@@ -112,7 +112,7 @@ The 2025-11-25 MCP spec introduced the following important changes.
 - If elicitation is supported, simply raise an `UrlElicitationRequiredError`.
   Note that the auth URL should have a `state` parameter that at least contains the `elicitation_id`,
   which is needed in the success page returned by the callback route of our `auth-server`.
-  THe `elicitation_id` is simply a unique ID (e.g. UUID) that identifies the elicitation.
+  The `elicitation_id` is simply a unique ID (e.g. UUID) that identifies the elicitation.
   Our `mcpgw` stores the mapping from `elicitation_id` to `session_id` in our Redis, so that we know which client the `elicitation_id` is for.
   The MCP client maps `elicitation_id` to the last failed tool call, so it knows what to retry when re-auth completes.
 
@@ -235,9 +235,9 @@ The 2025-11-25 MCP spec introduced the following important changes.
 
 ## Summary
 
-We use a pragmatic phase approach.
+We use a phased approach.
 
-- Use "URL mode elicitation" and "Universal Success Page" so that at least mainstream agents such as Claude, Cursor and VS Code all work well.
+- First use "URL mode elicitation" and "Universal Success Page" so that at least mainstream agents such as Claude, Cursor and VS Code all work well.
 
-- Add the `notifications/elicitation/complete` SSE implementation later, which is the recommended approach by the 2025-11-25 MCP spec,
+- Then add the `notifications/elicitation/complete` SSE implementation later, which is the recommended approach by the 2025-11-25 MCP spec,
   and we have a plan for SSE anyway.
