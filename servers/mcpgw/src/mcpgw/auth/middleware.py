@@ -1,10 +1,10 @@
 import logging
 from datetime import datetime
 
-from fastapi import HTTPException
 from fastmcp.server.dependencies import get_http_request
 from fastmcp.server.middleware import Middleware, MiddlewareContext
 from jwt import DecodeError, ExpiredSignatureError, InvalidIssuerError, InvalidSignatureError
+from starlette.exceptions import HTTPException
 
 from registry_pkgs.core.jwt_utils import decode_jwt
 

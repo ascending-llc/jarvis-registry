@@ -8,7 +8,8 @@ dependencies = [
     # MCP framework
     "mcp>=1.9.3",
     "fastmcp>=2.14.5",
-    "fastapi>=0.115.12",
+    "starlette>=0.48.0; python_version >= '3.14'",
+    "starlette>=0.27; python_version < '3.14'",
 
     # Core dependencies
     "pydantic>=2.11.3",

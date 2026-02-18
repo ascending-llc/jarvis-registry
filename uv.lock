@@ -1852,7 +1852,6 @@ name = "mcpgw"
 version = "0.2.0"
 source = { editable = "servers/mcpgw" }
 dependencies = [
-    { name = "fastapi" },
     { name = "fastmcp" },
     { name = "httpx" },
     { name = "mcp" },
@@ -1862,12 +1861,12 @@ dependencies = [
     { name = "python-dotenv" },
     { name = "pyyaml" },
     { name = "registry-pkgs" },
+    { name = "starlette" },
     { name = "websockets" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "fastapi", specifier = ">=0.115.12" },
     { name = "fastmcp", specifier = ">=2.14.5" },
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "mcp", specifier = ">=1.9.3" },
@@ -1877,6 +1876,8 @@ requires-dist = [
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "pyyaml", specifier = ">=6.0.2" },
     { name = "registry-pkgs", editable = "registry-pkgs" },
+    { name = "starlette", marker = "python_full_version < '3.14'", specifier = ">=0.27" },
+    { name = "starlette", marker = "python_full_version >= '3.14'", specifier = ">=0.48.0" },
     { name = "websockets", specifier = ">=15.0.1" },
 ]
 
