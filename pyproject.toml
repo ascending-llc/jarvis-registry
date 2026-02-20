@@ -109,7 +109,7 @@ hooks-run = { shell = "uv run pre-commit run --all-files", help = "Run pre-commi
 
 # Prepare Python-related artifacts for docker build.
 build-artifacts = { shell = """
-xargs -I % sh -c 'uv build --package % --wheel --no-build-logs --out-dir build-artifacts' <<EOF
+xargs -I % bash -c 'uv build --package % --wheel --no-build-logs --out-dir build-artifacts' <<EOF
 registry-pkgs
 registry
 auth-server
@@ -119,6 +119,34 @@ uv export --package registry --package registry-pkgs --no-hashes --no-annotate -
 uv export --package auth-server --package registry-pkgs --no-hashes --no-annotate --no-emit-workspace --quiet -o build-artifacts/requirements-auth-server.txt
 uv export --package mcpgw --package registry-pkgs --no-hashes --no-annotate --no-emit-workspace --quiet -o build-artifacts/requirements-mcpgw.txt
 """, help = "Generate artifacts for Docker build and put them in the build-artifacts/ folder." }
+
+cleanup-artifacts = { shell = """
+_clean_member() {
+  xargs -I % bash -c "([ -d '$1/%' ] && rm -rf '$1/%') || ([ -f '$1/%' ] && rm '$1/%') || true" <<-EOF
+  build
+  htmlcov
+  logs
+  .coverage
+  coverage.xml
+EOF
+}
+
+export -f _clean_member
+
+xargs -I % bash -c '[ -d "%" ] && rm -rf "%"' <<EOF
+build-artifacts
+logs
+security_scans
+registry/src/agent_security_scans
+EOF
+
+xargs -I % bash -c '_clean_member "%"' <<EOF
+auth-server
+registry
+registry-pkgs
+servers/mcpgw
+EOF
+""", help = "Clean up build artifacts, coverage reports, and logs." }
 
 [tool.ruff]
 target-version = "py312"
