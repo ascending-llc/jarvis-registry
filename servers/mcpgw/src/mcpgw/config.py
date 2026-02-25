@@ -44,7 +44,7 @@ class Settings(BaseSettings):
         default="X-Jarvis-Auth", description="Header name for internal JWT authentication (RFC 8707 compliant)"
     )
     # JWT authentication configuration
-    SECRET_KEY: str | None = Field(default=None, description="Secret key for JWT token validation (HS256)")
+    SECRET_KEY: str = Field(default="", description="Secret key for JWT token validation (HS256)")
     JWT_ISSUER: str = Field(default="jarvis-auth-server", description="Expected JWT token issuer")
     JWT_AUDIENCE: str = Field(default="jarvis-registry", description="Expected JWT token audience")
     JWT_SELF_SIGNED_KID: str = Field(default="self-signed-key-v1", description="Key ID for self-signed JWT tokens")
