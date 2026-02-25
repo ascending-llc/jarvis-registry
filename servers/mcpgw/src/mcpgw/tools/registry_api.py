@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 async def execute_tool_impl(
-    server_path: str, tool_name: str, arguments: dict[str, Any], server_id: str, ctx: Context = None
+    ctx: Context, server_path: str, tool_name: str, arguments: dict[str, Any], server_id: str
 ) -> dict[str, Any]:
     """
     Execute a specific tool (implementation layer).
@@ -56,7 +56,7 @@ async def execute_tool_impl(
         raise Exception(f"Tool execution failed: {str(e)}")
 
 
-async def read_resource_impl(server_id: str, resource_uri: str, ctx: Context = None) -> dict[str, Any]:
+async def read_resource_impl(ctx: Context, server_id: str, resource_uri: str) -> dict[str, Any]:
     """
     Read/access a resource from an MCP server.
 
@@ -92,7 +92,7 @@ async def read_resource_impl(server_id: str, resource_uri: str, ctx: Context = N
 
 
 async def execute_prompt_impl(
-    server_id: str, prompt_name: str, arguments: dict[str, Any] | None = None, ctx: Context = None
+    ctx: Context, server_id: str, prompt_name: str, arguments: dict[str, Any] | None = None
 ) -> dict[str, Any]:
     """
     Execute a prompt from an MCP server.
@@ -148,6 +148,7 @@ def get_tools() -> list[tuple[str, Callable]]:
 
     # Define tool wrapper function with proper signature and decorators
     async def execute_tool(
+        ctx: Context,
         server_path: str = Field(..., description="Server path from discovery (e.g., '/tavilysearch' for web search)"),
         tool_name: str = Field(
             ..., description="Tool name from discovery - can be scoped name (e.g., 'tavily_search_mcp_tavily_search')"
@@ -158,7 +159,6 @@ def get_tools() -> list[tuple[str, Callable]]:
             None,
             description="Original MCP tool name (e.g., 'tavily_search') - extract from toolFunction.mcpToolName if available",
         ),
-        ctx: Context | None = None,
     ) -> dict[str, Any]:
         """
         🚀 AUTO-USE: Execute any discovered tool to get real-time data.
@@ -203,14 +203,14 @@ def get_tools() -> list[tuple[str, Callable]]:
         if mcp_tool_name and mcp_tool_name != tool_name:
             logger.debug(f"Resolved tool name: '{resolved_tool_name}' (from mcpToolName, scoped was '{tool_name}')")
 
-        return await execute_tool_impl(server_path, resolved_tool_name, arguments, server_id, ctx)
+        return await execute_tool_impl(ctx, server_path, resolved_tool_name, arguments, server_id)
 
     async def read_resource(
+        ctx: Context,
         server_id: str = Field(..., description="Server ID from discover_servers (e.g., '6972e222755441652c23090f')"),
         resource_uri: str = Field(
             ..., description="Resource URI to read (e.g., 'tavily://search-results/AI', 'file:///path/to/data')"
         ),
-        ctx: Context | None = None,
     ) -> dict[str, Any]:
         """
         📄 Read/access resources from any MCP server.
@@ -246,15 +246,15 @@ def get_tools() -> list[tuple[str, Callable]]:
 
         Returns: Resource contents (format varies: text, JSON, binary, etc.)
         """
-        return await read_resource_impl(server_id, resource_uri, ctx)
+        return await read_resource_impl(ctx, server_id, resource_uri)
 
     async def execute_prompt(
+        ctx: Context,
         server_id: str = Field(..., description="Server ID from discover_servers"),
         prompt_name: str = Field(
             ..., description="Name of the prompt to execute (e.g., 'research_assistant', 'fact_checker')"
         ),
         arguments: dict[str, Any] | None = Field(None, description="Prompt arguments as key-value pairs"),
-        ctx: Context | None = None,
     ) -> dict[str, Any]:
         """
         💬 Execute prompts from any MCP server.
@@ -294,7 +294,7 @@ def get_tools() -> list[tuple[str, Callable]]:
 
         Returns: Prompt messages ready for LLM consumption (role, content pairs)
         """
-        return await execute_prompt_impl(server_id, prompt_name, arguments, ctx)
+        return await execute_prompt_impl(ctx, server_id, prompt_name, arguments)
 
     # Return list of (name, function) tuples
     return [

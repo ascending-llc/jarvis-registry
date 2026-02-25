@@ -72,7 +72,7 @@ def _generate_service_jwt(user_context: dict[str, Any]) -> str:
     return f"Bearer {token}"
 
 
-async def call_registry_api(method: str, endpoint: str, ctx: Context = None, **kwargs) -> dict[str, Any]:
+async def call_registry_api(method: str, endpoint: str, ctx: Context, **kwargs) -> dict[str, Any]:
     """
     Helper function to make async requests to the registry API with auth passthrough.
 

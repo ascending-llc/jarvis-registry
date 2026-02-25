@@ -27,4 +27,5 @@ exclude-signatures = [
     {signature = '8ebd4236ad5d438dd875a800006ab602de78d5d0d89e0b5f6a2bf055f9cedbba', reason = 'config file path in a container is not credential'},
     {signature = '0f3031126ee5bfac7c1beaf6752f14e6773de91184ca8df6dc187e77b5191fa0', reason = 'test data in unit test file is not credential'},
     {signature = '89642b0bf67e9e035c7d8232f4671ce1007205da87b891308593f45b37e6ec0f', reason = 'test data in unit test file is not credential'},
+    {signature = '5decd3cef441ca7cf7b3171542c5302e6b55ffe95ea32c7101b01c1015e74473', reason = 'example opage server_id is not credential'},
 ]
