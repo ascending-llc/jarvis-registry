@@ -12,11 +12,11 @@ logger = logging.getLogger(__name__)
 
 
 async def discover_servers_impl(
+    ctx: Context,
     query: str,
     top_n: int | None = None,
     search_type: str = "hybrid",
     type_list: list[str] | None = None,
-    ctx: Context = None,
 ) -> list[dict[str, Any]]:
     """
     🔍 Discover available MCP servers, tools, resources, or prompts.
@@ -62,10 +62,10 @@ async def discover_servers_impl(
     try:
         # Use centralized registry API call with automatic auth header extraction
         result = await call_registry_api(
+            ctx,
             method="POST",
             endpoint=f"/api/{settings.API_VERSION}/search/servers",
-            ctx=ctx,
-            json={"query": query, "top_n": top_n, "search_type": search_type, "type_list": type_list},
+            payload={"query": query, "top_n": top_n, "search_type": search_type, "type_list": type_list},
         )
 
         servers = result.get("servers", [])
@@ -94,6 +94,7 @@ def get_tools() -> list[tuple[str, Callable]]:
     """
 
     async def discover_servers(
+        ctx: Context,
         query: str = Field(
             "",
             description="Natural language query or keywords (e.g., 'web search', 'github', 'email automation') - leave empty to see all",
@@ -110,7 +111,6 @@ def get_tools() -> list[tuple[str, Callable]]:
             default_factory=lambda: ["tool"],
             description="Entity types to search: ['tool'] (most efficient, default), ['resource'], ['prompt'], ['server'] (full details, most tokens), or mix multiple types",
         ),
-        ctx: Context | None = None,
     ) -> list[dict[str, Any]]:
         """
         🔍 AUTO-USE: Unified discovery for tools, resources, prompts, or servers using smart semantic search.
@@ -210,7 +210,7 @@ def get_tools() -> list[tuple[str, Callable]]:
         - read_resource(server_id, resource_uri) for resources
         - execute_prompt(server_id, prompt_name, arguments) for prompts
         """
-        return await discover_servers_impl(query, top_n, search_type, type_list, ctx)
+        return await discover_servers_impl(ctx, query, top_n, search_type, type_list)
 
     return [
         ("discover_servers", discover_servers),

@@ -9,7 +9,7 @@ import json
 import logging
 import re
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 from fastmcp import Context
@@ -72,15 +72,24 @@ def _generate_service_jwt(user_context: dict[str, Any]) -> str:
     return f"Bearer {token}"
 
 
-async def call_registry_api(method: str, endpoint: str, ctx: Context, **kwargs) -> dict[str, Any]:
+async def call_registry_api(
+    ctx: Context,
+    /,
+    *,
+    method: Literal["POST"],
+    endpoint: str,
+    payload: dict[str, Any],
+    headers: dict[str, str] | None = None,
+) -> dict[str, Any]:
     """
     Helper function to make async requests to the registry API with auth passthrough.
 
     Args:
-        method: HTTP method (GET, POST, etc.)
-        endpoint: API endpoint path
-        ctx: FastMCP Context to extract auth headers from
-        **kwargs: Additional arguments to pass to the HTTP request
+        ctx: FastMCP Context to extract auth headers from.
+        method: HTTP method. Currently only POST is supported.
+        endpoint: API endpoint path.
+        payload: A plain Python dictionary that will be serialized to be the JSON payload of the POST request.
+        headers: Headers for the request. Those related to auth will be overriden.
 
     Returns:
         Dict[str, Any]: JSON response from the API
@@ -93,7 +102,7 @@ async def call_registry_api(method: str, endpoint: str, ctx: Context, **kwargs) 
     url = f"{settings.REGISTRY_URL}{endpoint}"
 
     # Extract user context from FastMCP middleware and generate JWT
-    auth_headers = {}
+    auth_headers: dict[str, str] = {}
     if ctx:
         # Get user context from middleware
         user_context = ctx.user_auth if hasattr(ctx, "user_auth") else {}
@@ -131,16 +140,16 @@ async def call_registry_api(method: str, endpoint: str, ctx: Context, **kwargs) 
     else:
         logger.warning("No FastMCP context provided for authentication")
 
-    # Merge auth headers with any existing headers in kwargs
-    if "headers" in kwargs:
-        kwargs["headers"].update(auth_headers)
+    if headers is None:
+        headers = auth_headers
     else:
-        kwargs["headers"] = auth_headers
+        # Merge auth headers into provided headers
+        headers.update(auth_headers)
 
     async with httpx.AsyncClient(timeout=Constants.REQUEST_TIMEOUT) as client:
         try:
             logger.info(f"Calling Registry API: {method} {url}")
-            response = await client.request(method, url, **kwargs)
+            response = await client.request(method, url, headers=headers, json=payload)
             response.raise_for_status()  # Raise HTTPStatusError for bad responses (4xx or 5xx)
 
             # Handle cases where response might be empty (e.g., 204 No Content)
