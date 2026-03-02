@@ -76,17 +76,27 @@ def map_cognito_groups_to_scopes(groups: list[str]) -> list[str]:
 
 
 def effective_scopes_from_context(user_context: dict[str, Any]) -> list[str]:
-    """Merge explicit scopes with group-mapped scopes and return de-duplicated results."""
-    scopes = list(user_context.get("scopes") or [])
+    """
+    Determine the effective scopes for a user based on the authentication context.
+
+    Explicit scopes (from the token's `scope` claim) take precedence. If any explicit
+    scopes are present, they are returned as-is (de-duplicated, preserving order)
+    without augmentation from group-mapped scopes. This avoids unintentionally
+    broadening permissions for down-scoped tokens.
+    If no explicit scopes are present, scopes are derived solely from group mappings.
+    """
+    explicit_scopes = list(user_context.get("scopes") or [])
+    if explicit_scopes:
+        seen: set[str] = set()
+        unique_scopes: list[str] = []
+        for scope in explicit_scopes:
+            if scope not in seen:
+                seen.add(scope)
+                unique_scopes.append(scope)
+        return unique_scopes
+
     groups = user_context.get("groups") or []
-    if groups:
-        scopes.extend(map_cognito_groups_to_scopes(groups))
+    if not groups:
+        return []
 
-    seen: set[str] = set()
-    unique_scopes: list[str] = []
-    for scope in scopes:
-        if scope not in seen:
-            seen.add(scope)
-            unique_scopes.append(scope)
-
-    return unique_scopes
+    return map_cognito_groups_to_scopes(groups)
