@@ -198,7 +198,7 @@ class ScopePermissionMiddleware(BaseHTTPMiddleware):
 
         method = request.method.upper()
         normalized_path = _normalize_path(request.url.path)
-        logger.info(f"RBAC check - path: {normalized_path}, method: {method}")
+        logger.debug(f"RBAC check - path: {normalized_path}, method: {method}")
 
         user_context = getattr(request.state, "user", {}) or {}
         user_scopes = effective_scopes_from_context(user_context)
