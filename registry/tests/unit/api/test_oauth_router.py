@@ -80,8 +80,8 @@ def client():
             "username": "test_user",
             "user_id": "test_user",
             "id": "test_user_id",
-            "groups": ["registry-admins"],
-            "scopes": ["registry-admins"],
+            "groups": ["registry-admin"],
+            "scopes": ["registry-admin"],
             "is_admin": True,
         }
         request.state.is_authenticated = True

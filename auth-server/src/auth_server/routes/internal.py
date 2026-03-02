@@ -1,24 +1,20 @@
 """Internal-only routes for the auth server.
 
 Endpoints are mounted under the API prefix by the main app, for example
-`/api_prefix/internal/tokens` and `/api_prefix/internal/reload-scopes`.
+`/api_prefix/internal/tokens`.
 """
 
-import base64
 import logging
 import time
 import uuid
-from datetime import datetime
 
-from fastapi import APIRouter, Header, HTTPException, Request
-from fastapi.responses import JSONResponse
-
-from auth_utils.jwt_utils import build_jwt_payload, encode_jwt
-from auth_utils.scopes import load_scopes_config
+import jwt
+from fastapi import APIRouter, HTTPException
 
 from ..core.config import settings
 from ..models import GenerateTokenRequest, GenerateTokenResponse
 from ..utils.security_mask import hash_username
+from auth_utils.jwt_utils import build_jwt_payload, encode_jwt
 
 logger = logging.getLogger(__name__)
 
@@ -130,42 +126,3 @@ async def generate_user_token(request: GenerateTokenRequest):
     except Exception as e:
         logger.error(f"Unexpected error generating token: {e}")
         raise HTTPException(status_code=500, detail="Internal error generating token")
-
-
-@router.post("/internal/reload-scopes")
-async def reload_scopes(request: Request, authorization: str | None = Header(None)):
-    if not authorization or not authorization.startswith("Basic "):
-        raise HTTPException(status_code=401, detail="Authentication required", headers={"WWW-Authenticate": "Basic"})
-
-    try:
-        encoded_credentials = authorization.split(" ")[1]
-        decoded_credentials = base64.b64decode(encoded_credentials).decode("utf-8")
-        username, password = decoded_credentials.split(":", 1)
-    except Exception as e:
-        logger.warning(f"Failed to decode Basic Auth credentials: {e}")
-        raise HTTPException(
-            status_code=401, detail="Invalid authentication format", headers={"WWW-Authenticate": "Basic"}
-        )
-
-    if username != settings.admin_user or password != settings.admin_password:
-        logger.warning(f"Failed admin authentication attempt for reload-scopes from {username}")
-        raise HTTPException(status_code=401, detail="Invalid admin credentials", headers={"WWW-Authenticate": "Basic"})
-
-    try:
-        # Test loading the scopes configuration to validate it's correct
-        new_config = load_scopes_config()
-        # Since scopes_config is now a property that loads from file each time,
-        # we don't need to update any module-level variable.
-        # The next access to settings.scopes_config will automatically load the updated file.
-        logger.info(f"Successfully validated and reloaded scopes configuration by admin '{username}'")
-        return JSONResponse(
-            status_code=200,
-            content={
-                "message": "Scopes configuration reloaded successfully",
-                "timestamp": datetime.utcnow().isoformat(),
-                "group_mappings_count": len(new_config.get("group_mappings", {})),
-            },
-        )
-    except Exception as e:
-        logger.error(f"Failed to reload scopes configuration: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to reload scopes: {str(e)}")

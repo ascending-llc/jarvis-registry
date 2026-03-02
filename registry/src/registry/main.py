@@ -36,11 +36,11 @@ from .api.v1.server.server_routes import router as servers_router_v1
 from .api.v1.token_routes import router as token_router
 from .api.wellknown_routes import router as wellknown_router
 from .auth.dependencies import CurrentUser
-from .auth.middleware import UnifiedAuthMiddleware
 from .core.config import settings
 from .core.exception_handler import register_validation_exception_handler
 from .health.routes import router as health_router
 from .health.service import health_service
+from .middleware import ScopePermissionMiddleware, UnifiedAuthMiddleware
 
 # Import services for initialization
 from .services.agent_service import agent_service
@@ -201,6 +201,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.add_middleware(ScopePermissionMiddleware)
 app.add_middleware(UnifiedAuthMiddleware)
 
 if hasattr(settings, "static_dir") and Path(settings.static_dir).exists():
@@ -280,8 +281,6 @@ async def get_current_user(user_context: CurrentUser):
         "provider": user_context.get("provider"),
         "scopes": user_context.get("scopes", []),
         "groups": user_context.get("groups", []),
-        "can_modify_servers": user_context.get("can_modify_servers", False),
-        "is_admin": user_context.get("is_admin", False),
         "user_id": user_context.get("user_id"),
     }
 

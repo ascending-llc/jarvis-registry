@@ -37,6 +37,19 @@ def event_loop():
     loop.close()
 
 
+@pytest.fixture(autouse=True)
+def mock_rbac_for_tests(monkeypatch):
+    """Mock RBAC middleware to always allow requests in tests."""
+    from registry.middleware import rbac
+
+    # Mock to always return True (allow all requests)
+    def mock_has_permission(self, user_scopes, path, method):
+        return True
+
+    monkeypatch.setattr(rbac.ScopePermissionMiddleware, "_has_permission", mock_has_permission)
+    yield
+
+
 @pytest.fixture
 def temp_dir() -> Generator[Path, None, None]:
     """Create a temporary directory for tests."""
@@ -146,8 +159,8 @@ def create_test_jwt_token(
     Returns:
         JWT access token string
     """
-    from auth_utils.scopes import map_groups_to_scopes
     from registry.utils.crypto_utils import generate_access_token
+    from registry_pkgs.core.scopes import map_groups_to_scopes
 
     if user_id is None:
         user_id = f"test-{username}-id"
@@ -173,7 +186,7 @@ def admin_session_cookie():
 
     return create_test_jwt_token(
         username=settings.admin_user,
-        groups=["registry-admins"],
+        groups=["registry-admin"],
         role="admin",
         auth_method="traditional",
         provider="local",
@@ -187,8 +200,8 @@ def mock_auth_middleware():
     test_user_context = {
         "username": "testadmin",
         "user_id": "test-admin-id",
-        "groups": ["registry-admins"],
-        "scopes": ["registry-admins"],
+        "groups": ["registry-admin"],
+        "scopes": ["registry-admin"],
         "role": "admin",
         "is_admin": True,
         "auth_method": "test",
@@ -200,7 +213,7 @@ def mock_auth_middleware():
         return test_user_context
 
     # Import the actual middleware class
-    from registry.auth.middleware import UnifiedAuthMiddleware
+    from registry.middleware.auth import UnifiedAuthMiddleware
 
     # Patch the instance method on the middleware class
     with patch.object(UnifiedAuthMiddleware, "_authenticate", mock_authenticate):
@@ -222,7 +235,7 @@ def user_session_cookie():
     """Create a valid user session cookie (JWT access token) for testing."""
     return create_test_jwt_token(
         username="testuser",
-        groups=["mcp-registry-user"],
+        groups=["register-user"],
         role="user",
         auth_method="oauth2",
         provider="keycloak",
@@ -262,14 +275,14 @@ def mock_authenticated_user():
     """Mock an authenticated user for testing protected routes."""
     from fastapi import Request
 
-    from registry.auth.dependencies import get_current_user_by_mid
+    from registry.auth.dependencies import get_current_user
 
     # Create admin user context
     user_context = {
         "username": "testadmin",
         "user_id": "testadmin",
-        "groups": ["registry-admins"],
-        "scopes": ["registry-admins"],
+        "groups": ["registry-admin"],
+        "scopes": ["registry-admin"],
         "is_admin": True,
         "auth_method": "traditional",
         "provider": "local",
@@ -292,7 +305,7 @@ def mock_authenticated_user():
         return user_context
 
     # Override the CurrentUser dependency
-    app.dependency_overrides[get_current_user_by_mid] = _mock_get_user
+    app.dependency_overrides[get_current_user] = _mock_get_user
 
     yield user_context
 

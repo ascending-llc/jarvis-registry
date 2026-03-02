@@ -160,39 +160,6 @@ def _normalize_path(
     return path
 
 
-def _check_agent_permission(
-    permission: str,
-    agent_name: str,
-    user_context: CurrentUser,
-) -> None:
-    """
-    Check if user has permission for agent operation.
-
-    Args:
-        permission: Permission to check
-        agent_name: Name of the agent
-        user_context: User context from auth
-
-    Raises:
-        HTTPException: If user lacks permission
-    """
-    from ..auth.dependencies import user_has_ui_permission_for_service
-
-    if not user_has_ui_permission_for_service(
-        permission,
-        agent_name,
-        user_context.get("ui_permissions", {}),
-    ):
-        logger.warning(
-            f"User {user_context['username']} attempted to perform {permission} "
-            f"on agent {agent_name} without permission"
-        )
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"You do not have permission to {permission} for {agent_name}",
-        )
-
-
 def _filter_agents_by_access(
     agents: list[AgentCard],
     user_context: CurrentUser,
@@ -210,22 +177,8 @@ def _filter_agents_by_access(
     accessible = []
     user_groups = set(user_context.get("groups", []))
     username = user_context["username"]
-    is_admin = user_context.get("is_admin", False)
-
-    # Get accessible agents from user context (UI-Scopes)
-    accessible_agent_list = user_context.get("accessible_agents", [])
-    logger.debug(f"User {username} accessible agents from UI-Scopes: {accessible_agent_list}")
 
     for agent in agents:
-        if is_admin:
-            accessible.append(agent)
-            continue
-
-        # Check if user has agent-level restrictions from UI-Scopes
-        if "all" not in accessible_agent_list and agent.path not in accessible_agent_list:
-            logger.debug(f"Agent {agent.path} filtered out: not in accessible agents {accessible_agent_list}")
-            continue
-
         if agent.visibility == "public":
             accessible.append(agent)
             continue
@@ -264,16 +217,6 @@ async def register_agent(
     Raises:
         HTTPException: 409 if path exists, 422 if validation fails, 403 if unauthorized
     """
-    ui_permissions = user_context.get("ui_permissions", {})
-    publish_permissions = ui_permissions.get("publish_agent", [])
-
-    if not publish_permissions:
-        logger.warning(f"User {user_context['username']} attempted to register agent without permission")
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You do not have permission to register agents",
-        )
-
     logger.info(f"Agent registration request from user '{user_context['username']}'")
     logger.info(f"Name: {request.name}, Path: {request.path}, URL: {request.url}")
 
@@ -643,8 +586,6 @@ async def toggle_agent(
             detail=f"Agent not found at path '{path}'",
         )
 
-    _check_agent_permission("toggle_service", agent_card.name, user_context)
-
     success = agent_service.toggle_agent(path, enabled)
 
     if not success:
@@ -742,8 +683,6 @@ async def update_agent(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Agent not found at path '{path}'",
         )
-
-    _check_agent_permission("modify_service", existing_agent.name, user_context)
 
     if not user_context["is_admin"] and existing_agent.registered_by != user_context["username"]:
         logger.warning(

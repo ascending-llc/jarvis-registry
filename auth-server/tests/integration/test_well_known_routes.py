@@ -179,15 +179,21 @@ class TestWellKnownRoutes:
 
         scopes = data["scopes_supported"]
 
-        # Should include MCP-specific scopes
-        assert any("mcp" in scope.lower() for scope in scopes)
+        # Expect actual scope names from scopes.yml, not group names
+        expected_scopes = {
+            "servers-read",
+            "agents-read",
+            "agents-write",
+            "server-write",
+            "servers-share",
+            "agents-share",
+            "system-ops",
+            "user-read",
+            "acl-read",
+            "acl-write",
+        }
 
-        # Should include admin scope
-        assert any("admin" in scope.lower() for scope in scopes)
-
-        # Should include read/execute scopes
-        assert any("read" in scope.lower() for scope in scopes)
-        assert any("execute" in scope.lower() for scope in scopes)
+        assert expected_scopes.issubset(set(scopes))
 
     def test_jwks_caching_behavior(self, test_client: TestClient):
         """Test that JWKS responses are consistent across requests."""

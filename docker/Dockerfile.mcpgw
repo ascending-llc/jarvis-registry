@@ -28,8 +28,8 @@ COPY ./build-artifacts /opt/build/
 # Install all 3rd party dependencies with the exact versions locked by uv
 RUN pip install --only-binary :all: -r /opt/build/requirements-mcpgw.txt
 
-# Install own packages from wheels
-RUN pip install --no-deps --no-index --find-links /opt/build/ mcpgw auth-utils
+# Install own packages from wheels - mcpgw depends on registry-pkgs
+RUN pip install --no-deps --no-index --find-links /opt/build/ mcpgw registry-pkgs
 
 # Expose port
 EXPOSE 8003

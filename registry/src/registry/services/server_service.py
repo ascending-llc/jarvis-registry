@@ -1481,10 +1481,8 @@ class ServerServiceV1:
                 }
             ]
 
-            # Use PyMongo collection directly for aggregation
-            collection = MCPServerDocument.get_pymongo_collection()
-            cursor = collection.aggregate(server_pipeline)
-            server_results = await cursor.to_list(length=None)
+            # Use Beanie's aggregate method directly
+            server_results = await MCPServerDocument.aggregate(server_pipeline).to_list()
 
             if server_results and len(server_results) > 0:
                 result = server_results[0]
@@ -1550,10 +1548,8 @@ class ServerServiceV1:
                 }
             ]
 
-            # Use PyMongo collection directly for aggregation
-            token_collection = Token.get_pymongo_collection()
-            token_cursor = token_collection.aggregate(token_pipeline)
-            token_results = await token_cursor.to_list(length=None)
+            # Use Beanie's aggregate method directly
+            token_results = await Token.aggregate(token_pipeline).to_list()
 
             if token_results and len(token_results) > 0:
                 result = token_results[0]
@@ -1604,10 +1600,8 @@ class ServerServiceV1:
                 {"$count": "count"},
             ]
 
-            # Use PyMongo collection directly for aggregation
-            active_users_collection = Token.get_pymongo_collection()
-            active_users_cursor = active_users_collection.aggregate(active_users_pipeline)
-            active_users_results = await active_users_cursor.to_list(length=None)
+            # Use Beanie's aggregate method directly
+            active_users_results = await Token.aggregate(active_users_pipeline).to_list()
 
             stats["active_users"] = active_users_results[0]["count"] if active_users_results else 0
 

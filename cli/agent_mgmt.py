@@ -11,9 +11,9 @@ for both MCP server management and A2A agent management operations. The JWT toke
 account is automatically loaded from .oauth-tokens/ingress.json.
 
 PERMISSIONS:
-- Token scopes: mcp-servers-restricted/*, mcp-servers-unrestricted/*, a2a-agent-admin
+- Token scopes: registry-admin, registry-power-user, register-user, register-read-only, a2a-agent-admin
 - Agent operations: register, modify, delete, list (full admin access)
-- Group assignment: mcp-servers-unrestricted, a2a-agent-admin
+- Group assignment: registry-admin, a2a-agent-admin
 
 API: /api/agents (A2A Agent Management API - dedicated endpoints for agent management)
 - List agents: GET /api/agents
@@ -51,7 +51,8 @@ import base64
 import json
 import logging
 import os
-import subprocess
+import re
+import subprocess  # nosec B404 - subprocess is required to run local credential scripts
 import sys
 import time
 from typing import Any
@@ -157,11 +158,24 @@ def _regenerate_token(token_file: str) -> bool:
         script_dir = os.path.dirname(os.path.abspath(__file__))
         project_root = os.path.dirname(script_dir)
 
+        def _validate_script_path(script_path: str) -> None:
+            real_script = os.path.realpath(script_path)
+            real_root = os.path.realpath(project_root)
+            if not real_script.startswith(real_root + os.sep):
+                raise ValueError(f"Script path escapes project root: {script_path}")
+            if not os.path.isfile(real_script):
+                raise FileNotFoundError(f"Script not found: {script_path}")
+            if not os.access(real_script, os.X_OK):
+                raise PermissionError(f"Script is not executable: {script_path}")
+
         if agent_name:
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", agent_name):
+                raise ValueError(f"Invalid agent name derived from token file: {agent_name}")
             # Use generate-agent-token.sh for specific agent
             # Call from keycloak/setup directory so relative paths work
             token_script = os.path.join(project_root, "keycloak/setup/generate-agent-token.sh")
             keycloak_setup_dir = os.path.join(project_root, "keycloak/setup")
+            _validate_script_path(token_script)
             logger.info(f"Running: {token_script} {agent_name}")
             result = subprocess.run(
                 [token_script, agent_name],
@@ -169,14 +183,15 @@ def _regenerate_token(token_file: str) -> bool:
                 capture_output=True,
                 text=True,
                 timeout=30,
-            )
+            )  # nosec B603 - script path is validated and arguments are controlled
         else:
             # Use generate_creds.sh for ingress token
             creds_script = os.path.join(project_root, "credentials-provider/generate_creds.sh")
+            _validate_script_path(creds_script)
             logger.info(f"Running: {creds_script} --ingress-only")
             result = subprocess.run(
                 [creds_script, "--ingress-only"], cwd=project_root, capture_output=True, text=True, timeout=60
-            )
+            )  # nosec B603 - script path is validated and arguments are controlled
 
         if result.returncode == 0:
             logger.info("✓ Token regenerated successfully")

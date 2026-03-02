@@ -11,7 +11,7 @@ import secrets
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from auth_utils.scopes import load_scopes_config
+from registry_pkgs import load_scopes_config
 
 from ..utils.config_loader import get_oauth2_config
 
@@ -99,11 +99,11 @@ class AuthSettings(BaseSettings):
     # Claude Desktop will automatically re-initiate the OAuth flow (the user may be prompted again
     # by the provider, but no manual restart of the flow is required).
 
-    # ==================== Paths ====================
+    # ==================== Configuration Properties ====================
 
     @property
     def scopes_config(self) -> dict:
-        """Get the scopes configuration from scopes.yml file."""
+        """Get the scopes configuration using centralized loader from registry_pkgs."""
         return load_scopes_config()
 
     @property

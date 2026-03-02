@@ -25,11 +25,9 @@ def mock_enhanced_auth_admin():
     def _mock_auth(session=None):
         return {
             "username": "testadmin",
-            "groups": ["mcp-registry-admin"],
+            "groups": ["registry-admin"],
             "scopes": [
-                "mcp-registry-admin",
-                "mcp-servers-unrestricted/read",
-                "mcp-servers-unrestricted/execute",
+                "registry-admin",
             ],
             "auth_method": "traditional",
             "provider": "local",
@@ -54,8 +52,8 @@ def mock_enhanced_auth_user():
     def _mock_auth(session=None):
         return {
             "username": "testuser",
-            "groups": ["mcp-registry-user"],
-            "scopes": ["mcp-servers-restricted/read"],
+            "groups": ["register-user"],
+            "scopes": ["register-read-only"],
             "auth_method": "oauth2",
             "provider": "cognito",
             "accessible_servers": ["mcpgw"],
@@ -71,8 +69,8 @@ def mock_enhanced_auth_user():
 @pytest.fixture
 def admin_session_cookie():
     """Create a valid admin session cookie (JWT access token)."""
-    from auth_utils.scopes import map_groups_to_scopes
     from registry.utils.crypto_utils import generate_access_token
+    from registry_pkgs.core.scopes import map_groups_to_scopes
 
     groups = ["registry-admins"]
     scopes = map_groups_to_scopes(groups) or ["registry-admins"]
@@ -178,8 +176,8 @@ class TestV0ListServers:
         """Test that regular users see only authorized servers."""
         from fastapi.testclient import TestClient
 
-        from auth_utils.scopes import map_groups_to_scopes
         from registry.utils.crypto_utils import generate_access_token
+        from registry_pkgs.core.scopes import map_groups_to_scopes
 
         # Create user context for a regular (non-admin) user
         user_context = mock_enhanced_auth_user()
@@ -394,8 +392,8 @@ class TestV0ListServerVersions:
         """Test that users cannot access servers they don't have permission for."""
         from fastapi.testclient import TestClient
 
-        from auth_utils.scopes import map_groups_to_scopes
         from registry.utils.crypto_utils import generate_access_token
+        from registry_pkgs.core.scopes import map_groups_to_scopes
 
         user_context = mock_enhanced_auth_user()
         groups = user_context["groups"]

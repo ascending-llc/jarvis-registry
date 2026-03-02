@@ -1,0 +1,192 @@
+# Pure new RBAC scopes for registry server/agent APIs.
+# Scopes configuration for role-based permissions focused on server/agent APIs.
+#
+# Roles:
+# - registry-admin: full access
+# - registry-power-user: create/delete/share servers, read agents
+# - register-user: create servers and agents, cannot share
+# - register-read-only: read-only access to servers and agents
+
+group_mappings:
+  jarvis-registry-admin:
+    - servers-read
+    - agents-read
+    - agents-write
+    - server-write
+    - servers-share
+    - agents-share
+    - system-ops
+    - user-read
+    - acl-read
+    - acl-write
+  jarvis-registry-power-user:
+    - servers-read
+    - agents-read
+    - agents-write
+    - server-write
+    - servers-share
+    - agents-share
+    - user-read
+    - acl-read
+    - acl-write
+  jarvis-registry-user:
+    - servers-read
+    - agents-read
+    - agents-write
+    - server-write
+    - user-read
+    - acl-read
+  jarvis-registry-read-only:
+    - servers-read
+    - agents-read
+    - user-read
+    - acl-read
+
+servers-read:
+  - action: list_servers # name
+    method: GET  # GET,POST or *
+    endpoint: /servers
+  - action: get_server
+    method: GET
+    endpoint: /servers/{server_id}
+  - action: servers_connection
+    method: POST
+    endpoint: /servers/connection
+  - action: get_server_tools
+    method: GET
+    endpoint: /servers/{server_id}/tools
+  - action: refresh_server_health
+    method: POST
+    endpoint: /servers/{server_id}/refresh
+
+agents-read:
+  - action: list_agents
+    method: GET
+    endpoint: /agents
+  - action: get_agent
+    method: GET
+    endpoint: /agents/{path}
+  - action: get_agent_rating
+    method: GET
+    endpoint: /agents/{path}/rating
+  - action: discover_agents
+    method: POST
+    endpoint: /agents/discover
+  - action: discover_agents_semantic
+    method: POST
+    endpoint: /agents/discover/semantic
+  - action: check_agent_health
+    method: POST
+    endpoint: /agents/{path}/health
+
+agents-write:
+  - action: publish_agent
+    method: POST
+    endpoint: /agents/register
+  - action: modify_agent
+    method: PUT
+    endpoint: /agents/{path}
+  - action: delete_agent
+    method: DELETE
+    endpoint: /agents/{path}
+  - action: toggle_agent
+    method: POST
+    endpoint: /agents/{path}/toggle
+  - action: rate_agent
+    method: POST
+    endpoint: /agents/{path}/rate
+
+server-write:
+  - action: register_service
+    method: POST
+    endpoint: /servers
+  - action: modify_service
+    method: PATCH
+    endpoint: /servers/{server_id}
+  - action: delete_service
+    method: DELETE
+    endpoint: /servers/{server_id}
+  - action: toggle_service
+    method: POST
+    endpoint: /servers/{server_id}/toggle
+
+servers-share:
+  - action: share_service
+    method: PUT
+    endpoint: /permissions/mcpServer/{resource_id}
+
+agents-share:
+  - action: share_agent
+    method: PUT
+    endpoint: /permissions/agent/{resource_id}
+
+user-read:
+  - action: get_user_info
+    method: GET
+    endpoint: /auth/me
+  - action: get_version
+    method: GET
+    endpoint: /version
+  # Token management
+  - action: generate_user_token
+    method: POST
+    endpoint: /tokens/generate
+  # MCP connection management
+  - action: reinitialize_server
+    method: POST
+    endpoint: /mcp/{server_id}/reinitialize
+  - action: get_connection_status
+    method: GET
+    endpoint: /mcp/connection/status
+  - action: get_server_connection_status
+    method: GET
+    endpoint: /mcp/connection/status/{server_id}
+  - action: get_auth_values
+    method: GET
+    endpoint: /mcp/{server_name}/auth-values
+  # MCP OAuth management
+  - action: oauth_discover
+    method: GET
+    endpoint: /mcp/oauth/discover
+  - action: oauth_initiate
+    method: GET
+    endpoint: /mcp/{server_id}/oauth/initiate
+  - action: oauth_callback
+    method: GET
+    endpoint: /mcp/{server_path}/oauth/callback
+  - action: get_oauth_tokens
+    method: GET
+    endpoint: /mcp/oauth/tokens/{flow_id}
+  - action: get_oauth_status
+    method: GET
+    endpoint: /mcp/oauth/status/{flow_id}
+  - action: cancel_oauth
+    method: POST
+    endpoint: /mcp/oauth/cancel/{server_id}
+  - action: refresh_oauth_token
+    method: POST
+    endpoint: /mcp/oauth/refresh/{server_id}
+  - action: delete_oauth_token
+    method: DELETE
+    endpoint: /mcp/oauth/token/{server_id}
+
+acl-read:
+  - action: search_principals
+    method: GET
+    endpoint: /permissions/search-principals
+  - action: get_resource_permissions
+    method: GET
+    endpoint: /permissions/{resource_type}/{resource_id}
+
+acl-write:
+  - action: update_resource_permissions
+    method: PUT
+    endpoint: /permissions/{resource_type}/{resource_id}
+
+system-ops:
+  - action: get_server_stats
+    method: GET
+    endpoint: /servers/stats
+  - action: get_admin_tokens
+    method: GET
+    endpoint: /admin/tokens

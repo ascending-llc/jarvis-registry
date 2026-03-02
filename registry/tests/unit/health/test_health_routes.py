@@ -30,7 +30,7 @@ class TestHealthRoutes:
             "username": settings.admin_user,
             "auth_method": "traditional",
             "provider": "local",
-            "groups": ["registry-admins"],
+            "groups": ["registry-admin"],
         }
 
         return signer.dumps(session_data)

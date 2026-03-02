@@ -8,7 +8,6 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
     # root must depend on all workspace members, referencing them by distribution names
     "registry-pkgs",
-    "auth-utils",
     "registry",
     "auth-server",
     "mcpgw",
@@ -20,7 +19,6 @@ dependencies = [
 [tool.uv.workspace]
 members = [
     "registry-pkgs",
-    "auth-utils",
     "registry",
     "auth-server",
     "servers/mcpgw",
@@ -28,7 +26,6 @@ members = [
 
 [tool.uv.sources]
 registry-pkgs = { workspace = true }
-auth-utils = { workspace = true }
 registry = { workspace = true }
 auth-server = { workspace = true }
 mcpgw = { workspace = true }
@@ -84,8 +81,8 @@ printf '   mcpgw       → %s\n' $(grep -m1 '^version = ' servers/mcpgw/pyprojec
 version-sync = { script = "scripts.sync_version:main", help = "Sync version across all projects (usage: poe version-sync 0.2.0)" }
 
 # Run all tests across all projects
-test-all = { shell = "cd registry && uv run poe test && cd ../auth-server && uv run poe test && cd ../registry-pkgs && uv run poe test && cd ../auth-utils && uv run poe test" }
-test-all-cov = { shell = "cd registry && uv run poe test-cov && cd ../auth-server && uv run poe test-cov && cd ../registry-pkgs && uv run poe test-cov && cd ../auth-utils && uv run poe test-cov" }
+test-all = { shell = "cd registry && uv run poe test && cd ../auth-server && uv run poe test && cd ../registry-pkgs && uv run poe test" }
+test-all-cov = { shell = "cd registry && uv run poe test-cov && cd ../auth-server && uv run poe test-cov && cd ../registry-pkgs && uv run poe test-cov" }
 
 # registry tests
 test-registry = { shell = "cd registry && uv run poe test" }
@@ -119,14 +116,13 @@ hooks-run = { shell = "uv run pre-commit run --all-files", help = "Run pre-commi
 build-artifacts = { shell = """
 xargs -I % sh -c 'uv build --package % --wheel --no-build-logs --out-dir build-artifacts' <<EOF
 registry-pkgs
-auth-utils
 registry
 auth-server
 mcpgw
 EOF
-uv export --package registry --package registry-pkgs --package auth-utils --no-hashes --no-annotate --no-emit-workspace --quiet -o build-artifacts/requirements-registry.txt
-uv export --package auth-server --package registry-pkgs --package auth-utils --no-hashes --no-annotate --no-emit-workspace --quiet -o build-artifacts/requirements-auth-server.txt
-uv export --package mcpgw --no-hashes --no-annotate --no-emit-workspace --quiet -o build-artifacts/requirements-mcpgw.txt
+uv export --package registry --package registry-pkgs --no-hashes --no-annotate --no-emit-workspace --quiet -o build-artifacts/requirements-registry.txt
+uv export --package auth-server --package registry-pkgs --no-hashes --no-annotate --no-emit-workspace --quiet -o build-artifacts/requirements-auth-server.txt
+uv export --package mcpgw --package registry-pkgs --no-hashes --no-annotate --no-emit-workspace --quiet -o build-artifacts/requirements-mcpgw.txt
 """, help = "Generate artifacts for Docker build and put them in the build-artifacts/ folder." }
 
 [tool.ruff]

@@ -50,7 +50,7 @@ include-package-data = true
 where = ["src"]
 
 [tool.setuptools.package-data]
-registry_pkgs = ["py.typed"]
+registry_pkgs = ["py.typed", "*.yml"]
 
 # Tasks of this specific workspace member should be run from the member directory, i.e. `registry-pkgs`.
 [tool.poe.tasks]

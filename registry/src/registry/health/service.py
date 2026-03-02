@@ -901,18 +901,6 @@ class HealthMonitoringService:
 
                         server_service.update_server(service_path, updated_server_info)
 
-                        # Update scopes.yml with newly discovered tools
-                        try:
-                            from ..utils.scopes_manager import update_server_scopes
-
-                            tool_names = [tool["name"] for tool in tool_list if "name" in tool]
-                            await update_server_scopes(
-                                service_path, current_server_info.get("server_name", "Unknown"), tool_names
-                            )
-                            logger.info(f"Updated scopes for {service_path} with {len(tool_names)} discovered tools")
-                        except Exception as e:
-                            logger.error(f"Failed to update scopes for {service_path} after tool discovery: {e}")
-
                         # Broadcast only this specific service update
                         await self.broadcast_health_update(service_path)
 

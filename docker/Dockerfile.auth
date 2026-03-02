@@ -35,8 +35,8 @@ COPY ./build-artifacts /opt/build/
 # Install all 3rd party dependencies with the exact versions locked by uv
 RUN pip install --only-binary :all: -r /opt/build/requirements-auth-server.txt
 
-# Install own packages from wheels - auth-server depends on registry-pkgs and auth-utils
-RUN pip install --no-deps --no-index --find-links /opt/build/ auth-server registry-pkgs auth-utils
+# Install own auth-server package from wheels; all dependencies must be listed in requirements-auth-server.txt
+RUN pip install --no-deps --no-index --find-links /opt/build/ auth-server registry-pkgs
 
 # Expose port
 EXPOSE 8888

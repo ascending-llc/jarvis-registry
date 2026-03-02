@@ -6,7 +6,6 @@ requires-python = ">=3.12"
 dependencies = [
     # workspace packages
     "registry-pkgs",
-    "auth-utils",
 
     # Web framework
     "fastapi>=0.115.12",
@@ -58,7 +57,6 @@ dependencies = [
 
 [tool.uv.sources]
 registry-pkgs = { workspace = true }
-auth-utils = { workspace = true }
 
 [build-system]
 requires = ["setuptools>=67", "wheel"]

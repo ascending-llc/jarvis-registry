@@ -68,7 +68,7 @@ class TestDynamicClientRegistration:
             "redirect_uris": ["https://example.com/callback"],
             "grant_types": ["authorization_code"],
             "response_types": ["code"],
-            "scope": "mcp-servers-unrestricted/read mcp-servers-unrestricted/execute",
+            "scope": "registry-admin",
             "contacts": ["admin@example.com"],
             "token_endpoint_auth_method": "client_secret_basic",
         }
@@ -737,7 +737,7 @@ class TestEndToEndIntegration:
         # Step 2: Initiate device flow
         device_response = test_client.post(
             f"{API_PREFIX}/oauth2/device/code",
-            data={"client_id": client_id, "scope": "mcp-servers-unrestricted/read mcp-servers-unrestricted/execute"},
+            data={"client_id": client_id, "scope": "registry-admin"},
         )
         assert device_response.status_code == 200
         device_code = device_response.json()["device_code"]

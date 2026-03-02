@@ -62,20 +62,6 @@ def get_user_context(user_context: CurrentUser):
     return user_context
 
 
-def check_admin_permission(user_context: dict) -> bool:
-    """
-    Check if user has admin permissions.
-
-    Args:
-        user_context: User context dictionary from authentication
-
-    Returns:
-        True if user has admin scope, False otherwise
-    """
-    scopes = user_context.get("scopes", [])
-    return "mcp-registry-admin" in scopes
-
-
 def apply_connection_status_to_server(
     server_item, status: dict[str, Any] | None, fallback_requires_oauth: bool = False
 ) -> None:
@@ -214,17 +200,10 @@ async def get_server_stats(
     Note: This endpoint uses MongoDB aggregation pipelines and is only
     available when using MongoDB storage backend. File-based storage
     will return a simplified version or 501 Not Implemented.
+
+    Authorization is enforced by ScopePermissionMiddleware based on scopes.yml configuration.
     """
     try:
-        if not check_admin_permission(user_context):
-            raise HTTPException(
-                status_code=http_status.HTTP_403_FORBIDDEN,
-                detail={
-                    "error": "forbidden",
-                    "message": "Admin access required to view system statistics",
-                },
-            )
-
         # Get statistics from service
         stats = await server_service_v1.get_stats()
 

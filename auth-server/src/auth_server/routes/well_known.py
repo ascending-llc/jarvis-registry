@@ -60,10 +60,18 @@ async def oauth_authorization_server_metadata():
     Per RFC 8414, the issuer MUST be at the root origin without any prefix.
     Operational endpoints use auth_server_url which includes the prefix.
     """
+    from registry_pkgs.core.scopes import get_scopes_config
+
     base_url, auth_server_url = _get_auth_server_urls()
 
     # Get current auth provider from settings
     auth_provider = settings.auth_provider
+
+    # Load scopes from scopes.yml
+    scopes_config = get_scopes_config()
+
+    # Get all scope names (excluding group_mappings)
+    scope_names = [key for key in scopes_config if key != "group_mappings"]
 
     return {
         "issuer": base_url,
@@ -80,7 +88,7 @@ async def oauth_authorization_server_metadata():
         ],
         "token_endpoint_auth_methods_supported": ["client_secret_post", "client_secret_basic", "none"],
         "code_challenge_methods_supported": ["S256"],
-        "scopes_supported": ["mcp-registry-admin", "mcp-servers-unrestricted/read", "mcp-servers-unrestricted/execute"],
+        "scopes_supported": scope_names,
         "service_documentation": f"{auth_server_url}/docs",
     }
 

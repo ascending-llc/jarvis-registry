@@ -4,6 +4,8 @@ import logging
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from registry_pkgs import load_scopes_config
+
 logger = logging.getLogger(__name__)
 
 
@@ -90,6 +92,11 @@ class Settings(BaseSettings):
             format=self.log_format,
             force=True,  # Override any existing configuration
         )
+
+    @property
+    def scopes_config(self) -> dict:
+        """Get scopes configuration using centralized loader from registry_pkgs."""
+        return load_scopes_config()
 
     def log_config(self):
         """Log current configuration (hiding sensitive values)."""

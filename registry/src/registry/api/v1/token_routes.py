@@ -64,6 +64,22 @@ async def generate_user_token(
         if requested_scopes and not isinstance(requested_scopes, list):
             raise HTTPException(status_code=400, detail="requested_scopes must be a list of strings")
 
+        # Check if requested scopes are within user's current scopes
+        if requested_scopes:
+            user_scopes = set(user_context.get("scopes", []))
+            requested_scopes_set = set(requested_scopes)
+
+            # Check if all requested scopes are in user's current scopes
+            invalid_scopes = requested_scopes_set - user_scopes
+            if invalid_scopes:
+                logger.warning(
+                    f"User '{user_context['username']}' requested scopes not in their permission: {invalid_scopes}"
+                )
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Cannot request scopes not in your current permissions. Invalid scopes: {list(invalid_scopes)}",
+                )
+
         # Prepare request to auth server
         auth_request = {
             "user_context": {

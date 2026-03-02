@@ -4,9 +4,7 @@ import {
   DEFAULT_IMPORT_LIST,
   IMPORT_ANTHROPIC_SCRIPT,
   REGISTRY_CLI_WRAPPER,
-  SERVICE_MANAGEMENT_SCRIPT,
-  TEST_ANTHROPIC_SCRIPT,
-  USER_MANAGEMENT_SCRIPT
+  TEST_ANTHROPIC_SCRIPT
 } from "../paths.js";
 import type {ScriptCommand, ScriptTask, TaskCategory, TaskContext} from "./types.js";
 

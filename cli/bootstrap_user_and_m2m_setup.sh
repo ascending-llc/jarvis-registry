@@ -1,6 +1,6 @@
 #!/bin/bash
 # Bootstrap script for setting up LOB users and M2M service accounts
-# Creates registry-users-lob1 and registry-users-lob2 groups
+# # Creates registry-admin, register-user, and register-read-only groups
 # Then creates bot and human users in these groups
 
 set -e
@@ -8,7 +8,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 ENV_FILE="$PROJECT_ROOT/.env"
-USER_MGMT_SCRIPT="$SCRIPT_DIR/user_mgmt.sh"
+REGISTRY_MGMT_SCRIPT="$PROJECT_ROOT/api/registry_management.py"
 
 # Load environment variables from .env file
 if [ ! -f "$ENV_FILE" ]; then
@@ -143,17 +143,17 @@ _create_group() {
 }
 
 
-_check_user_mgmt_script() {
-    if [ ! -f "$USER_MGMT_SCRIPT" ]; then
-        _print_error "user_mgmt.sh not found at $USER_MGMT_SCRIPT"
+_check_registry_mgmt_script() {
+    if [ ! -f "$REGISTRY_MGMT_SCRIPT" ]; then
+        _print_error "registry_management.py not found at $REGISTRY_MGMT_SCRIPT"
         exit 1
     fi
 
-    if [ ! -x "$USER_MGMT_SCRIPT" ]; then
-        chmod +x "$USER_MGMT_SCRIPT"
+    if [ ! -x "$REGISTRY_MGMT_SCRIPT" ]; then
+        chmod +x "$REGISTRY_MGMT_SCRIPT"
     fi
 
-    _print_success "user_mgmt.sh found and is executable"
+    _print_success "registry_management.py found and is executable"
 }
 
 
@@ -161,9 +161,9 @@ _create_lob1_users() {
     _print_section "Creating LOB1 Bot and Human Users"
 
     echo "Creating M2M service account: lob1-bot"
-    if "$USER_MGMT_SCRIPT" create-m2m \
+    if uv run python "$REGISTRY_MGMT_SCRIPT" user-create-m2m \
         --name "lob1-bot" \
-        --groups "registry-users-lob1" \
+        --groups "register-user" \
         --description "M2M service account for LOB1" 2>&1 | tee /tmp/lob1_bot_output.txt; then
         _print_success "Created lob1-bot"
     else
@@ -177,12 +177,12 @@ _create_lob1_users() {
 
     echo ""
     echo "Creating human user: lob1-user"
-    if "$USER_MGMT_SCRIPT" create-human \
+    if uv run python "$REGISTRY_MGMT_SCRIPT" user-create-human \
         --username "lob1-user" \
         --email "lob1-user@example.com" \
-        --firstname "LOB1" \
-        --lastname "User" \
-        --groups "registry-users-lob1" \
+        --first-name "LOB1" \
+        --last-name "User" \
+        --groups "register-user" \
         --password "$INITIAL_USER_PASSWORD" 2>&1 | tee /tmp/lob1_user_output.txt; then
         _print_success "Created lob1-user"
     else
@@ -200,9 +200,9 @@ _create_lob2_users() {
     _print_section "Creating LOB2 Bot and Human Users"
 
     echo "Creating M2M service account: lob2-bot"
-    if "$USER_MGMT_SCRIPT" create-m2m \
+    if uv run python "$REGISTRY_MGMT_SCRIPT" user-create-m2m \
         --name "lob2-bot" \
-        --groups "registry-users-lob2" \
+        --groups "register-read-only" \
         --description "M2M service account for LOB2" 2>&1 | tee /tmp/lob2_bot_output.txt; then
         _print_success "Created lob2-bot"
     else
@@ -216,12 +216,12 @@ _create_lob2_users() {
 
     echo ""
     echo "Creating human user: lob2-user"
-    if "$USER_MGMT_SCRIPT" create-human \
+    if uv run python "$REGISTRY_MGMT_SCRIPT" user-create-human \
         --username "lob2-user" \
         --email "lob2-user@example.com" \
-        --firstname "LOB2" \
-        --lastname "User" \
-        --groups "registry-users-lob2" \
+        --first-name "LOB2" \
+        --last-name "User" \
+        --groups "register-read-only" \
         --password "$INITIAL_USER_PASSWORD" 2>&1 | tee /tmp/lob2_user_output.txt; then
         _print_success "Created lob2-user"
     else
@@ -239,9 +239,9 @@ _create_admin_users() {
     _print_section "Creating Admin Bot and Admin User"
 
     echo "Creating M2M service account: admin-bot"
-    if "$USER_MGMT_SCRIPT" create-m2m \
+    if uv run python "$REGISTRY_MGMT_SCRIPT" user-create-m2m \
         --name "admin-bot" \
-        --groups "registry-admins" \
+        --groups "registry-admin" \
         --description "M2M service account for admin operations" 2>&1 | tee /tmp/admin_bot_output.txt; then
         _print_success "Created admin-bot"
     else
@@ -255,12 +255,12 @@ _create_admin_users() {
 
     echo ""
     echo "Creating human user: admin-user"
-    if "$USER_MGMT_SCRIPT" create-human \
+    if uv run python "$REGISTRY_MGMT_SCRIPT" user-create-human \
         --username "admin-user" \
         --email "admin-user@example.com" \
-        --firstname "Admin" \
-        --lastname "User" \
-        --groups "registry-admins" \
+        --first-name "Admin" \
+        --last-name "User" \
+        --groups "registry-admin" \
         --password "$INITIAL_USER_PASSWORD" 2>&1 | tee /tmp/admin_user_output.txt; then
         _print_success "Created admin-user"
     else
@@ -275,7 +275,7 @@ _create_admin_users() {
 
 
 _assign_mcp_gateway_to_registry_admins() {
-    _print_section "Assigning MCP Gateway Service Account to registry-admins"
+    _print_section "Assigning MCP Gateway Service Account to registry-admin"
 
     local service_account_name="service-account-mcp-gateway-m2m"
 
@@ -291,27 +291,27 @@ _assign_mcp_gateway_to_registry_admins() {
 
     echo "Found service account with ID: $service_account_id"
 
-    echo "Looking up registry-admins group"
+    echo "Looking up registry-admin group"
     local registry_admins_group_id=$(curl -s -H "Authorization: Bearer $TOKEN" \
         "$ADMIN_URL/admin/realms/$REALM/groups" | \
-        jq -r '.[] | select(.name=="registry-admins") | .id')
+        jq -r '.[] | select(.name=="registry-admin") | .id')
 
     if [ -z "$registry_admins_group_id" ] || [ "$registry_admins_group_id" = "null" ]; then
-        _print_error "Could not find registry-admins group"
+        _print_error "Could not find registry-admin group"
         return 1
     fi
 
-    echo "Found registry-admins group with ID: $registry_admins_group_id"
+    echo "Found registry-admin group with ID: $registry_admins_group_id"
 
-    echo "Assigning service account to registry-admins group"
+    echo "Assigning service account to registry-admin group"
     local assign_response=$(curl -s -o /dev/null -w "%{http_code}" \
         -X PUT "$ADMIN_URL/admin/realms/$REALM/users/$service_account_id/groups/$registry_admins_group_id" \
         -H "Authorization: Bearer $TOKEN")
 
     if [ "$assign_response" = "204" ]; then
-        _print_success "Service account assigned to registry-admins group"
+        _print_success "Service account assigned to registry-admin group"
     else
-        _print_error "Failed to assign service account to registry-admins group (HTTP $assign_response)"
+        _print_error "Failed to assign service account to registry-admin group (HTTP $assign_response)"
         return 1
     fi
 }
@@ -322,9 +322,9 @@ _print_summary() {
 
     echo ""
     _print_info "Created Groups:"
-    echo "  - registry-users-lob1"
-    echo "  - registry-users-lob2"
-    echo "  - registry-admins"
+    echo "  - register-user"
+    echo "  - register-read-only"
+    echo "  - registry-admin"
 
     echo ""
     _print_info "Created LOB1 Users:"
@@ -359,8 +359,8 @@ main() {
     # Validate environment variables
     _validate_environment
 
-    # Check if user_mgmt.sh exists
-    _check_user_mgmt_script
+    # Check if registry_management.py exists
+    _check_registry_mgmt_script
 
     # Get admin token
     echo "Authenticating with Keycloak..."
@@ -369,9 +369,9 @@ main() {
 
     # Create groups
     _print_section "Creating Keycloak Groups"
-    _create_group "registry-users-lob1"
-    _create_group "registry-users-lob2"
-    _create_group "registry-admins"
+    _create_group "register-user"
+    _create_group "register-read-only"
+    _create_group "registry-admin"
 
     # Create LOB1 users
     _create_lob1_users
@@ -382,7 +382,7 @@ main() {
     # Create Admin users
     _create_admin_users
 
-    # Assign MCP Gateway service account to registry-admins group
+    # Assign MCP Gateway service account to registry-admin group
     _assign_mcp_gateway_to_registry_admins
 
     # Print summary

@@ -89,10 +89,10 @@ User Management (IAM):
     uv run python registry_management.py user-list --search admin
 
     # Create M2M service account
-    uv run python registry_management.py user-create-m2m --name my-service --groups registry-admins
+    uv run python registry_management.py user-create-m2m --name my-service --groups registry-admin
 
     # Create human user
-    uv run python registry_management.py user-create-human --username john.doe --email john@example.com --first-name John --last-name Doe --groups registry-admins
+    uv run python registry_management.py user-create-human --username john.doe --email john@example.com --first-name John --last-name Doe --groups registry-admin
 
     # Delete user
     uv run python registry_management.py user-delete --username john.doe

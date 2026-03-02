@@ -16,7 +16,7 @@ export KEYCLOAK_DB_PASSWORD="your-secure-database-password"
 ### Step 2: Start Keycloak Services
 ```bash
 # Start PostgreSQL and Keycloak containers
-docker-compose up -d postgres keycloak
+docker compose up -d keycloak-db  keycloak
 
 # Wait for Keycloak to be ready (takes ~2 minutes)
 echo "Waiting for Keycloak to start..."
@@ -39,7 +39,7 @@ curl -f http://localhost:8080/health/ready || echo "Keycloak not ready yet"
 # Create a service account for each AI agent
 ./keycloak/setup/setup-agent-service-account.sh \
   --agent-id sre-agent \
-  --group mcp-servers-unrestricted
+  --group registry-admin
 ```
 
 **Option B: Development Setup (Shared Account)**
@@ -68,7 +68,7 @@ curl -f http://localhost:8080/health/ready || echo "Keycloak not ready yet"
 #### init-keycloak.sh
 **What it does:**
 - Creates the `mcp-gateway` realm
-- Creates two groups: `mcp-servers-unrestricted` and `mcp-servers-restricted`
+- Creates four groups: `registry-admin`, `registry-power-user`, `registry-user`, `registry-read-only`
 - Creates the M2M client (`mcp-gateway-m2m`)
 - Configures group mappers for JWT tokens
 - Sets up proper client scopes
@@ -87,7 +87,7 @@ export KEYCLOAK_DB_PASSWORD="secure-db-password"
 #### setup-agent-service-account.sh
 **What it does:**
 - Creates an individual service account for a specific AI agent
-- Assigns the account to either restricted or unrestricted group
+- Assigns the account to one of the role groups
 - Enables individual audit trails per agent
 
 **Required Environment Variables:**
@@ -98,23 +98,23 @@ export KEYCLOAK_DB_PASSWORD="secure-db-password"
 # For an agent with full access
 ./keycloak/setup/setup-agent-service-account.sh \
   --agent-id my-agent \
-  --group mcp-servers-unrestricted
+  --group registry-admin
 
 # For an agent with limited access
 ./keycloak/setup/setup-agent-service-account.sh \
   --agent-id my-limited-agent \
-  --group mcp-servers-restricted
+  --group registry-read-only
 ```
 
 **Options:**
 - `--agent-id` - Unique identifier for the agent (required)
-- `--group` - Either `mcp-servers-unrestricted` or `mcp-servers-restricted` (required)
+- `--group` - One of `registry-admin`, `registry-power-user`, `registry-user`, `registry-read-only` (required)
 
 #### setup-m2m-service-account.sh
 **What it does:**
 - Creates a single shared service account
 - Used for development/testing when you don't need individual agent tracking
-- Assigns to unrestricted group by default
+- Assigns to registry-admin group by default
 
 **Required Environment Variables:**
 - `KEYCLOAK_ADMIN_PASSWORD` - Admin password for Keycloak
@@ -133,7 +133,7 @@ export KEYCLOAK_DB_PASSWORD="secure-db-password"
 # 1. Create the service account
 ./keycloak/setup/setup-agent-service-account.sh \
   --agent-id new-agent \
-  --group mcp-servers-restricted
+  --group registry-read-only
 
 # 2. Generate token (using Python script)
 cd credentials-provider

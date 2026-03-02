@@ -174,7 +174,7 @@ create_groups() {
 
     echo "Creating user groups..."
 
-    local groups=("mcp-registry-admin" "mcp-registry-user" "mcp-registry-developer" "mcp-registry-operator" "mcp-servers-unrestricted" "mcp-servers-restricted" "a2a-agent-admin" "a2a-agent-publisher" "a2a-agent-user")
+    local groups=("registry-admin" "registry-power-user" "register-user" "register-read-only" "a2a-agent-admin" "a2a-agent-publisher" "a2a-agent-user")
 
     for group in "${groups[@]}"; do
         local group_json='{
@@ -199,7 +199,7 @@ create_scopes() {
 
     echo "Creating custom MCP scopes..."
 
-    local scopes=("mcp-servers-unrestricted/read" "mcp-servers-unrestricted/execute" "mcp-servers-restricted/read" "mcp-servers-restricted/execute")
+    local scopes=("registry-admin" "registry-power-user" "register-user" "register-read-only")
 
     for scope in "${scopes[@]}"; do
         local scope_json='{
@@ -243,7 +243,7 @@ setup_m2m_scopes() {
     fi
 
     # Get all available client scopes
-    local scopes=("mcp-servers-unrestricted/read" "mcp-servers-unrestricted/execute" "mcp-servers-restricted/read" "mcp-servers-restricted/execute")
+    local scopes=("registry-admin" "registry-power-user" "register-user" "register-read-only")
 
     for scope in "${scopes[@]}"; do
         # Get scope ID
@@ -311,10 +311,10 @@ create_service_account_user() {
 
         echo "Created service account user with ID: $user_id"
 
-        # Assign user to mcp-servers-unrestricted group
+        # Assign user to registry-admin group
         local group_id=$(curl -s -H "Authorization: Bearer ${token}" \
             "${KEYCLOAK_URL}/admin/realms/${REALM}/groups" | \
-            jq -r '.[] | select(.name=="mcp-servers-unrestricted") | .id')
+            jq -r '.[] | select(.name=="registry-admin") | .id')
 
         if [ ! -z "$group_id" ] && [ "$group_id" != "null" ]; then
             local group_response=$(curl -s -o /dev/null -w "%{http_code}" \
@@ -322,12 +322,12 @@ create_service_account_user() {
                 -H "Authorization: Bearer ${token}")
 
             if [ "$group_response" = "204" ]; then
-                echo -e "${GREEN}Service account assigned to mcp-servers-unrestricted group!${NC}"
+                echo -e "${GREEN}Service account assigned to registry-admin group!${NC}"
             else
-                echo -e "${YELLOW}Warning: Could not assign service account to mcp-servers-unrestricted group (HTTP $group_response)${NC}"
+                echo -e "${YELLOW}Warning: Could not assign service account to registry-admin group (HTTP $group_response)${NC}"
             fi
         else
-            echo -e "${RED}Error: Could not find mcp-servers-unrestricted group${NC}"
+            echo -e "${RED}Error: Could not find registry-admin group${NC}"
         fi
 
         # Assign user to a2a-agent-admin group for A2A agent access
@@ -427,27 +427,19 @@ create_users() {
     # Get all group IDs
     local admin_group_id=$(curl -s -H "Authorization: Bearer ${token}" \
         "${KEYCLOAK_URL}/admin/realms/${REALM}/groups" | \
-        jq -r '.[] | select(.name=="mcp-registry-admin") | .id')
+        jq -r '.[] | select(.name=="registry-admin") | .id')
 
     local user_group_id=$(curl -s -H "Authorization: Bearer ${token}" \
         "${KEYCLOAK_URL}/admin/realms/${REALM}/groups" | \
-        jq -r '.[] | select(.name=="mcp-registry-user") | .id')
+        jq -r '.[] | select(.name=="register-user") | .id')
 
-    local developer_group_id=$(curl -s -H "Authorization: Bearer ${token}" \
+    local power_user_group_id=$(curl -s -H "Authorization: Bearer ${token}" \
         "${KEYCLOAK_URL}/admin/realms/${REALM}/groups" | \
-        jq -r '.[] | select(.name=="mcp-registry-developer") | .id')
+        jq -r '.[] | select(.name=="registry-power-user") | .id')
 
-    local operator_group_id=$(curl -s -H "Authorization: Bearer ${token}" \
+    local read_only_group_id=$(curl -s -H "Authorization: Bearer ${token}" \
         "${KEYCLOAK_URL}/admin/realms/${REALM}/groups" | \
-        jq -r '.[] | select(.name=="mcp-registry-operator") | .id')
-
-    local unrestricted_group_id=$(curl -s -H "Authorization: Bearer ${token}" \
-        "${KEYCLOAK_URL}/admin/realms/${REALM}/groups" | \
-        jq -r '.[] | select(.name=="mcp-servers-unrestricted") | .id')
-
-    local restricted_group_id=$(curl -s -H "Authorization: Bearer ${token}" \
-        "${KEYCLOAK_URL}/admin/realms/${REALM}/groups" | \
-        jq -r '.[] | select(.name=="mcp-servers-restricted") | .id')
+        jq -r '.[] | select(.name=="register-read-only") | .id')
 
     # Define usernames for consistent logging
     local admin_username="admin"
@@ -457,21 +449,14 @@ create_users() {
     if [ ! -z "$admin_user_id" ] && [ ! -z "$admin_group_id" ]; then
         curl -s -X PUT "${KEYCLOAK_URL}/admin/realms/${REALM}/users/$admin_user_id/groups/$admin_group_id" \
             -H "Authorization: Bearer ${token}" > /dev/null
-        echo "  - $admin_username assigned to mcp-registry-admin group"
-    fi
-
-    # Also assign admin to unrestricted servers group for full access
-    if [ ! -z "$admin_user_id" ] && [ ! -z "$unrestricted_group_id" ]; then
-        curl -s -X PUT "${KEYCLOAK_URL}/admin/realms/${REALM}/users/$admin_user_id/groups/$unrestricted_group_id" \
-            -H "Authorization: Bearer ${token}" > /dev/null
-        echo "  - $admin_username assigned to mcp-servers-unrestricted group"
+        echo "  - $admin_username assigned to registry-admin group"
     fi
 
     # Assign test user to all groups except admin
     if [ ! -z "$test_user_id" ]; then
         # Arrays of group IDs and names for loop processing
-        local group_ids=("$user_group_id" "$developer_group_id" "$operator_group_id" "$unrestricted_group_id" "$restricted_group_id")
-        local group_names=("mcp-registry-user" "mcp-registry-developer" "mcp-registry-operator" "mcp-servers-unrestricted" "mcp-servers-restricted")
+        local group_ids=("$user_group_id" "$power_user_group_id" "$read_only_group_id")
+        local group_names=("register-user" "registry-power-user" "register-read-only")
 
         # Loop through groups and assign test user to each
         for i in "${!group_ids[@]}"; do

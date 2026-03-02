@@ -85,13 +85,6 @@ class SemanticSearchResponse(BaseModel):
 
 def _user_can_access_agent(agent_path: str, user_context: dict) -> bool:
     """Validate user access for a given agent."""
-    if user_context.get("is_admin"):
-        return True
-
-    accessible_agents = user_context.get("accessible_agents") or []
-    if "all" not in accessible_agents and agent_path not in accessible_agents:
-        return False
-
     agent_card = agent_service.get_agent_info(agent_path)
     if not agent_card:
         return False

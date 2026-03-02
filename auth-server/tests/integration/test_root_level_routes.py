@@ -119,7 +119,7 @@ class TestRootLevelRoutes:
             "client_id": "test-client-123",
             "redirect_uri": "http://localhost:23506/oauth/callback",
             "state": "abc123",
-            "scope": "mcp-registry-admin mcp-servers-unrestricted/read",
+            "scope": "registry-admin",
             "code_challenge": "test-challenge",
             "code_challenge_method": "S256",
         }
@@ -133,7 +133,7 @@ class TestRootLevelRoutes:
         assert "client_id=test-client-123" in location
         assert "redirect_uri=http" in location
         assert "state=abc123" in location
-        assert "scope=mcp-registry-admin" in location
+        assert "scope=registry-admin" in location
         assert "code_challenge=test-challenge" in location
         assert "code_challenge_method=S256" in location
 

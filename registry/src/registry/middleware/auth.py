@@ -8,21 +8,15 @@ from jwt import ExpiredSignatureError, InvalidTokenError
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.routing import compile_path
 
-from auth_utils.jwt_utils import decode_jwt, get_token_kid
+from registry_pkgs.core.scopes import load_scopes_config, map_groups_to_scopes
 from auth_utils.models import UserContextDict
-from auth_utils.scopes import map_groups_to_scopes
+from auth_utils.jwt_utils import decode_jwt, get_token_kid
 
+from ..auth.dependencies import signer
 from ..core.config import settings
 from ..core.telemetry_decorators import AuthMetricsContext
 from ..utils.crypto_utils import verify_access_token
-from .dependencies import (
-    get_accessible_agents_for_user,
-    get_accessible_services_for_user,
-    get_ui_permissions_for_user,
-    get_user_accessible_servers,
-    user_can_modify_servers,
-    user_has_wildcard_access,
-)
+
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +60,7 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
         self.public_paths_compiled = self._compile_patterns(
             [
                 "/",
+                "/login",
                 "/health",
                 "/docs",
                 "/openapi.json",
@@ -93,6 +88,10 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
             f"{len(self.public_paths_compiled)} public, "
             f"{len(self.internal_paths_compiled)} internal, "
         )
+
+        # Pre-load scopes config once for performance (cached at module level)
+        self.scopes_config = load_scopes_config()
+        logger.info(f"Scopes config loaded with {len(self.scopes_config.get('group_mappings', {}))} group mappings")
 
     def _compile_patterns(self, patterns: list[str]) -> list[tuple]:
         """
@@ -228,8 +227,8 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
             # Return user context for admin user
             return self._build_user_context(
                 username=username,
-                groups=["mcp-registry-admin"],
-                scopes=["mcp-registry-admin", "mcp-servers-unrestricted/read", "mcp-servers-unrestricted/execute"],
+                groups=["registry-admin"],
+                scopes=["registry-admin"],
                 auth_method="basic",
                 provider="basic",
                 auth_source="basic_auth",
@@ -307,7 +306,7 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
 
             # If no scopes but has groups, map groups to scopes
             if not scopes and groups:
-                scopes = map_groups_to_scopes(groups)
+                scopes = map_groups_to_scopes(groups, self.scopes_config)
                 logger.info(f"Mapped JWT groups {groups} to scopes: {scopes}")
 
             # Verify we have at least some scopes
@@ -368,7 +367,7 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
 
             # If no scopes but has groups, map groups to scopes
             if not scopes and groups:
-                scopes = map_groups_to_scopes(groups)
+                scopes = map_groups_to_scopes(groups, self.scopes_config)
                 logger.info(f"Mapped session groups {groups} to scopes: {scopes}")
 
             logger.debug(f"JWT access token valid for user {username} (user_id: {user_id})")
@@ -400,29 +399,17 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
         """
         Construct the complete user context (from the original enhanced_auth logic).
         """
-        ui_permissions = get_ui_permissions_for_user(scopes)
-        accessible_servers = get_user_accessible_servers(scopes)
-        accessible_services = get_accessible_services_for_user(ui_permissions)
-        accessible_agents = get_accessible_agents_for_user(ui_permissions)
-        can_modify = user_can_modify_servers(groups, scopes)
-
-        ctx: UserContextDict = {
+        user_context = {
             "user_id": user_id,
             "username": username,
             "groups": groups,
             "scopes": scopes,
             "auth_method": auth_method,
             "provider": provider,
-            "accessible_servers": accessible_servers,
-            "accessible_services": accessible_services,
-            "accessible_agents": accessible_agents,
-            "ui_permissions": ui_permissions,
-            "can_modify_servers": can_modify,
-            "is_admin": user_has_wildcard_access(scopes),
             "auth_source": auth_source,
         }
-        logger.debug(f"User context for {username}: {ctx}")
-        return ctx
+        logger.debug(f"User context for {username}: {user_context}")
+        return user_context
 
 
 class AuthenticationError(Exception):

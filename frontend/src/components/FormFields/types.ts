@@ -4,7 +4,8 @@ import type React from 'react';
  * Common Props for all form fields
  */
 export interface BaseFieldProps {
-  label?: string;
+  label?: React.ReactNode;
+  labelTag?: string;
   className?: string;
   error?: string;
   helperText?: React.ReactNode;

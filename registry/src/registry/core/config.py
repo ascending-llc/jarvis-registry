@@ -1,8 +1,11 @@
 import logging
 import secrets
 from pathlib import Path
+from typing import Any
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from registry_pkgs import load_scopes_config
 
 
 class Settings(BaseSettings):
@@ -31,6 +34,7 @@ class Settings(BaseSettings):
     registry_client_url: str = "http://localhost:5173"  # Registry URL for OAuth protected resource metadata
     registry_url: str = "http://localhost:7860"
     registry_app_name: str = "jarvis-registry-client"  # OAuth client ID for registry web app
+
     # Embeddings settings
     embeddings_model_name: str = "all-MiniLM-L6-v2"
     embeddings_model_dimensions: int = 384
@@ -183,6 +187,15 @@ class Settings(BaseSettings):
             format=self.log_format,
             force=True,  # Override any existing configuration
         )
+
+    @property
+    def scopes_config(self) -> dict[str, Any]:
+        """Get scopes configuration using centralized loader from registry_pkgs.
+
+        Returns:
+            dict: Parsed scopes configuration from YAML file
+        """
+        return load_scopes_config()
 
 
 # Global settings instance

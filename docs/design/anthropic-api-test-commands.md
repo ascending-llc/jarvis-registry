@@ -454,7 +454,7 @@ if [ ! -f .oauth-tokens/test-restricted-bot.json ]; then
   export $(grep KEYCLOAK_ADMIN_PASSWORD .env | xargs)
 
   # Create restricted bot (only has access to restricted servers)
-  ./cli/user_mgmt.sh create-m2m \
+  uv run python ./api/registry_management.py user-create-m2m \
     --name test-restricted-bot \
     --groups 'mcp-servers-restricted'
 else

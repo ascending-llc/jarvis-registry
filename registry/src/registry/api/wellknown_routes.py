@@ -201,7 +201,14 @@ async def oauth_protected_resource_metadata() -> JSONResponse:
     data = {
         "resource": registry_url,
         "authorization_servers": [base_url],
-        "scopes_supported": ["mcp-registry-admin", "mcp-servers-unrestricted/read", "mcp-servers-unrestricted/execute"],
+        "scopes_supported": [
+            "servers-read",
+            "agents-read",
+            "agents-write",
+            "server-write",
+            "servers-share",
+            "agents-share",
+        ],
         "bearer_methods_supported": ["header"],
         "resource_signing_alg_values_supported": ["HS256", "RS256"],
     }
@@ -226,7 +233,7 @@ async def mcp_oauth_metadata() -> JSONResponse:
         "device_authorization_endpoint": f"{auth_server_url}/oauth2/device/code",
         "token_endpoint": f"{auth_server_url}/oauth2/token",
         "verification_uri": f"{auth_server_url}/oauth2/device/verify",
-        "scopes_supported": ["mcp-registry-admin", "mcp-servers-unrestricted/read", "mcp-servers-unrestricted/execute"],
+        "scopes_supported": ["servers-read", "agents-read", "user-read"],
         "grant_types_supported": ["urn:ietf:params:oauth:grant-type:device_code"],
         "mcp_version": "2024-11-05",
     }
@@ -251,7 +258,7 @@ async def oauth_protected_resource_metadata_for_server(server_path: str, request
     data = {
         "resource": resource_url,
         "authorization_servers": [base_url],
-        "scopes_supported": ["mcp-registry-admin", "mcp-servers-unrestricted/read", "mcp-servers-unrestricted/execute"],
+        "scopes_supported": ["servers-read", "agents-read", "user-read"],
         "bearer_methods_supported": ["header"],
         "resource_signing_alg_values_supported": ["HS256", "RS256"],
     }
@@ -280,7 +287,7 @@ async def mcp_oauth_metadata_for_server(server_path: str, request: Request) -> J
         "device_authorization_endpoint": f"{auth_server_url}/oauth2/device/code",
         "token_endpoint": f"{auth_server_url}/oauth2/token",
         "verification_uri": f"{auth_server_url}/oauth2/device/verify",
-        "scopes_supported": ["mcp-registry-admin", "mcp-servers-unrestricted/read", "mcp-servers-unrestricted/execute"],
+        "scopes_supported": ["servers-read", "agents-read", "user-read"],
         "grant_types_supported": ["urn:ietf:params:oauth:grant-type:device_code"],
         "mcp_version": "2024-11-05",
     }

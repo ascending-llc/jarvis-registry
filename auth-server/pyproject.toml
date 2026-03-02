@@ -29,12 +29,10 @@ dependencies = [
 
     # workspace packages
     "registry-pkgs",
-    "auth-utils",
 ]
 
 [tool.uv.sources]
 registry-pkgs = { workspace = true }
-auth-utils = { workspace = true }
 
 [build-system]
 requires = ["setuptools>=67", "wheel"]
@@ -48,7 +46,7 @@ include-package-data = true
 where = ["src"]
 
 [tool.setuptools.package-data]
-auth_server = ["py.typed", "*.yml", "*.yaml", "*.json"]
+auth_server = ["py.typed", "*.yaml", "*.yml", "*.json"]
 
 # Tasks of this specific workspace member should be run from the member directory, i.e. `./auth-server`.
 [tool.poe.tasks]

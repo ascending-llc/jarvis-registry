@@ -34,6 +34,8 @@ const AuthenticationConfig: React.FC<AuthenticationConfigProps> = ({
   const [isClientSecretDirty, setIsClientSecretDirty] = useState(false);
   const [isDiscoverLoading, setIsDiscoverLoading] = useState(false);
   const [registrationEndpoint, setRegistrationEndpoint] = useState<string | null>(null);
+  const [isAuthUrlAutoFilled, setIsAuthUrlAutoFilled] = useState(false);
+  const [isTokenUrlAutoFilled, setIsTokenUrlAutoFilled] = useState(false);
 
   const configRef = useRef(config);
   configRef.current = config;
@@ -64,6 +66,8 @@ const AuthenticationConfig: React.FC<AuthenticationConfigProps> = ({
     }
     setIsDiscoverLoading(true);
     setRegistrationEndpoint(null);
+    setIsAuthUrlAutoFilled(false);
+    setIsTokenUrlAutoFilled(false);
     onChange({ ...(baseConfig || configRef.current), use_dynamic_registration: false });
     try {
       const res = await SERVICES.MCP.getDiscover(mcpUrl, { cancelTokenKey: DISCOVER_CANCEL_KEY });
@@ -73,6 +77,8 @@ const AuthenticationConfig: React.FC<AuthenticationConfigProps> = ({
         const currentConfig = baseConfig || configRef.current;
         const useDynamicRegistration = registration_endpoint && !hasOauth;
         if (useDynamicRegistration || isEditMode) setRegistrationEndpoint(registration_endpoint);
+        if (!isEditMode && authorization_endpoint) setIsAuthUrlAutoFilled(true);
+        if (!isEditMode && token_endpoint) setIsTokenUrlAutoFilled(true);
         onChange({
           ...currentConfig,
           authorization_url: authorization_endpoint || currentConfig.authorization_url,
@@ -251,24 +257,32 @@ const AuthenticationConfig: React.FC<AuthenticationConfigProps> = ({
 
                       <FormFields.InputField
                         label='Authorization URL'
+                        labelTag={!isEditMode && isAuthUrlAutoFilled ? 'Auto-Filled' : undefined}
                         required
                         type='url'
                         disabled={isReadOnly}
                         placeholder='https://auth.example.com/oauth/authorize'
                         value={config.authorization_url || ''}
-                        onChange={e => updateConfig({ authorization_url: e.target.value })}
+                        onChange={e => {
+                          setIsAuthUrlAutoFilled(false);
+                          updateConfig({ authorization_url: e.target.value });
+                        }}
                         helperText='The endpoint where users are redirected to authenticate and grant permissions.'
                         error={errors.authorization_url}
                       />
 
                       <FormFields.InputField
                         label='Token URL'
+                        labelTag={!isEditMode && isTokenUrlAutoFilled ? 'Auto-Filled' : undefined}
                         required
                         type='url'
                         disabled={isReadOnly}
                         placeholder='https://auth.example.com/oauth/token'
                         value={config.token_url || ''}
-                        onChange={e => updateConfig({ token_url: e.target.value })}
+                        onChange={e => {
+                          setIsTokenUrlAutoFilled(false);
+                          updateConfig({ token_url: e.target.value });
+                        }}
                         helperText='The backend endpoint for exchanging authorization codes for access tokens.'
                         error={errors.token_url}
                       />

@@ -19,7 +19,7 @@ if [ -z "$ADMIN_PASS" ]; then
 fi
 SERVICE_ACCOUNT="service-account-mcp-gateway-m2m"
 M2M_CLIENT="mcp-gateway-m2m"
-TARGET_GROUP="mcp-servers-unrestricted"
+TARGET_GROUP="registry-admin"
 
 # Colors for output
 GREEN='\033[0;32m'

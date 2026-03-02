@@ -6,9 +6,10 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
-from fastapi import status
+from fastapi import Request, status
 from fastapi.testclient import TestClient
 
+from registry.auth.dependencies import map_cognito_groups_to_scopes
 from registry.core.config import settings
 from registry.main import app
 from registry.schemas.agent_models import AgentCard
@@ -42,11 +43,10 @@ def mock_admin_context() -> dict[str, Any]:
 @pytest.fixture
 def admin_session_cookie():
     """Create a valid admin session cookie (JWT access token)."""
-    from auth_utils.scopes import map_groups_to_scopes
     from registry.utils.crypto_utils import generate_access_token
 
-    groups = ["registry-admins"]
-    scopes = map_groups_to_scopes(groups) or ["registry-admins"]
+    groups = ["registry-admin"]
+    scopes = map_cognito_groups_to_scopes(groups) or ["registry-admin"]
 
     return generate_access_token(
         user_id="test-admin-id",
@@ -63,8 +63,8 @@ def admin_session_cookie():
 @pytest.fixture
 def user_session_cookie():
     """Create a valid user session cookie (JWT access token)."""
-    from auth_utils.scopes import map_groups_to_scopes
     from registry.utils.crypto_utils import generate_access_token
+    from registry_pkgs.core.scopes import map_groups_to_scopes
 
     groups = ["users"]
     scopes = map_groups_to_scopes(groups) or []
@@ -165,26 +165,23 @@ class TestRateAgent:
         authenticated_client,
     ) -> None:
         """Test rating an agent without access returns 403."""
-        from fastapi import Request
-
-        from registry.auth.dependencies import get_current_user_by_mid
+        from registry.auth.dependencies import get_current_user
 
         # User with restricted access - accessible_agents doesn't include /test-agent
         restricted_context = {
             "username": "restricted_user",
-            "groups": [],
+            "groups": ["other-group"],
             "is_admin": False,
             "ui_permissions": {},
-            "accessible_agents": ["/other-agent"],  # Not the test agent (/test-agent)
         }
 
         def _mock_get_user(request: Request):
-            # Set request.state.user to restricted context
-            request.state.user = restricted_context
-            request.state.is_authenticated = True
             return restricted_context
 
-        app.dependency_overrides[get_current_user_by_mid] = _mock_get_user
+        app.dependency_overrides[get_current_user] = _mock_get_user
+
+        sample_agent_card.visibility = "group-restricted"
+        sample_agent_card.allowed_groups = ["allowed-group"]
 
         with patch.object(
             agent_service,

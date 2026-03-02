@@ -41,7 +41,7 @@ uv run python api/registry_management.py \
   --email john@example.com \
   --first-name John \
   --last-name Doe \
-  --groups mcp-registry-user \
+  --groups registry-user \
   --password MySecurePass123
 ```
 

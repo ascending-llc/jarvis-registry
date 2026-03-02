@@ -15,11 +15,9 @@
   "quickLoginCheckMilliSeconds": 1000,
   "maxDeltaTimeSeconds": 43200,
   "failureFactor": 5,
-
   "defaultSignatureAlgorithm": "RS256",
   "offlineSessionMaxLifespanEnabled": false,
   "offlineSessionMaxLifespan": 5184000,
-
   "clients": [
     {
       "clientId": "mcp-gateway-web",
@@ -115,7 +113,6 @@
       ]
     }
   ],
-
   "clientScopes": [
     {
       "name": "mcp-groups",
@@ -155,59 +152,50 @@
       ]
     }
   ],
-
   "defaultDefaultClientScopes": [
     "profile",
     "email",
     "roles",
     "web-origins"
   ],
-
   "groups": [
     {
-      "name": "mcp-registry-admin",
-      "path": "/mcp-registry-admin",
+      "name": "registry-admin",
+      "path": "/registry-admin",
       "attributes": {
-        "description": ["Full administrative access to MCP Gateway Registry"]
+        "description": [
+          "Full administrative access to MCP Gateway Registry"
+        ]
       }
     },
     {
-      "name": "mcp-registry-user",
-      "path": "/mcp-registry-user",
+      "name": "register-user",
+      "path": "/register-user",
       "attributes": {
-        "description": ["Standard user access to MCP Gateway Registry"]
+        "description": [
+          "Standard user access to MCP Gateway Registry"
+        ]
       }
     },
     {
-      "name": "mcp-registry-developer",
-      "path": "/mcp-registry-developer",
+      "name": "registry-power-user",
+      "path": "/registry-power-user",
       "attributes": {
-        "description": ["Developer access to MCP Gateway Registry"]
+        "description": [
+          "Create/delete/share access to MCP servers"
+        ]
       }
     },
     {
-      "name": "mcp-registry-operator",
-      "path": "/mcp-registry-operator",
+      "name": "register-read-only",
+      "path": "/register-read-only",
       "attributes": {
-        "description": ["Operator access to MCP Gateway Registry"]
-      }
-    },
-    {
-      "name": "mcp-servers-unrestricted",
-      "path": "/mcp-servers-unrestricted",
-      "attributes": {
-        "description": ["Unrestricted access to all MCP servers"]
-      }
-    },
-    {
-      "name": "mcp-servers-restricted",
-      "path": "/mcp-servers-restricted",
-      "attributes": {
-        "description": ["Restricted access to specific MCP servers"]
+        "description": [
+          "Restricted access to specific MCP servers"
+        ]
       }
     }
   ],
-
   "roles": {
     "realm": [
       {
@@ -240,7 +228,6 @@
       }
     ]
   },
-
   "users": [
     {
       "username": "admin",
@@ -257,8 +244,7 @@
         }
       ],
       "groups": [
-        "mcp-registry-admin",
-        "mcp-servers-unrestricted"
+        "registry-admin"
       ],
       "realmRoles": [
         "mcp-admin"
@@ -279,15 +265,14 @@
         }
       ],
       "groups": [
-        "mcp-registry-user",
-        "mcp-servers-restricted"
+        "register-user",
+        "register-read-only"
       ],
       "realmRoles": [
         "mcp-user"
       ]
     }
   ],
-
   "eventsConfig": {
     "eventsEnabled": true,
     "eventsListeners": [
@@ -308,10 +293,8 @@
     "adminEventsEnabled": true,
     "adminEventsDetailsEnabled": true
   },
-
   "internationalizationEnabled": false,
   "supportedLocales": [],
-
   "browserSecurityHeaders": {
     "contentSecurityPolicyReportOnly": "",
     "xContentTypeOptions": "nosniff",
@@ -320,9 +303,7 @@
     "xXSSProtection": "1; mode=block",
     "contentSecurityPolicy": "frame-ancestors 'self'; frame-src 'self'; object-src 'none';"
   },
-
   "smtpServer": {},
-
   "loginTheme": "keycloak",
   "accountTheme": "keycloak",
   "adminTheme": "keycloak",

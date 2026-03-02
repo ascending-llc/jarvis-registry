@@ -9,7 +9,6 @@ import { useServer } from '@/contexts/ServerContext';
 import SERVICES from '@/services';
 import type { GET_SERVERS_DETAIL_RESPONSE, Server } from '@/services/server/type';
 import MainConfigForm from './MainConfigForm';
-import ServerCreationSuccessDialog from './ServerCreationSuccessDialog';
 import type { AuthenticationConfig as AuthConfigType, ServerConfig } from './types';
 
 const DEFAULT_AUTH_CONFIG: AuthConfigType = { type: 'auto', source: 'admin', authorization_type: 'bearer' };
@@ -263,7 +262,6 @@ const ServerRegistryOrEdit: React.FC = () => {
       if (isEditMode) {
         const result = await SERVICES.SERVER.updateServer(id, data);
         showToast('Server updated successfully', 'success');
-        goBack();
         handleServerUpdate(id, {
           title: result.title,
           description: result.description,
@@ -276,12 +274,8 @@ const ServerRegistryOrEdit: React.FC = () => {
         const result = await SERVICES.SERVER.createServer(data);
         setServerData(result);
         refreshServerData(true);
-        if (data?.requiresOAuth) {
-          setShowSuccessDialog(true);
-        } else {
-          goBack();
-        }
       }
+      goBack();
     } catch (error: any) {
       showToast(error?.detail || error, 'error');
     } finally {
@@ -357,14 +351,6 @@ const ServerRegistryOrEdit: React.FC = () => {
           </div>
         </div>
       </div>
-      <ServerCreationSuccessDialog
-        isOpen={showSuccessDialog}
-        serverData={serverData}
-        onClose={() => {
-          setShowSuccessDialog(false);
-          goBack();
-        }}
-      />
     </div>
   );
 };

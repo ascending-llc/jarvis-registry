@@ -54,6 +54,12 @@ class Settings(BaseSettings):
     # ========== OpenTelemetry Configuration ==========
     OTEL_METRICS_CONFIG_PATH: str = Field(default="", description="Path to the OpenTelemetry metrics config file")
 
+    # ========== Scopes Configuration ==========
+    SCOPES_CONFIG_PATH: str = Field(
+        default="",
+        description="Path to scopes.yml configuration file (optional, uses package-bundled file if not set)",
+    )
+
     model_config = SettingsConfigDict(
         env_file=BASE_DIR / ".env",
         env_file_encoding="utf-8",

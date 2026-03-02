@@ -23,6 +23,7 @@ export interface InputFieldProps extends BaseFieldProps, Omit<React.InputHTMLAtt
  */
 export const InputField: React.FC<InputFieldProps> = ({
   label,
+  labelTag,
   className = '',
   error,
   helperText,
@@ -55,11 +56,15 @@ export const InputField: React.FC<InputFieldProps> = ({
   return (
     <div className={className}>
       {label && (
-        <label
-          htmlFor={generatedId}
-          className={`block text-sm font-medium text-gray-900 dark:text-gray-100 mb-1 ${labelClassName}`}
-        >
-          {label} {required && <span className='text-red-500'>*</span>}
+        <label htmlFor={generatedId} className={`flex items-center justify-between mb-1 ${labelClassName}`}>
+          <span className='text-sm font-medium text-gray-900 dark:text-gray-100'>
+            {label} {required && <span className='text-red-500'>*</span>}
+          </span>
+          {labelTag && (
+            <span className='text-xs font-semibold uppercase tracking-wide px-2 py-0.5 rounded bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-400'>
+              {labelTag}
+            </span>
+          )}
         </label>
       )}
       <div className={suffix ? 'flex gap-2' : ''}>

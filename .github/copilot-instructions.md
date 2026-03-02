@@ -120,7 +120,7 @@ When you need my input, format your message like this:
 **Options:**
 A. {First option - Recommended}
    - Tradeoffs: {effort/risk/impact}
-   
+
 B. {Second option}
    - Tradeoffs: {effort/risk/impact}
 
@@ -138,7 +138,7 @@ These rules are non-negotiable. They define where code lives and how workspaces 
 
 - **Beanie Document models** live ONLY in `registry-pkgs/src/registry_pkgs/models/`. Never define Beanie Documents in `registry/` or `auth-server/`.
 - **Dependency flows one-way**: `registry` → `registry-pkgs` ← `auth-server`. Never import from `registry` into `auth-server` or vice versa.
-- **`mcpgw` is standalone**: It talks to the registry via HTTP. Never import from `registry`, `auth-server`, or `registry-pkgs` into `mcpgw`.
+- **`mcpgw` minimal coupling**: `mcpgw` talks to the registry via HTTP and should remain as standalone as possible. Currently utilizing `registry-pkgs` only. Never import `auth-server` or `registry` packages.
 - **Route handlers are thin**: `registry/src/registry/api/` contains route definitions ONLY — no business logic, no direct database calls. All logic lives in `services/`.
 - **Frontend uses Biome** for formatting/linting (not ruff, ESLint, or Prettier). Never suggest Python tooling for `frontend/`.
 

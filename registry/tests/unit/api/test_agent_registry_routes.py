@@ -10,7 +10,7 @@ from unittest.mock import (
 )
 
 import pytest
-from fastapi import status
+from fastapi import Request, status
 from fastapi.testclient import TestClient
 
 from registry.constants import REGISTRY_CONSTANTS
@@ -51,8 +51,8 @@ def sample_agent_card() -> dict[str, Any]:
 @pytest.fixture
 def admin_session_cookie():
     """Create a valid admin session cookie (JWT access token)."""
-    from auth_utils.scopes import map_groups_to_scopes
     from registry.utils.crypto_utils import generate_access_token
+    from registry_pkgs.core.scopes import map_groups_to_scopes
 
     groups = ["registry-admins"]
     scopes = map_groups_to_scopes(groups) or ["registry-admins"]
