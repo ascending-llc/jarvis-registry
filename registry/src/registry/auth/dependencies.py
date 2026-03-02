@@ -38,7 +38,6 @@ def get_current_user(request: Request) -> dict[str, Any]:
 # Since it's Python 3.12, we use the new type statement instead of typing.TypeAlias
 type CurrentUser = Annotated[dict[str, Any], Depends(get_current_user)]
 
-
 # Global scopes configuration loaded from centralized loader
 SCOPES_CONFIG = load_scopes_config()
 
@@ -74,3 +73,30 @@ def map_cognito_groups_to_scopes(groups: list[str]) -> list[str]:
 
     logger.info(f"Final mapped scopes: {unique_scopes}")
     return unique_scopes
+
+
+def effective_scopes_from_context(user_context: dict[str, Any]) -> list[str]:
+    """
+    Determine the effective scopes for a user based on the authentication context.
+
+    Explicit scopes (from the token's `scope` claim) take precedence. If any explicit
+    scopes are present, they are returned as-is (de-duplicated, preserving order)
+    without augmentation from group-mapped scopes. This avoids unintentionally
+    broadening permissions for down-scoped tokens.
+    If no explicit scopes are present, scopes are derived solely from group mappings.
+    """
+    explicit_scopes = list(user_context.get("scopes") or [])
+    if explicit_scopes:
+        seen: set[str] = set()
+        unique_scopes: list[str] = []
+        for scope in explicit_scopes:
+            if scope not in seen:
+                seen.add(scope)
+                unique_scopes.append(scope)
+        return unique_scopes
+
+    groups = user_context.get("groups") or []
+    if not groups:
+        return []
+
+    return map_cognito_groups_to_scopes(groups)

@@ -116,6 +116,17 @@ class TestMethodParsing:
         """Parses comma-separated methods to set."""
         assert _parse_methods("GET,POST,PUT") == {"GET", "POST", "PUT"}
 
+    def test_comma_separated_methods_with_options(self):
+        """Parses comma-separated methods with OPTIONS."""
+        assert _parse_methods("GET,POST,PUT,DELETE,PATCH,OPTIONS") == {
+            "GET",
+            "POST",
+            "PUT",
+            "DELETE",
+            "PATCH",
+            "OPTIONS",
+        }
+
     def test_case_normalization(self):
         """Normalizes methods to uppercase."""
         assert _parse_methods("get,post") == {"GET", "POST"}
@@ -314,6 +325,23 @@ class TestPermissionChecking:
         assert middleware._has_permission(["servers-write"], "/servers", "GET") is True
         assert middleware._has_permission(["servers-write"], "/servers", "POST") is True
         assert middleware._has_permission(["servers-write"], "/servers", "DELETE") is True
+
+    def test_comma_methods_match_any_in_list(self, monkeypatch):
+        """Comma-separated methods allow any listed method."""
+        from registry.middleware import rbac as rbac_module
+
+        mock_settings = MagicMock()
+        mock_settings.API_VERSION = "v1"
+        mock_settings.scopes_config = {
+            "mcp-proxy-ops": [{"endpoint": "/proxy/{full_path:path}", "method": "GET,POST,PUT,DELETE,PATCH,OPTIONS"}],
+        }
+        monkeypatch.setattr(rbac_module, "settings", mock_settings)
+
+        middleware = ScopePermissionMiddleware(app=MagicMock())
+        assert middleware._has_permission(["mcp-proxy-ops"], "/proxy/knowledgebase", "GET") is True
+        assert middleware._has_permission(["mcp-proxy-ops"], "/proxy/knowledgebase", "POST") is True
+        assert middleware._has_permission(["mcp-proxy-ops"], "/proxy/knowledgebase", "PATCH") is True
+        assert middleware._has_permission(["mcp-proxy-ops"], "/proxy/knowledgebase", "OPTIONS") is True
 
 
 @pytest.mark.unit

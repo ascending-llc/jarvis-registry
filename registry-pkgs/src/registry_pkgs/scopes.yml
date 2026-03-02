@@ -19,6 +19,7 @@ group_mappings:
     - user-read
     - acl-read
     - acl-write
+    - mcp-proxy-ops
   jarvis-registry-power-user:
     - servers-read
     - agents-read
@@ -29,6 +30,7 @@ group_mappings:
     - user-read
     - acl-read
     - acl-write
+    - mcp-proxy-ops
   jarvis-registry-user:
     - servers-read
     - agents-read
@@ -36,6 +38,7 @@ group_mappings:
     - server-write
     - user-read
     - acl-read
+    - mcp-proxy-ops
   jarvis-registry-read-only:
     - servers-read
     - agents-read
@@ -43,8 +46,8 @@ group_mappings:
     - acl-read
 
 servers-read:
-  - action: list_servers # name
-    method: GET  # GET,POST or *
+  - action: list_servers
+    method: GET
     endpoint: /servers
   - action: get_server
     method: GET
@@ -190,3 +193,20 @@ system-ops:
   - action: get_admin_tokens
     method: GET
     endpoint: /admin/tokens
+
+mcp-proxy-ops:
+  - action: execute_tool
+    method: POST
+    endpoint: /proxy/tools/call
+  - action: read_resource
+    method: POST
+    endpoint: /proxy/resources/read
+  - action: delete_session
+    method: DELETE
+    endpoint: /proxy/sessions/{server_id}
+  - action: execute_prompt
+    method: POST
+    endpoint: /proxy/prompts/execute
+  - action: connection_mcp
+    method: GET,POST,PUT,DELETE,PATCH,OPTIONS
+    endpoint: /proxy/{full_path:path}
