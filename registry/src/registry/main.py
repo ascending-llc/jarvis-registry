@@ -192,7 +192,11 @@ app = FastAPI(
 
 register_validation_exception_handler(app)
 
-# Add CORS middleware for React development and Docker deployment
+app.add_middleware(ScopePermissionMiddleware)
+app.add_middleware(UnifiedAuthMiddleware)
+
+# Add CORS middleware for React development and Docker deployment.
+# CORSMiddleware generally should be added late so that it executes first with incomming requests.
 app.add_middleware(
     CORSMiddleware,
     allow_origin_regex=r"https?://(localhost(:[0-9]+)?|.*\.compute.*\.amazonaws\.com(:[0-9]+)?)",
@@ -201,9 +205,6 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["Mcp-Session-Id"],  # Allow browser-based agents to access Mcp-Session-Id.
 )
-
-app.add_middleware(ScopePermissionMiddleware)
-app.add_middleware(UnifiedAuthMiddleware)
 
 if hasattr(settings, "static_dir") and Path(settings.static_dir).exists():
     app.mount("/static", StaticFiles(directory=settings.static_dir), name="static")
@@ -224,6 +225,7 @@ app.include_router(oauth_router, prefix=f"/api/{settings.API_VERSION}", tags=["M
 app.include_router(connection_router, prefix=f"/api/{settings.API_VERSION}", tags=["MCP  Connection Management"])
 app.include_router(acl_router, prefix=f"/api/{settings.API_VERSION}", tags=["ACL Management"])
 app.include_router(auth_provider_router, tags=["Authentication"])
+app.include_router(proxy_router, prefix="/proxy", tags=["MCP Proxy"])
 
 # Register Anthropic MCP Registry API (public API for MCP servers only)
 
@@ -299,8 +301,6 @@ async def get_version():
     """Get application version."""
     return {"version": __version__}
 
-
-app.include_router(proxy_router, prefix="/proxy", tags=["MCP Proxy"])
 
 if __name__ == "__main__":
     import uvicorn
