@@ -24,7 +24,6 @@ interface User {
 
 interface AuthContextType {
   user: User | null;
-  login: (username: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   loading: boolean;
 }
@@ -48,8 +47,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const isOnLoginPage =
-      typeof window !== 'undefined' && window.location.pathname === `${getBasePath()}/login`;
+    const isOnLoginPage = typeof window !== 'undefined' && window.location.pathname === `${getBasePath()}/login`;
     if (isOnLoginPage) {
       setUser(null);
       setLoading(false);
@@ -79,22 +77,6 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     }
   };
 
-  const login = async (username: string, password: string) => {
-    const formData = new FormData();
-    formData.append('username', username);
-    formData.append('password', password);
-
-    const response = await axios.post('/api/auth/login', formData, {
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-    });
-
-    if (response.status === 200) {
-      await checkAuth();
-    }
-  };
-
   const logout = async () => {
     try {
       await SERVICES.AUTH.logout();
@@ -107,7 +89,6 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
 
   const value = {
     user,
-    login,
     logout,
     loading,
   };
