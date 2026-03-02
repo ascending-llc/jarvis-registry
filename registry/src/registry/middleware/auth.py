@@ -8,8 +8,8 @@ from jwt import ExpiredSignatureError, InvalidTokenError
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.routing import compile_path
 
+from registry.auth.dependencies import UserContextDict
 from registry_pkgs.core.jwt_utils import decode_jwt, get_token_kid
-from registry_pkgs.core.models import UserContextDict
 from registry_pkgs.core.scopes import map_groups_to_scopes
 
 from ..core.config import settings
@@ -304,7 +304,7 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
 
             # If no scopes but has groups, map groups to scopes
             if not scopes and groups:
-                scopes = map_groups_to_scopes(groups, self.scopes_config)
+                scopes = map_groups_to_scopes(groups)
                 logger.info(f"Mapped JWT groups {groups} to scopes: {scopes}")
 
             # Verify we have at least some scopes
@@ -365,7 +365,7 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
 
             # If no scopes but has groups, map groups to scopes
             if not scopes and groups:
-                scopes = map_groups_to_scopes(groups, self.scopes_config)
+                scopes = map_groups_to_scopes(groups)
                 logger.info(f"Mapped session groups {groups} to scopes: {scopes}")
 
             logger.debug(f"JWT access token valid for user {username} (user_id: {user_id})")
@@ -386,7 +386,7 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
 
     def _build_user_context(
         self,
-        username: str,
+        username: str | None,
         groups: list,
         scopes: list,
         auth_method: str,
@@ -397,7 +397,7 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
         """
         Construct the complete user context (from the original enhanced_auth logic).
         """
-        user_context = {
+        user_context: UserContextDict = {
             "user_id": user_id,
             "username": username,
             "groups": groups,

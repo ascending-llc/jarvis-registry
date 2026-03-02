@@ -1,16 +1,47 @@
 import logging
-from typing import Annotated
+from typing import Annotated, Any, TypedDict
 
 from fastapi import Depends, HTTPException, Request, status
 from itsdangerous import URLSafeTimedSerializer
-
-from registry_pkgs.core.models import UserContextDict
 
 from ..core.config import settings
 
 logger = logging.getLogger(__name__)
 
 signer = URLSafeTimedSerializer(settings.secret_key)
+
+
+class UserContextDict(TypedDict):
+    """
+    UserContextDict is the type of the dictionary set as the Request.state.user attribute for each incoming request
+    **to a non-public route** by the UnifiedAuthMiddlware.
+    If a FastAPI path operation function needs to access this UserContextDict information, it can retrieve this dictionary
+    by asking for the `user_context: CurrentUser` dependency injection.
+    If an MCP tool/resource/prompt handler function needs it, it can retrieve this dictionary by asking for the
+    `ctx: Context` dependency injection (`mcp.server.fastmcp.Context`) and then accessing
+    `ctx.request_context.request.state.user`.
+    """
+
+    # From the "user_id" field of the JWT claim.
+    user_id: str | None
+
+    # From the "sub" field of the JWT claim.
+    username: str | None
+
+    # From the "groups" field of the JWT claim.
+    groups: list[str]
+
+    # Converted from the "scope" field of the JWT claim, or mapped from the "groups" field if "scope" doesn't exist.
+    scopes: list[str]
+
+    # "jwt" if the JWT token comes from the Authorization header. "traditional" if from browser cookie.
+    auth_method: str
+
+    # "jwt" if the JWT token comes from the Authorization header. "local" if from browser cookie.
+    provider: str
+
+    # "jwt_auth" if the JWT token comes from the Authorization header. "jwt_session_auth" if from browser cookie.
+    auth_source: str
 
 
 def get_current_user(request: Request) -> UserContextDict:
@@ -37,6 +68,7 @@ def get_current_user(request: Request) -> UserContextDict:
 type CurrentUser = Annotated[UserContextDict, Depends(get_current_user)]
 # Global scopes configuration loaded from centralized loader
 SCOPES_CONFIG = settings.scopes_config
+
 
 def map_cognito_groups_to_scopes(groups: list[str]) -> list[str]:
     """
