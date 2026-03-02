@@ -10,7 +10,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from registry.auth.dependencies import CurrentUser
+from registry.auth.dependencies import CurrentUser, effective_scopes_from_context
 from registry.core.mcp_client import clear_session, get_session, initialize_mcp_session
 from registry.core.telemetry_decorators import (
     track_prompt_execution,
@@ -71,11 +71,12 @@ async def _build_authenticated_headers(
         raise HTTPException(status_code=401, detail="Invalid authentication context: missing user_id")
 
     # Build base headers (filter out empty values to avoid httpx errors)
+    effective_scopes = effective_scopes_from_context(auth_context)
     headers = {
         "X-User-Id": auth_context.get("user_id") or "",
         "X-Username": auth_context.get("username") or "",
         "X-Client-Id": auth_context.get("client_id") or "",
-        "X-Scopes": " ".join(auth_context.get("scopes", [])),
+        "X-Scopes": " ".join(effective_scopes),
     }
     # Remove empty header values (httpx requires non-empty strings)
     headers = {k: v for k, v in headers.items() if v}

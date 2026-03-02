@@ -38,7 +38,6 @@ def get_current_user(request: Request) -> dict[str, Any]:
 # Since it's Python 3.12, we use the new type statement instead of typing.TypeAlias
 type CurrentUser = Annotated[dict[str, Any], Depends(get_current_user)]
 
-
 # Global scopes configuration loaded from centralized loader
 SCOPES_CONFIG = load_scopes_config()
 
@@ -73,4 +72,21 @@ def map_cognito_groups_to_scopes(groups: list[str]) -> list[str]:
             unique_scopes.append(scope)
 
     logger.info(f"Final mapped scopes: {unique_scopes}")
+    return unique_scopes
+
+
+def effective_scopes_from_context(user_context: dict[str, Any]) -> list[str]:
+    """Merge explicit scopes with group-mapped scopes and return de-duplicated results."""
+    scopes = list(user_context.get("scopes") or [])
+    groups = user_context.get("groups") or []
+    if groups:
+        scopes.extend(map_cognito_groups_to_scopes(groups))
+
+    seen: set[str] = set()
+    unique_scopes: list[str] = []
+    for scope in scopes:
+        if scope not in seen:
+            seen.add(scope)
+            unique_scopes.append(scope)
+
     return unique_scopes

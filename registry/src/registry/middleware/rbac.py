@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.routing import compile_path
 
-from registry.auth.dependencies import map_cognito_groups_to_scopes
+from registry.auth.dependencies import effective_scopes_from_context
 from registry.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -136,22 +136,7 @@ class ScopePermissionMiddleware(BaseHTTPMiddleware):
         endpoint = rule["endpoint"]
         param_count = endpoint.count("{")
         segment_count = len(endpoint.split("/"))
-        return (param_count, -segment_count, endpoint)
-
-    def _effective_scopes(self, user_context: dict[str, Any]) -> list[str]:
-        """
-        Determine scopes for the request.
-        Prefer explicit scopes on the JWT; otherwise map groups to scopes.
-        """
-        scopes = user_context.get("scopes") or []
-        if scopes:
-            return scopes
-
-        groups = user_context.get("groups") or []
-        if groups:
-            return map_cognito_groups_to_scopes(groups)
-
-        return []
+        return param_count, -segment_count, endpoint
 
     def _rule_matches(self, rule: dict[str, Any], path: str, method: str) -> bool:
         """
@@ -213,10 +198,10 @@ class ScopePermissionMiddleware(BaseHTTPMiddleware):
 
         method = request.method.upper()
         normalized_path = _normalize_path(request.url.path)
-        logger.debug(f"RBAC check - path: {normalized_path}, method: {method}")
+        logger.info(f"RBAC check - path: {normalized_path}, method: {method}")
 
         user_context = getattr(request.state, "user", {}) or {}
-        user_scopes = self._effective_scopes(user_context)
+        user_scopes = effective_scopes_from_context(user_context)
 
         if not user_scopes:
             return JSONResponse(status_code=403, content={"detail": "Insufficient permissions"})
