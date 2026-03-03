@@ -77,12 +77,14 @@ const AuthenticationConfig: React.FC<AuthenticationConfigProps> = ({
         const currentConfig = baseConfig || configRef.current;
         const useDynamicRegistration = registration_endpoint && !hasOauth;
         if (useDynamicRegistration || isEditMode) setRegistrationEndpoint(registration_endpoint);
-        if (!isEditMode && authorization_endpoint) setIsAuthUrlAutoFilled(true);
-        if (!isEditMode && token_endpoint) setIsTokenUrlAutoFilled(true);
+        const shouldFillAuthUrl = authorization_endpoint && !currentConfig.authorization_url;
+        const shouldFillTokenUrl = token_endpoint && !currentConfig.token_url;
+        if (shouldFillAuthUrl) setIsAuthUrlAutoFilled(true);
+        if (shouldFillTokenUrl) setIsTokenUrlAutoFilled(true);
         onChange({
           ...currentConfig,
-          authorization_url: authorization_endpoint || currentConfig.authorization_url,
-          token_url: token_endpoint || currentConfig.token_url,
+          authorization_url: currentConfig.authorization_url || authorization_endpoint,
+          token_url: currentConfig.token_url || token_endpoint,
           use_dynamic_registration: useDynamicRegistration,
         });
       }
@@ -257,7 +259,7 @@ const AuthenticationConfig: React.FC<AuthenticationConfigProps> = ({
 
                       <FormFields.InputField
                         label='Authorization URL'
-                        labelTag={!isEditMode && isAuthUrlAutoFilled ? 'Auto-Filled' : undefined}
+                        labelTag={isAuthUrlAutoFilled ? 'Auto-Filled' : undefined}
                         required
                         type='url'
                         disabled={isReadOnly}
@@ -273,7 +275,7 @@ const AuthenticationConfig: React.FC<AuthenticationConfigProps> = ({
 
                       <FormFields.InputField
                         label='Token URL'
-                        labelTag={!isEditMode && isTokenUrlAutoFilled ? 'Auto-Filled' : undefined}
+                        labelTag={isTokenUrlAutoFilled ? 'Auto-Filled' : undefined}
                         required
                         type='url'
                         disabled={isReadOnly}
