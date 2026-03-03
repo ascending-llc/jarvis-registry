@@ -136,8 +136,11 @@ user-read:
     endpoint: /tokens/generate
   # Search functionality
   - action: search
-    method: GET
-    endpoint: /search/*
+    method: POST
+    endpoint: /search/semantic
+  - action: search_servers
+    method: POST
+    endpoint: /search/servers
   # MCP connection management
   - action: reinitialize_server
     method: POST
