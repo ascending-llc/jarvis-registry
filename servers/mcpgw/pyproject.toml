@@ -19,7 +19,7 @@ dependencies = [
     "pyyaml>=6.0.2",
 
     # Auth
-    "pyjwt>=2.10.0",
+    "pyjwt>=2.10.1",
 
     # Shared packages
     "registry-pkgs",

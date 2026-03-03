@@ -17,7 +17,7 @@ dependencies = [
     "pyyaml>=6.0.0",
 
     # Auth and security
-    "pyjwt>=2.6.0",
+    "pyjwt>=2.10.1",
     "python-jose>=3.3.0",
     "cryptography>=40.0.0",
     "itsdangerous>=2.1.0",
