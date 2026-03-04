@@ -115,7 +115,6 @@ mcp-gateway/
 ├── auth-server/       # Authentication service
 ├── registry-pkgs/     # Shared packages
 ├── servers/           # MCP servers
-│   └── mcpgw/         # Gateway server
 ├── frontend/          # Web UI
 ├── docs/              # Documentation
 └── pyproject.toml     # Root workspace config

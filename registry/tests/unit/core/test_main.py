@@ -28,7 +28,7 @@ class TestMainApplication:
             patch("registry.main.init_redis") as mock_init_redis,
             patch("registry.main.close_redis") as mock_close_redis,
             patch("registry.main.get_federation_service") as mock_get_federation,
-            patch("registry.main.shutdown_proxy_client") as mock_shutdown_proxy,
+            patch("registry.main.mcp_app") as mock_mcp_app,
         ):
             # Configure mocks
             mock_vector_service.initialize = AsyncMock()
@@ -53,8 +53,7 @@ class TestMainApplication:
             mock_federation.config.is_any_federation_enabled.return_value = False
             mock_get_federation.return_value = mock_federation
 
-            # Mock proxy client shutdown
-            mock_shutdown_proxy.return_value = AsyncMock()
+            mock_mcp_app = AsyncMock()
 
             yield {
                 "vector_service": mock_vector_service,
@@ -65,7 +64,7 @@ class TestMainApplication:
                 "init_redis": mock_init_redis,
                 "close_redis": mock_close_redis,
                 "get_federation_service": mock_get_federation,
-                "shutdown_proxy_client": mock_shutdown_proxy,
+                "mock_mcp_app": mock_mcp_app,
             }
 
     @pytest.mark.asyncio

@@ -292,9 +292,13 @@ async def initialize_mcp_session(
         # Create httpx client with custom headers for authentication
         async with httpx.AsyncClient(headers=headers, timeout=30.0) as http_client:
             # Send initialize request (JSON-RPC 2.0)
+            # The 2025-11-25 MCP spec allows the "id" field to be either str or int.
+            # With other tool call POST requests, we forward the "id" field from the client of mcpgw,
+            # which is provided to us by the `mcp` package and is typed str. Therefore we also use str below for consistency.
+            # Reference: https://modelcontextprotocol.io/specification/2025-11-25/schema#requestid
             init_request = {
                 "jsonrpc": "2.0",
-                "id": 1,
+                "id": "1",
                 "method": "initialize",
                 "params": {
                     "protocolVersion": "2024-11-05",

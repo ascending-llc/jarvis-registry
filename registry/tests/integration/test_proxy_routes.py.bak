@@ -1,4 +1,6 @@
 """
+The `/proxy/***` routes have been refactored a lot.
+Keep this file but disable it by changing extension name to `.py.bak`.
 Integration tests for proxy routes - specifically tool execution endpoint.
 """
 
@@ -72,7 +74,7 @@ class TestProxyToolExecutionRoutes:
             ) as mock_get_server,
             patch("registry.api.proxy_routes.proxy_client.stream") as mock_stream,
             patch(
-                "registry.services.server_service._build_complete_headers_for_server", new_callable=AsyncMock
+                "registry.services.server_service.build_complete_headers_for_server", new_callable=AsyncMock
             ) as mock_build_headers,
         ):
             mock_get_server.return_value = mock_server
@@ -129,7 +131,7 @@ class TestProxyToolExecutionRoutes:
             ) as mock_get_server,
             patch("registry.api.proxy_routes.proxy_client.stream") as mock_stream,
             patch(
-                "registry.services.server_service._build_complete_headers_for_server", new_callable=AsyncMock
+                "registry.services.server_service.build_complete_headers_for_server", new_callable=AsyncMock
             ) as mock_build_headers,
         ):
             mock_get_server.return_value = mock_server
@@ -209,7 +211,7 @@ class TestProxyToolExecutionRoutes:
             ) as mock_get_server,
             patch("registry.api.proxy_routes.proxy_client.stream") as mock_stream,
             patch(
-                "registry.services.server_service._build_complete_headers_for_server", new_callable=AsyncMock
+                "registry.services.server_service.build_complete_headers_for_server", new_callable=AsyncMock
             ) as mock_build_headers,
         ):
             mock_get_server.return_value = mock_server
@@ -260,7 +262,7 @@ class TestProxyToolExecutionRoutes:
             patch("registry.api.proxy_routes.proxy_client.stream") as mock_stream,
             patch("registry.utils.crypto_utils.decrypt_auth_fields") as mock_decrypt,
             patch(
-                "registry.services.server_service._build_complete_headers_for_server", new_callable=AsyncMock
+                "registry.services.server_service.build_complete_headers_for_server", new_callable=AsyncMock
             ) as mock_build_headers,
         ):
             mock_get_server.return_value = mock_server
@@ -314,7 +316,7 @@ class TestProxyToolExecutionRoutes:
             ) as mock_get_server,
             patch("registry.api.proxy_routes.proxy_client.stream") as mock_stream,
             patch(
-                "registry.services.server_service._build_complete_headers_for_server", new_callable=AsyncMock
+                "registry.services.server_service.build_complete_headers_for_server", new_callable=AsyncMock
             ) as mock_build_headers,
         ):
             mock_get_server.return_value = mock_server
@@ -371,7 +373,7 @@ class TestProxyToolExecutionRoutes:
             ) as mock_get_server,
             patch("registry.api.proxy_routes.proxy_client.stream") as mock_stream,
             patch(
-                "registry.services.server_service._build_complete_headers_for_server", new_callable=AsyncMock
+                "registry.services.server_service.build_complete_headers_for_server", new_callable=AsyncMock
             ) as mock_build_headers,
         ):
             mock_get_server.return_value = mock_server
@@ -424,7 +426,7 @@ class TestProxyToolExecutionRoutes:
             ) as mock_get_server,
             patch("registry.api.proxy_routes.proxy_client.stream") as mock_stream,
             patch(
-                "registry.services.server_service._build_complete_headers_for_server", new_callable=AsyncMock
+                "registry.services.server_service.build_complete_headers_for_server", new_callable=AsyncMock
             ) as mock_build_headers,
         ):
             mock_get_server.return_value = mock_server

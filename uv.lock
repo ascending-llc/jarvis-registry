@@ -6,7 +6,6 @@ requires-python = "==3.12.*"
 members = [
     "auth-server",
     "mcp-registry-workspace",
-    "mcpgw",
     "registry",
     "registry-pkgs",
 ]
@@ -1751,7 +1750,6 @@ version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "auth-server" },
-    { name = "mcpgw" },
     { name = "python-dotenv" },
     { name = "registry" },
     { name = "registry-pkgs" },
@@ -1779,7 +1777,6 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "auth-server", editable = "auth-server" },
-    { name = "mcpgw", editable = "servers/mcpgw" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "registry", editable = "registry" },
     { name = "registry-pkgs", editable = "registry-pkgs" },
@@ -1802,40 +1799,6 @@ dev = [
     { name = "pytest-xdist", specifier = ">=3.5.0" },
     { name = "ruff", specifier = ">=0.15.0" },
     { name = "types-pyyaml", specifier = ">=6.0.12.20250915" },
-]
-
-[[package]]
-name = "mcpgw"
-version = "0.2.0"
-source = { editable = "servers/mcpgw" }
-dependencies = [
-    { name = "fastmcp" },
-    { name = "httpx" },
-    { name = "mcp" },
-    { name = "pydantic" },
-    { name = "pydantic-settings" },
-    { name = "pyjwt" },
-    { name = "python-dotenv" },
-    { name = "pyyaml" },
-    { name = "registry-pkgs" },
-    { name = "starlette" },
-    { name = "websockets" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "fastmcp", specifier = ">=3.0.2,<4.0.0" },
-    { name = "httpx", specifier = ">=0.27.0" },
-    { name = "mcp", specifier = ">=1.9.3" },
-    { name = "pydantic", specifier = ">=2.11.3" },
-    { name = "pydantic-settings", specifier = ">=2.0.0" },
-    { name = "pyjwt", specifier = ">=2.10.1" },
-    { name = "python-dotenv", specifier = ">=1.0.0" },
-    { name = "pyyaml", specifier = ">=6.0.2" },
-    { name = "registry-pkgs", editable = "registry-pkgs" },
-    { name = "starlette", marker = "python_full_version < '3.14'", specifier = ">=0.27" },
-    { name = "starlette", marker = "python_full_version >= '3.14'", specifier = ">=0.48.0" },
-    { name = "websockets", specifier = ">=15.0.1" },
 ]
 
 [[package]]
@@ -2807,6 +2770,7 @@ dependencies = [
     { name = "fastmcp" },
     { name = "httpcore", extra = ["asyncio"] },
     { name = "httpx" },
+    { name = "httpx-sse" },
     { name = "inflection" },
     { name = "itsdangerous" },
     { name = "jinja2" },
@@ -2818,6 +2782,8 @@ dependencies = [
     { name = "matplotlib" },
     { name = "mcp" },
     { name = "psutil" },
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
     { name = "pyjwt" },
     { name = "python-multipart" },
     { name = "pytz" },
@@ -2825,6 +2791,7 @@ dependencies = [
     { name = "registry-pkgs" },
     { name = "requests" },
     { name = "rich" },
+    { name = "starlette" },
     { name = "strands-agents" },
     { name = "strands-agents-tools" },
     { name = "typing-extensions" },
@@ -2847,6 +2814,7 @@ requires-dist = [
     { name = "fastmcp", specifier = ">=2.14.5" },
     { name = "httpcore", extras = ["asyncio"], specifier = ">=1.0.9" },
     { name = "httpx", specifier = ">=0.27.0" },
+    { name = "httpx-sse", specifier = ">=0.4.0" },
     { name = "inflection", specifier = ">=0.5.1" },
     { name = "itsdangerous", specifier = ">=2.2.0" },
     { name = "jinja2", specifier = ">=3.1.6" },
@@ -2858,6 +2826,8 @@ requires-dist = [
     { name = "matplotlib", specifier = ">=3.10.5" },
     { name = "mcp", specifier = ">=1.9.3" },
     { name = "psutil", specifier = ">=6.1.0" },
+    { name = "pydantic", specifier = ">=2.11.3" },
+    { name = "pydantic-settings", specifier = ">=2.0.0" },
     { name = "pyjwt", specifier = ">=2.10.1" },
     { name = "python-multipart", specifier = ">=0.0.20" },
     { name = "pytz", specifier = ">=2025.2" },
@@ -2865,6 +2835,8 @@ requires-dist = [
     { name = "registry-pkgs", editable = "registry-pkgs" },
     { name = "requests", specifier = ">=2.31.0" },
     { name = "rich", specifier = ">=13.0.0" },
+    { name = "starlette", marker = "python_full_version < '3.14'", specifier = ">=0.27" },
+    { name = "starlette", marker = "python_full_version >= '3.14'", specifier = ">=0.48.0" },
     { name = "strands-agents", specifier = ">=0.1.6" },
     { name = "strands-agents-tools", specifier = ">=0.1.4" },
     { name = "typing-extensions", specifier = ">=4.8.0" },

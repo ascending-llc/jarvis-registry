@@ -10,6 +10,7 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
@@ -22,7 +23,6 @@ from registry_pkgs.telemetry import setup_metrics
 from .api.agent_routes import router as agent_router
 from .api.management_routes import router as management_router
 from .api.proxy_routes import router as proxy_router
-from .api.proxy_routes import shutdown_proxy_client
 from .api.redirect_routes import router as auth_provider_router
 from .api.v1.a2a.agent_routes import router as a2a_agent_router
 from .api.v1.acl_routes import router as acl_router
@@ -40,6 +40,9 @@ from .core.config import settings
 from .core.exception_handler import register_validation_exception_handler
 from .health.routes import router as health_router
 from .health.service import health_service
+
+# Import MCP app for mounting onto FastAPI
+from .mcpgw import mcp_app
 from .middleware import ScopePermissionMiddleware, UnifiedAuthMiddleware
 
 # Import services for initialization
@@ -128,8 +131,9 @@ async def lifespan(app: FastAPI):
         logger.error(f"❌ Failed to initialize services: {e}", exc_info=True)
         raise
 
-    # Application is ready
-    yield
+    async with mcp_app.session_manager.run():
+        # Application is ready
+        yield
 
     # Shutdown tasks
     logger.info("🔄 Shutting down MCP Gateway Registry...")
@@ -140,7 +144,6 @@ async def lifespan(app: FastAPI):
         logger.info("🔴 Closing Redis connection...")
         await close_redis()
         await health_service.shutdown()
-        await shutdown_proxy_client()
 
         # Close MongoDB connection
         logger.info("🗄️  Closing MongoDB connection...")
@@ -211,6 +214,10 @@ if hasattr(settings, "static_dir") and Path(settings.static_dir).exists():
     logger.info(f"Static files mounted from {settings.static_dir}")
 else:
     logger.warning("Static files directory not found, skipping static files mount")
+
+# MCP app must be mounted before including any FastAPI router. This is so that requests to `/proxy/mcpgw/mcp`
+# will be routed to the MCP app instead of `proxy_router`, which has a catch-all route.
+app.mount("/proxy/mcpgw", mcp_app.streamable_http_app())
 
 # Register API routers with /api prefix
 app.include_router(meta_router, prefix="/api/auth", tags=["Authentication metadata"])
@@ -303,8 +310,6 @@ async def get_version():
 
 
 if __name__ == "__main__":
-    import uvicorn
-
     # Configure logging before starting server
     settings.configure_logging()
 

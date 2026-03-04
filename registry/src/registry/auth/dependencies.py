@@ -1,5 +1,5 @@
 import logging
-from typing import Annotated, Any, TypedDict
+from typing import Annotated, TypedDict
 
 from fastapi import Depends, HTTPException, Request, status
 from itsdangerous import URLSafeTimedSerializer
@@ -103,7 +103,7 @@ def map_cognito_groups_to_scopes(groups: list[str]) -> list[str]:
     return unique_scopes
 
 
-def effective_scopes_from_context(user_context: dict[str, Any]) -> list[str]:
+def effective_scopes_from_context(user_context: UserContextDict) -> list[str]:
     """
     Determine the effective scopes for a user based on the authentication context.
 

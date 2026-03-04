@@ -412,7 +412,7 @@ class TestServerService:
 @pytest.mark.unit
 @pytest.mark.servers
 class TestBuildCompleteHeaders:
-    """Test suite for _build_complete_headers_for_server function."""
+    """Test suite for build_complete_headers_for_server function."""
 
     @pytest.fixture
     def mock_oauth_server(self):
@@ -477,7 +477,7 @@ class TestBuildCompleteHeaders:
         """Test OAuth server returns valid access token."""
         from unittest.mock import AsyncMock
 
-        from registry.services.server_service import _build_complete_headers_for_server
+        from registry.services.server_service import build_complete_headers_for_server
 
         with (
             patch("registry.services.oauth.oauth_service.get_oauth_service") as mock_oauth_svc,
@@ -490,7 +490,7 @@ class TestBuildCompleteHeaders:
             oauth_service.get_valid_access_token = AsyncMock(return_value=("access-token-123", None, None))
             mock_oauth_svc.return_value = oauth_service
 
-            headers = await _build_complete_headers_for_server(mock_oauth_server, "user-123")
+            headers = await build_complete_headers_for_server(mock_oauth_server, "user-123")
 
             assert headers["Authorization"] == "Bearer access-token-123"
             assert headers["Content-Type"] == "application/json"
@@ -501,13 +501,13 @@ class TestBuildCompleteHeaders:
     async def test_oauth_server_missing_user_id(self, mock_oauth_server):
         """Test OAuth server raises error when user_id is missing."""
         from registry.schemas.errors import MissingUserIdError
-        from registry.services.server_service import _build_complete_headers_for_server
+        from registry.services.server_service import build_complete_headers_for_server
 
         with patch("registry.utils.crypto_utils.decrypt_auth_fields") as mock_decrypt:
             mock_decrypt.return_value = mock_oauth_server.config
 
             with pytest.raises(MissingUserIdError) as exc_info:
-                await _build_complete_headers_for_server(mock_oauth_server, None)
+                await build_complete_headers_for_server(mock_oauth_server, None)
 
             assert "User ID required" in str(exc_info.value)
             assert exc_info.value.server_name == "oauth-server"
@@ -518,7 +518,7 @@ class TestBuildCompleteHeaders:
         from unittest.mock import AsyncMock
 
         from registry.schemas.errors import OAuthReAuthRequiredError
-        from registry.services.server_service import _build_complete_headers_for_server
+        from registry.services.server_service import build_complete_headers_for_server
 
         with (
             patch("registry.services.oauth.oauth_service.get_oauth_service") as mock_oauth_svc,
@@ -534,7 +534,7 @@ class TestBuildCompleteHeaders:
             mock_oauth_svc.return_value = oauth_service
 
             with pytest.raises(OAuthReAuthRequiredError) as exc_info:
-                await _build_complete_headers_for_server(mock_oauth_server, "user-123")
+                await build_complete_headers_for_server(mock_oauth_server, "user-123")
 
             assert "re-authentication required" in str(exc_info.value).lower()
             assert exc_info.value.auth_url == "https://oauth.example.com/authorize"
@@ -546,7 +546,7 @@ class TestBuildCompleteHeaders:
         from unittest.mock import AsyncMock
 
         from registry.schemas.errors import OAuthTokenError
-        from registry.services.server_service import _build_complete_headers_for_server
+        from registry.services.server_service import build_complete_headers_for_server
 
         with (
             patch("registry.services.oauth.oauth_service.get_oauth_service") as mock_oauth_svc,
@@ -560,7 +560,7 @@ class TestBuildCompleteHeaders:
             mock_oauth_svc.return_value = oauth_service
 
             with pytest.raises(OAuthTokenError) as exc_info:
-                await _build_complete_headers_for_server(mock_oauth_server, "user-123")
+                await build_complete_headers_for_server(mock_oauth_server, "user-123")
 
             assert "OAuth token error" in str(exc_info.value)
             assert exc_info.value.server_name == "oauth-server"
@@ -571,7 +571,7 @@ class TestBuildCompleteHeaders:
         from unittest.mock import AsyncMock
 
         from registry.schemas.errors import OAuthTokenError
-        from registry.services.server_service import _build_complete_headers_for_server
+        from registry.services.server_service import build_complete_headers_for_server
 
         with (
             patch("registry.services.oauth.oauth_service.get_oauth_service") as mock_oauth_svc,
@@ -585,7 +585,7 @@ class TestBuildCompleteHeaders:
             mock_oauth_svc.return_value = oauth_service
 
             with pytest.raises(OAuthTokenError) as exc_info:
-                await _build_complete_headers_for_server(mock_oauth_server, "user-123")
+                await build_complete_headers_for_server(mock_oauth_server, "user-123")
 
             assert "No valid OAuth token" in str(exc_info.value)
             assert exc_info.value.server_name == "oauth-server"
@@ -593,12 +593,12 @@ class TestBuildCompleteHeaders:
     @pytest.mark.asyncio
     async def test_apikey_bearer_auth(self, mock_apikey_server):
         """Test API key with Bearer authorization."""
-        from registry.services.server_service import _build_complete_headers_for_server
+        from registry.services.server_service import build_complete_headers_for_server
 
         with patch("registry.utils.crypto_utils.decrypt_auth_fields") as mock_decrypt:
             mock_decrypt.return_value = mock_apikey_server.config
 
-            headers = await _build_complete_headers_for_server(mock_apikey_server, None)
+            headers = await build_complete_headers_for_server(mock_apikey_server, None)
 
             assert headers["Authorization"] == "Bearer test-api-key-123"
             assert headers["Content-Type"] == "application/json"
@@ -606,12 +606,12 @@ class TestBuildCompleteHeaders:
     @pytest.mark.asyncio
     async def test_apikey_basic_auth(self, mock_basic_auth_server):
         """Test API key with Basic authorization."""
-        from registry.services.server_service import _build_complete_headers_for_server
+        from registry.services.server_service import build_complete_headers_for_server
 
         with patch("registry.utils.crypto_utils.decrypt_auth_fields") as mock_decrypt:
             mock_decrypt.return_value = mock_basic_auth_server.config
 
-            headers = await _build_complete_headers_for_server(mock_basic_auth_server, None)
+            headers = await build_complete_headers_for_server(mock_basic_auth_server, None)
 
             # Basic auth should be base64 encoded
             assert headers["Authorization"].startswith("Basic ")
@@ -620,12 +620,12 @@ class TestBuildCompleteHeaders:
     @pytest.mark.asyncio
     async def test_apikey_custom_auth(self, mock_custom_auth_server):
         """Test API key with custom header."""
-        from registry.services.server_service import _build_complete_headers_for_server
+        from registry.services.server_service import build_complete_headers_for_server
 
         with patch("registry.utils.crypto_utils.decrypt_auth_fields") as mock_decrypt:
             mock_decrypt.return_value = mock_custom_auth_server.config
 
-            headers = await _build_complete_headers_for_server(mock_custom_auth_server, None)
+            headers = await build_complete_headers_for_server(mock_custom_auth_server, None)
 
             assert headers["X-API-Key"] == "custom-token-xyz"
             assert headers["Content-Type"] == "application/json"
@@ -633,12 +633,12 @@ class TestBuildCompleteHeaders:
     @pytest.mark.asyncio
     async def test_custom_headers_only(self, mock_custom_headers_server):
         """Test server with only custom headers."""
-        from registry.services.server_service import _build_complete_headers_for_server
+        from registry.services.server_service import build_complete_headers_for_server
 
         with patch("registry.utils.crypto_utils.decrypt_auth_fields") as mock_decrypt:
             mock_decrypt.return_value = mock_custom_headers_server.config
 
-            headers = await _build_complete_headers_for_server(mock_custom_headers_server, None)
+            headers = await build_complete_headers_for_server(mock_custom_headers_server, None)
 
             assert headers["X-Custom-Header"] == "value1"
             assert headers["X-Another-Header"] == "value2"
@@ -649,7 +649,7 @@ class TestBuildCompleteHeaders:
         """Test OAuth server also processes custom headers."""
         from unittest.mock import AsyncMock
 
-        from registry.services.server_service import _build_complete_headers_for_server
+        from registry.services.server_service import build_complete_headers_for_server
 
         # Add custom headers to OAuth config
         mock_oauth_server.config["headers"] = [{"X-Custom-Header": "custom-value"}]
@@ -664,7 +664,7 @@ class TestBuildCompleteHeaders:
             oauth_service.get_valid_access_token = AsyncMock(return_value=("access-token", None, None))
             mock_oauth_svc.return_value = oauth_service
 
-            headers = await _build_complete_headers_for_server(mock_oauth_server, "user-123")
+            headers = await build_complete_headers_for_server(mock_oauth_server, "user-123")
 
             # Should have both OAuth and custom headers
             assert headers["Authorization"] == "Bearer access-token"
@@ -673,7 +673,7 @@ class TestBuildCompleteHeaders:
     @pytest.mark.asyncio
     async def test_no_auth_returns_base_headers(self):
         """Test server with no authentication returns base MCP headers."""
-        from registry.services.server_service import _build_complete_headers_for_server
+        from registry.services.server_service import build_complete_headers_for_server
         from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer as MCPServerDocument
 
         server = Mock(spec=MCPServerDocument)
@@ -683,7 +683,7 @@ class TestBuildCompleteHeaders:
         with patch("registry.utils.crypto_utils.decrypt_auth_fields") as mock_decrypt:
             mock_decrypt.return_value = {}
 
-            headers = await _build_complete_headers_for_server(server, None)
+            headers = await build_complete_headers_for_server(server, None)
 
             assert headers["Content-Type"] == "application/json"
             assert headers["Accept"] == "application/json"
@@ -696,7 +696,7 @@ class TestBuildCompleteHeaders:
         """Test OAuth Bearer token overrides custom Authorization header."""
         from unittest.mock import AsyncMock
 
-        from registry.services.server_service import _build_complete_headers_for_server
+        from registry.services.server_service import build_complete_headers_for_server
         from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer as MCPServerDocument
 
         server = Mock(spec=MCPServerDocument)
@@ -720,7 +720,7 @@ class TestBuildCompleteHeaders:
             oauth_service.get_valid_access_token = AsyncMock(return_value=("oauth-token-wins", None, None))
             mock_oauth_svc.return_value = oauth_service
 
-            headers = await _build_complete_headers_for_server(server, "user-123")
+            headers = await build_complete_headers_for_server(server, "user-123")
 
             # OAuth token should override custom Authorization header
             assert headers["Authorization"] == "Bearer oauth-token-wins"
@@ -728,7 +728,7 @@ class TestBuildCompleteHeaders:
     @pytest.mark.asyncio
     async def test_apikey_overrides_custom_authorization_header(self):
         """Test API key overrides custom Authorization header."""
-        from registry.services.server_service import _build_complete_headers_for_server
+        from registry.services.server_service import build_complete_headers_for_server
         from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer as MCPServerDocument
 
         server = Mock(spec=MCPServerDocument)
@@ -741,7 +741,7 @@ class TestBuildCompleteHeaders:
         with patch("registry.utils.crypto_utils.decrypt_auth_fields") as mock_decrypt:
             mock_decrypt.return_value = server.config
 
-            headers = await _build_complete_headers_for_server(server, None)
+            headers = await build_complete_headers_for_server(server, None)
 
             # API key should override custom Authorization header
             assert headers["Authorization"] == "Bearer apikey-token-wins"
@@ -751,7 +751,7 @@ class TestBuildCompleteHeaders:
         """Test custom headers are added before OAuth processing (lowest priority)."""
         from unittest.mock import AsyncMock
 
-        from registry.services.server_service import _build_complete_headers_for_server
+        from registry.services.server_service import build_complete_headers_for_server
         from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer as MCPServerDocument
 
         server = Mock(spec=MCPServerDocument)
@@ -776,7 +776,7 @@ class TestBuildCompleteHeaders:
             oauth_service.get_valid_access_token = AsyncMock(return_value=("oauth-token", None, None))
             mock_oauth_svc.return_value = oauth_service
 
-            headers = await _build_complete_headers_for_server(server, "user-123")
+            headers = await build_complete_headers_for_server(server, "user-123")
 
             # OAuth Authorization should be present
             assert headers["Authorization"] == "Bearer oauth-token"
@@ -791,7 +791,7 @@ class TestBuildCompleteHeaders:
     @pytest.mark.asyncio
     async def test_custom_headers_added_first_for_apikey(self):
         """Test custom headers are added before API key processing (lowest priority)."""
-        from registry.services.server_service import _build_complete_headers_for_server
+        from registry.services.server_service import build_complete_headers_for_server
         from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer as MCPServerDocument
 
         server = Mock(spec=MCPServerDocument)
@@ -804,7 +804,7 @@ class TestBuildCompleteHeaders:
         with patch("registry.utils.crypto_utils.decrypt_auth_fields") as mock_decrypt:
             mock_decrypt.return_value = server.config
 
-            headers = await _build_complete_headers_for_server(server, None)
+            headers = await build_complete_headers_for_server(server, None)
 
             # API key should override custom Authorization
             assert headers["Authorization"] == "Bearer test-key"
@@ -815,7 +815,7 @@ class TestBuildCompleteHeaders:
     @pytest.mark.asyncio
     async def test_custom_headers_dict_format(self):
         """Test custom headers provided as dict are supported."""
-        from registry.services.server_service import _build_complete_headers_for_server
+        from registry.services.server_service import build_complete_headers_for_server
         from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer as MCPServerDocument
 
         server = Mock(spec=MCPServerDocument)
@@ -830,7 +830,7 @@ class TestBuildCompleteHeaders:
         with patch("registry.utils.crypto_utils.decrypt_auth_fields") as mock_decrypt:
             mock_decrypt.return_value = server.config
 
-            headers = await _build_complete_headers_for_server(server, None)
+            headers = await build_complete_headers_for_server(server, None)
 
             assert headers["X-Trace-Id"] == "trace-123"
             assert headers["Accept"] == "application/json, application/xml"
@@ -838,7 +838,7 @@ class TestBuildCompleteHeaders:
     @pytest.mark.asyncio
     async def test_custom_header_with_list_values(self):
         """Test custom headers with list values are joined correctly."""
-        from registry.services.server_service import _build_complete_headers_for_server
+        from registry.services.server_service import build_complete_headers_for_server
         from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer as MCPServerDocument
 
         server = Mock(spec=MCPServerDocument)
@@ -853,7 +853,7 @@ class TestBuildCompleteHeaders:
         with patch("registry.utils.crypto_utils.decrypt_auth_fields") as mock_decrypt:
             mock_decrypt.return_value = server.config
 
-            headers = await _build_complete_headers_for_server(server, None)
+            headers = await build_complete_headers_for_server(server, None)
 
             # List values should be joined with comma
             assert headers["Accept"] == "application/json, application/xml"
@@ -862,7 +862,7 @@ class TestBuildCompleteHeaders:
     @pytest.mark.asyncio
     async def test_no_auth_with_custom_headers(self):
         """Test server with no auth but custom headers."""
-        from registry.services.server_service import _build_complete_headers_for_server
+        from registry.services.server_service import build_complete_headers_for_server
         from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer as MCPServerDocument
 
         server = Mock(spec=MCPServerDocument)
@@ -872,7 +872,7 @@ class TestBuildCompleteHeaders:
         with patch("registry.utils.crypto_utils.decrypt_auth_fields") as mock_decrypt:
             mock_decrypt.return_value = server.config
 
-            headers = await _build_complete_headers_for_server(server, None)
+            headers = await build_complete_headers_for_server(server, None)
 
             # Base headers should be present
             assert headers["Content-Type"] == "application/json"
@@ -890,7 +890,7 @@ class TestBuildCompleteHeaders:
         """Test API key Basic auth with pre-encoded base64."""
         import base64
 
-        from registry.services.server_service import _build_complete_headers_for_server
+        from registry.services.server_service import build_complete_headers_for_server
         from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer as MCPServerDocument
 
         # Pre-encoded credentials
@@ -903,7 +903,7 @@ class TestBuildCompleteHeaders:
         with patch("registry.utils.crypto_utils.decrypt_auth_fields") as mock_decrypt:
             mock_decrypt.return_value = server.config
 
-            headers = await _build_complete_headers_for_server(server, None)
+            headers = await build_complete_headers_for_server(server, None)
 
             # Should use the pre-encoded value
             assert headers["Authorization"] == f"Basic {encoded_creds}"
@@ -913,7 +913,7 @@ class TestBuildCompleteHeaders:
         """Test API key Basic auth with plain text credentials (auto-encoding)."""
         import base64
 
-        from registry.services.server_service import _build_complete_headers_for_server
+        from registry.services.server_service import build_complete_headers_for_server
         from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer as MCPServerDocument
 
         server = Mock(spec=MCPServerDocument)
@@ -923,7 +923,7 @@ class TestBuildCompleteHeaders:
         with patch("registry.utils.crypto_utils.decrypt_auth_fields") as mock_decrypt:
             mock_decrypt.return_value = server.config
 
-            headers = await _build_complete_headers_for_server(server, None)
+            headers = await build_complete_headers_for_server(server, None)
 
             # Should be auto-encoded
             expected = base64.b64encode(b"username:password").decode()
@@ -932,7 +932,7 @@ class TestBuildCompleteHeaders:
     @pytest.mark.asyncio
     async def test_apikey_custom_header_missing_custom_header_name(self):
         """Test API key custom auth without custom_header field logs warning."""
-        from registry.services.server_service import _build_complete_headers_for_server
+        from registry.services.server_service import build_complete_headers_for_server
         from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer as MCPServerDocument
 
         server = Mock(spec=MCPServerDocument)
@@ -948,7 +948,7 @@ class TestBuildCompleteHeaders:
         with patch("registry.utils.crypto_utils.decrypt_auth_fields") as mock_decrypt:
             mock_decrypt.return_value = server.config
 
-            headers = await _build_complete_headers_for_server(server, None)
+            headers = await build_complete_headers_for_server(server, None)
 
             # Should not add any custom header
             assert "Authorization" not in headers
@@ -958,7 +958,7 @@ class TestBuildCompleteHeaders:
     @pytest.mark.asyncio
     async def test_apikey_unknown_authorization_type_defaults_to_bearer(self):
         """Test API key with unknown authorization_type defaults to Bearer."""
-        from registry.services.server_service import _build_complete_headers_for_server
+        from registry.services.server_service import build_complete_headers_for_server
         from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer as MCPServerDocument
 
         server = Mock(spec=MCPServerDocument)
@@ -968,7 +968,7 @@ class TestBuildCompleteHeaders:
         with patch("registry.utils.crypto_utils.decrypt_auth_fields") as mock_decrypt:
             mock_decrypt.return_value = server.config
 
-            headers = await _build_complete_headers_for_server(server, None)
+            headers = await build_complete_headers_for_server(server, None)
 
             # Should default to Bearer
             assert headers["Authorization"] == "Bearer test-key"

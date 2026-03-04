@@ -1,17 +1,21 @@
 import logging
 from collections.abc import Callable
-from typing import Any
+from typing import Annotated, Any
 
-from fastmcp import Context
+from mcp.server.fastmcp import Context
+from mcp.server.session import ServerSession
 from pydantic import Field
 
-from ..core.registry import RegistryRoute, call_registry_api
+from ...api.v1.search_routes import SearchRequest, search_servers
+from ...auth.dependencies import UserContextDict
+from ..core.types import McpAppContext
+from ..exceptions import InternalServerException
 
 logger = logging.getLogger(__name__)
 
 
 async def discover_servers_impl(
-    ctx: Context,
+    ctx: Context[ServerSession, McpAppContext],
     query: str,
     top_n: int | None = None,
     search_type: str = "hybrid",
@@ -43,6 +47,9 @@ async def discover_servers_impl(
 
     Returns:
         List of matching entities based on type_list parameter
+
+    Raises:
+        InternalServerException: On any runtime exception
     """
     if type_list is None:
         type_list = ["tool"]
@@ -59,13 +66,12 @@ async def discover_servers_impl(
     logger.info(f"🔍 Discovering {type_list} for query: '{query}' (search_type={search_type})")
 
     try:
-        # Use centralized registry API call with automatic auth header extraction
-        result = await call_registry_api(
-            ctx,
-            method="POST",
-            endpoint=RegistryRoute.SEARCH_SERVERS,
-            payload={"query": query, "top_n": top_n, "search_type": search_type, "type_list": type_list},
+        search_request = SearchRequest.model_validate(
+            {"query": query, "top_n": top_n, "search_type": search_type, "type_list": type_list}
         )
+        user_context: UserContextDict = ctx.request_context.request.state.user  # type: ignore[union-attr]
+
+        result = await search_servers(search_request, user_context)
 
         servers = result.get("servers", [])
         total = result.get("total", 0)
@@ -74,9 +80,10 @@ async def discover_servers_impl(
 
         return servers
 
-    except Exception as e:
-        logger.error(f"Discovery failed: {e}")
-        raise Exception(f"Discovery failed: {str(e)}")
+    except Exception:
+        logger.exception("Server discovery failed")
+
+        raise InternalServerException("server discovery failed")
 
 
 # ============================================================================
@@ -93,22 +100,32 @@ def get_tools() -> list[tuple[str, Callable]]:
     """
 
     async def discover_servers(
-        ctx: Context,
-        query: str = Field(
-            "",
-            description="Natural language query or keywords (e.g., 'web search', 'github', 'email automation') - leave empty to see all",
-        ),
-        top_n: int | None = Field(
-            None,
-            description="Max results to return. Auto-sets to 3 for tools/resources/prompts, 1 for servers if not specified",
-        ),
-        search_type: str = Field(
-            "hybrid",
-            description="Search strategy: 'hybrid' (best), 'near_text' (semantic), 'bm25' (keyword), 'similarity_store' (alternative)",
-        ),
-        type_list: list[str] = Field(
+        ctx: Context[ServerSession, McpAppContext],
+        query: Annotated[
+            str,
+            Field(
+                description="Natural language query or keywords (e.g., 'web search', 'github', 'email automation') - leave empty to see all",
+            ),
+        ] = "",
+        top_n: Annotated[
+            int | None,
+            Field(
+                description="Max results to return. Auto-sets to 3 for tools/resources/prompts, 1 for servers if not specified",
+            ),
+        ] = None,
+        search_type: Annotated[
+            str,
+            Field(
+                description="Search strategy: 'hybrid' (best), 'near_text' (semantic), 'bm25' (keyword), 'similarity_store' (alternative)",
+            ),
+        ] = "hybrid",
+        type_list: Annotated[
+            list[str],
+            Field(
+                description="Entity types to search: ['tool'] (most efficient, default), ['resource'], ['prompt'], ['server'] (full details, most tokens), or mix multiple types",
+            ),
+        ] = Field(
             default_factory=lambda: ["tool"],
-            description="Entity types to search: ['tool'] (most efficient, default), ['resource'], ['prompt'], ['server'] (full details, most tokens), or mix multiple types",
         ),
     ) -> list[dict[str, Any]]:
         """

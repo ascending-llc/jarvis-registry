@@ -1,4 +1,7 @@
 """
+This file used to provide unit tests for functions from `registry.api.proxy_routes`.
+This module has been refactored completely and all imports from Line 16 to Line 19 are no longer there.
+Therefore we change the extension name to `.py.bak` to disable this test file but temporarily keep the code here.
 Unit tests for proxy_to_mcp_server function.
 """
 

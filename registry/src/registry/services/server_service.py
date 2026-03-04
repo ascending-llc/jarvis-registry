@@ -76,7 +76,7 @@ def _build_server_info_for_mcp_client(config: dict[str, Any], tags: list[str]) -
     return server_info
 
 
-async def _build_complete_headers_for_server(server: MCPServerDocument, user_id: str | None = None) -> dict[str, str]:
+async def build_complete_headers_for_server(server: MCPServerDocument, user_id: str | None = None) -> dict[str, str]:
     """
     Build complete HTTP headers with ALL authentication types.
     Consolidates OAuth, apiKey, and custom header logic in one place.
@@ -1112,7 +1112,7 @@ class ServerServiceV1:
             # Build complete headers with all authentication (OAuth, apiKey, custom)
             # This consolidates all auth logic in one place
             try:
-                headers = await _build_complete_headers_for_server(server, user_id)
+                headers = await build_complete_headers_for_server(server, user_id)
             except OAuthReAuthRequiredError as e:
                 # OAuth re-authentication needed - return special error format
                 return (

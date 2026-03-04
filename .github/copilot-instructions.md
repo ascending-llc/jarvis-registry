@@ -12,7 +12,6 @@ All Python workspaces are managed via `uv` from the root `pyproject.toml`.
 | `registry/` | Python (FastAPI) | Backend | `registry-pkgs` | Main MCP server registry + agent registry REST API |
 | `auth-server/` | Python (FastAPI) | Backend | `registry-pkgs` | OAuth2/OIDC auth server (Keycloak, Cognito, Entra) |
 | `registry-pkgs/` | Python | Shared | — | Shared Beanie models, MongoDB/Redis clients, vector DB, telemetry |
-| `servers/mcpgw/` | Python (FastMCP) | Backend | — (standalone) | MCP gateway server — discovers and proxies to 100+ MCP servers |
 | `frontend/` | TypeScript/React | Frontend | — | SPA (Vite + React 18 + TailwindCSS + Biome) |
 
 ---
@@ -138,7 +137,6 @@ These rules are non-negotiable. They define where code lives and how workspaces 
 
 - **Beanie Document models** live ONLY in `registry-pkgs/src/registry_pkgs/models/`. Never define Beanie Documents in `registry/` or `auth-server/`.
 - **Dependency flows one-way**: `registry` → `registry-pkgs` ← `auth-server`. Never import from `registry` into `auth-server` or vice versa.
-- **`mcpgw` minimal coupling**: `mcpgw` talks to the registry via HTTP and should remain as standalone as possible. Currently utilizing `registry-pkgs` only. Never import `auth-server` or `registry` packages.
 - **Route handlers are thin**: `registry/src/registry/api/` contains route definitions ONLY — no business logic, no direct database calls. All logic lives in `services/`.
 - **Frontend uses Biome** for formatting/linting (not ruff, ESLint, or Prettier). Never suggest Python tooling for `frontend/`.
 
@@ -183,15 +181,6 @@ These rules are non-negotiable. They define where code lives and how workspaces 
 | `core/` | Shared `Settings` (`BaseSettings`): vector store, Weaviate, AWS Bedrock, MongoDB, OTEL config. |
 | `telemetry/` | OpenTelemetry decorators and metrics client. |
 
-### MCP Gateway (`servers/mcpgw/src/mcpgw/`)
-
-| Directory | Responsibility |
-|---|---|
-| `server.py` | FastMCP app factory. Exposes `discover_servers` and `execute_tool`. |
-| `auth/` | Auth middleware, header management. |
-| `core/` | Registry HTTP client integration. |
-| `tools/` | MCP tools: registry API, search. |
-
 ---
 
 ## Code Style & Standards
@@ -232,7 +221,7 @@ General rules: specific exception types only — no bare `except:`. Chain except
 
 Within each Python file, organize code in this order:
 1. Module docstring
-2. Imports (ruff isort handles ordering — first-party packages: `registry_pkgs`, `registry`, `auth_server`, `mcpgw`)
+2. Imports (ruff isort handles ordering — first-party packages: `registry_pkgs`, `registry`, `auth_server`)
 3. Module-level constants
 4. Private functions (`_prefixed`)
 5. Public functions / classes

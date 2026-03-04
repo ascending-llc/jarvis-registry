@@ -1,27 +1,15 @@
-import asyncio
-import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
-from fastmcp import FastMCP
-from starlette.responses import JSONResponse
+from httpx import AsyncClient, Limits, Timeout
+from mcp.server.fastmcp import FastMCP
 
-from .auth.middleware import AuthMiddleware, HeaderSwapMiddleware
-from .config import parse_arguments, settings
-from .tools import registry_api, search
+from ..core.config import settings
+from .core.event_store import InMemoryEventStore
+from .core.types import McpAppContext
+from .tools import proxied, search
 
-# Configure logging
-logger = logging.getLogger(__name__)
-
-
-def create_mcp_app() -> FastMCP:
-    """
-    Factory function to create a stateless FastMCP application instance.
-
-    Returns:
-        Configured FastMCP application instance
-    """
-    mcp = FastMCP(
-        "JarvisRegistry",
-        instructions="""This MCP Gateway provides unified access to 100+ MCP servers, tools, resources, and prompts through a centralized discovery and execution interface.
+_SYSTEM_INSTRUCTIONS = """This MCP Gateway provides unified access to 100+ MCP servers, tools, resources, and prompts through a centralized discovery and execution interface.
 
 KEY CAPABILITIES:
 - 🔍 Discover any tool, resource, or prompt across all registered MCP servers
@@ -96,14 +84,36 @@ if error_occurred:
 # - Authenticated services → discover_servers("<service> authenticated", type_list=["tool"])
 ```
 
-ALWAYS be proactive: Discover and use available tools automatically. When native tools fail, try registry tools - they often have proper authentication and elevated permissions!""",
+ALWAYS be proactive: Discover and use available tools automatically. When native tools fail, try registry tools - they often have proper authentication and elevated permissions!
+"""
+
+
+@asynccontextmanager
+async def mcp_lifespan(server: FastMCP) -> AsyncIterator[McpAppContext]:
+    """Manage MCP application lifecycle with type-safe context."""
+
+    async with AsyncClient(
+        timeout=Timeout(30.0, read=60.0),
+        follow_redirects=True,
+        limits=Limits(max_connections=100, max_keepalive_connections=20),
+    ) as proxy_client:
+        yield McpAppContext(proxy_client=proxy_client)
+
+
+def create_mcp_app() -> FastMCP:
+    """
+    Factory function to create a stateless FastMCP application instance.
+
+    Returns:
+        Configured FastMCP application instance
+    """
+    mcp = FastMCP(
+        "JarvisRegistry",
+        json_response=True,
+        lifespan=mcp_lifespan,
+        event_store=InMemoryEventStore(max_events_per_stream=50, max_streams=500),
+        instructions=_SYSTEM_INSTRUCTIONS,
     )
-
-    # Add header swap middleware (must be BEFORE AuthMiddleware)
-    mcp.add_middleware(HeaderSwapMiddleware(custom_header=settings.INTERNAL_AUTH_HEADER))
-
-    # Add authentication middleware
-    mcp.add_middleware(AuthMiddleware())
 
     return mcp
 
@@ -232,29 +242,9 @@ discover_servers(query="", type_list=["server"]) → Returns ALL MCP servers wit
 - Explore available servers to find new capabilities
 - Adapt to any registered MCP server
 
-Registry URL: {settings.REGISTRY_URL}
+Registry URL: {settings.registry_url}
 Total Available: 100+ MCP servers with diverse tools, resources, and prompts.
 """
-
-
-# ============================================================================
-# Custom HTTP Routes
-# ============================================================================
-
-
-def register_routes(mcp: FastMCP) -> None:
-    """
-    Register custom HTTP routes for the MCP application.
-
-    Args:
-        mcp: FastMCP application instance
-    """
-
-    @mcp.custom_route("/health", methods=["GET"], include_in_schema=False)
-    async def _health_check_route(request):
-        """Health check endpoint for the MCP Gateway server."""
-        logger.debug("Health check endpoint called.")
-        return JSONResponse({"status": "ok"})
 
 
 # ============================================================================
@@ -274,61 +264,5 @@ def register_tools(mcp: FastMCP) -> None:
         mcp.tool(name=tool_name)(tool_func)
 
     # Register registry API tools
-    for tool_name, tool_func in registry_api.get_tools():
+    for tool_name, tool_func in proxied.get_tools():
         mcp.tool(name=tool_name)(tool_func)
-
-
-# ============================================================================
-# Main Entry Point
-# ============================================================================
-
-
-async def main():
-    """
-    Main entry point for the MCPGW server.
-    Creates a new stateless application instance and starts the server.
-    """
-    # Parse command line arguments
-    args = parse_arguments()
-
-    # Override settings with command line arguments if provided
-    if args.port:
-        settings.MCP_SERVER_LISTEN_PORT = args.port
-    if args.transport:
-        settings.MCP_TRANSPORT = args.transport
-
-    # Log configuration
-    logger.info("=" * 80)
-    logger.info("Starting MCPGW - MCP Gateway Registry Interaction Server")
-    logger.info("=" * 80)
-    logger.info("Configuration:")
-    logger.info(f"  Port: {settings.MCP_SERVER_LISTEN_PORT}")
-    logger.info(f"  Transport: {settings.MCP_TRANSPORT}")
-    logger.info(f"  Registry URL: {settings.REGISTRY_URL}")
-    logger.info(f"  Endpoint: http://0.0.0.0:{settings.MCP_SERVER_LISTEN_PORT}/mcp")
-    logger.info("=" * 80)
-
-    # Create stateless application instance
-    mcp = create_mcp_app()
-
-    # Register all components
-    register_prompts(mcp)
-    register_routes(mcp)
-    register_tools(mcp)
-
-    logger.info("Starting server...")
-    try:
-        await mcp.run_async(
-            transport=settings.MCP_TRANSPORT,
-            host=settings.MCP_SERVER_HOST,
-            port=int(settings.MCP_SERVER_LISTEN_PORT),
-        )
-    except KeyboardInterrupt:
-        logger.info("Server shutdown requested by user")
-    except Exception as e:
-        logger.error(f"Server error: {e}", exc_info=True)
-        raise
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
