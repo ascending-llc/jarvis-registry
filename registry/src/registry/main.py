@@ -160,6 +160,8 @@ app = FastAPI(
     swagger_ui_parameters={
         "persistAuthorization": True,
     },
+    # API responses should use snake_case field names, not aliases
+    generate_unique_id_function=lambda route: f"{route.tags[0]}-{route.name}" if route.tags else route.name,
     openapi_tags=[
         {"name": "Authentication", "description": "OAuth2 and session-based authentication endpoints"},
         {

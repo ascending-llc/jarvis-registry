@@ -26,23 +26,13 @@ from ....schemas.server_api_schemas import (
     ServerConnectionTestRequest,
     ServerConnectionTestResponse,
     ServerCreateRequest,
-    ServerCreateResponse,
     ServerDetailResponse,
-    ServerHealthResponse,
     ServerListResponse,
     ServerStatsResponse,
     ServerToggleRequest,
-    ServerToggleResponse,
-    ServerToolsResponse,
     ServerUpdateRequest,
-    ServerUpdateResponse,
-    convert_to_create_response,
     convert_to_detail,
-    convert_to_health_response,
     convert_to_list_item,
-    convert_to_toggle_response,
-    convert_to_tools_response,
-    convert_to_update_response,
 )
 from ....services.access_control_service import acl_service
 from ....services.oauth.connection_status_service import (
@@ -69,13 +59,13 @@ def apply_connection_status_to_server(
     Apply connection status to a server response object.
     """
     if status:
-        server_item.connectionState = status.get("connection_state")
-        server_item.requiresOAuth = status.get("requires_oauth", False)
+        server_item.connection_state = status.get("connection_state")
+        server_item.requires_oauth = status.get("requires_oauth", False)
         server_item.error = status.get("error")
     else:
         # Fallback if status not found
-        server_item.connectionState = ConnectionState.ERROR.value
-        server_item.requiresOAuth = fallback_requires_oauth
+        server_item.connection_state = ConnectionState.ERROR.value
+        server_item.requires_oauth = fallback_requires_oauth
         server_item.error = "Connection status not available"
 
 
@@ -85,6 +75,7 @@ def apply_connection_status_to_server(
 @router.get(
     "/servers",
     response_model=ServerListResponse,
+    response_model_by_alias=False,  # Use snake_case in API responses
     summary="List Servers",
     description="List all servers with filtering, searching, and pagination. Includes connection status for each server.",
 )
@@ -316,6 +307,7 @@ async def check_server_connection(
 @router.get(
     "/servers/{server_id}",
     response_model=ServerDetailResponse,
+    response_model_by_alias=False,  # Use snake_case in API responses
     summary="Get Server Details",
     description="Get detailed information about a specific server, including connection status",
 )
@@ -370,7 +362,8 @@ async def get_server(
 
 @router.post(
     "/servers",
-    response_model=ServerCreateResponse,
+    response_model=ServerDetailResponse,
+    response_model_by_alias=False,  # Use snake_case in API responses
     status_code=http_status.HTTP_201_CREATED,
     summary="Register Server",
     description="Register a new MCP server",
@@ -403,7 +396,18 @@ async def create_server(
         )
 
         logger.info(f"Granted user {user_id} {RoleBits.OWNER} permissions for server Id {server.id}")
-        return convert_to_create_response(server)
+
+        # ✅ 直接构造OWNER权限（避免事务内查询问题）
+        # 创建者被授予OWNER权限，包含所有操作权限
+        from registry.schemas.acl_schema import ResourcePermissions
+
+        perms = ResourcePermissions(
+            VIEW=True,
+            EDIT=True,
+            DELETE=True,
+            SHARE=True,
+        )
+        return convert_to_detail(server, acl_permission=perms)
 
     except ValueError as e:
         error_msg = str(e)
@@ -429,7 +433,8 @@ async def create_server(
 
 @router.patch(
     "/servers/{server_id}",
-    response_model=ServerUpdateResponse,
+    response_model=ServerDetailResponse,
+    response_model_by_alias=False,  # Use snake_case in API responses
     summary="Update Server",
     description="Update server configuration",
 )
@@ -443,7 +448,7 @@ async def update_server(
     """Update a server with partial data"""
     try:
         user_id = user_context.get("user_id")
-        await acl_service.check_user_permission(
+        permissions = await acl_service.check_user_permission(
             user_id=PydanticObjectId(user_id),
             resource_type=ResourceType.MCPSERVER.value,
             resource_id=PydanticObjectId(server_id),
@@ -456,7 +461,7 @@ async def update_server(
             user_id=user_id,
         )
 
-        return convert_to_update_response(server)
+        return convert_to_detail(server, acl_permission=permissions)
 
     except ValueError as e:
         error_msg = str(e)
@@ -546,7 +551,8 @@ async def delete_server(
 
 @router.post(
     "/servers/{server_id}/toggle",
-    response_model=ServerToggleResponse,
+    response_model=ServerDetailResponse,
+    response_model_by_alias=False,  # Use snake_case in API responses
     summary="Toggle Server Status",
     description="Enable or disable a server",
 )
@@ -559,7 +565,7 @@ async def toggle_server(
     """Toggle server enabled/disabled status. When enabling, fetches tools from server."""
     try:
         user_id = user_context.get("user_id")
-        await acl_service.check_user_permission(
+        permissions = await acl_service.check_user_permission(
             user_id=PydanticObjectId(user_id),
             resource_type=ResourceType.MCPSERVER.value,
             resource_id=PydanticObjectId(server_id),
@@ -572,7 +578,7 @@ async def toggle_server(
             user_id=user_id,
         )
 
-        return convert_to_toggle_response(server, data.enabled)
+        return convert_to_detail(server, acl_permission=permissions)
 
     except ValueError as e:
         error_msg = str(e)
@@ -599,7 +605,8 @@ async def toggle_server(
 
 @router.get(
     "/servers/{server_id}/tools",
-    response_model=ServerToolsResponse,
+    response_model=ServerDetailResponse,
+    response_model_by_alias=False,  # Use snake_case in API responses
     summary="Get Server Tools",
     description="Get the list of tools provided by a server",
 )
@@ -611,7 +618,7 @@ async def get_server_tools(
     """Get server tools"""
     try:
         user_id = user_context.get("user_id")
-        await acl_service.check_user_permission(
+        permissions = await acl_service.check_user_permission(
             user_id=PydanticObjectId(user_id),
             resource_type=ResourceType.MCPSERVER.value,
             resource_id=PydanticObjectId(server_id),
@@ -623,7 +630,7 @@ async def get_server_tools(
             user_id=None,
         )
 
-        return convert_to_tools_response(server, tools)
+        return convert_to_detail(server, acl_permission=permissions)
 
     except ValueError as e:
         error_msg = str(e)
@@ -660,7 +667,8 @@ async def get_server_tools(
 
 @router.post(
     "/servers/{server_id}/refresh",
-    response_model=ServerHealthResponse,
+    response_model=ServerDetailResponse,
+    response_model_by_alias=False,  # Use snake_case in API responses
     summary="Refresh Server Health",
     description="Refresh server health status and check connectivity",
 )
@@ -671,8 +679,14 @@ async def refresh_server_health(
 ):
     """Refresh server health status. Updates tools if server becomes active."""
     try:
-        # Get user_id from context for OAuth token retrieval
         user_id = user_context.get("user_id")
+
+        permissions = await acl_service.check_user_permission(
+            user_id=PydanticObjectId(user_id),
+            resource_type=ResourceType.MCPSERVER.value,
+            resource_id=PydanticObjectId(server_id),
+            required_permission="VIEW",
+        )
 
         health_info = await server_service_v1.refresh_server_health(
             server_id=server_id,
@@ -691,7 +705,7 @@ async def refresh_server_health(
 
         server = health_info["server"]
 
-        return convert_to_health_response(server, health_info)
+        return convert_to_detail(server, acl_permission=permissions)
 
     except ValueError as e:
         error_msg = str(e)

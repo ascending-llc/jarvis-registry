@@ -352,21 +352,21 @@ def _build_config_from_request(data: ServerCreateRequest, server_name: str = Non
         "capabilities": "{}",  # Default empty JSON string
     }
 
-    # Add optional MCP config fields
+    # Add optional MCP config fields (convert to camelCase for MongoDB storage)
     if data.timeout is not None:
         config["timeout"] = data.timeout
     if data.init_timeout is not None:
-        config[inflection.camelize("init_timeout", uppercase_first_letter=False)] = data.init_timeout
+        config["initTimeout"] = data.init_timeout
     if data.server_instructions is not None:
-        config["server_instructions"] = data.server_instructions
+        config["serverInstructions"] = data.server_instructions
     if data.oauth is not None:
         config["oauth"] = data.oauth
     if data.custom_user_vars is not None:
-        config["custom_user_vars"] = data.custom_user_vars
+        config["customUserVars"] = data.custom_user_vars
     if data.headers is not None:
         config["headers"] = data.headers
     if data.requires_oauth is not None:
-        config[inflection.camelize("requires_oauth", uppercase_first_letter=False)] = data.requires_oauth
+        config["requiresOAuth"] = data.requires_oauth
 
     # Convert tool_list to toolFunctions in OpenAI format
     if data.tool_list is not None:
@@ -388,9 +388,9 @@ def _build_config_from_request(data: ServerCreateRequest, server_name: str = Non
     if data.oauth is not None:
         # oauth is already added above, just ensure apiKey is not added
         pass
-    elif data.apiKey is not None:
+    elif data.api_key is not None:
         # When only apiKey is provided, store it
-        config["apiKey"] = data.apiKey
+        config["apiKey"] = data.api_key
 
     # Always set enabled to False during registration (regardless of frontend input)
     config["enabled"] = False
@@ -415,19 +415,20 @@ def _update_config_from_request(
 
     # Remove root-level registry fields from update_dict (these are handled at root level)
     # Note: enabled is removed here but will be added to config separately
+    # Note: model_dump() returns snake_case keys, so we use snake_case field names here
     registry_fields = [
         "path",
         "tags",
         "status",
-        "serverName",
+        "server_name",  # snake_case from model_dump
         "num_stars",
         "enabled",
     ]
     for field in registry_fields:
         update_dict.pop(field, None)
 
-    # Handle mutually exclusive authentication fields: oauth and apiKey
-    if "oauth" in update_dict or "apiKey" in update_dict:
+    # Handle mutually exclusive authentication fields: oauth and api_key (snake_case from model_dump)
+    if "oauth" in update_dict or "api_key" in update_dict:
         existing_oauth = config.pop("oauth", {})
         existing_apikey = config.pop("apiKey", {})
         if "oauth" in update_dict:
@@ -444,8 +445,8 @@ def _update_config_from_request(
                 else:
                     config["oauth"] = oauth_update
 
-        if "apiKey" in update_dict:
-            apikey_update = update_dict.pop("apiKey")
+        if "api_key" in update_dict:
+            apikey_update = update_dict.pop("api_key")
 
             # Only save if not None and not empty
             if apikey_update:
@@ -462,7 +463,7 @@ def _update_config_from_request(
         else:
             config.pop("headers", None)
 
-    # Update config with MCP-specific fields only
+    # Update config with MCP-specific fields only (convert snake_case to camelCase)
     mcp_config_fields = [
         "title",
         "url",
@@ -474,11 +475,11 @@ def _update_config_from_request(
         "requires_oauth",
         "oauth",
         "custom_user_vars",
-        "tool_list",
+        # Note: tool_list is handled separately below, not directly stored in config
     ]
     for key, value in update_dict.items():
         if key in mcp_config_fields and value is not None:
-            # Convert snake_case to camelCase for config keys using inflection
+            # Convert snake_case to camelCase for config keys
             config_key = inflection.camelize(key, uppercase_first_letter=False) if "_" in key else key
             config[config_key] = value
 
@@ -859,7 +860,7 @@ class ServerServiceV1:
         updated_config = _update_config_from_request(config, data, server_name=server.serverName)
 
         # Encrypt sensitive authentication fields if they were updated
-        if data.oauth is not None or data.apiKey is not None:
+        if data.oauth is not None or data.api_key is not None:
             updated_config = encrypt_auth_fields(updated_config)
 
         if data.requires_oauth:

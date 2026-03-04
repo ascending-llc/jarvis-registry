@@ -386,12 +386,12 @@ Response 200:
   "servers": [
     {
       "id": "674e1a2b3c4d5e6f7a8b9c0d",
-      "serverName": "github-copilot",
-      "title": "GitHub Integration", #this is coming for config.title
+      "server_name": "github-copilot",
+      "title": "GitHub Integration",
       "description": "GitHub repository management and code search",
       "type": "streamable-http",
       "url": "http://github-server:8011",
-      "requiresOAuth": true,
+      "requires_oauth": true,
       "oauth": {
         "authorization_url": "https://github.com/login/oauth/authorize",
         "token_url": "https://github.com/login/oauth/access_token",
@@ -406,39 +406,45 @@ Response 200:
       "status": "active",
       "path": "/mcp/github",
       "tags": ["github", "version-control", "collaboration", "development"],
-      "numTools": 4,
-      "numStars": 1250,
-      "initDuration": 49,
-      "lastConnected": "2026-01-03T15:54:22.728+00:00",
-      "createdAt": "2026-01-01T10:00:00Z",
-      "updatedAt": "2026-01-03T15:45:00Z"
+      "num_tools": 4,
+      "num_stars": 1250,
+      "init_duration": 49,
+      "last_connected": "2026-01-03T15:54:22.728+00:00",
+      "created_at": "2026-01-01T10:00:00Z",
+      "updated_at": "2026-01-03T15:45:00Z"
     },
     {
       "id": "674e1a2b3c4d5e6f7a8b9c0e",
-      "serverName": "tavilysearchv1",
+      "server_name": "tavilysearchv1",
       "title": "Tavily Search v1",
       "description": "Search the web with Tavily",
       "type": "streamable-http",
       "url": "https://mcp.tavily.com/mcp/",
-      "apiKey": {
+      "api_key": {
         "key": "encrypted_api_key_here",
         "source": "admin",
         "authorization_type": "custom",
         "custom_header": "tavilyApiKey"
       },
-      "requiresOAuth": false,
+      "requires_oauth": false,
       "capabilities": "{\"experimental\":{},\"prompts\":{\"listChanged\":true},\"resources\":{\"subscribe\":false,\"listChanged\":true},\"tools\":{\"listChanged\":true}}",
       "tools": "tavily_search, tavily_extract, tavily_crawl, tavily_map",
       "author": "507f1f77bcf86cd799439011",
-      "scope": "shared_app",
       "status": "active",
       "path": "/mcp/tavilysearchv1",
       "tags": ["search", "web", "tavily"],
-      "numTools": 4,
-      "numStars": 890,
-      "lastConnected": "2026-01-04T15:09:45Z",
-      "createdAt": "2026-01-04T15:09:45Z",
-      "updatedAt": "2026-01-04T15:09:45Z"
+      "num_tools": 4,
+      "num_stars": 890,
+      "enabled": true,
+      "last_connected": "2026-01-04T15:09:45Z",
+      "permissions": {
+        "VIEW": true,
+        "EDIT": false,
+        "DELETE": false,
+        "SHARE": false
+      },
+      "created_at": "2026-01-04T15:09:45Z",
+      "updated_at": "2026-01-04T15:09:45Z"
     }
   ],
   "pagination": {
@@ -449,7 +455,10 @@ Response 200:
   }
 }
 
-**Note:** List endpoint does NOT return `toolFunctions` for performance.
+**Note:** 
+- List endpoint uses `ServerListItemResponse` schema
+- Does NOT return `tool_functions` for performance
+- All field names use snake_case convention
 ```
 
 **2. Get Server Details**
@@ -460,12 +469,12 @@ Authorization: Bearer <token>
 Response 200:
 {
   "id": "674e1a2b3c4d5e6f7a8b9c0d",
-  "serverName": "github-copilot",
+  "server_name": "github-copilot",
   "title": "GitHub Integration",
   "description": "GitHub repository management and code search",
   "type": "streamable-http",
   "url": "http://github-server:8011",
-  "requiresOAuth": true,
+  "requires_oauth": true,
   "oauth": {
     "authorization_url": "https://github.com/login/oauth/authorize",
     "token_url": "https://github.com/login/oauth/access_token",
@@ -474,7 +483,7 @@ Response 200:
     "client_secret": "***",
     "scope": "repo read:user read:org"
   },
-  "oauthMetadata": {
+  "oauth_metadata": {
     "resource": "https://api.githubcopilot.com/mcp",
     "authorization_servers": ["https://github.com/login/oauth"],
     "scopes_supported": ["repo", "user", "read:org", "gist", "notifications"],
@@ -483,7 +492,7 @@ Response 200:
   },
   "capabilities": "{\"experimental\":{},\"prompts\":{\"listChanged\":true},\"resources\":{\"subscribe\":false,\"listChanged\":true},\"tools\":{\"listChanged\":true}}",
   "tools": "search_code, create_issue, list_repos, get_pull_requests",
-  "toolFunctions": {
+  "tool_functions": {
     "search_code_mcp_github_copilot": {
       "type": "function",
       "function": {
@@ -523,22 +532,31 @@ Response 200:
       }
     }
   },
-  "initDuration": 150,
+  "init_duration": 150,
   "author": "507f1f77bcf86cd799439011",
-  "scope": "shared_app",
   "status": "active",
   "path": "/mcp/github-copilot",
   "tags": ["github", "version-control"],
-  "numTools": 4,
-  "numStars": 1250,
-  "lastConnected": "2026-01-03T15:54:22.728+00:00",
-  "lastError": null,
-  "errorMessage": null,
-  "createdAt": "2026-01-01T10:00:00Z",
-  "updatedAt": "2026-01-03T15:45:00Z"
+  "num_tools": 4,
+  "num_stars": 1250,
+  "enabled": true,
+  "last_connected": "2026-01-03T15:54:22.728+00:00",
+  "last_error": null,
+  "error_message": null,
+  "permissions": {
+    "VIEW": true,
+    "EDIT": true,
+    "DELETE": true,
+    "SHARE": true
+  },
+  "created_at": "2026-01-01T10:00:00Z",
+  "updated_at": "2026-01-03T15:45:00Z"
 }
 
-**Note:** Detail endpoint includes `toolFunctions` with complete OpenAI function schemas.
+**Note:** 
+- Detail endpoint uses `ServerDetailResponse` schema
+- Includes `tool_functions` with complete OpenAI function schemas
+- All field names use snake_case convention
 ```
 
 **3. Register Server**
@@ -549,38 +567,37 @@ Content-Type: application/json
 
 Request:
 {
-  "serverName": "custom-api-server",
   "title": "Custom API Server",
+  "path": "/mcp/custom-api-server",
   "description": "Internal API integration server",
   "type": "streamable-http",
   "url": "http://api-server:8080/mcp",
-  "apiKey": {
+  "api_key": {
     "key": "sk-123456",
     "source": "user",
     "authorization_type": "bearer"
   },
-  "requiresOAuth": false,
-  "scope": "private_user",
+  "requires_oauth": false,
   "tags": ["api", "custom"]
 }
 
 Response 201:
 {
   "id": "674e1a2b3c4d5e6f7a8b9c0e",
-  "serverName": "custom-api-server",
+  "server_name": "custom-api-server",
   "title": "Custom API Server",
   "description": "Internal API integration server",
   "type": "streamable-http",
   "url": "http://api-server:8080/mcp",
-  "apiKey": {
+  "api_key": {
     "key": "***",
     "source": "user",
     "authorization_type": "bearer"
   },
-  "requiresOAuth": false,
+  "requires_oauth": false,
   "capabilities": "{\"tools\":{\"listChanged\":true}}",
   "tools": "fetch_data, post_data, get_status",
-  "toolFunctions": {
+  "tool_functions": {
     "search_custom_api_server": {
       "type": "function",
       "function": {
@@ -612,25 +629,29 @@ Response 201:
       }
     }
   },
-  "initDuration": 80,
+  "init_duration": 80,
   "author": "507f1f77bcf86cd799439012",
-  "scope": "private_user",
   "status": "active",
   "path": "/mcp/custom-api-server",
   "tags": ["api", "custom"],
-  "numTools": 3,
-  "numStars": 0,
-  "lastConnected": "2026-01-04T16:00:00Z",
-  "createdAt": "2026-01-04T16:00:00Z",
-  "updatedAt": "2026-01-04T16:00:00Z"
+  "num_tools": 3,
+  "num_stars": 0,
+  "enabled": true,
+  "last_connected": "2026-01-04T16:00:00Z",
+  "permissions": {
+    "VIEW": true,
+    "EDIT": true,
+    "DELETE": true,
+    "SHARE": true
+  },
+  "created_at": "2026-01-04T16:00:00Z",
+  "updated_at": "2026-01-04T16:00:00Z"
 }
 
-**Note:** Upon registration, the registry automatically:
-1. Connects to the MCP server at the provided URL
-2. Retrieves the server's capabilities and tool list
-3. Stores `capabilities`, `tools` (comma-separated string), and `toolFunctions` (OpenAI format)
-4. Calculates `numTools` from the tools string
-5. Measures `initDuration` (connection time in ms)
+**Note:** 
+- Upon registration, uses `ServerDetailResponse` schema
+- Automatically connects to the MCP server and retrieves capabilities
+- All field names use snake_case convention
 ```
 
 **4. Update Server**
@@ -649,12 +670,12 @@ Request:
 Response 200:
 {
   "id": "674e1a2b3c4d5e6f7a8b9c0d",
-  "serverName": "github",
+  "server_name": "github",
   "title": "GitHub MCP Server",
   "description": "Updated description - Enhanced GitHub integration",
   "type": "streamable-http",
   "url": "http://github-server:8011",
-  "requiresOAuth": true,
+  "requires_oauth": true,
   "oauth": {
     "authorization_url": "https://github.com/login/oauth/authorize",
     "token_url": "https://github.com/login/oauth/access_token",
@@ -664,18 +685,20 @@ Response 200:
   },
   "capabilities": "{\"experimental\":{},\"prompts\":{\"listChanged\":true},\"resources\":{\"subscribe\":false,\"listChanged\":true},\"tools\":{\"listChanged\":true}}",
   "tools": "search_code, create_issue, list_repos, get_pull_requests",
-  "initDuration": 49,
+  "init_duration": 49,
   "author": "69593baec59bdd2853ad0ff1",
   "scope": "shared_app",
   "status": "active",
   "path": "/mcp/github-copilot",
   "tags": ["github", "version-control", "collaboration"],
-  "numTools": 4,
-  "numStars": 1250,
-  "lastConnected": "2026-01-04T14:30:00Z",
-  "createdAt": "2026-01-01T10:00:00Z",
-  "updatedAt": "2026-01-04T16:05:00Z"
+  "num_tools": 4,
+  "num_stars": 1250,
+  "last_connected": "2026-01-04T14:30:00Z",
+  "created_at": "2026-01-01T10:00:00Z",
+  "updated_at": "2026-01-04T16:05:00Z"
 }
+
+**Note:** Uses `ServerDetailResponse` schema with snake_case fields
 
 Response 409 (Conflict):
 {
@@ -720,12 +743,14 @@ Request:
 Response 200:
 {
   "id": "674e1a2b3c4d5e6f7a8b9c0d",
-  "serverName": "github",
+  "server_name": "github",
+  "path": "/mcp/github",
   "status": "active",
   "enabled": true,
-  "message": "Server enabled successfully",
-  "updatedAt": "2026-01-04T16:10:00Z"
+  "updated_at": "2026-01-04T16:10:00Z"
 }
+
+**Note:** Uses `ServerDetailResponse` schema with snake_case fields
 ```
 
 **7. Get Server Tools**
@@ -736,12 +761,13 @@ Authorization: Bearer <token>
 Response 200:
 {
   "id": "674e1a2b3c4d5e6f7a8b9c0d",
-  "serverName": "github",
+  "server_name": "github",
+  "path": "/mcp/github",
   "tools": [
     {
       "name": "search_code",
       "description": "Search for code across GitHub repositories",
-      "inputSchema": {
+      "input_schema": {
         "type": "object",
         "properties": {
           "query": {
@@ -759,7 +785,7 @@ Response 200:
     {
       "name": "create_issue_github",
       "description": "Create a new issue in a repository",
-      "inputSchema": {
+      "input_schema": {
         "type": "object",
         "properties": {
           "owner": {"type": "string", "description": "Repository owner"},
@@ -771,18 +797,19 @@ Response 200:
       }
     }
   ],
-  "numTools": 4,
+  "num_tools": 4,
   "capabilities": {
     "experimental": {},
     "prompts": {"listChanged": true},
     "resources": {"subscribe": false, "listChanged": true},
     "tools": {"listChanged": true}
-  },
-  "cached": false,
-  "retrievedAt": "2026-01-04T16:15:00Z"
+  }
 }
 
-**Note:** This endpoint returns tools in MCP's native format (with `inputSchema`), which is different from the `toolFunctions` OpenAI format stored in the database.
+**Note:** 
+- Uses `ServerDetailResponse` schema with snake_case fields
+- Returns tools in MCP's native format (with `input_schema`)
+- Different from `tool_functions` OpenAI format stored in the database
 ```
 
 **8. Refresh Server Health**
@@ -793,20 +820,22 @@ Authorization: Bearer <token>
 Response 200:
 {
   "id": "674e1a2b3c4d5e6f7a8b9c0d",
-  "serverName": "github",
+  "server_name": "github",
+  "path": "/mcp/github",
   "status": "active",
-  "lastConnected": "2026-01-04T16:20:00Z",
-  "lastError": null,
-  "errorMessage": null,
-  "numTools": 4,
+  "last_connected": "2026-01-04T16:20:00Z",
+  "last_error": null,
+  "error_message": null,
+  "num_tools": 4,
   "capabilities": "{\"experimental\":{},\"prompts\":{\"listChanged\":true},\"resources\":{\"subscribe\":false,\"listChanged\":true}}",
   "tools": "tavily_search, tavily_extract, tavily_crawl, tavily_map",
-  "initDuration": 168,
-  "message": "Server health check successful",
-  "updatedAt": "2026-01-04T16:20:00Z"
+  "init_duration": 168,
+  "updated_at": "2026-01-04T16:20:00Z"
 }
 
-**Note:** Health refresh reconnects to the MCP server and updates tools/capabilities if they changed.
+**Note:** 
+- Uses `ServerDetailResponse` schema with snake_case fields  
+- Health refresh reconnects to the MCP server and updates tools/capabilities if they changed
 ```
 
 #### Token Management Endpoints

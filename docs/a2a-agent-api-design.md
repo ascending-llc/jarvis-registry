@@ -61,6 +61,10 @@
 }
 ```
 
+**Note:**
+- Uses `AgentListItem` schema for list items
+- All field names use snake_case convention
+
 ---
 
 ### 2. Get Agent Statistics
@@ -155,6 +159,10 @@
 }
 ```
 
+**Note:**
+- Uses `AgentDetailResponse` schema
+- All field names use snake_case convention
+
 **Error**: `404` Agent not found, `403` Access denied
 
 ---
@@ -202,20 +210,48 @@
 **Response**: `201 Created`
 ```json
 {
-  "message": "Agent registered successfully",
-  "agent": {
-    "id": "507f1f77bcf86cd799439011",
-    "path": "/code-reviewer",
-    "name": "Code Review Agent",
-    "url": "https://example.com/agents/code-reviewer",
-    "created_at": "2024-01-15T10:30:00Z"
-  }
+  "id": "507f1f77bcf86cd799439011",
+  "path": "/code-reviewer",
+  "name": "Code Review Agent",
+  "description": "AI-powered code review assistant",
+  "url": "https://example.com/agents/code-reviewer",
+  "version": "1.0.0",
+  "protocol_version": "1.0",
+  "capabilities": {
+    "streaming": true,
+    "push_notifications": false
+  },
+  "skills": [...],
+  "security_schemes": {},
+  "preferred_transport": "HTTP+JSON",
+  "default_input_modes": ["text/plain"],
+  "default_output_modes": ["application/json"],
+  "provider": {
+    "organization": "AI Labs",
+    "url": "https://ailabs.com"
+  },
+  "tags": ["code", "review"],
+  "status": "active",
+  "enabled": false,
+  "permissions": {
+    "VIEW": true,
+    "EDIT": true,
+    "DELETE": true,
+    "SHARE": true
+  },
+  "author": "507f1f77bcf86cd799439012",
+  "well_known": null,
+  "created_at": "2024-01-15T10:30:00Z",
+  "updated_at": "2024-01-15T10:30:00Z"
 }
 ```
 
-**Error**: `400` Validation error, `409` Path already exists
+**Note:**
+- Uses `AgentDetailResponse` schema (not a separate create response)
+- Automatically grants OWNER permission to creator
+- ACL resource type is `ResourceType.AGENT`
 
-**Note**: Automatically grants OWNER permission to creator when creating Agent, ACL resource type is `ResourceType.A2AAGENT`
+**Error**: `400` Validation error, `409` Path already exists
 
 ---
 
@@ -238,15 +274,39 @@
 **Response**: `200 OK`
 ```json
 {
-  "message": "Agent updated successfully",
-  "agent": {
-    "id": "507f1f77bcf86cd799439011",
-    "path": "/code-reviewer",
-    "name": "Updated Agent Name",
-    "updated_at": "2024-01-20T15:45:00Z"
-  }
+  "id": "507f1f77bcf86cd799439011",
+  "path": "/code-reviewer",
+  "name": "Updated Agent Name",
+  "description": "Updated description",
+  "url": "https://example.com/agents/code-reviewer",
+  "version": "1.1.0",
+  "protocol_version": "1.0",
+  "capabilities": {...},
+  "skills": [...],
+  "security_schemes": {...},
+  "preferred_transport": "HTTP+JSON",
+  "default_input_modes": ["text/plain"],
+  "default_output_modes": ["application/json"],
+  "provider": {...},
+  "tags": ["new", "tags"],
+  "status": "active",
+  "enabled": true,
+  "permissions": {
+    "VIEW": true,
+    "EDIT": true,
+    "DELETE": true,
+    "SHARE": true
+  },
+  "author": "507f1f77bcf86cd799439012",
+  "well_known": {...},
+  "created_at": "2024-01-15T10:30:00Z",
+  "updated_at": "2024-01-20T15:45:00Z"
 }
 ```
+
+**Note:**
+- Uses `AgentDetailResponse` schema (not a separate update response)
+- Returns complete agent details after update
 
 **Error**: `404` Agent not found, `403` Access denied
 
@@ -282,14 +342,39 @@
 **Response**: `200 OK`
 ```json
 {
-  "message": "Agent enabled successfully",
-  "agent": {
-    "id": "507f1f77bcf86cd799439011",
-    "path": "/code-reviewer",
-    "enabled": true
-  }
+  "id": "507f1f77bcf86cd799439011",
+  "path": "/code-reviewer",
+  "name": "Code Review Agent",
+  "description": "AI-powered code review assistant",
+  "url": "https://example.com/agents/code-reviewer",
+  "version": "1.0.0",
+  "protocol_version": "1.0",
+  "capabilities": {...},
+  "skills": [...],
+  "security_schemes": {...},
+  "preferred_transport": "HTTP+JSON",
+  "default_input_modes": ["text/plain"],
+  "default_output_modes": ["application/json"],
+  "provider": {...},
+  "tags": ["code", "review"],
+  "status": "active",
+  "enabled": true,
+  "permissions": {
+    "VIEW": true,
+    "EDIT": true,
+    "DELETE": true,
+    "SHARE": true
+  },
+  "author": "507f1f77bcf86cd799439012",
+  "well_known": {...},
+  "created_at": "2024-01-15T10:30:00Z",
+  "updated_at": "2024-01-20T15:45:00Z"
 }
 ```
+
+**Note:**
+- Uses `AgentDetailResponse` schema (not a separate toggle response)
+- Returns complete agent details after toggle
 
 **Error**: `404` Agent not found, `403` Access denied
 
