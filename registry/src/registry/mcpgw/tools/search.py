@@ -104,6 +104,8 @@ def get_tools() -> list[tuple[str, Callable]]:
         query: Annotated[
             str,
             Field(
+                min_length=1,
+                max_length=512,
                 description="Natural language query or keywords (e.g., 'web search', 'github', 'email automation') - leave empty to see all",
             ),
         ] = "",
