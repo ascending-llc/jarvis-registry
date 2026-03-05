@@ -1,4 +1,4 @@
-export type AuthType = 'auto' | 'apiKey' | 'oauth';
+export type AuthType = 'auto' | 'api_key' | 'oauth';
 export type ApiKeySource = 'admin' | 'user';
 export type ApiKeyHeaderFormat = 'bearer' | 'basic' | 'custom';
 export type ServerType = 'streamable-http' | 'sse';

@@ -6,7 +6,7 @@ import { getBasePath } from '@/config';
 
 interface ServerCreationSuccessDialogProps {
   isOpen: boolean;
-  serverData: { serverName: string; path: string };
+  serverData: { server_name: string; path: string };
   onClose: () => void;
 }
 

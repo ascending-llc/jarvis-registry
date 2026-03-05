@@ -12,8 +12,8 @@ export type GET_AUTH_ME_RESPONSE = {
 export type GET_TOKEN_REQUEST = {
   expires_in_hours: number;
   description: string;
-  scopeMethod?: 'current' | 'custom';
-  customScopes?: string;
+  scope_method?: 'current' | 'custom';
+  custom_scopes?: string;
 };
 
 type TOKEN_DATA = {

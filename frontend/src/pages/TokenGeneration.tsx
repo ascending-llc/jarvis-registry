@@ -10,8 +10,8 @@ const TokenGeneration: React.FC = () => {
   const [formData, setFormData] = useState({
     description: '',
     expires_in_hours: 8,
-    scopeMethod: 'current' as 'current' | 'custom',
-    customScopes: '',
+    scope_method: 'current' as 'current' | 'custom',
+    custom_scopes: '',
   });
   const [generatedToken, setGeneratedToken] = useState<string>('');
   const [tokenDetails, setTokenDetails] = useState<any>(null);
@@ -37,8 +37,8 @@ const TokenGeneration: React.FC = () => {
       };
 
       // Handle scopes based on the selected method
-      if (formData.scopeMethod === 'custom') {
-        const customScopesText = formData.customScopes.trim();
+      if (formData.scope_method === 'custom') {
+        const customScopesText = formData.custom_scopes.trim();
         if (customScopesText) {
           try {
             const parsedScopes = JSON.parse(customScopesText);
@@ -98,9 +98,9 @@ const TokenGeneration: React.FC = () => {
   };
 
   const validateCustomScopes = () => {
-    if (formData.scopeMethod === 'custom' && formData.customScopes.trim()) {
+    if (formData.scope_method === 'custom' && formData.custom_scopes.trim()) {
       try {
-        const parsed = JSON.parse(formData.customScopes);
+        const parsed = JSON.parse(formData.custom_scopes);
         if (!Array.isArray(parsed)) {
           return 'Custom scopes must be a JSON array';
         }
@@ -217,11 +217,11 @@ const TokenGeneration: React.FC = () => {
                       <label className='flex items-center space-x-2'>
                         <input
                           type='radio'
-                          name='scopeMethod'
+                          name='scope_method'
                           value='current'
-                          checked={formData.scopeMethod === 'current'}
+                          checked={formData.scope_method === 'current'}
                           onChange={e =>
-                            setFormData(prev => ({ ...prev, scopeMethod: e.target.value as 'current' | 'custom' }))
+                            setFormData(prev => ({ ...prev, scope_method: e.target.value as 'current' | 'custom' }))
                           }
                           className='rounded border-gray-300 text-primary-600 focus:ring-primary-500'
                         />
@@ -236,11 +236,11 @@ const TokenGeneration: React.FC = () => {
                       <label className='flex items-center space-x-2'>
                         <input
                           type='radio'
-                          name='scopeMethod'
+                          name='scope_method'
                           value='custom'
-                          checked={formData.scopeMethod === 'custom'}
+                          checked={formData.scope_method === 'custom'}
                           onChange={e =>
-                            setFormData(prev => ({ ...prev, scopeMethod: e.target.value as 'current' | 'custom' }))
+                            setFormData(prev => ({ ...prev, scope_method: e.target.value as 'current' | 'custom' }))
                           }
                           className='rounded border-gray-300 text-primary-600 focus:ring-primary-500'
                         />
@@ -256,20 +256,20 @@ const TokenGeneration: React.FC = () => {
                     </div>
 
                     {/* Custom Scopes JSON Input */}
-                    {formData.scopeMethod === 'custom' && (
+                    {formData.scope_method === 'custom' && (
                       <div className='mt-3'>
                         <label
-                          htmlFor='customScopes'
+                          htmlFor='custom_scopes'
                           className='block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1'
                         >
                           Custom Scopes (JSON format)
                         </label>
                         <textarea
-                          id='customScopes'
+                          id='custom_scopes'
                           className={`input h-24 font-mono text-xs ${scopeValidationError ? 'border-red-300 focus:border-red-500 focus:ring-red-500' : ''}`}
                           placeholder={`["mcp-servers-restricted/read", "mcp-registry-user"]`}
-                          value={formData.customScopes}
-                          onChange={e => setFormData(prev => ({ ...prev, customScopes: e.target.value }))}
+                          value={formData.custom_scopes}
+                          onChange={e => setFormData(prev => ({ ...prev, custom_scopes: e.target.value }))}
                         />
                         <p className='mt-1 text-xs text-gray-500 dark:text-gray-400'>
                           Enter a JSON array of scope names. Must be a subset of your current scopes.

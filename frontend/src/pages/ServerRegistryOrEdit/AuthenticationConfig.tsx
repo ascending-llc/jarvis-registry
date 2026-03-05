@@ -119,7 +119,7 @@ const AuthenticationConfig: React.FC<AuthenticationConfigProps> = ({
               onChange={val => handleTypeChange(val)}
               options={[
                 { label: 'No Auth', value: 'auto' },
-                { label: 'API Key', value: 'apiKey' },
+                { label: 'API Key', value: 'api_key' },
                 { label: 'OAuth', value: 'oauth' },
               ]}
               disabled={isReadOnly}
@@ -132,7 +132,7 @@ const AuthenticationConfig: React.FC<AuthenticationConfigProps> = ({
             </div>
           )}
 
-          {config.type === 'apiKey' && (
+          {config.type === 'api_key' && (
             <div className='space-y-4 animate-fadeIn'>
               <div>
                 <label className='block text-sm font-medium text-gray-900 dark:text-gray-100 mb-2'>

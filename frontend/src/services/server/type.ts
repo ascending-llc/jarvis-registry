@@ -34,14 +34,14 @@ export type PermissionType = {
 };
 export type Server = {
   id: string;
-  serverName: string;
+  server_name: string;
   title: string;
   description: string;
   type: ServerType;
   url: string;
   enabled: boolean;
-  requiresOAuth: boolean;
-  connectionState: SERVER_CONNECTION;
+  requires_oauth: boolean;
+  connection_state: SERVER_CONNECTION;
   capabilities: string;
   tools: string;
   author: string;
@@ -50,16 +50,16 @@ export type Server = {
   path: string;
   permissions: PermissionType;
   tags: string[];
-  numTools: number;
-  numStars: number;
-  initDuration: number;
-  lastConnected: string;
-  createdAt: string;
-  updatedAt: string;
+  num_tools: number;
+  num_stars: number;
+  init_duration: number;
+  last_connected: string;
+  created_at: string;
+  updated_at: string;
   is_python?: boolean;
   is_official?: boolean;
   oauth?: OauthConfig;
-  apiKey?: ApiKeyConfig;
+  api_key?: ApiKeyConfig;
 };
 
 export type GET_SERVERS_RESPONSE = {
@@ -84,7 +84,7 @@ export type TEST_SERVER_URL_RESPONSE = {
 };
 
 export type CREATE_SERVER_REQUEST = {
-  serverName: string;
+  server_name: string;
   description: string;
   path: string;
   url: string;
@@ -92,13 +92,13 @@ export type CREATE_SERVER_REQUEST = {
   enabled: boolean;
   type: ServerType;
   oauth?: OauthConfig;
-  apiKey?: ApiKeyConfig;
+  api_key?: ApiKeyConfig;
 };
 
 export type Tool = {
   name: string;
   description?: string;
-  inputSchema?: any;
+  input_schema?: any;
 };
 export type GET_SERVER_TOOLS_RESPONSE = {
   id: string;

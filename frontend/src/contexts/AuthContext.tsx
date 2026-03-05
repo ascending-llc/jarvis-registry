@@ -1,15 +1,8 @@
-import axios from 'axios';
 import type React from 'react';
 import { createContext, type ReactNode, useContext, useEffect, useState } from 'react';
 
 import { getBasePath } from '@/config';
 import SERVICES from '@/services';
-
-// Configure axios to include credentials (cookies) with all requests
-axios.defaults.withCredentials = true;
-
-// Add base URL from runtime config
-axios.defaults.baseURL = getBasePath() || '/';
 
 interface User {
   username: string;
