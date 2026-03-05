@@ -151,7 +151,7 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
     return serversList.map((serverInfo: Server) => {
       return {
         id: serverInfo.id,
-        name: serverInfo.serverName || 'Unknown Server',
+        name: serverInfo.server_name || 'Unknown Server',
         title: serverInfo.title,
         permissions: serverInfo.permissions,
         path: serverInfo.path,
@@ -159,16 +159,16 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
         official: serverInfo.is_official || false,
         enabled: serverInfo.enabled !== undefined ? serverInfo.enabled : false,
         tags: serverInfo.tags || [],
-        last_checked_time: serverInfo.lastConnected,
+        last_checked_time: serverInfo.last_connected,
         usersCount: 0,
-        rating: serverInfo.numStars || 0,
+        rating: serverInfo.num_stars || 0,
         status: serverInfo.status || 'unknown', // undefined
-        num_tools: serverInfo.numTools || 0,
+        num_tools: serverInfo.num_tools || 0,
         url: serverInfo.url,
-        num_stars: serverInfo.numStars || 0,
+        num_stars: serverInfo.num_stars || 0,
         is_python: serverInfo.is_python || false,
-        requires_oauth: serverInfo.requiresOAuth,
-        connection_state: serverInfo.connectionState,
+        requires_oauth: serverInfo.requires_oauth,
+        connection_state: serverInfo.connection_state,
       };
     });
   };
@@ -245,8 +245,8 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
   const getServerStatusById = useCallback(async (serverId: string): Promise<SERVER_CONNECTION | undefined> => {
     try {
       const result = await SERVICES.MCP.getServerStatusById(serverId);
-      handleServerUpdate(serverId, { connection_state: result.connectionState });
-      return result.connectionState;
+      handleServerUpdate(serverId, { connection_state: result.connection_state });
+      return result.connection_state;
     } catch (error: any) {
       console.log('error', error);
     }
@@ -278,8 +278,8 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
 
             const result = await SERVICES.SERVER.refreshServerHealth(serverId);
             handleServerUpdate(serverId, {
-              last_checked_time: result.lastConnected,
-              num_tools: result.numTools,
+              last_checked_time: result.last_connected,
+              num_tools: result.num_tools,
               status: result.status || 'unknown',
             });
           }

@@ -128,8 +128,8 @@ const ServerCard: React.FC<ServerCardProps> = ({ server, onEdit, onServerUpdate,
       if (onServerUpdate && result) {
         const updates: Partial<ServerInfo> = {
           status: result.status,
-          last_checked_time: result.lastConnected,
-          num_tools: result.numTools,
+          last_checked_time: result.last_connected,
+          num_tools: result.num_tools,
         };
         onServerUpdate(server.id, updates);
       } else if (onRefreshSuccess) {
@@ -430,11 +430,11 @@ const ServerCard: React.FC<ServerCardProps> = ({ server, onEdit, onServerUpdate,
                     {tool.description && (
                       <p className='text-sm text-gray-600 dark:text-gray-300 mb-2'>{tool.description}</p>
                     )}
-                    {tool.inputSchema && (
+                    {tool.input_schema && (
                       <details className='text-xs'>
                         <summary className='cursor-pointer text-gray-500 dark:text-gray-300'>View Schema</summary>
                         <pre className='mt-2 p-3 bg-gray-50 dark:bg-gray-900 border dark:border-gray-700 rounded overflow-x-auto text-gray-900 dark:text-gray-100'>
-                          {JSON.stringify(tool.inputSchema, null, 2)}
+                          {JSON.stringify(tool.input_schema, null, 2)}
                         </pre>
                       </details>
                     )}

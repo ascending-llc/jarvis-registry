@@ -16,16 +16,16 @@ const DEFAULT_AUTH_CONFIG: AuthConfigType = { type: 'auto', source: 'admin', aut
 const AUTH_ERROR_KEYS = ['key', 'custom_header', 'authorization_url', 'token_url'] as const;
 
 const parseAuthConfig = (result: GET_SERVERS_DETAIL_RESPONSE): AuthConfigType => {
-  if (result.apiKey) {
+  if (result.api_key) {
     return {
-      type: 'apiKey',
-      source: result.apiKey.source,
-      authorization_type: result.apiKey.authorization_type,
-      key: result.apiKey.key,
-      custom_header: result.apiKey.custom_header,
+      type: 'api_key',
+      source: result.api_key.source,
+      authorization_type: result.api_key.authorization_type,
+      key: result.api_key.key,
+      custom_header: result.api_key.custom_header,
     };
   }
-  if (result.oauth || result.requiresOAuth) {
+  if (result.oauth || result.requires_oauth) {
     return {
       type: 'oauth',
       client_id: result.oauth?.client_id,
@@ -33,7 +33,7 @@ const parseAuthConfig = (result: GET_SERVERS_DETAIL_RESPONSE): AuthConfigType =>
       authorization_url: result.oauth?.authorization_url,
       token_url: result.oauth?.token_url,
       scope: result.oauth?.scope,
-      use_dynamic_registration: result.requiresOAuth && !result.oauth,
+      use_dynamic_registration: result.requires_oauth && !result.oauth,
     };
   }
   return { ...DEFAULT_AUTH_CONFIG };
@@ -51,11 +51,11 @@ const processDataByAuthType = (data: ServerConfig, originalData: ServerConfig | 
   };
   switch (data.authConfig.type) {
     case 'auto':
-      return { ...baseData, apiKey: null, oauth: null, requiresOAuth: false };
-    case 'apiKey':
+      return { ...baseData, api_key: null, oauth: null, requires_oauth: false };
+    case 'api_key':
       return {
         ...baseData,
-        apiKey: {
+        api_key: {
           source: data.authConfig.source,
           authorization_type: data.authConfig.authorization_type,
           ...(data.authConfig.source !== 'user' &&
@@ -68,7 +68,7 @@ const processDataByAuthType = (data: ServerConfig, originalData: ServerConfig | 
             : {}),
         },
         oauth: null,
-        requiresOAuth: false,
+        requires_oauth: false,
       };
     case 'oauth':
       return {
@@ -84,8 +84,8 @@ const processDataByAuthType = (data: ServerConfig, originalData: ServerConfig | 
               token_url: data.authConfig.token_url,
               scope: data.authConfig.scope,
             },
-        apiKey: null,
-        requiresOAuth: true,
+        api_key: null,
+        requires_oauth: true,
       };
     default:
       return {};
@@ -117,7 +117,7 @@ const ServerRegistryOrEdit: React.FC = () => {
   const [formData, setFormData] = useState<ServerConfig>(INIT_DATA);
   const [originalData, setOriginalData] = useState<ServerConfig | null>(null);
   const [errors, setErrors] = useState<Record<string, string | undefined>>({});
-  const [serverData, setServerData] = useState<{ serverName: string; path: string }>({ serverName: '', path: '' });
+  const [serverData, setServerData] = useState<{ server_name: string; path: string }>({ server_name: '', path: '' });
   const [showSuccessDialog, setShowSuccessDialog] = useState(false);
 
   const isEditMode = !!id;
@@ -200,7 +200,7 @@ const ServerRegistryOrEdit: React.FC = () => {
 
     // Auth Validation
     const auth = formData.authConfig;
-    if (auth.type === 'apiKey') {
+    if (auth.type === 'api_key') {
       if (auth.source === 'admin' && !auth.key?.trim()) {
         newErrors.key = 'API Key is required';
       }
@@ -268,7 +268,7 @@ const ServerRegistryOrEdit: React.FC = () => {
           path: result.path,
           url: result.url,
           tags: result.tags,
-          last_checked_time: result.updatedAt ?? new Date().toISOString(),
+          last_checked_time: result.updated_at ?? new Date().toISOString(),
         });
       } else {
         const result = await SERVICES.SERVER.createServer(data);
