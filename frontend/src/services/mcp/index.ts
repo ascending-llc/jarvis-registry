@@ -3,9 +3,6 @@ import Request from '@/services/request';
 
 import type * as TYPE from './type';
 
-const getServerStatus: () => Promise<TYPE.GET_SERVER_STATUS_RESPONSE> = async () =>
-  await Request.get(API.getServerStatus);
-
 const getServerStatusById: (id: string) => Promise<TYPE.GET_SERVER_STATUS_BY_ID_RESPONSE> = async id =>
   await Request.get(API.getServerStatusById(id));
 
@@ -25,7 +22,6 @@ const getDiscover: (url: string, config?: object) => Promise<any> = async (url, 
   await Request.get(API.getDiscover, { url }, config);
 
 export default {
-  getServerStatus,
   getServerStatusById,
   getOauthInitiate,
   getOauthReinit,

@@ -10,7 +10,6 @@ const API = {
   refreshToken: '/redirect/refresh',
 
   // mcp
-  getServerStatus: `${MCP_BASE_URL}/connection/status`,
   getServerStatusById: (id: string) => `${MCP_BASE_URL}/connection/status/${id}`,
   getOauthInitiate: (id: string) => `${MCP_BASE_URL}/${id}/oauth/initiate`,
   getOauthReinit: (id: string) => `${MCP_BASE_URL}/${id}/reinitialize`,
@@ -19,6 +18,7 @@ const API = {
   getDiscover: `${MCP_BASE_URL}/oauth/discover`,
 
   // server
+  getSemanticSearch: `${BASE_URL}/search/semantic`,
   getVersion: '/api/version',
   getServers: `${SERVER_BASE_URL}`,
   getServerDetail: (id: string) => `${SERVER_BASE_URL}/${id}`,

@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { useEffect, useState } from 'react';
+import API from '@/services/api';
 
 type EntityType = 'mcp_server' | 'tool' | 'a2a_agent';
 
@@ -110,7 +111,7 @@ export const useSemanticSearch = (query: string, options: UseSemanticSearchOptio
       setError(null);
       try {
         const response = await axios.post<SemanticSearchResponse>(
-          '/api/v1/search/semantic',
+          API.getSemanticSearch,
           {
             query: debouncedQuery,
             entity_types: entityTypes,

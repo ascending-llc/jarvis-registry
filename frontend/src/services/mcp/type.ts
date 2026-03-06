@@ -11,13 +11,6 @@ export type SERVER_STATUS = {
   error?: string;
 };
 
-export type GET_SERVER_STATUS_RESPONSE = {
-  success: boolean;
-  connection_status: {
-    [server_name: string]: SERVER_STATUS;
-  };
-};
-
 export type GET_SERVER_STATUS_BY_ID_RESPONSE = {
   success: boolean;
   connection_state: SERVER_CONNECTION;
