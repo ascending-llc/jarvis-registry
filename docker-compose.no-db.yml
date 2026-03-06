@@ -1,0 +1,171 @@
+version: '3.8'
+
+# This docker-compose file doesn't use containers for our MongoDB, Redis and Weaviate services.
+# Instead, it uses k9s to open port forwarding into our EKS cluster.
+# In the .env file, set the host for all three DB services to "host.docker.internal",
+# which is a special host name on macOS that lets the containers reach the loopback interface of the host machine.
+# Set their ports to the local ports being forwarded into the EKS cluster.
+# Use the AWS CLI command `aws configure export-credentials --format env` to set environment variables for an IAM role that has enough permissions.
+# Use `uv run poe build-artifacts` to generate build artifacts.
+# Finally use `docker compose -f docker-compose.no-db.yml --profile full up --build -d` to start the services locally,
+# and use `docker compose -f docker-compose.no-db.yml --profile full down` to stop them.
+# The registry frontend can be reached at http://localhost/gateway.
+# The URL of the local MCP server is http://localhost/gateway/proxy/mcpgw/mcp.
+# Note that re-auth doesn't work with this set of local services, because the redirect_uri's configured with the IdPs do not match localhost.
+# Obviously, you should only port forward into the DEV environment.
+
+services:
+  # Registry service
+  registry:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.registry
+      args:
+        TOOL_DISCOVERY_MODE: ${TOOL_DISCOVERY_MODE:-external}
+        BUILD_VERSION: ${BUILD_VERSION:-}
+    networks:
+      default:
+        aliases:
+          - mcpgateway-registry
+    environment:
+      # Weaviate needs AWS credentials
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN}
+      # External Registry Configuration
+      - EXTERNAL_REGISTRY_TAGS=${EXTERNAL_REGISTRY_TAGS:-anthropic-registry,workday-asor}
+      - ASOR_ACCESS_TOKEN=${ASOR_ACCESS_TOKEN}
+      - ASOR_CLIENT_CREDENTIALS=${ASOR_CLIENT_CREDENTIALS}
+      # Security Scanning Configuration
+      - SECURITY_SCAN_ENABLED=${SECURITY_SCAN_ENABLED:-true}
+      - SECURITY_SCAN_ON_REGISTRATION=${SECURITY_SCAN_ON_REGISTRATION:-true}
+      - SECURITY_BLOCK_UNSAFE_SERVERS=${SECURITY_BLOCK_UNSAFE_SERVERS:-true}
+      - SECURITY_ANALYZERS=${SECURITY_ANALYZERS:-yara}
+      - SECURITY_SCAN_TIMEOUT=${SECURITY_SCAN_TIMEOUT:-60}
+      - SECURITY_ADD_PENDING_TAG=${SECURITY_ADD_PENDING_TAG:-true}
+      - MCP_SCANNER_LLM_API_KEY=${MCP_SCANNER_LLM_API_KEY}
+      # Sends logs to OpenTelemetry Collector
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+      - OTEL_SERVICE_NAME=mcp-gateway-registry
+    ports:
+      - "7860:7860"
+    volumes:
+      - ./registry/logs:/app/logs
+      - ./security_scans:/app/security_scans
+    depends_on:
+      auth-server:
+        condition: service_started
+    restart: unless-stopped
+    env_file:
+      - .env
+    profiles:
+      - full
+
+  # Registry Frontend
+  registry-frontend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.registry-frontend
+    environment:
+      - NGINX_BASE_PATH=${NGINX_BASE_PATH:-/gateway}
+      - AUTH_SERVER_URL=http://auth-server:8888
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - registry
+    restart: unless-stopped
+    env_file:
+      - .env
+    profiles:
+      - full
+
+  # Auth service (separate and scalable)
+  auth-server:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.auth
+    environment:
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+      - AUTH_PROVIDER=${AUTH_PROVIDER:-entra}  # 'cognito' or 'keycloak' or 'entra'
+      # Microsoft Entra ID (Azure AD) configuration
+      - ENTRA_TENANT_ID=${ENTRA_TENANT_ID}
+      - ENTRA_CLIENT_ID=${ENTRA_CLIENT_ID}
+      - ENTRA_CLIENT_SECRET=${ENTRA_CLIENT_SECRET}
+      # Optional: Claim mappings - customize based on your Entra ID setup
+      - ENTRA_USERNAME_CLAIM=${ENTRA_USERNAME_CLAIM:-preferred_username}
+      - ENTRA_GROUPS_CLAIM=${ENTRA_GROUPS_CLAIM:-groups}
+      - ENTRA_EMAIL_CLAIM=${ENTRA_EMAIL_CLAIM:-upn}
+      - ENTRA_NAME_CLAIM=${ENTRA_NAME_CLAIM:-name}
+      - ENTRA_ROLE_TOKEN_KIND=${ENTRA_ROLE_TOKEN_KIND:-id}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+      - OTEL_SERVICE_NAME=auth-server
+      - REGISTRY_CLIENT_URL=${REGISTRY_CLIENT_URL:-http://registry-frontend}
+      - SCOPES_CONFIG_PATH=/app/scopes.yml
+    ports:
+      - "8888:8888"
+    volumes:
+      - ./auth-server/logs:/app/logs
+      - ./registry-pkgs/src/registry_pkgs/scopes.yml:/app/scopes.yml
+    restart: unless-stopped
+    env_file:
+      - .env
+    profiles:
+      - full
+      - dev
+
+  # OpenTelemetry Collector
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./config/otel-collector-config.yaml:/etc/otel-collector-config.yaml
+    ports:
+      - "4318:4318"   # OTLP HTTP receiver
+      - "4317:4317"   # OTLP gRPC receiver
+      - "8889:8889"   # Prometheus exporter (optional)
+    restart: unless-stopped
+    profiles:
+      - full
+
+  # Prometheus for metrics collection
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    restart: unless-stopped
+    profiles:
+      - full
+
+  # Grafana for metrics visualization
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./config/grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./config/grafana/datasources:/etc/grafana/provisioning/datasources
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+    profiles:
+      - full
+
+volumes:
+  prometheus-data:
+  grafana-data:
