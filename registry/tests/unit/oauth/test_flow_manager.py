@@ -113,7 +113,6 @@ class TestFlowStateManager:
             "token_url": "https://example.com/oauth/token",
         }
 
-        elicitation_id = "abcdefg"
         branding = ClientBranding.CURSOR
         state_metadata = {"client_branding": branding}
 

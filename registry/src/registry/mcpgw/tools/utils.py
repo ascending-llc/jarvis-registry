@@ -277,7 +277,7 @@ class SessionStore:
     _mapping: dict[str, ServerSession]
     _elicitation_order: deque[str]
 
-    def __int__(self, max_session_count: int = 100):
+    def __init__(self, max_session_count: int = 100):
         self._max_session_count = max_session_count
         self._mapping = {}
         self._elicitation_order = deque(maxlen=self._max_session_count)

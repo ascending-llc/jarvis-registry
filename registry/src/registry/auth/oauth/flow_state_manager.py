@@ -75,7 +75,7 @@ class FlowStateManager:
 
     @classmethod
     def encode_state(
-        self, flow_id: str, security_token: str | None = None, *, state_metadata: StateMetadata | None = None
+        cls, flow_id: str, security_token: str | None = None, *, state_metadata: StateMetadata | None = None
     ) -> str:
         """
         Encode state parameter with CSRF protection
@@ -89,7 +89,7 @@ class FlowStateManager:
         # The execution flow reaching here from a tool call handler function means we need a URL mode elicitation,
         # so we generate an UUID for it.
         if state_metadata is not None:
-            state_dict["meta"] = state_metadata
+            state_dict["meta"] = state_metadata.copy()
             state_dict["meta"]["elicitation_id"] = str(uuid4())
 
         state = base64.urlsafe_b64encode(json.dumps(state_dict).encode("utf-8")).decode("utf-8").rstrip("=")
@@ -99,10 +99,10 @@ class FlowStateManager:
         return state
 
     @classmethod
-    def decode_state(self, state: str) -> OAuthFlowState:
+    def decode_state(cls, state: str) -> OAuthFlowState:
         """Decode state parameter"""
 
-        state += "=" * (4 - len(state) % 4)
+        state += "=" * ((-len(state)) % 4)
         try:
             state_dict = json.loads(base64.urlsafe_b64decode(state))
         except Exception:
@@ -143,7 +143,7 @@ class FlowStateManager:
         state_metadata: StateMetadata | None = None,
     ) -> MCPOAuthFlowMetadata:
         """Create OAuth flow metadata"""
-        # Generate secure state parameter (flow_id##random_token)
+        # Generate secure state parameter (base64url encoded JSON string)
         security_token = secrets.token_urlsafe(32)
         state = self.encode_state(flow_id, security_token, state_metadata=state_metadata)
 

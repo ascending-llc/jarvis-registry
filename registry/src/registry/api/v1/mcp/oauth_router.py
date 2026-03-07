@@ -177,7 +177,7 @@ async def oauth_callback(
             logger.error("[MCP OAuth] Missing or invalid state parameter")
             return _redirect_to_page(request, server_path, error_msg="missing_state")
 
-        # 3. Decode flow_id from state (state format: flow_id##security_token)
+        # 3. Decode flow_id from state
         try:
             state_dict = mcp_service.oauth_service.flow_manager.decode_state(state)
             flow_id, security_token = state_dict["flow_id"], state_dict["security_token"]

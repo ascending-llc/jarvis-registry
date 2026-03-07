@@ -85,7 +85,7 @@ class TestStateEncoding:
             assert state is not None
 
             # Decode state (it's base64-encoded JSON)
-            state_padded = state + "=" * (4 - len(state) % 4)
+            state_padded = state + "=" * ((-len(state)) % 4)
             state_decoded = json.loads(base64.urlsafe_b64decode(state_padded).decode())
 
             # Verify resource is preserved
@@ -102,7 +102,7 @@ class TestStateEncoding:
         state = base64.urlsafe_b64encode(json.dumps(state_data).encode()).decode().rstrip("=")
 
         # Decode with padding
-        state_padded = state + "=" * (4 - len(state) % 4)
+        state_padded = state + "=" * ((-len(state)) % 4)
         decoded = json.loads(base64.urlsafe_b64decode(state_padded).decode())
 
         assert decoded["resource"] == resource_url
@@ -135,7 +135,7 @@ class TestStateEncoding:
             state = query_params.get("state", [None])[0]
             assert state is not None
 
-            state_padded = state + "=" * (4 - len(state) % 4)
+            state_padded = state + "=" * ((-len(state)) % 4)
             state_decoded = json.loads(base64.urlsafe_b64decode(state_padded).decode())
 
             # Resource should be None
