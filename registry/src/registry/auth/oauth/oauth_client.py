@@ -92,9 +92,6 @@ class OAuthClient:
         metadata = flow_metadata.metadata
         state = flow_metadata.state
 
-        if not state.startswith(flow_id):
-            logger.warning(f"State format issue: state does not start with flow_id. state={state}, flow_id={flow_id}")
-
         # Create temporary client for URL generation
         client = self._get_client(flow_metadata)
 
