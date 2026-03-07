@@ -5,6 +5,7 @@ import logging
 import secrets
 import time
 from typing import Any
+from uuid import uuid4
 
 from registry_pkgs.database.redis_client import get_redis_client
 
@@ -86,6 +87,7 @@ class FlowStateManager:
 
         if state_metadata is not None:
             state_dict["meta"] = state_metadata
+            state_dict["meta"]["elicitation_id"] = str(uuid4())
 
         state = base64.urlsafe_b64encode(json.dumps(state_dict).encode("utf-8")).decode("utf-8").rstrip("=")
 

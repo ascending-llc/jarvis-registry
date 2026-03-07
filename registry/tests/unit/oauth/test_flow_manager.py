@@ -2,6 +2,7 @@ import base64
 import json
 import time
 from typing import Any
+from uuid import UUID
 
 import pytest
 
@@ -65,15 +66,15 @@ class TestFlowStateManager:
 
         # Encode/decode with flow_id and state_metadata
         flow_id = "test-flow-id"
-        elicitation_id = "abcdefg"
-        state_metadata = {"client_branding": ClientBranding.CLAUDE, "elicitation_id": elicitation_id}
+        state_metadata = {"client_branding": ClientBranding.CLAUDE}
         state = manager.encode_state(flow_id, state_metadata=state_metadata)
         state_dict = manager.decode_state(state)
+        elicitation_id = state_dict["meta"]["elicitation_id"]
 
         assert state_dict["flow_id"] == flow_id
         assert isinstance(state_dict["security_token"], str)
         assert state_dict["meta"]["client_branding"] == ClientBranding.CLAUDE
-        assert state_dict["meta"]["elicitation_id"] == elicitation_id
+        assert UUID(elicitation_id).version == 4
 
     def _prepare_wrong_state(self, dict_: dict[str, Any]) -> str:
         return base64.urlsafe_b64encode(json.dumps(dict_).encode("utf-8")).decode("utf-8").rstrip("=")
@@ -114,7 +115,7 @@ class TestFlowStateManager:
 
         elicitation_id = "abcdefg"
         branding = ClientBranding.CURSOR
-        state_metadata = {"elicitation_id": elicitation_id, "client_branding": branding}
+        state_metadata = {"client_branding": branding}
 
         metadata = manager.create_flow_metadata(
             server_name,
@@ -135,11 +136,12 @@ class TestFlowStateManager:
         assert metadata.client_info.client_id == "test-client-id"
 
         state_dict = manager.decode_state(metadata.state)
+        elicitation_id = state_dict["meta"]["elicitation_id"]
 
         assert state_dict["flow_id"] == flow_id
         assert isinstance(state_dict["security_token"], str)
-        assert state_dict["meta"]["elicitation_id"] == elicitation_id
         assert state_dict["meta"]["client_branding"] == branding
+        assert UUID(elicitation_id).version == 4
 
     def test_create_flow_success(self):
         """Test successful flow creation."""

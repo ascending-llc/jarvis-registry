@@ -283,7 +283,7 @@ class MCPOAuthService:
                 flow_metadata=flow_metadata, code_challenge=code_challenge, flow_id=flow_id
             )
 
-            logger.info(f"Initiated OAuth flow: {flow_id} for {user_id}/{server_id}")
+            logger.info(f"Initiated OAuth flow: {flow_id} for {user_id}/{server_id}, auth_url: {auth_url}")
             return flow_id, auth_url, None
 
         except Exception as e:

@@ -9,6 +9,8 @@ import json
 import logging
 from collections.abc import Callable
 from typing import Annotated, Any
+from urllib.parse import parse_qs, urlsplit
+from uuid import UUID
 
 from httpx_sse import EventSource
 from mcp.server.fastmcp import Context
@@ -26,6 +28,7 @@ from mcp.types import (
 from pydantic import Field
 
 from ...auth.dependencies import UserContextDict
+from ...auth.oauth.flow_state_manager import FlowStateManager
 from ...auth.oauth.types import ClientBranding, StateMetadata
 from ...core.mcp_client import get_session, initialize_mcp_session
 from ...services.server_service import server_service_v1
@@ -155,6 +158,41 @@ def _get_state_metadata(client_params: InitializeRequestParams | None) -> StateM
     elif "cursor" in name:
         return {"client_branding": ClientBranding.CURSOR}
     else:
+        return None
+
+
+def _support_url_elicitation(client_params: InitializeRequestParams | None) -> bool:
+    if client_params is None:
+        return False
+
+    elicitation = client_params.capabilities.elicitation
+    if elicitation is None:
+        return False
+
+    return elicitation.url is not None
+
+
+def _get_elicitation_id(auth_url: str) -> str | None:
+    try:
+        parsed = urlsplit(auth_url)
+
+        qs_dict = parse_qs(parsed.query)
+
+        state_str = qs_dict["state"][0]
+
+        state_dict = FlowStateManager.decode_state(state_str)
+
+        elicitation_id = state_dict["meta"]["elicitation_id"]
+
+        if UUID(elicitation_id).version != 4:
+            logger.error("elicitation_id from the state dictionary is not a valid UUID4 string.")
+
+            return None
+
+        return elicitation_id
+    except Exception:
+        logger.exception("failed to extract elicitation_id from auth_url.")
+
         return None
 
 
