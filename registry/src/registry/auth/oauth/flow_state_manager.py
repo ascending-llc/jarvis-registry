@@ -85,6 +85,9 @@ class FlowStateManager:
 
         state_dict: OAuthFlowState = {"flow_id": flow_id, "security_token": security_token}
 
+        # If state_metadata is not None, it's a dictionary passed all the way down from mcpgw's tool call handler function.
+        # The execution flow reaching here from a tool call handler function means we need a URL mode elicitation,
+        # so we generate an UUID for it.
         if state_metadata is not None:
             state_dict["meta"] = state_metadata
             state_dict["meta"]["elicitation_id"] = str(uuid4())

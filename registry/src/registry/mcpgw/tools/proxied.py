@@ -148,9 +148,9 @@ async def _downstream_tool_call(
         raise InternalServerException(msg) from exc
 
 
-def _get_state_metadata(client_params: InitializeRequestParams | None) -> StateMetadata | None:
+def _get_state_metadata(client_params: InitializeRequestParams | None) -> StateMetadata:
     if client_params is None:
-        return None
+        return {"client_branding": ClientBranding.UNRECOGNIZED}
 
     name = client_params.clientInfo.name.strip().lower()
     if "vscode" in name:
@@ -160,7 +160,7 @@ def _get_state_metadata(client_params: InitializeRequestParams | None) -> StateM
     elif "cursor" in name:
         return {"client_branding": ClientBranding.CURSOR}
     else:
-        return None
+        return {"client_branding": ClientBranding.UNRECOGNIZED}
 
 
 def _support_url_elicitation(client_params: InitializeRequestParams | None) -> bool:

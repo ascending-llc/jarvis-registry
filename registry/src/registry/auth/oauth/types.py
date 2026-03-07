@@ -6,6 +6,7 @@ class ClientBranding(StrEnum):
     VSCODE = "vscode"
     CLAUDE = "claude"
     CURSOR = "cursor"
+    UNRECOGNIZED = "unrecognized"
 
 
 class StateMetadata(TypedDict, total=False):
