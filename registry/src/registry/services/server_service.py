@@ -24,6 +24,7 @@ from registry_pkgs.database.decorators import get_current_session
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer as MCPServerDocument
 from registry_pkgs.vector.repositories.mcp_server_repository import get_mcp_server_repo
 
+from ..auth.oauth.types import StateMetadata
 from ..core.mcp_client import get_oauth_metadata_from_server, get_tools_from_server_with_server_info
 from ..core.telemetry_decorators import track_tool_discovery
 from ..schemas.errors import (
@@ -76,7 +77,12 @@ def _build_server_info_for_mcp_client(config: dict[str, Any], tags: list[str]) -
     return server_info
 
 
-async def build_complete_headers_for_server(server: MCPServerDocument, user_id: str | None = None) -> dict[str, str]:
+async def build_complete_headers_for_server(
+    server: MCPServerDocument,
+    user_id: str | None = None,
+    *,
+    state_metadata: StateMetadata | None = None,
+) -> dict[str, str]:
     """
     Build complete HTTP headers with ALL authentication types.
     Consolidates OAuth, apiKey, and custom header logic in one place.
@@ -156,7 +162,9 @@ async def build_complete_headers_for_server(server: MCPServerDocument, user_id: 
 
         # Get OAuth token (handles refresh automatically)
         oauth_service = await get_oauth_service()
-        access_token, auth_url, error = await oauth_service.get_valid_access_token(user_id=user_id, server=server)
+        access_token, auth_url, error = await oauth_service.get_valid_access_token(
+            user_id=user_id, server=server, state_metadata=state_metadata
+        )
 
         if auth_url:
             raise OAuthReAuthRequiredError(

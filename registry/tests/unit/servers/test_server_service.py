@@ -490,12 +490,18 @@ class TestBuildCompleteHeaders:
             oauth_service.get_valid_access_token = AsyncMock(return_value=("access-token-123", None, None))
             mock_oauth_svc.return_value = oauth_service
 
-            headers = await build_complete_headers_for_server(mock_oauth_server, "user-123")
+            state_metadata = {"client_branding": "vscode"}
+
+            headers = await build_complete_headers_for_server(
+                mock_oauth_server, "user-123", state_metadata=state_metadata
+            )
 
             assert headers["Authorization"] == "Bearer access-token-123"
             assert headers["Content-Type"] == "application/json"
             assert headers["Accept"] == "application/json"
-            oauth_service.get_valid_access_token.assert_called_once_with(user_id="user-123", server=mock_oauth_server)
+            oauth_service.get_valid_access_token.assert_called_once_with(
+                user_id="user-123", server=mock_oauth_server, state_metadata=state_metadata
+            )
 
     @pytest.mark.asyncio
     async def test_oauth_server_missing_user_id(self, mock_oauth_server):

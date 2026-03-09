@@ -1,8 +1,13 @@
+import base64
+import json
 import time
+from typing import Any
+from uuid import UUID
 
 import pytest
 
 from registry.auth.oauth.flow_state_manager import FlowStateManager
+from registry.auth.oauth.types import ClientBranding
 from registry.schemas.enums import OAuthFlowStatus
 
 
@@ -39,27 +44,60 @@ class TestFlowStateManager:
     def test_encode_decode_state(self):
         """Test encoding and decoding state parameter."""
         manager = FlowStateManager()
+
+        # Encode/decode with flow_id
         flow_id = "test-flow-id"
-
-        # Encode state
         state = manager.encode_state(flow_id)
-        assert manager.STATE_SEPARATOR in state
+        state_dict = manager.decode_state(state)
 
-        # Decode state
-        decoded_flow_id, security_token = manager.decode_state(state)
-        assert decoded_flow_id == flow_id
-        assert len(security_token) > 0
+        assert state_dict["flow_id"] == flow_id
+        assert isinstance(state_dict["security_token"], str)
+        assert "meta" not in state_dict
+
+        # Encode/decode with flow_id and security_token
+        flow_id = "test-flow-id"
+        security_token = "1234567890"
+        state = manager.encode_state(flow_id, security_token)
+        state_dict = manager.decode_state(state)
+
+        assert state_dict["flow_id"] == flow_id
+        assert state_dict["security_token"] == security_token
+        assert "meta" not in state_dict
+
+        # Encode/decode with flow_id and state_metadata
+        flow_id = "test-flow-id"
+        state_metadata = {"client_branding": ClientBranding.CLAUDE}
+        state = manager.encode_state(flow_id, state_metadata=state_metadata)
+        state_dict = manager.decode_state(state)
+        elicitation_id = state_dict["meta"]["elicitation_id"]
+
+        assert state_dict["flow_id"] == flow_id
+        assert isinstance(state_dict["security_token"], str)
+        assert state_dict["meta"]["client_branding"] == ClientBranding.CLAUDE
+        assert UUID(elicitation_id).version == 4
+
+    def _prepare_wrong_state(self, dict_: dict[str, Any]) -> str:
+        return base64.urlsafe_b64encode(json.dumps(dict_).encode("utf-8")).decode("utf-8").rstrip("=")
 
     def test_decode_state_invalid_format(self):
         """Test decoding invalid state format."""
         manager = FlowStateManager()
 
-        with pytest.raises(ValueError, match="Invalid state format"):
-            manager.decode_state("invalid-state-without-separator")
+        with pytest.raises(ValueError, match="state is not valid base64url encoded JSON string"):
+            manager.decode_state("not encoded JSON string")
+
+        with pytest.raises(ValueError, match="flow_id key is not in"):
+            manager.decode_state(self._prepare_wrong_state({"security_token": "1234567890"}))
+
+        with pytest.raises(ValueError, match="security_token key is not in"):
+            manager.decode_state(
+                self._prepare_wrong_state({"flow_id": "abc123", "meta": {"client_branding": "vscode"}})
+            )
 
     def test_create_flow_metadata(self):
         """Test creating flow metadata."""
         manager = FlowStateManager()
+
         server_name = "test-server"
         server_path = "/test-server"
         server_id = "test-server"
@@ -75,8 +113,19 @@ class TestFlowStateManager:
             "token_url": "https://example.com/oauth/token",
         }
 
+        branding = ClientBranding.CURSOR
+        state_metadata = {"client_branding": branding}
+
         metadata = manager.create_flow_metadata(
-            server_name, server_path, server_id, user_id, authorization_url, code_verifier, oauth_config, flow_id
+            server_name,
+            server_path,
+            server_id,
+            user_id,
+            authorization_url,
+            code_verifier,
+            oauth_config,
+            flow_id,
+            state_metadata=state_metadata,
         )
 
         assert metadata.server_name == server_name
@@ -84,6 +133,14 @@ class TestFlowStateManager:
         assert metadata.authorization_url == authorization_url
         assert metadata.code_verifier == code_verifier
         assert metadata.client_info.client_id == "test-client-id"
+
+        state_dict = manager.decode_state(metadata.state)
+        elicitation_id = state_dict["meta"]["elicitation_id"]
+
+        assert state_dict["flow_id"] == flow_id
+        assert isinstance(state_dict["security_token"], str)
+        assert state_dict["meta"]["client_branding"] == branding
+        assert UUID(elicitation_id).version == 4
 
     def test_create_flow_success(self):
         """Test successful flow creation."""

@@ -1,22 +1,26 @@
 import asyncio
+import base64
+import json
 import logging
 import secrets
 import time
 from typing import Any
+from uuid import uuid4
 
-from registry.auth.oauth.oauth_utils import parse_scope, scope_to_string
-from registry.auth.oauth.redis_flow_storage import RedisFlowStorage
-from registry.models.oauth_models import (
+from registry_pkgs.database.redis_client import get_redis_client
+
+from ...auth.oauth.oauth_utils import parse_scope, scope_to_string
+from ...auth.oauth.redis_flow_storage import RedisFlowStorage
+from ...auth.oauth.types import OAuthFlowState, StateMetadata
+from ...core.config import settings
+from ...models.oauth_models import (
     MCPOAuthFlowMetadata,
     OAuthClientInformation,
     OAuthFlow,
     OAuthMetadata,
     OAuthTokens,
 )
-from registry.schemas.enums import OAuthFlowStatus
-from registry_pkgs.database.redis_client import get_redis_client
-
-from ...core.config import settings
+from ...schemas.enums import OAuthFlowStatus
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +30,6 @@ class FlowStateManager:
     OAuth Flow State Manager
     """
 
-    STATE_SEPARATOR = "##"  # Separator for state parameter (flow_id##security_token)
     DEFAULT_FLOW_TTL = 600  # Flow time-to-live in seconds (10 minutes)
 
     def __init__(self, fallback_to_memory: bool = True):
@@ -70,33 +73,61 @@ class FlowStateManager:
         """
         return f"{user_id}:{server_id}"
 
-    def encode_state(self, flow_id: str, security_token: str | None = None) -> str:
+    @classmethod
+    def encode_state(
+        cls, flow_id: str, security_token: str | None = None, *, state_metadata: StateMetadata | None = None
+    ) -> str:
         """
         Encode state parameter with CSRF protection
         """
         if security_token is None:
             security_token = secrets.token_urlsafe(32)
 
-        state = f"{flow_id}{self.STATE_SEPARATOR}{security_token}"
+        state_dict: OAuthFlowState = {"flow_id": flow_id, "security_token": security_token}
+
+        # If state_metadata is not None, it's a dictionary passed all the way down from mcpgw's tool call handler function.
+        # The execution flow reaching here from a tool call handler function means we need a URL mode elicitation,
+        # so we generate an UUID for it.
+        if state_metadata is not None:
+            state_dict["meta"] = state_metadata.copy()
+            state_dict["meta"]["elicitation_id"] = str(uuid4())
+
+        state = base64.urlsafe_b64encode(json.dumps(state_dict).encode("utf-8")).decode("utf-8").rstrip("=")
+
         logger.debug(f"Encoded state: flow_id={flow_id}, token_length={len(security_token)}")
+
         return state
 
-    def decode_state(self, state: str) -> tuple[str, str]:
+    @classmethod
+    def decode_state(cls, state: str) -> OAuthFlowState:
         """Decode state parameter"""
-        if self.STATE_SEPARATOR not in state:
-            error_msg = f"Invalid state format: missing separator '{self.STATE_SEPARATOR}'"
-            logger.error(error_msg)
+
+        state += "=" * ((-len(state)) % 4)
+        try:
+            state_dict = json.loads(base64.urlsafe_b64decode(state))
+        except Exception:
+            error_msg = "state is not valid base64url encoded JSON string."
+            logger.exception(error_msg)
+
             raise ValueError(error_msg)
 
-        parts = state.split(self.STATE_SEPARATOR, 1)
-        if len(parts) != 2:
-            error_msg = f"Invalid state format: expected 2 parts, got {len(parts)}"
+        if "flow_id" not in state_dict or not isinstance(state_dict["flow_id"], str):
+            error_msg = "The flow_id key is not in decoded state dictionary."
             logger.error(error_msg)
+
             raise ValueError(error_msg)
 
-        flow_id, security_token = parts
-        logger.debug(f"Decoded state: flow_id={flow_id}, token_length={len(security_token)}")
-        return flow_id, security_token
+        if "security_token" not in state_dict or not isinstance(state_dict["security_token"], str):
+            error_msg = "The security_token key is not in decoded state dictionary."
+            logger.error(error_msg)
+
+            raise ValueError(error_msg)
+
+        logger.debug(
+            f"Decoded state: flow_id={state_dict['flow_id']}, token_length={len(state_dict['security_token'])}"
+        )
+
+        return state_dict
 
     def create_flow_metadata(
         self,
@@ -108,11 +139,13 @@ class FlowStateManager:
         code_verifier: str,
         oauth_config: dict[str, Any],
         flow_id: str,
+        *,
+        state_metadata: StateMetadata | None = None,
     ) -> MCPOAuthFlowMetadata:
         """Create OAuth flow metadata"""
-        # Generate secure state parameter (flow_id##random_token)
+        # Generate secure state parameter (base64url encoded JSON string)
         security_token = secrets.token_urlsafe(32)
-        state = self.encode_state(flow_id, security_token)
+        state = self.encode_state(flow_id, security_token, state_metadata=state_metadata)
 
         server_path = server_path.strip()
 

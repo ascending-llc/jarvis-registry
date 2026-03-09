@@ -117,7 +117,6 @@ def create_mcp_app() -> FastMCP:
 
     mcp = FastMCP(
         "JarvisRegistry",
-        json_response=True,
         lifespan=mcp_lifespan,
         event_store=InMemoryEventStore(max_events_per_stream=50, max_streams=500),
         instructions=_SYSTEM_INSTRUCTIONS,

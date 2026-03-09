@@ -565,8 +565,8 @@ async def oauth2_callback(
         # Try to decode state to extract resource
         resource = None
         try:
-            pad = "=" * (-len(state) % 4)
-            state_decoded = __import__("json").loads(base64.urlsafe_b64decode(state + pad).decode())
+            pad = "=" * ((-len(state)) % 4)
+            state_decoded = json.loads(base64.urlsafe_b64decode(state + pad).decode())
             resource = state_decoded.get("resource")
         except Exception as e:
             logger.debug(f"Failed to decode state parameter: {e}")

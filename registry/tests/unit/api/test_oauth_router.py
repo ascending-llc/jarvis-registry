@@ -238,7 +238,10 @@ class TestOAuthRouter:
         """Test successful OAuth callback"""
 
         # Mock the flow_manager methods - note: decode_state is NOT async in the actual code
-        mock_mcp_service.oauth_service.flow_manager.decode_state = lambda state: ("test_user-flow123", "security_token")
+        mock_mcp_service.oauth_service.flow_manager.decode_state = lambda _: {
+            "flow_id": "test_user-flow123",
+            "security_token": "security_token",
+        }
 
         # Mock get_flow to return a flow with user_id and server_id - note: get_flow is NOT async in the actual code
         mock_flow = Mock()
@@ -312,7 +315,10 @@ class TestOAuthRouter:
         from registry.schemas.enums import OAuthFlowStatus
 
         # Mock decode_state - note: decode_state is NOT async in the actual code
-        mock_mcp_service.oauth_service.flow_manager.decode_state = lambda state: ("test_user-flow123", "security_token")
+        mock_mcp_service.oauth_service.flow_manager.decode_state = lambda _: {
+            "flow_id": "test_user-flow123",
+            "security_token": "security_token",
+        }
 
         # Mock get_flow to return completed flow - note: get_flow is NOT async in the actual code
         mock_flow = Mock()

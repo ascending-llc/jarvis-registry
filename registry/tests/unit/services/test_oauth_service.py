@@ -383,7 +383,9 @@ class TestMCPOAuthService:
         mock_flow.server_name = "test_server"
         mock_flow.server_id = "507f1f77bcf86cd799439011"
 
-        oauth_service.flow_manager.decode_state = Mock(return_value=("test_flow_id", "security_token"))
+        oauth_service.flow_manager.decode_state = Mock(
+            return_value=({"flow_id": "test_flow_id", "security_token": "security_token"})
+        )
         oauth_service.flow_manager.get_flow = Mock(return_value=mock_flow)
         oauth_service.flow_manager.is_flow_expired = Mock(return_value=False)
         oauth_service.flow_manager.complete_flow = Mock()

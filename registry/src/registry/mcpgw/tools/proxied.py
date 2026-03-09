@@ -9,15 +9,28 @@ import json
 import logging
 from collections.abc import Callable
 from typing import Annotated, Any
+from urllib.parse import parse_qs, urlsplit
+from uuid import UUID
 
 from httpx_sse import EventSource
 from mcp.server.fastmcp import Context
 from mcp.server.session import ServerSession
-from mcp.shared.exceptions import McpError
-from mcp.types import AnyUrl, CallToolResult, EmbeddedResource, ErrorData, TextContent, TextResourceContents
+from mcp.shared.exceptions import McpError, UrlElicitationRequiredError
+from mcp.types import (
+    AnyUrl,
+    CallToolResult,
+    ElicitRequestURLParams,
+    EmbeddedResource,
+    ErrorData,
+    InitializeRequestParams,
+    TextContent,
+    TextResourceContents,
+)
 from pydantic import Field
 
 from ...auth.dependencies import UserContextDict
+from ...auth.oauth.flow_state_manager import FlowStateManager
+from ...auth.oauth.types import ClientBranding, StateMetadata
 from ...core.mcp_client import get_session, initialize_mcp_session
 from ...services.server_service import server_service_v1
 from ...utils.otel_metrics import record_server_request
@@ -27,9 +40,10 @@ from ..exceptions import (
     InternalServerException,
     McpGatewayException,
     MisimplementedSpecException,
+    UrlElicitationRequiredException,
 )
 from .types import get_meta_field
-from .utils import build_authenticated_headers, build_target_url, forward_notification, parse_data_field
+from .utils import build_authenticated_headers, build_target_url, forward_notification, parse_data_field, session_store
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +148,69 @@ async def _downstream_tool_call(
         raise InternalServerException(msg) from exc
 
 
+def _get_state_metadata(client_params: InitializeRequestParams | None) -> StateMetadata:
+    """
+    Check if client is one of the three brands: VS Code, Claude, and Cursor.
+    If yes, relay this info all the way to frontend for it to use the deep link technology with them.
+    """
+
+    if client_params is None:
+        return {"client_branding": ClientBranding.UNRECOGNIZED}
+
+    name = client_params.clientInfo.name.strip().lower()
+    if "vscode" in name:
+        return {"client_branding": ClientBranding.VSCODE}
+    elif "claude" in name:
+        return {"client_branding": ClientBranding.CLAUDE}
+    elif "cursor" in name:
+        return {"client_branding": ClientBranding.CURSOR}
+    else:
+        return {"client_branding": ClientBranding.UNRECOGNIZED}
+
+
+def _support_url_elicitation(client_params: InitializeRequestParams | None) -> bool:
+    """
+    Report if MCP client supports URL mode elicitation by checking its capabilities.
+    """
+
+    if client_params is None:
+        return False
+
+    elicitation = client_params.capabilities.elicitation
+    if elicitation is None:
+        return False
+
+    return elicitation.url is not None
+
+
+def _get_elicitation_id(auth_url: str) -> str | None:
+    """
+    Parse the auth_url to obtain the elicitation_id from the "state" query string parameter.
+    """
+
+    try:
+        parsed = urlsplit(auth_url)
+
+        qs_dict = parse_qs(parsed.query)
+
+        state_str = qs_dict["state"][0]
+
+        state_dict = FlowStateManager.decode_state(state_str)
+
+        elicitation_id = state_dict["meta"]["elicitation_id"]
+
+        if UUID(elicitation_id).version != 4:
+            logger.error("elicitation_id from the state dictionary is not a valid UUID4 string.")
+
+            return None
+
+        return elicitation_id
+    except Exception:
+        logger.exception("failed to extract elicitation_id from auth_url.")
+
+        return None
+
+
 async def execute_tool_impl(
     ctx: Context[ServerSession, McpAppContext],
     tool_name: str,
@@ -152,6 +229,7 @@ async def execute_tool_impl(
     Returns: CallToolResult
 
     Raises:
+        UrlElicitationRequiredError: The `mcp` package turns this into a URL mode elicitation error response to client.
         McpGatewayException: All classifiable exceptions are raised as subclasses of McpGatewayException.
             Caller of this function should filter on the subclasses to deal with specific exceptions differently.
             E.g. catch a UrlElicitationRequiredException in order to return a URL mode elicitation to client.
@@ -189,6 +267,8 @@ async def execute_tool_impl(
         # Check if server requires initialization (default True for safety/compatibility)
         requires_init = server.config.get("requiresInit", True)
 
+        state_metadata = _get_state_metadata(ctx.session.client_params)
+
         # Session management logic - only if server requires initialization
         session_key = None
         stored_session_id = None
@@ -210,6 +290,7 @@ async def execute_tool_impl(
                     server=server,
                     auth_context=user_context,
                     additional_headers=additional_headers,
+                    state_metadata=state_metadata,
                 )
                 # Get transport type from server config (default to streamable-http)
                 transport_type = server.config.get("type", "streamable-http")
@@ -224,7 +305,10 @@ async def execute_tool_impl(
 
         # Build final authenticated headers with session ID (if applicable)
         headers = await build_authenticated_headers(
-            server=server, auth_context=user_context, additional_headers=additional_headers
+            server=server,
+            auth_context=user_context,
+            additional_headers=additional_headers,
+            state_metadata=state_metadata,
         )
 
         # Build MCP JSON-RPC request
@@ -251,6 +335,41 @@ async def execute_tool_impl(
             return CallToolResult.model_validate(resp_obj["result"])
         else:
             raise MisimplementedSpecException("Downstream MCP did not return a JSONRPCResponse message.")
+    except UrlElicitationRequiredException as exc:
+        auth_url, server_name = exc.auth_url, exc.server_name
+
+        template = (
+            f"In order to make tool calls to the '{server_name}' MCP server, the client must first perform "
+            "out-of-band re-authorization in a browser window. Please direct the client to open the {} "
+            "in a browser window, finish re-authorization, and come back to retry the same tool call again."
+        )
+
+        elicitation_id = _get_elicitation_id(auth_url)
+        if elicitation_id is not None and _support_url_elicitation(ctx.session.client_params):
+            msg = template.format("provided URL")
+
+            logger.info(f"sending back the URL mode elicitation error response with ID {elicitation_id}.")
+
+            session_store.append(elicitation_id, ctx.session)
+
+            raise UrlElicitationRequiredError(
+                message=msg,
+                elicitations=[ElicitRequestURLParams(elicitationId=elicitation_id, url=auth_url, message=msg)],
+            )
+
+        logger.info(
+            "Client doesn't support URL mode elicitation. Sending back a tool call result to prompt LLM for re-auth."
+        )
+
+        return CallToolResult(
+            content=[
+                TextContent(
+                    type="text",
+                    text=template.format(f"URL `{auth_url}`"),
+                )
+            ],
+            isError=True,
+        )
     except (McpGatewayException, McpError):
         # These exceptions have been logged and should just bubble up to the caller as a way of communication.
         raise

@@ -6,14 +6,16 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse, RedirectResponse
 
-from registry.auth.dependencies import CurrentUser
-from registry.auth.oauth.reconnection import get_reconnection_manager
-from registry.constants import REGISTRY_CONSTANTS
-from registry.core.mcp_client import get_oauth_metadata_from_server
-from registry.schemas.enums import ConnectionState, OAuthFlowStatus
-from registry.services.oauth.mcp_service import MCPService, get_mcp_service
-from registry.services.oauth.token_service import token_service
-from registry.services.server_service import server_service_v1
+from ....auth.dependencies import CurrentUser
+from ....auth.oauth.reconnection import get_reconnection_manager
+from ....auth.oauth.types import ClientBranding
+from ....constants import REGISTRY_CONSTANTS
+from ....core.mcp_client import get_oauth_metadata_from_server
+from ....mcpgw.tools.utils import session_store
+from ....schemas.enums import ConnectionState, OAuthFlowStatus
+from ....services.oauth.mcp_service import MCPService, get_mcp_service
+from ....services.oauth.token_service import token_service
+from ....services.server_service import server_service_v1
 
 logger = logging.getLogger(__name__)
 
@@ -175,9 +177,10 @@ async def oauth_callback(
             logger.error("[MCP OAuth] Missing or invalid state parameter")
             return _redirect_to_page(request, server_path, error_msg="missing_state")
 
-        # 3. Decode flow_id from state (state format: flow_id##security_token)
+        # 3. Decode flow_id from state
         try:
-            flow_id, security_token = mcp_service.oauth_service.flow_manager.decode_state(state)
+            state_dict = mcp_service.oauth_service.flow_manager.decode_state(state)
+            flow_id, security_token = state_dict["flow_id"], state_dict["security_token"]
             logger.info(
                 f"[MCP OAuth] Callback received: server={server_path}, "
                 f"flow_id={flow_id}, code={'present' if code else 'missing'}, "
@@ -244,8 +247,29 @@ async def oauth_callback(
         except Exception as error:
             logger.error(f"[MCP OAuth] Failed to reconnect {server_path} after OAuth, but tokens are saved: {error}")
 
-        # 6. Redirect to success page
-        return _redirect_to_page(request, server_path, flag="success")
+        # 6. If the flow started from an URL mode elicitation by mcpgw, make a best-effort notification to client.
+        client_branding: ClientBranding | None = None
+        try:
+            if "meta" in state_dict and "elicitation_id" in state_dict["meta"]:
+                client_branding = state_dict["meta"].get("client_branding", None)
+
+                elicitation_id = state_dict["meta"]["elicitation_id"]
+
+                session = session_store.pop(elicitation_id)
+
+                if session is not None:
+                    await session.send_elicit_complete(elicitation_id)
+
+                    logger.info(
+                        f"successfully scheduled sending elicitation/complete notification for elicitation_id {elicitation_id}"
+                    )
+                else:
+                    logger.info(f"could not find session object for elicitation_id {elicitation_id}")
+        except Exception:
+            logger.exception("failed to send elicitation/complete notification to client.")
+
+        # 7. Redirect to success page
+        return _redirect_to_page(request, server_path, flag="success", client_branding=client_branding)
 
     except Exception as e:
         logger.error(f"[MCP OAuth] OAuth callback error: {str(e)}", exc_info=True)
@@ -488,7 +512,12 @@ async def delete_oauth_tokens(
 
 
 def _redirect_to_page(
-    request: Request, server_path: str, flag: str = "error", error_msg: str = None
+    request: Request,
+    server_path: str,
+    flag: str = "error",
+    error_msg: str | None = None,
+    *,
+    client_branding: ClientBranding | None = None,
 ) -> RedirectResponse:
     """
     Generate a response that redirects to frontend OAuth callback page.
@@ -504,6 +533,9 @@ def _redirect_to_page(
     if error_msg and flag == "error":
         encoded_error = quote(str(error_msg))
         redirect_url += f"&error={encoded_error}"
+
+    if client_branding is not None:
+        redirect_url += f"&clientBranding={quote(client_branding)}"
 
     logger.info(f"[OAuth Redirect] Redirecting to {flag} page: {redirect_url}")
     return RedirectResponse(url=redirect_url)

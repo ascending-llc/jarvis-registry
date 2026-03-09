@@ -31,10 +31,24 @@ const OAuthCallback: React.FC = () => {
   const type = useMemo(() => searchParams.get('type') || 'success', [searchParams]);
   const serverPath = useMemo(() => searchParams.get('serverPath') || 'Connectors', [searchParams]);
   const error = useMemo(() => searchParams.get('error') || 'Unknown error occurred', [searchParams]);
+  const clientBranding = useMemo(() => searchParams.get('clientBranding') ?? '', [searchParams]);
 
   const goToDashboard = useCallback(() => {
     navigate('/');
   }, [navigate]);
+
+  // Handle deep link for supported clients (cursor, vscode, claude)
+  useEffect(() => {
+    if (type === 'success' && ['cursor', 'vscode', 'claude'].includes(clientBranding)) {
+      const deepLinkTimer = setTimeout(() => {
+        const link = document.createElement('a');
+        link.href = `${clientBranding}://`;
+        link.click();
+      }, 1000); // Give user time to see success message
+
+      return () => clearTimeout(deepLinkTimer);
+    }
+  }, [type, clientBranding]);
 
   useEffect(() => {
     const timer = setInterval(() => {

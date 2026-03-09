@@ -347,3 +347,6 @@ image-manifest.json
 
 # Playground for quick code experimentation
 /adhoc*.py
+
+# Misc. files
+/docker-compose.no-db.yml

@@ -30,4 +30,6 @@ exclude-signatures = [
     {signature = '5decd3cef441ca7cf7b3171542c5302e6b55ffe95ea32c7101b01c1015e74473', reason = 'example opaque mock server_id is not credential'},
     {signature = '2ab1609c726cf6d179bb8091a606020587dd28ab1d28c46cb27c2223d99ab9a3', reason = 'example opaque mock server_id is not credential'},
     {signature = '901d9ee1f7f3404557a55381876d39151a85c4d2e349e1ce7924578b7b07e557', reason = 'example opaque mock server_id is not credential'},
+    {signature = 'd22e04bb6ed506bbebb2c79f9b93b358e60591a541a7bc6fe0db5300f0c3079a', reason = 'innocuous OTEL_SERVICE_NAME env var'},
+    {signature = '9bc8d7e10240b313c245008330bcf1ce1cfaaa7b02a268461b4d7907772c838a', reason = 'example opaque mock server_id is not credential'},
 ]

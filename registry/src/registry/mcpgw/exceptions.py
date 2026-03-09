@@ -25,11 +25,13 @@ class UrlElicitationRequiredException(McpGatewayException):
     """
 
     auth_url: str
+    server_name: str
 
-    def __init__(self, msg: str, /, *, auth_url: str):
+    def __init__(self, msg: str, /, *, auth_url: str, server_name: str):
         super().__init__(msg)
 
         self.auth_url = auth_url
+        self.server_name = server_name
 
 
 class DownstreamHttpFailureException(McpGatewayException):
