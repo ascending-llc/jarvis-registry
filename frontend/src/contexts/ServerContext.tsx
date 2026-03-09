@@ -16,16 +16,16 @@ export interface ServerInfo {
   official?: boolean;
   enabled: boolean;
   tags?: string[];
-  last_checked_time?: string;
+  lastCheckedTime?: string;
   usersCount?: number;
   rating?: number;
   status?: 'active' | 'inactive' | 'error';
-  num_tools?: number;
+  numTools?: number;
   url?: string;
-  num_stars?: number;
-  is_python?: boolean;
-  connection_state: SERVER_CONNECTION;
-  requires_oauth: boolean;
+  numStars?: number;
+  isPython?: boolean;
+  connectionState: SERVER_CONNECTION;
+  requiresOauth: boolean;
 }
 
 interface Agent {
@@ -151,24 +151,24 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
     return serversList.map((serverInfo: Server) => {
       return {
         id: serverInfo.id,
-        name: serverInfo.server_name || 'Unknown Server',
+        name: serverInfo.serverName || 'Unknown Server',
         title: serverInfo.title,
         permissions: serverInfo.permissions,
         path: serverInfo.path,
         description: serverInfo.description || '',
-        official: serverInfo.is_official || false,
+        official: serverInfo.isOfficial || false,
         enabled: serverInfo.enabled !== undefined ? serverInfo.enabled : false,
         tags: serverInfo.tags || [],
-        last_checked_time: serverInfo.last_connected,
+        lastCheckedTime: serverInfo.lastConnected,
         usersCount: 0,
-        rating: serverInfo.num_stars || 0,
+        rating: serverInfo.numStars || 0,
         status: serverInfo.status || 'unknown', // undefined
-        num_tools: serverInfo.num_tools || 0,
+        numTools: serverInfo.numTools || 0,
         url: serverInfo.url,
-        num_stars: serverInfo.num_stars || 0,
-        is_python: serverInfo.is_python || false,
-        requires_oauth: serverInfo.requires_oauth,
-        connection_state: serverInfo.connection_state,
+        numStars: serverInfo.numStars || 0,
+        isPython: serverInfo.isPython || false,
+        requiresOauth: serverInfo.requiresOauth,
+        connectionState: serverInfo.connectionState,
       };
     });
   };
@@ -245,8 +245,8 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
   const getServerStatusById = useCallback(async (serverId: string): Promise<SERVER_CONNECTION | undefined> => {
     try {
       const result = await SERVICES.MCP.getServerStatusById(serverId);
-      handleServerUpdate(serverId, { connection_state: result.connection_state });
-      return result.connection_state;
+      handleServerUpdate(serverId, { connectionState: result.connectionState });
+      return result.connectionState;
     } catch (error: any) {
       console.log('error', error);
     }
@@ -278,8 +278,8 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
 
             const result = await SERVICES.SERVER.refreshServerHealth(serverId);
             handleServerUpdate(serverId, {
-              last_checked_time: result.last_connected,
-              num_tools: result.num_tools,
+              lastCheckedTime: result.lastConnected,
+              numTools: result.numTools,
               status: result.status || 'unknown',
             });
           }

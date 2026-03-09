@@ -68,8 +68,8 @@ const ServerAuthorizationModal: React.FC<ServerAuthorizationModalProps> = ({
     try {
       setLoading(true);
       const result = await SERVICES.MCP.getOauthInitiate(serverId);
-      if (result?.authorization_url) {
-        window.open(result.authorization_url, '_blank');
+      if (result?.authorizationUrl) {
+        window.open(result.authorizationUrl, '_blank');
         getServerStatusByPolling?.(serverId);
         onCloseAuthDialog();
       } else {

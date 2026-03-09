@@ -48,14 +48,14 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
   };
 
   const mapHitToAgent = (hit: SemanticAgentHit): AgentType => ({
-    name: hit.agent_name,
+    name: hit.agentName,
     path: hit.path,
-    url: hit.url || (hit.agent_card as any)?.url,
+    url: hit.url || (hit.agentCard as any)?.url,
     description: hit.description,
     version: (hit as any).version,
     visibility: (hit.visibility as AgentType['visibility']) ?? 'public',
-    trust_level: (hit.trust_level as AgentType['trust_level']) ?? 'unverified',
-    enabled: hit.is_enabled ?? true,
+    trust_level: (hit.trustLevel as AgentType['trust_level']) ?? 'unverified',
+    enabled: hit.isEnabled ?? true,
     tags: hit.tags,
     status: 'unknown',
   });
@@ -115,7 +115,7 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
                 >
                   <div className='flex items-start justify-between gap-4'>
                     <div>
-                      <p className='text-base font-semibold text-gray-900 dark:text-white'>{server.server_name}</p>
+                      <p className='text-base font-semibold text-gray-900 dark:text-white'>{server.serverName}</p>
                       <p className='text-sm text-gray-500 dark:text-gray-300'>{server.path}</p>
                     </div>
                     <div className='flex items-center gap-2'>
@@ -127,12 +127,12 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
                         <CogIcon className='h-4 w-4' />
                       </button>
                       <span className='inline-flex items-center rounded-full bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-200 px-3 py-1 text-xs font-semibold'>
-                        {formatPercent(server.relevance_score)} match
+                        {formatPercent(server.relevanceScore)} match
                       </span>
                     </div>
                   </div>
                   <p className='mt-3 text-sm text-gray-600 dark:text-gray-300 line-clamp-3'>
-                    {server.description || server.match_context || 'No description available.'}
+                    {server.description || server.matchContext || 'No description available.'}
                   </p>
 
                   {server.tags?.length > 0 && (
@@ -148,18 +148,18 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
                     </div>
                   )}
 
-                  {server.matching_tools?.length > 0 && (
+                  {server.matchingTools?.length > 0 && (
                     <div className='mt-4 border-t border-dashed border-gray-200 dark:border-gray-700 pt-3'>
                       <p className='text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-2'>
                         Relevant tools
                       </p>
                       <ul className='space-y-2'>
-                        {server.matching_tools.slice(0, 3).map(tool => (
-                          <li key={tool.tool_name} className='text-sm text-gray-700 dark:text-gray-200'>
-                            <span className='font-medium text-gray-900 dark:text-white'>{tool.tool_name}</span>
+                        {server.matchingTools.slice(0, 3).map(tool => (
+                          <li key={tool.toolName} className='text-sm text-gray-700 dark:text-gray-200'>
+                            <span className='font-medium text-gray-900 dark:text-white'>{tool.toolName}</span>
                             <span className='mx-2 text-gray-400'>•</span>
                             <span className='text-gray-600 dark:text-gray-300'>
-                              {tool.description || tool.match_context || 'No description'}
+                              {tool.description || tool.matchContext || 'No description'}
                             </span>
                           </li>
                         ))}
@@ -185,22 +185,22 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
             >
               {tools.map(tool => (
                 <div
-                  key={`${tool.server_path}-${tool.tool_name}`}
+                  key={`${tool.serverPath}-${tool.toolName}`}
                   className='rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between'
                 >
                   <div>
                     <p className='text-sm font-semibold text-gray-900 dark:text-white'>
-                      {tool.tool_name}
+                      {tool.toolName}
                       <span className='ml-2 text-xs font-normal text-gray-500 dark:text-gray-400'>
-                        ({tool.server_name})
+                        ({tool.serverName})
                       </span>
                     </p>
                     <p className='text-sm text-gray-600 dark:text-gray-300'>
-                      {tool.description || tool.match_context || 'No description available.'}
+                      {tool.description || tool.matchContext || 'No description available.'}
                     </p>
                   </div>
                   <span className='inline-flex items-center rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200 px-3 py-1 text-xs font-semibold'>
-                    {formatPercent(tool.relevance_score)} match
+                    {formatPercent(tool.relevanceScore)} match
                   </span>
                 </div>
               ))}
@@ -226,7 +226,7 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
                 >
                   <div className='flex items-start justify-between gap-4'>
                     <div>
-                      <p className='text-base font-semibold text-gray-900 dark:text-white'>{agent.agent_name}</p>
+                      <p className='text-base font-semibold text-gray-900 dark:text-white'>{agent.agentName}</p>
                       <p className='text-xs uppercase tracking-wide text-gray-400 dark:text-gray-500'>
                         {agent.visibility || 'public'}
                       </p>
@@ -240,13 +240,13 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
                         <InformationCircleIcon className='h-4 w-4' />
                       </button>
                       <span className='inline-flex items-center rounded-full bg-cyan-100 text-cyan-700 dark:bg-cyan-900/40 dark:text-cyan-200 px-3 py-1 text-xs font-semibold'>
-                        {formatPercent(agent.relevance_score)} match
+                        {formatPercent(agent.relevanceScore)} match
                       </span>
                     </div>
                   </div>
 
                   <p className='mt-3 text-sm text-gray-600 dark:text-gray-300 line-clamp-3'>
-                    {agent.description || agent.match_context || 'No description available.'}
+                    {agent.description || agent.matchContext || 'No description available.'}
                   </p>
 
                   {agent.skills?.length > 0 && (
@@ -276,9 +276,9 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
 
                   <div className='mt-4 flex items-center justify-between text-xs text-gray-500 dark:text-gray-400'>
                     <span className='font-semibold text-cyan-700 dark:text-cyan-200'>
-                      {agent.trust_level || 'unverified'}
+                      {agent.trustLevel || 'unverified'}
                     </span>
-                    <span>{agent.is_enabled ? 'Enabled' : 'Disabled'}</span>
+                    <span>{agent.isEnabled ? 'Enabled' : 'Disabled'}</span>
                   </div>
                 </div>
               ))}
@@ -291,12 +291,12 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
         <ServerConfigModal
           server={
             {
-              name: configServer.server_name,
+              name: configServer.serverName,
               path: configServer.path,
               description: configServer.description,
-              enabled: configServer.is_enabled ?? true,
+              enabled: configServer.isEnabled ?? true,
               tags: configServer.tags,
-              num_tools: configServer.num_tools,
+              numTools: configServer.numTools,
             } as ServerInfo
           }
           isOpen

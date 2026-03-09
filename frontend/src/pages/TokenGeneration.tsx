@@ -9,9 +9,9 @@ const TokenGeneration: React.FC = () => {
   const { user } = useAuth();
   const [formData, setFormData] = useState({
     description: '',
-    expires_in_hours: 8,
-    scope_method: 'current' as 'current' | 'custom',
-    custom_scopes: '',
+    expiresInHours: 8,
+    scopeMethod: 'current' as 'current' | 'custom',
+    customScopes: '',
   });
   const [generatedToken, setGeneratedToken] = useState<string>('');
   const [tokenDetails, setTokenDetails] = useState<any>(null);
@@ -33,30 +33,30 @@ const TokenGeneration: React.FC = () => {
     try {
       const requestData: any = {
         description: formData.description,
-        expires_in_hours: formData.expires_in_hours,
+        expiresInHours: formData.expiresInHours,
       };
 
       // Handle scopes based on the selected method
-      if (formData.scope_method === 'custom') {
-        const customScopesText = formData.custom_scopes.trim();
+      if (formData.scopeMethod === 'custom') {
+        const customScopesText = formData.customScopes.trim();
         if (customScopesText) {
           try {
             const parsedScopes = JSON.parse(customScopesText);
             if (!Array.isArray(parsedScopes)) {
               throw new Error('Custom scopes must be a JSON array');
             }
-            requestData.requested_scopes = parsedScopes;
+            requestData.requestedScopes = parsedScopes;
           } catch (_e) {
             setError('Invalid JSON format for custom scopes. Please provide a valid JSON array.');
             return;
           }
         }
       }
-      // If using current scopes, we don't need to set requested_scopes - it will default to user's current scopes
+      // If using current scopes, we don't need to set requestedScopes - it will default to user's current scopes
       const response = await SERVICES.AUTH.getToken(requestData);
 
       if (response.success) {
-        setGeneratedToken(response.token_data.access_token);
+        setGeneratedToken(response.tokenData.accessToken);
         setTokenDetails(response);
       } else {
         throw new Error('Token generation failed');
@@ -98,9 +98,9 @@ const TokenGeneration: React.FC = () => {
   };
 
   const validateCustomScopes = () => {
-    if (formData.scope_method === 'custom' && formData.custom_scopes.trim()) {
+    if (formData.scopeMethod === 'custom' && formData.customScopes.trim()) {
       try {
-        const parsed = JSON.parse(formData.custom_scopes);
+        const parsed = JSON.parse(formData.customScopes);
         if (!Array.isArray(parsed)) {
           return 'Custom scopes must be a JSON array';
         }
@@ -187,16 +187,16 @@ const TokenGeneration: React.FC = () => {
                   {/* Expiration */}
                   <div>
                     <label
-                      htmlFor='expires_in_hours'
+                      htmlFor='expiresInHours'
                       className='block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1'
                     >
                       Expires In
                     </label>
                     <select
-                      id='expires_in_hours'
+                      id='expiresInHours'
                       className='input text-sm'
-                      value={formData.expires_in_hours}
-                      onChange={e => setFormData(prev => ({ ...prev, expires_in_hours: parseInt(e.target.value, 10) }))}
+                      value={formData.expiresInHours}
+                      onChange={e => setFormData(prev => ({ ...prev, expiresInHours: parseInt(e.target.value, 10) }))}
                     >
                       {expirationOptions.map(option => (
                         <option key={option.value} value={option.value}>
@@ -217,11 +217,11 @@ const TokenGeneration: React.FC = () => {
                       <label className='flex items-center space-x-2'>
                         <input
                           type='radio'
-                          name='scope_method'
+                          name='scopeMethod'
                           value='current'
-                          checked={formData.scope_method === 'current'}
+                          checked={formData.scopeMethod === 'current'}
                           onChange={e =>
-                            setFormData(prev => ({ ...prev, scope_method: e.target.value as 'current' | 'custom' }))
+                            setFormData(prev => ({ ...prev, scopeMethod: e.target.value as 'current' | 'custom' }))
                           }
                           className='rounded border-gray-300 text-primary-600 focus:ring-primary-500'
                         />
@@ -236,11 +236,11 @@ const TokenGeneration: React.FC = () => {
                       <label className='flex items-center space-x-2'>
                         <input
                           type='radio'
-                          name='scope_method'
+                          name='scopeMethod'
                           value='custom'
-                          checked={formData.scope_method === 'custom'}
+                          checked={formData.scopeMethod === 'custom'}
                           onChange={e =>
-                            setFormData(prev => ({ ...prev, scope_method: e.target.value as 'current' | 'custom' }))
+                            setFormData(prev => ({ ...prev, scopeMethod: e.target.value as 'current' | 'custom' }))
                           }
                           className='rounded border-gray-300 text-primary-600 focus:ring-primary-500'
                         />
@@ -256,20 +256,20 @@ const TokenGeneration: React.FC = () => {
                     </div>
 
                     {/* Custom Scopes JSON Input */}
-                    {formData.scope_method === 'custom' && (
+                    {formData.scopeMethod === 'custom' && (
                       <div className='mt-3'>
                         <label
-                          htmlFor='custom_scopes'
+                          htmlFor='customScopes'
                           className='block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1'
                         >
                           Custom Scopes (JSON format)
                         </label>
                         <textarea
-                          id='custom_scopes'
+                          id='customScopes'
                           className={`input h-24 font-mono text-xs ${scopeValidationError ? 'border-red-300 focus:border-red-500 focus:ring-red-500' : ''}`}
                           placeholder={`["mcp-servers-restricted/read", "mcp-registry-user"]`}
-                          value={formData.custom_scopes}
-                          onChange={e => setFormData(prev => ({ ...prev, custom_scopes: e.target.value }))}
+                          value={formData.customScopes}
+                          onChange={e => setFormData(prev => ({ ...prev, customScopes: e.target.value }))}
                         />
                         <p className='mt-1 text-xs text-gray-500 dark:text-gray-400'>
                           Enter a JSON array of scope names. Must be a subset of your current scopes.
@@ -343,14 +343,14 @@ const TokenGeneration: React.FC = () => {
               <div className='space-y-2 text-sm mb-4 text-gray-900 dark:text-white'>
                 <p>
                   <strong>Expires:</strong>{' '}
-                  {new Date(Date.now() + tokenDetails.token_data.expires_in * 1000).toLocaleString()}
+                  {new Date(Date.now() + tokenDetails.tokenData.expiresIn * 1000).toLocaleString()}
                 </p>
                 <p>
-                  <strong>Scopes:</strong> {tokenDetails.requested_scopes.join(', ')}
+                  <strong>Scopes:</strong> {tokenDetails.requestedScopes.join(', ')}
                 </p>
-                {tokenDetails.token_data.description && (
+                {tokenDetails.tokenData.description && (
                   <p>
-                    <strong>Description:</strong> {tokenDetails.token_data.description}
+                    <strong>Description:</strong> {tokenDetails.tokenData.description}
                   </p>
                 )}
               </div>

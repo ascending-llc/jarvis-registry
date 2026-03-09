@@ -9,10 +9,10 @@ interface User {
   email?: string;
   scopes?: string[];
   groups?: string[];
-  auth_method?: string;
+  authMethod?: string;
   provider?: string;
-  can_modify_servers?: boolean;
-  is_admin?: boolean;
+  canModifyServers?: boolean;
+  isAdmin?: boolean;
 }
 
 interface AuthContextType {
@@ -57,10 +57,10 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         email: userData.email,
         scopes: userData.scopes || [],
         groups: userData.groups || [],
-        auth_method: userData.auth_method || 'basic',
+        authMethod: userData.authMethod || 'basic',
         provider: userData.provider,
-        can_modify_servers: userData.can_modify_servers || false,
-        is_admin: userData.is_admin || false,
+        canModifyServers: userData.canModifyServers || false,
+        isAdmin: userData.isAdmin || false,
       });
     } catch (_error) {
       // User not authenticated

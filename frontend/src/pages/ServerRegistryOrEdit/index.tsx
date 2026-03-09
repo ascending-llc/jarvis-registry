@@ -11,29 +11,29 @@ import type { GET_SERVERS_DETAIL_RESPONSE, Server } from '@/services/server/type
 import MainConfigForm from './MainConfigForm';
 import type { AuthenticationConfig as AuthConfigType, ServerConfig } from './types';
 
-const DEFAULT_AUTH_CONFIG: AuthConfigType = { type: 'auto', source: 'admin', authorization_type: 'bearer' };
+const DEFAULT_AUTH_CONFIG: AuthConfigType = { type: 'auto', source: 'admin', authorizationType: 'bearer' };
 
-const AUTH_ERROR_KEYS = ['key', 'custom_header', 'authorization_url', 'token_url'] as const;
+const AUTH_ERROR_KEYS = ['key', 'customHeader', 'authorizationUrl', 'tokenUrl'] as const;
 
 const parseAuthConfig = (result: GET_SERVERS_DETAIL_RESPONSE): AuthConfigType => {
-  if (result.api_key) {
+  if (result.apiKey) {
     return {
-      type: 'api_key',
-      source: result.api_key.source,
-      authorization_type: result.api_key.authorization_type,
-      key: result.api_key.key,
-      custom_header: result.api_key.custom_header,
+      type: 'apiKey',
+      source: result.apiKey.source,
+      authorizationType: result.apiKey.authorizationType,
+      key: result.apiKey.key,
+      customHeader: result.apiKey.customHeader,
     };
   }
-  if (result.oauth || result.requires_oauth) {
+  if (result.oauth || result.requiresOauth) {
     return {
       type: 'oauth',
-      client_id: result.oauth?.client_id,
-      client_secret: result.oauth?.client_secret,
-      authorization_url: result.oauth?.authorization_url,
-      token_url: result.oauth?.token_url,
+      clientId: result.oauth?.clientId,
+      clientSecret: result.oauth?.clientSecret,
+      authorizationUrl: result.oauth?.authorizationUrl,
+      tokenUrl: result.oauth?.tokenUrl,
       scope: result.oauth?.scope,
-      use_dynamic_registration: result.requires_oauth && !result.oauth,
+      useDynamicRegistration: result.requiresOauth && !result.oauth,
     };
   }
   return { ...DEFAULT_AUTH_CONFIG };
@@ -51,41 +51,41 @@ const processDataByAuthType = (data: ServerConfig, originalData: ServerConfig | 
   };
   switch (data.authConfig.type) {
     case 'auto':
-      return { ...baseData, api_key: null, oauth: null, requires_oauth: false };
-    case 'api_key':
+      return { ...baseData, apiKey: null, oauth: null, requiresOauth: false };
+    case 'apiKey':
       return {
         ...baseData,
-        api_key: {
+        apiKey: {
           source: data.authConfig.source,
-          authorization_type: data.authConfig.authorization_type,
+          authorizationType: data.authConfig.authorizationType,
           ...(data.authConfig.source !== 'user' &&
           data.authConfig.key &&
           data.authConfig.key !== originalData?.authConfig?.key
             ? { key: data.authConfig.key }
             : {}),
-          ...(data.authConfig.authorization_type === 'custom' && data.authConfig.custom_header
-            ? { custom_header: data.authConfig.custom_header }
+          ...(data.authConfig.authorizationType === 'custom' && data.authConfig.customHeader
+            ? { customHeader: data.authConfig.customHeader }
             : {}),
         },
         oauth: null,
-        requires_oauth: false,
+        requiresOauth: false,
       };
     case 'oauth':
       return {
         ...baseData,
-        oauth: data.authConfig.use_dynamic_registration
+        oauth: data.authConfig.useDynamicRegistration
           ? null
           : {
-              client_id: data.authConfig.client_id,
-              ...(data.authConfig.client_secret !== originalData?.authConfig?.client_secret
-                ? { client_secret: data.authConfig.client_secret }
+              clientId: data.authConfig.clientId,
+              ...(data.authConfig.clientSecret !== originalData?.authConfig?.clientSecret
+                ? { clientSecret: data.authConfig.clientSecret }
                 : {}),
-              authorization_url: data.authConfig.authorization_url,
-              token_url: data.authConfig.token_url,
+              authorizationUrl: data.authConfig.authorizationUrl,
+              tokenUrl: data.authConfig.tokenUrl,
               scope: data.authConfig.scope,
             },
-        api_key: null,
-        requires_oauth: true,
+        apiKey: null,
+        requiresOauth: true,
       };
     default:
       return {};
@@ -117,7 +117,7 @@ const ServerRegistryOrEdit: React.FC = () => {
   const [formData, setFormData] = useState<ServerConfig>(INIT_DATA);
   const [originalData, setOriginalData] = useState<ServerConfig | null>(null);
   const [errors, setErrors] = useState<Record<string, string | undefined>>({});
-  const [serverData, setServerData] = useState<{ server_name: string; path: string }>({ server_name: '', path: '' });
+  const [serverData, setServerData] = useState<{ serverName: string; path: string }>({ serverName: '', path: '' });
   const [showSuccessDialog, setShowSuccessDialog] = useState(false);
 
   const isEditMode = !!id;
@@ -200,17 +200,17 @@ const ServerRegistryOrEdit: React.FC = () => {
 
     // Auth Validation
     const auth = formData.authConfig;
-    if (auth.type === 'api_key') {
+    if (auth.type === 'apiKey') {
       if (auth.source === 'admin' && !auth.key?.trim()) {
         newErrors.key = 'API Key is required';
       }
-      if (auth.authorization_type === 'custom' && !auth.custom_header?.trim()) {
-        newErrors.custom_header = 'Custom Header Name is required';
+      if (auth.authorizationType === 'custom' && !auth.customHeader?.trim()) {
+        newErrors.customHeader = 'Custom Header Name is required';
       }
     } else if (auth.type === 'oauth') {
-      if (!auth.use_dynamic_registration) {
-        if (!auth.authorization_url?.trim()) newErrors.authorization_url = 'Authorization URL is required';
-        if (!auth.token_url?.trim()) newErrors.token_url = 'Token URL is required';
+      if (!auth.useDynamicRegistration) {
+        if (!auth.authorizationUrl?.trim()) newErrors.authorizationUrl = 'Authorization URL is required';
+        if (!auth.tokenUrl?.trim()) newErrors.tokenUrl = 'Token URL is required';
       }
     }
 
@@ -268,7 +268,7 @@ const ServerRegistryOrEdit: React.FC = () => {
           path: result.path,
           url: result.url,
           tags: result.tags,
-          last_checked_time: result.updated_at ?? new Date().toISOString(),
+          lastCheckedTime: result.updatedAt ?? new Date().toISOString(),
         });
       } else {
         const result = await SERVICES.SERVER.createServer(data);

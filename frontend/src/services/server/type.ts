@@ -9,21 +9,21 @@ export type GET_SERVERS_REQUEST = {
   query?: string;
   status?: string;
   page?: string;
-  per_page?: string;
+  perPage?: string;
 };
 
 export type OauthConfig = {
-  authorization_url: string;
-  token_url: string;
-  client_id?: string;
-  client_secret?: string;
+  authorizationUrl: string;
+  tokenUrl: string;
+  clientId?: string;
+  clientSecret?: string;
   scope?: string;
 };
 export type ApiKeyConfig = {
   key: string;
   source: ApiKeySource;
-  authorization_type: ApiKeyHeaderFormat;
-  custom_header?: string;
+  authorizationType: ApiKeyHeaderFormat;
+  customHeader?: string;
 };
 export type StatusType = 'active' | 'inactive' | 'error';
 export type PermissionType = {
@@ -34,14 +34,14 @@ export type PermissionType = {
 };
 export type Server = {
   id: string;
-  server_name: string;
+  serverName: string;
   title: string;
   description: string;
   type: ServerType;
   url: string;
   enabled: boolean;
-  requires_oauth: boolean;
-  connection_state: SERVER_CONNECTION;
+  requiresOauth: boolean;
+  connectionState: SERVER_CONNECTION;
   capabilities: string;
   tools: string;
   author: string;
@@ -50,16 +50,16 @@ export type Server = {
   path: string;
   permissions: PermissionType;
   tags: string[];
-  num_tools: number;
-  num_stars: number;
-  init_duration: number;
-  last_connected: string;
-  created_at: string;
-  updated_at: string;
-  is_python?: boolean;
-  is_official?: boolean;
+  numTools: number;
+  numStars: number;
+  initDuration: number;
+  lastConnected: string;
+  createdAt: string;
+  updatedAt: string;
+  isPython?: boolean;
+  isOfficial?: boolean;
   oauth?: OauthConfig;
-  api_key?: ApiKeyConfig;
+  apiKey?: ApiKeyConfig;
 };
 
 export type GET_SERVERS_RESPONSE = {
@@ -67,8 +67,8 @@ export type GET_SERVERS_RESPONSE = {
   pagination: {
     total: number;
     page: number;
-    per_page: number;
-    total_pages: number;
+    perPage: number;
+    totalPages: number;
   };
 };
 
@@ -84,7 +84,7 @@ export type TEST_SERVER_URL_RESPONSE = {
 };
 
 export type CREATE_SERVER_REQUEST = {
-  server_name: string;
+  serverName: string;
   description: string;
   path: string;
   url: string;
@@ -92,13 +92,13 @@ export type CREATE_SERVER_REQUEST = {
   enabled: boolean;
   type: ServerType;
   oauth?: OauthConfig;
-  api_key?: ApiKeyConfig;
+  apiKey?: ApiKeyConfig;
 };
 
 export type Tool = {
   name: string;
   description?: string;
-  input_schema?: any;
+  inputSchema?: any;
 };
 export type GET_SERVER_TOOLS_RESPONSE = {
   id: string;

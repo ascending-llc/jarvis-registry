@@ -410,7 +410,7 @@ const Dashboard: React.FC = () => {
                     agent={agent}
                     onToggle={handleToggleAgent}
                     onEdit={handleEditAgent}
-                    canModify={user?.can_modify_servers || false}
+                    canModify={user?.canModifyServers || false}
                     onRefreshSuccess={refreshAgentData}
                     onAgentUpdate={handleAgentUpdate}
                     authToken={agentApiToken}
@@ -488,7 +488,7 @@ const Dashboard: React.FC = () => {
                           agent={agent}
                           onToggle={handleToggleAgent}
                           onEdit={handleEditAgent}
-                          canModify={user?.can_modify_servers || false}
+                          canModify={user?.canModifyServers || false}
                           onRefreshSuccess={refreshAgentData}
                           onAgentUpdate={handleAgentUpdate}
                         />

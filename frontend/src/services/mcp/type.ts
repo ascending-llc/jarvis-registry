@@ -6,30 +6,30 @@ export enum SERVER_CONNECTION {
 }
 
 export type SERVER_STATUS = {
-  connection_state: SERVER_CONNECTION;
-  requires_oauth: boolean;
+  connectionState: SERVER_CONNECTION;
+  requiresOauth: boolean;
   error?: string;
 };
 
 export type GET_SERVER_STATUS_BY_ID_RESPONSE = {
   success: boolean;
-  connection_state: SERVER_CONNECTION;
-  requires_oauth: boolean;
+  connectionState: SERVER_CONNECTION;
+  requiresOauth: boolean;
 };
 
 export type GET_OAUTH_INITIATE_RESPONSE = {
-  authorization_url: string;
-  flow_id: string;
-  server_name: string;
-  user_id: string;
+  authorizationUrl: string;
+  flowId: string;
+  serverName: string;
+  userId: string;
 };
 
 export type GET_SERVER_AUTH_URL_RESPONSE = {
   success: boolean;
   message: string;
-  oauth_url: string;
-  server_name: string;
-  oauth_required: boolean;
+  oauthUrl: string;
+  serverName: string;
+  oauthRequired: boolean;
 };
 
 export type CANCEL_AUTH_RESPONSE = {

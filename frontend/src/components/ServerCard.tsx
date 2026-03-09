@@ -54,17 +54,17 @@ const ServerCard: React.FC<ServerCardProps> = ({ server, onEdit, onServerUpdate,
     };
   }, [showTools]);
 
-  const { connection_state, requires_oauth } = server || {};
+  const { connectionState, requiresOauth } = server || {};
 
   const getAuthStatusIcon = useCallback(() => {
-    if (!requires_oauth) return null;
-    if (connection_state === SERVER_CONNECTION.CONNECTED) {
+    if (!requiresOauth) return null;
+    if (connectionState === SERVER_CONNECTION.CONNECTED) {
       return <CheckCircleIcon className='h-4 w-4 text-green-500' />;
     }
-    if (connection_state === SERVER_CONNECTION.DISCONNECTED || connection_state === SERVER_CONNECTION.ERROR) {
+    if (connectionState === SERVER_CONNECTION.DISCONNECTED || connectionState === SERVER_CONNECTION.ERROR) {
       return <KeyIcon className='h-4 w-4 text-amber-500' />;
     }
-    if (connection_state === SERVER_CONNECTION.CONNECTING) {
+    if (connectionState === SERVER_CONNECTION.CONNECTING) {
       return (
         <>
           <div className='group-hover/auth:hidden animate-spin rounded-full h-3 w-3 border-b-2 border-slate-200' />
@@ -72,7 +72,7 @@ const ServerCard: React.FC<ServerCardProps> = ({ server, onEdit, onServerUpdate,
         </>
       );
     }
-  }, [requires_oauth, connection_state]);
+  }, [requiresOauth, connectionState]);
 
   const onOpenAuthDialog = () => setShowApiKeyDialog(true);
   const onCloseAuthDialog = () => setShowApiKeyDialog(false);
@@ -92,7 +92,7 @@ const ServerCard: React.FC<ServerCardProps> = ({ server, onEdit, onServerUpdate,
   };
 
   const handleAuth = async () => {
-    if (connection_state === SERVER_CONNECTION.CONNECTING) {
+    if (connectionState === SERVER_CONNECTION.CONNECTING) {
       handleCancelAuth();
       cancelPolling?.(server.id);
     } else {
@@ -128,8 +128,8 @@ const ServerCard: React.FC<ServerCardProps> = ({ server, onEdit, onServerUpdate,
       if (onServerUpdate && result) {
         const updates: Partial<ServerInfo> = {
           status: result.status,
-          last_checked_time: result.last_connected,
-          num_tools: result.num_tools,
+          lastCheckedTime: result.lastConnected,
+          numTools: result.numTools,
         };
         onServerUpdate(server.id, updates);
       } else if (onRefreshSuccess) {
@@ -231,7 +231,7 @@ const ServerCard: React.FC<ServerCardProps> = ({ server, onEdit, onServerUpdate,
             </div>
 
             <div className='flex gap-1'>
-              {requires_oauth && (
+              {requiresOauth && (
                 <button
                   className='group/auth p-1.5 text-amber-500 hover:bg-gray-50 dark:hover:bg-gray-700/50 rounded-lg transition-all duration-200 flex-shrink-0'
                   onClick={handleAuth}
@@ -290,7 +290,7 @@ const ServerCard: React.FC<ServerCardProps> = ({ server, onEdit, onServerUpdate,
         <div className='px-4 pb-3'>
           <div className='grid grid-cols-2 gap-2'>
             <div className='flex items-center gap-1.5'>
-              {(server.num_tools || 0) > 0 ? (
+              {(server.numTools || 0) > 0 ? (
                 <button
                   onClick={handleViewTools}
                   disabled={loadingTools}
@@ -301,7 +301,7 @@ const ServerCard: React.FC<ServerCardProps> = ({ server, onEdit, onServerUpdate,
                     <WrenchScrewdriverIcon className='h-3.5 w-3.5' />
                   </div>
                   <div>
-                    <div className='text-xs font-semibold'>{server.num_tools}</div>
+                    <div className='text-xs font-semibold'>{server.numTools}</div>
                     <div className='text-xs'>Tools</div>
                   </div>
                 </button>
@@ -311,7 +311,7 @@ const ServerCard: React.FC<ServerCardProps> = ({ server, onEdit, onServerUpdate,
                     <WrenchScrewdriverIcon className='h-3.5 w-3.5' />
                   </div>
                   <div>
-                    <div className='text-xs font-semibold'>{server.num_tools || 0}</div>
+                    <div className='text-xs font-semibold'>{server.numTools || 0}</div>
                     <div className='text-xs'>Tools</div>
                   </div>
                 </div>
@@ -364,8 +364,8 @@ const ServerCard: React.FC<ServerCardProps> = ({ server, onEdit, onServerUpdate,
             <div className='flex items-center gap-2'>
               {/* Last Checked */}
               {(() => {
-                const timeText = UTILS.formatTimeSince(server.last_checked_time);
-                return server.last_checked_time && timeText ? (
+                const timeText = UTILS.formatTimeSince(server.lastCheckedTime);
+                return server.lastCheckedTime && timeText ? (
                   <div className='text-xs text-gray-500 dark:text-gray-300 flex items-center gap-1 hidden md:flex'>
                     <ClockIcon className='h-3 w-3' />
                     <span>{timeText}</span>
@@ -454,7 +454,7 @@ const ServerCard: React.FC<ServerCardProps> = ({ server, onEdit, onServerUpdate,
         <ServerAuthorizationModal
           name={server.name}
           serverId={server.id}
-          status={connection_state}
+          status={connectionState}
           showApiKeyDialog={showApiKeyDialog}
           handleCancelAuth={handleCancelAuth}
           onCloseAuthDialog={onCloseAuthDialog}
