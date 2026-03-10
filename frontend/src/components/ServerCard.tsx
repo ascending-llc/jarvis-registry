@@ -106,7 +106,7 @@ const ServerCard: React.FC<ServerCardProps> = ({ server, onEdit, onServerUpdate,
     setLoadingTools(true);
     try {
       const result = await SERVICES.SERVER.getServerTools(server.id);
-      setTools(result.tools || []);
+      setTools(Array.isArray(result.tools) ? result.tools : []);
       setShowTools(true);
     } catch (error) {
       console.error('Failed to fetch tools:', error);
@@ -423,18 +423,18 @@ const ServerCard: React.FC<ServerCardProps> = ({ server, onEdit, onServerUpdate,
             </div>
 
             <div className='space-y-4 mt-[2.8rem]'>
-              {tools.length > 0 ? (
-                tools.map((tool, index) => (
+              {tools?.length > 0 ? (
+                tools.map((tool: Tool, index: number) => (
                   <div key={index} className='border border-gray-200 dark:border-gray-700 rounded-lg p-4'>
                     <h4 className='font-medium text-gray-900 dark:text-white mb-2'>{tool.name}</h4>
                     {tool.description && (
                       <p className='text-sm text-gray-600 dark:text-gray-300 mb-2'>{tool.description}</p>
                     )}
-                    {tool.input_schema && (
+                    {tool.inputSchema && (
                       <details className='text-xs'>
                         <summary className='cursor-pointer text-gray-500 dark:text-gray-300'>View Schema</summary>
                         <pre className='mt-2 p-3 bg-gray-50 dark:bg-gray-900 border dark:border-gray-700 rounded overflow-x-auto text-gray-900 dark:text-gray-100'>
-                          {JSON.stringify(tool.input_schema, null, 2)}
+                          {JSON.stringify(tool.inputSchema, null, 2)}
                         </pre>
                       </details>
                     )}
