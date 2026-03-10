@@ -8,8 +8,10 @@ from fastapi.responses import RedirectResponse
 
 from registry.auth.dependencies import CurrentUser
 from registry.auth.oauth.reconnection import get_reconnection_manager
+from registry.auth.oauth.types import ClientBranding
 from registry.constants import REGISTRY_CONSTANTS
 from registry.core.mcp_client import get_oauth_metadata_from_server
+from registry.mcpgw.tools.utils import session_store
 from registry.schemas.common_api_schemas import (
     OAuthInitiateResponse,
     OAuthMetadataDiscoverResponse,
