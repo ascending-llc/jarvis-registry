@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import quote
@@ -10,10 +11,19 @@ from beanie import PydanticObjectId
 
 from registry.constants import REGISTRY_CONSTANTS
 from registry.services.federation.base_client import BaseFederationClient
-from registry_pkgs.models import A2AAgent, AgentCoreGateway, ExtendedMCPServer
+from registry_pkgs.models import A2AAgent, ExtendedMCPServer
 from registry_pkgs.models.enums import AgentCoreTargetType, FederationSource
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class _GatewayInfo:
+    arn: str
+    name: str
+    region: str
+    gatewayId: str | None = None
+    gatewayUrl: str | None = None
 
 
 class AgentCoreFederationClient(BaseFederationClient):
@@ -37,7 +47,7 @@ class AgentCoreFederationClient(BaseFederationClient):
         self._control_clients: dict[str, Any] = {}
         self._client_locks: dict[str, asyncio.Lock] = {}
 
-    async def discover_gateways(self, gateway_arns: list[str] | None = None) -> list[AgentCoreGateway]:
+    async def discover_gateways(self, gateway_arns: list[str] | None = None) -> list[dict[str, Any]]:
         """
         List AgentCore gateways in a region.
 
@@ -64,7 +74,16 @@ class AgentCoreFederationClient(BaseFederationClient):
                 raise ValueError(f"Requested AgentCore gateways were not found or not accessible: {missing}")
             discovered = [discovered_map[arn] for arn in gateway_arns]
 
-        return discovered
+        return [
+            {
+                "arn": item.arn,
+                "name": item.name,
+                "region": item.region,
+                "gatewayId": item.gatewayId,
+                "gatewayUrl": item.gatewayUrl,
+            }
+            for item in discovered
+        ]
 
     async def discover_servers_from_gateway(
         self,
@@ -92,7 +111,7 @@ class AgentCoreFederationClient(BaseFederationClient):
             logger.error(f"Failed to fetch AgentCore gateway details for {gateway_arn}: {exc}", exc_info=True)
             return []
 
-        gateway = AgentCoreGateway.model_construct(
+        gateway = _GatewayInfo(
             arn=gateway_data.get("gatewayArn", gateway_arn),
             name=gateway_data.get("name", self._extract_gateway_id(gateway_arn)),
             region=self._extract_region_from_arn(gateway_data.get("gatewayArn", gateway_arn), region),
@@ -402,7 +421,7 @@ class AgentCoreFederationClient(BaseFederationClient):
     def _transform_gateway_target_to_mcp_server(
         self,
         target_data: dict[str, Any],
-        gateway: AgentCoreGateway,
+        gateway: _GatewayInfo,
         author_id: PydanticObjectId | None = None,
     ) -> ExtendedMCPServer:
         target_name = target_data.get("name", target_data.get("targetId", "unknown-target"))
@@ -574,7 +593,7 @@ class AgentCoreFederationClient(BaseFederationClient):
             return AgentCoreTargetType.INTEGRATIONS
         return AgentCoreTargetType.UNKNOWN
 
-    def _extract_target_endpoint(self, target_data: dict[str, Any], gateway: AgentCoreGateway) -> str | None:
+    def _extract_target_endpoint(self, target_data: dict[str, Any], gateway: _GatewayInfo) -> str | None:
         """Best-effort endpoint extraction for heterogeneous gateway target types."""
         config = target_data.get("targetConfiguration", {})
         mcp_cfg = config.get("mcp", {})
@@ -631,7 +650,7 @@ class AgentCoreFederationClient(BaseFederationClient):
                 )
                 await existing_a2a.delete()
 
-    def _normalize_gateway_summary(self, summary: dict[str, Any], default_region: str) -> AgentCoreGateway | None:
+    def _normalize_gateway_summary(self, summary: dict[str, Any], default_region: str) -> _GatewayInfo | None:
         arn = summary.get("gatewayArn") or summary.get("arn")
 
         gateway_id = summary.get("gatewayId") or (self._extract_gateway_id(arn) if arn else None)
@@ -643,7 +662,7 @@ class AgentCoreFederationClient(BaseFederationClient):
             arn = f"gateway/{gateway_id}"
 
         region = self._extract_region_from_arn(arn, default_region)
-        return AgentCoreGateway.model_construct(
+        return _GatewayInfo(
             arn=arn,
             name=summary.get("name", gateway_id),
             region=region,

@@ -20,7 +20,6 @@ from ..models._generated import (
     Token,
 )
 from ..models.a2a_agent import A2AAgent
-from ..models.agentcore_gateway import AgentCoreGateway
 from ..models.extended_acl_entry import ExtendedAclEntry as IAclEntry
 from ..models.extended_mcp_server import (
     ExtendedMCPServer as MCPServerDocument,
@@ -110,7 +109,6 @@ class MongoDB:
                 "IAction": IAction,
                 "Key": Key,
                 "A2AAgent": A2AAgent,
-                "AgentCoreGateway": AgentCoreGateway,
             }
             MCPServerDocument.model_rebuild(_types_namespace=rebuild_namespace)
             Token.model_rebuild(_types_namespace=rebuild_namespace)
@@ -118,7 +116,6 @@ class MongoDB:
             IAction.model_rebuild(_types_namespace=rebuild_namespace)
             Key.model_rebuild(_types_namespace=rebuild_namespace)
             A2AAgent.model_rebuild(_types_namespace=rebuild_namespace)
-            AgentCoreGateway.model_rebuild(_types_namespace=rebuild_namespace)
 
             # Initialize Beanie with all document models
             await init_beanie(
@@ -133,7 +130,6 @@ class MongoDB:
                     IAction,
                     Key,
                     A2AAgent,
-                    AgentCoreGateway,
                 ],
             )
         except Exception:
