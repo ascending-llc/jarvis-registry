@@ -26,17 +26,16 @@ class AgentCoreFederationClient(BaseFederationClient):
 
     def __init__(
         self,
-        token_manager: Any,
         region: str | None = None,
         timeout_seconds: int = 30,
         retry_attempts: int = 3,
     ):
         super().__init__("https://bedrock-agentcore-control.amazonaws.com", timeout_seconds, retry_attempts)
-        self.token_manager = token_manager
         self.region = (
             region or getattr(REGISTRY_CONSTANTS, "AWS_REGION", None) or os.getenv("AWS_REGION") or "us-east-1"
         )
         self._control_clients: dict[str, Any] = {}
+        self._client_locks: dict[str, asyncio.Lock] = {}
 
     async def discover_gateways(self, gateway_arns: list[str] | None = None) -> list[AgentCoreGateway]:
         """
@@ -47,17 +46,16 @@ class AgentCoreFederationClient(BaseFederationClient):
             gateway_arns: Optional allow-list. If provided, the method validates all
                 requested ARNs are visible and returns them in the same order.
         """
-        region = self.region
-        control_client = self._init_boto3_client(region)
+        control_client = await self._get_control_client()
 
         try:
             summaries = await asyncio.to_thread(self._list_gateways, control_client)
             details = await asyncio.to_thread(self._get_gateway_details, control_client, summaries)
         except Exception as exc:
-            logger.error(f"Failed to list AgentCore gateways in {region}: {exc}", exc_info=True)
+            logger.error(f"Failed to list AgentCore gateways in {self.region}: {exc}", exc_info=True)
             return []
 
-        discovered = [item for item in (self._normalize_gateway_summary(d, region) for d in details) if item]
+        discovered = [item for item in (self._normalize_gateway_summary(d, self.region) for d in details) if item]
 
         if gateway_arns:
             discovered_map = {item.arn: item for item in discovered if item.arn}
@@ -82,7 +80,7 @@ class AgentCoreFederationClient(BaseFederationClient):
         - Multiple target backing types are supported (mcpServer/lambda/apiGateway/openApi/smithy).
         """
         region = self._extract_region_from_arn(gateway_arn)
-        control_client = self._init_boto3_client(region)
+        control_client = await self._get_control_client(region)
 
         try:
             gateway_data, target_summaries = await asyncio.to_thread(
@@ -101,14 +99,16 @@ class AgentCoreFederationClient(BaseFederationClient):
             gatewayId=gateway_data.get("gatewayId", self._extract_gateway_id(gateway_arn)),
             gatewayUrl=gateway_data.get("gatewayUrl"),
         )
-
-        target_details = await asyncio.to_thread(
-            self._get_gateway_target_details,
-            control_client,
-            gateway_arn,
-            target_summaries,
-        )
-
+        try:
+            target_details = await asyncio.to_thread(
+                self._get_gateway_target_details,
+                control_client,
+                gateway_arn,
+                target_summaries,
+            )
+        except Exception as exc:
+            logger.error(f"Failed to fetch AgentCore targets for {gateway_arn}: {exc}", exc_info=True)
+            return []
         return [self._transform_gateway_target_to_mcp_server(t, gateway, author_id) for t in target_details]
 
     async def discover_runtime_entities(
@@ -129,12 +129,12 @@ class AgentCoreFederationClient(BaseFederationClient):
           model collection are deleted by federationId.
         """
         region = self.region
-        control_client = self._init_boto3_client(region)
+        control_client = await self._get_control_client(region)
 
         try:
             runtime_summaries = await asyncio.to_thread(self._list_runtime_summaries, control_client)
         except Exception as exc:
-            logger.error(f"Failed to list AgentCore runtimes in {region}: {exc}", exc_info=True)
+            logger.error(f"Failed to list AgentCore runtimes in {self.region}: {exc}", exc_info=True)
             return {"a2a_agents": [], "mcp_servers": [], "skipped_runtimes": []}
 
         summary_by_arn = {s["agentRuntimeArn"]: s for s in runtime_summaries if s.get("agentRuntimeArn")}
@@ -183,7 +183,7 @@ class AgentCoreFederationClient(BaseFederationClient):
             "skipped_runtimes": skipped_runtimes,
         }
 
-    def fetch_server(self, server_name: str, **kwargs) -> ExtendedMCPServer | None:
+    def fetch_server(self, server_name: str, **kwargs) -> dict[str, Any] | None:
         """
         BaseFederationClient compatibility wrapper.
 
@@ -191,19 +191,28 @@ class AgentCoreFederationClient(BaseFederationClient):
         """
         author_id = kwargs.get("author_id")
         servers = self._run_async(self.discover_servers_from_gateway(server_name, author_id=author_id))
-        return servers[0] if servers else None
+        if not servers:
+            return None
+        return self._server_to_dict(servers[0])
 
-    def fetch_all_servers(self, server_names: list[str], **kwargs) -> list[ExtendedMCPServer]:
+    def fetch_all_servers(self, server_names: list[str], **kwargs) -> list[dict[str, Any]]:
         """
         BaseFederationClient compatibility wrapper.
 
         server_names is interpreted as a list of gateway ARNs.
         """
         author_id = kwargs.get("author_id")
-        servers: list[ExtendedMCPServer] = []
+        servers: list[dict[str, Any]] = []
         for gateway_arn in server_names:
-            servers.extend(self._run_async(self.discover_servers_from_gateway(gateway_arn, author_id=author_id)))
+            discovered = self._run_async(self.discover_servers_from_gateway(gateway_arn, author_id=author_id))
+            servers.extend(self._server_to_dict(server) for server in discovered)
         return servers
+
+    def _server_to_dict(self, server: ExtendedMCPServer) -> dict[str, Any]:
+        """Convert model document to BaseFederationClient-compatible dict."""
+        if hasattr(server, "model_dump"):
+            return server.model_dump(by_alias=True, exclude_none=True)
+        return dict(server)
 
     def _init_boto3_client(self, region: str):
         """
@@ -255,6 +264,25 @@ class AgentCoreFederationClient(BaseFederationClient):
         client = session.client("bedrock-agentcore-control", region_name=region)
         self._control_clients[region] = client
         return client
+
+    async def _get_control_client(self, region: str) -> Any:
+        """
+        Async-safe client getter.
+
+        boto3/session initialization may trigger network I/O (for example STS assume_role),
+        so client initialization is executed in a worker thread to avoid blocking the event loop.
+        A per-region lock prevents duplicate concurrent initialization.
+        """
+        cached = self._control_clients.get(region)
+        if cached:
+            return cached
+
+        lock = self._client_locks.setdefault(region, asyncio.Lock())
+        async with lock:
+            cached = self._control_clients.get(region)
+            if cached:
+                return cached
+            return await asyncio.to_thread(self._init_boto3_client, region)
 
     def _list_gateways(self, control_client: Any) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
