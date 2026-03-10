@@ -1,15 +1,22 @@
 import asyncio
+import json
 import logging
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import quote
 
 import boto3
+import httpx
 from beanie import PydanticObjectId
+from botocore.auth import SigV4Auth
+from botocore.awsrequest import AWSRequest
+from botocore.credentials import RefreshableCredentials
 
 from registry.constants import REGISTRY_CONSTANTS
+from registry.core.mcp_client import get_tools_and_capabilities_from_server
 from registry.services.federation.base_client import BaseFederationClient
 from registry_pkgs.models import A2AAgent, ExtendedMCPServer
 from registry_pkgs.models.enums import AgentCoreTargetType, FederationSource
@@ -24,6 +31,38 @@ class _GatewayInfo:
     region: str
     gatewayId: str | None = None
     gatewayUrl: str | None = None
+
+
+class _SigV4HttpxAuth(httpx.Auth):
+    """
+    HTTPX auth provider that signs each request using AWS SigV4.
+    """
+
+    requires_request_body = True
+
+    def __init__(self, service: str, region: str, credentials_provider: Callable[[], Any]):
+        self.service = service
+        self.region = region
+        self.credentials_provider = credentials_provider
+
+    def auth_flow(self, request: httpx.Request):
+        credentials = self.credentials_provider()
+        if isinstance(credentials, RefreshableCredentials):
+            credentials = credentials.get_frozen_credentials()
+        else:
+            credentials = credentials.get_frozen_credentials()
+
+        aws_request = AWSRequest(
+            method=request.method,
+            url=str(request.url),
+            data=request.content,
+            headers=dict(request.headers),
+        )
+        SigV4Auth(credentials, self.service, self.region).add_auth(aws_request)
+
+        for key, value in aws_request.headers.items():
+            request.headers[key] = value
+        yield request
 
 
 class AgentCoreFederationClient(BaseFederationClient):
@@ -45,6 +84,7 @@ class AgentCoreFederationClient(BaseFederationClient):
             region or getattr(REGISTRY_CONSTANTS, "AWS_REGION", None) or os.getenv("AWS_REGION") or "us-east-1"
         )
         self._control_clients: dict[str, Any] = {}
+        self._aws_sessions: dict[str, Any] = {}
         self._client_locks: dict[str, asyncio.Lock] = {}
 
     async def discover_gateways(self, gateway_arns: list[str] | None = None) -> list[dict[str, Any]]:
@@ -134,6 +174,7 @@ class AgentCoreFederationClient(BaseFederationClient):
         self,
         runtime_arns: list[str] | None = None,
         author_id: PydanticObjectId | None = None,
+        enrich_protocol_payloads: bool = True,
     ) -> dict[str, list[Any]]:
         """
         Discover runtime details and classify by protocol.
@@ -179,12 +220,18 @@ class AgentCoreFederationClient(BaseFederationClient):
 
             if protocol == "A2A":
                 await self._reconcile_runtime_type(runtime_arn=runtime_arn, target_type="a2a")
-                a2a_agents.append(self._transform_runtime_to_a2a_agent(runtime_detail, region, author_id))
+                a2a_agent = self._transform_runtime_to_a2a_agent(runtime_detail, region, author_id)
+                if enrich_protocol_payloads:
+                    await self._enrich_a2a_agent(a2a_agent, runtime_detail, region)
+                a2a_agents.append(a2a_agent)
                 continue
 
             if protocol == "MCP":
                 await self._reconcile_runtime_type(runtime_arn=runtime_arn, target_type="mcp")
-                mcp_servers.append(self._transform_runtime_to_mcp_server(runtime_detail, region, author_id))
+                mcp_server = self._transform_runtime_to_mcp_server(runtime_detail, region, author_id)
+                if enrich_protocol_payloads:
+                    await self._enrich_mcp_server(mcp_server)
+                mcp_servers.append(mcp_server)
                 continue
 
             skipped_runtimes.append(
@@ -282,6 +329,7 @@ class AgentCoreFederationClient(BaseFederationClient):
 
         client = session.client("bedrock-agentcore-control", region_name=region)
         self._control_clients[region] = client
+        self._aws_sessions[region] = session
         return client
 
     async def _get_control_client(self, region: str) -> Any:
@@ -302,6 +350,13 @@ class AgentCoreFederationClient(BaseFederationClient):
             if cached:
                 return cached
             return await asyncio.to_thread(self._init_boto3_client, region)
+
+    async def _get_session(self, region: str) -> Any:
+        session = self._aws_sessions.get(region)
+        if session:
+            return session
+        await self._get_control_client(region)
+        return self._aws_sessions.get(region)
 
     def _list_gateways(self, control_client: Any) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
@@ -463,6 +518,127 @@ class AgentCoreFederationClient(BaseFederationClient):
         }
         return ExtendedMCPServer.from_server_info(server_info=server_info, is_enabled=True)
 
+    async def _enrich_mcp_server(self, server: ExtendedMCPServer) -> None:
+        """
+        Retrieve MCP protocol payloads (tools/resources/prompts/capabilities) from runtime endpoint.
+
+        Failures are non-fatal and recorded in federationMetadata.enrichmentError.
+        """
+        config = server.config or {}
+        runtime_url = config.get("url")
+        if not runtime_url:
+            return
+
+        try:
+            auth_headers, httpx_auth = await self._build_runtime_http_auth(metadata=server.federationMetadata or {})
+            result = await get_tools_and_capabilities_from_server(
+                runtime_url,
+                headers=auth_headers,
+                transport_type=config.get("type"),
+                include_resources=True,
+                include_prompts=True,
+                httpx_auth=httpx_auth,
+            )
+        except Exception as exc:
+            logger.warning("MCP runtime enrichment failed for %s: %s", server.serverName, exc)
+            metadata = dict(server.federationMetadata or {})
+            metadata["enrichmentError"] = f"mcp enrichment failed: {exc}"
+            metadata["enrichedAt"] = datetime.now(UTC)
+            server.federationMetadata = metadata
+            return
+
+        tools = result.tools or []
+        resources = result.resources or []
+        prompts = result.prompts or []
+        capabilities = result.capabilities or {}
+
+        config["toolFunctions"] = self._convert_tools_to_tool_functions(tools, server.serverName)
+        config["tools"] = ", ".join([tool.get("name", "") for tool in tools if tool.get("name")])
+        config["resources"] = resources
+        config["prompts"] = prompts
+        config["capabilities"] = json.dumps(capabilities, ensure_ascii=False) if capabilities else "{}"
+        config["requiresInit"] = bool(result.requires_init) if result.requires_init is not None else False
+        server.config = config
+        server.numTools = len(tools)
+
+        metadata = dict(server.federationMetadata or {})
+        metadata["enrichedAt"] = datetime.now(UTC)
+        metadata["enrichmentError"] = result.error_message
+        server.federationMetadata = metadata
+
+    async def _enrich_a2a_agent(self, agent: A2AAgent, runtime_detail: dict[str, Any], region: str) -> None:
+        """
+        Retrieve A2A well-known agent card and map skills/capabilities into A2AAgent.card.
+
+        Failures are non-fatal and recorded in wellKnown/federationMetadata.
+        """
+        runtime_arn = runtime_detail.get("agentRuntimeArn", "")
+        if not runtime_arn:
+            return
+
+        escaped_runtime_arn = quote(runtime_arn, safe="")
+        card_url = (
+            f"https://bedrock-agentcore.{region}.amazonaws.com/runtimes/{escaped_runtime_arn}/invocations"
+            f"/.well-known/agent-card.json?qualifier=DEFAULT"
+        )
+
+        try:
+            auth_headers, httpx_auth = await self._build_runtime_http_auth(
+                metadata=agent.federationMetadata or {},
+                runtime_detail=runtime_detail,
+            )
+            async with httpx.AsyncClient(timeout=20.0, headers=auth_headers, auth=httpx_auth) as client:
+                response = await client.get(card_url)
+                response.raise_for_status()
+                card_data = response.json()
+        except Exception as exc:
+            logger.warning("A2A runtime enrichment failed for %s: %s", agent.card.name, exc)
+            if agent.wellKnown:
+                agent.wellKnown.lastSyncStatus = "failed"
+                agent.wellKnown.syncError = str(exc)
+                agent.wellKnown.lastSyncAt = datetime.now(UTC)
+            metadata = dict(agent.federationMetadata or {})
+            metadata["enrichedAt"] = datetime.now(UTC)
+            metadata["enrichmentError"] = f"a2a enrichment failed: {exc}"
+            agent.federationMetadata = metadata
+            return
+
+        # Build card payload with runtime defaults as fallback.
+        fallback_card = agent.card.model_dump(mode="json")
+        merged = {**fallback_card, **card_data}
+
+        # Align path/url with runtime endpoint that registry can invoke.
+        merged["url"] = fallback_card.get("url")
+
+        refreshed = A2AAgent.from_a2a_agent_card(
+            card_data=merged,
+            path=agent.path,
+            author=agent.author,
+            isEnabled=agent.isEnabled,
+            status=agent.status,
+            tags=agent.tags,
+            registeredBy=agent.registeredBy,
+            registeredAt=agent.registeredAt,
+            federationSource=agent.federationSource,
+            federationId=agent.federationId,
+            federationGatewayArn=agent.federationGatewayArn,
+            federationSyncedAt=agent.federationSyncedAt or datetime.now(UTC),
+            federationMetadata=agent.federationMetadata,
+            wellKnown=agent.wellKnown.model_dump(mode="json") if agent.wellKnown else None,
+        )
+
+        agent.card = refreshed.card
+        if agent.wellKnown:
+            agent.wellKnown.lastSyncStatus = "success"
+            agent.wellKnown.syncError = None
+            agent.wellKnown.lastSyncAt = datetime.now(UTC)
+            agent.wellKnown.lastSyncVersion = str(agent.card.version)
+
+        metadata = dict(agent.federationMetadata or {})
+        metadata["enrichedAt"] = datetime.now(UTC)
+        metadata["enrichmentError"] = None
+        agent.federationMetadata = metadata
+
     def _transform_runtime_to_a2a_agent(
         self,
         runtime_detail: dict[str, Any],
@@ -474,7 +650,7 @@ class AgentCoreFederationClient(BaseFederationClient):
         runtime_version = runtime_detail.get("agentRuntimeVersion")
         runtime_name = runtime_detail.get("agentRuntimeName", "agentcore-runtime")
         escaped_runtime_arn = quote(runtime_arn, safe="")
-        runtime_url = f"https://bedrock-agentcore.{region}.amazonaws.com/runtimes/{escaped_runtime_arn}/invocations/"
+        runtime_url = f"https://bedrock-agentcore.{region}.amazonaws.com/runtimes/{escaped_runtime_arn}/invocations"
 
         card_data = {
             "name": runtime_name,
@@ -518,7 +694,7 @@ class AgentCoreFederationClient(BaseFederationClient):
             },
             wellKnown={
                 "enabled": True,
-                "url": f"{runtime_url}.well-known/agent-card.json",
+                "url": f"{runtime_url}/.well-known/agent-card.json?qualifier=DEFAULT",
                 "lastSyncStatus": "success" if runtime_detail.get("status") == "READY" else "failed",
                 "lastSyncVersion": str(runtime_version) if runtime_version else "1.0.0",
                 "syncError": None,
@@ -538,7 +714,8 @@ class AgentCoreFederationClient(BaseFederationClient):
         runtime_version = runtime_detail.get("agentRuntimeVersion")
         escaped_runtime_arn = quote(runtime_arn, safe="")
         runtime_mcp_url = (
-            f"https://bedrock-agentcore.{region}.amazonaws.com/runtimes/{escaped_runtime_arn}/invocations/mcp/"
+            f"https://bedrock-agentcore.{region}.amazonaws.com/runtimes/{escaped_runtime_arn}/invocations"
+            f"?qualifier=DEFAULT"
         )
 
         server_info = {
@@ -569,6 +746,7 @@ class AgentCoreFederationClient(BaseFederationClient):
                 "lastUpdatedAt": runtime_detail.get("lastUpdatedAt"),
                 "createdAt": runtime_detail.get("createdAt"),
                 "protocolConfiguration": runtime_detail.get("protocolConfiguration"),
+                "authorizerConfiguration": runtime_detail.get("authorizerConfiguration"),
             },
         }
         return ExtendedMCPServer.from_server_info(server_info=server_info, is_enabled=True)
@@ -576,6 +754,74 @@ class AgentCoreFederationClient(BaseFederationClient):
     def _extract_runtime_protocol(self, runtime_detail: dict[str, Any]) -> str:
         config = runtime_detail.get("protocolConfiguration") or {}
         return str(config.get("serverProtocol", "")).upper()
+
+    def _convert_tools_to_tool_functions(self, tool_list: list[dict[str, Any]], server_name: str) -> dict[str, Any]:
+        """
+        Convert MCP tool list into registry toolFunctions schema.
+        """
+        tool_functions: dict[str, Any] = {}
+        server_suffix = "".join(ch for ch in server_name.lower() if ch.isalnum() or ch == "_")
+
+        for tool in tool_list:
+            tool_name = str(tool.get("name", "")).strip()
+            if not tool_name:
+                continue
+            function_name = f"{tool_name}_mcp_{server_suffix}"
+            tool_functions[function_name] = {
+                "type": "function",
+                "function": {
+                    "name": function_name,
+                    "description": tool.get("description", ""),
+                    "parameters": tool.get("inputSchema", {"type": "object", "properties": {}}),
+                },
+                "mcpToolName": tool_name,
+            }
+        return tool_functions
+
+    async def _build_runtime_http_auth(
+        self,
+        metadata: dict[str, Any],
+        runtime_detail: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, str], httpx.Auth | None]:
+        """
+        Build authentication material for runtime data-plane requests.
+
+        Supported modes:
+        - IAM (SigV4)
+        - JWT (Authorization Bearer)
+        """
+        mode = self._detect_runtime_auth_mode(metadata, runtime_detail)
+        if mode == "JWT":
+            token = (
+                getattr(REGISTRY_CONSTANTS, "AGENTCORE_RUNTIME_JWT", None)
+                or os.getenv("AGENTCORE_RUNTIME_JWT")
+                or os.getenv("AGENTCORE_RUNTIME_BEARER_TOKEN")
+            )
+            if not token:
+                raise ValueError("Runtime auth mode JWT detected but no AGENTCORE_RUNTIME_JWT token was configured")
+            return {"Authorization": f"Bearer {token}"}, None
+
+        region = self._extract_region_from_arn(metadata.get("runtimeArn", ""), self.region)
+        session = await self._get_session(region)
+        if not session:
+            raise ValueError(f"Failed to initialize AWS session for runtime auth in region {region}")
+        return {}, _SigV4HttpxAuth("bedrock-agentcore", region, session.get_credentials)
+
+    def _detect_runtime_auth_mode(
+        self,
+        metadata: dict[str, Any],
+        runtime_detail: dict[str, Any] | None = None,
+    ) -> str:
+        """
+        Detect runtime data-plane auth mode from authorizer configuration.
+        Defaults to IAM when not explicitly JWT.
+        """
+        config = (runtime_detail or {}).get("authorizerConfiguration") or metadata.get("authorizerConfiguration") or {}
+
+        text = json.dumps(config, default=str).upper()
+        if "JWT" in text:
+            return "JWT"
+        return "IAM"
 
     def _extract_target_type(self, target_data: dict[str, Any]) -> AgentCoreTargetType:
         """Infer gateway target type from GetGatewayTarget.targetConfiguration payload."""

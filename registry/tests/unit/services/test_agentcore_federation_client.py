@@ -61,3 +61,18 @@ class TestAgentCoreFederationClientCompatibilityWrappers:
         assert isinstance(result, list)
         assert all(isinstance(item, dict) for item in result)
         assert [item["serverName"] for item in result] == ["s1", "s2"]
+
+
+@pytest.mark.unit
+class TestAgentCoreFederationClientAuthDetection:
+    def test_detect_runtime_auth_mode_defaults_to_iam(self):
+        client = AgentCoreFederationClient()
+        mode = client._detect_runtime_auth_mode(metadata={})
+        assert mode == "IAM"
+
+    def test_detect_runtime_auth_mode_detects_jwt(self):
+        client = AgentCoreFederationClient()
+        mode = client._detect_runtime_auth_mode(
+            metadata={"authorizerConfiguration": {"customJWTAuthorizerConfiguration": {"discoveryUrl": "x"}}}
+        )
+        assert mode == "JWT"

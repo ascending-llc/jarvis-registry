@@ -36,6 +36,25 @@ SESSION_TTL_MINUTES = 15  # MCP session timeout
 SESSION_KEY_PREFIX = "mcp_session:"
 
 
+def _flatten_exception_group_messages(error: BaseException) -> list[str]:
+    """
+    Flatten nested ExceptionGroup instances into readable leaf error messages.
+    """
+    if isinstance(error, ExceptionGroup):
+        flattened: list[str] = []
+        for nested in error.exceptions:
+            flattened.extend(_flatten_exception_group_messages(nested))
+        return flattened
+    return [f"{type(error).__name__}: {error}"]
+
+
+def _format_exception_group(error: ExceptionGroup) -> str:
+    details = _flatten_exception_group_messages(error)
+    if not details:
+        return "ExceptionGroup with no leaf exceptions"
+    return " | ".join(details)
+
+
 def get_session(session_key: str) -> tuple[str, bool] | None:
     """Get session ID and initialization status from Redis if not expired."""
     redis_client = get_redis_client()
@@ -557,6 +576,7 @@ async def _get_from_streamable_http(
     include_capabilities: bool = True,
     include_resources: bool = True,
     include_prompts: bool = True,
+    httpx_auth: Any = None,
 ) -> MCPServerData:
     """
     Consolidated method to get tools, resources, prompts, and optionally capabilities using streamable-http transport.
@@ -595,7 +615,7 @@ async def _get_from_streamable_http(
 
     try:
         # Create custom httpx client with headers
-        async with httpx.AsyncClient(headers=headers, timeout=30.0) as http_client:
+        async with httpx.AsyncClient(headers=headers, timeout=30.0, auth=httpx_auth) as http_client:
             async with streamable_http_client(url=mcp_url, http_client=http_client) as (read, write, get_session_id):
                 async with ClientSession(read, write) as session:
                     init_result = await asyncio.wait_for(session.initialize(), timeout=mcp_config.INIT_TIMEOUT)
@@ -652,6 +672,10 @@ async def _get_from_streamable_http(
     except TimeoutError:
         logger.error(f"Timeout connecting to {mcp_url}")
         return MCPServerData(None, None, None, None, "Timeout connecting to server")
+    except ExceptionGroup as eg:
+        detailed_error = _format_exception_group(eg)
+        logger.error(f"Failed to connect to {mcp_url}: ExceptionGroup - {detailed_error}")
+        return MCPServerData(None, None, None, None, f"Connection failed: {detailed_error}")
     except Exception as e:
         logger.error(f"Failed to connect to {mcp_url}: {type(e).__name__} - {e}")
         return MCPServerData(None, None, None, None, f"Connection failed: {type(e).__name__} - {e}")
@@ -677,6 +701,7 @@ async def _get_from_sse(
     include_capabilities: bool = True,
     include_resources: bool = True,
     include_prompts: bool = True,
+    httpx_auth: Any = None,
 ) -> MCPServerData:
     """
     Consolidated method to get tools, resources, prompts, and optionally capabilities using SSE transport.
@@ -734,7 +759,7 @@ async def _get_from_sse(
 
         try:
             # Create custom httpx client with headers
-            async with httpx.AsyncClient(headers=headers, timeout=30.0) as http_client:
+            async with httpx.AsyncClient(headers=headers, timeout=30.0, auth=httpx_auth) as http_client:
                 async with sse_client(mcp_server_url, http_client=http_client) as (read, write):
                     async with ClientSession(read, write, sampling_callback=None) as session:
                         init_result = await asyncio.wait_for(session.initialize(), timeout=mcp_config.INIT_TIMEOUT)
@@ -794,6 +819,10 @@ async def _get_from_sse(
     except TimeoutError:
         logger.error(f"Timeout connecting to {mcp_server_url}")
         return MCPServerData(None, None, None, None, "Timeout connecting to server")
+    except ExceptionGroup as eg:
+        detailed_error = _format_exception_group(eg)
+        logger.error(f"Failed to connect to {mcp_server_url}: ExceptionGroup - {detailed_error}")
+        return MCPServerData(None, None, None, None, f"Connection failed: {detailed_error}")
     except Exception as e:
         logger.error(f"Failed to connect to {mcp_server_url}: {type(e).__name__} - {e}")
         return MCPServerData(None, None, None, None, f"Connection failed: {type(e).__name__} - {e}")
@@ -1021,6 +1050,7 @@ async def get_tools_and_capabilities_from_server(
     transport_type: str = None,
     include_resources: bool = True,
     include_prompts: bool = True,
+    httpx_auth: Any = None,
 ) -> MCPServerData:
     """
     Get tools, resources, prompts, and capabilities from server.
@@ -1062,6 +1092,7 @@ async def get_tools_and_capabilities_from_server(
                 include_capabilities=True,
                 include_resources=include_resources,
                 include_prompts=include_prompts,
+                httpx_auth=httpx_auth,
             )
         elif transport_type == mcp_config.TRANSPORT_SSE or transport_type == "sse":
             return await _get_from_sse(
@@ -1071,6 +1102,7 @@ async def get_tools_and_capabilities_from_server(
                 include_capabilities=True,
                 include_resources=include_resources,
                 include_prompts=include_prompts,
+                httpx_auth=httpx_auth,
             )
         else:
             logger.error(f"Unsupported transport type: {transport_type}")

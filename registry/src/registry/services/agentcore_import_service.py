@@ -31,8 +31,8 @@ class AgentCoreImportService:
     - AgentCore is source of truth for updates
     """
 
-    _IGNORE_FEDERATION_METADATA_KEYS = {"createdAt", "lastUpdatedAt"}
-    _IGNORE_WELL_KNOWN_KEYS = {"lastSyncAt"}
+    _IGNORE_FEDERATION_METADATA_KEYS = {"createdAt", "lastUpdatedAt", "enrichedAt", "enrichmentError"}
+    _IGNORE_WELL_KNOWN_KEYS = {"lastSyncAt", "syncError"}
 
     def __init__(
         self,
@@ -602,6 +602,9 @@ class AgentCoreImportService:
 
         if isinstance(value, datetime):
             return value.astimezone(UTC).isoformat()
+
+        if isinstance(value, str) and value.startswith(("http://", "https://")):
+            return value.rstrip("/")
 
         return value
 
