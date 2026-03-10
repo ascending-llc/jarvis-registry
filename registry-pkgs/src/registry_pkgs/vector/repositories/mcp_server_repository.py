@@ -97,7 +97,6 @@ class MCPServerRepository(Repository[ExtendedMCPServer]):
             logger.info(
                 f"Indexed server '{server_name}' (server_id: {server_id}): {'success' if success else 'failed'}"
             )
-
             return {"indexed_tools": 1 if success else 0, "failed_tools": 0 if success else 1, "deleted": deleted}
 
         except Exception as e:
