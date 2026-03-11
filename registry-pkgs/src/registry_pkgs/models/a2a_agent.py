@@ -58,6 +58,8 @@ from beanie import Document, Insert, PydanticObjectId, Replace, Save, before_eve
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 from pymongo import IndexModel
 
+from .enums import FederationSource
+
 logger = logging.getLogger(__name__)
 
 # ========== Constants ==========
@@ -131,6 +133,12 @@ class A2AAgent(Document):
     createdAt: datetime = Field(default_factory=lambda: datetime.now(UTC), description="Creation timestamp")
     updatedAt: datetime = Field(default_factory=lambda: datetime.now(UTC), description="Last update timestamp")
 
+    # Federation sync fields (root level)
+    federationSource: FederationSource | None = None
+    federationId: str | None = None
+    federationSyncedAt: datetime | None = None
+    federationMetadata: dict[str, Any] | None = None
+
     # ========== Settings ==========
     class Settings:
         name = "a2a_agents"
@@ -146,6 +154,7 @@ class A2AAgent(Document):
             [("card.name", "text")],
             [("author", 1)],
             [("registeredBy", 1)],
+            IndexModel([("federationSource", 1), ("federationId", 1)], unique=True, sparse=True),
         ]
 
     # ========== Lifecycle Hooks ==========
@@ -262,6 +271,10 @@ class A2AAgent(Document):
             registeredBy=registry_fields.get("registeredBy"),
             registeredAt=registry_fields.get("registeredAt"),
             wellKnown=registry_fields.get("wellKnown"),
+            federationSource=registry_fields.get("federationSource"),
+            federationId=registry_fields.get("federationId"),
+            federationSyncedAt=registry_fields.get("federationSyncedAt"),
+            federationMetadata=registry_fields.get("federationMetadata"),
         )
 
     # ========== Pydantic Configuration ==========

@@ -29,3 +29,17 @@ class RoleBits:
     EDITOR = PermissionBits.VIEW | PermissionBits.EDIT  # 3
     MANAGER = PermissionBits.VIEW | PermissionBits.EDIT | PermissionBits.DELETE  # 7
     OWNER = PermissionBits.VIEW | PermissionBits.EDIT | PermissionBits.DELETE | PermissionBits.SHARE  # 15
+
+
+class FederationSource(StrEnum):
+    AGENTCORE = "agentcore"
+    ANTHROPIC = "anthropic"
+    ASOR = "asor"
+
+
+class OAuthProviderType(StrEnum):
+    COGNITO = "cognito"
+    AUTH0 = "auth0"
+    OKTA = "okta"
+    ENTRA_ID = "entra_id"
+    CUSTOM_OAUTH2 = "custom"

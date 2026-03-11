@@ -88,6 +88,7 @@ class RegistryConstants(BaseModel):
     AWS_SECRET_ACCESS_KEY: str = os.getenv("AWS_SECRET_ACCESS_KEY")
     AWS_SESSION_TOKEN: str = os.getenv("AWS_SESSION_TOKEN")
     AWS_REGION: str = os.getenv("AWS_REGION")
+    AGENTCORE_ASSUME_ROLE_ARN: str | None = os.getenv("AGENTCORE_ASSUME_ROLE_ARN")
 
     REDIS_URI: str = os.getenv("REDIS_URI", "redis://registry-redis:6379/1")
     REDIS_KEY_PREFIX: str = os.getenv("REDIS_KEY_PREFIX", "jarvis-registry")

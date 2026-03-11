@@ -53,9 +53,10 @@ from beanie import Document, PydanticObjectId
 from langchain_core.documents import Document as LangChainDocument
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pydantic import Field
+from pymongo import IndexModel
 
 from ..core.config import settings
-from ..models.enums import ServerEntityType
+from ..models.enums import FederationSource, ServerEntityType
 
 logger = logging.getLogger(__name__)
 
@@ -151,12 +152,19 @@ class ExtendedMCPServer(Document):
     createdAt: datetime | None = Field(default=None, alias="createdAt")
     updatedAt: datetime | None = Field(default=None, alias="updatedAt")
 
+    # Federation sync fields (root level, source tracking metadata)
+    federationSource: FederationSource | None = None
+    federationId: str | None = None
+    federationSyncedAt: datetime | None = None
+    federationMetadata: dict[str, Any] | None = None
+
     class Settings:
         name = "mcpservers"
         keep_nulls = False
         use_state_management = True
-        # Note: No indexes defined here - this file only defines field structure
-        # Indexes should be managed separately via database migrations
+        indexes = [
+            IndexModel([("federationSource", 1), ("federationId", 1)], unique=True, sparse=True),
+        ]
 
     # ========== Vector Search Integration (Weaviate) ==========
     COLLECTION_NAME: ClassVar[str] = "Jarvis_Registry"
@@ -501,6 +509,10 @@ class ExtendedMCPServer(Document):
             status=status,
             tags=server_info.get("tags", []),
             author=server_info.get("author") or PydanticObjectId(),
+            federationSource=server_info.get("federationSource"),
+            federationId=server_info.get("federationId"),
+            federationSyncedAt=server_info.get("federationSyncedAt"),
+            federationMetadata=server_info.get("federationMetadata"),
         )
 
 
