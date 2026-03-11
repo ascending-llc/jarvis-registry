@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 from registry.auth.dependencies import CurrentUser
 from registry.core.telemetry_decorators import track_registry_operation
+from registry.schemas.case_conversion import APIBaseModel
 from registry.services.search.service import faiss_service
 from registry.services.server_service import server_service_v1
 from registry.utils.otel_metrics import record_tool_discovery
@@ -26,61 +27,61 @@ mcp_server_repo = get_mcp_server_repo()
 EntityType = Literal["mcp_server", "tool", "a2a_agent"]
 
 
-class MatchingToolResult(BaseModel):
-    tool_name: str
+class MatchingToolResult(APIBaseModel):
+    toolName: str
     description: str | None = None
-    relevance_score: float = Field(0.0, ge=0.0, le=1.0)
-    match_context: str | None = None
+    relevanceScore: float = Field(0.0, ge=0.0, le=1.0)
+    matchContext: str | None = None
 
 
-class ServerSearchResult(BaseModel):
+class ServerSearchResult(APIBaseModel):
     path: str
-    server_name: str
+    serverName: str
     description: str | None = None
     tags: list[str] = Field(default_factory=list)
-    num_tools: int = 0
-    is_enabled: bool = False
-    relevance_score: float = Field(..., ge=0.0, le=1.0)
-    match_context: str | None = None
-    matching_tools: list[MatchingToolResult] = Field(default_factory=list)
+    numTools: int = 0
+    isEnabled: bool = False
+    relevanceScore: float = Field(..., ge=0.0, le=1.0)
+    matchContext: str | None = None
+    matchingTools: list[MatchingToolResult] = Field(default_factory=list)
 
 
-class ToolSearchResult(BaseModel):
-    server_path: str
-    server_name: str
-    tool_name: str
+class ToolSearchResult(APIBaseModel):
+    serverPath: str
+    serverName: str
+    toolName: str
     description: str | None = None
-    relevance_score: float = Field(..., ge=0.0, le=1.0)
-    match_context: str | None = None
+    relevanceScore: float = Field(..., ge=0.0, le=1.0)
+    matchContext: str | None = None
 
 
-class AgentSearchResult(BaseModel):
+class AgentSearchResult(APIBaseModel):
     path: str
-    agent_name: str
+    agentName: str
     description: str | None = None
     tags: list[str] = Field(default_factory=list)
     skills: list[str] = Field(default_factory=list)
-    trust_level: str | None = None
+    trustLevel: str | None = None
     visibility: str | None = None
-    is_enabled: bool = False
-    relevance_score: float = Field(..., ge=0.0, le=1.0)
-    match_context: str | None = None
+    isEnabled: bool = False
+    relevanceScore: float = Field(..., ge=0.0, le=1.0)
+    matchContext: str | None = None
 
 
-class SemanticSearchRequest(BaseModel):
+class SemanticSearchRequest(APIBaseModel):
     query: str = Field(..., min_length=1, max_length=512, description="Natural language query")
-    entity_types: list[EntityType] | None = Field(default=None, description="Optional entity filters")
-    max_results: int = Field(default=10, ge=1, le=50, description="Maximum results per entity collection")
+    entityTypes: list[EntityType] | None = Field(default=None, description="Optional entity filters")
+    maxResults: int = Field(default=10, ge=1, le=50, description="Maximum results per entity collection")
 
 
-class SemanticSearchResponse(BaseModel):
+class SemanticSearchResponse(APIBaseModel):
     query: str
     servers: list[ServerSearchResult] = Field(default_factory=list)
     tools: list[ToolSearchResult] = Field(default_factory=list)
     agents: list[AgentSearchResult] = Field(default_factory=list)
-    total_servers: int = 0
-    total_tools: int = 0
-    total_agents: int = 0
+    totalServers: int = 0
+    totalTools: int = 0
+    totalAgents: int = 0
 
 
 def _user_can_access_agent(agent_path: str, user_context: dict) -> bool:
@@ -106,6 +107,7 @@ def _user_can_access_agent(agent_path: str, user_context: dict) -> bool:
 @router.post(
     "/search/semantic",
     response_model=SemanticSearchResponse,
+    response_model_by_alias=True,
     summary="Unified semantic search for MCP servers and tools",
 )
 @track_registry_operation("search", resource_type="semantic")
@@ -128,16 +130,16 @@ async def semantic_search(
     logger.info(
         "Semantic search requested by %s (entities=%s, max=%s)",
         user_context.get("username"),
-        search_request.entity_types or ["mcp_server", "tool"],
-        search_request.max_results,
+        search_request.entityTypes or ["mcp_server", "tool"],
+        search_request.maxResults,
     )
 
     try:
         try:
             raw_results = await faiss_service.search_mixed(
                 query=search_request.query,
-                entity_types=search_request.entity_types,
-                max_results=search_request.max_results,
+                entity_types=search_request.entityTypes,
+                max_results=search_request.maxResults,
             )
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
@@ -151,10 +153,10 @@ async def semantic_search(
         for server in raw_results.get("servers", []):
             matching_tools = [
                 MatchingToolResult(
-                    tool_name=tool.get("tool_name", ""),
+                    toolName=tool.get("tool_name", ""),
                     description=tool.get("description"),
-                    relevance_score=tool.get("relevance_score", 0.0),
-                    match_context=tool.get("match_context"),
+                    relevanceScore=tool.get("relevance_score", 0.0),
+                    matchContext=tool.get("match_context"),
                 )
                 for tool in server.get("matching_tools", [])
             ]
@@ -162,14 +164,14 @@ async def semantic_search(
             filtered_servers.append(
                 ServerSearchResult(
                     path=server.get("path", ""),
-                    server_name=server.get("server_name", ""),
+                    serverName=server.get("server_name", ""),
                     description=server.get("description"),
                     tags=server.get("tags", []),
-                    num_tools=server.get("num_tools", 0),
-                    is_enabled=server.get("is_enabled", False),
-                    relevance_score=server.get("relevance_score", 0.0),
-                    match_context=server.get("match_context"),
-                    matching_tools=matching_tools,
+                    numTools=server.get("num_tools", 0),
+                    isEnabled=server.get("is_enabled", False),
+                    relevanceScore=server.get("relevance_score", 0.0),
+                    matchContext=server.get("match_context"),
+                    matchingTools=matching_tools,
                 )
             )
 
@@ -178,12 +180,12 @@ async def semantic_search(
             server_name = tool.get("server_name", "")
             filtered_tools.append(
                 ToolSearchResult(
-                    server_path=server_path,
-                    server_name=server_name,
-                    tool_name=tool.get("tool_name", ""),
+                    serverPath=server_path,
+                    serverName=server_name,
+                    toolName=tool.get("tool_name", ""),
                     description=tool.get("description"),
-                    relevance_score=tool.get("relevance_score", 0.0),
-                    match_context=tool.get("match_context"),
+                    relevanceScore=tool.get("relevance_score", 0.0),
+                    matchContext=tool.get("match_context"),
                 )
             )
 
@@ -206,15 +208,15 @@ async def semantic_search(
             filtered_agents.append(
                 AgentSearchResult(
                     path=agent_path,
-                    agent_name=agent_card_dict.get("name", agent.get("agent_name", agent_path.strip("/"))),
+                    agentName=agent_card_dict.get("name", agent.get("agent_name", agent_path.strip("/"))),
                     description=agent_card_dict.get("description", agent.get("description")),
                     tags=tags or [],
                     skills=[s for s in skills if s],
-                    trust_level=agent_card_dict.get("trust_level"),
+                    trustLevel=agent_card_dict.get("trust_level"),
                     visibility=agent_card_dict.get("visibility"),
-                    is_enabled=agent_card_dict.get("is_enabled", False),
-                    relevance_score=agent.get("relevance_score", 0.0),
-                    match_context=agent.get("match_context") or agent_card_dict.get("description"),
+                    isEnabled=agent_card_dict.get("is_enabled", False),
+                    relevanceScore=agent.get("relevance_score", 0.0),
+                    matchContext=agent.get("match_context") or agent_card_dict.get("description"),
                 )
             )
 
@@ -226,9 +228,9 @@ async def semantic_search(
             servers=filtered_servers,
             tools=filtered_tools,
             agents=filtered_agents,
-            total_servers=len(filtered_servers),
-            total_tools=len(filtered_tools),
-            total_agents=len(filtered_agents),
+            totalServers=len(filtered_servers),
+            totalTools=len(filtered_tools),
+            totalAgents=len(filtered_agents),
         )
     finally:
         # Record tool discovery metrics per discovered server

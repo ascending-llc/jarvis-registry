@@ -7,33 +7,33 @@ import McpIcon from '@/assets/McpIcon';
 import { useGlobal } from '@/contexts/GlobalContext';
 import { useServer } from '@/contexts/ServerContext';
 import SERVICES from '@/services';
-import type { GET_SERVERS_DETAIL_RESPONSE, Server } from '@/services/server/type';
+import type { GetServersDetailResponse, Server } from '@/services/server/type';
 import MainConfigForm from './MainConfigForm';
 import type { AuthenticationConfig as AuthConfigType, ServerConfig } from './types';
 
-const DEFAULT_AUTH_CONFIG: AuthConfigType = { type: 'auto', source: 'admin', authorization_type: 'bearer' };
+const DEFAULT_AUTH_CONFIG: AuthConfigType = { type: 'auto', source: 'admin', authorizationType: 'bearer' };
 
-const AUTH_ERROR_KEYS = ['key', 'custom_header', 'authorization_url', 'token_url'] as const;
+const AUTH_ERROR_KEYS = ['key', 'customHeader', 'authorizationUrl', 'tokenUrl'] as const;
 
-const parseAuthConfig = (result: GET_SERVERS_DETAIL_RESPONSE): AuthConfigType => {
+const parseAuthConfig = (result: GetServersDetailResponse): AuthConfigType => {
   if (result.apiKey) {
     return {
       type: 'apiKey',
       source: result.apiKey.source,
-      authorization_type: result.apiKey.authorization_type,
+      authorizationType: result.apiKey.authorizationType,
       key: result.apiKey.key,
-      custom_header: result.apiKey.custom_header,
+      customHeader: result.apiKey.customHeader,
     };
   }
-  if (result.oauth || result.requiresOAuth) {
+  if (result.oauth || result.requiresOauth) {
     return {
       type: 'oauth',
-      client_id: result.oauth?.client_id,
-      client_secret: result.oauth?.client_secret,
-      authorization_url: result.oauth?.authorization_url,
-      token_url: result.oauth?.token_url,
+      clientId: result.oauth?.clientId,
+      clientSecret: result.oauth?.clientSecret,
+      authorizationUrl: result.oauth?.authorizationUrl,
+      tokenUrl: result.oauth?.tokenUrl,
       scope: result.oauth?.scope,
-      use_dynamic_registration: result.requiresOAuth && !result.oauth,
+      useDynamicRegistration: result.requiresOauth && !result.oauth,
     };
   }
   return { ...DEFAULT_AUTH_CONFIG };
@@ -51,41 +51,41 @@ const processDataByAuthType = (data: ServerConfig, originalData: ServerConfig | 
   };
   switch (data.authConfig.type) {
     case 'auto':
-      return { ...baseData, apiKey: null, oauth: null, requiresOAuth: false };
+      return { ...baseData, apiKey: null, oauth: null, requiresOauth: false };
     case 'apiKey':
       return {
         ...baseData,
         apiKey: {
           source: data.authConfig.source,
-          authorization_type: data.authConfig.authorization_type,
+          authorizationType: data.authConfig.authorizationType,
           ...(data.authConfig.source !== 'user' &&
           data.authConfig.key &&
           data.authConfig.key !== originalData?.authConfig?.key
             ? { key: data.authConfig.key }
             : {}),
-          ...(data.authConfig.authorization_type === 'custom' && data.authConfig.custom_header
-            ? { custom_header: data.authConfig.custom_header }
+          ...(data.authConfig.authorizationType === 'custom' && data.authConfig.customHeader
+            ? { customHeader: data.authConfig.customHeader }
             : {}),
         },
         oauth: null,
-        requiresOAuth: false,
+        requiresOauth: false,
       };
     case 'oauth':
       return {
         ...baseData,
-        oauth: data.authConfig.use_dynamic_registration
+        oauth: data.authConfig.useDynamicRegistration
           ? null
           : {
-              client_id: data.authConfig.client_id,
-              ...(data.authConfig.client_secret !== originalData?.authConfig?.client_secret
-                ? { client_secret: data.authConfig.client_secret }
+              clientId: data.authConfig.clientId,
+              ...(data.authConfig.clientSecret !== originalData?.authConfig?.clientSecret
+                ? { clientSecret: data.authConfig.clientSecret }
                 : {}),
-              authorization_url: data.authConfig.authorization_url,
-              token_url: data.authConfig.token_url,
+              authorizationUrl: data.authConfig.authorizationUrl,
+              tokenUrl: data.authConfig.tokenUrl,
               scope: data.authConfig.scope,
             },
         apiKey: null,
-        requiresOAuth: true,
+        requiresOauth: true,
       };
     default:
       return {};
@@ -113,12 +113,10 @@ const ServerRegistryOrEdit: React.FC = () => {
 
   const [loading, setLoading] = useState(false);
   const [loadingDetail, setLoadingDetail] = useState(false);
-  const [serverDetail, setServerDetail] = useState<GET_SERVERS_DETAIL_RESPONSE | null>(null);
+  const [serverDetail, setServerDetail] = useState<GetServersDetailResponse | null>(null);
   const [formData, setFormData] = useState<ServerConfig>(INIT_DATA);
   const [originalData, setOriginalData] = useState<ServerConfig | null>(null);
   const [errors, setErrors] = useState<Record<string, string | undefined>>({});
-  const [serverData, setServerData] = useState<{ serverName: string; path: string }>({ serverName: '', path: '' });
-  const [showSuccessDialog, setShowSuccessDialog] = useState(false);
 
   const isEditMode = !!id;
   const isReadOnly = searchParams.get('isReadOnly') === 'true';
@@ -133,13 +131,13 @@ const ServerRegistryOrEdit: React.FC = () => {
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !showSuccessDialog) {
+      if (e.key === 'Escape') {
         goBack();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [showSuccessDialog]);
+  }, []);
 
   const getDetail = async () => {
     if (!id) return;
@@ -204,13 +202,13 @@ const ServerRegistryOrEdit: React.FC = () => {
       if (auth.source === 'admin' && !auth.key?.trim()) {
         newErrors.key = 'API Key is required';
       }
-      if (auth.authorization_type === 'custom' && !auth.custom_header?.trim()) {
-        newErrors.custom_header = 'Custom Header Name is required';
+      if (auth.authorizationType === 'custom' && !auth.customHeader?.trim()) {
+        newErrors.customHeader = 'Custom Header Name is required';
       }
     } else if (auth.type === 'oauth') {
-      if (!auth.use_dynamic_registration) {
-        if (!auth.authorization_url?.trim()) newErrors.authorization_url = 'Authorization URL is required';
-        if (!auth.token_url?.trim()) newErrors.token_url = 'Token URL is required';
+      if (!auth.useDynamicRegistration) {
+        if (!auth.authorizationUrl?.trim()) newErrors.authorizationUrl = 'Authorization URL is required';
+        if (!auth.tokenUrl?.trim()) newErrors.tokenUrl = 'Token URL is required';
       }
     }
 
@@ -268,11 +266,11 @@ const ServerRegistryOrEdit: React.FC = () => {
           path: result.path,
           url: result.url,
           tags: result.tags,
-          last_checked_time: result.updatedAt ?? new Date().toISOString(),
+          lastCheckedTime: result.updatedAt ?? new Date().toISOString(),
         });
       } else {
-        const result = await SERVICES.SERVER.createServer(data);
-        setServerData(result);
+        await SERVICES.SERVER.createServer(data);
+        showToast('Server created successfully', 'success');
         refreshServerData(true);
       }
       goBack();

@@ -4,7 +4,7 @@ import FormFields from '@/components/FormFields';
 import { useGlobal } from '@/contexts/GlobalContext';
 import SERVICES from '@/services';
 import Request from '@/services/request';
-import type { GET_SERVERS_DETAIL_RESPONSE } from '@/services/server/type';
+import type { GetServersDetailResponse } from '@/services/server/type';
 import AuthenticationConfig from './AuthenticationConfig';
 import type { ServerConfig } from './types';
 
@@ -12,7 +12,7 @@ const TEST_URL_CANCEL_KEY = 'testServerUrl';
 
 interface MainConfigFormProps {
   formData: ServerConfig;
-  serverDetail: GET_SERVERS_DETAIL_RESPONSE | null;
+  serverDetail: GetServersDetailResponse | null;
   isEditMode?: boolean;
   updateField: (field: keyof ServerConfig, value: any) => void;
   errors?: Record<string, string | undefined>;

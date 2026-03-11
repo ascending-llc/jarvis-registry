@@ -7,6 +7,7 @@ from pydantic import BaseModel
 
 from ...auth.dependencies import CurrentUser
 from ...core.config import settings
+from ...schemas.common_api_schemas import TokenData, TokenGenerateResponse
 from ...utils.keycloak_manager import KEYCLOAK_ADMIN_URL, KEYCLOAK_REALM
 
 logger = logging.getLogger(__name__)
@@ -18,11 +19,11 @@ class RatingRequest(BaseModel):
     rating: int
 
 
-@router.post("/tokens/generate")
+@router.post("/tokens/generate", response_model=TokenGenerateResponse, response_model_by_alias=True)
 async def generate_user_token(
     request: Request,
     user_context: CurrentUser,
-):
+) -> TokenGenerateResponse:
     """
     Generate a JWT token for the authenticated user.
 
@@ -111,21 +112,18 @@ async def generate_user_token(
                     f"Successfully generated token for user '{user_context['username']}' with expiry {expires_in_hours}h"
                 )
 
-                # Format response - remove tokens wrapper and refresh_token
-                formatted_response = {
-                    "success": True,
-                    "token_data": {
-                        "access_token": token_data.get("access_token"),
-                        # Note: refresh_token is intentionally excluded for API tokens
-                        "expires_in": token_data.get("expires_in"),
-                        "token_type": token_data.get("token_type", "Bearer"),
-                        "scope": token_data.get("scope", ""),
-                    },
-                    "user_scopes": user_context["scopes"],
-                    "requested_scopes": requested_scopes or user_context["scopes"],
-                }
-
-                return formatted_response
+                # Format response using Pydantic schema
+                return TokenGenerateResponse(
+                    success=True,
+                    tokenData=TokenData(
+                        accessToken=token_data.get("access_token"),
+                        expiresIn=token_data.get("expires_in"),
+                        tokenType=token_data.get("token_type", "Bearer"),
+                        scope=token_data.get("scope", ""),
+                    ),
+                    userScopes=user_context["scopes"],
+                    requestedScopes=requested_scopes or user_context["scopes"],
+                )
             else:
                 error_detail = "Unknown error"
                 try:

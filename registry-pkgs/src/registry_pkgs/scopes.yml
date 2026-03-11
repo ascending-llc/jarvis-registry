@@ -68,10 +68,13 @@ agents-read:
     endpoint: /agents
   - action: get_agent
     method: GET
-    endpoint: /agents/{path}
+    endpoint: /agents/{agent_id}
+  - action: get_agent_skills
+    method: GET
+    endpoint: /agents/{agent_id}/skills
   - action: get_agent_rating
     method: GET
-    endpoint: /agents/{path}/rating
+    endpoint: /agents/{agent_id}/rating
   - action: discover_agents
     method: POST
     endpoint: /agents/discover
@@ -80,24 +83,24 @@ agents-read:
     endpoint: /agents/discover/semantic
   - action: check_agent_health
     method: POST
-    endpoint: /agents/{path}/health
+    endpoint: /agents/{agent_id}/health
 
 agents-write:
-  - action: publish_agent
+  - action: create_agent
     method: POST
-    endpoint: /agents/register
+    endpoint: /agents
   - action: modify_agent
-    method: PUT
-    endpoint: /agents/{path}
+    method: PATCH
+    endpoint: /agents/{agent_id}
   - action: delete_agent
     method: DELETE
-    endpoint: /agents/{path}
+    endpoint: /agents/{agent_id}
   - action: toggle_agent
     method: POST
-    endpoint: /agents/{path}/toggle
-  - action: rate_agent
+    endpoint: /agents/{agent_id}/toggle
+  - action: sync_wellknown
     method: POST
-    endpoint: /agents/{path}/rate
+    endpoint: /agents/{agent_id}/wellknown
 
 server-write:
   - action: register_service

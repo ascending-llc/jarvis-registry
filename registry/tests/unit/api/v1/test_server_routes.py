@@ -66,7 +66,7 @@ async def test_create_server_route_creates_acl_entry(
         ) as mock_grant_permission,
         patch("registry_pkgs.database.decorators.MongoDB.get_client") as mock_get_client,
         patch(
-            "registry.api.v1.server.server_routes.convert_to_create_response",
+            "registry.api.v1.server.server_routes.convert_to_detail",
             return_value={"id": str(mock_created_server.id)},
         ),
     ):

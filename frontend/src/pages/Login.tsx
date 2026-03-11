@@ -1,8 +1,8 @@
 import { ExclamationTriangleIcon } from '@heroicons/react/24/outline';
-import axios from 'axios';
 import type React from 'react';
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import SERVICES from '@/services';
 import { getBasePath } from '../config';
 
 interface OAuthProvider {
@@ -38,11 +38,11 @@ const Login: React.FC = () => {
     setLoadingProviders(true);
     try {
       console.log('[Login] Fetching OAuth providers from /api/auth/providers');
-      const response = await axios.get('/api/auth/providers');
-      console.log('[Login] Response received:', response.data);
-      console.log('[Login] Providers:', response.data.providers);
-      setOauthProviders(response.data.providers || []);
-      console.log('[Login] State updated with', response.data.providers?.length || 0, 'providers');
+      const response = await SERVICES.AUTH.getAuthProviders();
+      console.log('[Login] Response received:', response);
+      console.log('[Login] Providers:', response.providers);
+      setOauthProviders(response.providers || []);
+      console.log('[Login] State updated with', response.providers?.length || 0, 'providers');
     } catch (error) {
       console.error('[Login] Failed to fetch OAuth providers:', error);
       setError('Failed to load authentication providers. Please refresh the page.');
@@ -57,12 +57,7 @@ const Login: React.FC = () => {
   };
 
   const LoadingSpinner = () => (
-    <svg
-      className='animate-spin h-5 w-5'
-      xmlns='http://www.w3.org/2000/svg'
-      fill='none'
-      viewBox='0 0 24 24'
-    >
+    <svg className='animate-spin h-5 w-5' xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24'>
       <circle className='opacity-25' cx='12' cy='12' r='10' stroke='currentColor' strokeWidth='4'></circle>
       <path
         className='opacity-75'

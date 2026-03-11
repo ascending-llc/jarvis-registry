@@ -4,28 +4,34 @@ from typing import Any
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import RedirectResponse
 
-from ....auth.dependencies import CurrentUser
-from ....auth.oauth.reconnection import get_reconnection_manager
-from ....auth.oauth.types import ClientBranding
-from ....constants import REGISTRY_CONSTANTS
-from ....core.mcp_client import get_oauth_metadata_from_server
-from ....mcpgw.tools.utils import session_store
-from ....schemas.enums import ConnectionState, OAuthFlowStatus
-from ....services.oauth.mcp_service import MCPService, get_mcp_service
-from ....services.oauth.token_service import token_service
-from ....services.server_service import server_service_v1
+from registry.auth.dependencies import CurrentUser
+from registry.auth.oauth.reconnection import get_reconnection_manager
+from registry.auth.oauth.types import ClientBranding
+from registry.constants import REGISTRY_CONSTANTS
+from registry.core.mcp_client import get_oauth_metadata_from_server
+from registry.mcpgw.tools.utils import session_store
+from registry.schemas.common_api_schemas import (
+    OAuthInitiateResponse,
+    OAuthMetadataDiscoverResponse,
+    OAuthOperationResponse,
+    OAuthTokensResponse,
+)
+from registry.schemas.enums import ConnectionState, OAuthFlowStatus
+from registry.services.oauth.mcp_service import MCPService, get_mcp_service
+from registry.services.oauth.token_service import token_service
+from registry.services.server_service import server_service_v1
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/mcp", tags=["oauth"])
 
 
-@router.get("/oauth/discover")
+@router.get("/oauth/discover", response_model=OAuthMetadataDiscoverResponse, response_model_by_alias=True)
 async def discover_oauth_metadata(
     url: str = Query(..., description="MCP server URL to discover OAuth metadata from"),
-) -> dict[str, Any]:
+) -> OAuthMetadataDiscoverResponse:
     """
     Discover OAuth metadata from MCP server's well-known endpoints.
 
@@ -66,11 +72,11 @@ async def discover_oauth_metadata(
             logger.info(
                 f"[OAuth Discovery] No OAuth metadata found for {url} - server may not support OAuth autodiscovery"
             )
-            return {
-                "server_url": url,
-                "metadata": None,
-                "message": "OAuth metadata could not be discovered. This server may not support OAuth autodiscovery or does not expose well-known endpoints.",
-            }
+            return OAuthMetadataDiscoverResponse(
+                serverUrl=url,
+                metadata=None,
+                message="OAuth metadata could not be discovered. This server may not support OAuth autodiscovery or does not expose well-known endpoints.",
+            )
 
         logger.info(
             f"[OAuth Discovery] Successfully discovered OAuth metadata for {url}: "
@@ -78,11 +84,11 @@ async def discover_oauth_metadata(
             f"token_endpoint={metadata.get('token_endpoint', 'N/A')}"
         )
 
-        return {
-            "server_url": url,
-            "metadata": metadata,
-            "message": "OAuth metadata discovered successfully.",
-        }
+        return OAuthMetadataDiscoverResponse(
+            serverUrl=url,
+            metadata=metadata,
+            message="OAuth metadata discovered successfully.",
+        )
 
     except HTTPException:
         # Re-raise HTTP exceptions with their original status code
@@ -95,10 +101,10 @@ async def discover_oauth_metadata(
         )
 
 
-@router.get("/{server_id}/oauth/initiate")
+@router.get("/{server_id}/oauth/initiate", response_model=OAuthInitiateResponse, response_model_by_alias=True)
 async def initiate_oauth_flow(
     server_id: str, user_context: CurrentUser, mcp_service: MCPService = Depends(get_mcp_service)
-) -> JSONResponse:
+) -> OAuthInitiateResponse:
     """
     Initialize OAuth flow
 
@@ -121,15 +127,12 @@ async def initiate_oauth_flow(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to initiate OAuth flow"
             )
 
-        return JSONResponse(
-            status_code=status.HTTP_200_OK,
-            content={
-                "flow_id": flow_id,
-                "authorization_url": auth_url,
-                "server_id": server_id,
-                "user_id": user_id,
-                "server_name": server.serverName,
-            },
+        return OAuthInitiateResponse(
+            flowId=flow_id,
+            authorizationUrl=auth_url,
+            serverId=server_id,
+            userId=user_id,
+            serverName=server.serverName,
         )
     except HTTPException:
         # Re-raise HTTP exceptions with their original status code
@@ -276,10 +279,10 @@ async def oauth_callback(
         return _redirect_to_page(request, server_path, error_msg="callback_failed")
 
 
-@router.get("/oauth/tokens/{flow_id}")
+@router.get("/oauth/tokens/{flow_id}", response_model=OAuthTokensResponse, response_model_by_alias=True)
 async def get_oauth_tokens(
     flow_id: str, current_user: CurrentUser, mcp_service: MCPService = Depends(get_mcp_service)
-) -> dict[str, Any]:
+) -> OAuthTokensResponse:
     """
     Get OAuth tokens
 
@@ -306,7 +309,7 @@ async def get_oauth_tokens(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tokens not found or flow not completed")
 
         # 3. Return tokens
-        return {"tokens": tokens.dict() if hasattr(tokens, "dict") else tokens}
+        return OAuthTokensResponse(tokens=tokens.model_dump() if hasattr(tokens, "model_dump") else tokens)
     except HTTPException:
         # Re-raise HTTP exceptions with their original status code
         raise
@@ -337,10 +340,10 @@ async def get_oauth_status(flow_id: str, mcp_service: MCPService = Depends(get_m
         )
 
 
-@router.post("/oauth/cancel/{server_id}")
+@router.post("/oauth/cancel/{server_id}", response_model=OAuthOperationResponse, response_model_by_alias=True)
 async def cancel_oauth_flow(
     server_id: str, current_user: CurrentUser, mcp_service: MCPService = Depends(get_mcp_service)
-) -> dict[str, Any]:
+) -> OAuthOperationResponse:
     """
     Cancel OAuth flow
 
@@ -378,13 +381,13 @@ async def cancel_oauth_flow(
         except Exception as e:
             logger.warning(f"[OAuth Cancel] Failed to update connection state: {e}")
 
-        return {
-            "success": True,
-            "message": f"OAuth flow for {mcp_server.serverName} cancelled successfully",
-            "server_id": server_id,
-            "user_id": user_id,
-            "server_name": mcp_server.serverName,
-        }
+        return OAuthOperationResponse(
+            success=True,
+            message=f"OAuth flow for {mcp_server.serverName} cancelled successfully",
+            serverId=server_id,
+            userId=user_id,
+            serverName=mcp_server.serverName,
+        )
     except HTTPException:
         # Re-raise HTTP exceptions with their original status code
         raise
@@ -395,10 +398,10 @@ async def cancel_oauth_flow(
         )
 
 
-@router.post("/oauth/refresh/{server_id}")
+@router.post("/oauth/refresh/{server_id}", response_model=OAuthOperationResponse, response_model_by_alias=True)
 async def refresh_oauth_tokens(
     server_id: str, current_user: CurrentUser, mcp_service: MCPService = Depends(get_mcp_service)
-) -> dict[str, Any]:
+) -> OAuthOperationResponse:
     """
     Refresh OAuth tokens
 
@@ -459,13 +462,13 @@ async def refresh_oauth_tokens(
         except Exception as e:
             logger.warning(f"[OAuth Refresh] Could not clear reconnection (manager not initialized): {e}")
 
-        return {
-            "success": True,
-            "message": f"Tokens refreshed successfully for {mcp_server.serverName}",
-            "server_id": server_id,
-            "user_id": user_id,
-            "server_name": mcp_server.serverName,
-        }
+        return OAuthOperationResponse(
+            success=True,
+            message=f"Tokens refreshed successfully for {mcp_server.serverName}",
+            serverId=server_id,
+            userId=user_id,
+            serverName=mcp_server.serverName,
+        )
     except HTTPException:
         # Re-raise HTTP exceptions with their original status code
         raise
@@ -476,10 +479,10 @@ async def refresh_oauth_tokens(
         )
 
 
-@router.delete("/oauth/token/{server_id}")
+@router.delete("/oauth/token/{server_id}", response_model=OAuthOperationResponse, response_model_by_alias=True)
 async def delete_oauth_tokens(
     server_id: str, current_user: CurrentUser, mcp_service: MCPService = Depends(get_mcp_service)
-) -> dict[str, Any]:
+) -> OAuthOperationResponse:
     """
     Delete the OAuth token for this user
 
@@ -495,12 +498,12 @@ async def delete_oauth_tokens(
         results = await token_service.delete_oauth_tokens(user_id, server.serverName)
         logger.info(f"[Delete OAuth Tokens] Deleted OAuth tokens for {server_id}, results: {results}")
         message = "successfully" if results else "failed"
-        return {
-            "success": results,
-            "message": f"oauth delete {message} for {server_id}",
-            "server_id": server_id,
-            "user_id": user_id,
-        }
+        return OAuthOperationResponse(
+            success=results,
+            message=f"oauth delete {message} for {server_id}",
+            serverId=server_id,
+            userId=user_id,
+        )
     except HTTPException as e:
         logger.error(f"Failed to delete OAuth tokens: {str(e)}", exc_info=True)
         raise HTTPException(

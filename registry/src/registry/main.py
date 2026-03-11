@@ -44,6 +44,7 @@ from .health.service import health_service
 # Import MCP app for mounting onto FastAPI
 from .mcpgw import mcp_app
 from .middleware import ScopePermissionMiddleware, UnifiedAuthMiddleware
+from .schemas.common_api_schemas import UserInfoResponse
 
 # Import services for initialization
 from .services.agent_service import agent_service
@@ -163,6 +164,8 @@ app = FastAPI(
     swagger_ui_parameters={
         "persistAuthorization": True,
     },
+    # API responses should use snake_case field names, not aliases
+    generate_unique_id_function=lambda route: f"{route.tags[0]}-{route.name}" if route.tags else route.name,
     openapi_tags=[
         {"name": "Authentication", "description": "OAuth2 and session-based authentication endpoints"},
         {
@@ -282,17 +285,17 @@ app.openapi = custom_openapi
 
 
 # Add user info endpoint for React auth context
-@app.get("/api/auth/me")
-async def get_current_user(user_context: CurrentUser):
+@app.get("/api/auth/me", response_model=UserInfoResponse, response_model_by_alias=True)
+async def get_current_user(user_context: CurrentUser) -> UserInfoResponse:
     """Get current user information for React auth context"""
-    return {
-        "username": user_context.get("username"),
-        "auth_method": user_context.get("auth_method", "basic"),
-        "provider": user_context.get("provider"),
-        "scopes": user_context.get("scopes", []),
-        "groups": user_context.get("groups", []),
-        "user_id": user_context.get("user_id"),
-    }
+    return UserInfoResponse(
+        username=user_context.get("username"),
+        authMethod=user_context.get("auth_method", "basic"),
+        provider=user_context.get("provider"),
+        scopes=user_context.get("scopes", []),
+        groups=user_context.get("groups", []),
+        userId=user_context.get("user_id"),
+    )
 
 
 # Basic health check endpoint

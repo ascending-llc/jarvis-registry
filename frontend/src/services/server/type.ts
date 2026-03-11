@@ -1,29 +1,29 @@
 import type { ApiKeyHeaderFormat, ApiKeySource, ServerType } from '@/pages/ServerRegistryOrEdit/types';
-import type { SERVER_CONNECTION } from '@/services/mcp/type';
+import type { ServerConnection } from '@/services/mcp/type';
 
-export type GET_VERSION_RESPONSE = {
+export type GetVersionResponse = {
   version: string;
 };
 
-export type GET_SERVERS_REQUEST = {
+export type GetServersRequest = {
   query?: string;
   status?: string;
   page?: string;
-  per_page?: string;
+  perPage?: string;
 };
 
 export type OauthConfig = {
-  authorization_url: string;
-  token_url: string;
-  client_id?: string;
-  client_secret?: string;
+  authorizationUrl: string;
+  tokenUrl: string;
+  clientId?: string;
+  clientSecret?: string;
   scope?: string;
 };
 export type ApiKeyConfig = {
   key: string;
   source: ApiKeySource;
-  authorization_type: ApiKeyHeaderFormat;
-  custom_header?: string;
+  authorizationType: ApiKeyHeaderFormat;
+  customHeader?: string;
 };
 export type StatusType = 'active' | 'inactive' | 'error';
 export type PermissionType = {
@@ -40,8 +40,8 @@ export type Server = {
   type: ServerType;
   url: string;
   enabled: boolean;
-  requiresOAuth: boolean;
-  connectionState: SERVER_CONNECTION;
+  requiresOauth: boolean;
+  connectionState: ServerConnection;
   capabilities: string;
   tools: string;
   author: string;
@@ -56,34 +56,34 @@ export type Server = {
   lastConnected: string;
   createdAt: string;
   updatedAt: string;
-  is_python?: boolean;
-  is_official?: boolean;
+  isPython?: boolean;
+  isOfficial?: boolean;
   oauth?: OauthConfig;
   apiKey?: ApiKeyConfig;
 };
 
-export type GET_SERVERS_RESPONSE = {
+export type GetServersResponse = {
   servers: Server[];
   pagination: {
     total: number;
     page: number;
-    per_page: number;
-    total_pages: number;
+    perPage: number;
+    totalPages: number;
   };
 };
 
-export type GET_SERVERS_DETAIL_RESPONSE = Server;
+export type GetServersDetailResponse = Server;
 
-export type TEST_SERVER_URL_REQUEST = {
+export type TestServerUrlRequest = {
   url: string;
   transport: ServerType;
 };
-export type TEST_SERVER_URL_RESPONSE = {
+export type TestServerUrlResponse = {
   success: boolean;
   message: string;
 };
 
-export type CREATE_SERVER_REQUEST = {
+export type CreateServerRequest = {
   serverName: string;
   description: string;
   path: string;
@@ -100,7 +100,7 @@ export type Tool = {
   description?: string;
   inputSchema?: any;
 };
-export type GET_SERVER_TOOLS_RESPONSE = {
+export type GetServerToolsResponse = {
   id: string;
   tools: Tool[];
 };

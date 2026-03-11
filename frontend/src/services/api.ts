@@ -1,16 +1,17 @@
 const BASE_URL = '/api/v1';
+const AUTH_BASE_URL = '/api/auth';
 const MCP_BASE_URL = `${BASE_URL}/mcp`;
 const SERVER_BASE_URL = `${BASE_URL}/servers`;
 
 const API = {
   // auth
-  getAuthMe: '/api/auth/me',
-  getToken: `${BASE_URL}/tokens/generate`,
   logout: '/redirect/logout',
   refreshToken: '/redirect/refresh',
+  getAuthProviders: `${AUTH_BASE_URL}/providers`,
+  getAuthMe: `${AUTH_BASE_URL}/me`,
+  getToken: `${BASE_URL}/tokens/generate`,
 
   // mcp
-  getServerStatus: `${MCP_BASE_URL}/connection/status`,
   getServerStatusById: (id: string) => `${MCP_BASE_URL}/connection/status/${id}`,
   getOauthInitiate: (id: string) => `${MCP_BASE_URL}/${id}/oauth/initiate`,
   getOauthReinit: (id: string) => `${MCP_BASE_URL}/${id}/reinitialize`,
@@ -19,6 +20,7 @@ const API = {
   getDiscover: `${MCP_BASE_URL}/oauth/discover`,
 
   // server
+  getSemanticSearch: `${BASE_URL}/search/semantic`,
   getVersion: '/api/version',
   getServers: `${SERVER_BASE_URL}`,
   getServerDetail: (id: string) => `${SERVER_BASE_URL}/${id}`,

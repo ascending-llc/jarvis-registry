@@ -9,7 +9,7 @@ const TokenGeneration: React.FC = () => {
   const { user } = useAuth();
   const [formData, setFormData] = useState({
     description: '',
-    expires_in_hours: 8,
+    expiresInHours: 8,
     scopeMethod: 'current' as 'current' | 'custom',
     customScopes: '',
   });
@@ -33,7 +33,7 @@ const TokenGeneration: React.FC = () => {
     try {
       const requestData: any = {
         description: formData.description,
-        expires_in_hours: formData.expires_in_hours,
+        expiresInHours: formData.expiresInHours,
       };
 
       // Handle scopes based on the selected method
@@ -45,18 +45,18 @@ const TokenGeneration: React.FC = () => {
             if (!Array.isArray(parsedScopes)) {
               throw new Error('Custom scopes must be a JSON array');
             }
-            requestData.requested_scopes = parsedScopes;
+            requestData.requestedScopes = parsedScopes;
           } catch (_e) {
             setError('Invalid JSON format for custom scopes. Please provide a valid JSON array.');
             return;
           }
         }
       }
-      // If using current scopes, we don't need to set requested_scopes - it will default to user's current scopes
+      // If using current scopes, we don't need to set requestedScopes - it will default to user's current scopes
       const response = await SERVICES.AUTH.getToken(requestData);
 
       if (response.success) {
-        setGeneratedToken(response.token_data.access_token);
+        setGeneratedToken(response.tokenData.accessToken);
         setTokenDetails(response);
       } else {
         throw new Error('Token generation failed');
@@ -187,16 +187,16 @@ const TokenGeneration: React.FC = () => {
                   {/* Expiration */}
                   <div>
                     <label
-                      htmlFor='expires_in_hours'
+                      htmlFor='expiresInHours'
                       className='block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1'
                     >
                       Expires In
                     </label>
                     <select
-                      id='expires_in_hours'
+                      id='expiresInHours'
                       className='input text-sm'
-                      value={formData.expires_in_hours}
-                      onChange={e => setFormData(prev => ({ ...prev, expires_in_hours: parseInt(e.target.value, 10) }))}
+                      value={formData.expiresInHours}
+                      onChange={e => setFormData(prev => ({ ...prev, expiresInHours: parseInt(e.target.value, 10) }))}
                     >
                       {expirationOptions.map(option => (
                         <option key={option.value} value={option.value}>
@@ -343,14 +343,14 @@ const TokenGeneration: React.FC = () => {
               <div className='space-y-2 text-sm mb-4 text-gray-900 dark:text-white'>
                 <p>
                   <strong>Expires:</strong>{' '}
-                  {new Date(Date.now() + tokenDetails.token_data.expires_in * 1000).toLocaleString()}
+                  {new Date(Date.now() + tokenDetails.tokenData.expiresIn * 1000).toLocaleString()}
                 </p>
                 <p>
-                  <strong>Scopes:</strong> {tokenDetails.requested_scopes.join(', ')}
+                  <strong>Scopes:</strong> {tokenDetails.requestedScopes.join(', ')}
                 </p>
-                {tokenDetails.token_data.description && (
+                {tokenDetails.tokenData.description && (
                   <p>
-                    <strong>Description:</strong> {tokenDetails.token_data.description}
+                    <strong>Description:</strong> {tokenDetails.tokenData.description}
                   </p>
                 )}
               </div>

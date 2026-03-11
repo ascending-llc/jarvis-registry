@@ -120,10 +120,10 @@ class TestOAuthRouter:
 
         assert response.status_code == 200
         response_data = response.json()
-        assert response_data["flow_id"] == "test_user-1234567890"
-        assert response_data["authorization_url"] == "https://example.com/auth"
-        assert response_data["server_id"] == TEST_SERVER_ID
-        assert response_data["user_id"] == "test_user"
+        assert response_data["flowId"] == "test_user-1234567890"
+        assert response_data["authorizationUrl"] == "https://example.com/auth"
+        assert response_data["serverId"] == TEST_SERVER_ID
+        assert response_data["userId"] == "test_user"
 
     def test_initiate_oauth_flow_failure(self, client):
         """Test initiation of OAuth flow with error"""
@@ -141,7 +141,7 @@ class TestOAuthRouter:
         """Test successful retrieval of OAuth tokens"""
         # Mock token response
         mock_token = Mock()
-        mock_token.dict.return_value = {
+        mock_token.model_dump.return_value = {
             "access_token": "test_access_token",
             "refresh_token": "test_refresh_token",
             "token_type": "Bearer",
@@ -191,7 +191,7 @@ class TestOAuthRouter:
 
         assert response.status_code == 200
         assert response.json()["success"]
-        assert response.json()["server_id"] == TEST_SERVER_ID
+        assert response.json()["serverId"] == TEST_SERVER_ID
         assert "cancelled successfully" in response.json()["message"]
 
     def test_cancel_oauth_flow_failure(self, client):
@@ -219,7 +219,7 @@ class TestOAuthRouter:
 
         assert response.status_code == 200
         assert response.json()["success"]
-        assert response.json()["server_id"] == TEST_SERVER_ID
+        assert response.json()["serverId"] == TEST_SERVER_ID
         assert "refreshed successfully" in response.json()["message"]
 
     def test_refresh_oauth_tokens_failure(self, client):
@@ -348,8 +348,8 @@ class TestOAuthRouter:
             assert response.status_code == 200
             response_data = response.json()
             assert response_data["success"]
-            assert response_data["server_id"] == TEST_SERVER_ID
-            assert response_data["user_id"] == "test_user"
+            assert response_data["serverId"] == TEST_SERVER_ID
+            assert response_data["userId"] == "test_user"
             assert "oauth delete successfully" in response_data["message"]
 
     def test_delete_oauth_tokens_failure(self, client):
@@ -365,8 +365,8 @@ class TestOAuthRouter:
             assert response.status_code == 200  # Note: The endpoint returns 200 even when delete returns False
             response_data = response.json()
             assert not response_data["success"]
-            assert response_data["server_id"] == TEST_SERVER_ID
-            assert response_data["user_id"] == "test_user"
+            assert response_data["serverId"] == TEST_SERVER_ID
+            assert response_data["userId"] == "test_user"
             assert "oauth delete failed" in response_data["message"]
 
 
