@@ -155,7 +155,6 @@ class ExtendedMCPServer(Document):
     # Federation sync fields (root level, source tracking metadata)
     federationSource: FederationSource | None = None
     federationId: str | None = None
-    federationGatewayArn: str | None = None
     federationSyncedAt: datetime | None = None
     federationMetadata: dict[str, Any] | None = None
 
@@ -512,7 +511,6 @@ class ExtendedMCPServer(Document):
             author=server_info.get("author") or PydanticObjectId(),
             federationSource=server_info.get("federationSource"),
             federationId=server_info.get("federationId"),
-            federationGatewayArn=server_info.get("federationGatewayArn"),
             federationSyncedAt=server_info.get("federationSyncedAt"),
             federationMetadata=server_info.get("federationMetadata"),
         )

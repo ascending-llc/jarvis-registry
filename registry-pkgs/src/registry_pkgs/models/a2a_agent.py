@@ -136,7 +136,6 @@ class A2AAgent(Document):
     # Federation sync fields (root level)
     federationSource: FederationSource | None = None
     federationId: str | None = None
-    federationGatewayArn: str | None = None
     federationSyncedAt: datetime | None = None
     federationMetadata: dict[str, Any] | None = None
 
@@ -274,7 +273,6 @@ class A2AAgent(Document):
             wellKnown=registry_fields.get("wellKnown"),
             federationSource=registry_fields.get("federationSource"),
             federationId=registry_fields.get("federationId"),
-            federationGatewayArn=registry_fields.get("federationGatewayArn"),
             federationSyncedAt=registry_fields.get("federationSyncedAt"),
             federationMetadata=registry_fields.get("federationMetadata"),
         )

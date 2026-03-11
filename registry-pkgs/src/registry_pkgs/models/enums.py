@@ -43,14 +43,3 @@ class OAuthProviderType(StrEnum):
     OKTA = "okta"
     ENTRA_ID = "entra_id"
     CUSTOM_OAUTH2 = "custom"
-
-
-class AgentCoreTargetType(StrEnum):
-    """Gateway target backend type for AgentCore MCP targets."""
-
-    MCP_SERVER = "mcp_server"
-    LAMBDA_ARN = "lambda_arn"
-    API_GATEWAY = "api_gateway"
-    REST_API = "rest_api"
-    INTEGRATIONS = "integrations"
-    UNKNOWN = "unknown"
