@@ -16,7 +16,7 @@ import { useGlobal } from '@/contexts/GlobalContext';
 import type { ServerInfo } from '@/contexts/ServerContext';
 import { useServer } from '@/contexts/ServerContext';
 import SERVICES from '@/services';
-import { SERVER_CONNECTION } from '@/services/mcp/type';
+import { ServerConnection } from '@/services/mcp/type';
 import type { Tool } from '@/services/server/type';
 import UTILS from '@/utils';
 import ServerAuthorizationModal from './ServerAuthorizationModal';
@@ -58,13 +58,13 @@ const ServerCard: React.FC<ServerCardProps> = ({ server, onEdit, onServerUpdate,
 
   const getAuthStatusIcon = useCallback(() => {
     if (!requiresOauth) return null;
-    if (connectionState === SERVER_CONNECTION.CONNECTED) {
+    if (connectionState === ServerConnection.CONNECTED) {
       return <CheckCircleIcon className='h-4 w-4 text-green-500' />;
     }
-    if (connectionState === SERVER_CONNECTION.DISCONNECTED || connectionState === SERVER_CONNECTION.ERROR) {
+    if (connectionState === ServerConnection.DISCONNECTED || connectionState === ServerConnection.ERROR) {
       return <KeyIcon className='h-4 w-4 text-amber-500' />;
     }
-    if (connectionState === SERVER_CONNECTION.CONNECTING) {
+    if (connectionState === ServerConnection.CONNECTING) {
       return (
         <>
           <div className='group-hover/auth:hidden animate-spin rounded-full h-3 w-3 border-b-2 border-slate-200' />
@@ -92,7 +92,7 @@ const ServerCard: React.FC<ServerCardProps> = ({ server, onEdit, onServerUpdate,
   };
 
   const handleAuth = async () => {
-    if (connectionState === SERVER_CONNECTION.CONNECTING) {
+    if (connectionState === ServerConnection.CONNECTING) {
       handleCancelAuth();
       cancelPolling?.(server.id);
     } else {

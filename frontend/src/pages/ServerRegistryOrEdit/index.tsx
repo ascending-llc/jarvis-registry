@@ -7,7 +7,7 @@ import McpIcon from '@/assets/McpIcon';
 import { useGlobal } from '@/contexts/GlobalContext';
 import { useServer } from '@/contexts/ServerContext';
 import SERVICES from '@/services';
-import type { GET_SERVERS_DETAIL_RESPONSE, Server } from '@/services/server/type';
+import type { GetServersDetailResponse, Server } from '@/services/server/type';
 import MainConfigForm from './MainConfigForm';
 import type { AuthenticationConfig as AuthConfigType, ServerConfig } from './types';
 
@@ -15,7 +15,7 @@ const DEFAULT_AUTH_CONFIG: AuthConfigType = { type: 'auto', source: 'admin', aut
 
 const AUTH_ERROR_KEYS = ['key', 'customHeader', 'authorizationUrl', 'tokenUrl'] as const;
 
-const parseAuthConfig = (result: GET_SERVERS_DETAIL_RESPONSE): AuthConfigType => {
+const parseAuthConfig = (result: GetServersDetailResponse): AuthConfigType => {
   if (result.apiKey) {
     return {
       type: 'apiKey',
@@ -113,12 +113,10 @@ const ServerRegistryOrEdit: React.FC = () => {
 
   const [loading, setLoading] = useState(false);
   const [loadingDetail, setLoadingDetail] = useState(false);
-  const [serverDetail, setServerDetail] = useState<GET_SERVERS_DETAIL_RESPONSE | null>(null);
+  const [serverDetail, setServerDetail] = useState<GetServersDetailResponse | null>(null);
   const [formData, setFormData] = useState<ServerConfig>(INIT_DATA);
   const [originalData, setOriginalData] = useState<ServerConfig | null>(null);
   const [errors, setErrors] = useState<Record<string, string | undefined>>({});
-  const [serverData, setServerData] = useState<{ serverName: string; path: string }>({ serverName: '', path: '' });
-  const [showSuccessDialog, setShowSuccessDialog] = useState(false);
 
   const isEditMode = !!id;
   const isReadOnly = searchParams.get('isReadOnly') === 'true';
@@ -133,13 +131,13 @@ const ServerRegistryOrEdit: React.FC = () => {
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !showSuccessDialog) {
+      if (e.key === 'Escape') {
         goBack();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [showSuccessDialog]);
+  }, []);
 
   const getDetail = async () => {
     if (!id) return;
@@ -271,8 +269,8 @@ const ServerRegistryOrEdit: React.FC = () => {
           lastCheckedTime: result.updatedAt ?? new Date().toISOString(),
         });
       } else {
-        const result = await SERVICES.SERVER.createServer(data);
-        setServerData(result);
+        await SERVICES.SERVER.createServer(data);
+        showToast('Server created successfully', 'success');
         refreshServerData(true);
       }
       goBack();

@@ -6,12 +6,12 @@ import { useState } from 'react';
 import { useGlobal } from '@/contexts/GlobalContext';
 import { useServer } from '@/contexts/ServerContext';
 import SERVICES from '@/services';
-import { SERVER_CONNECTION } from '../services/mcp/type';
+import { ServerConnection } from '../services/mcp/type';
 
 interface ServerAuthorizationModalProps {
   name: string;
   serverId: string;
-  status: SERVER_CONNECTION | undefined;
+  status: ServerConnection | undefined;
   showApiKeyDialog: boolean;
   handleCancelAuth: () => void;
   onCloseAuthDialog: () => void;
@@ -30,8 +30,8 @@ const ServerAuthorizationModal: React.FC<ServerAuthorizationModalProps> = ({
 
   const [loading, setLoading] = useState(false);
 
-  const isConnecting = status === SERVER_CONNECTION.CONNECTING;
-  const isAuthenticated = status === SERVER_CONNECTION.CONNECTED;
+  const isConnecting = status === ServerConnection.CONNECTING;
+  const isAuthenticated = status === ServerConnection.CONNECTED;
 
   const onClose = () => {
     onCloseAuthDialog();
@@ -88,10 +88,10 @@ const ServerAuthorizationModal: React.FC<ServerAuthorizationModalProps> = ({
       const result = await SERVICES.MCP.getOauthReinit(serverId);
       if (result.success) {
         await getServerStatusByPolling?.(serverId, state => {
-          if (state === SERVER_CONNECTION.CONNECTED) {
+          if (state === ServerConnection.CONNECTED) {
             showToast?.(result?.message || 'Server reinitialized successfully', 'success');
             onCloseAuthDialog();
-          } else if (state === SERVER_CONNECTION.DISCONNECTED || state === SERVER_CONNECTION.ERROR) {
+          } else if (state === ServerConnection.DISCONNECTED || state === ServerConnection.ERROR) {
             oauthInit();
           }
         });

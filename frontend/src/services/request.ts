@@ -2,7 +2,7 @@ import axios, { type AxiosError, type AxiosRequestConfig } from 'axios';
 
 import { getBasePath } from '@/config';
 import API from '@/services/api';
-import type { GET_TOKEN_RESPONSE } from './auth/type';
+import type { GetTokenResponse } from './auth/type';
 
 const cancelSources: Record<string, () => void> = {};
 const service = axios.create({ baseURL: getBasePath() || '/', timeout: 20000 });
@@ -14,10 +14,10 @@ type RequestConfig = AxiosRequestConfig & {
   __isRefresh?: boolean;
 };
 
-let tokenInitPromise: Promise<GET_TOKEN_RESPONSE> | null = null;
+let tokenInitPromise: Promise<GetTokenResponse> | null = null;
 let refreshTokenPromise: Promise<void> | null = null;
 
-export const setTokenInitPromise = (promise: Promise<GET_TOKEN_RESPONSE> | null) => {
+export const setTokenInitPromise = (promise: Promise<GetTokenResponse> | null) => {
   tokenInitPromise = promise;
 };
 

@@ -1,11 +1,11 @@
 import type { ApiKeyHeaderFormat, ApiKeySource, ServerType } from '@/pages/ServerRegistryOrEdit/types';
-import type { SERVER_CONNECTION } from '@/services/mcp/type';
+import type { ServerConnection } from '@/services/mcp/type';
 
-export type GET_VERSION_RESPONSE = {
+export type GetVersionResponse = {
   version: string;
 };
 
-export type GET_SERVERS_REQUEST = {
+export type GetServersRequest = {
   query?: string;
   status?: string;
   page?: string;
@@ -41,7 +41,7 @@ export type Server = {
   url: string;
   enabled: boolean;
   requiresOauth: boolean;
-  connectionState: SERVER_CONNECTION;
+  connectionState: ServerConnection;
   capabilities: string;
   tools: string;
   author: string;
@@ -62,7 +62,7 @@ export type Server = {
   apiKey?: ApiKeyConfig;
 };
 
-export type GET_SERVERS_RESPONSE = {
+export type GetServersResponse = {
   servers: Server[];
   pagination: {
     total: number;
@@ -72,18 +72,18 @@ export type GET_SERVERS_RESPONSE = {
   };
 };
 
-export type GET_SERVERS_DETAIL_RESPONSE = Server;
+export type GetServersDetailResponse = Server;
 
-export type TEST_SERVER_URL_REQUEST = {
+export type TestServerUrlRequest = {
   url: string;
   transport: ServerType;
 };
-export type TEST_SERVER_URL_RESPONSE = {
+export type TestServerUrlResponse = {
   success: boolean;
   message: string;
 };
 
-export type CREATE_SERVER_REQUEST = {
+export type CreateServerRequest = {
   serverName: string;
   description: string;
   path: string;
@@ -100,7 +100,7 @@ export type Tool = {
   description?: string;
   inputSchema?: any;
 };
-export type GET_SERVER_TOOLS_RESPONSE = {
+export type GetServerToolsResponse = {
   id: string;
   tools: Tool[];
 };

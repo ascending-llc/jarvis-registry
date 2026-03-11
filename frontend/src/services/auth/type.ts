@@ -1,4 +1,4 @@
-export type GET_AUTH_ME_RESPONSE = {
+export type GetAuthMeResponse = {
   username: string;
   email: string;
   scopes: string[];
@@ -9,14 +9,14 @@ export type GET_AUTH_ME_RESPONSE = {
   isAdmin: boolean;
 };
 
-export type GET_TOKEN_REQUEST = {
+export type GetTokenRequest = {
   expiresInHours: number;
   description: string;
   scopeMethod?: 'current' | 'custom';
   customScopes?: string;
 };
 
-type TOKEN_DATA = {
+type TokenData = {
   accessToken: string;
   refreshToken: string;
   expiresIn: number;
@@ -26,13 +26,13 @@ type TOKEN_DATA = {
   description: string;
 };
 
-export type GET_TOKEN_RESPONSE = {
+export type GetTokenResponse = {
   success: boolean;
-  tokens: TOKEN_DATA & { tokenType: string };
+  tokens: TokenData & { tokenType: string };
   keycloakUrl: string;
   realm: string;
   clientId: string;
-  tokenData: TOKEN_DATA;
+  tokenData: TokenData;
   userScopes: string[];
   requestedScopes: string[];
 };

@@ -3,7 +3,7 @@ import type React from 'react';
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { getBasePath } from '@/config';
 import SERVICES from '@/services';
-import { SERVER_CONNECTION } from '@/services/mcp/type';
+import { ServerConnection } from '@/services/mcp/type';
 import type { PermissionType, Server } from '@/services/server/type';
 
 export interface ServerInfo {
@@ -24,7 +24,7 @@ export interface ServerInfo {
   url?: string;
   numStars?: number;
   isPython?: boolean;
-  connectionState: SERVER_CONNECTION;
+  connectionState: ServerConnection;
   requiresOauth: boolean;
 }
 
@@ -83,7 +83,7 @@ interface ServerContextType {
   refreshServerData: (notLoading?: boolean) => Promise<ServerInfo[]>;
   refreshAgentData: (notLoading?: boolean) => Promise<void>;
   handleServerUpdate: (id: string, updates: Partial<ServerInfo>) => void;
-  getServerStatusByPolling: (serverId: string, callback?: (state: SERVER_CONNECTION | undefined) => void) => void;
+  getServerStatusByPolling: (serverId: string, callback?: (state: ServerConnection | undefined) => void) => void;
   cancelPolling: (serverId?: string) => void;
 }
 
@@ -242,7 +242,7 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
     };
   }, [refreshAgentData, refreshServerData]);
 
-  const getServerStatusById = useCallback(async (serverId: string): Promise<SERVER_CONNECTION | undefined> => {
+  const getServerStatusById = useCallback(async (serverId: string): Promise<ServerConnection | undefined> => {
     try {
       const result = await SERVICES.MCP.getServerStatusById(serverId);
       handleServerUpdate(serverId, { connectionState: result.connectionState });
@@ -253,7 +253,7 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
   }, []);
 
   const getServerStatusByPolling = useCallback(
-    async (serverId: string, callback?: (state: SERVER_CONNECTION | undefined) => void) => {
+    async (serverId: string, callback?: (state: ServerConnection | undefined) => void) => {
       // Clear existing timeout for this specific server if it exists
       if (timeoutRef.current[serverId]) {
         clearTimeout(timeoutRef.current[serverId]);
@@ -266,7 +266,7 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
       const poll = async () => {
         const currentState = await getServerStatusById(serverId);
 
-        if (currentState === SERVER_CONNECTION.CONNECTING) {
+        if (currentState === ServerConnection.CONNECTING) {
           timeoutRef.current[serverId] = setTimeout(() => {
             poll();
           }, 5000);

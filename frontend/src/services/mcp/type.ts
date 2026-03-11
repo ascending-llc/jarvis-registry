@@ -1,30 +1,30 @@
-export enum SERVER_CONNECTION {
+export enum ServerConnection {
   CONNECTED = 'connected',
   DISCONNECTED = 'disconnected',
   CONNECTING = 'connecting',
   ERROR = 'error',
 }
 
-export type SERVER_STATUS = {
-  connectionState: SERVER_CONNECTION;
+export type ServerStatus = {
+  connectionState: ServerConnection;
   requiresOauth: boolean;
   error?: string;
 };
 
-export type GET_SERVER_STATUS_BY_ID_RESPONSE = {
+export type GetServerStatusByIdResponse = {
   success: boolean;
-  connectionState: SERVER_CONNECTION;
+  connectionState: ServerConnection;
   requiresOauth: boolean;
 };
 
-export type GET_OAUTH_INITIATE_RESPONSE = {
+export type GetOauthInitiateResponse = {
   authorizationUrl: string;
   flowId: string;
   serverName: string;
   userId: string;
 };
 
-export type GET_SERVER_AUTH_URL_RESPONSE = {
+export type GetServerAuthUrlResponse = {
   success: boolean;
   message: string;
   oauthUrl: string;
@@ -32,7 +32,7 @@ export type GET_SERVER_AUTH_URL_RESPONSE = {
   oauthRequired: boolean;
 };
 
-export type CANCEL_AUTH_RESPONSE = {
+export type CancelAuthResponse = {
   success: boolean;
   message: string;
 };
