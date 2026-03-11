@@ -224,15 +224,13 @@ class TestConnectionRouter:
 
         mock_server_service_v1.list_servers.return_value = ([mock_server], 1)
 
-        # Mock get_servers_connection_status to return status
-        mock_get_servers_connection_status.return_value = [
-            {
-                "server_id": TEST_SERVER_ID,
-                "server_name": TEST_SERVER_NAME,
+        # Mock get_servers_connection_status to return status as dict (not list)
+        mock_get_servers_connection_status.return_value = {
+            TEST_SERVER_ID: {
                 "connection_state": ConnectionState.CONNECTED,
                 "requires_oauth": True,
             }
-        ]
+        }
 
         response = client.get("/mcp/connection/status")
 
@@ -240,16 +238,17 @@ class TestConnectionRouter:
         response_data = response.json()
         assert response_data["success"]
         assert "connectionStatus" in response_data
-        assert len(response_data["connectionStatus"]) == 1
-        assert response_data["connectionStatus"][0]["server_id"] == TEST_SERVER_ID
+        assert isinstance(response_data["connectionStatus"], dict)
+        assert TEST_SERVER_ID in response_data["connectionStatus"]
+        assert response_data["connectionStatus"][TEST_SERVER_ID]["connection_state"] == ConnectionState.CONNECTED
 
     def test_get_all_connection_status_empty(self, client):
         """Test retrieval of all connection statuses when no servers exist"""
         # Mock server_service_v1.list_servers to return empty list
         mock_server_service_v1.list_servers.return_value = ([], 0)
 
-        # Mock get_servers_connection_status to return empty list
-        mock_get_servers_connection_status.return_value = []
+        # Mock get_servers_connection_status to return empty dict (not list)
+        mock_get_servers_connection_status.return_value = {}
 
         response = client.get("/mcp/connection/status")
 
@@ -257,6 +256,7 @@ class TestConnectionRouter:
         response_data = response.json()
         assert response_data["success"]
         assert "connectionStatus" in response_data
+        assert isinstance(response_data["connectionStatus"], dict)
         assert len(response_data["connectionStatus"]) == 0
 
     def test_get_all_connection_status_failure(self, client):

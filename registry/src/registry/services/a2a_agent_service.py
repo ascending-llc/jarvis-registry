@@ -187,13 +187,13 @@ class A2AAgentService:
                 "description": data.description,
                 "url": str(data.url),
                 "version": data.version,
-                "protocolVersion": data.protocol_version,
+                "protocolVersion": data.protocolVersion,
                 "capabilities": data.capabilities,
                 "skills": [skill.model_dump(by_alias=True, exclude_none=True) for skill in data.skills],
-                "securitySchemes": data.security_schemes,
-                "preferredTransport": data.preferred_transport,
-                "defaultInputModes": data.default_input_modes,
-                "defaultOutputModes": data.default_output_modes,
+                "securitySchemes": data.securitySchemes,
+                "preferredTransport": data.preferredTransport,
+                "defaultInputModes": data.defaultInputModes,
+                "defaultOutputModes": data.defaultOutputModes,
             }
 
             # Add optional provider
@@ -263,10 +263,10 @@ class A2AAgentService:
                 "description": "description",
                 "version": "version",
                 "capabilities": "capabilities",
-                "security_schemes": "securitySchemes",
-                "preferred_transport": "preferredTransport",
-                "default_input_modes": "defaultInputModes",
-                "default_output_modes": "defaultOutputModes",
+                "securitySchemes": "securitySchemes",
+                "preferredTransport": "preferredTransport",
+                "defaultInputModes": "defaultInputModes",
+                "defaultOutputModes": "defaultOutputModes",
             }
 
             # Update card fields

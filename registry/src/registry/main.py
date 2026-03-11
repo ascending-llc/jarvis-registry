@@ -10,6 +10,7 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
@@ -22,7 +23,6 @@ from registry_pkgs.telemetry import setup_metrics
 from .api.agent_routes import router as agent_router
 from .api.management_routes import router as management_router
 from .api.proxy_routes import router as proxy_router
-from .api.proxy_routes import shutdown_proxy_client
 from .api.redirect_routes import router as auth_provider_router
 from .api.v1.a2a.agent_routes import router as a2a_agent_router
 from .api.v1.acl_routes import router as acl_router
@@ -40,7 +40,11 @@ from .core.config import settings
 from .core.exception_handler import register_validation_exception_handler
 from .health.routes import router as health_router
 from .health.service import health_service
+
+# Import MCP app for mounting onto FastAPI
+from .mcpgw import mcp_app
 from .middleware import ScopePermissionMiddleware, UnifiedAuthMiddleware
+from .schemas.common_api_schemas import UserInfoResponse
 
 # Import services for initialization
 from .services.agent_service import agent_service
@@ -128,8 +132,9 @@ async def lifespan(app: FastAPI):
         logger.error(f"❌ Failed to initialize services: {e}", exc_info=True)
         raise
 
-    # Application is ready
-    yield
+    async with mcp_app.session_manager.run():
+        # Application is ready
+        yield
 
     # Shutdown tasks
     logger.info("🔄 Shutting down MCP Gateway Registry...")
@@ -140,7 +145,6 @@ async def lifespan(app: FastAPI):
         logger.info("🔴 Closing Redis connection...")
         await close_redis()
         await health_service.shutdown()
-        await shutdown_proxy_client()
 
         # Close MongoDB connection
         logger.info("🗄️  Closing MongoDB connection...")
@@ -160,6 +164,8 @@ app = FastAPI(
     swagger_ui_parameters={
         "persistAuthorization": True,
     },
+    # API responses should use snake_case field names, not aliases
+    generate_unique_id_function=lambda route: f"{route.tags[0]}-{route.name}" if route.tags else route.name,
     openapi_tags=[
         {"name": "Authentication", "description": "OAuth2 and session-based authentication endpoints"},
         {
@@ -192,23 +198,29 @@ app = FastAPI(
 
 register_validation_exception_handler(app)
 
-# Add CORS middleware for React development and Docker deployment
+app.add_middleware(ScopePermissionMiddleware)
+app.add_middleware(UnifiedAuthMiddleware)
+
+# Add CORS middleware for React development and Docker deployment.
+# CORSMiddleware generally should be added late so that it executes first with incomming requests.
 app.add_middleware(
     CORSMiddleware,
     allow_origin_regex=r"https?://(localhost(:[0-9]+)?|.*\.compute.*\.amazonaws\.com(:[0-9]+)?)",
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["Mcp-Session-Id"],  # Allow browser-based agents to access Mcp-Session-Id.
 )
-
-app.add_middleware(ScopePermissionMiddleware)
-app.add_middleware(UnifiedAuthMiddleware)
 
 if hasattr(settings, "static_dir") and Path(settings.static_dir).exists():
     app.mount("/static", StaticFiles(directory=settings.static_dir), name="static")
     logger.info(f"Static files mounted from {settings.static_dir}")
 else:
     logger.warning("Static files directory not found, skipping static files mount")
+
+# MCP app must be mounted before including any FastAPI router. This is so that requests to `/proxy/mcpgw/mcp`
+# will be routed to the MCP app instead of `proxy_router`, which has a catch-all route.
+app.mount("/proxy/mcpgw", mcp_app.streamable_http_app())
 
 # Register API routers with /api prefix
 app.include_router(meta_router, prefix="/api/auth", tags=["Authentication metadata"])
@@ -223,6 +235,7 @@ app.include_router(oauth_router, prefix=f"/api/{settings.API_VERSION}", tags=["M
 app.include_router(connection_router, prefix=f"/api/{settings.API_VERSION}", tags=["MCP  Connection Management"])
 app.include_router(acl_router, prefix=f"/api/{settings.API_VERSION}", tags=["ACL Management"])
 app.include_router(auth_provider_router, tags=["Authentication"])
+app.include_router(proxy_router, prefix="/proxy", tags=["MCP Proxy"])
 
 # Register Anthropic MCP Registry API (public API for MCP servers only)
 
@@ -272,17 +285,17 @@ app.openapi = custom_openapi
 
 
 # Add user info endpoint for React auth context
-@app.get("/api/auth/me")
-async def get_current_user(user_context: CurrentUser):
+@app.get("/api/auth/me", response_model=UserInfoResponse, response_model_by_alias=True)
+async def get_current_user(user_context: CurrentUser) -> UserInfoResponse:
     """Get current user information for React auth context"""
-    return {
-        "username": user_context.get("username"),
-        "auth_method": user_context.get("auth_method", "basic"),
-        "provider": user_context.get("provider"),
-        "scopes": user_context.get("scopes", []),
-        "groups": user_context.get("groups", []),
-        "user_id": user_context.get("user_id"),
-    }
+    return UserInfoResponse(
+        username=user_context.get("username"),
+        authMethod=user_context.get("auth_method", "basic"),
+        provider=user_context.get("provider"),
+        scopes=user_context.get("scopes", []),
+        groups=user_context.get("groups", []),
+        userId=user_context.get("user_id"),
+    )
 
 
 # Basic health check endpoint
@@ -299,11 +312,7 @@ async def get_version():
     return {"version": __version__}
 
 
-app.include_router(proxy_router, prefix="/proxy", tags=["MCP Proxy"])
-
 if __name__ == "__main__":
-    import uvicorn
-
     # Configure logging before starting server
     settings.configure_logging()
 

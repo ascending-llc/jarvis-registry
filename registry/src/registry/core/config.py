@@ -58,6 +58,11 @@ class Settings(BaseSettings):
     tool_discovery_mode: str = "external"  # "embedded" (FAISS+transformers) or "external" (MCP service)
     external_vector_search_url: str = "http://localhost:8000/mcp"  # Used when tool_discovery_mode=external
 
+    # MCP Gateway Transport Security settings
+    mcpgw_enable_dns_rebinding_protection: bool = True  # Enable DNS rebinding protection for MCP endpoints
+    mcpgw_allowed_hosts: str = "jarvis-demo.ascendingdc.com,jarvis-demo.ascendingdc.com:*"  # Comma-separated list of allowed Host header values
+    mcpgw_allowed_origins: str = "https://jarvis-demo.ascendingdc.com,https://jarvis-demo.ascendingdc.com:*"  # Comma-separated list of allowed Origin header values
+
     # Security scanning settings (MCP Servers)
     security_scan_enabled: bool = True
     security_scan_on_registration: bool = True

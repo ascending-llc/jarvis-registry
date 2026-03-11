@@ -31,6 +31,72 @@ from registry_pkgs.models._generated.user import IUser
 from registry_pkgs.models.extended_acl_entry import IAclEntry
 from registry_pkgs.models.extended_mcp_server import MCPServerDocument
 
+# Try to import IGroup if it exists, otherwise we'll skip group seeding
+try:
+    from registry_pkgs.models._generated import IGroup
+
+    HAS_GROUP_MODEL = True
+except ImportError:
+    IGroup = None
+    HAS_GROUP_MODEL = False
+    print("Warning: IGroup model not found. Skipping group seeding.")
+
+
+async def seed_groups():
+    """Seed sample groups based on scopes.yml group_mappings."""
+    if not HAS_GROUP_MODEL:
+        print("Skipping groups seeding (IGroup model not available)")
+        return []
+
+    print("Seeding groups...")
+
+    # Groups from scopes.yml group_mappings
+    groups_data = [
+        {
+            "name": "jarvis-registry-admin",
+            "description": "Full access to all registry resources",
+            "email": "registry-admin@example.com",
+            "createdAt": datetime.now(UTC),
+            "updatedAt": datetime.now(UTC),
+        },
+        {
+            "name": "jarvis-registry-power-user",
+            "description": "Create/delete/share servers and agents",
+            "email": "registry-power-user@example.com",
+            "createdAt": datetime.now(UTC),
+            "updatedAt": datetime.now(UTC),
+        },
+        {
+            "name": "jarvis-registry-user",
+            "description": "Create servers and agents, cannot share",
+            "email": "registry-user@example.com",
+            "createdAt": datetime.now(UTC),
+            "updatedAt": datetime.now(UTC),
+        },
+        {
+            "name": "jarvis-registry-read-only",
+            "description": "Read-only access to servers and agents",
+            "email": "registry-read-only@example.com",
+            "createdAt": datetime.now(UTC),
+            "updatedAt": datetime.now(UTC),
+        },
+    ]
+
+    created_groups = []
+    for group_data in groups_data:
+        # Check if group already exists
+        existing_group = await IGroup.find_one(IGroup.name == group_data["name"])
+        if existing_group:
+            print(f"  Group {group_data['name']} already exists, skipping...")
+            created_groups.append(existing_group)
+        else:
+            group = IGroup(**group_data)
+            await group.insert()
+            created_groups.append(group)
+            print(f"  Created group: {group_data['name']}")
+
+    return created_groups
+
 
 async def seed_users():
     """Seed sample users."""
@@ -680,8 +746,12 @@ async def clean_database():
         server_count = await MCPServerDocument.delete_all()
         print(f"  Deleted {server_count.deleted_count} MCP servers")
 
-        server_count = await IAclEntry.delete_all()
-        print(f"  Deleted {server_count.deleted_count} ACL Entries")
+        acl_count = await IAclEntry.delete_all()
+        print(f"  Deleted {acl_count.deleted_count} ACL Entries")
+
+        if HAS_GROUP_MODEL:
+            group_count = await IGroup.delete_all()
+            print(f"  Deleted {group_count.deleted_count} groups")
 
         print("\n" + "=" * 60)
         print("✅ Database cleaned successfully!")
@@ -734,6 +804,9 @@ async def main():
             await clean_database()
         else:
             # Seed data in order
+            groups = await seed_groups()
+            print()
+
             users = await seed_users()
             print()
 
@@ -753,6 +826,7 @@ async def main():
             print("✅ Database seeding completed successfully!")
             print("=" * 60)
             print("Created/Found:")
+            print(f"  - {len(groups)} groups" if groups else "  - 0 groups (model not available)")
             print(f"  - {len(users)} users")
             print(f"  - {len(keys)} API keys")
             print(f"  - {len(tokens)} tokens")

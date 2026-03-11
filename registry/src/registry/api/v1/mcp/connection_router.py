@@ -5,6 +5,10 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
 
 from registry.auth.dependencies import CurrentUser
+from registry.schemas.common_api_schemas import (
+    ConnectionStatusMapResponse,
+    ServerConnectionStatusResponse,
+)
 from registry.schemas.enums import ConnectionState
 from registry.services.oauth.connection_status_service import (
     get_servers_connection_status,
@@ -76,10 +80,10 @@ async def reinitialize_server(
 
 
 @DeprecationWarning
-@router.get("/connection/status")
+@router.get("/connection/status", response_model=ConnectionStatusMapResponse, response_model_by_alias=True)
 async def get_all_connection_status(
     current_user: CurrentUser, mcp_service: MCPService = Depends(get_mcp_service)
-) -> dict[str, Any]:
+) -> ConnectionStatusMapResponse:
     """
     Get connection status for all MCP servers
 
@@ -98,17 +102,19 @@ async def get_all_connection_status(
         connection_status = await get_servers_connection_status(
             user_id=user_id, servers=all_services, mcp_service=mcp_service
         )
-        return {"success": True, "connectionStatus": connection_status}
+        return ConnectionStatusMapResponse(success=True, connectionStatus=connection_status)
 
     except Exception as e:
         logger.error(f"Failed to get connection status: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to get connection status")
 
 
-@router.get("/connection/status/{server_id}")
+@router.get(
+    "/connection/status/{server_id}", response_model=ServerConnectionStatusResponse, response_model_by_alias=True
+)
 async def get_server_connection_status(
     server_id: str, current_user: CurrentUser, mcp_service: MCPService = Depends(get_mcp_service)
-) -> dict[str, Any]:
+) -> ServerConnectionStatusResponse:
     """
     Get connection status for a specific MCP server by server ID
 
@@ -126,13 +132,13 @@ async def get_server_connection_status(
         server_status = await get_single_server_connection_status(
             user_id=user_id, server_id=server_id, mcp_service=mcp_service
         )
-        return {
-            "success": True,
-            "serverName": server.serverName,
-            "connectionState": server_status["connection_state"],
-            "requiresOAuth": server_status["requires_oauth"],
-            "serverId": server_id,
-        }
+        return ServerConnectionStatusResponse(
+            success=True,
+            serverName=server.serverName,
+            connectionState=server_status["connection_state"],
+            requiresOAuth=server_status["requires_oauth"],
+            serverId=server_id,
+        )
     except HTTPException:
         raise
     except Exception as e:

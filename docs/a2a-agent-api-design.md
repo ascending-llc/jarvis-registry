@@ -21,7 +21,7 @@
   query?: string;           // Search keywords (name, description, tags, skills)
   status?: string;          // Status filter: active | inactive | error
   page?: number;            // Page number (default: 1)
-  per_page?: number;        // Items per page (default: 20, max: 100)
+  perPage?: number;         // Items per page (default: 20, max: 100)
 }
 ```
 
@@ -36,9 +36,9 @@
       "description": "AI-powered code review assistant",
       "url": "https://example.com/agents/code-reviewer",
       "version": "1.0.0",
-      "protocol_version": "1.0",
+      "protocolVersion": "1.0",
       "tags": ["code", "review"],
-      "num_skills": 5,
+      "numSkills": 5,
       "enabled": true,
       "status": "active",
       "permissions": {
@@ -48,18 +48,22 @@
         "SHARE": true
       },
       "author": "507f1f77bcf86cd799439012",
-      "created_at": "2024-01-15T10:30:00Z",
-      "updated_at": "2024-01-20T15:45:00Z"
+      "createdAt": "2024-01-15T10:30:00Z",
+      "updatedAt": "2024-01-20T15:45:00Z"
     }
   ],
   "pagination": {
     "total": 150,
     "page": 1,
-    "per_page": 20,
-    "total_pages": 8
+    "perPage": 20,
+    "totalPages": 8
   }
 }
 ```
+
+**Note:**
+- Uses `AgentListItem` schema for list items
+- All field names use camelCase convention
 
 ---
 
@@ -70,21 +74,21 @@
 **Response**: `200 OK`
 ```json
 {
-  "total_agents": 150,
-  "enabled_agents": 120,
-  "disabled_agents": 30,
-  "by_status": {
+  "totalAgents": 150,
+  "enabledAgents": 120,
+  "disabledAgents": 30,
+  "byStatus": {
     "active": 130,
     "inactive": 15,
     "error": 5
   },
-  "by_transport": {
+  "byTransport": {
     "HTTP+JSON": 100,
     "JSONRPC": 30,
     "GRPC": 20
   },
-  "total_skills": 450,
-  "average_skills_per_agent": 3.0
+  "totalSkills": 450,
+  "averageSkillsPerAgent": 3.0
 }
 ```
 
@@ -105,10 +109,10 @@
   "description": "AI-powered code review assistant",
   "url": "https://example.com/agents/code-reviewer",
   "version": "1.0.0",
-  "protocol_version": "1.0",
+  "protocolVersion": "1.0",
   "capabilities": {
     "streaming": true,
-    "push_notifications": false
+    "pushNotifications": false
   },
   "skills": [
     {
@@ -116,19 +120,19 @@
       "name": "Code Analysis",
       "description": "Analyze code quality",
       "tags": ["analysis"],
-      "input_modes": ["text/plain"],
-      "output_modes": ["application/json"]
+      "inputModes": ["text/plain"],
+      "outputModes": ["application/json"]
     }
   ],
-  "security_schemes": {
+  "securitySchemes": {
     "bearer": {
       "type": "http",
       "scheme": "bearer"
     }
   },
-  "preferred_transport": "HTTP+JSON",
-  "default_input_modes": ["text/plain"],
-  "default_output_modes": ["application/json"],
+  "preferredTransport": "HTTP+JSON",
+  "defaultInputModes": ["text/plain"],
+  "defaultOutputModes": ["application/json"],
   "provider": {
     "organization": "AI Labs",
     "url": "https://ailabs.com"
@@ -143,17 +147,21 @@
     "SHARE": true
   },
   "author": "507f1f77bcf86cd799439012",
-  "well_known": {
+  "wellKnown": {
     "enabled": true,
     "url": "https://example.com/.well-known/agent-card.json",
-    "last_sync_at": "2024-01-20T12:00:00Z",
-    "last_sync_status": "success",
-    "last_sync_version": "1.0.0"
+    "lastSyncAt": "2024-01-20T12:00:00Z",
+    "lastSyncStatus": "success",
+    "lastSyncVersion": "1.0.0"
   },
-  "created_at": "2024-01-15T10:30:00Z",
-  "updated_at": "2024-01-20T15:45:00Z"
+  "createdAt": "2024-01-15T10:30:00Z",
+  "updatedAt": "2024-01-20T15:45:00Z"
 }
 ```
+
+**Note:**
+- Uses `AgentDetailResponse` schema
+- All field names use camelCase convention
 
 **Error**: `404` Agent not found, `403` Access denied
 
@@ -171,10 +179,10 @@
   "description": "AI-powered code review assistant",
   "url": "https://example.com/agents/code-reviewer",
   "version": "1.0.0",
-  "protocol_version": "1.0",
+  "protocolVersion": "1.0",
   "capabilities": {
     "streaming": true,
-    "push_notifications": false
+    "pushNotifications": false
   },
   "skills": [
     {
@@ -182,14 +190,14 @@
       "name": "Code Analysis",
       "description": "Analyze code quality",
       "tags": ["analysis"],
-      "input_modes": ["text/plain"],
-      "output_modes": ["application/json"]
+      "inputModes": ["text/plain"],
+      "outputModes": ["application/json"]
     }
   ],
-  "security_schemes": {},
-  "preferred_transport": "HTTP+JSON",
-  "default_input_modes": ["text/plain"],
-  "default_output_modes": ["application/json"],
+  "securitySchemes": {},
+  "preferredTransport": "HTTP+JSON",
+  "defaultInputModes": ["text/plain"],
+  "defaultOutputModes": ["application/json"],
   "provider": {
     "organization": "AI Labs",
     "url": "https://ailabs.com"
@@ -202,20 +210,48 @@
 **Response**: `201 Created`
 ```json
 {
-  "message": "Agent registered successfully",
-  "agent": {
-    "id": "507f1f77bcf86cd799439011",
-    "path": "/code-reviewer",
-    "name": "Code Review Agent",
-    "url": "https://example.com/agents/code-reviewer",
-    "created_at": "2024-01-15T10:30:00Z"
-  }
+  "id": "507f1f77bcf86cd799439011",
+  "path": "/code-reviewer",
+  "name": "Code Review Agent",
+  "description": "AI-powered code review assistant",
+  "url": "https://example.com/agents/code-reviewer",
+  "version": "1.0.0",
+  "protocolVersion": "1.0",
+  "capabilities": {
+    "streaming": true,
+    "pushNotifications": false
+  },
+  "skills": [...],
+  "securitySchemes": {},
+  "preferredTransport": "HTTP+JSON",
+  "defaultInputModes": ["text/plain"],
+  "defaultOutputModes": ["application/json"],
+  "provider": {
+    "organization": "AI Labs",
+    "url": "https://ailabs.com"
+  },
+  "tags": ["code", "review"],
+  "status": "active",
+  "enabled": false,
+  "permissions": {
+    "VIEW": true,
+    "EDIT": true,
+    "DELETE": true,
+    "SHARE": true
+  },
+  "author": "507f1f77bcf86cd799439012",
+  "wellKnown": null,
+  "createdAt": "2024-01-15T10:30:00Z",
+  "updatedAt": "2024-01-15T10:30:00Z"
 }
 ```
 
-**Error**: `400` Validation error, `409` Path already exists
+**Note:**
+- Uses `AgentDetailResponse` schema (not a separate create response)
+- Automatically grants OWNER permission to creator
+- ACL resource type is `ResourceType.AGENT`
 
-**Note**: Automatically grants OWNER permission to creator when creating Agent, ACL resource type is `ResourceType.A2AAGENT`
+**Error**: `400` Validation error, `409` Path already exists
 
 ---
 
@@ -238,15 +274,39 @@
 **Response**: `200 OK`
 ```json
 {
-  "message": "Agent updated successfully",
-  "agent": {
-    "id": "507f1f77bcf86cd799439011",
-    "path": "/code-reviewer",
-    "name": "Updated Agent Name",
-    "updated_at": "2024-01-20T15:45:00Z"
-  }
+  "id": "507f1f77bcf86cd799439011",
+  "path": "/code-reviewer",
+  "name": "Updated Agent Name",
+  "description": "Updated description",
+  "url": "https://example.com/agents/code-reviewer",
+  "version": "1.1.0",
+  "protocolVersion": "1.0",
+  "capabilities": {...},
+  "skills": [...],
+  "securitySchemes": {...},
+  "preferredTransport": "HTTP+JSON",
+  "defaultInputModes": ["text/plain"],
+  "defaultOutputModes": ["application/json"],
+  "provider": {...},
+  "tags": ["new", "tags"],
+  "status": "active",
+  "enabled": true,
+  "permissions": {
+    "VIEW": true,
+    "EDIT": true,
+    "DELETE": true,
+    "SHARE": true
+  },
+  "author": "507f1f77bcf86cd799439012",
+  "wellKnown": {...},
+  "createdAt": "2024-01-15T10:30:00Z",
+  "updatedAt": "2024-01-20T15:45:00Z"
 }
 ```
+
+**Note:**
+- Uses `AgentDetailResponse` schema (not a separate update response)
+- Returns complete agent details after update
 
 **Error**: `404` Agent not found, `403` Access denied
 
@@ -282,14 +342,39 @@
 **Response**: `200 OK`
 ```json
 {
-  "message": "Agent enabled successfully",
-  "agent": {
-    "id": "507f1f77bcf86cd799439011",
-    "path": "/code-reviewer",
-    "enabled": true
-  }
+  "id": "507f1f77bcf86cd799439011",
+  "path": "/code-reviewer",
+  "name": "Code Review Agent",
+  "description": "AI-powered code review assistant",
+  "url": "https://example.com/agents/code-reviewer",
+  "version": "1.0.0",
+  "protocolVersion": "1.0",
+  "capabilities": {...},
+  "skills": [...],
+  "securitySchemes": {...},
+  "preferredTransport": "HTTP+JSON",
+  "defaultInputModes": ["text/plain"],
+  "defaultOutputModes": ["application/json"],
+  "provider": {...},
+  "tags": ["code", "review"],
+  "status": "active",
+  "enabled": true,
+  "permissions": {
+    "VIEW": true,
+    "EDIT": true,
+    "DELETE": true,
+    "SHARE": true
+  },
+  "author": "507f1f77bcf86cd799439012",
+  "wellKnown": {...},
+  "createdAt": "2024-01-15T10:30:00Z",
+  "updatedAt": "2024-01-20T15:45:00Z"
 }
 ```
+
+**Note:**
+- Uses `AgentDetailResponse` schema (not a separate toggle response)
+- Returns complete agent details after toggle
 
 **Error**: `404` Agent not found, `403` Access denied
 
@@ -304,19 +389,19 @@
 **Response**: `200 OK`
 ```json
 {
-  "agent_id": "507f1f77bcf86cd799439011",
-  "agent_name": "Code Review Agent",
+  "agentId": "507f1f77bcf86cd799439011",
+  "agentName": "Code Review Agent",
   "skills": [
     {
       "id": "code-analysis",
       "name": "Code Analysis",
       "description": "Analyze code quality",
       "tags": ["analysis", "quality"],
-      "input_modes": ["text/plain"],
-      "output_modes": ["application/json"]
+      "inputModes": ["text/plain"],
+      "outputModes": ["application/json"]
     }
   ],
-  "total_skills": 1
+  "totalSkills": 1
 }
 ```
 
@@ -334,8 +419,8 @@
 ```json
 {
   "message": "Well-known configuration synced successfully",
-  "sync_status": "success",
-  "synced_at": "2024-01-20T15:45:00Z",
+  "syncStatus": "success",
+  "syncedAt": "2024-01-20T15:45:00Z",
   "version": "1.0.0",
   "changes": [
     "Updated version to 1.0.0",

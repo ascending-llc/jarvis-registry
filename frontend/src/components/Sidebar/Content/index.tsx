@@ -86,18 +86,18 @@ const Content: React.FC<any> = ({ setSidebarOpen }) => {
               <div className='text-sm'>
                 <div className='font-medium text-gray-900 dark:text-white mb-1'>{user.username}</div>
                 <div className='text-xs text-gray-600 dark:text-gray-300 mb-2'>
-                  {user.is_admin ? (
+                  {user.isAdmin ? (
                     <span className='text-green-600 dark:text-green-400'>🔑 Admin Access</span>
-                  ) : user.can_modify_servers ? (
+                  ) : user.canModifyServers ? (
                     <span className='text-blue-600 dark:text-blue-400'>⚙️ Modify Access</span>
                   ) : (
                     <span className='text-gray-600 dark:text-gray-300'>👁️ Read-only Access</span>
                   )}
-                  {user.auth_method === 'oauth2' && user.provider && <span className='ml-1'>({user.provider})</span>}
+                  {user.authMethod === 'oauth2' && user.provider && <span className='ml-1'>({user.provider})</span>}
                 </div>
 
                 {/* Scopes toggle */}
-                {!user.is_admin && user.scopes && user.scopes.length > 0 && (
+                {!user.isAdmin && user.scopes && user.scopes.length > 0 && (
                   <div>
                     <button
                       onClick={() => setShowScopes(!showScopes)}
@@ -148,18 +148,18 @@ const Content: React.FC<any> = ({ setSidebarOpen }) => {
                 <div className='text-sm'>
                   <div className='font-medium text-gray-900 dark:text-white mb-1'>{user.username}</div>
                   <div className='text-xs text-gray-600 dark:text-gray-300 mb-2'>
-                    {user.is_admin ? (
+                    {user.isAdmin ? (
                       <span className='text-green-600 dark:text-green-400'>🔑 Admin Access</span>
-                    ) : user.can_modify_servers ? (
+                    ) : user.canModifyServers ? (
                       <span className='text-blue-600 dark:text-blue-400'>⚙️ Modify Access</span>
                     ) : (
                       <span className='text-gray-600 dark:text-gray-300'>👁️ Read-only Access</span>
                     )}
-                    {user.auth_method === 'oauth2' && user.provider && <span className='ml-1'>({user.provider})</span>}
+                    {user.authMethod === 'oauth2' && user.provider && <span className='ml-1'>({user.provider})</span>}
                   </div>
 
                   {/* Scopes toggle */}
-                  {!user.is_admin && user.scopes && user.scopes.length > 0 && (
+                  {!user.isAdmin && user.scopes && user.scopes.length > 0 && (
                     <div>
                       <button
                         onClick={() => setShowScopes(!showScopes)}

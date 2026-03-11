@@ -6,7 +6,6 @@ and Authorization Code (PKCE) login/callback endpoints.
 import base64
 import json
 import logging
-import os
 import secrets
 import time
 import urllib.parse
@@ -458,12 +457,10 @@ async def device_token(
 @router.get("/oauth2/providers")
 async def get_oauth2_providers():
     try:
-        auth_provider_env = os.getenv("AUTH_PROVIDER")
         enabled = []
         for provider_name, config in settings.oauth2_config.get("providers", {}).items():
-            if config.get("enabled", False):
-                if auth_provider_env and provider_name != auth_provider_env:
-                    continue
+            # Always return one provider that is both enabled and matches that AUTH_PROVIDER env var.
+            if config.get("enabled", False) and provider_name == settings.auth_provider:
                 enabled.append(
                     {"name": provider_name, "display_name": config.get("display_name", provider_name.title())}
                 )
@@ -568,8 +565,8 @@ async def oauth2_callback(
         # Try to decode state to extract resource
         resource = None
         try:
-            pad = "=" * (-len(state) % 4)
-            state_decoded = __import__("json").loads(base64.urlsafe_b64decode(state + pad).decode())
+            pad = "=" * ((-len(state)) % 4)
+            state_decoded = json.loads(base64.urlsafe_b64decode(state + pad).decode())
             resource = state_decoded.get("resource")
         except Exception as e:
             logger.debug(f"Failed to decode state parameter: {e}")

@@ -1,16 +1,18 @@
 import logging
 from typing import Any
 
-from registry.auth.oauth import FlowStateManager, get_flow_state_manager, parse_scope
-from registry.auth.oauth.oauth_client import OAuthClient
-from registry.auth.oauth.oauth_utils import get_default_redirect_uri
-from registry.models.oauth_models import (
+from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer as MCPServerDocument
+
+from ...auth.oauth import FlowStateManager, get_flow_state_manager, parse_scope
+from ...auth.oauth.oauth_client import OAuthClient
+from ...auth.oauth.oauth_utils import get_default_redirect_uri
+from ...auth.oauth.types import StateMetadata
+from ...models.oauth_models import (
     OAuthTokens,
 )
-from registry.schemas.enums import OAuthFlowStatus
-from registry.services.oauth.token_service import token_service
-from registry.utils.crypto_utils import decrypt_auth_fields
-from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer as MCPServerDocument
+from ...schemas.enums import OAuthFlowStatus
+from ...services.oauth.token_service import token_service
+from ...utils.crypto_utils import decrypt_auth_fields
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +101,11 @@ class MCPOAuthService:
         return merged_config
 
     async def initiate_oauth_flow(
-        self, user_id: str, server: MCPServerDocument
+        self,
+        user_id: str,
+        server: MCPServerDocument,
+        *,
+        state_metadata: StateMetadata | None = None,
     ) -> tuple[str | None, str | None, str | None]:
         """
         Initialize OAuth flow with automatic DCR support.
@@ -260,6 +266,7 @@ class MCPOAuthService:
                 code_verifier=code_verifier,
                 oauth_config=oauth_config,
                 flow_id=flow_id,
+                state_metadata=state_metadata,
             )
 
             # Create OAuth flow
@@ -276,7 +283,7 @@ class MCPOAuthService:
                 flow_metadata=flow_metadata, code_challenge=code_challenge, flow_id=flow_id
             )
 
-            logger.info(f"Initiated OAuth flow: {flow_id} for {user_id}/{server_id}")
+            logger.info(f"Initiated OAuth flow: {flow_id} for {user_id}/{server_id}, auth_url: {auth_url}")
             return flow_id, auth_url, None
 
         except Exception as e:
@@ -292,7 +299,7 @@ class MCPOAuthService:
         try:
             # 1. Decode state parameter to get flow_id
             try:
-                decoded_flow_id, security_token = self.flow_manager.decode_state(state)
+                decoded_flow_id = self.flow_manager.decode_state(state)["flow_id"]
             except ValueError as e:
                 logger.error(f"Failed to decode state: {e}")
                 return False, "Invalid state format"
@@ -382,7 +389,11 @@ class MCPOAuthService:
             return False, str(e)
 
     async def get_valid_access_token(
-        self, user_id: str, server: MCPServerDocument
+        self,
+        user_id: str,
+        server: MCPServerDocument,
+        *,
+        state_metadata: StateMetadata | None = None,
     ) -> tuple[str | None, str | None, str | None]:
         """
         Get valid access token with automatic refresh and re-authentication flow
@@ -434,7 +445,9 @@ class MCPOAuthService:
 
             # 3. Both access and refresh failed - initiate new OAuth flow
             logger.info(f"Initiating new OAuth flow for {user_id}/{server_name}")
-            flow_id, auth_url, flow_error = await self.initiate_oauth_flow(user_id, server)
+            flow_id, auth_url, flow_error = await self.initiate_oauth_flow(
+                user_id, server, state_metadata=state_metadata
+            )
 
             if flow_error:
                 return None, None, f"Failed to initiate OAuth flow: {flow_error}"

@@ -122,12 +122,12 @@ class TestSearchRoutes:
 
         assert response.status_code == 200
         data = response.json()
-        assert data["total_servers"] == 1
-        assert data["total_tools"] == 1
-        assert data["total_agents"] == 1
-        assert data["servers"][0]["server_name"] == "Demo"
-        assert data["tools"][0]["tool_name"] == "alpha"
-        assert data["agents"][0]["agent_name"] == "Demo Agent"
+        assert data["totalServers"] == 1
+        assert data["totalTools"] == 1
+        assert data["totalAgents"] == 1
+        assert data["servers"][0]["serverName"] == "Demo"
+        assert data["tools"][0]["toolName"] == "alpha"
+        assert data["agents"][0]["agentName"] == "Demo Agent"
 
     def test_semantic_search_handles_service_errors(self, test_client: TestClient):
         """Service-level errors propagate as 503."""

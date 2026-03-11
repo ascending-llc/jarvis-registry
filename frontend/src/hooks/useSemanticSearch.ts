@@ -1,52 +1,53 @@
 import axios from 'axios';
 import { useEffect, useState } from 'react';
+import API from '@/services/api';
 
-type EntityType = 'mcp_server' | 'tool' | 'a2a_agent';
+type EntityType = 'mcpServer' | 'tool' | 'a2aAgent';
 
-const DEFAULT_ENTITY_TYPES: EntityType[] = ['mcp_server', 'tool', 'a2a_agent'];
+const DEFAULT_ENTITY_TYPES: EntityType[] = ['mcpServer', 'tool', 'a2aAgent'];
 const DEFAULT_ENTITY_TYPES_KEY = DEFAULT_ENTITY_TYPES.join('|');
 
 export interface MatchingToolHit {
-  tool_name: string;
+  toolName: string;
   description?: string;
-  relevance_score: number;
-  match_context?: string;
+  relevanceScore: number;
+  matchContext?: string;
 }
 
 export interface SemanticServerHit {
   path: string;
-  server_name: string;
+  serverName: string;
   description?: string;
   tags: string[];
-  num_tools: number;
-  is_enabled: boolean;
-  relevance_score: number;
-  match_context?: string;
-  matching_tools: MatchingToolHit[];
+  numTools: number;
+  isEnabled: boolean;
+  relevanceScore: number;
+  matchContext?: string;
+  matchingTools: MatchingToolHit[];
 }
 
 export interface SemanticToolHit {
-  server_path: string;
-  server_name: string;
-  tool_name: string;
+  serverPath: string;
+  serverName: string;
+  toolName: string;
   description?: string;
-  relevance_score: number;
-  match_context?: string;
+  relevanceScore: number;
+  matchContext?: string;
 }
 
 export interface SemanticAgentHit {
   path: string;
-  agent_name: string;
+  agentName: string;
   description?: string;
   tags: string[];
   skills: string[];
-  trust_level?: string;
+  trustLevel?: string;
   visibility?: string;
-  is_enabled?: boolean;
+  isEnabled?: boolean;
   url?: string;
-  agent_card?: Record<string, any>;
-  relevance_score: number;
-  match_context?: string;
+  agentCard?: Record<string, any>;
+  relevanceScore: number;
+  matchContext?: string;
 }
 
 export interface SemanticSearchResponse {
@@ -54,9 +55,9 @@ export interface SemanticSearchResponse {
   servers: SemanticServerHit[];
   tools: SemanticToolHit[];
   agents: SemanticAgentHit[];
-  total_servers: number;
-  total_tools: number;
-  total_agents: number;
+  totalServers: number;
+  totalTools: number;
+  totalAgents: number;
 }
 
 interface UseSemanticSearchOptions {
@@ -110,11 +111,11 @@ export const useSemanticSearch = (query: string, options: UseSemanticSearchOptio
       setError(null);
       try {
         const response = await axios.post<SemanticSearchResponse>(
-          '/api/v1/search/semantic',
+          API.getSemanticSearch,
           {
             query: debouncedQuery,
-            entity_types: entityTypes,
-            max_results: maxResults,
+            entityTypes,
+            maxResults,
           },
           { signal: controller.signal },
         );

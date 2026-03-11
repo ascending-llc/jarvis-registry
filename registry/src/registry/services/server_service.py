@@ -17,13 +17,13 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
-import inflection
 from beanie import PydanticObjectId
 
 from registry_pkgs.database.decorators import get_current_session
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer as MCPServerDocument
 from registry_pkgs.vector.repositories.mcp_server_repository import get_mcp_server_repo
 
+from ..auth.oauth.types import StateMetadata
 from ..core.mcp_client import get_oauth_metadata_from_server, get_tools_from_server_with_server_info
 from ..core.telemetry_decorators import track_tool_discovery
 from ..schemas.errors import (
@@ -76,7 +76,12 @@ def _build_server_info_for_mcp_client(config: dict[str, Any], tags: list[str]) -
     return server_info
 
 
-async def _build_complete_headers_for_server(server: MCPServerDocument, user_id: str | None = None) -> dict[str, str]:
+async def build_complete_headers_for_server(
+    server: MCPServerDocument,
+    user_id: str | None = None,
+    *,
+    state_metadata: StateMetadata | None = None,
+) -> dict[str, str]:
     """
     Build complete HTTP headers with ALL authentication types.
     Consolidates OAuth, apiKey, and custom header logic in one place.
@@ -156,7 +161,9 @@ async def _build_complete_headers_for_server(server: MCPServerDocument, user_id:
 
         # Get OAuth token (handles refresh automatically)
         oauth_service = await get_oauth_service()
-        access_token, auth_url, error = await oauth_service.get_valid_access_token(user_id=user_id, server=server)
+        access_token, auth_url, error = await oauth_service.get_valid_access_token(
+            user_id=user_id, server=server, state_metadata=state_metadata
+        )
 
         if auth_url:
             raise OAuthReAuthRequiredError(
@@ -347,34 +354,34 @@ def _build_config_from_request(data: ServerCreateRequest, server_name: str = Non
     config = {
         "title": data.title,
         "description": data.description or "",
-        "type": data.supported_transports[0] if data.supported_transports else "streamable-http",
+        "type": data.supportedTransports[0] if data.supportedTransports else "streamable-http",
         "url": data.url,
         "capabilities": "{}",  # Default empty JSON string
     }
 
-    # Add optional MCP config fields
+    # Add optional MCP config fields (convert to camelCase for MongoDB storage)
     if data.timeout is not None:
         config["timeout"] = data.timeout
-    if data.init_timeout is not None:
-        config[inflection.camelize("init_timeout", uppercase_first_letter=False)] = data.init_timeout
-    if data.server_instructions is not None:
-        config["server_instructions"] = data.server_instructions
+    if data.initTimeout is not None:
+        config["initTimeout"] = data.initTimeout
+    if data.serverInstructions is not None:
+        config["serverInstructions"] = data.serverInstructions
     if data.oauth is not None:
         config["oauth"] = data.oauth
-    if data.custom_user_vars is not None:
-        config["custom_user_vars"] = data.custom_user_vars
+    if data.customUserVars is not None:
+        config["customUserVars"] = data.customUserVars
     if data.headers is not None:
         config["headers"] = data.headers
-    if data.requires_oauth is not None:
-        config[inflection.camelize("requires_oauth", uppercase_first_letter=False)] = data.requires_oauth
+    if data.requiresOauth is not None:
+        config["requiresOAuth"] = data.requiresOauth
 
-    # Convert tool_list to toolFunctions in OpenAI format
-    if data.tool_list is not None:
+    # Convert toolList to toolFunctions in OpenAI format
+    if data.toolList is not None:
         use_server_name = server_name or generate_server_name_from_title(data.title)
-        config["toolFunctions"] = _convert_tool_list_to_functions(data.tool_list, use_server_name)
+        config["toolFunctions"] = _convert_tool_list_to_functions(data.toolList, use_server_name)
 
         # Build tools string (comma-separated tool names)
-        tool_names = [tool.get("name", "") for tool in data.tool_list if tool.get("name")]
+        tool_names = [tool.get("name", "") for tool in data.toolList if tool.get("name")]
         if tool_names:
             config["tools"] = ", ".join(tool_names)
         else:
@@ -415,26 +422,29 @@ def _update_config_from_request(
 
     # Remove root-level registry fields from update_dict (these are handled at root level)
     # Note: enabled is removed here but will be added to config separately
+    # Note: model_dump() returns camelCase keys since schema fields are now camelCase
     registry_fields = [
         "path",
         "tags",
         "status",
-        "serverName",
-        "num_stars",
+        "serverName",  # camelCase from schema
+        "numStars",
         "enabled",
     ]
     for field in registry_fields:
         update_dict.pop(field, None)
 
-    # Handle mutually exclusive authentication fields: oauth and apiKey
+    # Handle mutually exclusive authentication fields: oauth and apiKey (camelCase from model_dump)
     if "oauth" in update_dict or "apiKey" in update_dict:
         existing_oauth = config.pop("oauth", {})
         existing_apikey = config.pop("apiKey", {})
         if "oauth" in update_dict:
             oauth_update = update_dict.pop("oauth")
-
-            # Only save if not None and not empty
-            if oauth_update:
+            # If oauth is explicitly None, remove it (DCR - Direct Connection Required)
+            if oauth_update is None:
+                pass
+            # Otherwise, merge/update oauth config
+            elif oauth_update:
                 # Merge new oauth with existing oauth (upsert operation)
                 if isinstance(existing_oauth, dict) and isinstance(oauth_update, dict):
                     existing_oauth.update(oauth_update)
@@ -460,33 +470,32 @@ def _update_config_from_request(
         else:
             config.pop("headers", None)
 
-    # Update config with MCP-specific fields only
+    # Update config with MCP-specific fields only (already in camelCase from schema)
     mcp_config_fields = [
         "title",
         "url",
         "description",
         "type",
         "timeout",
-        "init_timeout",
-        "server_instructions",
-        "requires_oauth",
+        "initTimeout",
+        "serverInstructions",
+        "requiresOauth",
         "oauth",
-        "custom_user_vars",
-        "tool_list",
+        "customUserVars",
+        # Note: toolList is handled separately below, not directly stored in config
     ]
     for key, value in update_dict.items():
         if key in mcp_config_fields and value is not None:
-            # Convert snake_case to camelCase for config keys using inflection
-            config_key = inflection.camelize(key, uppercase_first_letter=False) if "_" in key else key
-            config[config_key] = value
+            # Store as camelCase for MongoDB (already camelCase from schema)
+            config[key] = value
 
     # Update enabled field in config if provided
     if enabled_value is not None:
         config["enabled"] = enabled_value
 
-    # If tool_list is updated, regenerate toolFunctions and tools string
-    if "tool_list" in update_dict and update_dict["tool_list"] is not None:
-        tool_list = update_dict["tool_list"]
+    # If toolList is updated, regenerate toolFunctions and tools string
+    if "toolList" in update_dict and update_dict["toolList"] is not None:
+        tool_list = update_dict["toolList"]
 
         # Convert to toolFunctions format
         if server_name:
@@ -678,7 +687,7 @@ class ServerServiceV1:
             tags=[tag.lower() for tag in data.tags],  # Normalize tags to lowercase
             status="active",  # Default status (independent of enabled field)
             numTools=num_tools,  # Store calculated numTools at root level
-            numStars=data.num_stars,
+            numStars=data.numStars,
             # Initialize error tracking fields as None
             lastError=None,
             errorMessage=None,
@@ -771,7 +780,7 @@ class ServerServiceV1:
 
                 logger.info(f"Server {server.serverName} registered successfully. Tools will be fetched on-demand.")
 
-                if data.requires_oauth:
+                if data.requiresOauth:
                     logger.info(f"OAuth configuration detected for {server.serverName}, retrieving OAuth metadata...")
 
                     oauth_metadata = await get_oauth_metadata_from_server(data.url)
@@ -860,7 +869,7 @@ class ServerServiceV1:
         if data.oauth is not None or data.apiKey is not None:
             updated_config = encrypt_auth_fields(updated_config)
 
-        if data.requires_oauth:
+        if data.requiresOauth:
             logger.info(f"OAuth configuration detected for {server.serverName}, retrieving OAuth metadata...")
             oauth_metadata = await get_oauth_metadata_from_server(data.url)
             if oauth_metadata:
@@ -1110,7 +1119,7 @@ class ServerServiceV1:
             # Build complete headers with all authentication (OAuth, apiKey, custom)
             # This consolidates all auth logic in one place
             try:
-                headers = await _build_complete_headers_for_server(server, user_id)
+                headers = await build_complete_headers_for_server(server, user_id)
             except OAuthReAuthRequiredError as e:
                 # OAuth re-authentication needed - return special error format
                 return (

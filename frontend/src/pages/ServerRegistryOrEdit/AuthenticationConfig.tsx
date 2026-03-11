@@ -68,22 +68,24 @@ const AuthenticationConfig: React.FC<AuthenticationConfigProps> = ({
     setRegistrationEndpoint(null);
     setIsAuthUrlAutoFilled(false);
     setIsTokenUrlAutoFilled(false);
-    onChange({ ...(baseConfig || configRef.current), use_dynamic_registration: false });
+    onChange({ ...(baseConfig || configRef.current), useDynamicRegistration: false });
     try {
       const res = await SERVICES.MCP.getDiscover(mcpUrl, { cancelTokenKey: DISCOVER_CANCEL_KEY });
       if (res?.Code === -200) return;
       if (res?.metadata) {
-        const { authorization_endpoint, token_endpoint, registration_endpoint } = res.metadata;
+        const { authorizationEndpoint, tokenEndpoint, registrationEndpoint } = res.metadata;
         const currentConfig = baseConfig || configRef.current;
-        const useDynamicRegistration = registration_endpoint && !hasOauth;
-        if (useDynamicRegistration || isEditMode) setRegistrationEndpoint(registration_endpoint);
-        if (!isEditMode && authorization_endpoint) setIsAuthUrlAutoFilled(true);
-        if (!isEditMode && token_endpoint) setIsTokenUrlAutoFilled(true);
+        const useDynamicRegistration = registrationEndpoint && !hasOauth;
+        if (useDynamicRegistration || isEditMode) setRegistrationEndpoint(registrationEndpoint);
+        const shouldFillAuthUrl = authorizationEndpoint && !currentConfig.authorizationUrl;
+        const shouldFillTokenUrl = tokenEndpoint && !currentConfig.tokenUrl;
+        if (shouldFillAuthUrl) setIsAuthUrlAutoFilled(true);
+        if (shouldFillTokenUrl) setIsTokenUrlAutoFilled(true);
         onChange({
           ...currentConfig,
-          authorization_url: authorization_endpoint || currentConfig.authorization_url,
-          token_url: token_endpoint || currentConfig.token_url,
-          use_dynamic_registration: useDynamicRegistration,
+          authorizationUrl: currentConfig.authorizationUrl || authorizationEndpoint,
+          tokenUrl: currentConfig.tokenUrl || tokenEndpoint,
+          useDynamicRegistration: useDynamicRegistration,
         });
       }
     } catch (error) {
@@ -96,7 +98,7 @@ const AuthenticationConfig: React.FC<AuthenticationConfigProps> = ({
   const handleTypeChange = (type: AuthConfigType['type']) => {
     const nextConfig = { ...config, type };
     onChange(nextConfig);
-    if (type === 'oauth' && !isReadOnly && mcpUrl && !config.authorization_url && !config.token_url) {
+    if (type === 'oauth' && !isReadOnly && mcpUrl && !config.authorizationUrl && !config.tokenUrl) {
       handleGetDiscover(nextConfig);
     }
   };
@@ -167,8 +169,8 @@ const AuthenticationConfig: React.FC<AuthenticationConfigProps> = ({
               <div>
                 <FormFields.RadioGroupField
                   label='Header Format'
-                  value={config.authorization_type || 'bearer'}
-                  onChange={val => updateConfig({ authorization_type: val })}
+                  value={config.authorizationType || 'bearer'}
+                  onChange={val => updateConfig({ authorizationType: val })}
                   options={[
                     { label: 'Bearer', value: 'bearer' },
                     { label: 'Basic', value: 'basic' },
@@ -177,16 +179,16 @@ const AuthenticationConfig: React.FC<AuthenticationConfigProps> = ({
                   disabled={isReadOnly}
                 />
 
-                {config.authorization_type === 'custom' && (
+                {config.authorizationType === 'custom' && (
                   <div className='mt-4 animate-fadeIn'>
                     <FormFields.InputField
                       label='Custom Header Name'
                       required
                       disabled={isReadOnly}
-                      value={config.custom_header || ''}
-                      onChange={e => updateConfig({ custom_header: e.target.value })}
+                      value={config.customHeader || ''}
+                      onChange={e => updateConfig({ customHeader: e.target.value })}
                       placeholder='X-Custom-Auth'
-                      error={errors.custom_header}
+                      error={errors.customHeader}
                     />
                   </div>
                 )}
@@ -217,22 +219,22 @@ const AuthenticationConfig: React.FC<AuthenticationConfigProps> = ({
                   <FormFields.CheckboxField
                     id='useDynamicRegistration'
                     disabled={isReadOnly}
-                    checked={config.use_dynamic_registration ?? false}
-                    onChange={e => updateConfig({ use_dynamic_registration: e.target.checked })}
+                    checked={config.useDynamicRegistration ?? false}
+                    onChange={e => updateConfig({ useDynamicRegistration: e.target.checked })}
                     label='Use Dynamic Client Registration'
                     description='Client will be registered dynamically at startup. No manual credentials needed.'
                   />
 
-                  {!(config.use_dynamic_registration ?? false) && (
+                  {!(config.useDynamicRegistration ?? false) && (
                     <>
                       <FormFields.InputField
                         label='Client ID'
                         disabled={isReadOnly}
                         placeholder='your-client-id-here'
-                        value={config.client_id || ''}
-                        onChange={e => updateConfig({ client_id: e.target.value })}
+                        value={config.clientId || ''}
+                        onChange={e => updateConfig({ clientId: e.target.value })}
                         helperText='Required for static clients. Leave blank if using dynamic client registration'
-                        error={errors.client_id}
+                        error={errors.clientId}
                       />
 
                       <FormFields.InputField
@@ -241,50 +243,50 @@ const AuthenticationConfig: React.FC<AuthenticationConfigProps> = ({
                         showPasswordToggle={!isEditMode || isClientSecretDirty}
                         monospace
                         disabled={isReadOnly}
-                        value={isEditMode && !isClientSecretDirty ? '' : config.client_secret || ''}
+                        value={isEditMode && !isClientSecretDirty ? '' : config.clientSecret || ''}
                         placeholder={
-                          isEditMode && !isClientSecretDirty && config.client_secret
-                            ? config.client_secret
+                          isEditMode && !isClientSecretDirty && config.clientSecret
+                            ? config.clientSecret
                             : 'your-client-secret-here'
                         }
                         onChange={e => {
                           setIsClientSecretDirty(true);
-                          updateConfig({ client_secret: e.target.value });
+                          updateConfig({ clientSecret: e.target.value });
                         }}
                         helperText='Required for static clients. Never share this value.'
-                        error={errors.client_secret}
+                        error={errors.clientSecret}
                       />
 
                       <FormFields.InputField
                         label='Authorization URL'
-                        labelTag={!isEditMode && isAuthUrlAutoFilled ? 'Auto-Filled' : undefined}
+                        labelTag={isAuthUrlAutoFilled ? 'Auto-Filled' : undefined}
                         required
                         type='url'
                         disabled={isReadOnly}
                         placeholder='https://auth.example.com/oauth/authorize'
-                        value={config.authorization_url || ''}
+                        value={config.authorizationUrl || ''}
                         onChange={e => {
                           setIsAuthUrlAutoFilled(false);
-                          updateConfig({ authorization_url: e.target.value });
+                          updateConfig({ authorizationUrl: e.target.value });
                         }}
                         helperText='The endpoint where users are redirected to authenticate and grant permissions.'
-                        error={errors.authorization_url}
+                        error={errors.authorizationUrl}
                       />
 
                       <FormFields.InputField
                         label='Token URL'
-                        labelTag={!isEditMode && isTokenUrlAutoFilled ? 'Auto-Filled' : undefined}
+                        labelTag={isTokenUrlAutoFilled ? 'Auto-Filled' : undefined}
                         required
                         type='url'
                         disabled={isReadOnly}
                         placeholder='https://auth.example.com/oauth/token'
-                        value={config.token_url || ''}
+                        value={config.tokenUrl || ''}
                         onChange={e => {
                           setIsTokenUrlAutoFilled(false);
-                          updateConfig({ token_url: e.target.value });
+                          updateConfig({ tokenUrl: e.target.value });
                         }}
                         helperText='The backend endpoint for exchanging authorization codes for access tokens.'
-                        error={errors.token_url}
+                        error={errors.tokenUrl}
                       />
 
                       <FormFields.InputField

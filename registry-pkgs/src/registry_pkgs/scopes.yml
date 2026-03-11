@@ -68,10 +68,13 @@ agents-read:
     endpoint: /agents
   - action: get_agent
     method: GET
-    endpoint: /agents/{path}
+    endpoint: /agents/{agent_id}
+  - action: get_agent_skills
+    method: GET
+    endpoint: /agents/{agent_id}/skills
   - action: get_agent_rating
     method: GET
-    endpoint: /agents/{path}/rating
+    endpoint: /agents/{agent_id}/rating
   - action: discover_agents
     method: POST
     endpoint: /agents/discover
@@ -80,24 +83,24 @@ agents-read:
     endpoint: /agents/discover/semantic
   - action: check_agent_health
     method: POST
-    endpoint: /agents/{path}/health
+    endpoint: /agents/{agent_id}/health
 
 agents-write:
-  - action: publish_agent
+  - action: create_agent
     method: POST
-    endpoint: /agents/register
+    endpoint: /agents
   - action: modify_agent
-    method: PUT
-    endpoint: /agents/{path}
+    method: PATCH
+    endpoint: /agents/{agent_id}
   - action: delete_agent
     method: DELETE
-    endpoint: /agents/{path}
+    endpoint: /agents/{agent_id}
   - action: toggle_agent
     method: POST
-    endpoint: /agents/{path}/toggle
-  - action: rate_agent
+    endpoint: /agents/{agent_id}/toggle
+  - action: sync_wellknown
     method: POST
-    endpoint: /agents/{path}/rate
+    endpoint: /agents/{agent_id}/wellknown
 
 server-write:
   - action: register_service
@@ -134,6 +137,13 @@ user-read:
   - action: generate_user_token
     method: POST
     endpoint: /tokens/generate
+  # Search functionality
+  - action: search
+    method: POST
+    endpoint: /search/semantic
+  - action: search_servers
+    method: POST
+    endpoint: /search/servers
   # MCP connection management
   - action: reinitialize_server
     method: POST
@@ -195,18 +205,9 @@ system-ops:
     endpoint: /admin/tokens
 
 mcp-proxy-ops:
-  - action: execute_tool
-    method: POST
-    endpoint: /proxy/tools/call
-  - action: read_resource
-    method: POST
-    endpoint: /proxy/resources/read
   - action: delete_session
     method: DELETE
     endpoint: /proxy/sessions/{server_id}
-  - action: execute_prompt
-    method: POST
-    endpoint: /proxy/prompts/execute
   - action: connection_mcp
-    method: GET,POST,PUT,DELETE,PATCH,OPTIONS
-    endpoint: /proxy/{full_path:path}
+    method: GET,POST
+    endpoint: /proxy/mcpgw/mcp

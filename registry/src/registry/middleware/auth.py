@@ -1,6 +1,4 @@
-import base64
 import logging
-import os
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
@@ -72,20 +70,7 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
             ]
         )
 
-        # =====================================================================
-        # INTERNAL PATHS (Admin/Internal - Require Basic Auth)
-        # =====================================================================
-        # Define patterns for internal/admin endpoints that use Basic authentication.
-        self.internal_paths_compiled = self._compile_patterns(
-            [
-                "/api/internal/{path:path}",  # Internal admin endpoints
-            ]
-        )
-        logger.info(
-            f"Auth middleware initialized with Starlette routing: "
-            f"{len(self.public_paths_compiled)} public, "
-            f"{len(self.internal_paths_compiled)} internal, "
-        )
+        logger.info(f"Auth middleware initialized with Starlette routing: {len(self.public_paths_compiled)} public.")
 
         # Pre-load scopes config once for performance (cached at module level)
         self.scopes_config = settings.scopes_config
@@ -174,17 +159,9 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
         """
         Unified authentication logic (simple and efficient)
 
-        1. Internal paths (/api/internal/*) → Basic Auth
-        2. Authenticated paths (including /api/auth/me, /api/servers/*, /proxy/*, /api/mcp/*) → JWT or Session Auth
-        3. Other paths → Session Auth
+        1. Authenticated paths (including /api/auth/me, /api/servers/*, /proxy/*, /api/mcp/*) → JWT or Session Auth
+        2. Other paths → Session Auth
         """
-        path = request.url.path
-
-        if self._match_path(path, self.internal_paths_compiled):
-            user_context = self._try_basic_auth(request)
-            if user_context:
-                return user_context
-            raise AuthenticationError("Basic authentication required")
         # Try JWT first, then fall back to session auth
         user_context = self._try_jwt_auth(request)
         if user_context:
@@ -193,48 +170,6 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
         if user_context:
             return user_context
         raise AuthenticationError("JWT or session authentication required")
-
-    def _try_basic_auth(self, request: Request) -> UserContextDict | None:
-        """Basic authentication for internal endpoints"""
-        try:
-            # Get Authorization header
-            auth_header = request.headers.get("Authorization")
-            if not auth_header or not auth_header.startswith("Basic "):
-                return None
-
-            # Decode Basic Auth credentials
-            try:
-                encoded_credentials = auth_header.split(" ")[1]
-                decoded_credentials = base64.b64decode(encoded_credentials).decode("utf-8")
-                username, password = decoded_credentials.split(":", 1)
-            except (IndexError, ValueError, Exception) as e:
-                logger.debug(f"Basic auth decoding failed: {e}")
-                return None
-
-            # Verify admin credentials from environment
-            admin_user = os.environ.get("ADMIN_USER", "admin")
-            admin_password = os.environ.get("ADMIN_PASSWORD")
-
-            if not admin_password:
-                logger.error("ADMIN_PASSWORD environment variable not set")
-                return None
-
-            if username != admin_user or password != admin_password:
-                logger.debug(f"Basic auth failed: invalid credentials for {username}")
-                return None
-            # Return user context for admin user
-            return self._build_user_context(
-                username=username,
-                groups=["registry-admin"],
-                scopes=["registry-admin"],
-                auth_method="basic",
-                provider="basic",
-                auth_source="basic_auth",
-            )
-
-        except Exception as e:
-            logger.debug(f"Basic auth failed: {e}")
-            return None
 
     def _try_jwt_auth(self, request: Request) -> UserContextDict | None:
         """JWT token authentication for /api/servers endpoints"""
@@ -324,7 +259,7 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
                 logger.debug(f"Token description: {description}")
             user_id = claims.get("user_id")
             logger.debug(f"jwt enhencement user id {user_id}")
-            # Return user context similar to _try_basic_auth
+
             return self._build_user_context(
                 user_id=user_id,
                 username=username,

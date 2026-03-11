@@ -6,9 +6,11 @@ Refactored with centralized configuration and strategy pattern.
 """
 
 import asyncio
+import json
 import logging
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlparse
 
@@ -51,7 +53,6 @@ def get_session(session_key: str) -> tuple[str, bool] | None:
             return None
 
         # Parse JSON data
-        import json
 
         data = json.loads(session_data)
         session_id = data.get("session_id")
@@ -73,8 +74,6 @@ def store_session(session_key: str, session_id: str, initialized: bool = False) 
         return
 
     try:
-        import json
-
         redis_key = f"{SESSION_KEY_PREFIX}{session_key}"
         session_data = json.dumps({"session_id": session_id, "initialized": initialized})
 
@@ -216,7 +215,6 @@ async def perform_health_check(
     logger.debug(f"Performing MCP initialization health check for {url}")
 
     # Measure response time
-    from datetime import UTC, datetime
 
     start_time = datetime.now(UTC)
 
@@ -294,9 +292,13 @@ async def initialize_mcp_session(
         # Create httpx client with custom headers for authentication
         async with httpx.AsyncClient(headers=headers, timeout=30.0) as http_client:
             # Send initialize request (JSON-RPC 2.0)
+            # The 2025-11-25 MCP spec allows the "id" field to be either str or int.
+            # With other tool call POST requests, we forward the "id" field from the client of mcpgw,
+            # which is provided to us by the `mcp` package and is typed str. Therefore we also use str below for consistency.
+            # Reference: https://modelcontextprotocol.io/specification/2025-11-25/schema#requestid
             init_request = {
                 "jsonrpc": "2.0",
-                "id": 1,
+                "id": "1",
                 "method": "initialize",
                 "params": {
                     "protocolVersion": "2024-11-05",
@@ -412,7 +414,6 @@ def normalize_sse_endpoint_url_for_request(url_str: str) -> str:
         return url_str
 
     # Pattern to match URLs like http://host:port/mount_path/messages/...
-    import re
 
     pattern = r"(https?://[^/]+)/([^/]+)(/messages/.*)"
     match = re.match(pattern, url_str)
@@ -591,7 +592,6 @@ async def _get_from_streamable_http(
     logger.info(f"Connecting to MCP server: {mcp_url}")
 
     # Import httpx for custom client
-    import httpx
 
     try:
         # Create custom httpx client with headers
@@ -717,7 +717,6 @@ async def _get_from_sse(
     logger.info("SSE transport: always stateful (requiresInit=True)")
 
     # Import httpx for custom client and monkey patching
-    import httpx
 
     try:
         # Monkey patch httpx to fix mount path issues (legacy SSE support)

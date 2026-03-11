@@ -45,7 +45,7 @@ using GitHub CLI for authentication.
 
 ```bash
 uv run --package registry-pkgs import-schemas \
---tag asc0.4.4 \
+--tag asc0.4.5 \
 --output-dir ./registry-pkgs/src/registry_pkgs/models \
 --token $(gh auth token)
 ```

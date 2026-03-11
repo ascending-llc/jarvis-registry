@@ -344,3 +344,9 @@ image-manifest.json
 # Python related artifacts folder used in docker build
 # This folder cannot exist in the .dockerignore file.
 /build-artifacts
+
+# Playground for quick code experimentation
+/adhoc*.py
+
+# Misc. files
+/docker-compose.no-db.yml

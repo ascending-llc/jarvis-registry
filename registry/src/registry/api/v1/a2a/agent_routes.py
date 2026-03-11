@@ -16,24 +16,19 @@ from registry.auth.dependencies import CurrentUser
 from registry.core.telemetry_decorators import track_registry_operation
 from registry.schemas.a2a_agent_api_schemas import (
     AgentCreateRequest,
-    AgentCreateResponse,
     AgentDetailResponse,
     AgentListResponse,
     AgentSkillsResponse,
     AgentStatsResponse,
     AgentToggleRequest,
-    AgentToggleResponse,
     AgentUpdateRequest,
-    AgentUpdateResponse,
     PaginationMetadata,
     WellKnownSyncResponse,
-    convert_to_create_response,
     convert_to_detail,
     convert_to_list_item,
     convert_to_skills_response,
-    convert_to_toggle_response,
-    convert_to_update_response,
 )
+from registry.schemas.acl_schema import ResourcePermissions
 from registry.schemas.errors import ErrorCode, create_error_detail
 from registry.services.a2a_agent_service import a2a_agent_service
 from registry.services.access_control_service import acl_service
@@ -66,6 +61,7 @@ def check_admin_permission(user_context: dict) -> bool:
 @router.get(
     "/agents",
     response_model=AgentListResponse,
+    response_model_by_alias=True,  # Use camelCase in API responses
     summary="List Agents",
     description="List all agents with filtering, searching, and pagination",
 )
@@ -194,6 +190,7 @@ async def get_agent_stats(
 @router.get(
     "/agents/{agent_id}",
     response_model=AgentDetailResponse,
+    response_model_by_alias=True,  # Use camelCase in API responses
     summary="Get Agent Detail",
     description="Get detailed information about a specific agent",
 )
@@ -244,7 +241,8 @@ async def get_agent(
 
 @router.post(
     "/agents",
-    response_model=AgentCreateResponse,
+    response_model=AgentDetailResponse,
+    response_model_by_alias=True,  # Use camelCase in API responses
     status_code=http_status.HTTP_201_CREATED,
     summary="Create Agent",
     description="Register a new A2A agent",
@@ -277,14 +275,14 @@ async def create_agent(
 
         logger.info(f"Granted user {user_id} OWNER permissions for agent {agent.id}")
 
-        # Get permissions for response
-        permissions = await acl_service.get_user_permissions_for_resource(
-            user_id=PydanticObjectId(user_id),
-            resource_type=ResourceType.AGENT.value,
-            resource_id=agent.id,
+        permissions = ResourcePermissions(
+            VIEW=True,
+            EDIT=True,
+            DELETE=True,
+            SHARE=True,
         )
 
-        return convert_to_create_response(agent, acl_permission=permissions)
+        return convert_to_detail(agent, acl_permission=permissions)
 
     except ValueError as e:
         error_msg = str(e)
@@ -315,7 +313,8 @@ async def create_agent(
 
 @router.patch(
     "/agents/{agent_id}",
-    response_model=AgentUpdateResponse,
+    response_model=AgentDetailResponse,
+    response_model_by_alias=True,  # Use camelCase in API responses
     summary="Update Agent",
     description="Update agent configuration",
 )
@@ -341,7 +340,7 @@ async def update_agent(
         # Update agent
         agent = await a2a_agent_service.update_agent(agent_id=agent_id, data=data)
 
-        return convert_to_update_response(agent, acl_permission=permissions)
+        return convert_to_detail(agent, acl_permission=permissions)
 
     except ValueError as e:
         error_msg = str(e)
@@ -436,7 +435,8 @@ async def delete_agent(
 
 @router.post(
     "/agents/{agent_id}/toggle",
-    response_model=AgentToggleResponse,
+    response_model=AgentDetailResponse,
+    response_model_by_alias=True,  # Use camelCase in API responses
     summary="Toggle Agent Status",
     description="Enable or disable an agent",
 )
@@ -461,7 +461,7 @@ async def toggle_agent(
         # Toggle agent status
         agent = await a2a_agent_service.toggle_agent_status(agent_id=agent_id, enabled=data.enabled)
 
-        return convert_to_toggle_response(agent, acl_permission=permissions)
+        return convert_to_detail(agent, acl_permission=permissions)
 
     except ValueError as e:
         error_msg = str(e)

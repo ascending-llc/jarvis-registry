@@ -87,58 +87,6 @@ jobs:
       AWS_DEPLOY_ROLE_ARN: ${{ secrets.SAAS_AWS_DEPLOY_ROLE_ARN }}
       JARVIS_RELEASE_ACCESS_TOKEN: ${{ secrets.JARVIS_RELEASE_ACCESS_TOKEN }}
 
-  deploy-mcpgateway:
-    runs-on: ubuntu-latest
-    needs: build-images
-    env:
-      DEPLOYMENT_NAME: mcpgateway-gwserver
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Install kubectl
-        uses: azure/setup-kubectl@v3
-        with:
-          version: latest
-
-      - name: Load Application Configuration
-        id: config
-        run: |
-          CONFIG=$(cat .github/workflows/config/applications.json | jq -r --arg app "${{ inputs.application }}" '.[$app]')
-          echo "eks_cluster_name=$(echo $CONFIG | jq -r '.eks_cluster_name')" >> $GITHUB_OUTPUT
-          echo "aws_deploy_role=$(echo $CONFIG | jq -r '.aws_deploy_role')" >> $GITHUB_OUTPUT
-
-      - name: Set IAM role to assume
-        id: set-role
-        run: |
-          echo "role=${{ secrets[steps.config.outputs.aws_deploy_role] }}" >> $GITHUB_OUTPUT
-
-      - name: Assume IAM role
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ steps.set-role.outputs.role }}
-          role-session-name: deployment-role-session
-          aws-region: ${{ inputs.region }}
-
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Update kubeconfig
-        run: aws eks update-kubeconfig --name ${{ steps.config.outputs.eks_cluster_name }} --region ${{ inputs.region }}
-
-      - name: Update backend images on EKS
-        env:
-          image: ${{ steps.login-ecr.outputs.registry }}/jarvis/mcpgateway:${{ github.sha }}
-        run: |
-          kubectl set image deploy/${{ env.DEPLOYMENT_NAME }} mcpgateway-server=$image -n ${{ inputs.application  }}
-
-      - name: Check pod status
-        run: |
-          kubectl rollout status deploy/${{ env.DEPLOYMENT_NAME }} -n ${{ inputs.application  }}
-
   deploy-registry:
     runs-on: ubuntu-latest
     needs: build-images
