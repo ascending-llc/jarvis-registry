@@ -14,10 +14,6 @@ router = APIRouter()
 
 class AgentCoreRuntimeSyncRequest(BaseModel):
     dryRun: bool = Field(default=False, description="Preview only, no persistence")
-    runtimeArns: list[str] | None = Field(
-        default=None,
-        description="Deprecated. AgentCore sync only supports full runtime sync.",
-    )
 
 
 class AgentCoreSyncCounter(BaseModel):
@@ -69,8 +65,6 @@ async def sync_agentcore_runtime(
     No background jobs; request blocks until import completes.
     """
     try:
-        if data.runtimeArns:
-            raise ValueError("runtimeArns is not supported. AgentCore sync only supports full runtime sync.")
         result = await agentcore_import_service.import_from_runtime(
             dry_run=data.dryRun,
             user_id=user_context.get("user_id"),
