@@ -43,6 +43,18 @@ from .user_service import user_service
 logger = logging.getLogger(__name__)
 
 
+# API to Database field name mapping
+# Some fields have different capitalization between the API schema and database storage
+API_TO_DB_FIELD_MAPPING = {
+    "requiresOauth": "requiresOAuth",  # API uses lowercase 'a', DB uses uppercase 'A'
+}
+
+
+def _map_api_field_to_db(api_field_name: str) -> str:
+    """Map API field name to database field name"""
+    return API_TO_DB_FIELD_MAPPING.get(api_field_name, api_field_name)
+
+
 def _extract_config_field(server: MCPServerDocument, field: str, default: Any = None) -> Any:
     """Extract a field from server.config with fallback to default"""
     if not server or not server.config:
@@ -359,21 +371,22 @@ def _build_config_from_request(data: ServerCreateRequest, server_name: str = Non
         "capabilities": "{}",  # Default empty JSON string
     }
 
-    # Add optional MCP config fields (convert to camelCase for MongoDB storage)
-    if data.timeout is not None:
-        config["timeout"] = data.timeout
-    if data.initTimeout is not None:
-        config["initTimeout"] = data.initTimeout
-    if data.serverInstructions is not None:
-        config["serverInstructions"] = data.serverInstructions
-    if data.oauth is not None:
-        config["oauth"] = data.oauth
-    if data.customUserVars is not None:
-        config["customUserVars"] = data.customUserVars
-    if data.headers is not None:
-        config["headers"] = data.headers
-    if data.requiresOauth is not None:
-        config["requiresOAuth"] = data.requiresOauth
+    # Optional fields mapping - maps API field names to values
+    optional_fields = {
+        "timeout": data.timeout,
+        "initTimeout": data.initTimeout,
+        "serverInstructions": data.serverInstructions,
+        "oauth": data.oauth,
+        "customUserVars": data.customUserVars,
+        "headers": data.headers,
+        "requiresOauth": data.requiresOauth,
+    }
+
+    # Add optional MCP config fields with API-to-DB field name mapping
+    for api_field, value in optional_fields.items():
+        if value is not None:
+            db_field = _map_api_field_to_db(api_field)
+            config[db_field] = value
 
     # Convert toolList to toolFunctions in OpenAI format
     if data.toolList is not None:
@@ -486,8 +499,9 @@ def _update_config_from_request(
     ]
     for key, value in update_dict.items():
         if key in mcp_config_fields and value is not None:
-            # Store as camelCase for MongoDB (already camelCase from schema)
-            config[key] = value
+            # Map API field name to database field name
+            db_field_name = _map_api_field_to_db(key)
+            config[db_field_name] = value
 
     # Update enabled field in config if provided
     if enabled_value is not None:
