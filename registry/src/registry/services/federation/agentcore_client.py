@@ -7,7 +7,7 @@ from urllib.parse import quote
 import boto3
 from beanie import PydanticObjectId
 
-from registry.constants import REGISTRY_CONSTANTS
+from registry.core.config import settings
 from registry_pkgs.models import A2AAgent, ExtendedMCPServer
 from registry_pkgs.models.enums import FederationSource
 
@@ -27,7 +27,7 @@ class AgentCoreFederationClient:
         self,
         region: str | None = None,
     ):
-        self.region = region or REGISTRY_CONSTANTS.AWS_REGION or "us-east-1"
+        self.region = region or settings.aws_region or "us-east-1"
         self._control_clients: dict[str, Any] = {}
         self._client_locks: dict[str, asyncio.Lock] = {}
 
@@ -104,10 +104,10 @@ class AgentCoreFederationClient:
         if region in self._control_clients:
             return self._control_clients[region]
 
-        access_key = REGISTRY_CONSTANTS.AWS_ACCESS_KEY_ID
-        secret_key = REGISTRY_CONSTANTS.AWS_SECRET_ACCESS_KEY
-        session_token = REGISTRY_CONSTANTS.AWS_SESSION_TOKEN
-        assume_role_arn = REGISTRY_CONSTANTS.AGENTCORE_ASSUME_ROLE_ARN
+        access_key = settings.aws_access_key_id
+        secret_key = settings.aws_secret_access_key
+        session_token = settings.aws_session_token
+        assume_role_arn = settings.agentcore_assume_role_arn
 
         if access_key and secret_key:
             base_session = boto3.Session(

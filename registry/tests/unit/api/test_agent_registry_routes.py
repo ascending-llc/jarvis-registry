@@ -13,7 +13,6 @@ import pytest
 from fastapi import Request, status
 from fastapi.testclient import TestClient
 
-from registry.constants import REGISTRY_CONSTANTS
 from registry.core.config import settings
 from registry.main import app
 from registry.services.agent_service import agent_service
@@ -169,7 +168,7 @@ def user_context() -> dict[str, Any]:
 #             return_value=True,
 #         ):
 #             response = authenticated_client.get(
-#                 f"/{REGISTRY_CONSTANTS.ANTHROPIC_API_VERSION}/agents"
+#                 f"/{settings.anthropic_api_version}/agents"
 #             )
 #
 #             assert response.status_code == status.HTTP_200_OK
@@ -205,7 +204,7 @@ def user_context() -> dict[str, Any]:
 #             return_value=True,
 #         ):
 #             response = authenticated_client.get(
-#                 f"/{REGISTRY_CONSTANTS.ANTHROPIC_API_VERSION}/agents?limit=2"
+#                 f"/{settings.anthropic_api_version}/agents?limit=2"
 #             )
 #
 #             assert response.status_code == status.HTTP_200_OK
@@ -239,7 +238,7 @@ def user_context() -> dict[str, Any]:
 #             return_value=True,
 #         ):
 #             response = authenticated_client.get(
-#                 f"/{REGISTRY_CONSTANTS.ANTHROPIC_API_VERSION}/agents?limit=1"
+#                 f"/{settings.anthropic_api_version}/agents?limit=1"
 #             )
 #
 #             assert response.status_code == status.HTTP_200_OK
@@ -274,7 +273,7 @@ def user_context() -> dict[str, Any]:
 #         ):
 #             # limit=2000 is rejected by validation (max 1000)
 #             response = authenticated_client.get(
-#                 f"/{REGISTRY_CONSTANTS.ANTHROPIC_API_VERSION}/agents?limit=2000"
+#                 f"/{settings.anthropic_api_version}/agents?limit=2000"
 #             )
 #
 #             # Should return 422 validation error for exceeding max limit
@@ -300,7 +299,7 @@ def user_context() -> dict[str, Any]:
 #             return_value=[],
 #         ):
 #             response = authenticated_client.get(
-#                 f"/{REGISTRY_CONSTANTS.ANTHROPIC_API_VERSION}/agents"
+#                 f"/{settings.anthropic_api_version}/agents"
 #             )
 #
 #             assert response.status_code == status.HTTP_200_OK
@@ -338,7 +337,7 @@ def user_context() -> dict[str, Any]:
 #             side_effect=_is_agent_enabled,
 #         ):
 #             response = authenticated_client.get(
-#                 f"/{REGISTRY_CONSTANTS.ANTHROPIC_API_VERSION}/agents"
+#                 f"/{settings.anthropic_api_version}/agents"
 #             )
 #
 #             assert response.status_code == status.HTTP_200_OK
@@ -376,7 +375,7 @@ def user_context() -> dict[str, Any]:
 #             return_value=True,
 #         ):
 #             response = authenticated_client.get(
-#                 f"/{REGISTRY_CONSTANTS.ANTHROPIC_API_VERSION}/agents/io.mcpgateway%2Fagents%2Fcode-reviewer/versions"
+#                 f"/{settings.anthropic_api_version}/agents/io.mcpgateway%2Fagents%2Fcode-reviewer/versions"
 #             )
 #
 #             assert response.status_code == status.HTTP_200_OK
@@ -410,7 +409,7 @@ def user_context() -> dict[str, Any]:
 #             return_value=True,
 #         ):
 #             response = authenticated_client.get(
-#                 f"/{REGISTRY_CONSTANTS.ANTHROPIC_API_VERSION}/agents/io.mcpgateway%2Fagents%2Fcode-reviewer/versions"
+#                 f"/{settings.anthropic_api_version}/agents/io.mcpgateway%2Fagents%2Fcode-reviewer/versions"
 #             )
 #
 #             assert response.status_code == status.HTTP_200_OK
@@ -446,7 +445,7 @@ def user_context() -> dict[str, Any]:
 #                 return_value=True,
 #             ):
 #                 response = authenticated_client.get(
-#                     f"/{REGISTRY_CONSTANTS.ANTHROPIC_API_VERSION}/agents/io.mcpgateway%2Fagents%2Fcode-reviewer/versions"
+#                     f"/{settings.anthropic_api_version}/agents/io.mcpgateway%2Fagents%2Fcode-reviewer/versions"
 #                 )
 #
 #                 assert response.status_code == status.HTTP_200_OK
@@ -471,7 +470,7 @@ def user_context() -> dict[str, Any]:
 #             return_value=None,
 #         ):
 #             response = authenticated_client.get(
-#                 f"/{REGISTRY_CONSTANTS.ANTHROPIC_API_VERSION}/agents/io.mcpgateway%2Fnonexistent/versions"
+#                 f"/{settings.anthropic_api_version}/agents/io.mcpgateway%2Fnonexistent/versions"
 #             )
 #
 #             assert response.status_code == status.HTTP_404_NOT_FOUND
@@ -501,7 +500,7 @@ def user_context() -> dict[str, Any]:
 #             return_value=False,
 #         ):
 #             response = authenticated_client.get(
-#                 f"/{REGISTRY_CONSTANTS.ANTHROPIC_API_VERSION}/agents/io.mcpgateway%2Fagents%2Fcode-reviewer/versions"
+#                 f"/{settings.anthropic_api_version}/agents/io.mcpgateway%2Fagents%2Fcode-reviewer/versions"
 #             )
 #
 #             assert response.status_code == status.HTTP_404_NOT_FOUND
@@ -536,7 +535,7 @@ def user_context() -> dict[str, Any]:
 #             return_value=True,
 #         ):
 #             response = authenticated_client.get(
-#                 f"/{REGISTRY_CONSTANTS.ANTHROPIC_API_VERSION}/agents/io.mcpgateway%2Fagents%2Fcode-reviewer/versions/latest"
+#                 f"/{settings.anthropic_api_version}/agents/io.mcpgateway%2Fagents%2Fcode-reviewer/versions/latest"
 #             )
 #
 #             assert response.status_code == status.HTTP_200_OK
@@ -578,7 +577,7 @@ def user_context() -> dict[str, Any]:
 #             return_value=True,
 #         ):
 #             response = authenticated_client.get(
-#                 f"/{REGISTRY_CONSTANTS.ANTHROPIC_API_VERSION}/agents/io.mcpgateway%2Fagents%2Fcode-reviewer/versions/1.0.0"
+#                 f"/{settings.anthropic_api_version}/agents/io.mcpgateway%2Fagents%2Fcode-reviewer/versions/1.0.0"
 #             )
 #
 #             assert response.status_code == status.HTTP_200_OK
@@ -611,7 +610,7 @@ def user_context() -> dict[str, Any]:
 #             return_value=True,
 #         ):
 #             response = authenticated_client.get(
-#                 f"/{REGISTRY_CONSTANTS.ANTHROPIC_API_VERSION}/agents/io.mcpgateway%2Fagents%2Fcode-reviewer/versions/latest"
+#                 f"/{settings.anthropic_api_version}/agents/io.mcpgateway%2Fagents%2Fcode-reviewer/versions/latest"
 #             )
 #
 #             assert response.status_code == status.HTTP_200_OK
@@ -649,7 +648,7 @@ def user_context() -> dict[str, Any]:
 #             return_value=True,
 #         ):
 #             response = authenticated_client.get(
-#                 f"/{REGISTRY_CONSTANTS.ANTHROPIC_API_VERSION}/agents/io.mcpgateway%2Fagents%2Fcode-reviewer/versions/1.0.0"
+#                 f"/{settings.anthropic_api_version}/agents/io.mcpgateway%2Fagents%2Fcode-reviewer/versions/1.0.0"
 #             )
 #
 #             assert response.status_code == status.HTTP_200_OK
@@ -674,7 +673,7 @@ def user_context() -> dict[str, Any]:
 #             return_value=None,
 #         ):
 #             response = authenticated_client.get(
-#                 f"/{REGISTRY_CONSTANTS.ANTHROPIC_API_VERSION}/agents/io.mcpgateway%2Fnonexistent/versions/latest"
+#                 f"/{settings.anthropic_api_version}/agents/io.mcpgateway%2Fnonexistent/versions/latest"
 #             )
 #
 #             assert response.status_code == status.HTTP_404_NOT_FOUND
@@ -704,7 +703,7 @@ def user_context() -> dict[str, Any]:
 #             return_value=True,
 #         ):
 #             response = authenticated_client.get(
-#                 f"/{REGISTRY_CONSTANTS.ANTHROPIC_API_VERSION}/agents/io.mcpgateway%2Fagents%2Fcode-reviewer/versions/2.0.0"
+#                 f"/{settings.anthropic_api_version}/agents/io.mcpgateway%2Fagents%2Fcode-reviewer/versions/2.0.0"
 #             )
 #
 #             assert response.status_code == status.HTTP_404_NOT_FOUND
@@ -726,9 +725,7 @@ class TestErrorHandling:
 
         app.dependency_overrides[get_current_user] = mock_current_user_admin
 
-        response = authenticated_client.get(
-            f"/{REGISTRY_CONSTANTS.ANTHROPIC_API_VERSION}/agents/invalid-format/versions"
-        )
+        response = authenticated_client.get(f"/{settings.anthropic_api_version}/agents/invalid-format/versions")
 
         assert response.status_code == status.HTTP_404_NOT_FOUND
 
@@ -750,7 +747,7 @@ class TestErrorHandling:
 
         # Use TestClient without auth cookie to test missing auth
         client = TestClient(app)
-        response = client.get(f"/{REGISTRY_CONSTANTS.ANTHROPIC_API_VERSION}/agents")
+        response = client.get(f"/{settings.anthropic_api_version}/agents")
 
         # Should fail due to auth dependency
         assert response.status_code == status.HTTP_401_UNAUTHORIZED
@@ -781,7 +778,7 @@ class TestErrorHandling:
             ),
         ):
             response = authenticated_client.get(
-                f"/{REGISTRY_CONSTANTS.ANTHROPIC_API_VERSION}/agents/io.mcpgateway%2Fagents%2Fcode-reviewer/versions/latest"
+                f"/{settings.anthropic_api_version}/agents/io.mcpgateway%2Fagents%2Fcode-reviewer/versions/latest"
             )
 
             assert response.status_code == status.HTTP_404_NOT_FOUND
@@ -806,7 +803,7 @@ class TestErrorHandling:
     #         return_value=[],
     #     ):
     #         response = authenticated_client.get(
-    #             f"/{REGISTRY_CONSTANTS.ANTHROPIC_API_VERSION}/agents?limit=0"
+    #             f"/{settings.anthropic_api_version}/agents?limit=0"
     #         )
     #
     #         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY

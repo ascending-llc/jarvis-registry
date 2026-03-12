@@ -35,6 +35,11 @@ class Settings(BaseSettings):
     registry_url: str = "http://localhost:7860"
     registry_app_name: str = "jarvis-registry-client"  # OAuth client ID for registry web app
 
+    anthropic_api_version: str = "v0.1"
+    anthropic_server_namespace: str = "io.mcpgateway"
+    anthropic_api_default_limit: int = 100
+    anthropic_api_max_limit: int = 1000
+
     # Embeddings settings
     embeddings_model_name: str = "all-MiniLM-L6-v2"
     embeddings_model_dimensions: int = 384
@@ -86,11 +91,20 @@ class Settings(BaseSettings):
     container_registry_dir: Path = Path("/app/registry")
     container_log_dir: Path = Path("/app/logs")
 
-    # Note:  It will be overwritten from the .env file.
-    JWT_ISSUER: str = "jarvis-auth-server"
-    JWT_AUDIENCE: str = "jarvis-services"
-    JWT_SELF_SIGNED_KID: str = "self-signed-key-v1"
-    API_VERSION: str = "v1"
+    # Federation / infrastructure settings
+    redis_uri: str = "redis://registry-redis:6379/1"
+    redis_key_prefix: str = "jarvis-registry"
+    aws_access_key_id: str = ""
+    aws_secret_access_key: str = ""
+    aws_session_token: str = ""
+    aws_region: str = ""
+    agentcore_assume_role_arn: str | None = None
+
+    # Note: It will be overwritten from the .env file.
+    jwt_issuer: str = "jarvis-auth-server"
+    jwt_audience: str = "jarvis-services"
+    jwt_self_signed_kid: str = "self-signed-key-v1"
+    api_version: str = "v1"
     log_level: str = (
         "INFO"  # Default to INFO, can be overridden by LOG_LEVEL env var (DEBUG, INFO, WARNING, ERROR, CRITICAL)
     )
@@ -98,7 +112,7 @@ class Settings(BaseSettings):
 
     # Encryption key for sensitive data (client secrets, API keys, etc.)
     # Hex-encoded AES key for encrypting OAuth client secrets and API keys
-    CREDS_KEY: str | None = None
+    creds_key: str | None = None
 
     # Local development mode detection
     @property

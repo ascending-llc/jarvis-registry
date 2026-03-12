@@ -8,7 +8,6 @@ import pytest
 from fastapi import status
 from fastapi.testclient import TestClient
 
-from registry.constants import REGISTRY_CONSTANTS
 from registry.core.config import settings
 from registry.health.service import health_service
 from registry.main import app
@@ -160,7 +159,7 @@ class TestV0ListServers:
                 },
             ),
         ):
-            response = authenticated_client.get(f"/{REGISTRY_CONSTANTS.ANTHROPIC_API_VERSION}/servers")
+            response = authenticated_client.get(f"/{settings.anthropic_api_version}/servers")
 
             assert response.status_code == status.HTTP_200_OK
             data = response.json()
@@ -224,7 +223,7 @@ class TestV0ListServers:
             client = TestClient(app)
             # Set the session cookie in the request
             client.cookies.set(settings.session_cookie_name, user_session_cookie)
-            response = client.get(f"/{REGISTRY_CONSTANTS.ANTHROPIC_API_VERSION}/servers")
+            response = client.get(f"/{settings.anthropic_api_version}/servers")
 
             assert response.status_code == status.HTTP_200_OK
             data = response.json()
@@ -252,7 +251,7 @@ class TestV0ListServers:
                 },
             ),
         ):
-            response = authenticated_client.get(f"/{REGISTRY_CONSTANTS.ANTHROPIC_API_VERSION}/servers?limit=2")
+            response = authenticated_client.get(f"/{settings.anthropic_api_version}/servers?limit=2")
 
             assert response.status_code == status.HTTP_200_OK
             data = response.json()
@@ -282,7 +281,7 @@ class TestV0ListServers:
                 },
             ),
         ):
-            response = authenticated_client.get(f"/{REGISTRY_CONSTANTS.ANTHROPIC_API_VERSION}/servers")
+            response = authenticated_client.get(f"/{settings.anthropic_api_version}/servers")
 
             assert response.status_code == status.HTTP_200_OK
             data = response.json()
@@ -347,7 +346,7 @@ class TestV0ListServerVersions:
         ):
             # URL-encode the server name
             response = authenticated_client.get(
-                f"/{REGISTRY_CONSTANTS.ANTHROPIC_API_VERSION}/servers/io.mcpgateway%2Fserver-a/versions"
+                f"/{settings.anthropic_api_version}/servers/io.mcpgateway%2Fserver-a/versions"
             )
 
             assert response.status_code == status.HTTP_200_OK
@@ -367,7 +366,7 @@ class TestV0ListServerVersions:
 
         with patch.object(server_service, "get_server_info", return_value=None):
             response = authenticated_client.get(
-                f"/{REGISTRY_CONSTANTS.ANTHROPIC_API_VERSION}/servers/io.mcpgateway%2Fnonexistent/versions"
+                f"/{settings.anthropic_api_version}/servers/io.mcpgateway%2Fnonexistent/versions"
             )
 
             assert response.status_code == status.HTTP_404_NOT_FOUND
@@ -380,9 +379,7 @@ class TestV0ListServerVersions:
 
         app.dependency_overrides[enhanced_auth] = mock_enhanced_auth_admin
 
-        response = authenticated_client.get(
-            f"/{REGISTRY_CONSTANTS.ANTHROPIC_API_VERSION}/servers/invalid-format/versions"
-        )
+        response = authenticated_client.get(f"/{settings.anthropic_api_version}/servers/invalid-format/versions")
 
         assert response.status_code == status.HTTP_404_NOT_FOUND
 
@@ -417,9 +414,7 @@ class TestV0ListServerVersions:
         ):
             client = TestClient(app)
             client.cookies.set(settings.session_cookie_name, user_session_cookie)
-            response = client.get(
-                f"/{REGISTRY_CONSTANTS.ANTHROPIC_API_VERSION}/servers/io.mcpgateway%2Fserver-a/versions"
-            )
+            response = client.get(f"/{settings.anthropic_api_version}/servers/io.mcpgateway%2Fserver-a/versions")
 
             # User doesn't have permission to Server A
             assert response.status_code == status.HTTP_404_NOT_FOUND
@@ -456,7 +451,7 @@ class TestV0GetServerVersion:
             ),
         ):
             response = authenticated_client.get(
-                f"/{REGISTRY_CONSTANTS.ANTHROPIC_API_VERSION}/servers/io.mcpgateway%2Fserver-a/versions/latest"
+                f"/{settings.anthropic_api_version}/servers/io.mcpgateway%2Fserver-a/versions/latest"
             )
 
             assert response.status_code == status.HTTP_200_OK
@@ -493,7 +488,7 @@ class TestV0GetServerVersion:
             ),
         ):
             response = authenticated_client.get(
-                f"/{REGISTRY_CONSTANTS.ANTHROPIC_API_VERSION}/servers/io.mcpgateway%2Fserver-a/versions/1.0.0"
+                f"/{settings.anthropic_api_version}/servers/io.mcpgateway%2Fserver-a/versions/1.0.0"
             )
 
             assert response.status_code == status.HTTP_200_OK
@@ -515,7 +510,7 @@ class TestV0GetServerVersion:
             return_value=sample_servers_data["/server-a"],
         ):
             response = authenticated_client.get(
-                f"/{REGISTRY_CONSTANTS.ANTHROPIC_API_VERSION}/servers/io.mcpgateway%2Fserver-a/versions/2.0.0"
+                f"/{settings.anthropic_api_version}/servers/io.mcpgateway%2Fserver-a/versions/2.0.0"
             )
 
             assert response.status_code == status.HTTP_404_NOT_FOUND
@@ -530,7 +525,7 @@ class TestV0GetServerVersion:
 
         with patch.object(server_service, "get_server_info", return_value=None):
             response = authenticated_client.get(
-                f"/{REGISTRY_CONSTANTS.ANTHROPIC_API_VERSION}/servers/io.mcpgateway%2Fnonexistent/versions/latest"
+                f"/{settings.anthropic_api_version}/servers/io.mcpgateway%2Fnonexistent/versions/latest"
             )
 
             assert response.status_code == status.HTTP_404_NOT_FOUND
@@ -561,7 +556,7 @@ class TestV0GetServerVersion:
             ),
         ):
             response = authenticated_client.get(
-                f"/{REGISTRY_CONSTANTS.ANTHROPIC_API_VERSION}/servers/io.mcpgateway%2Fserver-a/versions/latest"
+                f"/{settings.anthropic_api_version}/servers/io.mcpgateway%2Fserver-a/versions/latest"
             )
 
             assert response.status_code == status.HTTP_200_OK

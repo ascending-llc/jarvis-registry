@@ -30,12 +30,12 @@ from urllib.parse import quote
 
 import requests
 
-# Add project root to path to import constants
+# Add project root to path to import application settings
 SCRIPT_DIR = Path(__file__).parent
 PROJECT_ROOT = SCRIPT_DIR.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from registry.constants import REGISTRY_CONSTANTS
+from registry.core.config import settings
 
 logging.basicConfig(
     level=logging.INFO,
@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 
 
 DEFAULT_BASE_URL: str = "http://localhost"
-AGENTS_API_VERSION: str = REGISTRY_CONSTANTS.ANTHROPIC_API_VERSION
+AGENTS_API_VERSION: str = settings.anthropic_api_version
 
 
 class TestResult:

@@ -4,7 +4,7 @@ import time
 
 from redis import Redis
 
-from registry.constants import REGISTRY_CONSTANTS
+from registry.core.config import settings
 from registry.models.oauth_models import MCPOAuthFlowMetadata, OAuthFlow, OAuthTokens
 from registry.schemas.enums import OAuthFlowStatus
 
@@ -16,7 +16,6 @@ class RedisFlowStorage:
     Redis storage for OAuth flows
     """
 
-    KEY_PREFIX = f"{REGISTRY_CONSTANTS.REDIS_KEY_PREFIX}:oauth_flow:flow:"
     DEFAULT_TTL = 600  # 10 minutes
 
     def __init__(self, redis_client: Redis):
@@ -24,10 +23,11 @@ class RedisFlowStorage:
         Initialize storage with Redis client
         """
         self.redis = redis_client
+        self.key_prefix = f"{settings.redis_key_prefix}:oauth_flow:flow:"
 
     def _make_key(self, flow_id: str) -> str:
         """Generate Redis key for flow"""
-        return f"{self.KEY_PREFIX}{flow_id}"
+        return f"{self.key_prefix}{flow_id}"
 
     def save_flow(self, flow: OAuthFlow, ttl: int = DEFAULT_TTL) -> bool:
         """
@@ -132,12 +132,12 @@ class RedisFlowStorage:
         Find flows by user_id and server_id
         """
         try:
-            pattern = f"{self.KEY_PREFIX}*"
+            pattern = f"{self.key_prefix}*"
             flows = []
 
             # Scan all flow keys
             for key in self.redis.scan_iter(match=pattern, count=100):
-                flow = self.get_flow(key.decode() if isinstance(key, bytes) else key.replace(self.KEY_PREFIX, ""))
+                flow = self.get_flow(key.decode() if isinstance(key, bytes) else key.replace(self.key_prefix, ""))
                 if flow and flow.user_id == user_id and flow.server_id == server_id:
                     flows.append(flow)
 
@@ -153,7 +153,7 @@ class RedisFlowStorage:
 
         """
         try:
-            pattern = f"{self.KEY_PREFIX}*"
+            pattern = f"{self.key_prefix}*"
             cleaned = 0
             current_time = time.time()
 

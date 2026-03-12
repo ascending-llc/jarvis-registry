@@ -7,7 +7,7 @@ This bridges our internal data model with the external Anthropic API format.
 import logging
 from typing import Any
 
-from ..constants import REGISTRY_CONSTANTS
+from ..core.config import settings
 from ..schemas.anthropic_schema import (
     Package,
     PaginationMetadata,
@@ -92,7 +92,7 @@ def _create_server_name(server_info: dict[str, Any]) -> str:
     clean_path = path.strip("/")
 
     # Use our domain as prefix
-    namespace = REGISTRY_CONSTANTS.ANTHROPIC_SERVER_NAMESPACE
+    namespace = settings.anthropic_server_namespace
     return f"{namespace}/{clean_path}"
 
 
@@ -131,7 +131,7 @@ def transform_to_server_detail(server_info: dict[str, Any]) -> ServerDetail:
     repository = _extract_repository_from_description(server_info.get("description", ""))
 
     # Build metadata
-    namespace = REGISTRY_CONSTANTS.ANTHROPIC_SERVER_NAMESPACE
+    namespace = settings.anthropic_server_namespace
     meta = {
         f"{namespace}/internal": {
             "path": server_info.get("path"),
@@ -173,7 +173,7 @@ def transform_to_server_response(
 
     registry_meta = None
     if include_registry_meta:
-        namespace = REGISTRY_CONSTANTS.ANTHROPIC_SERVER_NAMESPACE
+        namespace = settings.anthropic_server_namespace
         registry_meta = {
             f"{namespace}/registry": {
                 "last_checked": server_info.get("last_checked_iso"),
