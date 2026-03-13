@@ -350,30 +350,34 @@ def _build_config_from_request(data: ServerCreateRequest, server_name: str = Non
     are stored at root level in MongoDB, NOT in config.
     Config stores MCP-specific configuration only (title, description, type, url, oauth, apiKey, etc.)
     """
+    # Get all data with DB field names applied
+    all_data = data.to_db_dict()
+
     # Build MCP-specific configuration (stored in config object)
     config = {
-        "title": data.title,
-        "description": data.description or "",
-        "type": data.supportedTransports[0] if data.supportedTransports else "streamable-http",
-        "url": data.url,
+        "title": all_data.get("title"),
+        "description": all_data.get("description", ""),
+        "type": all_data.get("supportedTransports", ["streamable-http"])[0]
+        if all_data.get("supportedTransports")
+        else "streamable-http",
+        "url": all_data.get("url"),
         "capabilities": "{}",  # Default empty JSON string
     }
 
-    # Add optional MCP config fields (convert to camelCase for MongoDB storage)
-    if data.timeout is not None:
-        config["timeout"] = data.timeout
-    if data.initTimeout is not None:
-        config["initTimeout"] = data.initTimeout
-    if data.serverInstructions is not None:
-        config["serverInstructions"] = data.serverInstructions
-    if data.oauth is not None:
-        config["oauth"] = data.oauth
-    if data.customUserVars is not None:
-        config["customUserVars"] = data.customUserVars
-    if data.headers is not None:
-        config["headers"] = data.headers
-    if data.requiresOauth is not None:
-        config["requiresOAuth"] = data.requiresOauth
+    # Add optional MCP config fields (already mapped to DB field names)
+    optional_fields = [
+        "timeout",
+        "initTimeout",
+        "serverInstructions",
+        "oauth",
+        "customUserVars",
+        "headers",
+        "requiresOAuth",  # Note: already mapped from requiresOauth
+    ]
+
+    for field in optional_fields:
+        if field in all_data and all_data[field] is not None:
+            config[field] = all_data[field]
 
     # Convert toolList to toolFunctions in OpenAI format
     if data.toolList is not None:
@@ -415,26 +419,26 @@ def _update_config_from_request(
     Registry fields (path, tags, scope, status) are updated at root level separately.
     Note: enabled field is stored in BOTH config and used to update status at root level.
     """
-    update_dict = data.model_dump(exclude_unset=True)
+    # Use to_db_dict() to get DB-compatible field names
+    update_dict = data.to_db_dict(exclude_unset=True)
 
     # Save enabled field separately before removing it (we'll update config with it)
     enabled_value = update_dict.get("enabled")
 
     # Remove root-level registry fields from update_dict (these are handled at root level)
     # Note: enabled is removed here but will be added to config separately
-    # Note: model_dump() returns camelCase keys since schema fields are now camelCase
     registry_fields = [
         "path",
         "tags",
         "status",
-        "serverName",  # camelCase from schema
+        "serverName",
         "numStars",
         "enabled",
     ]
     for field in registry_fields:
         update_dict.pop(field, None)
 
-    # Handle mutually exclusive authentication fields: oauth and apiKey (camelCase from model_dump)
+    # Handle mutually exclusive authentication fields: oauth and apiKey
     if "oauth" in update_dict or "apiKey" in update_dict:
         existing_oauth = config.pop("oauth", {})
         existing_apikey = config.pop("apiKey", {})
@@ -470,7 +474,8 @@ def _update_config_from_request(
         else:
             config.pop("headers", None)
 
-    # Update config with MCP-specific fields only (already in camelCase from schema)
+    # Update config with MCP-specific fields only
+    # Note: Field names are already mapped to DB names via to_db_dict()
     mcp_config_fields = [
         "title",
         "url",
@@ -479,14 +484,13 @@ def _update_config_from_request(
         "timeout",
         "initTimeout",
         "serverInstructions",
-        "requiresOauth",
+        "requiresOAuth",  # Already mapped from requiresOauth
         "oauth",
         "customUserVars",
         # Note: toolList is handled separately below, not directly stored in config
     ]
     for key, value in update_dict.items():
         if key in mcp_config_fields and value is not None:
-            # Store as camelCase for MongoDB (already camelCase from schema)
             config[key] = value
 
     # Update enabled field in config if provided

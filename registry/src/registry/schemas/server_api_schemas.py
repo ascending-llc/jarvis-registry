@@ -32,6 +32,11 @@ def _validate_headers_value(headers: dict[str, Any] | None) -> dict[str, Any] | 
 class ServerCreateRequest(APIBaseModel):
     """Request schema for creating a new server"""
 
+    # API to Database field name mapping
+    _field_mapping = {
+        "requiresOauth": "requiresOAuth",
+    }
+
     title: str = Field(..., description="Display title of the MCP server")
     path: str = Field(..., description="Unique path/route for the server")
     description: str | None = Field(default="", description="Server description")
@@ -77,6 +82,11 @@ class ServerCreateRequest(APIBaseModel):
 
 class ServerUpdateRequest(APIBaseModel):
     """Request schema for updating a server (partial update)"""
+
+    # API to Database field name mapping
+    _field_mapping = {
+        "requiresOauth": "requiresOAuth",
+    }
 
     title: str | None = None
     path: str | None = None
