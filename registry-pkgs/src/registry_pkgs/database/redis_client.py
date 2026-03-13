@@ -7,7 +7,7 @@ import logging
 
 from redis import Redis
 
-from registry.core.config import settings
+from ..core.config import RedisConfig
 
 # Global Redis client instance
 _redis_client: Redis | None = None
@@ -15,7 +15,7 @@ _redis_client: Redis | None = None
 logger = logging.getLogger(__name__)
 
 
-async def init_redis() -> None:
+async def init_redis(config: RedisConfig) -> None:
     """
     Initialize Redis connection (called at application startup).
     Similar to init_mongodb() pattern.
@@ -26,7 +26,7 @@ async def init_redis() -> None:
         logger.warning("Redis client already initialized")
         return
 
-    redis_url = settings.redis_uri
+    redis_url = config.redis_uri
 
     try:
         # Create Redis client with connection pooling

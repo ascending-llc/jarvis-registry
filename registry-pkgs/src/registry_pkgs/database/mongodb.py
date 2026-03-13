@@ -5,12 +5,12 @@ This module provides MongoDB connection management with connection pooling
 and Beanie ODM initialization for the MCP Gateway Registry.
 """
 
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlsplit
 
 from beanie import init_beanie
 from pymongo import AsyncMongoClient
 
-from ..core.config import settings
+from ..core.config import MongoConfig
 from ..models._generated import (
     IAccessRole,
     IAction,
@@ -32,7 +32,7 @@ class MongoDB:
     client: AsyncMongoClient | None = None
 
     @classmethod
-    async def connect_db(cls, db_name: str | None = None):
+    async def connect_db(cls, config: MongoConfig, db_name: str | None = None):
         """
         Initialize MongoDB connection with connection pooling.
 
@@ -41,29 +41,21 @@ class MongoDB:
         """
         if cls.client is not None:
             return
-        # Get MongoDB configuration from environment variables
-        # URI format: mongodb://username:password@host:port/dbname?queryParams
-        mongo_uri = settings.MONGO_URI
-        mongo_username = settings.MONGODB_USERNAME
-        mongo_password = settings.MONGODB_PASSWORD
+        mongo_uri = config.mongo_uri
+        mongo_username = config.mongodb_username
+        mongo_password = config.mongodb_password
 
-        # Parse MONGO_URI to extract db_name and query params if present
-        uri_parts = mongo_uri.rsplit("/", 1)
-        base_uri = uri_parts[0]
-        db_and_params = uri_parts[1] if len(uri_parts) > 1 else None
-
-        # Split database name from query parameters
-        query_params = ""
-        extracted_db = None
-        if db_and_params:
-            if "?" in db_and_params:
-                extracted_db, query_params = db_and_params.split("?", 1)
-                query_params = "?" + query_params
-            else:
-                extracted_db = db_and_params
-
+        parsed = urlsplit(mongo_uri)
+        path = parsed.path.lstrip("/")
+        extracted_db = path if path else None
         if extracted_db and not db_name:
             db_name = extracted_db
+        if not db_name:
+            raise ValueError("MongoDB database name is required in mongo_uri or explicit db_name")
+
+        base_path = ""
+        query_params = f"?{parsed.query}" if parsed.query else ""
+        base_uri = f"{parsed.scheme}://{parsed.netloc}{base_path}"
 
         # Construct the final MongoDB URL
         if mongo_username and mongo_password:
@@ -177,15 +169,15 @@ class MongoDB:
 
 
 # Convenience functions for FastAPI lifespan events
-async def init_mongodb(db_name: str | None = None):
+async def init_mongodb(config: MongoConfig, db_name: str | None = None):
     """
     Initialize MongoDB connection. To be called during FastAPI startup.
 
     Args:
-        mongodb_url: MongoDB connection URL
+        config: Database configuration.
         db_name: Database name
     """
-    await MongoDB.connect_db(db_name)
+    await MongoDB.connect_db(config, db_name)
 
 
 async def close_mongodb():

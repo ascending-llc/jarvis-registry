@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 
+from registry_pkgs.core.config import TelemetryConfig
 from registry_pkgs.telemetry.metrics_client import (
     OTelMetricsClient,
     create_metrics_client,
@@ -494,36 +495,11 @@ def debug_logger():
     logger.setLevel(orig_level)
 
 
-class PatchedSettings:
-    OTEL_METRICS_CONFIG_PATH: str
-
-
-# Fixture for patching settings with env var pointing to an existing config file.
-@pytest.fixture
-def patched_settings_right_file(mocker, temp_dir_with_config):
-    d = temp_dir_with_config
-    patched_settings = PatchedSettings()
-    patched_settings.OTEL_METRICS_CONFIG_PATH = d["config_path"]
-    mocker.patch("registry_pkgs.telemetry.metrics_client.settings", patched_settings)
-
-    yield
-
-
-# Fixture for patching settings with env var pointing to a non-existent config file.
-@pytest.fixture
-def patched_settings_nonexistent_file(mocker):
-    patched_settings = PatchedSettings()
-    patched_settings.OTEL_METRICS_CONFIG_PATH = ".better-not-exist-ha!"
-    mocker.patch("registry_pkgs.telemetry.metrics_client.settings", patched_settings)
-
-    yield
-
-
 class TestLoadMetricsConfig:
     def test_config_path_exists(self, temp_dir_with_config, caplog):
         d = temp_dir_with_config
         with caplog.at_level("INFO"):
-            result = load_metrics_config(d["service_name"], config_path=d["config_path"])
+            result = load_metrics_config(d["service_name"], TelemetryConfig(), config_path=d["config_path"])
         assert result == d["config_data"]
         assert any("Loaded metrics config" in m for m in caplog.messages)
 
@@ -531,28 +507,29 @@ class TestLoadMetricsConfig:
         d = temp_dir_with_config
         missing_path = d["config_path"] + ".missing"
         with caplog.at_level("WARNING"):
-            result = load_metrics_config(d["service_name"], config_path=missing_path)
+            result = load_metrics_config(d["service_name"], TelemetryConfig(), config_path=missing_path)
         assert result is None
         assert any(f"Metrics config not found at {missing_path}" in m for m in caplog.messages)
 
-    def test_env_path_exists(self, temp_dir_with_config, patched_settings_right_file, caplog):
+    def test_env_path_exists(self, temp_dir_with_config, caplog):
         d = temp_dir_with_config
         with caplog.at_level("INFO"):
-            result = load_metrics_config(d["service_name"])
+            result = load_metrics_config(d["service_name"], TelemetryConfig(otel_metrics_config_path=d["config_path"]))
         assert result == d["config_data"]
         assert any("Loaded metrics config" in m for m in caplog.messages)
 
-    def test_env_path_not_exists(self, temp_dir_with_config, patched_settings_nonexistent_file, caplog):
-        d = temp_dir_with_config
+    def test_env_path_not_exists(self, temp_dir_with_config, caplog):
         with caplog.at_level("WARNING"):
-            result = load_metrics_config(d["service_name"])
+            result = load_metrics_config(
+                temp_dir_with_config["service_name"], TelemetryConfig(otel_metrics_config_path=".better-not-exist-ha!")
+            )
         assert result is None
         assert any("Metrics config not found at" in m for m in caplog.messages)
 
     def test_default_path_exists(self, temp_dir_with_config, caplog):
         d = temp_dir_with_config
         with caplog.at_level("INFO"):
-            result = load_metrics_config(d["service_name"])
+            result = load_metrics_config(d["service_name"], TelemetryConfig())
         assert result == d["config_data"]
         assert any("Loaded metrics config" in m for m in caplog.messages)
 
@@ -560,7 +537,7 @@ class TestLoadMetricsConfig:
         d = temp_dir_with_config
         os.remove(d["config_path"])
         with caplog.at_level("WARNING"):
-            result = load_metrics_config(d["service_name"])
+            result = load_metrics_config(d["service_name"], TelemetryConfig())
         assert result is None
         expected_path = os.path.join(os.getcwd(), "config", "metrics", f"{d['service_name']}.yml")
         assert any(f"Metrics config not found at {expected_path}" in m for m in caplog.messages)

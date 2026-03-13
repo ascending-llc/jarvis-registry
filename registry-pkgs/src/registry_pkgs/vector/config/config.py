@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field
 
-from ...core.config import settings
+from ...core.config import VectorConfig
 from ..enum.enums import EmbeddingProvider, VectorStoreType
 
 
@@ -10,9 +10,9 @@ class VectorStoreConfig(BaseModel):
     type: str
 
     @classmethod
-    def from_env(cls) -> "VectorStoreConfig":
-        """Create config instance from environment variables."""
-        raise NotImplementedError(f"{cls.__name__} must implement from_env method")
+    def from_vector_config(cls, config: VectorConfig) -> "VectorStoreConfig":
+        """Create config instance from shared vector config."""
+        raise NotImplementedError(f"{cls.__name__} must implement from_vector_config")
 
 
 class EmbeddingModelConfig(BaseModel):
@@ -21,9 +21,9 @@ class EmbeddingModelConfig(BaseModel):
     provider: str
 
     @classmethod
-    def from_env(cls) -> "EmbeddingModelConfig":
-        """Create config instance from environment variables."""
-        raise NotImplementedError(f"{cls.__name__} must implement from_env method")
+    def from_vector_config(cls, config: VectorConfig) -> "EmbeddingModelConfig":
+        """Create config instance from shared vector config."""
+        raise NotImplementedError(f"{cls.__name__} must implement from_vector_config")
 
 
 # Registry for configuration classes
@@ -87,27 +87,22 @@ class WeaviateConfig(VectorStoreConfig):
     collection_prefix: str | None = Field(default=None, description="Collection prefix")
 
     @classmethod
-    def from_env(cls) -> "WeaviateConfig":
-        """Create Weaviate config from environment variables with validation."""
-        host = settings.WEAVIATE_HOST
-        port = settings.WEAVIATE_PORT
-        collection_prefix = settings.WEAVIATE_COLLECTION_PREFIX
+    def from_vector_config(cls, config: VectorConfig) -> "WeaviateConfig":
+        """Create Weaviate config from explicit vector config."""
+        host = config.weaviate_host
+        port = config.weaviate_port
+        collection_prefix = config.weaviate_collection_prefix
 
         # Required validation
         if not host:
-            raise ValueError("WEAVIATE_HOST environment variable must be set")
+            raise ValueError("weaviate_host must be set in the supplied vector config")
         if not port:
-            raise ValueError("WEAVIATE_PORT environment variable must be set")
+            raise ValueError("weaviate_port must be set in the supplied vector config")
 
         # Type validation
-        try:
-            port_int = int(port)
-            if port_int <= 0 or port_int > 65535:
-                raise ValueError(f"WEAVIATE_PORT must be between 1-65535, got: {port_int}")
-        except ValueError as e:
-            if "invalid literal" in str(e):
-                raise ValueError(f"WEAVIATE_PORT must be integer, got: {port}")
-            raise
+        port_int = int(port)
+        if port_int <= 0 or port_int > 65535:
+            raise ValueError(f"WEAVIATE_PORT must be between 1-65535, got: {port_int}")
 
         # Host validation
         if not host or host.strip() == "":
@@ -117,7 +112,7 @@ class WeaviateConfig(VectorStoreConfig):
             type=VectorStoreType.WEAVIATE.value,
             host=host.strip(),
             port=port_int,
-            api_key=settings.WEAVIATE_API_KEY,
+            api_key=config.weaviate_api_key,
             collection_prefix=collection_prefix,
         )
 
@@ -130,14 +125,14 @@ class OpenAIEmbeddingConfig(EmbeddingModelConfig):
     model: str = Field(description="Model name")
 
     @classmethod
-    def from_env(cls) -> "OpenAIEmbeddingConfig":
-        """Create OpenAI config from environment variables with validation."""
-        api_key = settings.OPENAI_API_KEY
-        model = settings.OPENAI_MODEL
+    def from_vector_config(cls, config: VectorConfig) -> "OpenAIEmbeddingConfig":
+        """Create OpenAI config from explicit vector config."""
+        api_key = config.openai_api_key
+        model = config.openai_model
 
         # Required validation
         if not api_key or api_key.strip() == "":
-            raise ValueError("OPENAI_API_KEY environment variable must be set")
+            raise ValueError("openai_api_key must be set in the supplied vector config")
 
         # API key format validation
         if not api_key.startswith("sk-"):
@@ -160,14 +155,14 @@ class BedrockEmbeddingConfig(EmbeddingModelConfig):
     secret_access_key: str | None = Field(default=None, description="AWS secret access key")
 
     @classmethod
-    def from_env(cls) -> "BedrockEmbeddingConfig":
-        """Create AWS Bedrock config from environment variables with validation."""
-        region = settings.AWS_REGION
-        model = settings.BEDROCK_MODEL
+    def from_vector_config(cls, config: VectorConfig) -> "BedrockEmbeddingConfig":
+        """Create AWS Bedrock config from explicit vector config."""
+        region = config.aws_region
+        model = config.bedrock_model
 
         # Required validation
         if not region or region.strip() == "":
-            raise ValueError("AWS_REGION environment variable must be set")
+            raise ValueError("aws_region must be set in the supplied vector config")
 
         # Region format validation
         valid_regions = ["us-east-1", "us-west-2", "eu-west-1", "ap-southeast-1", "ap-northeast-1"]
@@ -184,8 +179,8 @@ class BedrockEmbeddingConfig(EmbeddingModelConfig):
             provider=EmbeddingProvider.AWS_BEDROCK.value,
             region=region.strip(),
             model=model.strip(),
-            access_key_id=settings.AWS_ACCESS_KEY_ID,
-            secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+            access_key_id=config.aws_access_key_id,
+            secret_access_key=config.aws_secret_access_key,
         )
 
 
@@ -196,29 +191,29 @@ class BackendConfig(BaseModel):
     embedding_model_config: EmbeddingModelConfig
 
     @classmethod
-    def from_env(cls) -> "BackendConfig":
+    def from_vector_config(cls, config: VectorConfig) -> "BackendConfig":
         """
-        Create unified config from environment variables with validation.
+        Create unified backend config from an explicit vector config model.
 
-        Required env vars:
-        - VECTOR_STORE_TYPE: weaviate
-        - EMBEDDING_PROVIDER: openai | aws_bedrock
+        Required fields:
+        - vector_store_type: weaviate
+        - embedding_provider: openai | aws_bedrock
 
         Raises:
-            ValueError: If required env vars missing or invalid
+            ValueError: If required fields are missing or invalid
         """
-        vector_store_type = settings.VECTOR_STORE_TYPE
-        embedding_provider = settings.EMBEDDING_PROVIDER
+        vector_store_type = config.vector_store_type
+        embedding_provider = config.embedding_provider
 
         # Required validation
         if not vector_store_type or vector_store_type.strip() == "":
             raise ValueError(
-                "VECTOR_STORE_TYPE environment variable must be set. "
+                "vector_store_type must be set in the supplied vector config. "
                 f"Valid values: {', '.join(get_registered_vector_stores())}"
             )
         if not embedding_provider or embedding_provider.strip() == "":
             raise ValueError(
-                "EMBEDDING_PROVIDER environment variable must be set. "
+                "embedding_provider must be set in the supplied vector config. "
                 f"Valid values: {', '.join(get_registered_embedding_models())}"
             )
 
@@ -229,13 +224,13 @@ class BackendConfig(BaseModel):
         # Validate against registered types
         if vector_store_type not in get_registered_vector_stores():
             raise ValueError(
-                f"Unsupported VECTOR_STORE_TYPE: '{vector_store_type}'. "
+                f"Unsupported vector_store_type: '{vector_store_type}'. "
                 f"Supported: {', '.join(get_registered_vector_stores())}"
             )
 
         if embedding_provider not in get_registered_embedding_models():
             raise ValueError(
-                f"Unsupported EMBEDDING_PROVIDER: '{embedding_provider}'. "
+                f"Unsupported embedding_provider: '{embedding_provider}'. "
                 f"Supported: {', '.join(get_registered_embedding_models())}"
             )
 
@@ -243,7 +238,10 @@ class BackendConfig(BaseModel):
         vector_store_class = get_vector_store_config_class(vector_store_type)
         embedding_class = get_embedding_model_config_class(embedding_provider)
 
-        return cls(vector_store_config=vector_store_class.from_env(), embedding_model_config=embedding_class.from_env())
+        return cls(
+            vector_store_config=vector_store_class.from_vector_config(config),
+            embedding_model_config=embedding_class.from_vector_config(config),
+        )
 
     @property
     def vector_store_type(self) -> str:

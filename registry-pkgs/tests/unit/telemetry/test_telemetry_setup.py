@@ -1,8 +1,8 @@
-import os
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from registry_pkgs.core.config import TelemetryConfig
 from registry_pkgs.telemetry import setup_metrics
 
 
@@ -68,7 +68,7 @@ class TestTelemetrySetup:
         service_name = "test-service"
         otlp_endpoint = "http://localhost:4318"
 
-        setup_metrics(service_name, otlp_endpoint=otlp_endpoint)
+        setup_metrics(service_name, TelemetryConfig(), otlp_endpoint=otlp_endpoint)
 
         mock_otel_deps["resource"].create.assert_called_once()
         _, kwargs = mock_otel_deps["resource"].create.call_args
@@ -79,21 +79,20 @@ class TestTelemetrySetup:
 
     def test_setup_metrics_disabled(self, mock_otel_deps):
         """Test setup with metrics disabled."""
-        setup_metrics("test-service", enable_metrics=False)
+        setup_metrics("test-service", TelemetryConfig(), enable_metrics=False)
 
         mock_otel_deps["metrics"].set_meter_provider.assert_not_called()
 
     def test_setup_prometheus_enabled(self, mock_otel_deps):
         """Test that Prometheus reader is added when env var is set."""
         with (
-            patch.dict(os.environ, {"OTEL_PROMETHEUS_ENABLED": "true"}),
             patch("opentelemetry.exporter.prometheus.PrometheusMetricReader") as _mock_prom_reader,
             patch("prometheus_client.start_http_server") as mock_start_server,
         ):
             # Suppress unused variable warning - we just need to mock it
             _ = _mock_prom_reader
 
-            setup_metrics("test-service")
+            setup_metrics("test-service", TelemetryConfig(otel_prometheus_enabled=True))
 
             mock_start_server.assert_called_once_with(port=9464, addr="0.0.0.0")
 
@@ -102,18 +101,15 @@ class TestTelemetrySetup:
     def test_setup_no_endpoint_env_fallback(self, mock_otel_deps):
         """Test that it falls back to env var if no endpoint provided."""
         env_endpoint = "http://env-collector:4318"
-
-        with patch.dict(os.environ, {"OTEL_EXPORTER_OTLP_ENDPOINT": env_endpoint}):
-            setup_metrics("test-service", otlp_endpoint=None)
-
-            mock_otel_deps["safe_exporter"].assert_called_with(endpoint=f"{env_endpoint}/v1/metrics", timeout=5)
+        setup_metrics("test-service", TelemetryConfig(otel_exporter_otlp_endpoint=env_endpoint), otlp_endpoint=None)
+        mock_otel_deps["safe_exporter"].assert_called_with(endpoint=f"{env_endpoint}/v1/metrics", timeout=5)
 
     def test_setup_handles_initialization_failure(self, mock_otel_deps):
         """Test that initialization failure is caught and logged."""
         mock_otel_deps["meter_provider"].side_effect = Exception("Init Failed")
 
         # Should not raise - errors are suppressed
-        setup_metrics("test-service", enable_metrics=True)
+        setup_metrics("test-service", TelemetryConfig(), enable_metrics=True)
 
         # set_meter_provider should not be called since MeterProvider failed
         mock_otel_deps["metrics"].set_meter_provider.assert_not_called()

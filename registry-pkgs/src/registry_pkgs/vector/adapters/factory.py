@@ -64,11 +64,11 @@ class VectorStoreFactory:
     """Factory class for creating vector store adapters using registry pattern."""
 
     @classmethod
-    def create_adapter(cls, config: BackendConfig | None = None) -> VectorStoreAdapter:
+    def create_adapter(cls, config: BackendConfig) -> VectorStoreAdapter:
         """Create vector store adapter.
 
         Args:
-            config: BackendConfig instance (uses env vars if None)
+            config: BackendConfig instance
 
         Returns:
             VectorStoreAdapter instance
@@ -78,9 +78,6 @@ class VectorStoreFactory:
             DependencyMissingError: Required LangChain packages not installed
             ValueError: Invalid configuration
         """
-        if config is None:
-            config = BackendConfig.from_env()
-
         cls._validate_config(config)
 
         try:
@@ -153,7 +150,7 @@ class VectorStoreFactory:
 
 
 # Convenience functions
-def create_adapter(config: BackendConfig | None = None) -> VectorStoreAdapter:
+def create_adapter(config: BackendConfig) -> VectorStoreAdapter:
     """Convenience function to create vector store adapter."""
     return VectorStoreFactory.create_adapter(config)
 

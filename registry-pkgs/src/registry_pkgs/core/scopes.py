@@ -1,14 +1,14 @@
-"""Centralized scopes configuration loader for MCP Gateway Registry.
+"""Centralized scopes configuration loader for MCP Gateway services.
 
-This module provides a consistent way to load and access the scopes.yml configuration
-across all services (registry, auth-server, mcpgw).
+This module loads ``scopes.yml`` from an explicit ``ScopesConfig`` object rather than
+reading environment variables directly. Callers provide the config, and the loader
+resolves the file using this priority:
 
-The loader follows this priority:
-1. SCOPES_CONFIG_PATH environment variable (for local development)
-2. Package-bundled scopes.yml (for production containers)
+1. ``ScopesConfig.scopes_config_path`` when it points to an existing file
+2. The package-bundled ``scopes.yml`` included with ``registry-pkgs``
 
-The configuration is loaded once at module import and cached for the lifetime of the process.
-Changes to scopes.yml require a service restart.
+Configuration is loaded lazily on first use and cached by resolved file path for the
+lifetime of the process. Changes to a loaded ``scopes.yml`` still require a restart.
 """
 
 import logging
@@ -17,99 +17,57 @@ from typing import Any
 
 import yaml
 
-from .config import settings
+from .config import ScopesConfig
 
 logger = logging.getLogger(__name__)
 
-# Module-level cache - loaded once at import
-_SCOPES_CONFIG: dict[str, Any] | None = None
+_SCOPES_CONFIG_CACHE: dict[str, dict[str, Any]] = {}
 
 
-def get_scopes_file_path() -> Path:
-    """Get the path to the scopes.yml file.
-
-    Priority:
-    1. SCOPES_CONFIG_PATH environment variable (absolute or relative path)
-    2. Package-bundled scopes.yml file
-
-    Returns:
-        Path object pointing to scopes.yml
-
-    Raises:
-        FileNotFoundError: If scopes.yml cannot be found in any location
-    """
-    # Check environment variable first (for local development)
-    if settings.SCOPES_CONFIG_PATH:
-        scopes_path = Path(settings.SCOPES_CONFIG_PATH)
+def get_scopes_file_path(config: ScopesConfig) -> Path:
+    """Resolve the scopes.yml path from explicit config or the packaged fallback."""
+    if config.scopes_config_path:
+        scopes_path = Path(config.scopes_config_path)
         if scopes_path.exists():
             logger.info(f"Using scopes config from SCOPES_CONFIG_PATH: {scopes_path}")
             return scopes_path
-        else:
-            logger.warning(f"SCOPES_CONFIG_PATH set to {settings.SCOPES_CONFIG_PATH} but file not found")
+        logger.warning(f"SCOPES_CONFIG_PATH set to {config.scopes_config_path} but file not found")
 
-    # Fallback to package-bundled file (production)
     package_path = Path(__file__).parent.parent / "scopes.yml"
     if package_path.exists():
         logger.info(f"Using package-bundled scopes config: {package_path}")
         return package_path
 
-    # If nothing found, raise error (fail fast)
     raise FileNotFoundError(
-        "scopes.yml not found. Set SCOPES_CONFIG_PATH environment variable "
-        "or ensure scopes.yml is packaged with registry-pkgs."
+        "scopes.yml not found. Provide scopes_config_path or ensure scopes.yml is packaged with registry-pkgs."
     )
 
 
-def load_scopes_config() -> dict[str, Any]:
-    """Load scopes configuration from YAML file.
+def load_scopes_config(config: ScopesConfig) -> dict[str, Any]:
+    """Load scopes configuration from YAML with path-based lazy caching."""
+    if config.scopes_config_path and config.scopes_config_path in _SCOPES_CONFIG_CACHE:
+        return _SCOPES_CONFIG_CACHE[config.scopes_config_path]
 
-    This function uses module-level caching - the config is loaded once at first call
-    and reused for subsequent calls. Changes require a service restart.
+    scopes_file = get_scopes_file_path(config)
+    cache_key = str(scopes_file.resolve())
 
-    Returns:
-        Dictionary containing scopes configuration with structure:
-        {
-            "group_mappings": {
-                "group-name": ["scope1", "scope2", ...],
-                ...
-            },
-            "scope-name": [
-                {"action": "...", "method": "...", "endpoint": "..."},
-                ...
-            ],
-            ...
-        }
-
-    Raises:
-        FileNotFoundError: If scopes.yml cannot be found
-        yaml.YAMLError: If scopes.yml is not valid YAML
-        RuntimeError: If loaded config is empty or invalid
-    """
-    global _SCOPES_CONFIG
-
-    # Return cached config if already loaded
-    if _SCOPES_CONFIG is not None:
-        return _SCOPES_CONFIG
-
-    # Load configuration
-    scopes_file = get_scopes_file_path()
+    if cache_key in _SCOPES_CONFIG_CACHE:
+        return _SCOPES_CONFIG_CACHE[cache_key]
 
     try:
         with open(scopes_file) as f:
-            config = yaml.safe_load(f)
+            loaded = yaml.safe_load(f)
 
-        if not config or not isinstance(config, dict):
-            raise RuntimeError(f"Invalid scopes configuration: expected dict, got {type(config)}")
-
-        # Validate structure
-        if "group_mappings" not in config:
+        if not loaded or not isinstance(loaded, dict):
+            raise RuntimeError(f"Invalid scopes configuration: expected dict, got {type(loaded)}")
+        if "group_mappings" not in loaded:
             raise RuntimeError("scopes.yml missing required 'group_mappings' section")
 
-        logger.info(f"Loaded scopes config with {len(config.get('group_mappings', {}))} group mappings")
-
-        # Cache the configuration
-        _SCOPES_CONFIG = config
-        return config
+        logger.info(f"Loaded scopes config with {len(loaded.get('group_mappings', {}))} group mappings")
+        _SCOPES_CONFIG_CACHE[cache_key] = loaded
+        if config.scopes_config_path:
+            _SCOPES_CONFIG_CACHE[config.scopes_config_path] = loaded
+        return loaded
 
     except yaml.YAMLError as e:
         logger.error(f"Failed to parse scopes.yml: {e}")
@@ -119,22 +77,9 @@ def load_scopes_config() -> dict[str, Any]:
         raise
 
 
-def map_groups_to_scopes(groups: list[str]) -> list[str]:
-    """Map user groups to OAuth2 scopes based on the scopes configuration.
-
-    Uses the cached scopes configuration loaded from scopes.yml.
-
-    Args:
-        groups: List of group names to map.
-
-    Returns:
-        Deduplicated list of scope strings (order-preserving).
-
-    Example:
-        >>> map_groups_to_scopes(["jarvis-registry-admin"])
-        ["servers-read", "agents-read", "agents-write", ...]
-    """
-    group_mappings = _SCOPES_CONFIG.get("group_mappings", {})
+def map_groups_to_scopes(groups: list[str], config: ScopesConfig) -> list[str]:
+    """Map user groups to OAuth2 scopes using the configured scopes file."""
+    group_mappings = load_scopes_config(config).get("group_mappings", {})
     scopes: list[str] = []
 
     for group in groups:
@@ -145,7 +90,6 @@ def map_groups_to_scopes(groups: list[str]) -> list[str]:
         else:
             logger.debug(f"No scope mapping found for group: {group}")
 
-    # Deduplicate while preserving order
     seen: set[str] = set()
     unique_scopes: list[str] = []
     for scope in scopes:
@@ -155,14 +99,3 @@ def map_groups_to_scopes(groups: list[str]) -> list[str]:
 
     logger.info(f"Mapped {len(groups)} groups to {len(unique_scopes)} unique scopes")
     return unique_scopes
-
-
-# Pre-load configuration at module import for fail-fast behavior
-# If this fails, the service won't start - which is desired behavior
-try:
-    load_scopes_config()
-    logger.info("Scopes configuration pre-loaded successfully")
-except Exception as e:
-    logger.error(f"Failed to pre-load scopes configuration: {e}")
-    # Don't suppress the exception - let the service fail to start
-    raise

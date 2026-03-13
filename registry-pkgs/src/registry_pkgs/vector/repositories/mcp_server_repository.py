@@ -12,7 +12,7 @@ from langchain_core.documents import Document
 
 from ...models import ExtendedMCPServer
 from ...models.enums import ServerEntityType
-from ..client import DatabaseClient, initialize_database
+from ..client import DatabaseClient
 from ..repository import Repository
 
 logger = logging.getLogger(__name__)
@@ -558,12 +558,14 @@ def create_mcp_server_repository(db_client: DatabaseClient) -> MCPServerReposito
     return repo
 
 
-_mcp_server_repo = None
+_mcp_server_repo: MCPServerRepository | None = None
 
 
-def get_mcp_server_repo():
+def get_mcp_server_repo(db_client: DatabaseClient | None = None) -> MCPServerRepository:
     """Lazy initialization of MCP Server repository."""
     global _mcp_server_repo
     if _mcp_server_repo is None:
-        _mcp_server_repo = create_mcp_server_repository(initialize_database())
+        if db_client is None:
+            raise RuntimeError("Database client is required when initializing MCPServerRepository")
+        _mcp_server_repo = create_mcp_server_repository(db_client)
     return _mcp_server_repo

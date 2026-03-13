@@ -55,7 +55,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pydantic import Field
 from pymongo import IndexModel
 
-from ..core.config import settings
+from ..core.config import ChunkingConfig
 from ..models.enums import FederationSource, ServerEntityType
 
 logger = logging.getLogger(__name__)
@@ -169,7 +169,7 @@ class ExtendedMCPServer(Document):
     # ========== Vector Search Integration (Weaviate) ==========
     COLLECTION_NAME: ClassVar[str] = "Jarvis_Registry"
 
-    def to_documents(self) -> list[LangChainDocument]:
+    def to_documents(self, chunking_config: ChunkingConfig | None = None) -> list[LangChainDocument]:
         """
         Convert ExtendedMCPServer to multiple searchable documents.
 
@@ -182,27 +182,28 @@ class ExtendedMCPServer(Document):
             List of LangChain Documents with entity_type metadata
         """
         docs = []
+        chunking_config = chunking_config or ChunkingConfig()
 
         # 1. Server Overview
-        server_docs = self._create_server_docs()
+        server_docs = self._create_server_docs(chunking_config)
         docs.extend(server_docs)
 
         # 2. Tools
         tool_functions = self.config.get("toolFunctions", {})
         for tool_name, tool_data in tool_functions.items():
-            tool_docs = self._create_tool_docs(tool_name, tool_data)
+            tool_docs = self._create_tool_docs(tool_name, tool_data, chunking_config)
             docs.extend(tool_docs)
 
         # 3. Resources
         resources = self.config.get("resources", [])
         for resource in resources:
-            resource_docs = self._create_resource_docs(resource)
+            resource_docs = self._create_resource_docs(resource, chunking_config)
             docs.extend(resource_docs)
 
         # 4. Prompts
         prompts = self.config.get("prompts", [])
         for prompt in prompts:
-            prompt_docs = self._create_prompt_docs(prompt)
+            prompt_docs = self._create_prompt_docs(prompt, chunking_config)
             docs.extend(prompt_docs)
 
         logger.info(
@@ -213,39 +214,41 @@ class ExtendedMCPServer(Document):
 
         return docs
 
-    def _create_server_docs(self) -> list[LangChainDocument]:
+    def _create_server_docs(self, chunking_config: ChunkingConfig) -> list[LangChainDocument]:
         """Create Server Overview document(s) with text splitting if needed."""
         content = self.generate_server_content()
 
         base_metadata = self._get_base_metadata(ServerEntityType.SERVER)
-        return self._split_if_needed(content, base_metadata)
+        return self._split_if_needed(content, base_metadata, chunking_config)
 
-    def _create_tool_docs(self, tool_name: str, tool_data: dict) -> list[LangChainDocument]:
+    def _create_tool_docs(
+        self, tool_name: str, tool_data: dict, chunking_config: ChunkingConfig
+    ) -> list[LangChainDocument]:
         """Create Tool document(s) with text splitting if needed."""
         content = self.generate_tool_content(tool_name, tool_data)
 
         metadata = self._get_base_metadata(ServerEntityType.TOOL)
         metadata.update({"tool_name": tool_name, "original_mcp_name": tool_data.get("mcpToolName", tool_name)})
 
-        return self._split_if_needed(content, metadata)
+        return self._split_if_needed(content, metadata, chunking_config)
 
-    def _create_resource_docs(self, resource: dict) -> list[LangChainDocument]:
+    def _create_resource_docs(self, resource: dict, chunking_config: ChunkingConfig) -> list[LangChainDocument]:
         """Create Resource document(s) with text splitting if needed."""
         content = self.generate_resource_content(resource)
 
         metadata = self._get_base_metadata(ServerEntityType.RESOURCE)
         metadata.update({"resource_name": resource.get("name", ""), "resource_uri": resource.get("uri", "")})
 
-        return self._split_if_needed(content, metadata)
+        return self._split_if_needed(content, metadata, chunking_config)
 
-    def _create_prompt_docs(self, prompt: dict) -> list[LangChainDocument]:
+    def _create_prompt_docs(self, prompt: dict, chunking_config: ChunkingConfig) -> list[LangChainDocument]:
         """Create Prompt document(s) with text splitting if needed."""
         content = self.generate_prompt_content(prompt)
 
         metadata = self._get_base_metadata(ServerEntityType.PROMPT)
         metadata.update({"prompt_name": prompt.get("name", "")})
 
-        return self._split_if_needed(content, metadata)
+        return self._split_if_needed(content, metadata, chunking_config)
 
     def _get_base_metadata(self, entity_type: ServerEntityType) -> dict[str, Any]:
         """Get base metadata shared by all document types."""
@@ -261,7 +264,9 @@ class ExtendedMCPServer(Document):
         metadata.update({"enabled": enabled})
         return metadata
 
-    def _split_if_needed(self, content: str, metadata: dict[str, Any]) -> list[LangChainDocument]:
+    def _split_if_needed(
+        self, content: str, metadata: dict[str, Any], chunking_config: ChunkingConfig
+    ) -> list[LangChainDocument]:
         """
         Split content if it exceeds MAX_CHUNK_SIZE using RecursiveCharacterTextSplitter.
 
@@ -272,19 +277,19 @@ class ExtendedMCPServer(Document):
         Returns:
             List of LangChain Documents (1 if no split needed, N if split)
         """
-        if len(content) <= settings.MAX_CHUNK_SIZE:
+        if len(content) <= chunking_config.max_chunk_size:
             return [LangChainDocument(page_content=content, metadata=metadata)]
 
         # Split required
         entity_identifier = metadata.get("tool_name") or metadata.get("server_name") or "unknown"
         logger.warning(
-            f"Content exceeds {settings.MAX_CHUNK_SIZE} chars ({len(content)} chars), splitting... "
+            f"Content exceeds {chunking_config.max_chunk_size} chars ({len(content)} chars), splitting... "
             f"[{metadata.get('entity_type')}: {entity_identifier}]"
         )
 
         splitter = RecursiveCharacterTextSplitter(
-            chunk_size=settings.MAX_CHUNK_SIZE,
-            chunk_overlap=settings.CHUNK_OVERLAP,
+            chunk_size=chunking_config.max_chunk_size,
+            chunk_overlap=chunking_config.chunk_overlap,
             separators=["\n## ", "\n### ", "\n\n", "\n", " | ", " ", ""],
             length_function=len,
         )
