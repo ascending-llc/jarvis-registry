@@ -437,7 +437,7 @@
 
 ### 10. Get Agent Card (Well-Known)
 
-**Endpoint**: `GET /api/v1/agents/{agent_id}/well-known/agent-cards`
+**Endpoint**: `GET /api/v1/agents/{agent_id}/.well-known/agent-cards`
 
 **Authentication**: JWT Bearer token required
 
@@ -482,7 +482,6 @@
 **Features**:
 - Returns agent card directly from A2A SDK (agent.card)
 - Standard A2A protocol format (validated by a2a-sdk)
-- Only returns enabled agents (404 if disabled)
 - Cached response (configurable TTL via `wellknown_cache_ttl` setting)
 - No additional processing or reformatting
 
@@ -504,7 +503,7 @@ agent_card_data = agent.card.model_dump(mode="json", exclude_none=True, by_alias
 - Integration with A2A-compatible systems
 - Get original agent metadata in standard format
 
-**Error**: `404` Agent not found or not enabled, `403` Access denied
+**Error**: `404` Agent not found, `403` Access denied
 
 **Permission**: Requires VIEW permission
 

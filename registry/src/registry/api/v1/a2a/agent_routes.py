@@ -609,7 +609,7 @@ async def sync_wellknown(
 
 
 @router.get(
-    "/agents/{agent_id}/well-known/agent-cards",
+    "/agents/{agent_id}/.well-known/agent-cards",
     summary="Get Agent Card (Well-Known)",
     description="Get agent card from well-known endpoint following A2A protocol",
 )
@@ -624,7 +624,7 @@ async def get_agent_wellknown_card(
     similar to what would be found at /.well-known/agent-card.json
     on a standalone A2A agent server.
 
-    Endpoint: /api/v1/agents/{agent_id}/well-known/agent-cards
+    Endpoint: /api/v1/agents/{agent_id}/.well-known/agent-cards
     """
     try:
         user_id = user_context.get("user_id")
@@ -639,13 +639,6 @@ async def get_agent_wellknown_card(
 
         # Get agent
         agent = await a2a_agent_service.get_agent_by_id(agent_id)
-
-        # Only return enabled agents
-        if not agent.isEnabled:
-            raise HTTPException(
-                status_code=http_status.HTTP_404_NOT_FOUND,
-                detail=create_error_detail(ErrorCode.RESOURCE_NOT_FOUND, "Agent is not enabled"),
-            )
 
         # Return agent card directly from SDK (agent.card is already AgentCard from a2a-sdk)
         # Use model_dump() to convert Pydantic model to dict, excluding None values
