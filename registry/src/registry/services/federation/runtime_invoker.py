@@ -9,7 +9,6 @@ from typing import Any
 import httpx
 from botocore.auth import SigV4Auth
 from botocore.awsrequest import AWSRequest
-from botocore.credentials import RefreshableCredentials
 
 from registry.constants import REGISTRY_CONSTANTS
 from registry.core.mcp_client import MCPServerData, get_tools_and_capabilities_from_server
@@ -28,11 +27,12 @@ class _SigV4HttpxAuth(httpx.Auth):
         self.credentials_provider = credentials_provider
 
     def auth_flow(self, request: httpx.Request):
+        """
+        Sign each outgoing HTTPX request with a frozen snapshot of the current
+        AWS credentials and write the SigV4 headers back onto the request.
+        """
         credentials = self.credentials_provider()
-        if isinstance(credentials, RefreshableCredentials):
-            credentials = credentials.get_frozen_credentials()
-        else:
-            credentials = credentials.get_frozen_credentials()
+        credentials = credentials.get_frozen_credentials()
 
         aws_request = AWSRequest(
             method=request.method,

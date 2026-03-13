@@ -61,7 +61,6 @@ class AgentCoreImportService:
 
     async def import_from_runtime(
         self,
-        runtime_arns: list[str] | None = None,
         dry_run: bool = False,
         user_id: str | None = None,
     ) -> dict[str, Any]:
@@ -70,9 +69,6 @@ class AgentCoreImportService:
 
         HTTP/UNKNOWN runtimes are skipped and returned in skipped_runtimes.
         """
-        if runtime_arns:
-            raise ValueError("runtimeArns is not supported. AgentCore sync only supports full runtime sync.")
-
         start_time = time.time()
         errors: list[str] = []
         mcp_results: list[dict[str, Any]] = []
