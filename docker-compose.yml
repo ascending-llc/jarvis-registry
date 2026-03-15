@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # OpenTelemetry Collector
   otel-collector:
@@ -204,28 +202,6 @@ services:
     profiles:
       - disabled
 
-  # MCP Gateway Server
-  mcpgw-server:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.mcpgw
-    environment:
-      - PORT=8003
-      - REGISTRY_URL=http://registry:7860
-      - REGISTRY_USERNAME=${ADMIN_USER:-admin}
-      - REGISTRY_PASSWORD=${ADMIN_PASSWORD}
-      - JWT_SECRET_KEY=${SECRET_KEY}
-      - WEAVIATE_HOST=weaviate
-    ports:
-      - "8003:8003"
-    #    depends_on:
-    #      - registry
-    restart: unless-stopped
-    env_file:
-      - .env
-    profiles:
-      - full
-      - dev
   weaviate:
     image: cr.weaviate.io/semitechnologies/weaviate:latest
     restart: on-failure:0

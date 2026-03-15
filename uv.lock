@@ -9,7 +9,6 @@ members = [
     "registry",
     "registry-pkgs",
 ]
-constraints = [{ name = "onnxruntime", specifier = "<=1.23.2" }]
 
 [[package]]
 name = "a2a-sdk"
