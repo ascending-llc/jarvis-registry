@@ -23,15 +23,24 @@ class TestACLService:
         new_entry = AsyncMock()
         new_entry.insert = AsyncMock()
         mock_acl_entry.return_value = new_entry
-        with patch("registry.services.access_control_service.IAclEntry", mock_acl_entry):
+        with (
+            patch("registry.services.access_control_service.IAclEntry", mock_acl_entry),
+            patch(
+                "registry.services.access_control_service.IAccessRole.find_one",
+                AsyncMock(return_value=MagicMock(permBits=PermissionBits.EDIT)),
+            ),
+        ):
+            role_id = PydanticObjectId()
             await service.grant_permission(
                 principal_type="user",
                 principal_id={"id": "user1"},
                 resource_type=ResourceType.MCPSERVER.value,
                 resource_id=PydanticObjectId(),
+                role_id=role_id,
                 perm_bits=PermissionBits.EDIT,
             )
             new_entry.insert.assert_awaited()
+            assert mock_acl_entry.call_args.kwargs["roleId"] == role_id
 
     @pytest.mark.asyncio
     @patch("registry.services.access_control_service.get_current_session")

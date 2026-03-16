@@ -13,8 +13,8 @@ class MCPClientConfig:
     """Centralized MCP client configuration"""
 
     # Timeouts (in seconds)
-    INIT_TIMEOUT: float = 10.0
-    TOOLS_TIMEOUT: float = 15.0
+    INIT_TIMEOUT: float = 30.0
+    TOOLS_TIMEOUT: float = 45.0
     HEALTH_CHECK_TIMEOUT: float = 10.0
     OAUTH_METADATA_TIMEOUT: float = 10.0
 
