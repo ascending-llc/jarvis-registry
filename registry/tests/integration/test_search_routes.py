@@ -2,7 +2,7 @@
 Integration tests for semantic search routes.
 """
 
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi import Request
@@ -93,23 +93,8 @@ class TestSearchRoutes:
             ],
         }
 
-        with (
-            patch("registry.api.v1.search_routes.faiss_service") as mock_faiss,
-            patch("registry.api.v1.search_routes.agent_service") as mock_agent_service,
-        ):
+        with patch("registry.api.v1.search_routes.faiss_service") as mock_faiss:
             mock_faiss.search_mixed = AsyncMock(return_value=mock_results)
-            mock_agent = Mock()
-            mock_agent.visibility = "public"
-            mock_agent.model_dump.return_value = {
-                "name": "Demo Agent",
-                "description": "Helps with demos",
-                "tags": ["demo"],
-                "skills": [{"name": "explain"}],
-                "visibility": "public",
-                "trust_level": "verified",
-                "is_enabled": True,
-            }
-            mock_agent_service.get_agent_info.return_value = mock_agent
 
             response = test_client.post(
                 "/api/v1/search/semantic",
@@ -124,10 +109,10 @@ class TestSearchRoutes:
         data = response.json()
         assert data["totalServers"] == 1
         assert data["totalTools"] == 1
-        assert data["totalAgents"] == 1
+        # Legacy file-based agent support has been removed
+        assert data["totalAgents"] == 0
         assert data["servers"][0]["serverName"] == "Demo"
         assert data["tools"][0]["toolName"] == "alpha"
-        assert data["agents"][0]["agentName"] == "Demo Agent"
 
     def test_semantic_search_handles_service_errors(self, test_client: TestClient):
         """Service-level errors propagate as 503."""

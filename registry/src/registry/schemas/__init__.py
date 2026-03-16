@@ -1,12 +1,5 @@
 """Models for the registry service."""
 
-from .agent_models import (
-    AgentCard,
-    AgentInfo,
-    AgentRegistrationRequest,
-    SecurityScheme,
-    Skill,
-)
 from .anthropic_schema import (
     ErrorResponse,
     Package,
@@ -37,11 +30,6 @@ __all__ = [
     "ServerList",
     "PaginationMetadata",
     "ErrorResponse",
-    "SecurityScheme",
-    "Skill",
-    "AgentCard",
-    "AgentInfo",
-    "AgentRegistrationRequest",
     # Error handling
     "APIErrorDetail",
     "APIErrorResponse",

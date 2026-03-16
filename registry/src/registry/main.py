@@ -20,7 +20,6 @@ from registry_pkgs.database import close_mongodb, init_mongodb
 from registry_pkgs.database.redis_client import close_redis, init_redis
 from registry_pkgs.telemetry import setup_metrics
 
-from .api.agent_routes import router as agent_router
 from .api.management_routes import router as management_router
 from .api.proxy_routes import router as proxy_router
 from .api.redirect_routes import router as auth_provider_router
@@ -48,7 +47,6 @@ from .middleware import ScopePermissionMiddleware, UnifiedAuthMiddleware
 from .schemas.common_api_schemas import UserInfoResponse
 
 # Import services for initialization
-from .services.agent_service import agent_service
 from .services.federation_service import get_federation_service
 from .services.search.service import vector_service
 from .version import __version__
@@ -86,20 +84,7 @@ async def lifespan(app: FastAPI):
 
         # Only update index if service initialized successfully
         if hasattr(vector_service, "_initialized") and vector_service._initialized:
-            logger.info("📊 Updating vector search index with all registered services...")
-            logger.info("📋 Loading agent cards and state...")
-            agent_service.load_agents_and_state()
-            logger.info("📊 Updating vector index with all registered agents...")
-            all_agents = agent_service.list_agents()
-            for agent_card in all_agents:
-                agent_service.is_agent_enabled(agent_card.path)
-                try:
-                    await vector_service.add_or_update_agent(agent_card.path, agent_card)
-                    logger.debug(f"Updated vector index for agent: {agent_card.path}")
-                except Exception as e:
-                    logger.error(f"Failed to update vector index for agent {agent_card.path}: {e}", exc_info=True)
-
-            logger.info(f"✅ Vector search index updated with {len(all_agents)} services")
+            logger.info("✅ Vector search service initialized successfully")
         else:
             logger.warning("⚠️  Vector search service not initialized - index update skipped")
             logger.info("💡 App will continue without vector search features")
@@ -178,10 +163,6 @@ app = FastAPI(
             "description": "A2A agent registration and management API v1. Requires JWT Bearer token authentication.",
         },
         {
-            "name": "Agent Management",
-            "description": "Legacy A2A agent management. Requires JWT Bearer token authentication.",
-        },
-        {
             "name": "Management API",
             "description": "IAM and user management operations. Requires JWT Bearer token with admin permissions.",
         },
@@ -228,7 +209,6 @@ app.include_router(meta_router, prefix="/api/auth", tags=["Authentication metada
 app.include_router(token_router, prefix=f"/api/{settings.API_VERSION}", tags=["Server Management"])
 app.include_router(servers_router_v1, prefix=f"/api/{settings.API_VERSION}", tags=["Server Management V1"])
 app.include_router(a2a_agent_router, prefix=f"/api/{settings.API_VERSION}", tags=["A2A Agent Management V1"])
-app.include_router(agent_router, prefix="/api", tags=["Agent Management"])
 app.include_router(management_router, prefix="/api")
 app.include_router(search_router, prefix=f"/api/{settings.API_VERSION}", tags=["Semantic Search"])
 app.include_router(health_router, prefix="/api/health", tags=["Health Monitoring"])

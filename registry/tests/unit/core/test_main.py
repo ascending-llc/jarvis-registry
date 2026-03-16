@@ -22,7 +22,6 @@ class TestMainApplication:
         with (
             patch("registry.main.vector_service") as mock_vector_service,
             patch("registry.main.health_service") as mock_health_service,
-            patch("registry.main.agent_service") as mock_agent_service,
             patch("registry.main.init_mongodb") as mock_init_mongodb,
             patch("registry.main.close_mongodb") as mock_close_mongodb,
             patch("registry.main.init_redis") as mock_init_redis,
@@ -33,9 +32,6 @@ class TestMainApplication:
             # Configure mocks
             mock_vector_service.initialize = AsyncMock()
             mock_vector_service._initialized = False  # Skip index update
-
-            mock_agent_service.load_agents_and_state = Mock()
-            mock_agent_service.list_agents.return_value = []
 
             mock_health_service.initialize = AsyncMock()
             mock_health_service.shutdown = AsyncMock()
@@ -62,7 +58,6 @@ class TestMainApplication:
             yield {
                 "vector_service": mock_vector_service,
                 "health_service": mock_health_service,
-                "agent_service": mock_agent_service,
                 "init_mongodb": mock_init_mongodb,
                 "close_mongodb": mock_close_mongodb,
                 "init_redis": mock_init_redis,
@@ -82,17 +77,6 @@ class TestMainApplication:
             mock_services["health_service"].initialize.assert_called_once()
 
     @pytest.mark.skip(reason="Agent service failure doesn't crash startup in current implementation")
-    @pytest.mark.asyncio
-    async def test_lifespan_startup_server_service_failure(self, mock_services):
-        """Test startup failure during agent service initialization."""
-        mock_services["agent_service"].load_agents_and_state.side_effect = Exception("Agent load failed")
-
-        test_app = FastAPI()
-
-        with pytest.raises(Exception, match="Agent load failed"):
-            async with lifespan(test_app):
-                pass
-
     @pytest.mark.asyncio
     async def test_lifespan_startup_faiss_service_failure(self, mock_services):
         """Test startup failure during vector service initialization."""
