@@ -26,6 +26,7 @@ from .api.proxy_routes import router as proxy_router
 from .api.redirect_routes import router as auth_provider_router
 from .api.v1.a2a.agent_routes import router as a2a_agent_router
 from .api.v1.acl_routes import router as acl_router
+from .api.v1.federation.agentcore_routes import router as agentcore_federation_router
 from .api.v1.mcp.connection_router import router as connection_router
 from .api.v1.mcp.oauth_router import router as oauth_router
 
@@ -234,6 +235,11 @@ app.include_router(health_router, prefix="/api/health", tags=["Health Monitoring
 app.include_router(oauth_router, prefix=f"/api/{settings.API_VERSION}", tags=["MCP  Oauth Management"])
 app.include_router(connection_router, prefix=f"/api/{settings.API_VERSION}", tags=["MCP  Connection Management"])
 app.include_router(acl_router, prefix=f"/api/{settings.API_VERSION}", tags=["ACL Management"])
+app.include_router(
+    agentcore_federation_router,
+    prefix=f"/api/{settings.API_VERSION}",
+    tags=["Federation Management"],
+)
 app.include_router(auth_provider_router, tags=["Authentication"])
 app.include_router(proxy_router, prefix="/proxy", tags=["MCP Proxy"])
 

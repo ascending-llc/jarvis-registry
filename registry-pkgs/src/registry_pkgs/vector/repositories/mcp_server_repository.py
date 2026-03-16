@@ -77,8 +77,10 @@ class MCPServerRepository(Repository[ExtendedMCPServer]):
         Returns:
             {"indexed_tools": count, "failed_tools": count, "deleted": count}
         """
-        await self.ensure_collection()
         try:
+            collection_existed = self.adapter.collection_exists(self.collection)
+            await self.ensure_collection()
+
             # 1. Extract identifiers from server object
             server_id = str(server.id) if server.id else None
             server_name = server.serverName
@@ -86,18 +88,28 @@ class MCPServerRepository(Repository[ExtendedMCPServer]):
             # 2. Delete old server records if requested
             deleted = 0
             if is_delete and server_id:
-                deleted = await self.adelete_by_filter({"server_id": server_id})
-                if deleted > 0:
-                    logger.info(f"Deleted {deleted} old record(s) by server_id: {server_id}")
+                if not collection_existed:
+                    logger.info(
+                        "Collection '%s' did not exist before sync. Skip delete step for server_id=%s.",
+                        self.collection,
+                        server_id,
+                    )
+                elif not self.adapter.has_property(self.collection, "server_id"):
+                    logger.info(
+                        "Collection '%s' schema has no 'server_id' property. Skip delete step for server_id=%s.",
+                        self.collection,
+                        server_id,
+                    )
+                else:
+                    deleted = await self.adelete_by_filter({"server_id": server_id})
+                    if deleted > 0:
+                        logger.info(f"Deleted {deleted} old record(s) by server_id: {server_id}")
 
             # 3. Save server object to vector database
             doc_id = await self.asave(server)
             success = doc_id is not None
 
-            logger.info(
-                f"Indexed server '{server_name}' (server_id: {server_id}): {'success' if success else 'failed'}"
-            )
-
+            logger.info(f"Indexed server '{server_name}' (server_id: {server_id}):{'success' if success else 'failed'}")
             return {"indexed_tools": 1 if success else 0, "failed_tools": 0 if success else 1, "deleted": deleted}
 
         except Exception as e:

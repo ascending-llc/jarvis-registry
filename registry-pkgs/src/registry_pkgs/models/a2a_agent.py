@@ -55,6 +55,7 @@ from typing import Any, ClassVar
 
 from a2a.types import AgentCard
 from beanie import Document, Insert, PydanticObjectId, Replace, Save, before_event
+from langchain_core.documents import Document as LangChainDocument
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 from pymongo import IndexModel
 
@@ -166,7 +167,7 @@ class A2AAgent(Document):
             self.createdAt = datetime.now(UTC)
 
     # ========== Vector Search Integration ==========
-    COLLECTION_NAME: ClassVar[str] = "a2a_agents"
+    COLLECTION_NAME: ClassVar[str] = "A2a_agents"
 
     def to_searchable_text(self) -> str:
         """
@@ -200,6 +201,78 @@ class A2AAgent(Document):
             parts.append(f"Provider: {self.card.provider.organization}")
 
         return "\n".join(parts)
+
+    def to_documents(self) -> list[LangChainDocument]:
+        """
+        Convert A2AAgent to vector documents.
+
+        Emits:
+        - 1 agent overview document
+        - N skill documents (one per skill)
+        """
+        agent_id = str(self.id) if self.id else None
+        base_metadata = {
+            "collection": self.COLLECTION_NAME,
+            "agent_id": agent_id,
+            "agent_name": self.card.name,
+            "path": self.path,
+            "status": self.status,
+            "is_enabled": self.isEnabled,
+            "tags": self.tags,
+        }
+        runtime_version = (self.federationMetadata or {}).get("runtimeVersion")
+        if runtime_version is not None:
+            base_metadata["runtime_version"] = str(runtime_version)
+
+        docs: list[LangChainDocument] = [
+            LangChainDocument(
+                page_content=self.to_searchable_text(),
+                metadata={
+                    **base_metadata,
+                    "entity_type": "agent",
+                },
+            )
+        ]
+
+        for skill in self.card.skills or []:
+            skill_name = getattr(skill, "name", "") or ""
+            skill_desc = getattr(skill, "description", "") or ""
+            skill_tags = getattr(skill, "tags", None) or []
+            content = (
+                f"Agent: {self.card.name}\n"
+                f"Skill: {skill_name}\n"
+                f"Description: {skill_desc}\n"
+                f"Tags: {', '.join(skill_tags)}"
+            )
+            docs.append(
+                LangChainDocument(
+                    page_content=content,
+                    metadata={
+                        **base_metadata,
+                        "entity_type": "skill",
+                        "skill_name": skill_name,
+                    },
+                )
+            )
+
+        return docs
+
+    @classmethod
+    def from_document(cls, document: LangChainDocument) -> dict[str, Any]:
+        """
+        Extract minimal metadata from vector document.
+        """
+        metadata = document.metadata or {}
+        return {
+            "agent_id": metadata.get("agent_id"),
+            "agent_name": metadata.get("agent_name"),
+            "path": metadata.get("path"),
+            "entity_type": metadata.get("entity_type"),
+            "skill_name": metadata.get("skill_name"),
+            "status": metadata.get("status"),
+            "is_enabled": metadata.get("is_enabled"),
+            "content": document.page_content,
+        }
 
     def is_accessible_by_user(self, username: str, user_groups: list[str], is_admin: bool = False) -> bool:
         """

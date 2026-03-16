@@ -334,6 +334,31 @@ class WeaviateStore(VectorStoreAdapter):
             logger.error(f"Failed to check collection existence: {e}")
             return collection_name in self._stores
 
+    def has_property(self, collection_name: str, property_name: str) -> bool:
+        """
+        Check whether a property exists in Weaviate collection schema.
+        """
+        if not self.collection_exists(collection_name):
+            return False
+        try:
+            collection = self.get_collection(collection_name)
+            config = collection.config.get()
+            properties = getattr(config, "properties", None)
+            if not properties:
+                return False
+
+            for prop in properties:
+                if isinstance(prop, dict):
+                    if prop.get("name") == property_name:
+                        return True
+                    continue
+                if getattr(prop, "name", None) == property_name:
+                    return True
+            return False
+        except Exception as e:
+            logger.warning(f"Failed to inspect collection property '{property_name}': {e}")
+            return False
+
     def filter_by_metadata(
         self, filters: Any, limit: int = 100, collection_name: str | None = None, **kwargs
     ) -> list[Document]:

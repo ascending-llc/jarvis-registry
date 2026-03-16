@@ -630,6 +630,7 @@ class ServerServiceV1:
         self,
         data: ServerCreateRequest,
         user_id: str,
+        skip_post_registration_checks: bool = False,
     ) -> MCPServerDocument:
         """
         Create a new server.
@@ -704,7 +705,7 @@ class ServerServiceV1:
         logger.info(f"Created server: {server.serverName} (ID: {server.id}, Path: {data.path})")
 
         # Perform health check and tool retrieval after registration
-        if data.url:
+        if data.url and not skip_post_registration_checks:
             logger.info(f"Performing post-registration health check and tool retrieval for {server.serverName}")
 
             try:

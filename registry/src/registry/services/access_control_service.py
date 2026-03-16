@@ -22,6 +22,49 @@ logger = logging.getLogger(__name__)
 
 
 class ACLService:
+    async def _upsert_acl_entry(
+        self,
+        *,
+        principal_type: str,
+        principal_id: PydanticObjectId | str | None,
+        resource_type: str,
+        resource_id: PydanticObjectId,
+        role_id: PydanticObjectId | None,
+        perm_bits: int | None,
+        session=None,
+    ) -> IAclEntry:
+        acl_entry = await IAclEntry.find_one(
+            {
+                "principalType": principal_type,
+                "principalId": principal_id,
+                "resourceType": resource_type,
+                "resourceId": resource_id,
+            },
+            session=session,
+        )
+        now = datetime.now(UTC)
+        if acl_entry:
+            acl_entry.permBits = perm_bits
+            acl_entry.roleId = role_id
+            acl_entry.grantedAt = now
+            acl_entry.updatedAt = now
+            await acl_entry.save(session=session)
+            return acl_entry
+
+        new_entry = IAclEntry(
+            principalType=principal_type,
+            principalId=principal_id,
+            resourceType=resource_type,
+            resourceId=resource_id,
+            roleId=role_id,
+            permBits=perm_bits,
+            grantedAt=now,
+            createdAt=now,
+            updatedAt=now,
+        )
+        await new_entry.insert(session=session)
+        return new_entry
+
     def _principal_result_obj(self, principal_type: str, obj: Any) -> PermissionPrincipalOut:
         """
         Helper to construct the PermissionPrincipalOut for users and groups.
@@ -73,37 +116,37 @@ class ACLService:
 
         # Check if an ACL entry already exists for this principal/resource
         try:
-            session = get_current_session()
-            acl_entry = await IAclEntry.find_one(
-                {
-                    "principalType": principal_type,
-                    "principalId": principal_id,
-                    "resourceType": resource_type,
-                    "resourceId": resource_id,
-                }
+            session = None
+            try:
+                session = get_current_session()
+            except RuntimeError:
+                session = None
+
+            return await self._upsert_acl_entry(
+                principal_type=principal_type,
+                principal_id=principal_id,
+                resource_type=resource_type,
+                resource_id=resource_id,
+                role_id=role_id,
+                perm_bits=perm_bits,
+                session=session,
             )
-            now = datetime.now(UTC)
-            if acl_entry:
-                acl_entry.permBits = perm_bits
-                acl_entry.roleId = role_id
-                acl_entry.grantedAt = now
-                acl_entry.updatedAt = now
-                await acl_entry.save(session=session)
-                return acl_entry
-            else:
-                new_entry = IAclEntry(
-                    principalType=principal_type,
-                    principalId=principal_id,
-                    resourceType=resource_type,
-                    resourceId=resource_id,
-                    permBits=perm_bits,
-                    grantedAt=now,
-                    createdAt=now,
-                    updatedAt=now,
-                )
-                await new_entry.insert(session=session)
-                return new_entry
         except Exception as e:
+            if "NoSuchTransaction" in str(e) or "txnNumber" in str(e):
+                logger.warning("Retrying ACL upsert without transaction session due to transient tx abort: %s", e)
+                try:
+                    return await self._upsert_acl_entry(
+                        principal_type=principal_type,
+                        principal_id=principal_id,
+                        resource_type=resource_type,
+                        resource_id=resource_id,
+                        role_id=role_id,
+                        perm_bits=perm_bits,
+                        session=None,
+                    )
+                except Exception as retry_error:
+                    logger.error(f"Error upserting ACL entry on retry: {retry_error}")
+                    raise ValueError(f"Error upserting ACL permissions: {retry_error}") from retry_error
             logger.error(f"Error upserting ACL entry: {e}")
             raise ValueError(f"Error upserting ACL permissions: {e}")
 

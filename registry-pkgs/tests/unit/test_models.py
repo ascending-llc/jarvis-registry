@@ -3,9 +3,11 @@
 from datetime import UTC, datetime
 
 import pytest
+from a2a.types import AgentCard
 from beanie import PydanticObjectId
 from pydantic import ValidationError
 
+from registry_pkgs.models.a2a_agent import A2AAgent
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer, MCPServerDocument
 
 
@@ -238,3 +240,52 @@ class TestExtendedMCPServerStructure:
         server = ExtendedMCPServer.model_construct(**server_dict)
 
         assert server.numTools == 5
+
+    def test_to_documents_includes_runtime_version_metadata(self):
+        server = ExtendedMCPServer.model_construct(
+            id=PydanticObjectId(),
+            serverName="versioned-server",
+            config={
+                "title": "Versioned Server",
+                "description": "desc",
+                "type": "streamable-http",
+                "url": "https://example.com/mcp",
+                "toolFunctions": {},
+                "resources": [],
+                "prompts": [],
+            },
+            author=PydanticObjectId(),
+            path="/agentcore/mcp/versioned-server",
+            status="active",
+            federationId="arn:aws:bedrock-agentcore:us-east-1:1:runtime/versioned",
+            federationMetadata={"sourceType": "runtime", "runtimeVersion": "7"},
+        )
+
+        docs = server.to_documents()
+        assert docs
+        assert docs[0].metadata.get("runtime_version") == "7"
+
+    def test_a2a_to_documents_includes_runtime_version_metadata(self):
+        agent = A2AAgent.model_construct(
+            id=PydanticObjectId(),
+            path="/agentcore/a2a/versioned-agent",
+            card=AgentCard(
+                name="Versioned Agent",
+                description="A test A2A agent",
+                url="https://example.com/a2a",
+                version="1.0.0",
+                capabilities={"streaming": True},
+                defaultInputModes=["text/plain"],
+                defaultOutputModes=["application/json"],
+                skills=[],
+            ),
+            tags=["agentcore"],
+            status="active",
+            isEnabled=True,
+            author=PydanticObjectId(),
+            federationMetadata={"sourceType": "runtime", "runtimeVersion": "11"},
+        )
+
+        docs = agent.to_documents()
+        assert docs
+        assert docs[0].metadata.get("runtime_version") == "11"
