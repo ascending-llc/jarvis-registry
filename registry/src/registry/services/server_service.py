@@ -37,6 +37,7 @@ from ..schemas.server_api_schemas import (
     ServerUpdateRequest,
 )
 from ..utils.crypto_utils import encrypt_auth_fields, generate_service_jwt
+from ..utils.schema_converter import convert_dict_keys_to_snake
 from ..utils.utils import generate_server_name_from_title, normalize_headers
 from .user_service import user_service
 
@@ -397,8 +398,8 @@ def _build_config_from_request(data: ServerCreateRequest, server_name: str = Non
     # Handle mutually exclusive authentication fields: oauth and apiKey
     # Only store one of them, with oauth taking priority
     if data.oauth is not None:
-        # oauth is already added above, just ensure apiKey is not added
-        pass
+        # Normalize oauth sub-field keys to snake_case for DB storage
+        config["oauth"] = convert_dict_keys_to_snake(config["oauth"])
     elif data.apiKey is not None:
         # When only apiKey is provided, store it
         config["apiKey"] = data.apiKey
@@ -449,6 +450,8 @@ def _update_config_from_request(
                 pass
             # Otherwise, merge/update oauth config
             elif oauth_update:
+                # Normalize incoming camelCase keys to snake_case before merging/storing
+                oauth_update = convert_dict_keys_to_snake(oauth_update)
                 # Merge new oauth with existing oauth (upsert operation)
                 if isinstance(existing_oauth, dict) and isinstance(oauth_update, dict):
                     existing_oauth.update(oauth_update)

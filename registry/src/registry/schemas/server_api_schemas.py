@@ -15,6 +15,7 @@ from pydantic import ConfigDict, Field, field_validator, model_serializer
 from registry.schemas.acl_schema import ResourcePermissions
 from registry.schemas.case_conversion import APIBaseModel
 from registry.utils.crypto_utils import decrypt_auth_fields
+from registry.utils.schema_converter import convert_dict_keys_to_camel
 
 # ==================== Request Schemas ====================
 
@@ -388,7 +389,8 @@ def convert_to_list_item(
     config = server.config or {}
     config = decrypt_auth_fields(config)
 
-    oauth_config = _mask_oauth_client_secret(config.get("oauth"))
+    # Mask first (reads snake_case keys), then convert to camelCase for API response
+    oauth_config = convert_dict_keys_to_camel(_mask_oauth_client_secret(config.get("oauth")))
     apikey_config = _mask_apikey(config.get("apiKey"))
 
     author_id = str(server.author) if server.author else None
@@ -410,7 +412,7 @@ def convert_to_list_item(
         headers=config.get("headers"),
         requiresOauth=config.get("requiresOAuth", False),
         capabilities=capabilities_str,
-        oauthMetadata=config.get("oauthMetadata"),
+        oauthMetadata=convert_dict_keys_to_camel(config.get("oauthMetadata")),
         tools=tools_str,
         author=author_id,
         status=server.status,
@@ -434,7 +436,8 @@ def convert_to_detail(
     config = server.config or {}
     config = decrypt_auth_fields(config)
 
-    oauth_config = _mask_oauth_client_secret(config.get("oauth"))
+    # Mask first (reads snake_case keys), then convert to camelCase for API response
+    oauth_config = convert_dict_keys_to_camel(_mask_oauth_client_secret(config.get("oauth")))
     apikey_config = _mask_apikey(config.get("apiKey"))
 
     author_id = str(server.author) if server.author else None
@@ -465,7 +468,7 @@ def convert_to_detail(
         headers=config.get("headers"),
         requiresOauth=config.get("requiresOAuth", False),
         capabilities=capabilities_str,
-        oauthMetadata=config.get("oauthMetadata"),
+        oauthMetadata=convert_dict_keys_to_camel(config.get("oauthMetadata")),
         tools=tools_str,
         toolFunctions=tool_functions,
         resources=resources,
