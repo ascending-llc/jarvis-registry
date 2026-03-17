@@ -6,15 +6,16 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
-from registry.auth.dependencies import CurrentUser
-from registry.core.telemetry_decorators import track_registry_operation
-from registry.schemas.case_conversion import APIBaseModel
-from registry.services.search.service import faiss_service
-from registry.services.server_service import server_service_v1
-from registry.utils.otel_metrics import record_tool_discovery
 from registry_pkgs.models.enums import ServerEntityType
 from registry_pkgs.vector.enum.enums import SearchType
 from registry_pkgs.vector.repositories.mcp_server_repository import get_mcp_server_repo
+
+from ...auth.dependencies import CurrentUser
+from ...core.telemetry_decorators import track_registry_operation
+from ...schemas.case_conversion import APIBaseModel
+from ...services.search.service import faiss_service
+from ...services.server_service import server_service_v1
+from ...utils.otel_metrics import record_tool_discovery
 
 logger = logging.getLogger(__name__)
 

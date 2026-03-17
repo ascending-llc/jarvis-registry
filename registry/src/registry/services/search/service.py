@@ -10,8 +10,7 @@ As of 2026-02-12, we decide not to use the embedded FAISS service moving forward
 
 import logging
 
-from registry.core.config import settings
-
+from ...core.config import settings
 from .base import VectorSearchService
 
 # Get logger - logging is configured centrally in main.py via settings.configure_logging()

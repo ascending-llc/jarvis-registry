@@ -4,7 +4,7 @@ from typing import Any
 
 import boto3
 
-from registry.constants import REGISTRY_CONSTANTS
+from ...constants import REGISTRY_CONSTANTS
 
 logger = logging.getLogger(__name__)
 

@@ -6,10 +6,10 @@ from jwt import ExpiredSignatureError, InvalidTokenError
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.routing import compile_path
 
-from registry.auth.dependencies import UserContextDict
 from registry_pkgs.core.jwt_utils import decode_jwt, get_token_kid
 from registry_pkgs.core.scopes import map_groups_to_scopes
 
+from ..auth.dependencies import UserContextDict
 from ..core.config import settings
 from ..core.telemetry_decorators import AuthMetricsContext
 from ..utils.crypto_utils import verify_access_token

@@ -284,7 +284,7 @@ class TestFlowStateManager:
         manager.create_flow(flow_id, server_id, user_id, code_verifier, metadata)
 
         # Complete the flow
-        from registry.models.oauth_models import OAuthTokens
+        from registry.schemas.oauth_schema import OAuthTokens
 
         tokens = OAuthTokens(access_token="test-token", token_type="Bearer", expires_in=3600)
         manager.complete_flow(flow_id, tokens)
@@ -300,7 +300,7 @@ class TestFlowStateManager:
         manager = FlowStateManager()
         flow_id = "non-existent-flow"
 
-        from registry.models.oauth_models import OAuthTokens
+        from registry.schemas.oauth_schema import OAuthTokens
 
         tokens = OAuthTokens(access_token="test-token", token_type="Bearer", expires_in=3600)
 
@@ -564,7 +564,7 @@ class TestFlowStateManagerIntegration:
         assert flow.status == OAuthFlowStatus.PENDING
 
         # Complete the flow
-        from registry.models.oauth_models import OAuthTokens
+        from registry.schemas.oauth_schema import OAuthTokens
 
         tokens = OAuthTokens(
             access_token="test-access-token", refresh_token="test-refresh-token", token_type="Bearer", expires_in=3600

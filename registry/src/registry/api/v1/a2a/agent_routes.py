@@ -14,10 +14,14 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi import status as http_status
 from fastapi.responses import JSONResponse
 
-from registry.auth.dependencies import CurrentUser
-from registry.core.config import settings
-from registry.core.telemetry_decorators import track_registry_operation
-from registry.schemas.a2a_agent_api_schemas import (
+from registry_pkgs.database.decorators import use_transaction
+from registry_pkgs.models._generated import PrincipalType, ResourceType
+from registry_pkgs.models.enums import RoleBits
+
+from ....auth.dependencies import CurrentUser
+from ....core.config import settings
+from ....core.telemetry_decorators import track_registry_operation
+from ....schemas.a2a_agent_api_schemas import (
     AgentCreateRequest,
     AgentDetailResponse,
     AgentListResponse,
@@ -31,13 +35,10 @@ from registry.schemas.a2a_agent_api_schemas import (
     convert_to_list_item,
     convert_to_skills_response,
 )
-from registry.schemas.acl_schema import ResourcePermissions
-from registry.schemas.errors import ErrorCode, create_error_detail
-from registry.services.a2a_agent_service import a2a_agent_service
-from registry.services.access_control_service import acl_service
-from registry_pkgs.database.decorators import use_transaction
-from registry_pkgs.models._generated import PrincipalType, ResourceType
-from registry_pkgs.models.enums import RoleBits
+from ....schemas.acl_schema import ResourcePermissions
+from ....schemas.errors import ErrorCode, create_error_detail
+from ....services.a2a_agent_service import a2a_agent_service
+from ....services.access_control_service import acl_service
 
 logger = logging.getLogger(__name__)
 

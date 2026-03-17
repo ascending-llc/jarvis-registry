@@ -4,10 +4,10 @@ from fastapi import APIRouter, HTTPException
 from fastapi import status as http_status
 from pydantic import BaseModel, Field
 
-from registry.auth.dependencies import CurrentUser
-from registry.core.telemetry_decorators import track_registry_operation
-from registry.schemas.errors import ErrorCode, create_error_detail
-from registry.services.agentcore_import_service import agentcore_import_service
+from ....auth.dependencies import CurrentUser
+from ....core.telemetry_decorators import track_registry_operation
+from ....schemas.errors import ErrorCode, create_error_detail
+from ....services.agentcore_import_service import agentcore_import_service
 
 router = APIRouter()
 

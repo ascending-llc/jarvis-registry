@@ -7,11 +7,12 @@ from urllib.parse import quote
 
 from beanie import PydanticObjectId
 
-from registry.constants import REGISTRY_CONSTANTS
-from registry.services.federation.agentcore_client_provider import AgentCoreClientProvider
-from registry.services.federation.runtime_invoker import AgentCoreRuntimeInvoker
 from registry_pkgs.models import A2AAgent, ExtendedMCPServer
 from registry_pkgs.models.enums import FederationSource
+
+from ...constants import REGISTRY_CONSTANTS
+from .agentcore_client_provider import AgentCoreClientProvider
+from .runtime_invoker import AgentCoreRuntimeInvoker
 
 logger = logging.getLogger(__name__)
 
