@@ -424,8 +424,8 @@ class TestBuildCompleteHeaders:
         server.config = {
             "requiresOAuth": True,
             "oauth": {
-                "authorizationUrl": "https://oauth.example.com/authorize",
-                "tokenUrl": "https://oauth.example.com/token",
+                "authorization_url": "https://oauth.example.com/authorize",
+                "token_url": "https://oauth.example.com/token",
             },
         }
         return server
