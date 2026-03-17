@@ -173,13 +173,16 @@ class A2AAgentService:
             Created agent document
 
         Raises:
-            ValueError: If path already exists or validation fails
+            ValueError: If path+url combination already exists or validation fails
         """
         try:
-            # Check if path already exists
-            existing = await A2AAgent.find_one({"path": data.path})
-            if existing:
-                raise ValueError(f"Agent with path '{data.path}' already exists")
+            # Check if path+url combination already exists
+            # Only reject if BOTH path AND url are the same (to allow same path for different agents)
+            existing_agents = await A2AAgent.find({"path": data.path}).to_list()
+            for existing in existing_agents:
+                existing_url = str(existing.card.url) if existing.card and existing.card.url else None
+                if existing_url == str(data.url):
+                    raise ValueError(f"Agent with path '{data.path}' and URL '{data.url}' already exists")
 
             # Build agent card data for SDK validation (path is NOT part of SDK AgentCard)
             card_data = {

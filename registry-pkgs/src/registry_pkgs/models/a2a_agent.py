@@ -148,7 +148,8 @@ class A2AAgent(Document):
 
         # Indexes for efficient queries
         indexes = [
-            IndexModel([("path", 1)], unique=True),
+            # Composite unique index: same path is allowed for different URLs
+            IndexModel([("path", 1), ("card.url", 1)], unique=True),
             "tags",
             "isEnabled",
             "status",
