@@ -353,8 +353,19 @@ async def execute_tool_impl(
             session_store.append(elicitation_id, ctx.session)
 
             raise UrlElicitationRequiredError(
+                # This message is for LLM.
                 message=msg,
-                elicitations=[ElicitRequestURLParams(elicitationId=elicitation_id, url=auth_url, message=msg)],
+                elicitations=[
+                    ElicitRequestURLParams(
+                        elicitationId=elicitation_id,
+                        url=auth_url,
+                        # This message is for human users.
+                        message=(
+                            f"The tokens for the '{server_name}' MCP server managed by Jarvis Registry have expired. "
+                            "Please follow the URL to perform re-authorization in a browser window and come back again."
+                        ),
+                    )
+                ],
             )
 
         logger.info(
