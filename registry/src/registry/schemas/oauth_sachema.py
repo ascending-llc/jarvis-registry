@@ -62,19 +62,6 @@ class OAuthProtectedResourceMetadata(BaseModel):
     scopes_supported: list[str] | None = Field(None, description="Supported scopes")
 
 
-class TokenTransformConfig(BaseModel):
-    """Token transformation configuration"""
-
-    provider: str | None = Field(None, description="Provider name")
-    access_token_path: str | None = Field(None, description="Access token path in response")
-    refresh_token_path: str | None = Field(None, description="Refresh token path in response")
-    expires_in_path: str | None = Field(None, description="Expiration time path in response")
-    token_type_path: str | None = Field(None, description="Token type path in response")
-    scope_path: str | None = Field(None, description="Scope path in response")
-    field_mappings: dict[str, str] | None = Field(None, description="Field mapping configuration")
-    value_transforms: dict[str, Any] | None = Field(None, description="Value transformation configuration")
-
-
 class MCPOAuthFlowMetadata(BaseModel):
     """MCP OAuth flow metadata"""
 
@@ -88,7 +75,6 @@ class MCPOAuthFlowMetadata(BaseModel):
     client_info: OAuthClientInformation = Field(..., description="Client information")
     metadata: OAuthMetadata = Field(..., description="OAuth metadata")
     resource_metadata: OAuthProtectedResourceMetadata | None = Field(None, description="Resource metadata")
-    token_transform: TokenTransformConfig | None = Field(None, description="Token transformation configuration")
 
 
 @dataclass

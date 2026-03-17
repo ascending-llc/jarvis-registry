@@ -12,11 +12,20 @@ from .anthropic_schema import (
     StdioTransport,
     StreamableHttpTransport,
 )
+from .enums import TokenType
 from .errors import (
     APIErrorDetail,
     APIErrorResponse,
     ErrorCode,
     create_error_detail,
+)
+from .oauth_sachema import (
+    MCPOAuthFlowMetadata,
+    OAuthClientInformation,
+    OAuthFlow,
+    OAuthMetadata,
+    OAuthProtectedResourceMetadata,
+    OAuthTokens,
 )
 
 __all__ = [
@@ -35,4 +44,11 @@ __all__ = [
     "APIErrorResponse",
     "ErrorCode",
     "create_error_detail",
+    "OAuthTokens",
+    "OAuthClientInformation",
+    "OAuthMetadata",
+    "OAuthProtectedResourceMetadata",
+    "MCPOAuthFlowMetadata",
+    "OAuthFlow",
+    "TokenType",
 ]
