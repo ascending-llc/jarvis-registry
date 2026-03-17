@@ -184,8 +184,10 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 .idea/
 
-# VS Code
-.vscode/
+# IDE specific
+/.vscode
+/.claude
+/.cursor
 
 # Ruff stuff:
 .ruff_cache/
@@ -349,4 +351,4 @@ image-manifest.json
 /adhoc*.py
 
 # Misc. files
-/docker-compose.no-db.yml
+/docker-compose.*.yml

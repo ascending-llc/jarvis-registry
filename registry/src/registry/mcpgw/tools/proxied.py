@@ -17,7 +17,6 @@ from mcp.server.fastmcp import Context
 from mcp.server.session import ServerSession
 from mcp.shared.exceptions import McpError, UrlElicitationRequiredError
 from mcp.types import (
-    AnyUrl,
     CallToolResult,
     ElicitRequestURLParams,
     EmbeddedResource,
@@ -27,6 +26,7 @@ from mcp.types import (
     TextResourceContents,
 )
 from pydantic import Field
+from pydantic.networks import AnyUrl
 
 from ...auth.dependencies import UserContextDict
 from ...auth.oauth.flow_state_manager import FlowStateManager
@@ -157,12 +157,29 @@ def _get_state_metadata(client_params: InitializeRequestParams | None) -> StateM
     if client_params is None:
         return {"client_branding": ClientBranding.UNRECOGNIZED}
 
+    # As of 2026-03-17, below are how mainstream AI agents support URL mode elicitation and how that relate to deep link.
+    # VSCode: Perfect support. Its client name is "Visual Studio Code". We recognize this and provide deep link
+    #   back to the VSCode app window from our re-auth success page.
+    # Claude Desktop: Doesn't support URL mode elicitation, but does recognize our fallback CallToolResult and
+    #   provides a link to its user, so UX is good. Its client name starts with "claude-ai", and we recognize this
+    #   to provide deep link back to it.
+    # Claude Code CLI: Perfect support in the latest version. However, Claude Code CLI runs in the terminal emulator's app window,
+    #   so there is no way we can deep link back to it. Its client name is "claude-code".
+    # Claude extension for VSCode/Cursor: The extension is basically a bridge between the editor UI and the Claude Code CLI.
+    #   Even though Claude Code CLI support URL mode elicitation, when it relays the elicitation back to the extension,
+    #   the extension just silently denies it without prompting the user at all. This is a bug and we have filed
+    #   an [issue](https://github.com/anthropics/claude-code/issues/35353) for it.
+    #   The client names are both "claude-code", so even after the bug is fixed, we cannot provide deep link support
+    #   because we cannot tell apart the CLI from the two extensions.
+    # Cursor: Doesn't support, but does recognize our fallback, similar to Claude Desktop. Its client name starts with
+    #   "probe (via mcp-remote" or "mcp-stdio-client (via mcp-remote", depending on how the MCP server is configured,
+    #   and we recognize them to provide deep link back to Cursor.
     name = client_params.clientInfo.name.strip().lower()
-    if "vscode" in name:
+    if name == "visual studio code":
         return {"client_branding": ClientBranding.VSCODE}
-    elif "claude" in name:
+    elif name.startswith("claude-ai"):
         return {"client_branding": ClientBranding.CLAUDE}
-    elif "cursor" in name:
+    elif name.startswith("probe (via mcp-remote") or name.startswith("mcp-stdio-client (via mcp-remote"):
         return {"client_branding": ClientBranding.CURSOR}
     else:
         return {"client_branding": ClientBranding.UNRECOGNIZED}
@@ -353,8 +370,19 @@ async def execute_tool_impl(
             session_store.append(elicitation_id, ctx.session)
 
             raise UrlElicitationRequiredError(
+                # This message is for LLM.
                 message=msg,
-                elicitations=[ElicitRequestURLParams(elicitationId=elicitation_id, url=auth_url, message=msg)],
+                elicitations=[
+                    ElicitRequestURLParams(
+                        elicitationId=elicitation_id,
+                        url=auth_url,
+                        # This message is for human users.
+                        message=(
+                            f"The tokens for the '{server_name}' MCP server managed by Jarvis Registry have expired. "
+                            "Please follow the URL to perform re-authorization in a browser window and come back again."
+                        ),
+                    )
+                ],
             )
 
         logger.info(
