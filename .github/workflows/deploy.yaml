@@ -86,6 +86,10 @@ jobs:
     secrets:
       AWS_DEPLOY_ROLE_ARN: ${{ secrets.SAAS_AWS_DEPLOY_ROLE_ARN }}
       JARVIS_RELEASE_ACCESS_TOKEN: ${{ secrets.JARVIS_RELEASE_ACCESS_TOKEN }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      AZURE_ACR_NAME: ${{ secrets.AZURE_ACR_NAME }}
 
   deploy-registry:
     runs-on: ubuntu-latest
