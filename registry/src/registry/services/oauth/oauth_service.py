@@ -7,10 +7,10 @@ from ...auth.oauth import FlowStateManager, get_flow_state_manager, parse_scope
 from ...auth.oauth.oauth_client import OAuthClient
 from ...auth.oauth.oauth_utils import get_default_redirect_uri
 from ...auth.oauth.types import StateMetadata
-from ...models.oauth_models import (
+from ...schemas.enums import OAuthFlowStatus
+from ...schemas.oauth_schema import (
     OAuthTokens,
 )
-from ...schemas.enums import OAuthFlowStatus
 from ...services.oauth.token_service import token_service
 from ...utils.crypto_utils import decrypt_auth_fields
 
@@ -156,7 +156,7 @@ class MCPOAuthService:
 
                 try:
                     # Build OAuth metadata for DCR
-                    from registry.models.oauth_models import OAuthMetadata, OAuthProtectedResourceMetadata
+                    from ...schemas.oauth_schema import OAuthMetadata, OAuthProtectedResourceMetadata
 
                     metadata_obj = OAuthMetadata(
                         issuer=oauth_metadata.get("issuer"),

@@ -12,8 +12,8 @@ from typing import Any
 
 from pydantic import Field, HttpUrl
 
-from registry.schemas.acl_schema import ResourcePermissions
-from registry.schemas.case_conversion import APIBaseModel
+from .acl_schema import ResourcePermissions
+from .case_conversion import APIBaseModel
 
 # ==================== Nested Models ====================
 

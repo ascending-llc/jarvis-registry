@@ -12,10 +12,10 @@ from typing import Any
 
 from pydantic import ConfigDict, Field, field_validator, model_serializer
 
-from registry.schemas.acl_schema import ResourcePermissions
-from registry.schemas.case_conversion import APIBaseModel
-from registry.utils.crypto_utils import decrypt_auth_fields
-from registry.utils.schema_converter import convert_dict_keys_to_camel
+from ..schemas.acl_schema import ResourcePermissions
+from ..schemas.case_conversion import APIBaseModel
+from ..utils.crypto_utils import decrypt_auth_fields
+from ..utils.schema_converter import convert_dict_keys_to_camel
 
 # ==================== Request Schemas ====================
 

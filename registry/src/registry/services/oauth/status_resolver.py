@@ -1,8 +1,8 @@
 import logging
 from typing import Any
 
-from registry.schemas.enums import ConnectionState
-from registry.services.oauth.base import Connection, ConnectionStateContext
+from ...schemas.enums import ConnectionState
+from .base import Connection, ConnectionStateContext
 
 logger = logging.getLogger(__name__)
 

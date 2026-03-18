@@ -5,12 +5,13 @@ from typing import Any
 
 from beanie import PydanticObjectId
 
-from registry.models.emus import TokenType
-from registry.models.oauth_models import OAuthClientInformation, OAuthTokens
-from registry.services.user_service import user_service
-from registry.utils.crypto_utils import decrypt_auth_fields, encrypt_value
 from registry_pkgs.models import IUser
 from registry_pkgs.models._generated.token import Token
+
+from ...schemas.enums import TokenType
+from ...schemas.oauth_schema import OAuthClientInformation, OAuthTokens
+from ...services.user_service import user_service
+from ...utils.crypto_utils import decrypt_auth_fields, encrypt_value
 
 logger = logging.getLogger(__name__)
 

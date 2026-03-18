@@ -1,12 +1,12 @@
 import logging
 from typing import Any
 
-from registry.auth.oauth.flow_state_manager import get_flow_state_manager
-from registry.auth.oauth.reconnection import get_reconnection_manager
-from registry.schemas.enums import ConnectionState
-from registry.services.oauth.mcp_service import MCPService, get_mcp_service
-from registry.services.oauth.status_resolver import ConnectionStateContext, get_status_resolver
-from registry.services.server_service import server_service_v1
+from ...auth.oauth.flow_state_manager import get_flow_state_manager
+from ...auth.oauth.reconnection import get_reconnection_manager
+from ...schemas.enums import ConnectionState
+from ..server_service import server_service_v1
+from .mcp_service import MCPService, get_mcp_service
+from .status_resolver import ConnectionStateContext, get_status_resolver
 
 logger = logging.getLogger(__name__)
 

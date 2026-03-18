@@ -5,20 +5,21 @@ from typing import Any
 
 from beanie import PydanticObjectId
 
-from registry.constants import REGISTRY_CONSTANTS
-from registry.schemas.server_api_schemas import ServerCreateRequest
-from registry.services.access_control_service import acl_service
-from registry.services.federation.agentcore_client import AgentCoreFederationClient
-from registry.services.federation.agentcore_client_provider import AgentCoreClientProvider
-from registry.services.federation.runtime_invoker import AgentCoreRuntimeInvoker
-from registry.services.server_service import server_service_v1
-from registry.services.user_service import user_service
 from registry_pkgs.database.decorators import get_current_session, use_transaction
 from registry_pkgs.models import A2AAgent, ExtendedMCPServer
 from registry_pkgs.models._generated import PrincipalType, ResourceType
 from registry_pkgs.models.enums import FederationSource, PermissionBits, RoleBits
 from registry_pkgs.vector.repositories.a2a_agent_repository import get_a2a_agent_repo
 from registry_pkgs.vector.repositories.mcp_server_repository import get_mcp_server_repo
+
+from ..constants import REGISTRY_CONSTANTS
+from ..schemas.server_api_schemas import ServerCreateRequest
+from .access_control_service import acl_service
+from .federation.agentcore_client import AgentCoreFederationClient
+from .federation.agentcore_client_provider import AgentCoreClientProvider
+from .federation.runtime_invoker import AgentCoreRuntimeInvoker
+from .server_service import server_service_v1
+from .user_service import user_service
 
 logger = logging.getLogger(__name__)
 

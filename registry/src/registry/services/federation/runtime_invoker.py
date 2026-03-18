@@ -10,8 +10,8 @@ import httpx
 from botocore.auth import SigV4Auth
 from botocore.awsrequest import AWSRequest
 
-from registry.constants import REGISTRY_CONSTANTS
-from registry.core.mcp_client import MCPServerData, get_tools_and_capabilities_from_server
+from ...constants import REGISTRY_CONSTANTS
+from ...core.mcp_client import MCPServerData, get_tools_and_capabilities_from_server
 
 logger = logging.getLogger(__name__)
 

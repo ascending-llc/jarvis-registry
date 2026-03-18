@@ -8,7 +8,7 @@ Eliminates hardcoded special-case handling scattered across the codebase.
 import logging
 from abc import ABC, abstractmethod
 
-from registry.core.mcp_config import mcp_config
+from .mcp_config import mcp_config
 
 logger = logging.getLogger(__name__)
 

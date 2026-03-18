@@ -7,8 +7,8 @@ import logging
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
-from registry.auth.dependencies import CurrentUser
-from registry.core.mcp_client import clear_session
+from ..auth.dependencies import CurrentUser
+from ..core.mcp_client import clear_session
 
 logger = logging.getLogger(__name__)
 

@@ -3,10 +3,10 @@ import logging
 import time
 from typing import Any, Optional
 
-from registry.auth.oauth.flow_state_manager import get_flow_state_manager
-from registry.models.oauth_models import OAuthTokens
-from registry.schemas.enums import ConnectionState
-from registry.services.server_service import server_service_v1
+from ....schemas.enums import ConnectionState
+from ....schemas.oauth_schema import OAuthTokens
+from ....services.server_service import server_service_v1
+from ..flow_state_manager import get_flow_state_manager
 
 logger = logging.getLogger(__name__)
 

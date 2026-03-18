@@ -3,7 +3,7 @@ import logging
 import httpx
 from fastapi import APIRouter
 
-from registry.core.config import settings
+from ...core.config import settings
 
 logger = logging.getLogger(__name__)
 

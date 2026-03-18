@@ -13,14 +13,14 @@ from ...auth.oauth.oauth_utils import parse_scope, scope_to_string
 from ...auth.oauth.redis_flow_storage import RedisFlowStorage
 from ...auth.oauth.types import OAuthFlowState, StateMetadata
 from ...core.config import settings
-from ...models.oauth_models import (
+from ...schemas.enums import OAuthFlowStatus
+from ...schemas.oauth_schema import (
     MCPOAuthFlowMetadata,
     OAuthClientInformation,
     OAuthFlow,
     OAuthMetadata,
     OAuthTokens,
 )
-from ...schemas.enums import OAuthFlowStatus
 
 logger = logging.getLogger(__name__)
 

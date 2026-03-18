@@ -17,22 +17,22 @@ from typing import (
     TypeVar,
 )
 
-from registry.utils.otel_metrics import (
+from ..utils.otel_metrics import (
     record_auth_request as _record_auth_request,
 )
-from registry.utils.otel_metrics import (
+from ..utils.otel_metrics import (
     record_prompt_execution as _record_prompt_execution,
 )
-from registry.utils.otel_metrics import (
+from ..utils.otel_metrics import (
     record_registry_operation as _record_registry_operation,
 )
-from registry.utils.otel_metrics import (
+from ..utils.otel_metrics import (
     record_resource_access as _record_resource_access,
 )
-from registry.utils.otel_metrics import (
+from ..utils.otel_metrics import (
     record_tool_discovery as _record_tool_discovery,
 )
-from registry.utils.otel_metrics import (
+from ..utils.otel_metrics import (
     record_tool_execution as _record_tool_execution,
 )
 

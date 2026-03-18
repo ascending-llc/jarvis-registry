@@ -10,7 +10,7 @@ following the same pattern as Server Management and A2A Agent APIs.
 
 from pydantic import Field
 
-from registry.schemas.case_conversion import APIBaseModel
+from .case_conversion import APIBaseModel
 
 # ==================== Auth Schemas ====================
 

@@ -4,18 +4,18 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
 
-from registry.auth.dependencies import CurrentUser
-from registry.schemas.common_api_schemas import (
+from ....auth.dependencies import CurrentUser
+from ....schemas.common_api_schemas import (
     ConnectionStatusMapResponse,
     ServerConnectionStatusResponse,
 )
-from registry.schemas.enums import ConnectionState
-from registry.services.oauth.connection_status_service import (
+from ....schemas.enums import ConnectionState
+from ....services.oauth.connection_status_service import (
     get_servers_connection_status,
     get_single_server_connection_status,
 )
-from registry.services.oauth.mcp_service import MCPService, get_mcp_service
-from registry.services.server_service import server_service_v1
+from ....services.oauth.mcp_service import MCPService, get_mcp_service
+from ....services.server_service import server_service_v1
 
 logger = logging.getLogger(__name__)
 
