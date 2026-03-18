@@ -8,7 +8,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
-from registry.schemas.enums import ConnectionState
+from ...schemas.enums import ConnectionState
 
 
 @dataclass

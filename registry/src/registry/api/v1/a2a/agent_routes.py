@@ -2,6 +2,7 @@
 A2A Agent Management API Routes V1
 
 RESTful API endpoints for managing A2A agents using MongoDB.
+Includes well-known agent card discovery endpoint.
 """
 
 import logging
@@ -11,10 +12,16 @@ from typing import Annotated, Literal
 from beanie import PydanticObjectId
 from fastapi import APIRouter, HTTPException, Query
 from fastapi import status as http_status
+from fastapi.responses import JSONResponse
 
-from registry.auth.dependencies import CurrentUser
-from registry.core.telemetry_decorators import track_registry_operation
-from registry.schemas.a2a_agent_api_schemas import (
+from registry_pkgs.database.decorators import use_transaction
+from registry_pkgs.models._generated import PrincipalType, ResourceType
+from registry_pkgs.models.enums import RoleBits
+
+from ....auth.dependencies import CurrentUser
+from ....core.config import settings
+from ....core.telemetry_decorators import track_registry_operation
+from ....schemas.a2a_agent_api_schemas import (
     AgentCreateRequest,
     AgentDetailResponse,
     AgentListResponse,
@@ -28,13 +35,10 @@ from registry.schemas.a2a_agent_api_schemas import (
     convert_to_list_item,
     convert_to_skills_response,
 )
-from registry.schemas.acl_schema import ResourcePermissions
-from registry.schemas.errors import ErrorCode, create_error_detail
-from registry.services.a2a_agent_service import a2a_agent_service
-from registry.services.access_control_service import acl_service
-from registry_pkgs.database.decorators import use_transaction
-from registry_pkgs.models._generated import PrincipalType, ResourceType
-from registry_pkgs.models.enums import RoleBits
+from ....schemas.acl_schema import ResourcePermissions
+from ....schemas.errors import ErrorCode, create_error_detail
+from ....services.a2a_agent_service import a2a_agent_service
+from ....services.access_control_service import acl_service
 
 logger = logging.getLogger(__name__)
 
@@ -602,4 +606,71 @@ async def sync_wellknown(
         raise HTTPException(
             status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=create_error_detail(ErrorCode.INTERNAL_ERROR, "Internal server error while syncing well-known"),
+        )
+
+
+@router.get(
+    "/agents/{agent_id}/.well-known/agent-cards",
+    summary="Get Agent Card (Well-Known)",
+    description="Get agent card from well-known endpoint following A2A protocol",
+)
+async def get_agent_wellknown_card(
+    agent_id: str,
+    user_context: CurrentUser,
+) -> JSONResponse:
+    """
+    Get agent card in A2A protocol format from well-known endpoint.
+
+    This endpoint returns the agent card directly from the A2A SDK,
+    similar to what would be found at /.well-known/agent-card.json
+    on a standalone A2A agent server.
+
+    Endpoint: /api/v1/agents/{agent_id}/.well-known/agent-cards
+    """
+    try:
+        user_id = user_context.get("user_id")
+
+        # Check VIEW permission
+        await acl_service.check_user_permission(
+            user_id=PydanticObjectId(user_id),
+            resource_type=ResourceType.AGENT.value,
+            resource_id=PydanticObjectId(agent_id),
+            required_permission="VIEW",
+        )
+
+        # Get agent
+        agent = await a2a_agent_service.get_agent_by_id(agent_id)
+
+        # Return agent card directly from SDK (agent.card is already AgentCard from a2a-sdk)
+        # Use model_dump() to convert Pydantic model to dict, excluding None values
+        agent_card_data = agent.card.model_dump(mode="json", exclude_none=True, by_alias=True)
+
+        # Return with cache headers
+        headers = {
+            "Cache-Control": f"public, max-age={settings.wellknown_cache_ttl}",
+            "Content-Type": "application/json",
+        }
+
+        logger.info(f"Returned well-known agent card for agent {agent_id}")
+        return JSONResponse(content=agent_card_data, headers=headers)
+
+    except ValueError as e:
+        error_msg = str(e)
+        if "not found" in error_msg.lower():
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail=create_error_detail(ErrorCode.RESOURCE_NOT_FOUND, error_msg),
+            )
+        raise HTTPException(
+            status_code=http_status.HTTP_400_BAD_REQUEST,
+            detail=create_error_detail(ErrorCode.INVALID_REQUEST, error_msg),
+        )
+    except HTTPException:
+        logger.exception("HTTPException in get_agent_wellknown_card")
+        raise
+    except Exception as e:
+        logger.error(f"Error getting well-known agent card for {agent_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=create_error_detail(ErrorCode.INTERNAL_ERROR, "Internal server error while getting agent card"),
         )

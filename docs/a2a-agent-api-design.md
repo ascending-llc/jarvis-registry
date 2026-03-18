@@ -434,3 +434,77 @@
 **Permission**: Requires EDIT permission
 
 ---
+
+### 10. Get Agent Card (Well-Known)
+
+**Endpoint**: `GET /api/v1/agents/{agent_id}/.well-known/agent-cards`
+
+**Authentication**: JWT Bearer token required
+
+**Description**: Get agent card in A2A protocol format. This endpoint returns the agent card directly from the A2A SDK (agent.card), providing the standard A2A protocol-compliant agent card without additional processing.
+
+**Response**: `200 OK`
+```json
+{
+  "name": "Code Review Agent",
+  "description": "AI-powered code review assistant",
+  "url": "https://example.com/agents/code-reviewer",
+  "version": "1.0.0",
+  "protocolVersion": "1.0",
+  "capabilities": {
+    "streaming": true,
+    "pushNotifications": false
+  },
+  "preferredTransport": "HTTP+JSON",
+  "provider": {
+    "organization": "AI Labs",
+    "url": "https://ailabs.com"
+  },
+  "skills": [
+    {
+      "id": "code-analysis",
+      "name": "Code Analysis",
+      "description": "Analyze code quality",
+      "tags": ["analysis", "quality"]
+    }
+  ],
+  "securitySchemes": {
+    "bearer": {
+      "type": "http",
+      "scheme": "bearer"
+    }
+  },
+  "defaultInputModes": ["text/plain"],
+  "defaultOutputModes": ["application/json"]
+}
+```
+
+**Features**:
+- Returns agent card directly from A2A SDK (agent.card)
+- Standard A2A protocol format (validated by a2a-sdk)
+- Cached response (configurable TTL via `wellknown_cache_ttl` setting)
+- No additional processing or reformatting
+
+**Cache Headers**:
+```
+Cache-Control: public, max-age=300
+Content-Type: application/json
+```
+
+**Implementation**:
+```python
+# Simple and direct - returns SDK's AgentCard as-is
+agent_card_data = agent.card.model_dump(mode="json", exclude_none=True, by_alias=True)
+```
+
+**Use Cases**:
+- A2A protocol compliance
+- Agent card discovery per individual agent
+- Integration with A2A-compatible systems
+- Get original agent metadata in standard format
+
+**Error**: `404` Agent not found, `403` Access denied
+
+**Permission**: Requires VIEW permission
+
+---

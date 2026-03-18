@@ -14,8 +14,6 @@ from typing import Any
 
 from pydantic import HttpUrl
 
-from registry.schemas.agent_models import AgentCard
-
 from ...core.config import Settings
 from .base import VectorSearchService
 
@@ -204,32 +202,13 @@ class EmbeddedFaissService(VectorSearchService):
         return (f"Name: {name}\nDescription: {description}\nTags: {tag_string}\nTools:\n{tools_section}").strip()
 
     def _get_text_for_agent(self, agent_card) -> str:
-        """Prepare text string from agent card for embedding."""
-        name = agent_card.name
-        description = agent_card.description
+        """
+        DEPRECATED: Prepare text string from agent card for embedding.
 
-        skills_text = ""
-        if agent_card.skills:
-            skill_names = [skill.name for skill in agent_card.skills]
-            skill_descriptions = [f"{skill.name}: {skill.description}" for skill in agent_card.skills]
-            skills_text = "Skills: " + ", ".join(skill_names)
-            skills_text += "\nSkill Details: " + " | ".join(skill_descriptions)
-
-        tags = agent_card.tags
-        tag_string = ", ".join(tags) if tags else ""
-
-        text_parts = [
-            f"Name: {name}",
-            f"Description: {description}",
-        ]
-
-        if skills_text:
-            text_parts.append(skills_text)
-
-        if tag_string:
-            text_parts.append(f"Tags: {tag_string}")
-
-        return "\n".join(text_parts)
+        Legacy file-based agent support has been removed.
+        """
+        logger.warning("_get_text_for_agent called but legacy agent support has been removed.")
+        return ""
 
     async def add_or_update_service(self, service_path: str, server_info: dict[str, Any], is_enabled: bool = False):
         """Add or update a service in the FAISS index."""
@@ -344,113 +323,26 @@ class EmbeddedFaissService(VectorSearchService):
         agent_card,
         is_enabled: bool = False,
     ) -> None:
-        """Add or update an agent in the FAISS index."""
-        if self.embedding_model is None or self.faiss_index is None:
-            logger.error("Embedding model or FAISS index not initialized. Cannot add/update agent in FAISS.")
-            return
+        """
+        DEPRECATED: Add or update an agent in the FAISS index.
 
-        logger.info(f"Attempting to add/update agent '{agent_path}' in FAISS.")
-        text_to_embed = self._get_text_for_agent(agent_card)
-
-        current_faiss_id = -1
-        needs_new_embedding = True
-
-        existing_entry = self.metadata_store.get(agent_path)
-
-        if existing_entry:
-            current_faiss_id = existing_entry["id"]
-            if existing_entry.get("text_for_embedding") == text_to_embed:
-                needs_new_embedding = False
-                logger.info(
-                    f"Text for embedding for '{agent_path}' has not changed. Will update metadata store only if agent_card differs."
-                )
-            else:
-                logger.info(f"Text for embedding for '{agent_path}' has changed. Re-embedding required.")
-        else:
-            # New agent
-            current_faiss_id = self.next_id_counter
-            self.next_id_counter += 1
-            logger.info(f"New agent '{agent_path}'. Assigning new FAISS ID: {current_faiss_id}.")
-            needs_new_embedding = True
-
-        if needs_new_embedding:
-            try:
-                # Run model encoding in a separate thread
-                embedding = await asyncio.to_thread(
-                    self.embedding_model.encode,
-                    [text_to_embed],
-                )
-                embedding_np = np.array([embedding[0]], dtype=np.float32)
-
-                ids_to_remove = np.array([current_faiss_id])
-                if existing_entry:
-                    try:
-                        num_removed = self.faiss_index.remove_ids(ids_to_remove)
-                        if num_removed > 0:
-                            logger.info(
-                                f"Removed {num_removed} old vector(s) for FAISS ID {current_faiss_id} ({agent_path})."
-                            )
-                        else:
-                            logger.info(
-                                f"No old vector found for FAISS ID {current_faiss_id} ({agent_path}) during update, or ID not in index."
-                            )
-                    except Exception as e_remove:
-                        logger.warning(
-                            f"Issue removing FAISS ID {current_faiss_id} for {agent_path}: {e_remove}. Proceeding to add."
-                        )
-
-                self.faiss_index.add_with_ids(
-                    embedding_np,
-                    np.array([current_faiss_id]),
-                )
-                logger.info(f"Added/Updated vector for '{agent_path}' with FAISS ID {current_faiss_id}.")
-            except Exception as e:
-                logger.error(
-                    f"Error encoding or adding embedding for '{agent_path}': {e}",
-                    exc_info=True,
-                )
-                return
-
-        # Update metadata store
-        agent_card_dict = agent_card.model_dump() if hasattr(agent_card, "model_dump") else agent_card
-
-        if existing_entry is None or needs_new_embedding or existing_entry.get("full_agent_card") != agent_card_dict:
-            self.metadata_store[agent_path] = {
-                "id": current_faiss_id,
-                "entity_type": "a2a_agent",
-                "text_for_embedding": text_to_embed,
-                "full_agent_card": agent_card_dict,
-            }
-            logger.debug(f"Updated faiss_metadata_store for agent '{agent_path}'.")
-            await self._save_data()
-        else:
-            logger.debug(f"No changes to FAISS vector or agent card for '{agent_path}'. Skipping save.")
+        Legacy file-based agent support has been removed.
+        Use A2A Agent Management V1 API (/api/v1/agents) instead.
+        """
+        logger.warning(
+            f"add_or_update_agent called for '{agent_path}' but legacy agent support has been removed. "
+            "Use A2A Agent Management V1 API."
+        )
+        return
 
     async def remove_agent(self, agent_path: str) -> None:
-        """Remove an agent from the FAISS index and metadata store."""
-        try:
-            # Check if agent exists in metadata
-            if agent_path not in self.metadata_store:
-                logger.warning(f"Agent '{agent_path}' not found in FAISS metadata store")
-                return
+        """
+        DEPRECATED: Remove an agent from the FAISS index and metadata store.
 
-            # Get the FAISS ID for this agent
-            agent_id = self.metadata_store[agent_path].get("id")
-            if agent_id is not None and self.faiss_index:
-                logger.info(f"Removing agent '{agent_path}' with FAISS ID {agent_id} from index")
-
-            # Remove from metadata store
-            del self.metadata_store[agent_path]
-            logger.info(f"Removed agent '{agent_path}' from FAISS metadata store")
-
-            # Save the updated metadata
-            await self._save_data()
-
-        except Exception as e:
-            logger.error(
-                f"Failed to remove agent '{agent_path}' from FAISS: {e}",
-                exc_info=True,
-            )
+        Legacy file-based agent support has been removed.
+        """
+        logger.warning(f"remove_agent called for '{agent_path}' but legacy agent support has been removed.")
+        return
 
     async def search_agents(
         self,
@@ -478,11 +370,12 @@ class EmbeddedFaissService(VectorSearchService):
         Routes entities to appropriate methods based on entity_type.
         """
         if entity_type == "a2a_agent":
-            if AgentCard:
-                agent_card = AgentCard(**entity_info)
-            else:
-                agent_card = entity_info
-            await self.add_or_update_agent(entity_path, agent_card, is_enabled)
+            # Legacy file-based agent support removed
+            logger.warning(
+                f"Legacy agent '{entity_path}' cannot be added to FAISS - "
+                "file-based agent service has been removed. Use A2A Agent Management V1 API."
+            )
+            return
         elif entity_type == "mcp_server":
             await self.add_or_update_service(entity_path, entity_info, is_enabled)
 

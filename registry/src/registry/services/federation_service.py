@@ -10,7 +10,6 @@ Handles:
 
 import json
 import logging
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -166,73 +165,17 @@ class FederationService:
         """
         Sync agents from Workday ASOR.
 
+        NOTE: Legacy file-based agent registration has been removed.
+        ASOR agent sync is disabled pending migration to new A2A Agent Management V1 API.
+
         Returns:
-            List of synced agent data
+            Empty list (ASOR sync disabled)
         """
-        if not self.asor_client:
-            logger.error("ASOR client not initialized")
-            return []
-
-        # Fetch agents
-        agents = self.asor_client.fetch_all_agents(self.config.asor.agents)
-
-        # Register agents with the agent service
-        from ..schemas.agent_models import AgentCard
-        from ..services.agent_service import agent_service
-
-        for agent_data in agents:
-            # Extract agent info from ASOR data structure
-            agent_name = agent_data.get("name", "Unknown ASOR Agent")
-            agent_path = f"/{agent_name.lower().replace('_', '-')}"
-            agent_url = agent_data.get("url", "")
-            agent_description = agent_data.get("description", "Agent synced from ASOR")
-            if agent_description == "None":
-                agent_description = f"ASOR agent: {agent_name}"
-
-            # Extract skills
-            skills_data = agent_data.get("skills", [])
-            skills = []
-            for skill in skills_data:
-                skills.append(
-                    {
-                        "name": skill.get("name", ""),
-                        "description": skill.get("description", ""),
-                        "id": skill.get("id", ""),
-                    }
-                )
-
-            # Convert ASOR agent data to AgentCard format
-            agent_card = AgentCard(
-                protocol_version="1.0",  # Required A2A field
-                name=agent_name,
-                path=agent_path,
-                url=agent_url,
-                description=agent_description,
-                version=agent_data.get("version", "1.0.0"),
-                provider="ASOR",  # Add provider field
-                author="ASOR",
-                license="Unknown",
-                skills=skills,
-                tags=["asor", "federated", "workday"],
-                visibility="public",
-                registered_by="asor-federation",
-                registered_at=datetime.now(UTC),
-            )
-
-            try:
-                # Check if agent already exists
-                if agent_path in agent_service.registered_agents:
-                    logger.debug(f"ASOR agent {agent_path} already exists, skipping registration")
-                    continue
-
-                # Register the agent using the proper method
-                agent_service.register_agent(agent_card)
-                logger.info(f"Registered ASOR agent: {agent_card.name} at {agent_card.path}")
-
-            except Exception as e:
-                logger.error(f"Failed to register ASOR agent {agent_data.get('name', 'unknown')}: {e}")
-
-        return agents
+        logger.warning(
+            "ASOR agent sync is disabled - legacy file-based agent service has been removed. "
+            "Please migrate to A2A Agent Management V1 API (/api/v1/agents)"
+        )
+        return []
 
     def get_federated_servers(self, source: str | None = None, force_refresh: bool = False) -> list[dict[str, Any]]:
         """

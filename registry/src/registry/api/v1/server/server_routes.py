@@ -13,7 +13,6 @@ from beanie import PydanticObjectId
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi import status as http_status
 
-from registry.schemas.acl_schema import ResourcePermissions
 from registry_pkgs.database.decorators import use_transaction
 from registry_pkgs.models._generated import PrincipalType, ResourceType
 from registry_pkgs.models.enums import RoleBits
@@ -21,6 +20,7 @@ from registry_pkgs.models.enums import RoleBits
 from ....auth.dependencies import CurrentUser
 from ....core.mcp_client import perform_health_check
 from ....core.telemetry_decorators import track_registry_operation
+from ....schemas.acl_schema import ResourcePermissions
 from ....schemas.enums import ConnectionState
 from ....schemas.server_api_schemas import (
     PaginationMetadata,

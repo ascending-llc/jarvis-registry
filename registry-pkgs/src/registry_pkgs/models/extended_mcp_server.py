@@ -252,16 +252,28 @@ class ExtendedMCPServer(Document):
 
     def _get_base_metadata(self, entity_type: ServerEntityType) -> dict[str, Any]:
         """Get base metadata shared by all document types."""
+        is_enabled = self.status == "active"
+        if self.config and isinstance(self.config.get("enabled"), bool):
+            is_enabled = self.config["enabled"]
+
         metadata = {
             "collection": self.COLLECTION_NAME,
             "entity_type": entity_type,
             "server_id": str(self.id) if self.id else None,
             "server_name": self.serverName,
+            "path": self.path,
+            "status": self.status,
+            "enabled": is_enabled,
         }
-        enabled = False
-        if self.config:
-            enabled = self.config.get("enabled")
-        metadata.update({"enabled": enabled})
+        if self.federationSource:
+            metadata["federation_source"] = self.federationSource.value if self.federationSource else None
+        if self.federationId:
+            metadata["federation_id"] = self.federationId
+        runtime_version = (self.federationMetadata or {}).get("runtimeVersion")
+        if runtime_version is not None:
+            metadata["runtime_version"] = str(runtime_version)
+        if self.tags:
+            metadata["tags"] = list(self.tags)
         return metadata
 
     def _split_if_needed(

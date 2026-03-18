@@ -12,9 +12,10 @@ from typing import Any
 
 from pydantic import ConfigDict, Field, field_validator, model_serializer
 
-from registry.schemas.acl_schema import ResourcePermissions
-from registry.schemas.case_conversion import APIBaseModel
-from registry.utils.crypto_utils import decrypt_auth_fields
+from ..schemas.acl_schema import ResourcePermissions
+from ..schemas.case_conversion import APIBaseModel
+from ..utils.crypto_utils import decrypt_auth_fields
+from ..utils.schema_converter import convert_dict_keys_to_camel
 
 # ==================== Request Schemas ====================
 
@@ -31,6 +32,11 @@ def _validate_headers_value(headers: dict[str, Any] | None) -> dict[str, Any] | 
 
 class ServerCreateRequest(APIBaseModel):
     """Request schema for creating a new server"""
+
+    # API to Database field name mapping
+    _field_mapping = {
+        "requiresOauth": "requiresOAuth",
+    }
 
     title: str = Field(..., description="Display title of the MCP server")
     path: str = Field(..., description="Unique path/route for the server")
@@ -77,6 +83,11 @@ class ServerCreateRequest(APIBaseModel):
 
 class ServerUpdateRequest(APIBaseModel):
     """Request schema for updating a server (partial update)"""
+
+    # API to Database field name mapping
+    _field_mapping = {
+        "requiresOauth": "requiresOAuth",
+    }
 
     title: str | None = None
     path: str | None = None
@@ -378,7 +389,8 @@ def convert_to_list_item(
     config = server.config or {}
     config = decrypt_auth_fields(config)
 
-    oauth_config = _mask_oauth_client_secret(config.get("oauth"))
+    # Mask first (reads snake_case keys), then convert to camelCase for API response
+    oauth_config = convert_dict_keys_to_camel(_mask_oauth_client_secret(config.get("oauth")))
     apikey_config = _mask_apikey(config.get("apiKey"))
 
     author_id = str(server.author) if server.author else None
@@ -400,7 +412,7 @@ def convert_to_list_item(
         headers=config.get("headers"),
         requiresOauth=config.get("requiresOAuth", False),
         capabilities=capabilities_str,
-        oauthMetadata=config.get("oauthMetadata"),
+        oauthMetadata=convert_dict_keys_to_camel(config.get("oauthMetadata")),
         tools=tools_str,
         author=author_id,
         status=server.status,
@@ -424,7 +436,8 @@ def convert_to_detail(
     config = server.config or {}
     config = decrypt_auth_fields(config)
 
-    oauth_config = _mask_oauth_client_secret(config.get("oauth"))
+    # Mask first (reads snake_case keys), then convert to camelCase for API response
+    oauth_config = convert_dict_keys_to_camel(_mask_oauth_client_secret(config.get("oauth")))
     apikey_config = _mask_apikey(config.get("apiKey"))
 
     author_id = str(server.author) if server.author else None
@@ -455,7 +468,7 @@ def convert_to_detail(
         headers=config.get("headers"),
         requiresOauth=config.get("requiresOAuth", False),
         capabilities=capabilities_str,
-        oauthMetadata=config.get("oauthMetadata"),
+        oauthMetadata=convert_dict_keys_to_camel(config.get("oauthMetadata")),
         tools=tools_str,
         toolFunctions=tool_functions,
         resources=resources,

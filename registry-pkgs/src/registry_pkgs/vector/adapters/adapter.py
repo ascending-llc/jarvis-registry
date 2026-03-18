@@ -393,6 +393,15 @@ class VectorStoreAdapter(ABC):
         """
         return collection_name in self.list_collections()
 
+    def has_property(self, collection_name: str, property_name: str) -> bool:
+        """
+        Check whether a metadata/property field exists in collection schema.
+
+        Default adapter behavior is permissive (True). Backends with explicit schema
+        constraints (e.g., Weaviate) should override this.
+        """
+        return True
+
     def update_metadata(self, doc_id: str, metadata: dict[str, Any], collection_name: str | None = None) -> bool:
         """
         Update metadata fields only without re-vectorization.

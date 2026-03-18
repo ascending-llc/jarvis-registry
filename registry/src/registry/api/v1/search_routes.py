@@ -6,18 +6,17 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
-from registry.auth.dependencies import CurrentUser
-from registry.core.telemetry_decorators import track_registry_operation
-from registry.schemas.case_conversion import APIBaseModel
-from registry.services.search.service import faiss_service
-from registry.services.server_service import server_service_v1
-from registry.utils.otel_metrics import record_tool_discovery
 from registry_pkgs.models.enums import ServerEntityType
 from registry_pkgs.vector.client import get_db_client
 from registry_pkgs.vector.enum.enums import SearchType
 from registry_pkgs.vector.repositories.mcp_server_repository import get_mcp_server_repo
 
-from ...services.agent_service import agent_service
+from ...auth.dependencies import CurrentUser
+from ...core.telemetry_decorators import track_registry_operation
+from ...schemas.case_conversion import APIBaseModel
+from ...services.search.service import faiss_service
+from ...services.server_service import server_service_v1
+from ...utils.otel_metrics import record_tool_discovery
 
 logger = logging.getLogger(__name__)
 
@@ -96,26 +95,6 @@ class SemanticSearchResponse(APIBaseModel):
     totalServers: int = 0
     totalTools: int = 0
     totalAgents: int = 0
-
-
-def _user_can_access_agent(agent_path: str, user_context: dict) -> bool:
-    """Validate user access for a given agent."""
-    agent_card = agent_service.get_agent_info(agent_path)
-    if not agent_card:
-        return False
-
-    if agent_card.visibility == "public":
-        return True
-
-    if agent_card.visibility == "private":
-        return agent_card.registered_by == user_context.get("username")
-
-    if agent_card.visibility == "group-restricted":
-        allowed_groups = set(agent_card.allowed_groups)
-        user_groups = set(user_context.get("groups", []))
-        return bool(allowed_groups & user_groups)
-
-    return False
 
 
 @router.post(
@@ -203,36 +182,9 @@ async def semantic_search(
                 )
             )
 
+        # Note: Legacy file-based agent search has been removed.
+        # Use the new A2A Agent Management V1 API (/api/v1/agents) instead.
         filtered_agents: list[AgentSearchResult] = []
-        for agent in raw_results.get("agents", []):
-            agent_path = agent.get("path", "")
-            if not agent_path:
-                continue
-
-            if not _user_can_access_agent(agent_path, user_context):
-                continue
-
-            agent_card_obj = agent_service.get_agent_info(agent_path)
-            agent_card_dict = agent_card_obj.model_dump() if agent_card_obj else agent.get("agent_card", {})
-
-            tags = agent_card_dict.get("tags", []) or agent.get("tags", [])
-            raw_skills = agent_card_dict.get("skills", []) or agent.get("skills", [])
-            skills = [skill.get("name") if isinstance(skill, dict) else skill for skill in raw_skills]
-
-            filtered_agents.append(
-                AgentSearchResult(
-                    path=agent_path,
-                    agentName=agent_card_dict.get("name", agent.get("agent_name", agent_path.strip("/"))),
-                    description=agent_card_dict.get("description", agent.get("description")),
-                    tags=tags or [],
-                    skills=[s for s in skills if s],
-                    trustLevel=agent_card_dict.get("trust_level"),
-                    visibility=agent_card_dict.get("visibility"),
-                    isEnabled=agent_card_dict.get("is_enabled", False),
-                    relevanceScore=agent.get("relevance_score", 0.0),
-                    matchContext=agent.get("match_context") or agent_card_dict.get("description"),
-                )
-            )
 
         success = True
         total_results = len(filtered_servers) + len(filtered_tools) + len(filtered_agents)

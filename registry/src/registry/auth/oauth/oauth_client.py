@@ -8,15 +8,14 @@ import httpx
 from authlib.integrations.httpx_client import AsyncOAuth2Client
 from authlib.oauth2.rfc7636 import create_s256_code_challenge
 
-from registry.models.oauth_models import (
+from ...core.config import settings
+from ...schemas.oauth_schema import (
     MCPOAuthFlowMetadata,
     OAuthClientInformation,
     OAuthMetadata,
     OAuthProtectedResourceMetadata,
     OAuthTokens,
 )
-
-from ...core.config import settings
 
 logger = logging.getLogger(__name__)
 

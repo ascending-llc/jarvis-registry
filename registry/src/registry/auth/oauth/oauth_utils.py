@@ -1,4 +1,4 @@
-from registry.core.config import settings
+from ...core.config import settings
 
 
 def get_default_redirect_uri(path: str) -> str:

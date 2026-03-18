@@ -8,8 +8,8 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.routing import compile_path
 
-from registry.auth.dependencies import effective_scopes_from_context
-from registry.core.config import settings
+from ..auth.dependencies import effective_scopes_from_context
+from ..core.config import settings
 
 logger = logging.getLogger(__name__)
 

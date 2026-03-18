@@ -6,22 +6,22 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import RedirectResponse
 
-from registry.auth.dependencies import CurrentUser
-from registry.auth.oauth.reconnection import get_reconnection_manager
-from registry.auth.oauth.types import ClientBranding
-from registry.core.config import settings
-from registry.core.mcp_client import get_oauth_metadata_from_server
-from registry.mcpgw.tools.utils import session_store
-from registry.schemas.common_api_schemas import (
+from ....auth.dependencies import CurrentUser
+from ....auth.oauth.reconnection import get_reconnection_manager
+from ....auth.oauth.types import ClientBranding
+from ....core.config import settings
+from ....core.mcp_client import get_oauth_metadata_from_server
+from ....mcpgw.tools.utils import session_store
+from ....schemas.common_api_schemas import (
     OAuthInitiateResponse,
     OAuthMetadataDiscoverResponse,
     OAuthOperationResponse,
     OAuthTokensResponse,
 )
-from registry.schemas.enums import ConnectionState, OAuthFlowStatus
-from registry.services.oauth.mcp_service import MCPService, get_mcp_service
-from registry.services.oauth.token_service import token_service
-from registry.services.server_service import server_service_v1
+from ....schemas.enums import ConnectionState, OAuthFlowStatus
+from ....services.oauth.mcp_service import MCPService, get_mcp_service
+from ....services.oauth.token_service import token_service
+from ....services.server_service import server_service_v1
 
 logger = logging.getLogger(__name__)
 

@@ -28,9 +28,6 @@ registry = { workspace = true }
 auth-server = { workspace = true }
 
 [tool.uv]
-# Constrain onnxruntime to a version with macOS Intel (x86_64) support
-# v1.24.1 only has ARM64 wheels for macOS, so we use an older version
-constraint-dependencies = ["onnxruntime<=1.23.2"]
 
 [project.scripts]
 # Data management scripts

@@ -126,7 +126,7 @@ class TestAgentCoreFederationClient:
         )
 
         with stubber:
-            result = await client.discover_runtime_entities()
+            result = await client.discover_runtime_entities(enrich_protocol_payloads=False)
 
         assert len(result["mcp_servers"]) == 1
         assert len(result["a2a_agents"]) == 1
@@ -200,7 +200,7 @@ class TestAgentCoreFederationClient:
         )
 
         with stubber:
-            result = await client.discover_runtime_entities(runtime_arns=[target_arn])
+            result = await client.discover_runtime_entities(runtime_arns=[target_arn], enrich_protocol_payloads=False)
 
         assert len(result["a2a_agents"]) == 1
         assert result["a2a_agents"][0].federationId == target_arn
