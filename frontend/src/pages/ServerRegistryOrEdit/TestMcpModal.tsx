@@ -4,7 +4,7 @@ import { JarvisEmbed } from 'jarvis-embed';
 
 import SERVICES from '@/services';
 
-const JARVIS_URL = 'http://localhost:3090';
+const JARVIS_URL = 'https://jarvis-demo.ascendingdc.com';
 
 type Props = {
   serverPath: string;
@@ -44,7 +44,7 @@ const TestMcpModal = ({ serverPath, onClose }: Props) => {
         jarvisRef.current = new JarvisEmbed({
           provider: 'direct',
           token,
-          model: 'gpt-4',
+          model: 'claude-sonnet-4-6',
           apiUrl: JARVIS_URL,
           container,
           width: '100%',
