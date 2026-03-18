@@ -7,6 +7,7 @@ All environment variables are loaded here and accessed through the global `setti
 
 import logging
 import secrets
+from functools import cached_property
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -86,7 +87,7 @@ class AuthSettings(BaseSettings):
 
     # ==================== Metrics Settings ====================
     metrics_service_url: str = "http://localhost:8890"
-    metrics_api_key: str = ""
+    metrics_api_key: str | None = None
     otel_metrics_config_path: str = ""
     otel_exporter_otlp_endpoint: str = "http://otel-collector:4318"
     otel_prometheus_enabled: bool = False
@@ -110,16 +111,16 @@ class AuthSettings(BaseSettings):
 
     # ==================== Configuration Properties ====================
 
-    @property
+    @cached_property
     def scopes_config(self) -> dict:
         """Get the scopes configuration using centralized loader from registry_pkgs."""
         return load_scopes_config(self.scopes_file_config)
 
-    @property
+    @cached_property
     def scopes_file_config(self) -> ScopesConfig:
         return ScopesConfig(scopes_config_path=self.scopes_config_path)
 
-    @property
+    @cached_property
     def mongo_config(self) -> MongoConfig:
         return MongoConfig(
             mongo_uri=self.mongo_uri,
@@ -127,7 +128,7 @@ class AuthSettings(BaseSettings):
             mongodb_password=self.mongodb_password,
         )
 
-    @property
+    @cached_property
     def telemetry_config(self) -> TelemetryConfig:
         return TelemetryConfig(
             otel_metrics_config_path=self.otel_metrics_config_path,
@@ -136,14 +137,12 @@ class AuthSettings(BaseSettings):
             otel_prometheus_port=self.otel_prometheus_port,
         )
 
-    @property
+    @cached_property
     def oauth2_config(self) -> dict:
         """Get the OAuth2 configuration from oauth2_providers.yml file."""
         return get_oauth2_config()
 
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-
+    def model_post_init(self, __context) -> None:
         # Generate secret key if not provided
         if not self.secret_key:
             self.secret_key = secrets.token_hex(32)

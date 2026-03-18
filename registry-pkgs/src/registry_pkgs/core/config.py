@@ -11,15 +11,15 @@ class VectorConfig(BaseModel):
     embedding_provider: str = Field(default="aws_bedrock", description="Embedding provider")
     weaviate_host: str = Field(default="127.0.0.1", description="Weaviate host address")
     weaviate_port: int = Field(default=8080, description="Weaviate port")
-    weaviate_api_key: str = Field(default="", description="Weaviate API key")
+    weaviate_api_key: str | None = Field(default=None, description="Weaviate API key")
     weaviate_collection_prefix: str = Field(default="", description="Weaviate collection prefix")
-    openai_api_key: str = Field(default="", description="OpenAI API key")
+    openai_api_key: str | None = Field(default=None, description="OpenAI API key")
     openai_model: str = Field(default="text-embedding-3-small", description="OpenAI embedding model")
     aws_region: str = Field(default="us-east-1", description="AWS region for Bedrock")
     bedrock_model: str = Field(default="amazon.titan-embed-text-v2:0", description="AWS Bedrock model")
-    aws_access_key_id: str = Field(default="", description="AWS access key ID")
-    aws_secret_access_key: str = Field(default="", description="AWS secret access key")
-    aws_session_token: str = Field(default="", description="AWS session token")
+    aws_access_key_id: str | None = Field(default=None, description="AWS access key ID")
+    aws_secret_access_key: str | None = Field(default=None, description="AWS secret access key")
+    aws_session_token: str | None = Field(default=None, description="AWS session token")
 
 
 class MongoConfig(BaseModel):
