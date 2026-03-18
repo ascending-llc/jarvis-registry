@@ -1,6 +1,6 @@
 # Anthropic MCP Registry API - Implementation Guide
 
-> **Note**: The Anthropic API version (v0.1) is defined as a constant `ANTHROPIC_API_VERSION` in `registry/constants.py`. All code references this constant rather than hardcoding the version string.
+> **Note**: The Anthropic API version (v0.1) is defined in `registry/core/config.py` as `Settings.anthropic_api_version`. All code references the shared settings object rather than hardcoding the version string.
 
 ---
 
@@ -64,7 +64,7 @@ This implementation provides full compatibility with the [Anthropic MCP Registry
 
 | File | Purpose |
 |------|---------|
-| `registry/constants.py` | Anthropic API constants (`ANTHROPIC_SERVER_NAMESPACE`, limits) |
+| `registry/core/config.py` | Anthropic API settings (`anthropic_api_version`, `anthropic_server_namespace`, limits) |
 | `registry/schemas/anthropic_schema.py` | 9 Pydantic models for Anthropic spec |
 | `registry/services/transform_service.py` | Data transformation between formats |
 | `registry/api/registry_routes.py` | 3 REST endpoints with JWT auth |
@@ -83,19 +83,19 @@ This implementation provides full compatibility with the [Anthropic MCP Registry
 
 ---
 
-## Constants Configuration
+## Settings Configuration
 
-All hardcoded values are centralized in `registry/constants.py`:
+Anthropic API configuration is centralized in `registry/core/config.py`:
 
 ```python
-class RegistryConstants(BaseModel):
-    # Anthropic Registry API v0.1 constants
-    ANTHROPIC_SERVER_NAMESPACE: str = "io.mcpgateway"
-    ANTHROPIC_API_DEFAULT_LIMIT: int = 100
-    ANTHROPIC_API_MAX_LIMIT: int = 1000
+class Settings(BaseSettings):
+    anthropic_api_version: str = "v0.1"
+    anthropic_server_namespace: str = "io.mcpgateway"
+    anthropic_api_default_limit: int = 100
+    anthropic_api_max_limit: int = 1000
 ```
 
-**Usage**: Import with `from ..constants import REGISTRY_CONSTANTS`
+**Usage**: Import with `from registry.core.config import settings`
 
 ---
 
@@ -343,7 +343,7 @@ if server_name not in accessible_servers:
 def _create_server_name(server_info: Dict[str, Any]) -> str:
     path = server_info.get("path", "")
     clean_path = path.strip("/")
-    namespace = REGISTRY_CONSTANTS.ANTHROPIC_SERVER_NAMESPACE
+    namespace = settings.anthropic_server_namespace
     return f"{namespace}/{clean_path}"
 ```
 
@@ -365,7 +365,7 @@ def transform_to_server_detail(server_info: Dict[str, Any]) -> ServerDetail:
     )
 
     # Add internal metadata
-    namespace = REGISTRY_CONSTANTS.ANTHROPIC_SERVER_NAMESPACE
+    namespace = settings.anthropic_server_namespace
     meta = {
         f"{namespace}/internal": {
             "path": server_info.get("path"),
@@ -436,8 +436,8 @@ def transform_to_server_list(
     limit: Optional[int] = None
 ) -> ServerList:
     # Apply defaults
-    limit = limit or REGISTRY_CONSTANTS.ANTHROPIC_API_DEFAULT_LIMIT
-    limit = min(limit, REGISTRY_CONSTANTS.ANTHROPIC_API_MAX_LIMIT)
+    limit = limit or settings.anthropic_api_default_limit
+    limit = min(limit, settings.anthropic_api_max_limit)
 
     # Sort alphabetically for consistency
     sorted_servers = sorted(servers_data, key=lambda s: _create_server_name(s))
@@ -521,16 +521,16 @@ health_data = health_service._get_service_health_data(path)
 
 ### 3. Namespace Constant Usage
 
-**All occurrences** of hardcoded `"io.mcpgateway"` replaced with constant:
+**All occurrences** of hardcoded `"io.mcpgateway"` replaced with shared settings:
 
 ```python
-from ..constants import REGISTRY_CONSTANTS
+from registry.core.config import settings
 
-namespace = REGISTRY_CONSTANTS.ANTHROPIC_SERVER_NAMESPACE
+namespace = settings.anthropic_server_namespace
 expected_prefix = f"{namespace}/"  # "io.mcpgateway/"
 ```
 
-**Files using constant**:
+**Files using setting**:
 - `registry/api/registry_routes.py` - Validates server name format
 - `registry/services/transform_service.py` - Creates names and metadata keys
 

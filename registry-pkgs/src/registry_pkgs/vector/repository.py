@@ -73,11 +73,15 @@ class Repository[T: VectorStorable]:
             )
 
         self.db_client = db_client
-        self.adapter = db_client.adapter
         self.model_class = model_class
         self.collection = model_class.COLLECTION_NAME
 
         logger.debug(f"Repository initialized for {model_class.__name__} -> {self.collection}")
+
+    @property
+    def adapter(self):
+        """Lazily resolve the underlying adapter when a vector operation runs."""
+        return self.db_client.adapter
 
     # ========================================
     # CRUD Operations with Smart Update Detection

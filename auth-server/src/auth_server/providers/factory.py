@@ -1,7 +1,6 @@
 """Factory for creating authentication provider instances."""
 
 import logging
-import os
 
 from ..core.config import settings
 from ..utils.config_loader import get_provider_config
@@ -19,7 +18,7 @@ def get_auth_provider(provider_type: str | None = None) -> AuthProvider:
 
     Args:
         provider_type: Type of provider to create ('cognito', 'keycloak', or 'entra').
-                      If None, uses AUTH_PROVIDER environment variable.
+                      If None, uses auth-server settings.
 
     Returns:
         AuthProvider instance configured for the specified provider
@@ -27,7 +26,7 @@ def get_auth_provider(provider_type: str | None = None) -> AuthProvider:
     Raises:
         ValueError: If provider type is unknown or required config is missing
     """
-    provider_type = provider_type or os.environ.get("AUTH_PROVIDER", "cognito")
+    provider_type = provider_type or settings.auth_provider
 
     logger.info(f"Creating authentication provider: {provider_type}")
 
@@ -87,13 +86,13 @@ def _create_keycloak_provider() -> KeycloakProvider:
 def _create_cognito_provider() -> CognitoProvider:
     """Create and configure Cognito provider."""
     # Required configuration
-    user_pool_id = os.environ.get("COGNITO_USER_POOL_ID")
-    client_id = os.environ.get("COGNITO_CLIENT_ID")
-    client_secret = os.environ.get("COGNITO_CLIENT_SECRET")
-    region = os.environ.get("AWS_REGION", "us-east-1")
+    user_pool_id = settings.cognito_user_pool_id
+    client_id = settings.cognito_client_id
+    client_secret = settings.cognito_client_secret
+    region = settings.aws_region
 
     # Optional configuration
-    domain = os.environ.get("COGNITO_DOMAIN")
+    domain = settings.cognito_domain
 
     # Validate required configuration
     missing_vars = []
@@ -203,7 +202,7 @@ def _get_provider_health_info() -> dict:
         if hasattr(provider, "get_provider_info"):
             return provider.get_provider_info()
         else:
-            return {"provider_type": os.environ.get("AUTH_PROVIDER", "cognito"), "status": "unknown"}
+            return {"provider_type": settings.auth_provider, "status": "unknown"}
     except Exception as e:
         logger.error(f"Failed to get provider health info: {e}")
-        return {"provider_type": os.environ.get("AUTH_PROVIDER", "cognito"), "status": "error", "error": str(e)}
+        return {"provider_type": settings.auth_provider, "status": "error", "error": str(e)}

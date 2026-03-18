@@ -43,42 +43,42 @@ class TestPathNormalization:
         """Strips /api/v1 prefix from paths."""
         from registry.core import config as config_module
 
-        monkeypatch.setattr(config_module.settings, "API_VERSION", "v1")
+        monkeypatch.setattr(config_module.settings, "api_version", "v1")
         assert _normalize_path("/api/v1/servers") == "/servers"
 
     def test_strips_api_prefix(self, monkeypatch):
         """Strips /api prefix from paths."""
         from registry.core import config as config_module
 
-        monkeypatch.setattr(config_module.settings, "API_VERSION", "v1")
+        monkeypatch.setattr(config_module.settings, "api_version", "v1")
         assert _normalize_path("/api/servers") == "/servers"
 
     def test_returns_original_without_prefix(self, monkeypatch):
         """Returns original path when no prefix to strip."""
         from registry.core import config as config_module
 
-        monkeypatch.setattr(config_module.settings, "API_VERSION", "v1")
+        monkeypatch.setattr(config_module.settings, "api_version", "v1")
         assert _normalize_path("/servers") == "/servers"
 
     def test_strips_api_v2_prefix(self, monkeypatch):
-        """Strips /api/v2 prefix when API_VERSION is v2."""
+        """Strips /api/v2 prefix when api_version is v2."""
         from registry.core import config as config_module
 
-        monkeypatch.setattr(config_module.settings, "API_VERSION", "v2")
+        monkeypatch.setattr(config_module.settings, "api_version", "v2")
         assert _normalize_path("/api/v2/agents") == "/agents"
 
     def test_nested_path_with_api_v1(self, monkeypatch):
         """Handles nested paths with /api/v1 prefix."""
         from registry.core import config as config_module
 
-        monkeypatch.setattr(config_module.settings, "API_VERSION", "v1")
+        monkeypatch.setattr(config_module.settings, "api_version", "v1")
         assert _normalize_path("/api/v1/auth/me") == "/auth/me"
 
     def test_path_with_id_parameter(self, monkeypatch):
         """Handles paths with ID parameters."""
         from registry.core import config as config_module
 
-        monkeypatch.setattr(config_module.settings, "API_VERSION", "v1")
+        monkeypatch.setattr(config_module.settings, "api_version", "v1")
         assert _normalize_path("/api/v1/servers/abc123") == "/servers/abc123"
 
 
@@ -149,7 +149,7 @@ class TestRuleSpecificity:
         from registry.middleware import rbac as rbac_module
 
         mock_settings = MagicMock()
-        mock_settings.API_VERSION = "v1"
+        mock_settings.api_version = "v1"
         mock_settings.scopes_config = {
             "test-scope": [
                 {"endpoint": "/servers/{server_id}", "method": "GET"},
@@ -168,7 +168,7 @@ class TestRuleSpecificity:
         from registry.middleware import rbac as rbac_module
 
         mock_settings = MagicMock()
-        mock_settings.API_VERSION = "v1"
+        mock_settings.api_version = "v1"
         mock_settings.scopes_config = {
             "test-scope": [
                 {"endpoint": "/a/{x}/{y}/{z}", "method": "GET"},
@@ -188,7 +188,7 @@ class TestRuleSpecificity:
         from registry.middleware import rbac as rbac_module
 
         mock_settings = MagicMock()
-        mock_settings.API_VERSION = "v1"
+        mock_settings.api_version = "v1"
         mock_settings.scopes_config = {
             "test-scope": [
                 {"endpoint": "/a", "method": "GET"},
@@ -213,7 +213,7 @@ class TestPermissionChecking:
         from registry.middleware import rbac as rbac_module
 
         mock_settings = MagicMock()
-        mock_settings.API_VERSION = "v1"
+        mock_settings.api_version = "v1"
         mock_settings.scopes_config = {
             "system-ops": [{"endpoint": "/servers/stats", "method": "GET"}],
             "servers-read": [{"endpoint": "/servers/{server_id}", "method": "GET"}],
@@ -230,7 +230,7 @@ class TestPermissionChecking:
         from registry.middleware import rbac as rbac_module
 
         mock_settings = MagicMock()
-        mock_settings.API_VERSION = "v1"
+        mock_settings.api_version = "v1"
         mock_settings.scopes_config = {
             "system-ops": [{"endpoint": "/servers/stats", "method": "GET"}],
             "servers-read": [{"endpoint": "/servers/{server_id}", "method": "GET"}],
@@ -247,7 +247,7 @@ class TestPermissionChecking:
         from registry.middleware import rbac as rbac_module
 
         mock_settings = MagicMock()
-        mock_settings.API_VERSION = "v1"
+        mock_settings.api_version = "v1"
         mock_settings.scopes_config = {
             "system-ops": [{"endpoint": "/servers/stats", "method": "GET"}],
             "servers-read": [{"endpoint": "/servers/{server_id}", "method": "GET"}],
@@ -266,7 +266,7 @@ class TestPermissionChecking:
         from registry.middleware import rbac as rbac_module
 
         mock_settings = MagicMock()
-        mock_settings.API_VERSION = "v1"
+        mock_settings.api_version = "v1"
         mock_settings.scopes_config = {
             "system-ops": [{"endpoint": "/servers/stats", "method": "GET"}],
             "servers-read": [{"endpoint": "/servers/{server_id}", "method": "GET"}],
@@ -283,7 +283,7 @@ class TestPermissionChecking:
         from registry.middleware import rbac as rbac_module
 
         mock_settings = MagicMock()
-        mock_settings.API_VERSION = "v1"
+        mock_settings.api_version = "v1"
         mock_settings.scopes_config = {
             "servers-read": [{"endpoint": "/servers", "method": "GET"}],
         }
@@ -299,7 +299,7 @@ class TestPermissionChecking:
         from registry.middleware import rbac as rbac_module
 
         mock_settings = MagicMock()
-        mock_settings.API_VERSION = "v1"
+        mock_settings.api_version = "v1"
         mock_settings.scopes_config = {
             "servers-read": [{"endpoint": "/servers", "method": "GET"}],
         }
@@ -315,7 +315,7 @@ class TestPermissionChecking:
         from registry.middleware import rbac as rbac_module
 
         mock_settings = MagicMock()
-        mock_settings.API_VERSION = "v1"
+        mock_settings.api_version = "v1"
         mock_settings.scopes_config = {
             "servers-write": [{"endpoint": "/servers", "method": "*"}],
         }
@@ -331,7 +331,7 @@ class TestPermissionChecking:
         from registry.middleware import rbac as rbac_module
 
         mock_settings = MagicMock()
-        mock_settings.API_VERSION = "v1"
+        mock_settings.api_version = "v1"
         mock_settings.scopes_config = {
             "mcp-proxy-ops": [{"endpoint": "/proxy/{full_path:path}", "method": "GET,POST,PUT,DELETE,PATCH,OPTIONS"}],
         }
@@ -399,7 +399,7 @@ class TestIntegrationScenarios:
         from registry.middleware import rbac as rbac_module
 
         mock_settings = MagicMock()
-        mock_settings.API_VERSION = "v1"
+        mock_settings.api_version = "v1"
         mock_settings.scopes_config = {
             "system-ops": [{"endpoint": "/servers/stats", "method": "GET"}],
             "servers-read": [{"endpoint": "/servers/{server_id}", "method": "GET"}],
@@ -420,7 +420,7 @@ class TestIntegrationScenarios:
         from registry.middleware import rbac as rbac_module
 
         mock_settings = MagicMock()
-        mock_settings.API_VERSION = "v1"
+        mock_settings.api_version = "v1"
         mock_settings.scopes_config = {
             "system-ops": [{"endpoint": "/servers/stats", "method": "GET"}],
             "servers-read": [{"endpoint": "/servers/{server_id}", "method": "GET"}],
@@ -441,7 +441,7 @@ class TestIntegrationScenarios:
         from registry.middleware import rbac as rbac_module
 
         mock_settings = MagicMock()
-        mock_settings.API_VERSION = "v1"
+        mock_settings.api_version = "v1"
         mock_settings.scopes_config = {
             "system-ops": [{"endpoint": "/servers/stats", "method": "GET"}],
             "servers-read": [{"endpoint": "/servers/{server_id}", "method": "GET"}],
@@ -462,7 +462,7 @@ class TestIntegrationScenarios:
         from registry.middleware import rbac as rbac_module
 
         mock_settings = MagicMock()
-        mock_settings.API_VERSION = "v1"
+        mock_settings.api_version = "v1"
         mock_settings.scopes_config = {
             "servers-read": [{"endpoint": "/servers", "method": "GET"}],
         }
@@ -482,7 +482,7 @@ class TestIntegrationScenarios:
         from registry.middleware import rbac as rbac_module
 
         mock_settings = MagicMock()
-        mock_settings.API_VERSION = "v1"
+        mock_settings.api_version = "v1"
         mock_settings.scopes_config = {
             "servers-read": [{"endpoint": "/servers", "method": "GET"}],
         }
@@ -502,7 +502,7 @@ class TestIntegrationScenarios:
         from registry.middleware import rbac as rbac_module
 
         mock_settings = MagicMock()
-        mock_settings.API_VERSION = "v1"
+        mock_settings.api_version = "v1"
         mock_settings.scopes_config = {
             "servers-read": [{"endpoint": "/servers", "method": "GET"}],
             "agents-read": [{"endpoint": "/agents", "method": "GET"}],
@@ -523,7 +523,7 @@ class TestIntegrationScenarios:
         from registry.middleware import rbac as rbac_module
 
         mock_settings = MagicMock()
-        mock_settings.API_VERSION = "v1"
+        mock_settings.api_version = "v1"
         mock_settings.scopes_config = {
             "servers-read": [{"endpoint": "*", "method": "GET"}],
         }
@@ -544,7 +544,7 @@ class TestIntegrationScenarios:
         from registry.middleware import rbac as rbac_module
 
         mock_settings = MagicMock()
-        mock_settings.API_VERSION = "v1"
+        mock_settings.api_version = "v1"
         mock_settings.scopes_config = {
             "agents-read": [{"endpoint": "/agents/{path}", "method": "GET"}],
         }
@@ -571,7 +571,7 @@ class TestIntegrationScenarios:
         from registry.middleware import rbac as rbac_module
 
         mock_settings = MagicMock()
-        mock_settings.API_VERSION = "v1"
+        mock_settings.api_version = "v1"
         mock_settings.scopes_config = {
             "servers-share": [{"endpoint": "/permissions/mcpServer/{resource_id}", "method": "PUT"}],
         }
@@ -597,7 +597,7 @@ class TestIntegrationScenarios:
         from registry.middleware import rbac as rbac_module
 
         mock_settings = MagicMock()
-        mock_settings.API_VERSION = "v1"
+        mock_settings.api_version = "v1"
         mock_settings.scopes_config = {
             "agents-share": [{"endpoint": "/permissions/agent/{resource_id}", "method": "PUT"}],
         }
@@ -623,7 +623,7 @@ class TestIntegrationScenarios:
         from registry.middleware import rbac as rbac_module
 
         mock_settings = MagicMock()
-        mock_settings.API_VERSION = "v1"
+        mock_settings.api_version = "v1"
         mock_settings.scopes_config = {
             "group_mappings": {"jarvis-registry-user": ["servers-read"]},
             "servers-read": [{"endpoint": "/servers", "method": "GET"}],

@@ -10,7 +10,6 @@ Handles:
 
 import json
 import logging
-import os
 from pathlib import Path
 from typing import Any
 
@@ -37,7 +36,7 @@ class FederationService:
         """
         # Set default paths
         if config_path is None:
-            config_path = os.getenv("FEDERATION_CONFIG_PATH", "/app/config/federation.json")
+            config_path = settings.federation_config_path
 
         self.config_path = config_path
 
@@ -59,7 +58,10 @@ class FederationService:
             )
 
             self.asor_client = AsorFederationClient(
-                endpoint=self.config.asor.endpoint, auth_env_var=self.config.asor.auth_env_var, tenant_url=tenant_url
+                endpoint=self.config.asor.endpoint,
+                access_token=settings.asor_access_token,
+                client_credentials=settings.asor_client_credentials,
+                tenant_url=tenant_url,
             )
 
         logger.info(f"Federation service initialized with config: {config_path}")

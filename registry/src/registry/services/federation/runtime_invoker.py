@@ -1,7 +1,6 @@
 import asyncio
 import json
 import logging
-import os
 import uuid
 from collections.abc import Callable
 from typing import Any
@@ -10,7 +9,7 @@ import httpx
 from botocore.auth import SigV4Auth
 from botocore.awsrequest import AWSRequest
 
-from ...constants import REGISTRY_CONSTANTS
+from ...core.config import settings
 from ...core.mcp_client import MCPServerData, get_tools_and_capabilities_from_server
 
 logger = logging.getLogger(__name__)
@@ -67,18 +66,10 @@ class AgentCoreRuntimeInvoker:
         self.get_runtime_client = get_runtime_client
         self.get_runtime_credentials_provider = get_runtime_credentials_provider
         self.extract_region_from_arn = extract_region_from_arn
-        self._runtime_init_retry_attempts = max(
-            1, int(getattr(REGISTRY_CONSTANTS, "AGENTCORE_RUNTIME_INIT_RETRY_ATTEMPTS", 4) or 4)
-        )
-        self._runtime_init_retry_delay_seconds = float(
-            getattr(REGISTRY_CONSTANTS, "AGENTCORE_RUNTIME_INIT_RETRY_DELAY_SECONDS", 5.0) or 5.0
-        )
-        self._a2a_card_retry_attempts = max(
-            1, int(getattr(REGISTRY_CONSTANTS, "AGENTCORE_A2A_CARD_RETRY_ATTEMPTS", 3) or 3)
-        )
-        self._a2a_card_retry_delay_seconds = float(
-            getattr(REGISTRY_CONSTANTS, "AGENTCORE_A2A_CARD_RETRY_DELAY_SECONDS", 3.0) or 3.0
-        )
+        self._runtime_init_retry_attempts = max(1, int(settings.agentcore_runtime_init_retry_attempts or 4))
+        self._runtime_init_retry_delay_seconds = float(settings.agentcore_runtime_init_retry_delay_seconds or 5.0)
+        self._a2a_card_retry_attempts = max(1, int(settings.agentcore_a2a_card_retry_attempts or 3))
+        self._a2a_card_retry_delay_seconds = float(settings.agentcore_a2a_card_retry_delay_seconds or 3.0)
 
     @staticmethod
     def detect_runtime_auth_mode(
@@ -690,11 +681,7 @@ class AgentCoreRuntimeInvoker:
         """
         mode = self.detect_runtime_auth_mode(metadata=metadata, runtime_detail=runtime_detail)
         if mode == "JWT":
-            token = (
-                getattr(REGISTRY_CONSTANTS, "AGENTCORE_RUNTIME_JWT", None)
-                or os.getenv("AGENTCORE_RUNTIME_JWT")
-                or os.getenv("AGENTCORE_RUNTIME_BEARER_TOKEN")
-            )
+            token = settings.agentcore_runtime_jwt
             if not token:
                 raise ValueError("Runtime auth mode JWT detected but no AGENTCORE_RUNTIME_JWT token was configured")
             return {"Authorization": f"Bearer {token}"}, None

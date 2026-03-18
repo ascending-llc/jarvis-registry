@@ -381,7 +381,7 @@ This section implements the official [Anthropic MCP Registry API specification](
 ### MCP Servers (v0)
 
 **File:** `registry/api/registry_routes.py`
-**Route Prefix:** `/v0` (from `REGISTRY_CONSTANTS.ANTHROPIC_API_VERSION`)
+**Route Prefix:** `/v0.1` (from `Settings.anthropic_api_version` in `registry/core/config.py`)
 **Authentication:** JWT Bearer Token
 
 #### 1. List MCP Servers

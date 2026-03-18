@@ -14,7 +14,7 @@ The import functionality allows you to quickly add these servers to your gateway
 - Access to the registry container or CLI tools
 - Environment variables configured in `.env` file (for authenticated servers)
 
-> **Note**: The Anthropic API version is defined in `registry/constants.py` as `ANTHROPIC_API_VERSION` for easy version management.
+> **Note**: The Anthropic API version is defined in `registry/core/config.py` as `Settings.anthropic_api_version` for easy version management.
 
 ## Quick Start
 

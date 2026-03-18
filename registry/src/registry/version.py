@@ -5,7 +5,8 @@ Version is determined from BUILD_VERSION environment variable.
 """
 
 import logging
-import os
+
+from .core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +20,7 @@ def get_version() -> str:
     Returns:
         Version string from BUILD_VERSION env var or DEFAULT_VERSION
     """
-    build_version = os.getenv("BUILD_VERSION", "").strip()
+    build_version = settings.build_version.strip()
     if build_version:
         logger.info(f"Version from BUILD_VERSION: {build_version}")
         return build_version

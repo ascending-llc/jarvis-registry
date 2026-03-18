@@ -1,5 +1,4 @@
 import logging
-import os
 import re
 from pathlib import Path
 from threading import Lock
@@ -8,6 +7,19 @@ from typing import Any, Optional
 import yaml
 
 logger = logging.getLogger(__name__)
+
+
+def _get_settings_value(var_name: str) -> str | None:
+    """Resolve an oauth2 placeholder from auth-server settings."""
+    from ..core.config import settings
+
+    field_name = var_name.strip().lower()
+    value = getattr(settings, field_name, None)
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return str(value).lower()
+    return str(value)
 
 
 class OAuth2ConfigLoader:
@@ -94,9 +106,9 @@ class OAuth2ConfigLoader:
         elif isinstance(config, str) and "${" in config:
             # Handle special case for auto-derived Cognito domain
             if "COGNITO_DOMAIN:-auto" in config:
-                cognito_domain = os.environ.get("COGNITO_DOMAIN")
+                cognito_domain = _get_settings_value("COGNITO_DOMAIN")
                 if not cognito_domain:
-                    user_pool_id = os.environ.get("COGNITO_USER_POOL_ID", "")
+                    user_pool_id = _get_settings_value("COGNITO_USER_POOL_ID") or ""
                     cognito_domain = self._auto_derive_cognito_domain(user_pool_id)
                 config = config.replace("${COGNITO_DOMAIN:-auto}", cognito_domain)
 
@@ -106,14 +118,15 @@ class OAuth2ConfigLoader:
                 # Check if it has a default value
                 if ":-" in var_expr:
                     var_name, default_value = var_expr.split(":-", 1)
-                    return os.environ.get(var_name.strip(), default_value.strip())
+                    return _get_settings_value(var_name) or default_value.strip()
                 else:
                     var_name = var_expr.strip()
-                    if var_name in os.environ:
-                        return os.environ[var_name]
-                    else:
-                        logger.warning(f"Environment variable not found: {var_name}")
-                        return match.group(0)  # Return original if not found
+                    value = _get_settings_value(var_name)
+                    if value is not None:
+                        return value
+
+                    logger.warning(f"Setting not found for oauth2 placeholder: {var_name}")
+                    return match.group(0)  # Return original if not found
 
             return re.sub(r"\$\{([^}]+)\}", replace_var, config)
         else:

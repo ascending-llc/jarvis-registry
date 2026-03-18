@@ -2,6 +2,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from registry.core.config import settings
 from registry.core.mcp_client import MCPServerData
 from registry.services.federation.runtime_invoker import AgentCoreRuntimeInvoker
 
@@ -293,7 +294,7 @@ class TestAgentCoreRuntimeInvoker:
     @pytest.mark.asyncio
     async def test_build_runtime_http_auth_jwt_uses_bearer_header(self, monkeypatch):
         invoker = _build_invoker()
-        monkeypatch.setenv("AGENTCORE_RUNTIME_JWT", "token-123")
+        monkeypatch.setattr(settings, "agentcore_runtime_jwt", "token-123")
 
         headers, auth = await invoker._build_runtime_http_auth(
             metadata={"authorizerConfiguration": {"customJWTAuthorizerConfiguration": {"discoveryUrl": "x"}}},

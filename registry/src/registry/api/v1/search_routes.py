@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from registry_pkgs.models.enums import ServerEntityType
+from registry_pkgs.vector.client import get_db_client
 from registry_pkgs.vector.enum.enums import SearchType
 from registry_pkgs.vector.repositories.mcp_server_repository import get_mcp_server_repo
 
@@ -21,9 +22,22 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-mcp_server_repo = get_mcp_server_repo()
-
 EntityType = Literal["mcp_server", "tool", "a2a_agent"]
+
+
+def _get_mcp_server_repo():
+    return get_mcp_server_repo(get_db_client())
+
+
+class _MCPServerRepoProxy:
+    async def asearch_with_rerank(self, *args, **kwargs):
+        return await _get_mcp_server_repo().asearch_with_rerank(*args, **kwargs)
+
+    def __getattr__(self, name: str):
+        return getattr(_get_mcp_server_repo(), name)
+
+
+mcp_server_repo = _MCPServerRepoProxy()
 
 
 class MatchingToolResult(APIBaseModel):

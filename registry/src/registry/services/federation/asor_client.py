@@ -6,8 +6,7 @@ to the gateway's internal format.
 """
 
 import logging
-import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from ...schemas.federation_schema import AsorAgentConfig
@@ -24,7 +23,8 @@ class AsorFederationClient(BaseFederationClient):
         self,
         endpoint: str,
         auth_type: str = "oauth2",
-        auth_env_var: str | None = None,
+        access_token: str | None = None,
+        client_credentials: str | None = None,
         tenant_url: str | None = None,
         timeout_seconds: int = 30,
         retry_attempts: int = 3,
@@ -35,14 +35,16 @@ class AsorFederationClient(BaseFederationClient):
         Args:
             endpoint: Base URL for ASOR API
             auth_type: Authentication type (oauth2, api-key)
-            auth_env_var: Environment variable containing auth credentials
+            access_token: Pre-obtained access token
+            client_credentials: Credentials in client_id:client_secret format
             tenant_url: Workday tenant URL (for authentication)
             timeout_seconds: HTTP request timeout
             retry_attempts: Number of retry attempts
         """
         super().__init__(endpoint, timeout_seconds, retry_attempts)
         self.auth_type = auth_type
-        self.auth_env_var = auth_env_var
+        self.access_token = access_token
+        self.client_credentials = client_credentials
         self.tenant_url = tenant_url
         self._access_token: str | None = None
         self._token_expiry: datetime | None = None
@@ -55,11 +57,9 @@ class AsorFederationClient(BaseFederationClient):
             Access token or None if authentication fails
         """
         # Always check for pre-obtained access token first (for 3LO scenarios)
-        access_token_env = os.getenv("ASOR_ACCESS_TOKEN")
-        if access_token_env:
-            logger.info("Using pre-obtained ASOR access token from environment")
-            logger.debug(f"Token starts with: {access_token_env[:50]}...")
-            self._access_token = access_token_env
+        if self.access_token:
+            logger.info("Using pre-obtained ASOR access token from settings")
+            self._access_token = self.access_token
             # Set a reasonable expiry (1 hour from now)
             self._token_expiry = datetime.now(UTC).replace(microsecond=0) + timedelta(hours=1)
             return self._access_token
@@ -70,35 +70,27 @@ class AsorFederationClient(BaseFederationClient):
             return self._access_token
 
         # Get credentials from environment
-        if self.auth_env_var:
-            credentials = os.getenv(self.auth_env_var)
-            if credentials:
-                # Parse credentials (format: client_id:client_secret or client_id:client_secret:refresh_token)
+        if self.client_credentials:
+            credentials = self.client_credentials
+            try:
+                parts = credentials.split(":")
+                if len(parts) >= 2:
+                    client_id, client_secret = parts[0], parts[1]
+                else:
+                    raise ValueError("Invalid credentials format")
                 try:
-                    parts = credentials.split(":")
-                    if len(parts) >= 2:
-                        client_id, client_secret = parts[0], parts[1]
-                        # Ignore any additional parts (like refresh token)
-                    else:
-                        raise ValueError("Invalid credentials format")
-                    # Decode base64 client_id if needed
-                    try:
-                        import base64
+                    import base64
 
-                        decoded_client_id = base64.b64decode(client_id).decode("utf-8")
-                        client_id = decoded_client_id
-                        logger.info(f"Decoded base64 client_id: {client_id}")
-                    except Exception:
-                        # If decoding fails, use original client_id
-                        logger.info(f"Using original client_id: {client_id}")
-                except ValueError:
-                    logger.error("ASOR credentials must be in format 'client_id:client_secret'")
-                    return None
-            else:
-                logger.error(f"Environment variable {self.auth_env_var} not found")
+                    decoded_client_id = base64.b64decode(client_id).decode("utf-8")
+                    client_id = decoded_client_id
+                    logger.info(f"Decoded base64 client_id: {client_id}")
+                except Exception:
+                    logger.info(f"Using original client_id: {client_id}")
+            except ValueError:
+                logger.error("ASOR credentials must be in format 'client_id:client_secret'")
                 return None
         else:
-            logger.error("No auth_env_var configured for ASOR")
+            logger.error("No client credentials configured for ASOR")
             return None
 
         # Request token from Workday - use tenant-specific URL
@@ -350,4 +342,3 @@ class AsorFederationClient(BaseFederationClient):
 
 
 # Import timedelta for token expiry calculation
-from datetime import timedelta

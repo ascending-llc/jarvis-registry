@@ -14,9 +14,11 @@ import logging
 
 from registry_pkgs.telemetry.metrics_client import create_metrics_client, load_metrics_config
 
+from ..core.config import settings
+
 logger = logging.getLogger(__name__)
 
 
 # Load configuration and create service-specific metrics client
-_config = load_metrics_config("auth_server")
+_config = load_metrics_config("auth_server", settings.telemetry_config)
 metrics = create_metrics_client("auth_server", config=_config)

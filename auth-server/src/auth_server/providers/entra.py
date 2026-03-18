@@ -1,5 +1,4 @@
 import logging
-import os
 import time
 from typing import Any
 from urllib.parse import urlencode
@@ -8,6 +7,7 @@ import jwt
 import requests
 from authlib.integrations.requests_client import OAuth2Session
 
+from ..core.config import settings
 from ..utils.config_loader import get_provider_config
 from .base import AuthProvider
 
@@ -367,7 +367,7 @@ class EntraIdProvider(AuthProvider):
         """Get user information from token or Microsoft Graph API.
 
         This method supports flexible user info extraction:
-        1. Extract from id_token (preferred) or access_token based on ENTRA_TOKEN_KIND config
+        1. Extract from id_token (preferred) or access_token based on auth-server settings
         2. Fallback to Microsoft Graph API if token extraction fails
         3. Groups are automatically included (fetched from Graph API using access_token)
 
@@ -385,7 +385,7 @@ class EntraIdProvider(AuthProvider):
             - Additional fields from Graph API (if fallback used)
         """
         try:
-            token_kind = os.environ.get("ENTRA_TOKEN_KIND", "id").lower()
+            token_kind = settings.entra_token_kind.lower()
             user_info = None
 
             if token_kind == "id" and id_token:

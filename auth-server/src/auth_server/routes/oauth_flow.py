@@ -343,7 +343,11 @@ async def device_token(
         user_info = auth_code_data["user_info"]
         audience = auth_code_data.get("resource") or JWT_AUDIENCE
         user_groups = user_info.get("groups", [])
-        user_scopes = map_groups_to_scopes(user_groups) if user_groups else user_info.get("scopes", [])
+        user_scopes = (
+            map_groups_to_scopes(user_groups, settings.scopes_file_config)
+            if user_groups
+            else user_info.get("scopes", [])
+        )
 
         # Resolve user_id from MongoDB
         user_id = await user_service.resolve_user_id(user_info)
@@ -1030,7 +1034,7 @@ async def validate_request(request: Request):
         auth_method = validation_result.get("method", "")
         if user_groups and auth_method in ["keycloak", "entra", "cognito"]:
             # Map IdP groups to scopes using the group mappings
-            user_scopes = map_groups_to_scopes(user_groups)
+            user_scopes = map_groups_to_scopes(user_groups, settings.scopes_file_config)
             logger.info(f"Mapped {auth_method} groups {user_groups} to scopes: {user_scopes}")
         else:
             user_scopes = validation_result.get("scopes", [])
@@ -1292,7 +1296,7 @@ def validate_session_cookie(cookie_value: str) -> dict[str, any]:
         groups = data.get("groups", [])
 
         # Map groups to scopes using global settings.scopes_config
-        scopes = map_groups_to_scopes(groups)
+        scopes = map_groups_to_scopes(groups, settings.scopes_file_config)
 
         logger.info(f"Session cookie validated for user: {hash_username(username)}")
 

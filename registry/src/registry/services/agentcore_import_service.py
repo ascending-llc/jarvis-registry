@@ -9,10 +9,11 @@ from registry_pkgs.database.decorators import get_current_session, use_transacti
 from registry_pkgs.models import A2AAgent, ExtendedMCPServer
 from registry_pkgs.models._generated import PrincipalType, ResourceType
 from registry_pkgs.models.enums import FederationSource, PermissionBits, RoleBits
+from registry_pkgs.vector.client import get_db_client
 from registry_pkgs.vector.repositories.a2a_agent_repository import get_a2a_agent_repo
 from registry_pkgs.vector.repositories.mcp_server_repository import get_mcp_server_repo
 
-from ..constants import REGISTRY_CONSTANTS
+from ..core.config import settings
 from ..schemas.server_api_schemas import ServerCreateRequest
 from .access_control_service import acl_service
 from .federation.agentcore_client import AgentCoreFederationClient
@@ -43,7 +44,7 @@ class AgentCoreImportService:
         mcp_server_repo=None,
         a2a_agent_repo=None,
     ):
-        default_region = REGISTRY_CONSTANTS.AWS_REGION or "us-east-1"
+        default_region = settings.aws_region or "us-east-1"
         client_provider = agentcore_client_provider or AgentCoreClientProvider(default_region=default_region)
         invoker = runtime_invoker or AgentCoreRuntimeInvoker(
             default_region=client_provider.default_region,
@@ -57,8 +58,9 @@ class AgentCoreImportService:
             runtime_invoker=invoker,
         )
         self.acl_service = acl_service_instance or acl_service
-        self.mcp_server_repo = mcp_server_repo or get_mcp_server_repo()
-        self.a2a_agent_repo = a2a_agent_repo or get_a2a_agent_repo()
+        db_client = get_db_client()
+        self.mcp_server_repo = mcp_server_repo or get_mcp_server_repo(db_client)
+        self.a2a_agent_repo = a2a_agent_repo or get_a2a_agent_repo(db_client)
 
     async def import_from_runtime(
         self,

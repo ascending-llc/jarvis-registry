@@ -323,7 +323,7 @@ async def refresh_token(
 
         # If no scopes but has groups, map groups to scopes
         if not scopes and groups:
-            scopes = map_groups_to_scopes(groups)
+            scopes = map_groups_to_scopes(groups, settings.scopes_file_config)
             logger.info(f"Mapped refresh token groups {groups} to scopes: {scopes}")
 
         role = refresh_claims.get("role", "user")

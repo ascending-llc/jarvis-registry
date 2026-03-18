@@ -6,18 +6,18 @@ It handles authentication, group CRUD operations, and integrates with the regist
 """
 
 import logging
-import os
 from typing import Any
 
 import httpx
 
+from ..core.config import settings
+
 logger = logging.getLogger(__name__)
 
-
-KEYCLOAK_ADMIN_URL: str = os.environ.get("KEYCLOAK_URL", "http://keycloak:8080")
-KEYCLOAK_REALM: str = os.environ.get("KEYCLOAK_REALM", "mcp-gateway")
-KEYCLOAK_ADMIN: str = os.environ.get("KEYCLOAK_ADMIN", "admin")
-KEYCLOAK_ADMIN_PASSWORD: str | None = os.environ.get("KEYCLOAK_ADMIN_PASSWORD")
+KEYCLOAK_ADMIN_URL = settings.keycloak_url
+KEYCLOAK_REALM = settings.keycloak_realm
+KEYCLOAK_ADMIN = settings.keycloak_admin
+KEYCLOAK_ADMIN_PASSWORD = settings.keycloak_admin_password
 
 
 class KeycloakAdminError(RuntimeError):

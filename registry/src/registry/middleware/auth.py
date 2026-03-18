@@ -65,7 +65,7 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
                 "/redirect/{provider}",
                 "/api/auth/providers",
                 "/api/auth/config",
-                f"/api/{settings.API_VERSION}/mcp/{{server_name}}/oauth/callback",  # OAuth callback is public
+                f"/api/{settings.api_version}/mcp/{{server_name}}/oauth/callback",  # OAuth callback is public
                 "/.well-known/{path:path}",  # OAuth discovery endpoints must be public
             ]
         )
@@ -193,8 +193,8 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
                 return None
 
             # Check if this is our self-signed token; reject tokens with an unrecognised explicit kid
-            if kid and kid != settings.JWT_SELF_SIGNED_KID:
-                logger.debug(f"JWT token has wrong kid: {kid}, expected: {settings.JWT_SELF_SIGNED_KID}")
+            if kid and kid != settings.jwt_self_signed_kid:
+                logger.debug(f"JWT token has wrong kid: {kid}, expected: {settings.jwt_self_signed_kid}")
                 return None
 
             # Validate and decode token
@@ -203,7 +203,7 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
                 # because the audience is now the resource URL (RFC 8707 Resource Indicators)
                 # which varies per endpoint (/proxy/mcpgw, /proxy/server2, etc.)
                 # Issuer validation provides sufficient security for self-signed tokens.
-                is_self_signed_token = kid == settings.JWT_SELF_SIGNED_KID
+                is_self_signed_token = kid == settings.jwt_self_signed_kid
 
                 if is_self_signed_token:
                     logger.info("Skipping audience validation for self-signed token (RFC 8707 Resource Indicators)")
@@ -211,8 +211,8 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
                 claims = decode_jwt(
                     access_token,
                     settings.secret_key,
-                    issuer=settings.JWT_ISSUER,
-                    audience=None if is_self_signed_token else settings.JWT_AUDIENCE,
+                    issuer=settings.jwt_issuer,
+                    audience=None if is_self_signed_token else settings.jwt_audience,
                 )
                 logger.info(
                     f"JWT claims validated: sub={claims.get('sub')}, aud={claims.get('aud')}, scope={claims.get('scope')}"
@@ -239,7 +239,7 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
 
             # If no scopes but has groups, map groups to scopes
             if not scopes and groups:
-                scopes = map_groups_to_scopes(groups)
+                scopes = map_groups_to_scopes(groups, settings.scopes_file_config)
                 logger.info(f"Mapped JWT groups {groups} to scopes: {scopes}")
 
             # Verify we have at least some scopes
@@ -300,7 +300,7 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
 
             # If no scopes but has groups, map groups to scopes
             if not scopes and groups:
-                scopes = map_groups_to_scopes(groups)
+                scopes = map_groups_to_scopes(groups, settings.scopes_file_config)
                 logger.info(f"Mapped session groups {groups} to scopes: {scopes}")
 
             logger.debug(f"JWT access token valid for user {username} (user_id: {user_id})")

@@ -44,12 +44,12 @@ from typing import Any
 
 import requests
 
-# Add project root to path to import constants
+# Add project root to path to import application settings
 SCRIPT_DIR = Path(__file__).parent
 PROJECT_ROOT = SCRIPT_DIR.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from registry.constants import REGISTRY_CONSTANTS
+from registry.core.config import settings
 
 logging.basicConfig(
     level=logging.INFO,
@@ -212,7 +212,7 @@ def _test_list_servers(access_token: str, base_url: str, limit: int = 5) -> None
     logger.info(f"Testing: List servers (limit={limit})")
 
     result = _make_api_request(
-        endpoint=f"/{REGISTRY_CONSTANTS.ANTHROPIC_API_VERSION}/servers",
+        endpoint=f"/{settings.anthropic_api_version}/servers",
         access_token=access_token,
         base_url=base_url,
         params={"limit": limit},
@@ -243,7 +243,7 @@ def _test_get_server_versions(access_token: str, base_url: str, server_name: str
     logger.info(f"Testing: Get server versions for {server_name}")
 
     encoded_name = server_name.replace("/", "%2F")
-    endpoint = f"/{REGISTRY_CONSTANTS.ANTHROPIC_API_VERSION}/servers/{encoded_name}/versions"
+    endpoint = f"/{settings.anthropic_api_version}/servers/{encoded_name}/versions"
 
     result = _make_api_request(endpoint=endpoint, access_token=access_token, base_url=base_url)
 
@@ -272,7 +272,7 @@ def _test_get_server_version_details(
     logger.info(f"Testing: Get server version details for {server_name} v{version}")
 
     encoded_name = server_name.replace("/", "%2F")
-    endpoint = f"/{REGISTRY_CONSTANTS.ANTHROPIC_API_VERSION}/servers/{encoded_name}/versions/{version}"
+    endpoint = f"/{settings.anthropic_api_version}/servers/{encoded_name}/versions/{version}"
 
     result = _make_api_request(endpoint=endpoint, access_token=access_token, base_url=base_url)
 
@@ -312,7 +312,7 @@ def _run_all_tests(access_token: str, base_url: str) -> None:
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
-        description=f"Test Anthropic MCP Registry API {REGISTRY_CONSTANTS.ANTHROPIC_API_VERSION}",
+        description=f"Test Anthropic MCP Registry API {settings.anthropic_api_version}",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -368,7 +368,7 @@ token lifetime in Keycloak: Realm Settings → Tokens → Access Token Lifespan
         logging.getLogger().setLevel(logging.DEBUG)
 
     logger.info("=" * 80)
-    logger.info(f"Anthropic MCP Registry API {REGISTRY_CONSTANTS.ANTHROPIC_API_VERSION} Test Tool")
+    logger.info(f"Anthropic MCP Registry API {settings.anthropic_api_version} Test Tool")
     logger.info("=" * 80)
 
     token_file_path = Path(args.token_file)

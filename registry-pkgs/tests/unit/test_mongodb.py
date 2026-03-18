@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from registry_pkgs.core.config import MongoConfig
 from registry_pkgs.database.mongodb import MongoDB, close_mongodb, init_mongodb
 
 
@@ -37,7 +38,7 @@ class TestMongoDBConnection:
             mock_instance.__getitem__ = MagicMock(return_value=MagicMock())
             MockClient.return_value = mock_instance
 
-            await MongoDB.connect_db("test_db")
+            await MongoDB.connect_db(MongoConfig(mongo_uri="mongodb://localhost:27017/test_db"), "test_db")
 
             # Verify client was created
             assert MongoDB.client is not None
@@ -45,24 +46,24 @@ class TestMongoDBConnection:
 
     @pytest.mark.asyncio
     async def test_connect_db_uses_env_variables(self):
-        """Test connect_db reads configuration from settings."""
+        """Test connect_db reads configuration from explicit config."""
         with (
-            patch("registry_pkgs.database.mongodb.settings") as mock_settings,
             patch("registry_pkgs.database.mongodb.AsyncMongoClient") as MockClient,
             patch("registry_pkgs.database.mongodb.init_beanie", new_callable=AsyncMock),
         ):
-            # Configure mock settings
-            mock_settings.MONGO_URI = "mongodb://testhost:27017/testdb"
-            mock_settings.MONGODB_USERNAME = "testuser"
-            mock_settings.MONGODB_PASSWORD = "testpass"
-
             mock_instance = MagicMock()
             mock_instance.admin = MagicMock()
             mock_instance.admin.command = AsyncMock(return_value={"ok": 1})
             mock_instance.__getitem__ = MagicMock(return_value=MagicMock())
             MockClient.return_value = mock_instance
 
-            await MongoDB.connect_db()
+            await MongoDB.connect_db(
+                MongoConfig(
+                    mongo_uri="mongodb://testhost:27017/testdb",
+                    mongodb_username="testuser",
+                    mongodb_password="testpass",
+                )
+            )
 
             # Verify URI construction included credentials
             call_args = MockClient.call_args[0]
@@ -73,21 +74,15 @@ class TestMongoDBConnection:
     async def test_connect_db_extracts_dbname_from_uri(self):
         """Test connect_db extracts database name from MONGO_URI."""
         with (
-            patch("registry_pkgs.database.mongodb.settings") as mock_settings,
             patch("registry_pkgs.database.mongodb.AsyncMongoClient") as MockClient,
             patch("registry_pkgs.database.mongodb.init_beanie", new_callable=AsyncMock),
         ):
-            # Configure mock settings
-            mock_settings.MONGO_URI = "mongodb://localhost:27017/extracted_db"
-            mock_settings.MONGODB_USERNAME = None
-            mock_settings.MONGODB_PASSWORD = None
-
             mock_instance = MagicMock()
             mock_instance.admin = MagicMock()
             mock_instance.admin.command = AsyncMock(return_value={"ok": 1})
             mock_instance.__getitem__ = MagicMock(return_value=MagicMock())
             MockClient.return_value = mock_instance
-            await MongoDB.connect_db()
+            await MongoDB.connect_db(MongoConfig(mongo_uri="mongodb://localhost:27017/extracted_db"))
 
             assert MongoDB.database_name == "extracted_db"
 
@@ -105,7 +100,7 @@ class TestMongoDBConnection:
             mock_instance.__getitem__ = MagicMock(return_value=mock_db)
             MockClient.return_value = mock_instance
 
-            await MongoDB.connect_db("test_db")
+            await MongoDB.connect_db(MongoConfig(mongo_uri="mongodb://localhost:27017/test_db"), "test_db")
 
             # Verify Beanie was initialized
             assert mock_init_beanie.called
@@ -140,11 +135,11 @@ class TestMongoDBConnection:
             mock_instance.__getitem__ = MagicMock(return_value=MagicMock())
             MockClient.return_value = mock_instance
 
-            await MongoDB.connect_db("test_db")
+            await MongoDB.connect_db(MongoConfig(mongo_uri="mongodb://localhost:27017/test_db"), "test_db")
             first_call_count = MockClient.call_count
 
             # Call again
-            await MongoDB.connect_db("test_db")
+            await MongoDB.connect_db(MongoConfig(mongo_uri="mongodb://localhost:27017/test_db"), "test_db")
 
             # Verify client wasn't recreated
             assert MockClient.call_count == first_call_count
@@ -223,8 +218,9 @@ class TestConvenienceFunctions:
     async def test_init_mongodb(self):
         """Test init_mongodb convenience function."""
         with patch.object(MongoDB, "connect_db", new_callable=AsyncMock) as mock_connect:
-            await init_mongodb("test_db")
-            mock_connect.assert_called_once_with("test_db")
+            config = MongoConfig(mongo_uri="mongodb://localhost:27017/test_db")
+            await init_mongodb(config, "test_db")
+            mock_connect.assert_called_once_with(config, "test_db")
 
     @pytest.mark.asyncio
     async def test_close_mongodb(self):

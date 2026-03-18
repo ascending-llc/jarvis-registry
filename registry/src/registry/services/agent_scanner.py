@@ -11,7 +11,7 @@ import json
 import logging
 import os
 import re
-import subprocess
+import subprocess  # nosec B404 - controlled CLI invocation for the bundled scanner tool
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -46,7 +46,7 @@ class AgentScannerService:
             block_unsafe_agents=settings.agent_security_block_unsafe_agents,
             analyzers=settings.agent_security_analyzers,
             scan_timeout_seconds=settings.agent_security_scan_timeout,
-            llm_api_key=settings.a2a_scanner_llm_api_key or os.getenv("A2A_SCANNER_LLM_API_KEY"),
+            llm_api_key=settings.a2a_scanner_llm_api_key,
             add_security_pending_tag=settings.agent_security_add_pending_tag,
         )
 
@@ -199,7 +199,7 @@ class AgentScannerService:
 
             # Run scanner with timeout
             try:
-                result = subprocess.run(
+                result = subprocess.run(  # nosec B603 - command is built from fixed args and validated inputs
                     cmd,
                     capture_output=True,
                     text=True,

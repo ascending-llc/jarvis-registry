@@ -4,7 +4,7 @@ from typing import Any
 
 import boto3
 
-from ...constants import REGISTRY_CONSTANTS
+from ...core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -63,10 +63,10 @@ class AgentCoreClientProvider:
         if region in self._control_clients and region in self._runtime_clients:
             return
 
-        access_key = REGISTRY_CONSTANTS.AWS_ACCESS_KEY_ID
-        secret_key = REGISTRY_CONSTANTS.AWS_SECRET_ACCESS_KEY
-        session_token = REGISTRY_CONSTANTS.AWS_SESSION_TOKEN
-        assume_role_arn = REGISTRY_CONSTANTS.AGENTCORE_ASSUME_ROLE_ARN
+        access_key = settings.aws_access_key_id
+        secret_key = settings.aws_secret_access_key
+        session_token = settings.aws_session_token
+        assume_role_arn = settings.agentcore_assume_role_arn
 
         if access_key and secret_key:
             base_session = boto3.Session(

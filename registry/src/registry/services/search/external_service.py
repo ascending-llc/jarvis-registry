@@ -2,6 +2,7 @@ import logging
 from typing import Any
 
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
+from registry_pkgs.vector.client import get_db_client
 from registry_pkgs.vector.enum.enums import RerankerProvider, SearchType
 from registry_pkgs.vector.repositories.mcp_server_repository import get_mcp_server_repo
 
@@ -33,30 +34,18 @@ class ExternalVectorSearchService(VectorSearchService):
         self.search_type = search_type
         self.reranker_model = reranker_model
 
-        try:
-            self.mcp_server_repo = get_mcp_server_repo()
-            self.client = self.mcp_server_repo.db_client
-            self._initialized = True
-
-            logger.info(
-                f"Registry vector search service initialized (specialized repository): "
-                f"rerank={enable_rerank}, search_type={search_type.value}"
-            )
-        except Exception as e:
-            self.client = None
-            self.mcp_server_repo = None
-            self._initialized = False
-            logger.error(f"Failed to initialize vector search service: {e}")
+        self.client = None
+        self.mcp_server_repo = None
+        self._initialized = False
 
     async def initialize(self) -> None:
         """Initialize and verify database connection."""
-        if not self._initialized:
-            logger.error("Vector search not initialized")
-            raise Exception("Vector search not initialized")
-
         try:
-            if not self.client or not self.client.is_initialized():
+            self.client = get_db_client()
+            if not self.client.is_initialized():
                 raise Exception("Database client not initialized")
+            self.mcp_server_repo = get_mcp_server_repo(self.client)
+            self._initialized = True
 
             collection_name = ExtendedMCPServer.COLLECTION_NAME
             adapter = self.client.adapter
@@ -69,6 +58,10 @@ class ExternalVectorSearchService(VectorSearchService):
                     logger.warning(f"Collection '{collection_name}' may not exist yet")
 
             logger.info("Registry vector search verified successfully")
+            logger.info(
+                f"Registry vector search service initialized (specialized repository): "
+                f"rerank={self.enable_rerank}, search_type={self.search_type.value}"
+            )
 
         except Exception as e:
             logger.error(f"Initialization verification failed: {e}", exc_info=True)

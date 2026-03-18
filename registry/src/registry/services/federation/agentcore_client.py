@@ -5,12 +5,13 @@ from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import quote
 
+import boto3
 from beanie import PydanticObjectId
 
+from registry.core.config import settings
 from registry_pkgs.models import A2AAgent, ExtendedMCPServer
 from registry_pkgs.models.enums import FederationSource
 
-from ...constants import REGISTRY_CONSTANTS
 from .agentcore_client_provider import AgentCoreClientProvider
 from .runtime_invoker import AgentCoreRuntimeInvoker
 
@@ -32,7 +33,9 @@ class AgentCoreFederationClient:
         client_provider: AgentCoreClientProvider | None = None,
         runtime_invoker: AgentCoreRuntimeInvoker | None = None,
     ):
-        self.region = region or REGISTRY_CONSTANTS.AWS_REGION or "us-east-1"
+        self.region = region or settings.aws_region or "us-east-1"
+        self._control_clients: dict[str, Any] = {}
+        self._client_locks: dict[str, asyncio.Lock] = {}
         self.client_provider = client_provider or AgentCoreClientProvider(default_region=self.region)
         self.runtime_invoker = runtime_invoker or AgentCoreRuntimeInvoker(
             default_region=self.region,
@@ -117,20 +120,58 @@ class AgentCoreFederationClient:
             "skipped_runtimes": skipped_runtimes,
         }
 
-    async def invoke_runtime_prompt(
-        self,
-        runtime_arn: str,
-        prompt: str = "ping",
-        qualifier: str = "DEFAULT",
-    ) -> dict[str, Any]:
-        return await self.runtime_invoker.invoke_runtime_prompt(
-            runtime_arn=runtime_arn,
-            prompt=prompt,
-            qualifier=qualifier,
-        )
+    def _init_boto3_client(self, region: str):
+        if region in self._control_clients:
+            return self._control_clients[region]
+
+        access_key = settings.aws_access_key_id
+        secret_key = settings.aws_secret_access_key
+        session_token = settings.aws_session_token
+        assume_role_arn = settings.agentcore_assume_role_arn
+
+        if access_key and secret_key:
+            base_session = boto3.Session(
+                region_name=region,
+                aws_access_key_id=access_key,
+                aws_secret_access_key=secret_key,
+                aws_session_token=session_token,
+            )
+            logger.info("Initialized AgentCore AWS session with explicit access keys")
+        else:
+            base_session = boto3.Session(region_name=region)
+            logger.info("Initialized AgentCore AWS session with default credential chain")
+
+        session = base_session
+        if assume_role_arn:
+            sts_client = base_session.client("sts")
+            assumed_role = sts_client.assume_role(
+                RoleArn=assume_role_arn,
+                RoleSessionName=f"agentcore-federation-{region}",
+            )
+            credentials = assumed_role["Credentials"]
+            session = boto3.Session(
+                region_name=region,
+                aws_access_key_id=credentials["AccessKeyId"],
+                aws_secret_access_key=credentials["SecretAccessKey"],
+                aws_session_token=credentials["SessionToken"],
+            )
+            logger.info("Initialized AgentCore AWS session via assume role")
+
+        client = session.client("bedrock-agentcore-control", region_name=region)
+        self._control_clients[region] = client
+        return client
 
     async def _get_control_client(self, region: str) -> Any:
-        return await self.client_provider.get_control_client(region)
+        cached = self._control_clients.get(region)
+        if cached:
+            return cached
+
+        lock = self._client_locks.setdefault(region, asyncio.Lock())
+        async with lock:
+            cached = self._control_clients.get(region)
+            if cached:
+                return cached
+            return await asyncio.to_thread(self._init_boto3_client, region)
 
     def _list_runtime_summaries(self, control_client: Any) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
@@ -361,6 +402,7 @@ class AgentCoreFederationClient:
                 "description": runtime_detail.get("description", f"AgentCore MCP runtime {runtime_name}"),
                 "type": "streamable-http",
                 "url": runtime_mcp_url,
+                "requiresOAuth": False,
                 "authProvider": "bedrock-agentcore",
             },
             "author": author_id or PydanticObjectId(),
@@ -452,17 +494,14 @@ class AgentCoreFederationClient:
                 )
                 await existing_a2a.delete()
 
-    @staticmethod
-    def _extract_region_from_arn(arn: str, fallback: str = "us-east-1") -> str:
+    def _extract_region_from_arn(self, arn: str, fallback: str = "us-east-1") -> str:
         parts = arn.split(":")
         return parts[3] if len(parts) > 3 and parts[3] else fallback
 
-    @staticmethod
-    def _slug(value: str) -> str:
+    def _slug(self, value: str) -> str:
         cleaned = value.strip().lower().replace(" ", "-").replace("_", "-")
         return "".join(ch for ch in cleaned if ch.isalnum() or ch in "-/")
 
-    @staticmethod
-    def _build_runtime_invocation_url(runtime_arn: str, region: str) -> str:
+    def _build_runtime_invocation_url(self, runtime_arn: str, region: str) -> str:
         escaped_runtime_arn = quote(runtime_arn, safe="")
         return f"https://bedrock-agentcore.{region}.amazonaws.com/runtimes/{escaped_runtime_arn}/invocations"

@@ -9,17 +9,18 @@ import yaml
 from opentelemetry import metrics
 from opentelemetry.metrics import Counter, Histogram
 
-from ..core.config import settings
+from ..core.config import TelemetryConfig
 
 logger = logging.getLogger(__name__)
 
 
-def load_metrics_config(service_name: str, config_path: str = "") -> dict | None:
+def load_metrics_config(service_name: str, telemetry_config: TelemetryConfig, config_path: str = "") -> dict | None:
     """
     Load metrics configuration from YAML file for a specific service.
 
     Args:
         service_name: Name of the service (e.g., 'registry', 'auth_server')
+        telemetry_config: Telemetry configuration
         config_path: Optional path to the config file. If config_path is the empty string "",
           try to use the OTEL_METRICS_CONFIG_PATH environment variable from the unified config.
           If the env var is the empty string, try a standard location relative to the current working directory.
@@ -29,8 +30,8 @@ def load_metrics_config(service_name: str, config_path: str = "") -> dict | None
     """
     if config_path != "":
         path = Path(config_path)
-    elif settings.OTEL_METRICS_CONFIG_PATH != "":
-        path = Path(settings.OTEL_METRICS_CONFIG_PATH)
+    elif telemetry_config.otel_metrics_config_path != "":
+        path = Path(telemetry_config.otel_metrics_config_path)
     else:
         # Default: config/metrics/{service_name}.yml relative to the current working directory.
         # In a container, if the WORKDIR is /app/ and the "config" folder at project root is copied into /app/,

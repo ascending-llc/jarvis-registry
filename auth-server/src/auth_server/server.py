@@ -102,7 +102,7 @@ async def lifespan(app: FastAPI):
     try:
         # Initialize MongoDB connection
         logger.info("🗄️  Initializing MongoDB connection...")
-        await init_mongodb()
+        await init_mongodb(settings.mongo_config)
         logger.info("✅ MongoDB connection established")
         logger.info("✅ Auth server initialized successfully!")
 
@@ -140,7 +140,7 @@ app = FastAPI(
 
 logger.info("🔭 Initializing Telemetry...")
 try:
-    setup_metrics("auth-server")
+    setup_metrics("auth-server", settings.telemetry_config)
 except Exception as e:
     logger.warning(f"Failed to initialize telemetry: {e}")
 

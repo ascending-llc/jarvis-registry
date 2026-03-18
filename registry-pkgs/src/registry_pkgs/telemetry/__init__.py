@@ -1,5 +1,4 @@
 import logging
-import os
 
 from opentelemetry import metrics
 from opentelemetry.sdk.metrics import MeterProvider
@@ -7,6 +6,7 @@ from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.sdk.metrics.view import ExplicitBucketHistogramAggregation, View
 from opentelemetry.sdk.resources import SERVICE_NAME, Resource
 
+from ..core.config import TelemetryConfig
 from .decorators import (
     create_timed_context,
     track_duration,
@@ -85,7 +85,12 @@ class SafeOTLPMetricExporter:
             pass
 
 
-def setup_metrics(service_name: str, otlp_endpoint: str | None = None, enable_metrics: bool = True) -> None:
+def setup_metrics(
+    service_name: str,
+    telemetry_config: TelemetryConfig,
+    otlp_endpoint: str | None = None,
+    enable_metrics: bool = True,
+) -> None:
     """
     Configures OTel Metrics to send to a collector.
     Will NOT crash even if collector is unavailable - errors are suppressed.
@@ -93,7 +98,7 @@ def setup_metrics(service_name: str, otlp_endpoint: str | None = None, enable_me
     logger.info("Setting up telemetry...")
 
     try:
-        otlp_endpoint = otlp_endpoint or os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4318")
+        otlp_endpoint = otlp_endpoint or telemetry_config.otel_exporter_otlp_endpoint
 
         resource = Resource.create(attributes={SERVICE_NAME: service_name})
 
@@ -103,12 +108,12 @@ def setup_metrics(service_name: str, otlp_endpoint: str | None = None, enable_me
                 readers = []
 
                 # Prometheus setup
-                if os.getenv("OTEL_PROMETHEUS_ENABLED", "false").lower() == "true":
+                if telemetry_config.otel_prometheus_enabled:
                     try:
                         from opentelemetry.exporter.prometheus import PrometheusMetricReader
                         from prometheus_client import start_http_server
 
-                        port = int(os.getenv("OTEL_PROMETHEUS_PORT", "9464"))
+                        port = telemetry_config.otel_prometheus_port
                         start_http_server(port=port, addr="0.0.0.0")
                         readers.append(PrometheusMetricReader())
                         logger.info(f"Prometheus metrics enabled on port {port}")

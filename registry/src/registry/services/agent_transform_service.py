@@ -8,7 +8,7 @@ following the same pattern as the server transform service.
 import logging
 from typing import Any
 
-from ..constants import REGISTRY_CONSTANTS
+from ..core.config import settings
 from ..schemas.anthropic_schema import (
     Package,
     PaginationMetadata,
@@ -83,7 +83,7 @@ def _create_agent_name(agent_info: dict[str, Any]) -> str:
     clean_path = path.strip("/")
 
     # Use our domain as prefix
-    namespace = REGISTRY_CONSTANTS.ANTHROPIC_SERVER_NAMESPACE
+    namespace = settings.anthropic_server_namespace
     return f"{namespace}/{clean_path}"
 
 
@@ -124,7 +124,7 @@ def transform_to_agent_detail(
     )
 
     # Build metadata with agent-specific info
-    namespace = REGISTRY_CONSTANTS.ANTHROPIC_SERVER_NAMESPACE
+    namespace = settings.anthropic_server_namespace
     meta = {
         f"{namespace}/internal": {
             "path": agent_info.get("path"),
@@ -168,7 +168,7 @@ def transform_to_agent_response(
 
     registry_meta = None
     if include_registry_meta:
-        namespace = REGISTRY_CONSTANTS.ANTHROPIC_SERVER_NAMESPACE
+        namespace = settings.anthropic_server_namespace
         registry_meta = {
             f"{namespace}/registry": {
                 "last_checked": agent_info.get("last_checked_iso"),

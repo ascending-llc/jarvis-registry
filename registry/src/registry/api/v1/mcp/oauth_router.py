@@ -9,7 +9,7 @@ from fastapi.responses import RedirectResponse
 from ....auth.dependencies import CurrentUser
 from ....auth.oauth.reconnection import get_reconnection_manager
 from ....auth.oauth.types import ClientBranding
-from ....constants import REGISTRY_CONSTANTS
+from ....core.config import settings
 from ....core.mcp_client import get_oauth_metadata_from_server
 from ....mcpgw.tools.utils import session_store
 from ....schemas.common_api_schemas import (
@@ -527,7 +527,7 @@ def _redirect_to_page(
         /oauth-callback?type=success&serverPath=value
         /oauth-callback?type=error&serverPath=value&error=value
     """
-    host = REGISTRY_CONSTANTS.REGISTRY_CLIENT_URL
+    host = settings.registry_client_url
     encoded_path = quote(str(server_path))
 
     # Build full URL with host if request is provided

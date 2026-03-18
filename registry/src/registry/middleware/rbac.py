@@ -25,7 +25,7 @@ def _normalize_path(path: str) -> str:
       - /api/v1/auth/me -> /auth/me
     """
     # Strip /api/v{version} prefix first (more specific)
-    api_version_prefix = f"/api/{settings.API_VERSION}"
+    api_version_prefix = f"/api/{settings.api_version}"
     if path.startswith(api_version_prefix):
         return path[len(api_version_prefix) :]
 

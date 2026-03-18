@@ -11,7 +11,7 @@ import json
 import logging
 import os
 import re
-import subprocess
+import subprocess  # nosec B404 - controlled CLI invocation for the bundled scanner tool
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -150,7 +150,7 @@ class SecurityScannerService:
             block_unsafe_servers=settings.security_block_unsafe_servers,
             analyzers=settings.security_analyzers,
             scan_timeout_seconds=settings.security_scan_timeout,
-            llm_api_key=settings.mcp_scanner_llm_api_key or os.getenv("MCP_SCANNER_LLM_API_KEY"),
+            llm_api_key=settings.mcp_scanner_llm_api_key,
             add_security_pending_tag=settings.security_add_pending_tag,
         )
 
@@ -356,7 +356,7 @@ class SecurityScannerService:
 
         # Run scanner with timeout
         try:
-            result = subprocess.run(
+            result = subprocess.run(  # nosec B603 - command is built from fixed args and validated inputs
                 cmd,
                 capture_output=True,
                 text=True,

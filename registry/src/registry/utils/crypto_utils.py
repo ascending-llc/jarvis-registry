@@ -57,7 +57,7 @@ def _get_encryption_key() -> bytes:
     global _ENCRYPTION_KEY
 
     if _ENCRYPTION_KEY is None:
-        creds_key = settings.CREDS_KEY
+        creds_key = settings.creds_key
         if not creds_key:
             raise ValueError(
                 "CREDS_KEY configuration must be set for encryption/decryption. Set the CREDS_KEY environment variable."
@@ -104,8 +104,8 @@ def generate_service_jwt(user_id: str, username: str | None = None, scopes: list
     # Build JWT payload using centralized helper
     payload = build_jwt_payload(
         subject=username or user_id,
-        issuer=settings.JWT_ISSUER,
-        audience=settings.JWT_AUDIENCE,
+        issuer=settings.jwt_issuer,
+        audience=settings.jwt_audience,
         expires_in_seconds=300,  # 5 minutes - short-lived for service-to-service
         iat=now,
         extra_claims=extra_claims,
@@ -259,7 +259,7 @@ def encrypt_auth_fields(config: dict) -> dict:
     config = config.copy()
 
     # Check if CREDS_KEY is available
-    if not settings.CREDS_KEY:
+    if not settings.creds_key:
         logger.warning(
             "CREDS_KEY configuration is not set. "
             "Sensitive authentication fields will be stored as PLAINTEXT. "
@@ -334,7 +334,7 @@ def decrypt_auth_fields(config: dict) -> dict:
     config = config.copy()
 
     # Check if CREDS_KEY is available
-    if not settings.CREDS_KEY:
+    if not settings.creds_key:
         logger.warning(
             "CREDS_KEY configuration is not set. "
             "Encrypted authentication fields will be returned as-is (still encrypted). "
@@ -442,8 +442,8 @@ def generate_access_token(
     # Build JWT payload using centralized helper
     payload = build_jwt_payload(
         subject=username,
-        issuer=settings.JWT_ISSUER,
-        audience=settings.JWT_AUDIENCE,
+        issuer=settings.jwt_issuer,
+        audience=settings.jwt_audience,
         expires_in_seconds=expires_in_seconds,
         token_type="access_token",
         iat=iat,
@@ -451,7 +451,7 @@ def generate_access_token(
     )
 
     # Generate JWT
-    token = encode_jwt(payload, settings.secret_key, kid=settings.JWT_SELF_SIGNED_KID)
+    token = encode_jwt(payload, settings.secret_key, kid=settings.jwt_self_signed_kid)
 
     logger.debug(f"Generated access token for user {username}, expires in {expires_hours}h")
     return token
@@ -504,14 +504,14 @@ def generate_refresh_token(
     # Build JWT payload using centralized helper
     payload = build_jwt_payload(
         subject=username,
-        issuer=settings.JWT_ISSUER,
-        audience=settings.JWT_AUDIENCE,
+        issuer=settings.jwt_issuer,
+        audience=settings.jwt_audience,
         expires_in_seconds=expires_in_seconds,
         token_type="refresh_token",
         extra_claims=extra_claims,
     )
 
-    token = encode_jwt(payload, settings.secret_key, kid=settings.JWT_SELF_SIGNED_KID)
+    token = encode_jwt(payload, settings.secret_key, kid=settings.jwt_self_signed_kid)
 
     logger.debug(f"Generated refresh token for user {username}, expires in {expires_days} days")
     return token
@@ -531,7 +531,7 @@ def verify_access_token(token: str) -> dict[str, Any] | None:
         # Verify kid in header
         kid = get_token_kid(token)
 
-        if kid != settings.JWT_SELF_SIGNED_KID:
+        if kid != settings.jwt_self_signed_kid:
             logger.debug(f"Invalid kid in token: {kid}")
             return None
 
@@ -539,8 +539,8 @@ def verify_access_token(token: str) -> dict[str, Any] | None:
         claims = decode_jwt(
             token,
             settings.secret_key,
-            issuer=settings.JWT_ISSUER,
-            audience=settings.JWT_AUDIENCE,
+            issuer=settings.jwt_issuer,
+            audience=settings.jwt_audience,
             leeway=30,
         )
 
@@ -577,7 +577,7 @@ def verify_refresh_token(token: str) -> dict[str, Any] | None:
         # Verify kid in header
         kid = get_token_kid(token)
 
-        if kid != settings.JWT_SELF_SIGNED_KID:
+        if kid != settings.jwt_self_signed_kid:
             logger.debug(f"Invalid kid in refresh token: {kid}")
             return None
 
@@ -585,8 +585,8 @@ def verify_refresh_token(token: str) -> dict[str, Any] | None:
         claims = decode_jwt(
             token,
             settings.secret_key,
-            issuer=settings.JWT_ISSUER,
-            audience=settings.JWT_AUDIENCE,
+            issuer=settings.jwt_issuer,
+            audience=settings.jwt_audience,
             leeway=30,
         )
 

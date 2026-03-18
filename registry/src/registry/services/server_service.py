@@ -21,6 +21,7 @@ from beanie import PydanticObjectId
 
 from registry_pkgs.database.decorators import get_current_session
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer as MCPServerDocument
+from registry_pkgs.vector.client import get_db_client
 from registry_pkgs.vector.repositories.mcp_server_repository import get_mcp_server_repo
 
 from ..auth.oauth.types import StateMetadata
@@ -90,6 +91,7 @@ async def build_complete_headers_for_server(
     This eliminates duplicate header building across server_service, proxy_routes, and health_service.
 
     Args:
+        state_metadata:
         server: Server document containing config
         user_id: User ID for OAuth token retrieval (required for OAuth servers)
 
@@ -523,8 +525,13 @@ class ServerServiceV1:
 
     def __init__(self):
         """Initialize server service with search index manager."""
-        self.mcp_server_repo = get_mcp_server_repo()
+        self.mcp_server_repo = None
         logger.info("ServerServiceV1 initialized with search index manager")
+
+    def _get_mcp_server_repo(self):
+        if self.mcp_server_repo is None:
+            self.mcp_server_repo = get_mcp_server_repo(get_db_client())
+        return self.mcp_server_repo
 
     async def list_servers(
         self,
@@ -902,7 +909,7 @@ class ServerServiceV1:
 
         await server.save(session=session)
 
-        asyncio.create_task(self.mcp_server_repo.smart_sync(server))
+        asyncio.create_task(self._get_mcp_server_repo().smart_sync(server))
         return server
 
     async def delete_server(
@@ -935,7 +942,7 @@ class ServerServiceV1:
             raise ValueError("Server not found")
 
         # Remove from vector DB before deleting from MongoDB (background task)
-        asyncio.create_task(self.mcp_server_repo.delete_by_server_id(server_id, server.serverName))
+        asyncio.create_task(self._get_mcp_server_repo().delete_by_server_id(server_id, server.serverName))
         await server.delete(session=session)
         logger.info(f"Deleted server: {server.serverName} (ID: {server.id})")
         return True
@@ -1043,7 +1050,7 @@ class ServerServiceV1:
         await server.save()
         logger.info(f"Toggled server {server.serverName} (ID: {server.id}) enabled to {enabled}")
 
-        asyncio.create_task(self.mcp_server_repo.smart_sync(server))
+        asyncio.create_task(self._get_mcp_server_repo().smart_sync(server))
         return server
 
     async def get_server_tools(

@@ -19,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from registry_pkgs.database import close_mongodb, init_mongodb
 from registry_pkgs.database.redis_client import close_redis, init_redis
 from registry_pkgs.telemetry import setup_metrics
+from registry_pkgs.vector.client import initialize_database
 
 from .api.management_routes import router as management_router
 from .api.proxy_routes import router as proxy_router
@@ -65,19 +66,22 @@ async def lifespan(app: FastAPI):
     try:
         logger.info("🔭 Initializing Telemetry...")
         try:
-            setup_metrics("mcp-gateway-registry")
+            setup_metrics("mcp-gateway-registry", settings.telemetry_config)
         except Exception as e:
             logger.warning(f"Failed to initialize telemetry: {e}")
 
         # Initialize MongoDB connection first
         logger.info("🗄️  Initializing MongoDB connection...")
-        await init_mongodb()
+        await init_mongodb(settings.mongo_config)
         logger.info("✅ MongoDB connection established")
 
         # Initialize Redis connection
         logger.info("🔴 Initializing Redis connection...")
-        await init_redis()
+        await init_redis(settings.redis_config)
         logger.info("✅ Redis connection established")
+
+        logger.info("🧭 Initializing vector database client...")
+        initialize_database(settings.vector_backend_config)
 
         logger.info("🔍 Initializing vector search service...")
         await vector_service.initialize()
@@ -206,18 +210,18 @@ app.mount("/proxy/mcpgw", mcp_app.streamable_http_app())
 
 # Register API routers with /api prefix
 app.include_router(meta_router, prefix="/api/auth", tags=["Authentication metadata"])
-app.include_router(token_router, prefix=f"/api/{settings.API_VERSION}", tags=["Server Management"])
-app.include_router(servers_router_v1, prefix=f"/api/{settings.API_VERSION}", tags=["Server Management V1"])
-app.include_router(a2a_agent_router, prefix=f"/api/{settings.API_VERSION}", tags=["A2A Agent Management V1"])
+app.include_router(token_router, prefix=f"/api/{settings.api_version}", tags=["Server Management"])
+app.include_router(servers_router_v1, prefix=f"/api/{settings.api_version}", tags=["Server Management V1"])
+app.include_router(a2a_agent_router, prefix=f"/api/{settings.api_version}", tags=["A2A Agent Management V1"])
 app.include_router(management_router, prefix="/api")
-app.include_router(search_router, prefix=f"/api/{settings.API_VERSION}", tags=["Semantic Search"])
+app.include_router(search_router, prefix=f"/api/{settings.api_version}", tags=["Semantic Search"])
 app.include_router(health_router, prefix="/api/health", tags=["Health Monitoring"])
-app.include_router(oauth_router, prefix=f"/api/{settings.API_VERSION}", tags=["MCP  Oauth Management"])
-app.include_router(connection_router, prefix=f"/api/{settings.API_VERSION}", tags=["MCP  Connection Management"])
-app.include_router(acl_router, prefix=f"/api/{settings.API_VERSION}", tags=["ACL Management"])
+app.include_router(oauth_router, prefix=f"/api/{settings.api_version}", tags=["MCP  Oauth Management"])
+app.include_router(connection_router, prefix=f"/api/{settings.api_version}", tags=["MCP  Connection Management"])
+app.include_router(acl_router, prefix=f"/api/{settings.api_version}", tags=["ACL Management"])
 app.include_router(
     agentcore_federation_router,
-    prefix=f"/api/{settings.API_VERSION}",
+    prefix=f"/api/{settings.api_version}",
     tags=["Federation Management"],
 )
 app.include_router(auth_provider_router, tags=["Authentication"])

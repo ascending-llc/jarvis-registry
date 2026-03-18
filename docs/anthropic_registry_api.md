@@ -2,7 +2,7 @@
 
 The MCP Gateway Registry implements the server listing and related APIs from the [Anthropic MCP Registry REST API](https://raw.githubusercontent.com/modelcontextprotocol/registry/refs/heads/main/docs/reference/api/openapi.yaml) specification (currently v0.1). Additional API endpoints will be added in future releases.
 
-> **Note**: The Anthropic API version is defined in `registry/constants.py` as `ANTHROPIC_API_VERSION` for easy version management.
+> **Note**: The Anthropic API version is defined in `registry/core/config.py` as `Settings.anthropic_api_version` for easy version management.
 
 ## Overview
 
@@ -49,7 +49,7 @@ The token file typically contains:
 
 ## API Endpoints
 
-All endpoints are prefixed with the API version (currently `/v0.1`, defined in `registry/constants.py`) and require authentication via Bearer token.
+All endpoints are prefixed with the API version (currently `/v0.1`, defined in `registry/core/config.py` via `Settings.anthropic_api_version`) and require authentication via Bearer token.
 
 ### 1. List Servers
 

@@ -1,7 +1,7 @@
 import logging
 
 from ...models import A2AAgent
-from ..client import DatabaseClient, initialize_database
+from ..client import DatabaseClient
 from ..repository import Repository
 
 logger = logging.getLogger(__name__)
@@ -112,8 +112,15 @@ def create_a2a_agent_repository(db_client: DatabaseClient) -> A2AAgentRepository
     return A2AAgentRepository(db_client)
 
 
-def get_a2a_agent_repo():
-    return A2AAgentRepository(initialize_database())
+_a2a_agent_repo: A2AAgentRepository | None = None
 
 
-a2a_agent_repo = get_a2a_agent_repo()
+def get_a2a_agent_repo(db_client: DatabaseClient | None = None) -> A2AAgentRepository:
+    global _a2a_agent_repo
+
+    if _a2a_agent_repo is None:
+        if db_client is None:
+            raise ValueError("db_client is required when initializing A2AAgentRepository")
+        _a2a_agent_repo = create_a2a_agent_repository(db_client)
+
+    return _a2a_agent_repo
