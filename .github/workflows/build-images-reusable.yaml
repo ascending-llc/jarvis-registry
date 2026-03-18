@@ -23,6 +23,12 @@ on:
         required: true
       JARVIS_RELEASE_ACCESS_TOKEN:
         required: true
+      AZURE_CLIENT_ID:
+        required: false
+      AZURE_TENANT_ID:
+        required: false
+      AZURE_SUBSCRIPTION_ID:
+        required: false
 
 permissions:
   id-token: write
@@ -100,6 +106,16 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Login to Azure Container Registry
+        run: az acr login --name "${{ vars.AZURE_ACR_NAME }}"
+
       - name: Determine BUILD_VERSION
         id: version
         run: |
@@ -112,14 +128,17 @@ jobs:
       - name: Determine image tags
         id: tags
         run: |
-          COMMIT_TAG="${{ steps.login-ecr.outputs.registry }}/jarvis/registry:${{ github.sha }}"
-          LATEST_TAG="${{ steps.login-ecr.outputs.registry }}/jarvis/registry:latest"
+          ECR_COMMIT_TAG="${{ steps.login-ecr.outputs.registry }}/jarvis/registry:${{ github.sha }}"
+          ECR_LATEST_TAG="${{ steps.login-ecr.outputs.registry }}/jarvis/registry:latest"
+          ACR_COMMIT_TAG="${{ vars.AZURE_ACR_NAME }}.azurecr.io/jarvis/registry:${{ github.sha }}"
+          ACR_LATEST_TAG="${{ vars.AZURE_ACR_NAME }}.azurecr.io/jarvis/registry:latest"
 
           if [ -n "${{ inputs.version_tag }}" ]; then
-            VERSION_TAG="${{ steps.login-ecr.outputs.registry }}/jarvis/registry:${{ inputs.version_tag }}"
-            echo "tags=${VERSION_TAG},$COMMIT_TAG" >> $GITHUB_OUTPUT
+            ECR_VERSION_TAG="${{ steps.login-ecr.outputs.registry }}/jarvis/registry:${{ inputs.version_tag }}"
+            ACR_VERSION_TAG="${{ vars.AZURE_ACR_NAME }}.azurecr.io/jarvis/registry:${{ inputs.version_tag }}"
+            echo "tags=${ECR_VERSION_TAG},${ECR_COMMIT_TAG},${ACR_VERSION_TAG},${ACR_COMMIT_TAG}" >> $GITHUB_OUTPUT
           else
-            echo "tags=${LATEST_TAG},$COMMIT_TAG" >> $GITHUB_OUTPUT
+            echo "tags=${ECR_LATEST_TAG},${ECR_COMMIT_TAG},${ACR_LATEST_TAG},${ACR_COMMIT_TAG}" >> $GITHUB_OUTPUT
           fi
 
       - name: Download build artifact - wheels and locks
@@ -174,17 +193,30 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Login to Azure Container Registry
+        run: az acr login --name "${{ vars.AZURE_ACR_NAME }}"
+
       - name: Determine image tags
         id: tags
         run: |
-          COMMIT_TAG="${{ steps.login-ecr.outputs.registry }}/jarvis/registry-frontend:${{ github.sha }}"
-          LATEST_TAG="${{ steps.login-ecr.outputs.registry }}/jarvis/registry-frontend:latest"
+          ECR_COMMIT_TAG="${{ steps.login-ecr.outputs.registry }}/jarvis/registry-frontend:${{ github.sha }}"
+          ECR_LATEST_TAG="${{ steps.login-ecr.outputs.registry }}/jarvis/registry-frontend:latest"
+          ACR_COMMIT_TAG="${{ vars.AZURE_ACR_NAME }}.azurecr.io/jarvis/registry-frontend:${{ github.sha }}"
+          ACR_LATEST_TAG="${{ vars.AZURE_ACR_NAME }}.azurecr.io/jarvis/registry-frontend:latest"
 
           if [ -n "${{ inputs.version_tag }}" ]; then
-            VERSION_TAG="${{ steps.login-ecr.outputs.registry }}/jarvis/registry-frontend:${{ inputs.version_tag }}"
-            echo "tags=${VERSION_TAG},$COMMIT_TAG" >> $GITHUB_OUTPUT
+            ECR_VERSION_TAG="${{ steps.login-ecr.outputs.registry }}/jarvis/registry-frontend:${{ inputs.version_tag }}"
+            ACR_VERSION_TAG="${{ vars.AZURE_ACR_NAME }}.azurecr.io/jarvis/registry-frontend:${{ inputs.version_tag }}"
+            echo "tags=${ECR_VERSION_TAG},${ECR_COMMIT_TAG},${ACR_VERSION_TAG},${ACR_COMMIT_TAG}" >> $GITHUB_OUTPUT
           else
-            echo "tags=${LATEST_TAG},$COMMIT_TAG" >> $GITHUB_OUTPUT
+            echo "tags=${ECR_LATEST_TAG},${ECR_COMMIT_TAG},${ACR_LATEST_TAG},${ACR_COMMIT_TAG}" >> $GITHUB_OUTPUT
           fi
 
       - name: Build and push mcp-gateway registry frontend image
@@ -221,17 +253,30 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Login to Azure Container Registry
+        run: az acr login --name "${{ vars.AZURE_ACR_NAME }}"
+
       - name: Determine image tags
         id: tags
         run: |
-          COMMIT_TAG="${{ steps.login-ecr.outputs.registry }}/jarvis/auth-server:${{ github.sha }}"
-          LATEST_TAG="${{ steps.login-ecr.outputs.registry }}/jarvis/auth-server:latest"
+          ECR_COMMIT_TAG="${{ steps.login-ecr.outputs.registry }}/jarvis/auth-server:${{ github.sha }}"
+          ECR_LATEST_TAG="${{ steps.login-ecr.outputs.registry }}/jarvis/auth-server:latest"
+          ACR_COMMIT_TAG="${{ vars.AZURE_ACR_NAME }}.azurecr.io/jarvis/auth-server:${{ github.sha }}"
+          ACR_LATEST_TAG="${{ vars.AZURE_ACR_NAME }}.azurecr.io/jarvis/auth-server:latest"
 
           if [ -n "${{ inputs.version_tag }}" ]; then
-            VERSION_TAG="${{ steps.login-ecr.outputs.registry }}/jarvis/auth-server:${{ inputs.version_tag }}"
-            echo "tags=${VERSION_TAG},$COMMIT_TAG" >> $GITHUB_OUTPUT
+            ECR_VERSION_TAG="${{ steps.login-ecr.outputs.registry }}/jarvis/auth-server:${{ inputs.version_tag }}"
+            ACR_VERSION_TAG="${{ vars.AZURE_ACR_NAME }}.azurecr.io/jarvis/auth-server:${{ inputs.version_tag }}"
+            echo "tags=${ECR_VERSION_TAG},${ECR_COMMIT_TAG},${ACR_VERSION_TAG},${ACR_COMMIT_TAG}" >> $GITHUB_OUTPUT
           else
-            echo "tags=${LATEST_TAG},$COMMIT_TAG" >> $GITHUB_OUTPUT
+            echo "tags=${ECR_LATEST_TAG},${ECR_COMMIT_TAG},${ACR_LATEST_TAG},${ACR_COMMIT_TAG}" >> $GITHUB_OUTPUT
           fi
 
       - name: Download build artifact - wheels and locks
