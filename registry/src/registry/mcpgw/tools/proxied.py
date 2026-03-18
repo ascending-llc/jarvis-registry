@@ -595,7 +595,7 @@ def get_tools() -> list[tuple[str, Callable]]:
         tool_name: Annotated[
             str,
             Field(
-                description="Actual downstream MCP tool name to execute, matching .config.toolFunctions[*].mcpToolName"
+                description="Use the exact `tool_name` field from one discover_servers result for the same `server_id`. Pass it unchanged. Do not use a display name, registry-scoped function key, or rewritten name. This exact string is forwarded as `tools/call.params.name` to the downstream MCP server."
             ),
         ],
         arguments: Annotated[dict[str, Any], Field(description="Tool parameters from input_schema")],
@@ -622,11 +622,19 @@ def get_tools() -> list[tuple[str, Callable]]:
         ```
 
         **Parameters:**
-        - tool_name: Actual downstream MCP tool name (same value as `.config.toolFunctions[*].mcpToolName`)
+        - tool_name: The exact `tool_name` value from a single `discover_servers` result. Use it unchanged and pair it with the matching `server_id` from that same result. This exact value is forwarded as `tools/call.params.name` to the downstream MCP server.
         - arguments: Tool-specific parameters from input_schema
         - server_id: Server ID from discovery
 
-        **Important:** Pass the real downstream MCP tool name here, not the registry-scoped toolFunction key.
+        **Important:**
+        - Do not invent, rename, scope, or rewrite the tool name.
+        - Do not pass a display name or registry-scoped function key.
+        - Use the `tool_name` field from discover_servers exactly as returned.
+        - Pair it with the matching `server_id` from the same discovery result.
+
+        **Example:**
+        - If discover_servers returns `{"tool_name": "tavily_search", "server_id": "abc123"}`,
+          then call `execute_tool(tool_name="tavily_search", server_id="abc123", arguments={...})`.
 
         ⚠️ Use after discover_servers to execute tools.
         Returns: Tool-specific results (format varies by tool)

@@ -224,7 +224,7 @@ def get_tools() -> list[tuple[str, Callable]]:
         - For type_list=["server"]: {serverName, path, config{tools, resources, prompts}, tags, numTools}
 
         **After discovery, use:**
-        - execute_tool(server_path, tool_name, arguments) for tools
+        - For tool results, pass the returned `tool_name` and matching `server_id` unchanged into `execute_tool`
         - read_resource(server_id, resource_uri) for resources
         - execute_prompt(server_id, prompt_name, arguments) for prompts
         """
