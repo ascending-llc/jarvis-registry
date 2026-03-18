@@ -617,7 +617,6 @@ async def sync_wellknown(
 )
 async def get_agent_wellknown_card(
     url: Annotated[str, Query(description="The A2A agent URL to fetch card from")],
-    user_context: CurrentUser,
 ) -> JSONResponse:
     """
     Get agent card in A2A protocol format from well-known endpoint by URL.
