@@ -437,11 +437,20 @@
 
 ### 10. Get Agent Card (Well-Known)
 
-**Endpoint**: `GET /api/v1/agents/{agent_id}/.well-known/agent-cards`
+**Endpoint**: `GET /api/v1/agents/.well-known/agent-cards?url={agent_url}`
 
 **Authentication**: JWT Bearer token required
 
-**Description**: Get agent card in A2A protocol format. This endpoint returns the agent card directly from the A2A SDK (agent.card), providing the standard A2A protocol-compliant agent card without additional processing.
+**Description**: Fetch and validate agent card from a remote A2A agent URL. This endpoint is used during agent creation (before ID is assigned) to validate and preview the agent card from the provided URL. It uses the A2A SDK to fetch and validate the card from the remote agent's `.well-known/agent-card.json` endpoint.
+
+**Query Parameters**:
+- `url` (required, string): The base URL of the A2A agent to fetch card from (e.g., `https://example.com/agents/code-reviewer`)
+
+**Example Request**:
+```
+GET /api/v1/agents/.well-known/agent-cards?url=https://example.com/agents/code-reviewer
+Authorization: Bearer <token>
+```
 
 **Response**: `200 OK`
 ```json
@@ -480,31 +489,38 @@
 ```
 
 **Features**:
-- Returns agent card directly from A2A SDK (agent.card)
-- Standard A2A protocol format (validated by a2a-sdk)
-- Cached response (configurable TTL via `wellknown_cache_ttl` setting)
-- No additional processing or reformatting
+- Fetches agent card from remote URL using A2A SDK's `A2ACardResolver`
+- Validates agent card structure per A2A protocol (via a2a-sdk)
+- No caching (for real-time validation during creation)
+- 15-second timeout for remote requests
+- Supports both with/without `.well-known` suffix in URL
 
-**Cache Headers**:
+**Headers**:
 ```
-Cache-Control: public, max-age=300
 Content-Type: application/json
 ```
 
 **Implementation**:
 ```python
-# Simple and direct - returns SDK's AgentCard as-is
-agent_card_data = agent.card.model_dump(mode="json", exclude_none=True, by_alias=True)
+# Fetch and validate from remote URL using SDK
+async with httpx.AsyncClient(timeout=httpx.Timeout(15.0)) as client:
+    resolver = A2ACardResolver(base_url=url, httpx_client=client)
+    agent_card = await resolver.get_agent_card()
+    
+agent_card_data = agent_card.model_dump(mode="json", exclude_none=True, by_alias=True)
 ```
 
 **Use Cases**:
-- A2A protocol compliance
-- Agent card discovery per individual agent
-- Integration with A2A-compatible systems
-- Get original agent metadata in standard format
+- Pre-creation validation: Validate agent before registering
+- Agent discovery: Preview agent capabilities from URL
+- Frontend integration: Fetch agent details during creation flow
+- URL validation: Verify the agent URL is accessible and valid
 
-**Error**: `404` Agent not found, `403` Access denied
+**Error Responses**:
+- `400 Bad Request`: Invalid URL format
+- `404 Not Found`: Agent card not found at the provided URL
+- `500 Internal Server Error`: Failed to fetch or parse agent card from remote URL
 
-**Permission**: Requires VIEW permission
+**Permission**: No specific resource permission required (uses authenticated user context only)
 
 ---
