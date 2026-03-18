@@ -250,9 +250,8 @@
 - Uses `AgentDetailResponse` schema (not a separate create response)
 - Automatically grants OWNER permission to creator
 - ACL resource type is `ResourceType.AGENT`
-- Uniqueness constraint: Same `path` is allowed for different URLs, but the combination of `(path, url)` must be unique
 
-**Error**: `400` Validation error, `409` Path and URL combination already exists
+**Error**: `400` Validation error, `409` Path already exists
 
 ---
 
