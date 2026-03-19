@@ -84,6 +84,9 @@ agents-read:
   - action: check_agent_health
     method: POST
     endpoint: /agents/{agent_id}/health
+  - action: get_agent_wellknown_card
+    method: GET
+    endpoint: /agents/.well-known/agent-cards
 
 agents-write:
   - action: create_agent
