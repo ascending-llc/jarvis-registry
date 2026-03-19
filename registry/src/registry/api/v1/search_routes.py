@@ -256,7 +256,7 @@ def _build_search_filters(search: SearchRequest) -> dict[str, object]:
     """Build shared vector-store filters from the request."""
     return {
         "enabled": not search.include_disabled,
-        "entity_type": [entity_type.value for entity_type in search.type_list],
+        "entity_type": list(search.type_list),
     }
 
 

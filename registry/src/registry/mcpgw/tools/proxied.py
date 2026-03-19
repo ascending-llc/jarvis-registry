@@ -595,7 +595,7 @@ def get_tools() -> list[tuple[str, Callable]]:
         tool_name: Annotated[
             str,
             Field(
-                description="Final downstream MCP tool name to execute. If the previous discovery call used `type_list=[\"server\"]` and only `server`, first choose one tool entry from `server.config.toolFunctions`, then pass that chosen entry's `mcpToolName` as `tool_name` (or fall back to that chosen entry's key/name only if `mcpToolName` is missing). In every other discovery case, pass the returned `tool_name` unchanged. This exact string is forwarded as downstream MCP `tools/call.params.name`."
+                description="Final downstream MCP tool name to execute. If the previous discovery call used `type_list=[\"server\"]` and only `server`, first choose one tool entry from `$.config.toolFunctions`, then pass that chosen entry's `mcpToolName` as `tool_name` (or fall back to that chosen entry's key/name only if `mcpToolName` is missing). In every other discovery case, pass the returned `tool_name` unchanged. This exact string is forwarded as the value of the `$.params.name` field in the JSON-RPC payload of the `tools/call` request to downstream MCP."
             ),
         ],
         arguments: Annotated[dict[str, Any], Field(description="Tool parameters from input_schema")],
@@ -622,7 +622,7 @@ def get_tools() -> list[tuple[str, Callable]]:
         ```
 
         **Parameters:**
-        - tool_name: Final downstream MCP tool name. This is the exact value that will be forwarded to downstream MCP as `tools/call.params.name`.
+        - tool_name: Final downstream MCP tool name. This is the exact value that becomes the `$.params.name` field in the JSON-RPC payload of the `tools/call` request to downstream MCP.
         - arguments: Tool-specific parameters from input_schema
         - server_id: Server ID from discovery
 
@@ -630,7 +630,7 @@ def get_tools() -> list[tuple[str, Callable]]:
         - Case 1: the previous discovery call used `type_list=["server"]` and only `server`.
           - The discovery response contains full server documents in `servers`.
           - Pick one server document.
-          - Inspect that server document's `config.toolFunctions`.
+          - Inspect the `$.config.toolFunctions` field of that server document.
           - Choose the single tool entry that best matches the user's task.
           - Set `server_id` to that server document's `id`.
           - Set `tool_name` to that chosen tool entry's `mcpToolName`.
@@ -652,8 +652,8 @@ def get_tools() -> list[tuple[str, Callable]]:
         - If discover_servers returns `{"tool_name": "tavily_search", "server_id": "abc123"}`,
           then call `execute_tool(tool_name="tavily_search", server_id="abc123", arguments={...})`.
         - If a server result contains:
-          - `config.toolFunctions["add_numbers_mcp_minimal_mcp_iam"].mcpToolName = "add_numbers"`
-          - `config.toolFunctions["greet_mcp_minimal_mcp_iam"].mcpToolName = "greet"`
+          - `$.config.toolFunctions["add_numbers_mcp_minimal_mcp_iam"].mcpToolName = "add_numbers"`
+          - `$.config.toolFunctions["greet_mcp_minimal_mcp_iam"].mcpToolName = "greet"`
           then first choose the correct tool entry for the task.
           - To execute the add tool, call `execute_tool(tool_name="add_numbers", server_id="<server id>", arguments={...})`.
           - To execute the greet tool, call `execute_tool(tool_name="greet", server_id="<server id>", arguments={...})`.

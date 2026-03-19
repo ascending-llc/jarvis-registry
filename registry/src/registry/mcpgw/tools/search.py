@@ -161,10 +161,10 @@ def get_tools() -> list[tuple[str, Callable]]:
         **If `type_list` is exactly `["server"]`:**
         - Each item in `servers` is a full server document in MongoDB format.
         - To execute a tool from that server:
-          1. Inspect `server.config.toolFunctions`
+          1. Inspect the `$.config.toolFunctions` field of the server document.
           2. Choose one tool entry whose description and parameters match the user's task
-          3. Set `execute_tool.server_id` to that server document's `id`
-          4. Set `execute_tool.tool_name` to that chosen tool entry's `mcpToolName`
+          3. Set the `server_id` parameter of the `execute_tool` call to that server document's `id`
+          4. Set the `tool_name` parameter of the `execute_tool` call to that chosen tool entry's `mcpToolName`
           5. Only if `mcpToolName` is missing, fall back to that chosen tool entry's key/name
 
         **In every other case, including `type_list=["tool"]`:**
@@ -183,7 +183,7 @@ def get_tools() -> list[tuple[str, Callable]]:
           - If discovery returns `{"tool_name": "tavily_search", "server_id": "abc123", ...}`,
             call `execute_tool(tool_name="tavily_search", server_id="abc123", arguments={...})`.
         - Server result:
-          - If `server.config.toolFunctions["add_numbers_mcp_minimal_mcp_iam"].mcpToolName = "add_numbers"`,
+          - If `$.config.toolFunctions["add_numbers_mcp_minimal_mcp_iam"].mcpToolName = "add_numbers"`,
             call `execute_tool(tool_name="add_numbers", server_id="<server id>", arguments={...})`.
 
         Use `read_resource(server_id, resource_uri)` for resources.

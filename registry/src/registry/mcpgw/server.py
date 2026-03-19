@@ -42,9 +42,9 @@ CRITICAL RESULT INTERPRETATION RULE:
 
 EXECUTION RULES:
 - `execute_tool` always runs exactly one downstream MCP tool.
-- `execute_tool.tool_name` must always be the final downstream MCP tool name.
-- If the previous discovery call used exactly `type_list=["server"]`, first inspect `server.config.toolFunctions`, choose one tool entry, and pass that chosen entry's `mcpToolName` as `tool_name`. Only if `mcpToolName` is missing may you fall back to that tool entry's key or name.
-- In every other discovery case, pass the returned `tool_name` unchanged into `execute_tool.tool_name`.
+- The `tool_name` parameter of the `execute_tool` call must always be the final downstream MCP tool name.
+- If the previous discovery call used exactly `type_list=["server"]`, first inspect the `$.config.toolFunctions` field of the server document, choose one tool entry, and pass that chosen entry's `mcpToolName` as `tool_name`. Only if `mcpToolName` is missing may you fall back to that tool entry's key or name.
+- In every other discovery case, pass the returned `tool_name` unchanged into the `tool_name` parameter of the `execute_tool` call.
 - Pair the chosen `tool_name` with the matching `server_id` from the same discovery result or chosen server document.
 
 EXAMPLES:
@@ -55,7 +55,7 @@ EXAMPLES:
 - Access failure on a protected service → `discover_servers(query="<service> authenticated", type_list=["tool"])`
 
 SERVER-DOCUMENT EXAMPLE:
-- If `discover_servers(..., type_list=["server"])` returns a server whose `config.toolFunctions` contains:
+- If `discover_servers(..., type_list=["server"])` returns a server whose `$.config.toolFunctions` contains:
   - `add_numbers_mcp_minimal_mcp_iam -> mcpToolName="add_numbers"`
   - `greet_mcp_minimal_mcp_iam -> mcpToolName="greet"`
 - Then first choose the single tool entry that matches the task.

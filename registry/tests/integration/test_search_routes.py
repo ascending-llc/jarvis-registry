@@ -341,12 +341,19 @@ class TestServerSearchRoutes:
         assert call_kwargs["candidate_k"] == 100
 
     def test_search_servers_empty_query(self, test_client: TestClient):
-        """Server search rejects empty query string."""
-        response = test_client.post("/api/v1/search/servers", json={"query": "", "top_n": 10})
+        """Server search accepts empty query and returns a valid response."""
+        with patch("registry.api.v1.search_routes.mcp_server_repo.afilter", new_callable=AsyncMock) as mock_filter:
+            mock_filter.return_value = []
+            response = test_client.post("/api/v1/search/servers", json={"query": "", "top_n": 10})
 
-        # Query has min_length=1, so empty string returns validation error
-        assert response.status_code == 422
-        assert "query" in response.json()["detail"]
+        assert response.status_code == 200
+        mock_filter.assert_awaited_once()
+        assert response.json() == {
+            "query": "",
+            "type_list": ["server", "tool", "resource", "prompt"],
+            "total": 0,
+            "servers": [],
+        }
 
     def test_search_servers_returns_results(self, test_client: TestClient):
         """Server search returns search results."""
