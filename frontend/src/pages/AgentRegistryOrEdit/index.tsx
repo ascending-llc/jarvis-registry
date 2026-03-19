@@ -89,10 +89,21 @@ const AgentRegistryOrEdit: React.FC = () => {
       newErrors.path = 'Path is required';
     } else if (!/^\//.test(formData.path)) {
       newErrors.path = 'Path must start with /';
+    } else if (!/^\/[a-zA-Z0-9\-._~%@!$&'()*+,;=:/]*$/.test(formData.path)) {
+      newErrors.path = 'Path contains invalid characters';
     }
 
     if (!formData.url?.trim()) {
       newErrors.url = 'Agent URL is required';
+    } else {
+      try {
+        const parsedUrl = new URL(formData.url);
+        if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+          newErrors.url = 'URL must start with http:// or https://';
+        }
+      } catch (_) {
+        newErrors.url = 'Invalid URL format';
+      }
     }
 
     if (!formData.trustAgent) {
@@ -107,8 +118,14 @@ const AgentRegistryOrEdit: React.FC = () => {
     setFormData(prev => ({ ...prev, [field]: value }));
 
     if (field === 'path') {
-      const isInvalid = value && !/^\//.test(value as string);
-      setErrors(prev => ({ ...prev, path: isInvalid ? 'Path must start with /' : undefined }));
+      const strVal = value as string | undefined;
+      let pathError: string | undefined;
+      if (strVal && !/^\//.test(strVal)) {
+        pathError = 'Path must start with /';
+      } else if (strVal && !/^\/[a-zA-Z0-9\-._~%@!$&'()*+,;=:/]*$/.test(strVal)) {
+        pathError = 'Path contains invalid characters';
+      }
+      setErrors(prev => ({ ...prev, path: pathError }));
     } else if (errors[field as string]) {
       setErrors(prev => ({ ...prev, [field as string]: undefined }));
     }

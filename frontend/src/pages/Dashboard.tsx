@@ -495,7 +495,7 @@ const Dashboard: React.FC = () => {
           {viewFilter !== 'external' && (
             <button
               onClick={handleRegister}
-              className='btn-primary flex items-center justify-center space-x-2 flex-shrink-0 w-[190px]'
+              className='btn-primary flex items-center justify-center space-x-2 flex-shrink-0 w-[250px]'
             >
               <PlusIcon className='h-4 w-4' />
               <span>{viewFilter === 'agents' ? 'Register Agent' : 'Register Server'}</span>

@@ -156,7 +156,6 @@ const MainConfigForm: React.FC<MainConfigFormProps> = ({ formData, agentDetail, 
             helperText='The base URL where your agent is running.'
             suffix={
               <button
-                id='test-url-btn'
                 type='button'
                 onClick={() => handleTestUrl()}
                 disabled={isReadOnly || !formData.url}
