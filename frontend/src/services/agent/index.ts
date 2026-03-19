@@ -1,3 +1,5 @@
+import type { AxiosRequestConfig } from 'axios';
+
 import API from '@/services/api';
 import Request from '@/services/request';
 
@@ -27,8 +29,11 @@ const testAgentUrl: (url: string, config: any) => Promise<any> = async () => ({ 
 const getAgentSkills: (id: string) => Promise<TYPE.GetAgentSkillsResponse> = async id =>
   await Request.get(API.getAgentSkills(id));
 
-const getWellKnownAgentCards: (url: string) => Promise<TYPE.GetWellKnownAgentCardsResponse> = async url =>
-  await Request.get(API.getWellKnownAgentCards, { url });
+const getWellKnownAgentCards: (
+  url: string,
+  config?: AxiosRequestConfig,
+) => Promise<TYPE.GetWellKnownAgentCardsResponse> = async (url, config) =>
+  await Request.get(API.getWellKnownAgentCards, { url }, config);
 
 const AGENT = {
   getAgentsList,

@@ -8,7 +8,7 @@ import McpIcon from '@/assets/McpIcon';
 import AgentCard from '@/components/AgentCard';
 import SemanticSearchResults from '@/components/SemanticSearchResults';
 import ServerCard from '@/components/ServerCard';
-import { useGlobal } from '@/contexts/GlobalContext';
+
 import { useServer } from '@/contexts/ServerContext';
 import { useSemanticSearch } from '@/hooks/useSemanticSearch';
 
@@ -30,26 +30,13 @@ const Dashboard: React.FC = () => {
     refreshServerData,
     refreshAgentData,
   } = useServer();
+
   const [searchTerm, setSearchTerm] = useState('');
   const [committedQuery, setCommittedQuery] = useState('');
   const [refreshing, setRefreshing] = useState(false);
-  const { showToast } = useGlobal();
-
-  // Agent state management
-  const [editingAgent, setEditingAgent] = useState<Agent | null>(null);
 
   // Local view filter that includes 'external' mode not in context
   const [viewFilter, setViewFilter] = useState<'servers' | 'agents' | 'external'>('servers');
-  const [editAgentForm, setEditAgentForm] = useState({
-    name: '',
-    path: '',
-    description: '',
-    version: '',
-    visibility: 'private' as 'public' | 'private' | 'group-restricted',
-    trust_level: 'community' as 'community' | 'verified' | 'trusted' | 'unverified',
-    tags: [] as string[],
-  });
-  const [editAgentLoading, setEditAgentLoading] = useState(false);
 
   // External registry tags - can be configured via environment or constants
   // Default tags that identify servers from external registries
@@ -167,6 +154,62 @@ const Dashboard: React.FC = () => {
     return filtered;
   }, [externalAgents, searchTerm]);
 
+  // DEV-only mock agent for testing AgentCard Skills modal
+  const MOCK_AGENT_FOR_TEST: Agent = {
+    id: '__mock_agent__',
+    path: '/mock/agent',
+    name: 'Mock Agent (DEV)',
+    description: 'This is a mock agent used to test the Skills modal in AgentCard. Only visible in development.',
+    url: 'http://localhost:9999',
+    version: '1.0.0',
+    protocolVersion: '1.0',
+    capabilities: { streaming: true, pushNotifications: false },
+    skills: [
+      {
+        id: 'skill-1',
+        name: 'Text Summarization',
+        description: 'Summarizes long text into concise bullet points using LLM.',
+        tags: ['nlp', 'summarize'],
+        inputModes: ['text/plain', 'text/markdown'],
+        outputModes: ['text/plain'],
+        examples: [
+          'input: {"skillId":"analyze-csv","param":{"file_id":"123"}}',
+          'output: {"status":"success","data":{"id":"123","summary":"Analyzed CSV content."}}',
+        ],
+      },
+      {
+        id: 'skill-2',
+        name: 'Image Analysis',
+        description: 'Analyzes images and returns structured JSON descriptions.',
+        tags: ['vision', 'multimodal'],
+        inputModes: ['image/png', 'image/jpeg'],
+        outputModes: ['application/json'],
+        examples: ['Find AWS case studies for fintech companies'],
+      },
+      {
+        id: 'skill-3',
+        name: 'Code Generation',
+        description: 'Generates code snippets based on natural language instructions.',
+        tags: ['code', 'generation'],
+        inputModes: ['text/plain'],
+        outputModes: ['text/plain', 'application/json'],
+      },
+    ],
+    securitySchemes: { bearer: { type: 'http', scheme: 'bearer' } },
+    preferredTransport: 'HTTP+JSON',
+    defaultInputModes: ['text/plain'],
+    defaultOutputModes: ['text/plain'],
+    provider: { organization: 'Mock Corp', url: 'https://mock.example.com' },
+    tags: ['mock', 'dev'],
+    status: 'active',
+    enabled: true,
+    permissions: { VIEW: true, EDIT: false, DELETE: false, SHARE: false },
+    author: 'dev',
+    wellKnown: { enabled: false, url: '', lastSyncAt: '', lastSyncStatus: '', lastSyncVersion: '' },
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
   // Filter agents based on activeFilter and searchTerm
   const filteredAgents = useMemo(() => {
     let filtered = internalAgents;
@@ -246,23 +289,6 @@ const Dashboard: React.FC = () => {
     }
   };
 
-  const handleCloseEdit = () => {
-    setEditingAgent(null);
-  };
-
-  const handleSaveEditAgent = async () => {
-    if (editAgentLoading || !editingAgent) return;
-
-    try {
-      setEditAgentLoading(true);
-      showToast('Agent editing is not yet implemented', 'error');
-    } catch (error: any) {
-      showToast(error.response?.data?.detail || 'Failed to update agent', 'error');
-    } finally {
-      setEditAgentLoading(false);
-    }
-  };
-
   const handleRegister = useCallback(() => {
     if (viewFilter === 'agents') {
       navigate('/agent-registry');
@@ -336,6 +362,15 @@ const Dashboard: React.FC = () => {
                     ? 'Press Enter in the search bar to search semantically'
                     : 'No agents are registered yet'}
                 </p>
+                {!searchTerm && activeFilter === 'all' && (
+                  <button
+                    onClick={handleRegister}
+                    className='mt-4 inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-lg text-white bg-cyan-600 hover:bg-cyan-700 transition-colors'
+                  >
+                    <PlusIcon className='h-4 w-4 mr-2' />
+                    Register Agent
+                  </button>
+                )}
               </div>
             ) : (
               <div
@@ -345,6 +380,9 @@ const Dashboard: React.FC = () => {
                   gap: 'clamp(1.5rem, 1.5rem, 2.5rem)',
                 }}
               >
+                {process.env.NODE_ENV !== 'production' && (
+                  <AgentCard key={MOCK_AGENT_FOR_TEST.id} agent={MOCK_AGENT_FOR_TEST} />
+                )}
                 {filteredAgents.map(agent => (
                   <AgentCard key={agent.id} agent={agent} />
                 ))}
@@ -446,276 +484,136 @@ const Dashboard: React.FC = () => {
   };
 
   return (
-    <>
-      <div className='flex flex-col h-full'>
-        {/* Fixed Header Section */}
-        <div className='flex-shrink-0 space-y-4 pb-4'>
-          {/* View Filter Tabs */}
-          <div className='flex gap-2 border-b border-gray-200 dark:border-gray-700 overflow-x-auto'>
-            <button
-              onClick={() => handleChangeViewFilter('servers')}
-              className={`px-4 py-2 text-sm font-medium whitespace-nowrap transition-colors border-b-2 ${
-                viewFilter === 'servers'
-                  ? 'border-blue-500 text-blue-600 dark:text-blue-400'
-                  : 'border-transparent text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
-              }`}
-            >
-              <McpIcon className='h-6 w-6 inline mr-2' />
-              MCP Servers
-            </button>
-            <button
-              onClick={() => handleChangeViewFilter('agents')}
-              className={`px-4 py-2 text-sm font-medium whitespace-nowrap transition-colors border-b-2 ${
-                viewFilter === 'agents'
-                  ? 'border-cyan-500 text-cyan-600 dark:text-cyan-400'
-                  : 'border-transparent text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
-              }`}
-            >
-              <HiCommandLine className='h-6 w-6 inline mr-2' />
-              A2A Agents
-            </button>
-            <button
-              onClick={() => handleChangeViewFilter('external')}
-              className={`px-4 py-2 text-sm font-medium whitespace-nowrap transition-colors border-b-2 ${
-                viewFilter === 'external'
-                  ? 'border-green-500 text-green-600 dark:text-green-400'
-                  : 'border-transparent text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
-              }`}
-            >
-              <HiServerStack className='h-6 w-6 inline mr-2' />
-              External Registries
-            </button>
-          </div>
-
-          {/* Search Bar and Refresh Button */}
-          <div className='flex gap-4 items-center'>
-            <div className='relative flex-1'>
-              <div className='absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none'>
-                <MagnifyingGlassIcon className='h-5 w-5 text-gray-400' />
-              </div>
-              <input
-                type='text'
-                placeholder='Search servers, agents, descriptions, or tags… (Press Enter to run semantic search; typing filters locally.)'
-                className='input pl-10 w-full'
-                value={searchTerm}
-                onChange={e => setSearchTerm(e.target.value)}
-                onKeyDown={e => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault();
-                    handleSemanticSearch();
-                  }
-                }}
-              />
-              {searchTerm && (
-                <button
-                  onClick={handleClearSearch}
-                  className='absolute inset-y-0 right-0 flex items-center pr-3 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200'
-                >
-                  <XMarkIcon className='h-4 w-4' />
-                </button>
-              )}
-            </div>
-
-            {viewFilter !== 'external' && (
-              <button
-                onClick={handleRegister}
-                className='btn-primary flex items-center justify-center space-x-2 flex-shrink-0 w-[190px]'
-              >
-                <PlusIcon className='h-4 w-4' />
-                <span>{viewFilter === 'agents' ? 'Register Agent' : 'Register Server'}</span>
-              </button>
-            )}
-
-            <button
-              onClick={handleRefreshHealth}
-              disabled={refreshing}
-              className='btn-secondary flex items-center space-x-2 flex-shrink-0'
-            >
-              <ArrowPathIcon className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />
-              <span>Refresh</span>
-            </button>
-          </div>
-
-          {/* Results count */}
-          <div className='flex items-center justify-between'>
-            <p className='text-sm text-gray-500 dark:text-gray-300'>{getCardNumber()}</p>
-            <p className='text-xs text-gray-400 dark:text-gray-500'>
-              Press Enter to run semantic search; typing filters locally.
-            </p>
-          </div>
+    <div className='flex flex-col h-full'>
+      {/* Fixed Header Section */}
+      <div className='flex-shrink-0 space-y-4 pb-4'>
+        {/* View Filter Tabs */}
+        <div className='flex gap-2 border-b border-gray-200 dark:border-gray-700 overflow-x-auto'>
+          <button
+            onClick={() => handleChangeViewFilter('servers')}
+            className={`px-4 py-2 text-sm font-medium whitespace-nowrap transition-colors border-b-2 ${
+              viewFilter === 'servers'
+                ? 'border-blue-500 text-blue-600 dark:text-blue-400'
+                : 'border-transparent text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
+            }`}
+          >
+            <McpIcon className='h-6 w-6 inline mr-2' />
+            MCP Servers
+          </button>
+          <button
+            onClick={() => handleChangeViewFilter('agents')}
+            className={`px-4 py-2 text-sm font-medium whitespace-nowrap transition-colors border-b-2 ${
+              viewFilter === 'agents'
+                ? 'border-cyan-500 text-cyan-600 dark:text-cyan-400'
+                : 'border-transparent text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
+            }`}
+          >
+            <HiCommandLine className='h-6 w-6 inline mr-2' />
+            A2A Agents
+          </button>
+          <button
+            onClick={() => handleChangeViewFilter('external')}
+            className={`px-4 py-2 text-sm font-medium whitespace-nowrap transition-colors border-b-2 ${
+              viewFilter === 'external'
+                ? 'border-green-500 text-green-600 dark:text-green-400'
+                : 'border-transparent text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
+            }`}
+          >
+            <HiServerStack className='h-6 w-6 inline mr-2' />
+            External Registries
+          </button>
         </div>
 
-        {/* Scrollable Content Area */}
-        <div className='flex-1 overflow-y-auto min-h-0 space-y-10 pr-4 sm:pr-6 lg:pr-8 -mr-4 sm:-mr-6 lg:-mr-8'>
-          {semanticSectionVisible ? (
-            <>
-              <SemanticSearchResults
-                query={semanticDisplayQuery}
-                loading={semanticLoading}
-                error={semanticError}
-                servers={semanticServers}
-                tools={semanticTools}
-                agents={semanticAgents}
-              />
+        {/* Search Bar and Refresh Button */}
+        <div className='flex gap-4 items-center'>
+          <div className='relative flex-1'>
+            <div className='absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none'>
+              <MagnifyingGlassIcon className='h-5 w-5 text-gray-400' />
+            </div>
+            <input
+              type='text'
+              placeholder='Search servers, agents, descriptions, or tags… (Press Enter to run semantic search; typing filters locally.)'
+              className='input pl-10 w-full'
+              value={searchTerm}
+              onChange={e => setSearchTerm(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  handleSemanticSearch();
+                }
+              }}
+            />
+            {searchTerm && (
+              <button
+                onClick={handleClearSearch}
+                className='absolute inset-y-0 right-0 flex items-center pr-3 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200'
+              >
+                <XMarkIcon className='h-4 w-4' />
+              </button>
+            )}
+          </div>
 
-              {shouldShowFallbackGrid && (
-                <div className='border-t border-gray-200 dark:border-gray-700 pt-6'>
-                  <div className='flex items-center justify-between mb-4'>
-                    <h4 className='text-base font-semibold text-gray-900 dark:text-gray-200'>
-                      Keyword search fallback
-                    </h4>
-                    {semanticError && (
-                      <span className='text-xs font-medium text-red-500'>
-                        Showing local matches because semantic search is unavailable
-                      </span>
-                    )}
-                  </div>
-                  {renderDashboardCollections()}
-                </div>
-              )}
-            </>
-          ) : (
-            renderDashboardCollections()
+          {viewFilter !== 'external' && (
+            <button
+              onClick={handleRegister}
+              className='btn-primary flex items-center justify-center space-x-2 flex-shrink-0 w-[190px]'
+            >
+              <PlusIcon className='h-4 w-4' />
+              <span>{viewFilter === 'agents' ? 'Register Agent' : 'Register Server'}</span>
+            </button>
           )}
+
+          <button
+            onClick={handleRefreshHealth}
+            disabled={refreshing}
+            className='btn-secondary flex items-center space-x-2 flex-shrink-0'
+          >
+            <ArrowPathIcon className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />
+            <span>Refresh</span>
+          </button>
+        </div>
+
+        {/* Results count */}
+        <div className='flex items-center justify-between'>
+          <p className='text-sm text-gray-500 dark:text-gray-300'>{getCardNumber()}</p>
+          <p className='text-xs text-gray-400 dark:text-gray-500'>
+            Press Enter to run semantic search; typing filters locally.
+          </p>
         </div>
       </div>
 
-      {/* Edit Agent Modal */}
-      {editingAgent && (
-        <div className='fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50'>
-          <div className='bg-white dark:bg-gray-800 rounded-lg p-6 w-full max-w-md max-h-[90vh] overflow-y-auto'>
-            <h3 className='text-lg font-semibold text-gray-900 dark:text-white mb-4'>
-              Edit Agent: {editingAgent.name}
-            </h3>
+      {/* Scrollable Content Area */}
+      <div className='flex-1 overflow-y-auto min-h-0 space-y-10 pr-4 sm:pr-6 lg:pr-8 -mr-4 sm:-mr-6 lg:-mr-8'>
+        {semanticSectionVisible ? (
+          <>
+            <SemanticSearchResults
+              query={semanticDisplayQuery}
+              loading={semanticLoading}
+              error={semanticError}
+              servers={semanticServers}
+              tools={semanticTools}
+              agents={semanticAgents}
+            />
 
-            <form
-              onSubmit={async e => {
-                e.preventDefault();
-                await handleSaveEditAgent();
-              }}
-              className='space-y-4'
-            >
-              <div>
-                <label className='block text-sm font-medium text-gray-700 dark:text-gray-200 mb-1'>Agent Name *</label>
-                <input
-                  type='text'
-                  value={editAgentForm.name}
-                  onChange={e => setEditAgentForm(prev => ({ ...prev, name: e.target.value }))}
-                  className='block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-cyan-500 focus:border-cyan-500'
-                  required
-                />
+            {shouldShowFallbackGrid && (
+              <div className='border-t border-gray-200 dark:border-gray-700 pt-6'>
+                <div className='flex items-center justify-between mb-4'>
+                  <h4 className='text-base font-semibold text-gray-900 dark:text-gray-200'>Keyword search fallback</h4>
+                  {semanticError && (
+                    <span className='text-xs font-medium text-red-500'>
+                      Showing local matches because semantic search is unavailable
+                    </span>
+                  )}
+                </div>
+                {renderDashboardCollections()}
               </div>
-
-              <div>
-                <label className='block text-sm font-medium text-gray-700 dark:text-gray-200 mb-1'>Description</label>
-                <textarea
-                  value={editAgentForm.description}
-                  onChange={e => setEditAgentForm(prev => ({ ...prev, description: e.target.value }))}
-                  className='block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-cyan-500 focus:border-cyan-500'
-                  rows={3}
-                  placeholder='Brief description of the agent'
-                />
-              </div>
-
-              <div>
-                <label className='block text-sm font-medium text-gray-700 dark:text-gray-200 mb-1'>Version</label>
-                <input
-                  type='text'
-                  value={editAgentForm.version}
-                  onChange={e => setEditAgentForm(prev => ({ ...prev, version: e.target.value }))}
-                  className='block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-cyan-500 focus:border-cyan-500'
-                  placeholder='1.0.0'
-                />
-              </div>
-
-              <div>
-                <label className='block text-sm font-medium text-gray-700 dark:text-gray-200 mb-1'>Visibility</label>
-                <select
-                  value={editAgentForm.visibility}
-                  onChange={e =>
-                    setEditAgentForm(prev => ({
-                      ...prev,
-                      visibility: e.target.value as 'public' | 'private' | 'group-restricted',
-                    }))
-                  }
-                  className='block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-cyan-500 focus:border-cyan-500'
-                >
-                  <option value='private'>Private</option>
-                  <option value='public'>Public</option>
-                  <option value='group-restricted'>Group Restricted</option>
-                </select>
-              </div>
-
-              <div>
-                <label className='block text-sm font-medium text-gray-700 dark:text-gray-200 mb-1'>Trust Level</label>
-                <select
-                  value={editAgentForm.trust_level}
-                  onChange={e =>
-                    setEditAgentForm(prev => ({
-                      ...prev,
-                      trust_level: e.target.value as 'community' | 'verified' | 'trusted' | 'unverified',
-                    }))
-                  }
-                  className='block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-cyan-500 focus:border-cyan-500'
-                >
-                  <option value='unverified'>Unverified</option>
-                  <option value='community'>Community</option>
-                  <option value='verified'>Verified</option>
-                  <option value='trusted'>Trusted</option>
-                </select>
-              </div>
-
-              <div>
-                <label className='block text-sm font-medium text-gray-700 dark:text-gray-200 mb-1'>Tags</label>
-                <input
-                  type='text'
-                  value={editAgentForm.tags.join(',')}
-                  onChange={e =>
-                    setEditAgentForm(prev => ({
-                      ...prev,
-                      tags: e.target.value
-                        .split(',')
-                        .map(t => t.trim())
-                        .filter(t => t),
-                    }))
-                  }
-                  className='block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-cyan-500 focus:border-cyan-500'
-                  placeholder='tag1,tag2,tag3'
-                />
-              </div>
-
-              <div>
-                <label className='block text-sm font-medium text-gray-700 dark:text-gray-200 mb-1'>
-                  Path (read-only)
-                </label>
-                <input
-                  type='text'
-                  value={editAgentForm.path}
-                  className='block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-300'
-                  disabled
-                />
-              </div>
-
-              <div className='flex space-x-3 pt-4'>
-                <button
-                  type='submit'
-                  disabled={editAgentLoading}
-                  className='flex-1 px-4 py-2 text-sm font-medium text-white bg-cyan-600 hover:bg-cyan-700 disabled:opacity-50 rounded-md transition-colors'
-                >
-                  {editAgentLoading ? 'Saving...' : 'Save Changes'}
-                </button>
-                <button
-                  onClick={handleCloseEdit}
-                  className='flex-1 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-md transition-colors'
-                >
-                  Cancel
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-    </>
+            )}
+          </>
+        ) : (
+          renderDashboardCollections()
+        )}
+      </div>
+    </div>
   );
 };
 
