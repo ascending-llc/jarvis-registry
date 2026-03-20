@@ -11,7 +11,7 @@ type Props = {
   onClose: () => void;
 };
 
-const TestMcpModal = ({ serverPath, onClose }: Props) => {
+const McpPlaygroundModal = ({ serverPath, onClose }: Props) => {
   const [container, setContainer] = useState<HTMLDivElement | null>(null);
   const [error, setError] = useState<string | null>(null);
   const jarvisRef = useRef<JarvisEmbed | null>(null);
@@ -41,7 +41,7 @@ const TestMcpModal = ({ serverPath, onClose }: Props) => {
           return;
         }
 
-        jarvisRef.current = new JarvisEmbed({
+        const embed = new JarvisEmbed({
           provider: 'direct',
           token,
           model: 'anthropic-claude-sonnet-4-6',
@@ -49,12 +49,13 @@ const TestMcpModal = ({ serverPath, onClose }: Props) => {
           container,
           width: '100%',
           height: '100%',
-          onReady: () => jarvisRef.current?.setMcpServers([serverName]),
           onError: () => setError('Failed to connect to Jarvis'),
         });
+        embed.setMcpServers([serverName]);
+        jarvisRef.current = embed;
       })
       .catch((err) => {
-        console.error('[TestMcpModal] getToken failed:', err);
+        console.error('[McpPlaygroundModal] getToken failed:', err);
         setError('Failed to authenticate with Jarvis');
       });
 
@@ -93,4 +94,4 @@ const TestMcpModal = ({ serverPath, onClose }: Props) => {
   );
 };
 
-export default TestMcpModal;
+export default McpPlaygroundModal;
