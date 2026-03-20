@@ -362,7 +362,7 @@ const ServerRegistryOrEdit: React.FC = () => {
             >
               Cancel
             </button>
-            {isEditMode && (
+            {isReadOnly && (
               <button
                 onClick={() => setPlaygroundOpen(true)}
                 disabled={loading || loadingDetail}
