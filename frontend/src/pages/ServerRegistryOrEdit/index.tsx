@@ -304,7 +304,7 @@ const ServerRegistryOrEdit: React.FC = () => {
     <>
       {playgroundOpen && (
         <McpPlaygroundModal
-          serverPath={formData.path}
+          serverPath={serverDetail?.serverName || formData.path}
           onClose={() => setPlaygroundOpen(false)}
         />
       )}

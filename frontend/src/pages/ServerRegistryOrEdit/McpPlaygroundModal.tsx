@@ -71,7 +71,7 @@ const McpPlaygroundModal = ({ serverPath, onClose }: Props) => {
       <div className='flex flex-col w-[480px] h-[620px] bg-white dark:bg-gray-800 rounded-xl shadow-2xl overflow-hidden'>
         <div className='flex items-center justify-between px-4 py-3 border-b border-gray-100 dark:border-gray-700'>
           <div>
-            <p className='text-sm font-semibold text-gray-900 dark:text-white'>Test MCP</p>
+            <p className='text-sm font-semibold text-gray-900 dark:text-white'>Playground</p>
             <p className='text-xs text-gray-400 font-mono'>{serverPath}</p>
           </div>
           <button
