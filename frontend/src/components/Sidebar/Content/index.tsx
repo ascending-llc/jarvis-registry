@@ -22,6 +22,7 @@ const Content: React.FC<any> = ({ setSidebarOpen }) => {
 
   const isTokenPage = location.pathname === '/generate-token';
   const isServerRegistryOrEditPage = location.pathname === '/server-registry' || location.pathname === '/server-edit';
+  const isAgentRegistryOrEditPage = location.pathname === '/agent-registry' || location.pathname === '/agent-edit';
 
   /** List of filters available for token generation */
   const filters = [
@@ -49,7 +50,7 @@ const Content: React.FC<any> = ({ setSidebarOpen }) => {
   return (
     <div className='flex h-full flex-col'>
       {/* Conditional Content */}
-      {isServerRegistryOrEditPage ? (
+      {isServerRegistryOrEditPage || isAgentRegistryOrEditPage ? (
         <div className='flex-1 p-4 md:p-6'>
           {/* Navigation Links */}
           <div className='space-y-2 mb-6'>
@@ -60,7 +61,7 @@ const Content: React.FC<any> = ({ setSidebarOpen }) => {
               tabIndex={0}
             >
               <ArrowLeftIcon className='h-4 w-4' />
-              <span>Back to MCP</span>
+              <span>{isAgentRegistryOrEditPage ? 'Back to Dashboard' : 'Back to MCP'}</span>
             </Link>
           </div>
         </div>

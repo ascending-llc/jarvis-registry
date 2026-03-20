@@ -6,6 +6,7 @@ import { AuthProvider } from './contexts/AuthContext';
 import { GlobalProvider } from './contexts/GlobalContext';
 import { ServerProvider } from './contexts/ServerContext';
 import { ThemeProvider } from './contexts/ThemeContext';
+import AgentRegistryOrEdit from './pages/AgentRegistryOrEdit';
 import Dashboard from './pages/Dashboard';
 import Login from './pages/Login';
 import OAuthCallback from './pages/OAuthCallback';
@@ -55,6 +56,26 @@ function App() {
                     <ProtectedRoute>
                       <Layout>
                         <ServerRegistryOrEdit />
+                      </Layout>
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path='/agent-registry'
+                  element={
+                    <ProtectedRoute>
+                      <Layout>
+                        <AgentRegistryOrEdit />
+                      </Layout>
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path='/agent-edit'
+                  element={
+                    <ProtectedRoute>
+                      <Layout>
+                        <AgentRegistryOrEdit />
                       </Layout>
                     </ProtectedRoute>
                   }

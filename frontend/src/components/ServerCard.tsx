@@ -24,15 +24,12 @@ import ServerConfigModal from './ServerConfigModal';
 
 interface ServerCardProps {
   server: ServerInfo;
-  onEdit?: (server: ServerInfo) => void;
-  onServerUpdate: (id: string, updates: Partial<ServerInfo>) => void;
-  onRefreshSuccess?: () => void;
 }
 
-const ServerCard: React.FC<ServerCardProps> = ({ server, onEdit, onServerUpdate, onRefreshSuccess }) => {
+const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
   const navigate = useNavigate();
   const { showToast } = useGlobal();
-  const { cancelPolling, refreshServerData } = useServer();
+  const { cancelPolling, refreshServerData, handleServerUpdate } = useServer();
   const [loading, setLoading] = useState(false);
   const [tools, setTools] = useState<Tool[]>([]);
   const [loadingTools, setLoadingTools] = useState(false);
@@ -74,6 +71,10 @@ const ServerCard: React.FC<ServerCardProps> = ({ server, onEdit, onServerUpdate,
     }
   }, [requiresOauth, connectionState]);
 
+  const toEditPage = (server: ServerInfo) => {
+    navigate(`/server-edit?id=${server.id}`);
+  };
+
   const onOpenAuthDialog = () => setShowApiKeyDialog(true);
   const onCloseAuthDialog = () => setShowApiKeyDialog(false);
 
@@ -106,8 +107,14 @@ const ServerCard: React.FC<ServerCardProps> = ({ server, onEdit, onServerUpdate,
     setLoadingTools(true);
     try {
       const result = await SERVICES.SERVER.getServerTools(server.id);
-      setTools(Array.isArray(result.tools) ? result.tools : []);
-      setShowTools(true);
+      if (result.toolFunctions) {
+        const list: any = [];
+        Object.keys(result.toolFunctions).forEach(key => {
+          list.push(result.toolFunctions[key]);
+        });
+        setTools(list);
+        setShowTools(true);
+      }
     } catch (error) {
       console.error('Failed to fetch tools:', error);
       if (showToast) {
@@ -125,15 +132,15 @@ const ServerCard: React.FC<ServerCardProps> = ({ server, onEdit, onServerUpdate,
     try {
       const result = await SERVICES.SERVER.refreshServerHealth(server.id);
 
-      if (onServerUpdate && result) {
+      if (handleServerUpdate && result) {
         const updates: Partial<ServerInfo> = {
           status: result.status,
           lastCheckedTime: result.lastConnected,
           numTools: result.numTools,
         };
-        onServerUpdate(server.id, updates);
-      } else if (onRefreshSuccess) {
-        onRefreshSuccess();
+        handleServerUpdate(server.id, updates);
+      } else if (refreshServerData) {
+        refreshServerData();
       }
 
       if (showToast) {
@@ -146,14 +153,14 @@ const ServerCard: React.FC<ServerCardProps> = ({ server, onEdit, onServerUpdate,
     } finally {
       setLoadingRefresh(false);
     }
-  }, [server.path, loadingRefresh, onRefreshSuccess, showToast, onServerUpdate]);
+  }, [server.path, loadingRefresh, refreshServerData, showToast, handleServerUpdate]);
 
   const handleToggleServer = async (id: string, enabled: boolean) => {
     try {
       setLoading(true);
       await SERVICES.SERVER.refreshServerHealth(id);
       await SERVICES.SERVER.toggleServerStatus(id, { enabled });
-      onServerUpdate(id, { enabled });
+      handleServerUpdate(id, { enabled });
       showToast(`Server ${enabled ? 'enabled' : 'disabled'} successfully!`, 'success');
     } catch (error: any) {
       const errorMessage = error.detail?.message || (typeof error.detail === 'string' ? error.detail : '');
@@ -184,8 +191,9 @@ const ServerCard: React.FC<ServerCardProps> = ({ server, onEdit, onServerUpdate,
             <div className='animate-spin rounded-full h-8 w-8 border-b-2 border-cyan-600'></div>
           </div>
         )}
-        {/* Header */}
+
         <div className='p-4 pb-3'>
+          {/* Header */}
           <div className='flex items-start justify-between mb-3'>
             <div className='flex-1 min-w-0'>
               <div className='flex flex-wrap items-center gap-1.5 mb-2'>
@@ -243,7 +251,7 @@ const ServerCard: React.FC<ServerCardProps> = ({ server, onEdit, onServerUpdate,
               {server?.permissions?.EDIT && (
                 <button
                   className='p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50 rounded-lg transition-all duration-200 flex-shrink-0'
-                  onClick={() => onEdit?.(server)}
+                  onClick={() => toEditPage?.(server)}
                   title='Edit server'
                 >
                   <PencilIcon className='h-3.5 w-3.5' />
@@ -260,7 +268,7 @@ const ServerCard: React.FC<ServerCardProps> = ({ server, onEdit, onServerUpdate,
               </button>
             </div>
           </div>
-
+          {/* content */}
           {/* Description */}
           <p className='text-gray-600 dark:text-gray-300 text-xs leading-relaxed line-clamp-2 mb-3'>
             {server.description || 'No description available'}
@@ -426,15 +434,15 @@ const ServerCard: React.FC<ServerCardProps> = ({ server, onEdit, onServerUpdate,
               {tools?.length > 0 ? (
                 tools.map((tool: Tool, index: number) => (
                   <div key={index} className='border border-gray-200 dark:border-gray-700 rounded-lg p-4'>
-                    <h4 className='font-medium text-gray-900 dark:text-white mb-2'>{tool.name}</h4>
-                    {tool.description && (
-                      <p className='text-sm text-gray-600 dark:text-gray-300 mb-2'>{tool.description}</p>
+                    <h4 className='font-medium text-gray-900 dark:text-white mb-2'>{tool?.function?.name}</h4>
+                    {tool?.function?.description && (
+                      <p className='text-sm text-gray-600 dark:text-gray-300 mb-2'>{tool?.function?.description}</p>
                     )}
-                    {tool.inputSchema && (
+                    {tool?.function?.parameters && (
                       <details className='text-xs'>
                         <summary className='cursor-pointer text-gray-500 dark:text-gray-300'>View Schema</summary>
                         <pre className='mt-2 p-3 bg-gray-50 dark:bg-gray-900 border dark:border-gray-700 rounded overflow-x-auto text-gray-900 dark:text-gray-100'>
-                          {JSON.stringify(tool.inputSchema, null, 2)}
+                          {JSON.stringify(tool?.function?.parameters, null, 2)}
                         </pre>
                       </details>
                     )}

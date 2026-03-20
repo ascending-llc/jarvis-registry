@@ -96,11 +96,14 @@ export type CreateServerRequest = {
 };
 
 export type Tool = {
-  name: string;
-  description?: string;
-  inputSchema?: any;
+  function: {
+    name: string;
+    description?: string;
+    parameters?: any;
+  };
 };
 export type GetServerToolsResponse = {
   id: string;
-  tools: Tool[];
+  tools: string[];
+  toolFunctions: Record<string, Tool>;
 };

@@ -2,6 +2,7 @@ const BASE_URL = '/api/v1';
 const AUTH_BASE_URL = '/api/auth';
 const MCP_BASE_URL = `${BASE_URL}/mcp`;
 const SERVER_BASE_URL = `${BASE_URL}/servers`;
+const AGENT_BASE_URL = `${BASE_URL}/agents`;
 
 const API = {
   // auth
@@ -31,6 +32,17 @@ const API = {
   toggleServerStatus: (id: string) => `${SERVER_BASE_URL}/${id}/toggle`,
   getServerTools: (id: string) => `${SERVER_BASE_URL}/${id}/tools`,
   refreshServerHealth: (id: string) => `${SERVER_BASE_URL}/${id}/refresh`,
+
+  // agent
+  getAgentsList: `${AGENT_BASE_URL}`,
+  getAgentState: `${AGENT_BASE_URL}/state`,
+  getAgentDetail: (id: string) => `${AGENT_BASE_URL}/${id}`,
+  createAgent: `${AGENT_BASE_URL}`,
+  updateAgent: (id: string) => `${AGENT_BASE_URL}/${id}`,
+  deleteAgent: (id: string) => `${AGENT_BASE_URL}/${id}`,
+  toggleAgentState: (id: string) => `${AGENT_BASE_URL}/${id}/toggle`,
+  getAgentSkills: (id: string) => `${AGENT_BASE_URL}/${id}/skills`,
+  getWellKnownAgentCards: `${AGENT_BASE_URL}/.well-known/agent-cards`,
 };
 
 export default API;
