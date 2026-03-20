@@ -66,9 +66,13 @@ async def discover_servers_impl(
     logger.info(f"🔍 Discovering {type_list} for query: '{query}' (search_type={search_type})")
 
     try:
-        search_request = SearchRequest.model_validate(
-            {"query": query, "top_n": top_n, "search_type": search_type, "type_list": type_list}
-        )
+        payload: dict[str, Any] = {"search_type": search_type, "type_list": type_list}
+        if query:
+            payload["query"] = query
+        if top_n is not None:
+            payload["top_n"] = top_n
+
+        search_request = SearchRequest.model_validate(payload)
         user_context: UserContextDict = ctx.request_context.request.state.user  # type: ignore[union-attr]
 
         result = await search_servers(search_request, user_context)
@@ -104,9 +108,9 @@ def get_tools() -> list[tuple[str, Callable]]:
         query: Annotated[
             str,
             Field(
-                min_length=1,
+                min_length=0,
                 max_length=512,
-                description="Natural language query or keywords (e.g., 'web search', 'github', 'email automation') - leave empty to see all",
+                description="Natural language query or keywords (e.g., 'web search', 'github', 'email automation'). May be omitted or empty. For `type_list=[\"server\"]`, an empty query means list available servers.",
             ),
         ] = "",
         top_n: Annotated[
@@ -131,102 +135,59 @@ def get_tools() -> list[tuple[str, Callable]]:
         ),
     ) -> list[dict[str, Any]]:
         """
-        🔍 AUTO-USE: Unified discovery for tools, resources, prompts, or servers using smart semantic search.
+        🔍 AUTO-USE: Discover tools, resources, prompts, or full server documents.
 
-        **⚡ TOKEN OPTIMIZATION STRATEGY (CRITICAL):**
+        **Use this search order by default:**
+        1. `type_list=["tool"]` first for executable tools
+        2. `type_list=["resource"]` or `type_list=["prompt"]` when the user needs those specifically
+        3. `type_list=["server"]` only when you need a full Mongo-style server document
 
-        **ALWAYS follow this search sequence to minimize tokens:**
-        1. **First try:** type_list=["tool"] (DEFAULT) - Returns 3 tools (~100 tokens each)
-        2. **If no tools found, try:** type_list=["resource"] or type_list=["prompt"] - Returns 3 results each
-        3. **Last resort:** type_list=["server"] - Returns 1 full server config (1000+ tokens)
+        **What each type means:**
+        - `["tool"]`: best default for action-oriented tasks such as search, API calls, automation, or data operations
+        - `["resource"]`: for reading URIs, cached data, or file-like resources
+        - `["prompt"]`: for reusable prompt workflows
+        - `["server"]`: for full server configs, including `config.toolFunctions`, resources, and prompts
 
-        **Smart Defaults:**
-        - type_list=["tool"] (default): Returns top 3 tools
-        - type_list=["resource"]: Returns top 3 resources
-        - type_list=["prompt"]: Returns top 3 prompts
-        - type_list=["server"]: Returns top 1 server (token-heavy)
+        **Search strategies:**
+        - `hybrid`: best default, combines semantic and keyword search
+        - `near_text`: semantic/concept matching
+        - `bm25`: exact keyword matching
+        - `similarity_store`: alternative retrieval path
 
-        **Why this matters:**
-        - type_list=["tool"]: Returns just executable tools with input schemas (efficient ✅)
-        - type_list=["resource"]: Returns just data sources/URIs (efficient ✅)
-        - type_list=["prompt"]: Returns just prompt templates (efficient ✅)
-        - type_list=["server"]: Returns EVERYTHING - all tools, resources, prompts (expensive ❌)
+        **How to interpret the returned `servers` array:**
+        - Treat results as full server documents only when `type_list` is exactly `["server"]`.
+        - In every other case, including `type_list=["tool"]`, treat each result as a directly usable discovery result for execution.
 
-        **When to use each type:**
+        **If `type_list` is exactly `["server"]`:**
+        - Each item in `servers` is a full server document in MongoDB format.
+        - To execute a tool from that server:
+          1. Inspect the `$.config.toolFunctions` field of the server document.
+          2. Choose one tool entry whose description and parameters match the user's task
+          3. Set the `server_id` parameter of the `execute_tool` call to that server document's `id`
+          4. Set the `tool_name` parameter of the `execute_tool` call to that chosen tool entry's `mcpToolName`
+          5. Only if `mcpToolName` is missing, fall back to that chosen tool entry's key/name
 
-        🔧 **type_list=["tool"]** (DEFAULT - most common)
-        - User needs to DO something: search web, get data, create/update/delete
-        - Action-oriented requests: "find news", "search GitHub", "send email"
-        - Example queries: "web search", "github operations", "database queries"
-        - Returns: tool_name, server_path, description, input_schema
+        **In every other case, including `type_list=["tool"]`:**
+        - Each result is already an executable match.
+        - Use the returned `tool_name` unchanged as `execute_tool.tool_name`.
+        - Use the returned `server_id` unchanged as `execute_tool.server_id`.
 
-        📚 **type_list=["resource"]**
-        - User needs to ACCESS data sources, caches, or URIs
-        - Data retrieval: "read cached results", "get configuration", "access files"
-        - Example queries: "cached search results", "config files", "data exports"
-        - Returns: resource URIs and descriptions
+        **Examples:**
+        - News or web search: `discover_servers(query="web search news", type_list=["tool"])`
+        - GitHub operations: `discover_servers(query="github repositories", type_list=["tool"])`
+        - Cached data: `discover_servers(query="cached data", type_list=["resource"])`
+        - Full capability inspection: `discover_servers(query="github", type_list=["server"])`
 
-        💬 **type_list=["prompt"]**
-        - User needs pre-configured workflows or expert guidance
-        - Complex workflows: "research assistant", "fact checker", "code reviewer"
-        - Example queries: "research workflow", "analysis templates"
-        - Returns: prompt templates with argument schemas
+        **Execution examples:**
+        - Tool result:
+          - If discovery returns `{"tool_name": "tavily_search", "server_id": "abc123", ...}`,
+            call `execute_tool(tool_name="tavily_search", server_id="abc123", arguments={...})`.
+        - Server result:
+          - If `$.config.toolFunctions["add_numbers_mcp_minimal_mcp_iam"].mcpToolName = "add_numbers"`,
+            call `execute_tool(tool_name="add_numbers", server_id="<server id>", arguments={...})`.
 
-        🖥️ **type_list=["server"]** (use sparingly - high token cost)
-        - User asks "what can you do?" or wants to explore ALL capabilities
-        - Need complete server catalog with all tools/resources/prompts
-        - Failed to find specific tools and need full context
-        - Example: "show me all github capabilities" (not "search github repos")
-        - Returns: FULL server configs (expensive - use only when necessary)
-
-        **Search Type Strategies:**
-        - **"hybrid"** (default): Best overall accuracy, combines semantic + keyword + AI reranking
-        - **"near_text"**: Pure semantic for concept matching ("find info online" → search engines)
-        - **"bm25"**: Pure keyword for exact terms ("github" → finds "github" literally)
-        - **"similarity_store"**: Alternative algorithm if others fail
-
-        **Real-World Examples:**
-
-        ✅ GOOD (token-efficient):
-        ```
-        # User: "search for Donald Trump news"
-        discover_servers(query="web search news", type_list=["tool"])  # Returns tavily_search tool only
-
-        # User: "list GitHub repos"
-        discover_servers(query="github repositories", type_list=["tool"])  # Returns list_repos tool
-
-        # User: "get cached results"
-        discover_servers(query="cached data", type_list=["resource"])  # Returns resource URIs
-        ```
-
-        ❌ BAD (token-wasteful):
-        ```
-        # User: "search for news"
-        discover_servers(query="news", type_list=["server"])  # Returns ENTIRE server configs (wasteful!)
-        ```
-
-        **Fallback Strategy:**
-        ```
-        # Try tools first (efficient, returns 3 tools by default)
-        results = discover_servers(query="github operations", type_list=["tool"])
-        if not results:
-            # Try resources if applicable
-            results = discover_servers(query="github operations", type_list=["resource"])
-        if not results:
-            # Last resort: full server (returns 1 server by default)
-            results = discover_servers(query="github operations", type_list=["server"])
-        ```
-
-        **Returns:**
-        - For type_list=["tool"]: {tool_name, server_path, description, input_schema, server_id}
-        - For type_list=["resource"]: {resource_uri, description, server_path}
-        - For type_list=["prompt"]: {prompt_name, description, arguments, server_path}
-        - For type_list=["server"]: {serverName, path, config{tools, resources, prompts}, tags, numTools}
-
-        **After discovery, use:**
-        - execute_tool(server_path, tool_name, arguments) for tools
-        - read_resource(server_id, resource_uri) for resources
-        - execute_prompt(server_id, prompt_name, arguments) for prompts
+        Use `read_resource(server_id, resource_uri)` for resources.
+        Use `execute_prompt(server_id, prompt_name, arguments)` for prompts.
         """
         return await discover_servers_impl(ctx, query, top_n, search_type, type_list)
 

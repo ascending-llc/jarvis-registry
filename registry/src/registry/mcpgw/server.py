@@ -10,82 +10,60 @@ from .core.event_store import InMemoryEventStore
 from .core.types import McpAppContext
 from .tools import proxied, search
 
-_SYSTEM_INSTRUCTIONS = """This MCP Gateway provides unified access to 100+ MCP servers, tools, resources, and prompts through a centralized discovery and execution interface.
+_SYSTEM_INSTRUCTIONS = """This MCP Gateway provides unified access to registered MCP servers through centralized discovery and execution.
 
 KEY CAPABILITIES:
-- 🔍 Discover any tool, resource, or prompt across all registered MCP servers
-- 🚀 Execute tools from any MCP server through unified proxy
-- 📚 Access resources (URIs, caches, data sources) from any server
-- 💬 Use prompts from any server for specialized workflows
-- 🎯 Automatic routing, authentication, and execution with proper credentials
+- Discover tools, resources, prompts, or full server documents across registered MCP servers
+- Execute downstream MCP tools through a unified proxy
+- Access downstream resources and prompts through the same registry
+- Route requests with the server's configured authentication and connection settings
 
-CRITICAL RULE - ALWAYS USE DISCOVERY FIRST:
-⚠️ MANDATORY: If you don't have a suitable tool for the user's request, you MUST use discover_servers to find one.
-⚠️ NEVER respond with "I don't have the capability" without first attempting discovery.
-⚠️ The gateway provides access to 100+ specialized tools - they must be discovered before use.
+GLOBAL WORKFLOW RULES:
+1. If you do not already have a suitable tool for the user's request, call `discover_servers` first.
+2. Do not respond that you lack capability until you have attempted discovery.
+3. If a native fetch or direct access attempt fails with authentication, permission, or access errors, fall back to `discover_servers`.
+4. Prefer `type_list=["tool"]` first. Use `type_list=["server"]` only when you need a full server document to inspect all capabilities on that server.
 
-CRITICAL RULE - WHEN NATIVE TOOLS FAIL:
-⚠️ If you encounter FAILURES (fetch fails, can't access resource, authentication errors, permission denied):
-  1. DON'T give up or say "I can't access this" - The registry has specialized authenticated tools
-  2. IMMEDIATELY use discover_servers to find a specialized tool for that service
-  3. Specialized tools in registry have proper authentication/authorization configured
-  4. Most services (GitHub, APIs, databases) have authenticated tools available
-
-EXAMPLES OF WHEN TO FALL BACK TO REGISTRY:
-✓ Fetch fails on private repository URL → discover_servers(query="<service> repository", type_list=["tool"])
-✓ Can't access API endpoint → discover_servers(query="<service name> API", type_list=["tool"])
-✓ Authentication error (401/403) → discover_servers(query="<service> authenticated", type_list=["tool"])
-✓ Rate limit exceeded → discover_servers(query="<service> premium access", type_list=["tool"])
-✓ Permission denied → discover_servers(query="<service> <operation>", type_list=["tool"])
-✓ Resource unavailable → Specialized tools in registry have proper credentials and access
-
-WHEN TO USE DISCOVERY TOOLS:
-✓ User needs external/real-time data (news, weather, stock prices, current events)
-✓ User asks "what can you do?" → Use discover_servers with type_list=["server"]
-✓ User mentions specific services (GitHub, databases, APIs, search engines)
-✓ User requests functionality you don't have built-in → ALWAYS try discover_servers first
-✓ You encounter a task requiring specialized tools → discover_servers before saying "I can't"
-✓ User asks about capabilities in a domain → Use discover_servers with domain keyword
-✓ Native tool FAILED → Try discover_servers to find authenticated/specialized alternative
-
-DISCOVERY WORKFLOW:
-1. User makes request → Check if you have suitable tools
-2. No suitable tools? → MUST call discover_servers("description of need", type_list=["tool"])
-3. Review discovered tools/servers
-4. Execute appropriate tool with execute_tool(server_path, tool_name, arguments)
-5. Present results to user
+WHEN TO FALL BACK TO DISCOVERY:
+- Private repository or API access fails
+- Authentication or authorization fails (401, 403, permission denied)
+- A specialized external service is likely needed
+- The user asks what capabilities exist for a domain or service
 
 TOKEN-EFFICIENT DISCOVERY:
-- Use type_list=["tool"] (default) for specific executable tools (returns 3 results)
-- Use type_list=["resource"] for data sources/URIs (returns 3 results)
-- Use type_list=["prompt"] for workflows (returns 3 results)
-- Use type_list=["server"] only when exploring all capabilities (returns 1 server, token-heavy)
+- `type_list=["tool"]`: default and preferred for executable tools
+- `type_list=["resource"]`: for data sources or URIs
+- `type_list=["prompt"]`: for reusable prompt workflows
+- `type_list=["server"]`: only when you need the full Mongo-style server document
+
+CRITICAL RESULT INTERPRETATION RULE:
+- Treat discovery results as full server documents only when `type_list` is exactly `["server"]`.
+- In every other case, including `type_list=["tool"]`, treat each returned item as a directly usable result for execution purposes.
+
+EXECUTION RULES:
+- `execute_tool` always runs exactly one downstream MCP tool.
+- The `tool_name` parameter of the `execute_tool` call must always be the final downstream MCP tool name.
+- If the previous discovery call used exactly `type_list=["server"]`, first inspect the `$.config.toolFunctions` field of the server document, choose one tool entry, and pass that chosen entry's `mcpToolName` as `tool_name`. Only if `mcpToolName` is missing may you fall back to that tool entry's key or name.
+- In every other discovery case, pass the returned `tool_name` unchanged into the `tool_name` parameter of the `execute_tool` call.
+- Pair the chosen `tool_name` with the matching `server_id` from the same discovery result or chosen server document.
 
 EXAMPLES:
-- "What's the weather?" → discover_servers(query="weather forecast", type_list=["tool"])
-- "Search for news on AI" → discover_servers(query="web search news", type_list=["tool"])
-- "What can you do?" → discover_servers(query="", type_list=["server"])
-- "Get stock prices" → discover_servers(query="financial data stock market", type_list=["tool"])
-- "Send an email" → discover_servers(query="email send message", type_list=["tool"])
-- Fetch/access fails → discover_servers(query="<service> <operation>", type_list=["tool"])
+- Weather or current events → `discover_servers(query="weather forecast", type_list=["tool"])`
+- Web search → `discover_servers(query="web search news", type_list=["tool"])`
+- Stock prices → `discover_servers(query="financial data stock market", type_list=["tool"])`
+- Explore full capabilities of a server domain → `discover_servers(query="github", type_list=["server"])`
+- Access failure on a protected service → `discover_servers(query="<service> authenticated", type_list=["tool"])`
 
-RESILIENCE PATTERN:
-```
-# When you see errors (fetch failed, 403, 401, permission denied):
-if error_occurred:
-    # Don't give up! Find authenticated tool from registry
-    tools = discover_servers(query="<service> <operation>", type_list=["tool"])
-    if tools:
-        result = execute_tool(tools[0]["server_path"], tools[0]["tool_name"], args)
+SERVER-DOCUMENT EXAMPLE:
+- If `discover_servers(..., type_list=["server"])` returns a server whose `$.config.toolFunctions` contains:
+  - `add_numbers_mcp_minimal_mcp_iam -> mcpToolName="add_numbers"`
+  - `greet_mcp_minimal_mcp_iam -> mcpToolName="greet"`
+- Then first choose the single tool entry that matches the task.
+- To execute the add tool, call `execute_tool(tool_name="add_numbers", server_id="<server id>", arguments={...})`.
+- To execute the greet tool, call `execute_tool(tool_name="greet", server_id="<server id>", arguments={...})`.
 
-# For authenticated resources, prefer registry tools proactively:
-# - Private repositories → discover_servers("<service> repository", type_list=["tool"])
-# - Private APIs → discover_servers("<api name>", type_list=["tool"])
-# - Database queries → discover_servers("database <operation>", type_list=["tool"])
-# - Authenticated services → discover_servers("<service> authenticated", type_list=["tool"])
-```
-
-ALWAYS be proactive: Discover and use available tools automatically. When native tools fail, try registry tools - they often have proper authentication and elevated permissions!
+TOOL-RESULT EXAMPLE:
+- If discovery returns `{"tool_name": "tavily_search", "server_id": "abc123", ...}`, call `execute_tool(tool_name="tavily_search", server_id="abc123", arguments={...})`.
 """
 
 

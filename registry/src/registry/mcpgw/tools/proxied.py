@@ -595,17 +595,11 @@ def get_tools() -> list[tuple[str, Callable]]:
         tool_name: Annotated[
             str,
             Field(
-                description="Tool name from discovery - can be scoped name (e.g., 'tavily_search_mcp_tavily_search')"
+                description="Final downstream MCP tool name to execute. If the previous discovery call used `type_list=[\"server\"]` and only `server`, first choose one tool entry from `$.config.toolFunctions`, then pass that chosen entry's `mcpToolName` as `tool_name` (or fall back to that chosen entry's key/name only if `mcpToolName` is missing). In every other discovery case, pass the returned `tool_name` unchanged. This exact string is forwarded as the value of the `$.params.name` field in the JSON-RPC payload of the `tools/call` request to downstream MCP."
             ),
         ],
         arguments: Annotated[dict[str, Any], Field(description="Tool parameters from input_schema")],
         server_id: Annotated[str, Field(description="Server ID from discovery")],
-        mcp_tool_name: Annotated[
-            str | None,
-            Field(
-                description="Original MCP tool name (e.g., 'tavily_search') - extract from toolFunction.mcpToolName if available",
-            ),
-        ] = None,
     ) -> CallToolResult:
         """
         🚀 AUTO-USE: Execute any discovered tool to get real-time data.
@@ -615,7 +609,6 @@ def get_tools() -> list[tuple[str, Callable]]:
         # Web search
         execute_tool(
             tool_name="tavily_search",
-            mcp_tool_name="tavily_search",  # Extract from toolFunction.mcpToolName
             arguments={"query": "latest AI news", "max_results": 5},
             server_id="6972e222755441652c23090f"
         )
@@ -629,27 +622,48 @@ def get_tools() -> list[tuple[str, Callable]]:
         ```
 
         **Parameters:**
-        - tool_name: Tool identifier (can be scoped name like "tavily_search_mcp_tavily_search")
-        - mcp_tool_name: Original MCP name from toolFunction.mcpToolName (e.g., "tavily_search")
+        - tool_name: Final downstream MCP tool name. This is the exact value that becomes the `$.params.name` field in the JSON-RPC payload of the `tools/call` request to downstream MCP.
         - arguments: Tool-specific parameters from input_schema
         - server_id: Server ID from discovery
 
-        **Note:** If mcp_tool_name is provided, it's used for execution (MCP standard).
-        Otherwise, tool_name is used directly.
+        **How to set `tool_name`:**
+        - Case 1: the previous discovery call used `type_list=["server"]` and only `server`.
+          - The discovery response contains full server documents in `servers`.
+          - Pick one server document.
+          - Inspect the `$.config.toolFunctions` field of that server document.
+          - Choose the single tool entry that best matches the user's task.
+          - Set `server_id` to that server document's `id`.
+          - Set `tool_name` to that chosen tool entry's `mcpToolName`.
+          - Only if `mcpToolName` is missing, fall back to that chosen tool entry's key/name.
+        - Case 2: every other discovery case, including `type_list=["tool"]`.
+          - The discovery response already contains executable tool results.
+          - Set `server_id` to the returned `server_id`.
+          - Set `tool_name` to the returned `tool_name` unchanged.
+
+        **Important constraints:**
+        - `execute_tool` always runs exactly one tool.
+        - `tool_name` must always be the final downstream MCP tool name.
+        - Do not invent, rename, scope, or rewrite the tool name.
+        - Do not pass a display label or registry-only alias.
+        - Do not pass the full server document into `execute_tool`.
+        - Pair the final `tool_name` with the matching `server_id` from the same discovery result.
+
+        **Example:**
+        - If discover_servers returns `{"tool_name": "tavily_search", "server_id": "abc123"}`,
+          then call `execute_tool(tool_name="tavily_search", server_id="abc123", arguments={...})`.
+        - If a server result contains:
+          - `$.config.toolFunctions["add_numbers_mcp_minimal_mcp_iam"].mcpToolName = "add_numbers"`
+          - `$.config.toolFunctions["greet_mcp_minimal_mcp_iam"].mcpToolName = "greet"`
+          then first choose the correct tool entry for the task.
+          - To execute the add tool, call `execute_tool(tool_name="add_numbers", server_id="<server id>", arguments={...})`.
+          - To execute the greet tool, call `execute_tool(tool_name="greet", server_id="<server id>", arguments={...})`.
 
         ⚠️ Use after discover_servers to execute tools.
         Returns: Tool-specific results (format varies by tool)
         """
-        # Resolve tool name at interface layer: use mcpToolName if provided, otherwise use tool_name
-        resolved_tool_name = mcp_tool_name or tool_name
-
-        # Log the resolution for debugging
-        if mcp_tool_name and mcp_tool_name != tool_name:
-            logger.debug(f"Resolved tool name: '{resolved_tool_name}' (from mcpToolName, scoped was '{tool_name}')")
-
         return await execute_tool_impl(
             ctx,
-            resolved_tool_name,
+            tool_name,
             arguments,
             server_id,
         )

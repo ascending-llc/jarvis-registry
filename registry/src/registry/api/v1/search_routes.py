@@ -252,13 +252,123 @@ class ToolDiscoveryResponse(BaseModel):
 
 
 class SearchRequest(BaseModel):
-    query: str = Field(..., min_length=1, max_length=512, description="Natural language query")
+    query: str = Field(default="", min_length=0, max_length=512, description="Natural language query")
     top_n: int = Field(1, description="Number of results to return")
     search_type: SearchType = Field(default=SearchType.HYBRID, description="Type of search to perform")
     type_list: list[ServerEntityType] | None = Field(
         default_factory=lambda: list(ServerEntityType), description="Type of document to return (default: all types)"
     )
     include_disabled: bool = Field(default=False, description="Include disabled results")
+
+
+def _is_server_only_search(type_list: list[ServerEntityType] | None) -> bool:
+    """Return True only for the dedicated full-server discovery path."""
+    return bool(type_list) and len(type_list) == 1 and type_list[0] == ServerEntityType.SERVER
+
+
+def _build_search_filters(search: SearchRequest) -> dict[str, object]:
+    """Build shared vector-store filters from the request."""
+    return {
+        "enabled": not search.include_disabled,
+        "entity_type": list(search.type_list),
+    }
+
+
+def _serialize_search_results(results: list) -> list:
+    """Normalize model instances into JSON-compatible dicts for API/tool output."""
+    return [result.model_dump(mode="json") if hasattr(result, "model_dump") else result for result in results]
+
+
+async def _fetch_servers_by_ids(server_ids: list[str]) -> list:
+    """Load full server documents from Mongo for the matched server ids."""
+    async with asyncio.TaskGroup() as tg:
+        tasks = [tg.create_task(server_service_v1.get_server_by_id(server_id)) for server_id in server_ids]
+    return [server for task in tasks if (server := task.result()) is not None]
+
+
+def _extract_unique_server_ids(results: list[dict[str, object]]) -> list[str]:
+    """Preserve result order while removing duplicate/empty server ids."""
+    seen_server_ids: set[str] = set()
+    server_ids: list[str] = []
+    for result in results:
+        server_id = str(result.get("server_id"))
+        if not server_id or server_id in seen_server_ids:
+            continue
+        seen_server_ids.add(server_id)
+        server_ids.append(server_id)
+    return server_ids
+
+
+async def _search_server_documents(search: SearchRequest, query: str) -> list:
+    """Run the full-server discovery path using Mongo fallback for empty queries."""
+    if not query:
+        status = None if search.include_disabled else "active"
+        raw_servers, _ = await server_service_v1.list_servers(
+            query=None,
+            status=status,
+            page=1,
+            per_page=search.top_n,
+        )
+        return raw_servers
+
+    filters = _build_search_filters(search)
+    results = await mcp_server_repo.asearch_with_rerank(
+        query=query,
+        search_type=search.search_type,
+        filters=filters,
+        k=search.top_n,
+    )
+    server_ids = _extract_unique_server_ids(results)
+    return await _fetch_servers_by_ids(server_ids)
+
+
+async def _search_non_server_documents(search: SearchRequest, query: str) -> list:
+    """Run tool/resource/prompt discovery, using metadata filtering for empty queries."""
+    filters = _build_search_filters(search)
+    if not query:
+        return await mcp_server_repo.afilter(filters=filters, limit=search.top_n)
+
+    return await mcp_server_repo.asearch_with_rerank(
+        query=query,
+        k=search.top_n,
+        candidate_k=min(search.top_n * 5, 100),
+        search_type=search.search_type,
+        filters=filters,
+    )
+
+
+def _record_discovery_metrics(
+    search_results: list,
+    success: bool,
+    duration: float,
+    search_type: SearchType,
+    results_count: int,
+) -> None:
+    """Record discovery metrics once per discovered server name."""
+    discovered_names: set[str] = set()
+    for result in search_results:
+        name = getattr(result, "serverName", None) or (result.get("server_name") if isinstance(result, dict) else None)
+        if name:
+            discovered_names.add(name)
+
+    if discovered_names:
+        for name in discovered_names:
+            record_tool_discovery(
+                server_name=name,
+                success=success,
+                duration_seconds=duration,
+                transport_type=str(search_type.value),
+                tools_count=results_count,
+            )
+        return
+
+    record_tool_discovery(
+        server_name="registry",
+        success=success,
+        duration_seconds=duration,
+        transport_type=str(search_type.value),
+        tools_count=results_count,
+    )
 
 
 @router.post("/search/servers")
@@ -279,7 +389,7 @@ async def search_servers(search: SearchRequest, user_context: CurrentUser):
 
     Returns raw JSON that can be converted to ExtendedMCPServer format.
     """
-    query = search.query
+    query = search.query.strip()
     top_n = search.top_n
     start_time = time.perf_counter()
     success = False
@@ -292,65 +402,22 @@ async def search_servers(search: SearchRequest, user_context: CurrentUser):
     )
 
     try:
-        # if it includes the server, add tool,resource and prompt.
-        # search only server and get server detail from mongo
-        if len(search.type_list) == 1 and search.type_list[0] == ServerEntityType.SERVER:
-            filters = {"enabled": not search.include_disabled}
-            results = await mcp_server_repo.asearch_with_rerank(
-                query=query, search_type=search.search_type, filters=filters, k=top_n
-            )
-            server_ids = [str(result.get("server_id")) for result in results]
-            async with asyncio.TaskGroup() as tg:
-                tasks = [tg.create_task(server_service_v1.get_server_by_id(sid)) for sid in server_ids]
-            search_results = [t.result() for t in tasks]
+        if _is_server_only_search(search.type_list):
+            raw_servers = await _search_server_documents(search, query)
+            search_results = _serialize_search_results(raw_servers)
             logger.info(f"Found {len(search_results)} servers with full details")
         else:
-            filters = {"enabled": not search.include_disabled, "entity_type": [dt.value for dt in search.type_list]}
-            search_results = await mcp_server_repo.asearch_with_rerank(
-                query=query,
-                k=top_n,
-                candidate_k=min(top_n * 5, 100),  # Fetch 5x candidates for reranking (max 100)
-                search_type=search.search_type,
-                filters=filters,
-            )
-            logger.info(
-                "Search completed: %d results for query=%r",
-                len(search_results),
-                query,
-            )
+            search_results = await _search_non_server_documents(search, query)
             logger.info(f"✅ Found {len(search_results)} servers")
 
         success = True
         results_count = len(search_results)
-        return {"query": query, "total": len(search_results), "servers": search_results}
+
+        return {"query": query, "type_list": search.type_list, "total": len(search_results), "servers": search_results}
     finally:
         # Record tool discovery metrics per discovered server
         duration = time.perf_counter() - start_time
         try:
-            discovered_names: set[str] = set()
-            for result in search_results:
-                name = getattr(result, "serverName", None) or (
-                    result.get("server_name") if isinstance(result, dict) else None
-                )
-                if name:
-                    discovered_names.add(name)
-
-            if discovered_names:
-                for name in discovered_names:
-                    record_tool_discovery(
-                        server_name=name,
-                        success=success,
-                        duration_seconds=duration,
-                        transport_type=str(search.search_type.value),
-                        tools_count=results_count,
-                    )
-            else:
-                record_tool_discovery(
-                    server_name="registry",
-                    success=success,
-                    duration_seconds=duration,
-                    transport_type=str(search.search_type.value),
-                    tools_count=results_count,
-                )
+            _record_discovery_metrics(search_results, success, duration, search.search_type, results_count)
         except Exception as e:
             logger.warning(f"Failed to record tool discovery metric: {e}")

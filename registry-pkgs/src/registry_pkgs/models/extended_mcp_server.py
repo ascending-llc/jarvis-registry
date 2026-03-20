@@ -167,7 +167,7 @@ class ExtendedMCPServer(Document):
         ]
 
     # ========== Vector Search Integration (Weaviate) ==========
-    COLLECTION_NAME: ClassVar[str] = "Jarvis_Registry"
+    COLLECTION_NAME: ClassVar[str] = "MCP_Servers"
 
     def to_documents(self, chunking_config: ChunkingConfig | None = None) -> list[LangChainDocument]:
         """
@@ -225,10 +225,11 @@ class ExtendedMCPServer(Document):
         self, tool_name: str, tool_data: dict, chunking_config: ChunkingConfig
     ) -> list[LangChainDocument]:
         """Create Tool document(s) with text splitting if needed."""
-        content = self.generate_tool_content(tool_name, tool_data)
+        downstream_tool_name = tool_data.get("mcpToolName", tool_name)
+        content = self.generate_tool_content(downstream_tool_name, tool_data)
 
         metadata = self._get_base_metadata(ServerEntityType.TOOL)
-        metadata.update({"tool_name": tool_name, "original_mcp_name": tool_data.get("mcpToolName", tool_name)})
+        metadata.update({"tool_name": downstream_tool_name})
 
         return self._split_if_needed(content, metadata, chunking_config)
 
@@ -464,7 +465,6 @@ class ExtendedMCPServer(Document):
         entity_type = metadata.get("entity_type")
         if entity_type == ServerEntityType.TOOL:
             result["tool_name"] = metadata.get("tool_name")
-            result["original_mcp_name"] = metadata.get("original_mcp_name")
         elif entity_type == ServerEntityType.RESOURCE:
             result["resource_name"] = metadata.get("resource_name")
             result["resource_uri"] = metadata.get("resource_uri")

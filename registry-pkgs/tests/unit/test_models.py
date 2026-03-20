@@ -265,6 +265,44 @@ class TestExtendedMCPServerStructure:
         assert docs
         assert docs[0].metadata.get("runtime_version") == "7"
 
+    def test_tool_documents_use_downstream_mcp_tool_name_only(self):
+        server = ExtendedMCPServer.model_construct(
+            id=PydanticObjectId(),
+            serverName="tool-server",
+            config={
+                "title": "Tool Server",
+                "description": "desc",
+                "type": "streamable-http",
+                "url": "https://example.com/mcp",
+                "toolFunctions": {
+                    "scoped_tool_mcp_tool_server": {
+                        "type": "function",
+                        "mcpToolName": "downstream_tool",
+                        "function": {
+                            "name": "scoped_tool_mcp_tool_server",
+                            "description": "desc",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                },
+                "resources": [],
+                "prompts": [],
+            },
+            author=PydanticObjectId(),
+            path="/mcp/tool-server",
+            status="active",
+        )
+
+        docs = server.to_documents()
+        tool_doc = next(doc for doc in docs if doc.metadata.get("entity_type") == "tool")
+
+        assert tool_doc.metadata["tool_name"] == "downstream_tool"
+        assert "original_mcp_name" not in tool_doc.metadata
+
+        result = ExtendedMCPServer.from_document(tool_doc)
+        assert result["tool_name"] == "downstream_tool"
+        assert "original_mcp_name" not in result
+
     def test_a2a_to_documents_includes_runtime_version_metadata(self):
         agent = A2AAgent.model_construct(
             id=PydanticObjectId(),
