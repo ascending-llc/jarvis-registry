@@ -1,8 +1,5 @@
-"""
-Integration tests for semantic search routes.
-"""
+"""Integration tests for semantic search routes."""
 
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -11,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from registry.deps import get_container
 from registry.main import app
+from tests.conftest import make_container, make_container_factory
 
 
 @pytest.mark.integration
@@ -41,7 +39,7 @@ class TestSearchRoutes:
             return user_context
 
         app.dependency_overrides[get_current_user] = _mock_auth
-        app.state.container = SimpleNamespace(
+        app.state.container = make_container(
             server_service=AsyncMock(),
             vector_service=AsyncMock(),
             status_resolver=AsyncMock(),
@@ -100,9 +98,9 @@ class TestSearchRoutes:
             ],
         }
 
-        mock_container = AsyncMock()
-        mock_container.vector_service.search_mixed = AsyncMock(return_value=mock_results)
-        app.dependency_overrides[get_container] = lambda: mock_container
+        vector_service = AsyncMock()
+        vector_service.search_mixed = AsyncMock(return_value=mock_results)
+        app.dependency_overrides[get_container] = make_container_factory(vector_service=vector_service)
 
         response = test_client.post(
             "/api/v1/search/semantic",
@@ -124,9 +122,9 @@ class TestSearchRoutes:
 
     def test_semantic_search_handles_service_errors(self, test_client: TestClient):
         """Service-level errors propagate as 503."""
-        mock_container = AsyncMock()
-        mock_container.vector_service.search_mixed = AsyncMock(side_effect=RuntimeError("offline"))
-        app.dependency_overrides[get_container] = lambda: mock_container
+        vector_service = AsyncMock()
+        vector_service.search_mixed = AsyncMock(side_effect=RuntimeError("offline"))
+        app.dependency_overrides[get_container] = make_container_factory(vector_service=vector_service)
 
         response = test_client.post("/api/v1/search/semantic", json={"query": "alpha"})
 
@@ -162,8 +160,8 @@ class TestServerSearchRoutes:
             return user_context
 
         app.dependency_overrides[get_current_user] = _mock_auth
-        app.state.container = SimpleNamespace(
-            server_service=SimpleNamespace(
+        app.state.container = make_container(
+            server_service=make_container(
                 get_server_by_id=AsyncMock(),
                 list_servers=AsyncMock(return_value=([], 0)),
             ),

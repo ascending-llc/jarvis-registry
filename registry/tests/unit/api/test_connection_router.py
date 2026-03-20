@@ -9,6 +9,7 @@ from registry.api.v1.mcp.connection_router import router
 from registry.deps import get_container
 from registry.schemas.enums import ConnectionState
 from registry.services.oauth.mcp_service import MCPService
+from tests.conftest import make_container_factory
 
 # Valid MongoDB ObjectId for testing (24 hex characters)
 TEST_SERVER_ID = "000000000000000000000001"
@@ -89,7 +90,11 @@ def client():
         return response
 
     mock_container.mcp_service = mock_mcp_service
-    app.dependency_overrides[get_container] = lambda: mock_container
+    app.dependency_overrides[get_container] = make_container_factory(
+        server_service=mock_container.server_service,
+        mcp_service=mock_container.mcp_service,
+        status_resolver=mock_container.status_resolver,
+    )
 
     with patch(
         "registry.api.v1.mcp.connection_router.get_servers_connection_status", mock_get_servers_connection_status

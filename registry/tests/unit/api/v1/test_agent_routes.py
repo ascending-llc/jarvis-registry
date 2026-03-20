@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from beanie import PydanticObjectId
+from tests.conftest import make_container
 
 from registry.api.v1.a2a.agent_routes import create_agent, get_agent_stats, list_agents
 from registry.schemas.a2a_agent_api_schemas import AgentCreateRequest, AgentSkillInput
@@ -71,7 +72,7 @@ async def test_list_agents_uses_injected_services(sample_user_context):
         status="active",
         page=1,
         per_page=20,
-        container=MagicMock(
+        container=make_container(
             acl_service=acl_service,
             a2a_agent_service=a2a_agent_service,
         ),
@@ -100,7 +101,7 @@ async def test_get_agent_stats_uses_injected_service(sample_user_context):
 
     result = await get_agent_stats(
         user_context=sample_user_context,
-        container=MagicMock(a2a_agent_service=a2a_agent_service),
+        container=make_container(a2a_agent_service=a2a_agent_service),
     )
 
     a2a_agent_service.get_stats.assert_awaited_once()
@@ -138,7 +139,7 @@ async def test_create_agent_uses_injected_services(sample_user_context):
         result = await create_agent(
             data=request,
             user_context=sample_user_context,
-            container=MagicMock(
+            container=make_container(
                 acl_service=acl_service,
                 a2a_agent_service=a2a_agent_service,
             ),

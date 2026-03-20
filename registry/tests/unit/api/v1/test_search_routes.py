@@ -1,8 +1,8 @@
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic import BaseModel
+from tests.conftest import make_container
 
 from registry.api.v1.search_routes import SearchRequest, SemanticSearchRequest, search_servers, semantic_search
 from registry_pkgs.models.enums import ServerEntityType
@@ -11,8 +11,8 @@ from registry_pkgs.vector.enum.enums import SearchType
 
 @pytest.mark.asyncio
 async def test_semantic_search_uses_injected_vector_service():
-    request = SimpleNamespace(
-        state=SimpleNamespace(
+    request = make_container(
+        state=make_container(
             is_authenticated=True,
             user={"username": "tester"},
         )
@@ -39,7 +39,7 @@ async def test_semantic_search_uses_injected_vector_service():
     response = await semantic_search(
         request=request,
         search_request=SemanticSearchRequest(query="test", entityTypes=["mcp_server"], maxResults=5),
-        container=SimpleNamespace(vector_service=vector_service),
+        container=make_container(vector_service=vector_service),
     )
 
     vector_service.search_mixed.assert_awaited_once_with(
@@ -71,7 +71,7 @@ async def test_search_servers_uses_injected_server_service():
                 include_disabled=False,
             ),
             user_context={"username": "tester"},
-            container=SimpleNamespace(server_service=server_service),
+            container=make_container(server_service=server_service),
         )
 
     assert server_service.get_server_by_id.await_count == 2
@@ -104,7 +104,7 @@ async def test_search_servers_serializes_server_models_to_dicts():
                 include_disabled=False,
             ),
             user_context={"username": "tester"},
-            container=SimpleNamespace(server_service=server_service),
+            container=make_container(server_service=server_service),
         )
 
     assert response["total"] == 1
@@ -131,7 +131,7 @@ async def test_search_servers_lists_servers_when_query_is_empty():
                 include_disabled=False,
             ),
             user_context={"username": "tester"},
-            container=SimpleNamespace(server_service=SimpleNamespace(list_servers=list_servers)),
+            container=make_container(server_service=make_container(list_servers=list_servers)),
         )
 
     list_servers.assert_awaited_once_with(query=None, status="active", page=1, per_page=5)
@@ -163,7 +163,7 @@ async def test_search_servers_filters_metadata_when_non_server_query_is_empty():
                 include_disabled=False,
             ),
             user_context={"username": "tester"},
-            container=SimpleNamespace(server_service=MagicMock()),
+            container=make_container(server_service=MagicMock()),
         )
 
     afilter.assert_awaited_once_with(filters={"enabled": True, "entity_type": ["tool"]}, limit=5)

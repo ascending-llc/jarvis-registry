@@ -1,12 +1,10 @@
-"""
-Unit tests for health monitoring routes.
-"""
+"""Unit tests for health monitoring routes."""
 
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 from fastapi import WebSocket, WebSocketDisconnect
+from tests.conftest import make_container
 
 from registry.health.routes import (
     health_status_http,
@@ -56,7 +54,7 @@ class TestHealthRoutes:
         websocket.cookies = {settings.session_cookie_name: mock_session_cookie}
         websocket.headers = {"cookie": f"{settings.session_cookie_name}={mock_session_cookie}"}
         websocket.query_params = {}
-        websocket.app = SimpleNamespace(state=SimpleNamespace(container=SimpleNamespace(health_service=Mock())))
+        websocket.app = make_container(state=make_container(container=make_container(health_service=Mock())))
         return websocket
 
     @pytest.fixture
@@ -75,8 +73,8 @@ class TestHealthRoutes:
     @pytest.fixture
     def mock_request(self, mock_health_service):
         """Create a mock request with container-backed health service."""
-        return SimpleNamespace(
-            app=SimpleNamespace(state=SimpleNamespace(container=SimpleNamespace(health_service=mock_health_service)))
+        return make_container(
+            app=make_container(state=make_container(container=make_container(health_service=mock_health_service)))
         )
 
     @pytest.fixture(autouse=True)
@@ -234,8 +232,8 @@ class TestHealthRoutes:
         websocket.cookies = {}
         websocket.headers = {}
         websocket.query_params = {}
-        websocket.app = SimpleNamespace(
-            state=SimpleNamespace(container=SimpleNamespace(health_service=mock_health_service))
+        websocket.app = make_container(
+            state=make_container(container=make_container(health_service=mock_health_service))
         )
 
         await websocket_endpoint(websocket)

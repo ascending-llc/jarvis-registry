@@ -38,4 +38,5 @@ exclude-signatures = [
     {signature = 'b23bb66b9fd6b9c1e98369ab9cb6545a3ba71c07be13ac3b5fe32e3b2e5f50f2', reason = 'OAuth callback unit test uses mocked access tokens and decoded claims'},
     {signature = 'c425141de7ee7b5cd951cce030516c66daf84b08b69b28dbc2544dc67e8f3fce', reason = 'OAuth callback unit test uses mocked access tokens and decoded claims'},
     {signature = '85ad1c2974b339bca27b5da486f74048105771b53d0667159578790b1461ada9', reason = 'OAuth callback unit test uses mocked access tokens and decoded claims'},
+    {signature = '20c7387c76fac87bc98c5858b571628e367c403da266c5d6ba44130335513188', reason = 'OAuth router test dependency override diff is not credential'},
 ]

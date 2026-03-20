@@ -8,9 +8,10 @@ from fastapi.testclient import TestClient
 from registry.api.v1.mcp.oauth_router import router
 from registry.deps import get_container
 from registry.services.oauth.mcp_service import MCPService
+from tests.conftest import make_container_factory
 
 # Valid MongoDB ObjectId for testing (24 hex characters)
-TEST_SERVER_ID = "507f1f77bcf86cd799439011"
+TEST_SERVER_ID = "000000000000000000000001"
 
 # Create a mock MCP service
 mock_mcp_service = Mock(spec=MCPService)
@@ -106,7 +107,12 @@ def client():
     mock_container.token_service = AsyncMock()
     mock_container.token_service.delete_oauth_tokens = AsyncMock(return_value=True)
     mock_container.mcp_service = mock_mcp_service
-    app.dependency_overrides[get_container] = lambda: mock_container
+    app.dependency_overrides[get_container] = make_container_factory(
+        reconnection_manager=mock_container.reconnection_manager,
+        server_service=mock_container.server_service,
+        token_service=mock_container.token_service,
+        mcp_service=mock_container.mcp_service,
+    )
     yield TestClient(app)
 
 

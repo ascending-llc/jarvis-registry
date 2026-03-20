@@ -4,6 +4,7 @@ import pytest
 
 from registry.core.config import settings
 from registry.deps import get_container
+from tests.conftest import make_container_factory
 
 
 def _sync_response() -> dict:
@@ -27,11 +28,9 @@ class TestAgentCoreRuntimeSyncRoute:
     def test_sync_runtime_success(self, test_client, monkeypatch):
         mock_service = AsyncMock()
         mock_service.import_from_runtime.return_value = _sync_response()
-        test_client.app.dependency_overrides[get_container] = lambda: type(
-            "Container",
-            (),
-            {"agentcore_import_service": mock_service},
-        )()
+        test_client.app.dependency_overrides[get_container] = make_container_factory(
+            agentcore_import_service=mock_service
+        )
 
         response = test_client.post(
             f"/api/{settings.api_version}/federation/agentcore/runtime/sync",
@@ -47,11 +46,9 @@ class TestAgentCoreRuntimeSyncRoute:
     def test_sync_runtime_maps_unexpected_error_to_500(self, test_client, monkeypatch):
         mock_service = AsyncMock()
         mock_service.import_from_runtime.side_effect = RuntimeError("boom")
-        test_client.app.dependency_overrides[get_container] = lambda: type(
-            "Container",
-            (),
-            {"agentcore_import_service": mock_service},
-        )()
+        test_client.app.dependency_overrides[get_container] = make_container_factory(
+            agentcore_import_service=mock_service
+        )
 
         response = test_client.post(
             f"/api/{settings.api_version}/federation/agentcore/runtime/sync",
@@ -65,11 +62,9 @@ class TestAgentCoreRuntimeSyncRoute:
     def test_sync_runtime_forbidden_when_rbac_denies(self, test_client, monkeypatch):
         mock_service = AsyncMock()
         mock_service.import_from_runtime.return_value = _sync_response()
-        test_client.app.dependency_overrides[get_container] = lambda: type(
-            "Container",
-            (),
-            {"agentcore_import_service": mock_service},
-        )()
+        test_client.app.dependency_overrides[get_container] = make_container_factory(
+            agentcore_import_service=mock_service
+        )
         monkeypatch.setattr(
             "registry.middleware.rbac.ScopePermissionMiddleware._has_permission",
             lambda _self, _scopes, _path, _method: False,

@@ -182,6 +182,20 @@ def create_test_jwt_token(
     )
 
 
+def make_container(**services):
+    """Create a lightweight container-like object for tests."""
+    return type("Container", (), services)()
+
+
+def make_container_factory(**services):
+    """Build a zero-argument FastAPI dependency override that returns a container-like object."""
+
+    def factory():
+        return make_container(**services)
+
+    return factory
+
+
 @pytest.fixture
 def admin_session_cookie():
     """Create a valid admin session cookie (JWT access token) for testing."""
