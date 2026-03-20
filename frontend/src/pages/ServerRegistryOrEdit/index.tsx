@@ -362,13 +362,15 @@ const ServerRegistryOrEdit: React.FC = () => {
             >
               Cancel
             </button>
-            <button
-              onClick={() => setPlaygroundOpen(true)}
-              disabled={loading || loadingDetail}
-              className='min-w-[80px] sm:min-w-[120px] md:min-w-[160px] px-4 py-2 border border-purple-300 dark:border-purple-600 rounded-md shadow-sm text-sm font-medium text-purple-700 dark:text-purple-300 bg-white dark:bg-gray-800 hover:bg-purple-50 dark:hover:bg-purple-900/20 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 disabled:opacity-50 disabled:cursor-not-allowed'
-            >
-              Playground
-            </button>
+            {isEditMode && (
+              <button
+                onClick={() => setPlaygroundOpen(true)}
+                disabled={loading || loadingDetail}
+                className='min-w-[80px] sm:min-w-[120px] md:min-w-[160px] px-4 py-2 border border-purple-300 dark:border-purple-600 rounded-md shadow-sm text-sm font-medium text-purple-700 dark:text-purple-300 bg-white dark:bg-gray-800 hover:bg-purple-50 dark:hover:bg-purple-900/20 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 disabled:opacity-50 disabled:cursor-not-allowed'
+              >
+                Playground
+            </button>)
+            }
             {!isReadOnly && (
               <button
                 onClick={handleSave}
