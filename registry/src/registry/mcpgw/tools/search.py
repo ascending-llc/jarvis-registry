@@ -6,7 +6,7 @@ from mcp.server.fastmcp import Context
 from mcp.server.session import ServerSession
 from pydantic import Field
 
-from ...api.v1.search_routes import SearchRequest, search_servers
+from ...api.v1.search_routes import SearchRequest, search_servers_impl
 from ...auth.dependencies import UserContextDict
 from ..core.types import McpAppContext
 from ..exceptions import InternalServerException
@@ -75,7 +75,13 @@ async def discover_servers_impl(
         search_request = SearchRequest.model_validate(payload)
         user_context: UserContextDict = ctx.request_context.request.state.user  # type: ignore[union-attr]
 
-        result = await search_servers(search_request, user_context)
+        lifespan_context = ctx.request_context.lifespan_context
+        result = await search_servers_impl(
+            search_request,
+            user_context,
+            server_service=lifespan_context.server_service,
+            mcp_server_repo=lifespan_context.mcp_server_repo,
+        )
 
         servers = result.get("servers", [])
         total = result.get("total", 0)

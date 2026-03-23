@@ -332,6 +332,47 @@ async def _search_non_server_documents(
     )
 
 
+async def search_servers_impl(
+    search: SearchRequest,
+    user_context: CurrentUser,
+    *,
+    server_service: ServerServiceV1,
+    mcp_server_repo: MCPServerRepository,
+) -> dict[str, object]:
+    """Shared server discovery implementation for both FastAPI routes and MCP tools."""
+    query = search.query.strip()
+    top_n = search.top_n
+    start_time = time.perf_counter()
+    success = False
+    results_count = 0
+    search_results: list = []
+
+    logger.info(
+        f"🔍 Server search from user '{user_context.get('username', 'unknown')}': "
+        f"query='{query}', top_n={top_n}, search_type={search.search_type}"
+    )
+
+    try:
+        if _is_server_only_search(search.type_list):
+            raw_servers = await _search_server_documents(search, query, server_service, mcp_server_repo)
+            search_results = _serialize_search_results(raw_servers)
+            logger.info(f"Found {len(search_results)} servers with full details")
+        else:
+            search_results = await _search_non_server_documents(search, query, mcp_server_repo)
+            logger.info(f"✅ Found {len(search_results)} servers")
+
+        success = True
+        results_count = len(search_results)
+
+        return {"query": query, "type_list": search.type_list, "total": len(search_results), "servers": search_results}
+    finally:
+        duration = time.perf_counter() - start_time
+        try:
+            _record_discovery_metrics(search_results, success, duration, search.search_type, results_count)
+        except Exception as e:
+            logger.warning(f"Failed to record tool discovery metric: {e}")
+
+
 def _record_discovery_metrics(
     search_results: list,
     success: bool,
@@ -389,35 +430,9 @@ async def search_servers(
 
     Returns raw JSON that can be converted to ExtendedMCPServer format.
     """
-    query = search.query.strip()
-    top_n = search.top_n
-    start_time = time.perf_counter()
-    success = False
-    results_count = 0
-    search_results: list = []
-
-    logger.info(
-        f"🔍 Server search from user '{user_context.get('username', 'unknown')}': "
-        f"query='{query}', top_n={top_n}, search_type={search.search_type}"
+    return await search_servers_impl(
+        search,
+        user_context,
+        server_service=server_service,
+        mcp_server_repo=mcp_server_repo,
     )
-
-    try:
-        if _is_server_only_search(search.type_list):
-            raw_servers = await _search_server_documents(search, query, server_service, mcp_server_repo)
-            search_results = _serialize_search_results(raw_servers)
-            logger.info(f"Found {len(search_results)} servers with full details")
-        else:
-            search_results = await _search_non_server_documents(search, query, mcp_server_repo)
-            logger.info(f"✅ Found {len(search_results)} servers")
-
-        success = True
-        results_count = len(search_results)
-
-        return {"query": query, "type_list": search.type_list, "total": len(search_results), "servers": search_results}
-    finally:
-        # Record tool discovery metrics per discovered server
-        duration = time.perf_counter() - start_time
-        try:
-            _record_discovery_metrics(search_results, success, duration, search.search_type, results_count)
-        except Exception as e:
-            logger.warning(f"Failed to record tool discovery metric: {e}")

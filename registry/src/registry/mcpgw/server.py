@@ -95,6 +95,7 @@ def create_mcp_app(*, container_provider: Callable[[], "RegistryContainer | None
             yield McpAppContext(
                 proxy_client=proxy_client,
                 server_service=container.server_service,
+                mcp_server_repo=container.mcp_server_repo,
                 oauth_service=container.oauth_service,
                 session_store=container.session_store,
             )
