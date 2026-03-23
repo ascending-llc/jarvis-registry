@@ -84,8 +84,9 @@ async def reinitialize_server(
         )
 
 
-@DeprecationWarning
-@router.get("/connection/status", response_model=ConnectionStatusMapResponse, response_model_by_alias=True)
+@router.get(
+    "/connection/status", response_model=ConnectionStatusMapResponse, response_model_by_alias=True, deprecated=True
+)
 async def get_all_connection_status(
     current_user: CurrentUser,
     mcp_service: MCPService = Depends(get_mcp_service),

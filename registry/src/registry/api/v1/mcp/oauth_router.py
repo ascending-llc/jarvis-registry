@@ -11,13 +11,14 @@ from ....auth.oauth.reconnection import OAuthReconnectionManager
 from ....auth.oauth.types import ClientBranding
 from ....core.config import settings
 from ....core.mcp_client import get_oauth_metadata_from_server
+from ....core.session_store import SessionStore
 from ....deps import (
     get_mcp_service,
     get_reconnection_manager,
     get_server_service,
+    get_session_store,
     get_token_service,
 )
-from ....mcpgw.tools.utils import session_store
 from ....schemas.common_api_schemas import (
     OAuthInitiateResponse,
     OAuthMetadataDiscoverResponse,
@@ -162,6 +163,7 @@ async def oauth_callback(
     error: str | None = Query(None, description="OAuth error message"),
     mcp_service: MCPService = Depends(get_mcp_service),
     reconnection_manager: OAuthReconnectionManager = Depends(get_reconnection_manager),
+    session_store: SessionStore = Depends(get_session_store),
 ) -> RedirectResponse:
     """
     OAuth callback handler
