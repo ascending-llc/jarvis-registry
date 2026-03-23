@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from bson import ObjectId
 
-from auth_server.services.user_service import UserService, user_service
+from auth_server.services.user_service import UserService
 
 
 @pytest.mark.unit
@@ -138,13 +138,8 @@ class TestUserService:
             assert result is None
 
     @pytest.mark.asyncio
-    async def test_global_user_service_instance(self):
-        """Test that global user_service instance is available."""
-        # Test that the singleton instance exists
-        assert user_service is not None
-        assert isinstance(user_service, UserService)
-
-        # Test that it works
+    async def test_service_instance_resolves_user(self):
+        """Test that a constructed service instance resolves users."""
         mock_user = MagicMock()
         mock_user.id = ObjectId("507f1f77bcf86cd799439014")
 
@@ -152,7 +147,7 @@ class TestUserService:
             mock_find.return_value = mock_user
 
             user_info = {"username": "globaltest"}
-            result = await user_service.resolve_user_id(user_info)
+            result = await UserService().resolve_user_id(user_info)
 
             assert result == "507f1f77bcf86cd799439014"
 

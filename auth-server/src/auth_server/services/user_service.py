@@ -50,7 +50,3 @@ class UserService:
         except Exception as e:
             logger.error(f"Error resolving user_id from MongoDB: {type(e).__name__}: {e}")
             return None
-
-
-# Global service instance
-user_service = UserService()

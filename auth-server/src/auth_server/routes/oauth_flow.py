@@ -15,17 +15,15 @@ import jwt
 from authlib.oauth2.rfc7636 import create_s256_code_challenge
 from fastapi import APIRouter, Cookie, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
-from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
+from itsdangerous import BadSignature, SignatureExpired
 from pydantic import BaseModel, Field
 
 from registry_pkgs.core.jwt_utils import build_jwt_payload, encode_jwt, get_token_kid
 from registry_pkgs.core.scopes import map_groups_to_scopes
 
+from ..container import AuthContainer
 from ..core.config import settings
 from ..models.device_flow import DeviceApprovalRequest, DeviceCodeResponse, DeviceTokenResponse
-from ..providers.factory import get_auth_provider
-from ..services.cognito_validator_service import SimplifiedCognitoValidator
-from ..services.user_service import user_service
 from ..utils.security_mask import (
     anonymize_ip,
     hash_username,
@@ -33,9 +31,6 @@ from ..utils.security_mask import (
     mask_sensitive_id,
     parse_server_and_tool_from_url,
 )
-
-# Create global validator instance
-validator = SimplifiedCognitoValidator()
 
 logger = logging.getLogger(__name__)
 
@@ -47,9 +42,6 @@ SECRET_KEY = settings.secret_key
 JWT_ISSUER = settings.jwt_issuer
 JWT_AUDIENCE = settings.jwt_audience
 JWT_SELF_SIGNED_KID = settings.jwt_self_signed_kid
-
-# Signer for temporary OAuth sessions
-signer = URLSafeTimedSerializer(SECRET_KEY)
 
 
 def oauth_error_response(error: str, error_description: str = None, status_code: int = 400) -> JSONResponse:
@@ -94,6 +86,30 @@ class ClientRegistrationResponse(BaseModel):
     response_types: list[str] = []
     scope: str | None = None
     token_endpoint_auth_method: str = "client_secret_post"
+
+
+def _get_container(request: Request) -> AuthContainer:
+    return request.app.state.container
+
+
+def _get_oauth2_config(request: Request) -> dict:
+    return _get_container(request).oauth2_config
+
+
+def _get_user_service(request: Request):
+    return _get_container(request).user_service
+
+
+def _get_validator(request: Request):
+    return _get_container(request).validator
+
+
+def _get_signer(request: Request):
+    return _get_container(request).build_signer()
+
+
+def _get_auth_provider(request: Request, provider_type: str | None = None):
+    return _get_container(request).get_auth_provider(provider_type)
 
 
 @router.post("/oauth2/register", response_model=ClientRegistrationResponse)
@@ -295,6 +311,7 @@ async def approve_device(request: DeviceApprovalRequest):
 
 @router.post("/oauth2/token", response_model=DeviceTokenResponse)
 async def device_token(
+    request: Request,
     grant_type: str = Form(...),
     device_code: str = Form(None),
     client_id: str = Form(...),
@@ -305,6 +322,7 @@ async def device_token(
 ):
     logger.info("TOKEN ENDPOINT CALLED")
     logger.info(f"grant_type: {grant_type}")
+    user_service = _get_user_service(request)
     # Authorization Code Flow
     if grant_type == "authorization_code":
         cleanup_expired_authorization_codes()
@@ -459,10 +477,11 @@ async def device_token(
 
 
 @router.get("/oauth2/providers")
-async def get_oauth2_providers():
+async def get_oauth2_providers(request: Request):
     try:
+        oauth2_config = _get_oauth2_config(request)
         enabled = []
-        for provider_name, config in settings.oauth2_config.get("providers", {}).items():
+        for provider_name, config in oauth2_config.get("providers", {}).items():
             # Always return one provider that is both enabled and matches that AUTH_PROVIDER env var.
             if config.get("enabled", False) and provider_name == settings.auth_provider:
                 enabled.append(
@@ -486,10 +505,13 @@ async def oauth2_login(
     resource: str = None,
     state: str = None,
 ):
+    oauth2_config = {}
     try:
-        if provider not in settings.oauth2_config.get("providers", {}):
+        oauth2_config = _get_oauth2_config(request)
+        signer = _get_signer(request)
+        if provider not in oauth2_config.get("providers", {}):
             raise HTTPException(status_code=404, detail=f"Provider {provider} not found")
-        provider_config = settings.oauth2_config["providers"][provider]
+        provider_config = oauth2_config["providers"][provider]
         if not provider_config.get("enabled", False):
             raise HTTPException(status_code=400, detail=f"Provider {provider} is disabled")
 
@@ -507,7 +529,7 @@ async def oauth2_login(
             "state": internal_state,
             "client_state": client_state,
             "provider": provider,
-            "redirect_uri": redirect_uri or settings.oauth2_config.get("registry", {}).get("success_redirect", "/"),
+            "redirect_uri": redirect_uri or oauth2_config.get("registry", {}).get("success_redirect", "/"),
         }
         if client_id and response_type == "code":
             session_data["client_id"] = client_id
@@ -545,7 +567,7 @@ async def oauth2_login(
         raise
     except Exception as e:
         logger.error(f"Error initiating OAuth2 login for {provider}: {e}")
-        error_url = settings.oauth2_config.get("registry", {}).get("error_redirect", "/login")
+        error_url = oauth2_config.get("registry", {}).get("error_redirect", "/login")
         return RedirectResponse(url=f"{error_url}?error=oauth2_init_failed", status_code=302)
 
 
@@ -558,10 +580,14 @@ async def oauth2_callback(
     error: str = None,
     oauth2_temp_session: str = Cookie(None),
 ):
+    oauth2_config = {}
     try:
+        oauth2_config = _get_oauth2_config(request)
+        signer = _get_signer(request)
+        user_service = _get_user_service(request)
         if error:
             logger.warning(f"OAuth2 error from {provider}: {error}")
-            error_url = settings.oauth2_config.get("registry", {}).get("error_redirect", "/login")
+            error_url = oauth2_config.get("registry", {}).get("error_redirect", "/login")
             return RedirectResponse(url=f"{error_url}?error=oauth2_error&details={error}", status_code=302)
         if not code or not state or not oauth2_temp_session:
             raise HTTPException(status_code=400, detail="Missing required OAuth2 parameters")
@@ -608,7 +634,7 @@ async def oauth2_callback(
         if provider != temp_session_data.get("provider"):
             raise HTTPException(status_code=400, detail="Provider mismatch")
 
-        provider_config = settings.oauth2_config["providers"][provider]
+        provider_config = oauth2_config["providers"][provider]
 
         auth_server_url = settings.auth_server_external_url or settings.auth_server_url
         auth_server_url = auth_server_url.rstrip("/")
@@ -642,7 +668,7 @@ async def oauth2_callback(
                     except Exception:
                         raise ValueError("No ID token and access token claims unavailable")
             elif provider == "entra":
-                auth_provider = get_auth_provider("entra")
+                auth_provider = _get_auth_provider(request, "entra")
                 user_info = auth_provider.get_user_info(
                     access_token=token_data.get("access_token"), id_token=token_data.get("id_token")
                 )
@@ -710,7 +736,7 @@ async def oauth2_callback(
         raise
     except Exception as e:
         logger.error(f"Error in OAuth2 callback for {provider}: {e}")
-        error_url = settings.oauth2_config.get("registry", {}).get("error_redirect", "/login")
+        error_url = oauth2_config.get("registry", {}).get("error_redirect", "/login")
         return RedirectResponse(url=f"{error_url}?error=oauth2_callback_failed", status_code=302)
 
 
@@ -778,13 +804,15 @@ def map_user_info(user_info: dict, provider_config: dict) -> dict:
 
 @router.get("/oauth2/logout/{provider}")
 async def oauth2_logout(provider: str, request: Request, redirect_uri: str = None):
+    oauth2_config = {}
     try:
-        if provider not in settings.oauth2_config.get("providers", {}):
+        oauth2_config = _get_oauth2_config(request)
+        if provider not in oauth2_config.get("providers", {}):
             raise HTTPException(status_code=404, detail=f"Provider {provider} not found")
-        provider_config = settings.oauth2_config["providers"][provider]
+        provider_config = oauth2_config["providers"][provider]
         logout_url = provider_config.get("logout_url")
         if not logout_url:
-            redirect_url = redirect_uri or settings.oauth2_config.get("registry", {}).get("success_redirect", "/login")
+            redirect_url = redirect_uri or oauth2_config.get("registry", {}).get("success_redirect", "/login")
             return RedirectResponse(url=redirect_url, status_code=302)
         full_redirect_uri = redirect_uri or "/logout"
         if not full_redirect_uri.startswith("http"):
@@ -797,7 +825,7 @@ async def oauth2_logout(provider: str, request: Request, redirect_uri: str = Non
         raise
     except Exception as e:
         logger.error(f"Error initiating logout for {provider}: {e}")
-        redirect_url = redirect_uri or settings.oauth2_config.get("registry", {}).get("success_redirect", "/login")
+        redirect_url = redirect_uri or oauth2_config.get("registry", {}).get("success_redirect", "/login")
         return RedirectResponse(url=redirect_url, status_code=302)
 
 
@@ -898,7 +926,7 @@ async def validate_request(request: Request):
 
             if cookie_value:
                 try:
-                    validation_result = validate_session_cookie(cookie_value)
+                    validation_result = validate_session_cookie(cookie_value, signer=_get_signer(request))
                     # Log validation result without exposing username
                     safe_result = {k: v for k, v in validation_result.items() if k != "username"}
                     safe_result["username"] = hash_username(validation_result.get("username", ""))
@@ -934,7 +962,7 @@ async def validate_request(request: Request):
                 # If kid is our self-signed token identifier, validate as self-signed immediately
                 if header_kid == JWT_SELF_SIGNED_KID:
                     logger.info("Detected self-signed token by kid header, validating...")
-                    validation_result = validator.validate_self_signed_token(access_token)
+                    validation_result = _get_validator(request).validate_self_signed_token(access_token)
                     logger.info(
                         f"Self-signed token validation successful for user: {hash_username(validation_result.get('username', ''))}"
                     )
@@ -947,7 +975,7 @@ async def validate_request(request: Request):
                     unverified_claims = jwt.decode(access_token, options={"verify_signature": False})
                     if unverified_claims.get("iss") == JWT_ISSUER:
                         logger.info("Detected self-signed token by issuer, validating...")
-                        validation_result = validator.validate_self_signed_token(access_token)
+                        validation_result = _get_validator(request).validate_self_signed_token(access_token)
                         logger.info(
                             f"Self-signed token validation successful for user: {hash_username(validation_result.get('username', ''))}"
                         )
@@ -958,7 +986,7 @@ async def validate_request(request: Request):
             if not validation_result:
                 # Get authentication provider based on AUTH_PROVIDER environment variable
                 try:
-                    auth_provider = get_auth_provider()
+                    auth_provider = _get_auth_provider(request)
                     logger.info(f"Using authentication provider: {auth_provider.__class__.__name__}")
 
                     # Provider-specific validation
@@ -981,7 +1009,7 @@ async def validate_request(request: Request):
                             )
 
                         # Use old validator for backward compatibility
-                        validation_result = validator.validate_token(
+                        validation_result = _get_validator(request).validate_token(
                             access_token=access_token, user_pool_id=user_pool_id, client_id=client_id, region=region
                         )
 
@@ -1269,7 +1297,7 @@ def _normalize_server_name(name: str) -> str:
     return name.rstrip("/") if name else name
 
 
-def validate_session_cookie(cookie_value: str) -> dict[str, any]:
+def validate_session_cookie(cookie_value: str, *, signer) -> dict[str, any]:
     """
     Validate session cookie using itsdangerous serializer.
 
@@ -1281,12 +1309,6 @@ def validate_session_cookie(cookie_value: str) -> dict[str, any]:
     Raises:
         ValueError: If cookie is invalid or expired
     """
-    # Use global signer initialized at startup
-    global signer
-    if not signer:
-        logger.warning("Global signer not configured for session cookie validation")
-        raise ValueError("Session cookie validation not configured")
-
     try:
         # Decrypt cookie (max_age=28800 for 8 hours)
         data = signer.loads(cookie_value, max_age=28800)

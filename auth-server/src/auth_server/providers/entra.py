@@ -8,7 +8,6 @@ import requests
 from authlib.integrations.requests_client import OAuth2Session
 
 from ..core.config import settings
-from ..utils.config_loader import get_provider_config
 from .base import AuthProvider
 
 # Get logger - logging is configured centrally in server.py via settings.configure_logging()
@@ -306,17 +305,11 @@ class EntraIdProvider(AuthProvider):
             graph_data = response.json()
             logger.info(f"User info fetched from Microsoft Graph API: {graph_data}")
 
-            entra_config = get_provider_config("entra") or {}
-
-            username_claim = entra_config.get("username_claim")
-            email_claim = entra_config.get("email_claim")
-            name_claim = entra_config.get("name_claim")
-
             # Map Microsoft Graph response to standard format
-            username = graph_data.get(username_claim)
-            email = graph_data.get(email_claim)
+            username = graph_data.get(self.username_claim)
+            email = graph_data.get(self.email_claim)
 
-            name = graph_data.get(name_claim) or graph_data.get("DisplayName")
+            name = graph_data.get(self.name_claim) or graph_data.get("DisplayName")
             user_info = {
                 "username": username,
                 "email": email,

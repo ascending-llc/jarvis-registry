@@ -3,7 +3,6 @@
 import logging
 
 from ..core.config import settings
-from ..utils.config_loader import get_provider_config
 from .base import AuthProvider
 from .cognito import CognitoProvider
 from .entra import EntraIdProvider
@@ -13,10 +12,17 @@ from .keycloak import KeycloakProvider
 logger = logging.getLogger(__name__)
 
 
-def get_auth_provider(provider_type: str | None = None) -> AuthProvider:
+def get_auth_provider(
+    provider_type: str | None = None,
+    *,
+    settings_override=None,
+    oauth2_config: dict | None = None,
+) -> AuthProvider:
     """Factory function to get the appropriate auth provider.
 
     Args:
+        settings_override:
+        oauth2_config:
         provider_type: Type of provider to create ('cognito', 'keycloak', or 'entra').
                       If None, uses auth-server settings.
 
@@ -26,32 +32,33 @@ def get_auth_provider(provider_type: str | None = None) -> AuthProvider:
     Raises:
         ValueError: If provider type is unknown or required config is missing
     """
-    provider_type = provider_type or settings.auth_provider
+    resolved_settings = settings_override or settings
+    provider_type = provider_type or resolved_settings.auth_provider
 
     logger.info(f"Creating authentication provider: {provider_type}")
 
     if provider_type == "keycloak":
-        return _create_keycloak_provider()
+        return _create_keycloak_provider(resolved_settings)
     elif provider_type == "cognito":
-        return _create_cognito_provider()
+        return _create_cognito_provider(resolved_settings)
     elif provider_type == "entra":
-        return _create_entra_provider()
+        return _create_entra_provider(resolved_settings, oauth2_config or {})
     else:
         raise ValueError(f"Unknown auth provider: {provider_type}")
 
 
-def _create_keycloak_provider() -> KeycloakProvider:
+def _create_keycloak_provider(resolved_settings) -> KeycloakProvider:
     """Create and configure Keycloak provider."""
     # Get configuration from settings
-    keycloak_url = settings.keycloak_url
-    keycloak_external_url = settings.keycloak_external_url or keycloak_url
-    realm = settings.keycloak_realm
-    client_id = settings.keycloak_client_id
-    client_secret = settings.keycloak_client_secret
+    keycloak_url = resolved_settings.keycloak_url
+    keycloak_external_url = resolved_settings.keycloak_external_url or keycloak_url
+    realm = resolved_settings.keycloak_realm
+    client_id = resolved_settings.keycloak_client_id
+    client_secret = resolved_settings.keycloak_client_secret
 
     # Optional M2M configuration
-    m2m_client_id = settings.keycloak_m2m_client_id
-    m2m_client_secret = settings.keycloak_m2m_client_secret
+    m2m_client_id = resolved_settings.keycloak_m2m_client_id
+    m2m_client_secret = resolved_settings.keycloak_m2m_client_secret
 
     # Validate required configuration
     missing_vars = []
@@ -83,16 +90,16 @@ def _create_keycloak_provider() -> KeycloakProvider:
     )
 
 
-def _create_cognito_provider() -> CognitoProvider:
+def _create_cognito_provider(resolved_settings) -> CognitoProvider:
     """Create and configure Cognito provider."""
     # Required configuration
-    user_pool_id = settings.cognito_user_pool_id
-    client_id = settings.cognito_client_id
-    client_secret = settings.cognito_client_secret
-    region = settings.aws_region
+    user_pool_id = resolved_settings.cognito_user_pool_id
+    client_id = resolved_settings.cognito_client_id
+    client_secret = resolved_settings.cognito_client_secret
+    region = resolved_settings.aws_region
 
     # Optional configuration
-    domain = settings.cognito_domain
+    domain = resolved_settings.cognito_domain
 
     # Validate required configuration
     missing_vars = []
@@ -116,10 +123,10 @@ def _create_cognito_provider() -> CognitoProvider:
     )
 
 
-def _create_entra_provider() -> EntraIdProvider:
+def _create_entra_provider(resolved_settings, oauth2_config: dict) -> EntraIdProvider:
     """Create and configure Microsoft Entra ID provider."""
     # Load OAuth2 configuration using shared loader
-    entra_config = get_provider_config("entra") or {}
+    entra_config = oauth2_config.get("providers", {}).get("entra", {})
 
     # Endpoint URLs from oauth2_providers.yml (already have environment variable substitution)
     tenant_id = entra_config.get("tenant_id")

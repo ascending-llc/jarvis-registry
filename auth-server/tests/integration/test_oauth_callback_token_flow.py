@@ -6,7 +6,7 @@ and registry redirect endpoint that calls /oauth2/token to decode JWT.
 """
 
 import secrets
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -20,13 +20,19 @@ API_PREFIX = "/auth"
 @pytest.fixture
 def test_client_oauth_callback():
     """Create test client for OAuth callback tests."""
+    app.state.container = Mock()
+    app.state.container.build_signer.return_value = Mock()
+    app.state.container.user_service = Mock()
+    app.state.container.validator = Mock()
+    app.state.container.get_auth_provider.return_value = Mock()
     return TestClient(app)
 
 
 @pytest.fixture
 def mock_user_service():
     """Mock user_service for user_id resolution."""
-    with patch("auth_server.routes.oauth_flow.user_service") as mock_service:
+    with patch("auth_server.routes.oauth_flow._get_user_service") as mock_get_user_service:
+        mock_service = mock_get_user_service.return_value
         # Default behavior: resolve_user_id returns a valid user_id
         mock_service.resolve_user_id = AsyncMock(return_value="507f1f77bcf86cd799439011")
         yield mock_service
@@ -60,23 +66,24 @@ class TestOAuth2CallbackStandardFlow:
             "groups": ["user-group"],
         }
 
-        # Mock settings
-        with patch("auth_server.routes.oauth_flow.settings") as mock_settings:
-            mock_settings.oauth2_config = {
-                "providers": {
-                    "keycloak": {
-                        "enabled": True,
-                        "client_id": "test-client",
-                        "client_secret": "test-secret",
-                        "token_url": "http://keycloak/token",
-                        "user_info_url": "http://keycloak/userinfo",
-                        "username_claim": "preferred_username",
-                        "email_claim": "email",
-                        "name_claim": "name",
-                        "groups_claim": "groups",
-                    }
+        oauth2_config = {
+            "providers": {
+                "keycloak": {
+                    "enabled": True,
+                    "client_id": "test-client",
+                    "client_secret": "test-secret",
+                    "token_url": "http://keycloak/token",
+                    "user_info_url": "http://keycloak/userinfo",
+                    "username_claim": "preferred_username",
+                    "email_claim": "email",
+                    "name_claim": "name",
+                    "groups_claim": "groups",
                 }
             }
+        }
+
+        # Mock settings
+        with patch("auth_server.routes.oauth_flow.settings") as mock_settings:
             mock_settings.registry_url = "http://localhost:3000"
             mock_settings.registry_app_name = "registry-internal-client"
             mock_settings.auth_server_external_url = "http://localhost:8888"
@@ -84,28 +91,28 @@ class TestOAuth2CallbackStandardFlow:
             mock_settings.oauth_session_ttl_seconds = 600
             mock_settings.secret_key = "test-secret-key"
 
-            # Create a valid session cookie
-            from itsdangerous import URLSafeTimedSerializer
+            with patch("auth_server.routes.oauth_flow._get_oauth2_config", return_value=oauth2_config):
+                # Create a valid session cookie
+                from itsdangerous import URLSafeTimedSerializer
 
-            test_signer = URLSafeTimedSerializer("test-secret-key")
+                test_signer = URLSafeTimedSerializer("test-secret-key")
 
-            session_data = {
-                "state": "test-state-123",
-                "client_state": None,
-                "provider": "keycloak",
-                "redirect_uri": "http://localhost:3000/redirect",
-            }
-            temp_session = test_signer.dumps(session_data)
+                session_data = {
+                    "state": "test-state-123",
+                    "client_state": None,
+                    "provider": "keycloak",
+                    "redirect_uri": "http://localhost:3000/redirect",
+                }
+                temp_session = test_signer.dumps(session_data)
 
-            # Patch the signer in oauth_flow to use our test signer
-            with patch("auth_server.routes.oauth_flow.signer", test_signer):
-                # Make callback request
-                response = test_client_oauth_callback.get(
-                    f"{API_PREFIX}/oauth2/callback/keycloak",
-                    params={"code": "provider_auth_code", "state": "test-state-123"},
-                    cookies={"oauth2_temp_session": temp_session},
-                    follow_redirects=False,
-                )
+                with patch("auth_server.routes.oauth_flow._get_signer", return_value=test_signer):
+                    # Make callback request
+                    response = test_client_oauth_callback.get(
+                        f"{API_PREFIX}/oauth2/callback/keycloak",
+                        params={"code": "provider_auth_code", "state": "test-state-123"},
+                        cookies={"oauth2_temp_session": temp_session},
+                        follow_redirects=False,
+                    )
 
             # Should redirect with authorization code
             assert response.status_code == 302
@@ -154,52 +161,54 @@ class TestOAuth2CallbackStandardFlow:
             "groups": ["external-group"],
         }
 
-        with patch("auth_server.routes.oauth_flow.settings") as mock_settings:
-            mock_settings.oauth2_config = {
-                "providers": {
-                    "keycloak": {
-                        "enabled": True,
-                        "client_id": "test-client",
-                        "client_secret": "test-secret",
-                        "token_url": "http://keycloak/token",
-                        "user_info_url": "http://keycloak/userinfo",
-                        "username_claim": "preferred_username",
-                        "email_claim": "email",
-                        "name_claim": "name",
-                        "groups_claim": "groups",
-                    }
+        oauth2_config = {
+            "providers": {
+                "keycloak": {
+                    "enabled": True,
+                    "client_id": "test-client",
+                    "client_secret": "test-secret",
+                    "token_url": "http://keycloak/token",
+                    "user_info_url": "http://keycloak/userinfo",
+                    "username_claim": "preferred_username",
+                    "email_claim": "email",
+                    "name_claim": "name",
+                    "groups_claim": "groups",
                 }
             }
+        }
+
+        with patch("auth_server.routes.oauth_flow.settings") as mock_settings:
             mock_settings.registry_url = "http://localhost:3000"
             mock_settings.auth_server_external_url = "http://localhost:8888"
             mock_settings.auth_server_url = "http://localhost:8888"
             mock_settings.oauth_session_ttl_seconds = 600
             mock_settings.secret_key = "test-secret-key"
 
-            from itsdangerous import URLSafeTimedSerializer
+            with patch("auth_server.routes.oauth_flow._get_oauth2_config", return_value=oauth2_config):
+                from itsdangerous import URLSafeTimedSerializer
 
-            test_signer = URLSafeTimedSerializer("test-secret-key")
+                test_signer = URLSafeTimedSerializer("test-secret-key")
 
-            # Session with explicit client_id
-            session_data = {
-                "state": "test-state-456",
-                "client_state": "external-state-abc",
-                "provider": "keycloak",
-                "redirect_uri": "http://external-app.com/callback",
-                "client_id": "external-client-123",
-                "client_redirect_uri": "http://external-app.com/callback",
-                "code_challenge": "test-challenge",
-                "code_challenge_method": "S256",
-            }
-            temp_session = test_signer.dumps(session_data)
+                # Session with explicit client_id
+                session_data = {
+                    "state": "test-state-456",
+                    "client_state": "external-state-abc",
+                    "provider": "keycloak",
+                    "redirect_uri": "http://external-app.com/callback",
+                    "client_id": "external-client-123",
+                    "client_redirect_uri": "http://external-app.com/callback",
+                    "code_challenge": "test-challenge",
+                    "code_challenge_method": "S256",
+                }
+                temp_session = test_signer.dumps(session_data)
 
-            with patch("auth_server.routes.oauth_flow.signer", test_signer):
-                response = test_client_oauth_callback.get(
-                    f"{API_PREFIX}/oauth2/callback/keycloak",
-                    params={"code": "provider_auth_code", "state": "test-state-456"},
-                    cookies={"oauth2_temp_session": temp_session},
-                    follow_redirects=False,
-                )
+                with patch("auth_server.routes.oauth_flow._get_signer", return_value=test_signer):
+                    response = test_client_oauth_callback.get(
+                        f"{API_PREFIX}/oauth2/callback/keycloak",
+                        params={"code": "provider_auth_code", "state": "test-state-456"},
+                        cookies={"oauth2_temp_session": temp_session},
+                        follow_redirects=False,
+                    )
 
             # Should redirect to external client with state
             assert response.status_code == 302
@@ -238,18 +247,19 @@ class TestOAuth2CallbackStandardFlow:
             "groups": ["/admin", "/users"],
         }
 
-        with patch("auth_server.routes.oauth_flow.settings") as mock_settings:
-            mock_settings.oauth2_config = {
-                "providers": {
-                    "keycloak": {
-                        "enabled": True,
-                        "client_id": "test-client",
-                        "client_secret": "test-secret",
-                        "token_url": "http://keycloak/token",
-                        "user_info_url": "http://keycloak/userinfo",
-                    }
+        oauth2_config = {
+            "providers": {
+                "keycloak": {
+                    "enabled": True,
+                    "client_id": "test-client",
+                    "client_secret": "test-secret",
+                    "token_url": "http://keycloak/token",
+                    "user_info_url": "http://keycloak/userinfo",
                 }
             }
+        }
+
+        with patch("auth_server.routes.oauth_flow.settings") as mock_settings:
             mock_settings.registry_url = "http://localhost:3000"
             mock_settings.registry_app_name = "registry-internal-client"
             mock_settings.auth_server_external_url = "http://localhost:8888"
@@ -257,25 +267,26 @@ class TestOAuth2CallbackStandardFlow:
             mock_settings.oauth_session_ttl_seconds = 600
             mock_settings.secret_key = "test-secret-key"
 
-            from itsdangerous import URLSafeTimedSerializer
+            with patch("auth_server.routes.oauth_flow._get_oauth2_config", return_value=oauth2_config):
+                from itsdangerous import URLSafeTimedSerializer
 
-            test_signer = URLSafeTimedSerializer("test-secret-key")
+                test_signer = URLSafeTimedSerializer("test-secret-key")
 
-            session_data = {
-                "state": "test-state-789",
-                "client_state": None,
-                "provider": "keycloak",
-                "redirect_uri": "http://localhost:3000/redirect",
-            }
-            temp_session = test_signer.dumps(session_data)
+                session_data = {
+                    "state": "test-state-789",
+                    "client_state": None,
+                    "provider": "keycloak",
+                    "redirect_uri": "http://localhost:3000/redirect",
+                }
+                temp_session = test_signer.dumps(session_data)
 
-            with patch("auth_server.routes.oauth_flow.signer", test_signer):
-                response = test_client_oauth_callback.get(
-                    f"{API_PREFIX}/oauth2/callback/keycloak",
-                    params={"code": "keycloak_code", "state": "test-state-789"},
-                    cookies={"oauth2_temp_session": temp_session},
-                    follow_redirects=False,
-                )
+                with patch("auth_server.routes.oauth_flow._get_signer", return_value=test_signer):
+                    response = test_client_oauth_callback.get(
+                        f"{API_PREFIX}/oauth2/callback/keycloak",
+                        params={"code": "keycloak_code", "state": "test-state-789"},
+                        cookies={"oauth2_temp_session": temp_session},
+                        follow_redirects=False,
+                    )
 
                 # Extract authorization code
                 import urllib.parse
@@ -297,7 +308,8 @@ class TestOAuth2CallbackStandardFlow:
         """Test oauth2_callback when user_id cannot be resolved (user not in MongoDB)."""
         with patch("auth_server.routes.oauth_flow.exchange_code_for_token") as mock_exchange:
             with patch("auth_server.routes.oauth_flow.get_user_info") as mock_get_user:
-                with patch("auth_server.routes.oauth_flow.user_service") as mock_service:
+                with patch("auth_server.routes.oauth_flow._get_user_service") as mock_get_user_service:
+                    mock_service = mock_get_user_service.return_value
                     # User not found in MongoDB
                     mock_service.resolve_user_id = AsyncMock(return_value=None)
 
@@ -310,22 +322,23 @@ class TestOAuth2CallbackStandardFlow:
                         "groups": [],
                     }
 
-                    with patch("auth_server.routes.oauth_flow.settings") as mock_settings:
-                        mock_settings.oauth2_config = {
-                            "providers": {
-                                "keycloak": {
-                                    "enabled": True,
-                                    "client_id": "test",
-                                    "client_secret": "secret",
-                                    "token_url": "http://keycloak/token",
-                                    "user_info_url": "http://keycloak/userinfo",
-                                    "username_claim": "preferred_username",
-                                    "email_claim": "email",
-                                    "name_claim": "name",
-                                    "groups_claim": "groups",
-                                }
+                    oauth2_config = {
+                        "providers": {
+                            "keycloak": {
+                                "enabled": True,
+                                "client_id": "test",
+                                "client_secret": "secret",
+                                "token_url": "http://keycloak/token",
+                                "user_info_url": "http://keycloak/userinfo",
+                                "username_claim": "preferred_username",
+                                "email_claim": "email",
+                                "name_claim": "name",
+                                "groups_claim": "groups",
                             }
                         }
+                    }
+
+                    with patch("auth_server.routes.oauth_flow.settings") as mock_settings:
                         mock_settings.registry_url = "http://localhost:3000"
                         mock_settings.registry_app_name = "registry-internal-client"
                         mock_settings.auth_server_external_url = "http://localhost:8888"
@@ -333,25 +346,26 @@ class TestOAuth2CallbackStandardFlow:
                         mock_settings.oauth_session_ttl_seconds = 600
                         mock_settings.secret_key = "test-secret-key"
 
-                        from itsdangerous import URLSafeTimedSerializer
+                        with patch("auth_server.routes.oauth_flow._get_oauth2_config", return_value=oauth2_config):
+                            from itsdangerous import URLSafeTimedSerializer
 
-                        test_signer = URLSafeTimedSerializer("test-secret-key")
+                            test_signer = URLSafeTimedSerializer("test-secret-key")
 
-                        session_data = {
-                            "state": "test-state",
-                            "client_state": None,
-                            "provider": "keycloak",
-                            "redirect_uri": "http://localhost:3000/redirect",
-                        }
-                        temp_session = test_signer.dumps(session_data)
+                            session_data = {
+                                "state": "test-state",
+                                "client_state": None,
+                                "provider": "keycloak",
+                                "redirect_uri": "http://localhost:3000/redirect",
+                            }
+                            temp_session = test_signer.dumps(session_data)
 
-                        with patch("auth_server.routes.oauth_flow.signer", test_signer):
-                            response = test_client_oauth_callback.get(
-                                f"{API_PREFIX}/oauth2/callback/keycloak",
-                                params={"code": "code", "state": "test-state"},
-                                cookies={"oauth2_temp_session": temp_session},
-                                follow_redirects=False,
-                            )
+                            with patch("auth_server.routes.oauth_flow._get_signer", return_value=test_signer):
+                                response = test_client_oauth_callback.get(
+                                    f"{API_PREFIX}/oauth2/callback/keycloak",
+                                    params={"code": "code", "state": "test-state"},
+                                    cookies={"oauth2_temp_session": temp_session},
+                                    follow_redirects=False,
+                                )
 
                             # Still should generate authorization code (user_id is None)
                             assert response.status_code == 302

@@ -15,8 +15,6 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from registry_pkgs import load_scopes_config
 from registry_pkgs.core.config import MongoConfig, ScopesConfig, TelemetryConfig
 
-from ..utils.config_loader import get_oauth2_config
-
 
 class AuthSettings(BaseSettings):
     """Auth server settings with environment variable support."""
@@ -136,11 +134,6 @@ class AuthSettings(BaseSettings):
             otel_prometheus_enabled=self.otel_prometheus_enabled,
             otel_prometheus_port=self.otel_prometheus_port,
         )
-
-    @cached_property
-    def oauth2_config(self) -> dict:
-        """Get the OAuth2 configuration from oauth2_providers.yml file."""
-        return get_oauth2_config()
 
     def model_post_init(self, __context) -> None:
         # Generate secret key if not provided

@@ -9,18 +9,17 @@ import time
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 # Import database utilities
 from registry_pkgs.database import close_mongodb, init_mongodb
 from registry_pkgs.telemetry import setup_metrics
 
+from .container import AuthContainer
 from .core.config import settings
 
 # Import provider factory
-from .providers.factory import get_auth_provider
-
 # Import root-level authorize endpoint
 from .routes.authorize import router as authorize_router
 
@@ -32,12 +31,6 @@ from .routes.oauth_flow import router as oauth_flow_router
 
 # Import .well-known routes
 from .routes.well_known import router as well_known_router
-
-# Import validator service (moved out of server.py)
-from .services.cognito_validator_service import SimplifiedCognitoValidator
-
-# Instantiate a default validator (main() may replace region)
-validator = SimplifiedCognitoValidator()
 
 # Configure logging
 settings.configure_logging()
@@ -103,6 +96,7 @@ async def lifespan(app: FastAPI):
         # Initialize MongoDB connection
         logger.info("🗄️  Initializing MongoDB connection...")
         await init_mongodb(settings.mongo_config)
+        app.state.container = AuthContainer(settings=settings)
         logger.info("✅ MongoDB connection established")
         logger.info("✅ Auth server initialized successfully!")
 
@@ -116,6 +110,8 @@ async def lifespan(app: FastAPI):
     # Shutdown tasks
     logger.info("🔄 Shutting down Auth Server...")
     try:
+        if hasattr(app.state, "container"):
+            del app.state.container
         # Close MongoDB connection
         logger.info("🗄️  Closing MongoDB connection...")
         await close_mongodb()
@@ -180,10 +176,10 @@ async def health_check():
 
 
 @app.get(f"{api_prefix}/config")
-async def get_auth_config():
+async def get_auth_config(request: Request):
     """Return the authentication configuration info"""
     try:
-        auth_provider = get_auth_provider()
+        auth_provider = request.app.state.container.get_auth_provider()
         provider_info = auth_provider.get_provider_info()
 
         if provider_info.get("provider_type") == "keycloak":
@@ -244,9 +240,7 @@ def main():
     """Run the server"""
     args = parse_arguments()
 
-    # Update global validator with default region
-    global validator
-    validator = SimplifiedCognitoValidator(region=args.region)
+    settings.aws_region = args.region
 
     logger.info(f"Starting simplified auth server on {args.host}:{args.port}")
     logger.info(f"Default region: {args.region}")
