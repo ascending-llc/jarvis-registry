@@ -38,7 +38,25 @@
       "version": "1.0.0",
       "protocolVersion": "1.0",
       "tags": ["code", "review"],
-      "numSkills": 5,
+      "numSkills": 2,
+      "skills": [
+        {
+          "id": "code-analysis",
+          "name": "Code Analysis",
+          "description": "Analyze code quality and identify issues",
+          "tags": ["analysis", "quality"],
+          "inputModes": ["text/plain"],
+          "outputModes": ["application/json"]
+        },
+        {
+          "id": "bug-detection",
+          "name": "Bug Detection",
+          "description": "Detect potential bugs in code",
+          "tags": ["bugs", "detection"],
+          "inputModes": ["text/plain"],
+          "outputModes": ["application/json"]
+        }
+      ],
       "enabled": true,
       "status": "active",
       "permissions": {
@@ -114,6 +132,7 @@
     "streaming": true,
     "pushNotifications": false
   },
+  "numSkills": 1,
   "skills": [
     {
       "id": "code-analysis",

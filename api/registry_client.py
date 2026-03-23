@@ -438,18 +438,22 @@ class AgentListItem(BaseModel):
     Note: Uses snake_case internally but serializes to camelCase for A2A compliance.
     """
 
+    id: str = Field(..., description="Agent ID")
+    path: str = Field(..., description="Agent path")
     name: str = Field(..., description="Agent name")
     description: str = Field(default="", description="Agent description")
-    path: str = Field(..., description="Agent path")
     url: str = Field(..., description="Agent URL")
+    version: str = Field(..., description="Agent version")
+    protocol_version: str = Field(..., alias="protocolVersion", description="Protocol version")
     tags: list[str] = Field(default_factory=list, description="Categorization tags")
-    skills: list[str] = Field(default_factory=list, description="Skill names")
     num_skills: int = Field(default=0, alias="numSkills", description="Number of skills")
-    num_stars: float = Field(default=0.0, alias="numStars", description="Average community rating (0.0-5.0)")
-    is_enabled: bool = Field(default=False, alias="isEnabled", description="Whether agent is enabled")
-    provider: str | None = Field(None, description="Agent provider")
-    streaming: bool = Field(default=False, description="Supports streaming")
-    trust_level: str = Field(default="unverified", alias="trustLevel", description="Trust level")
+    skills: list[Skill] = Field(default_factory=list, description="Agent skills with full details")
+    enabled: bool = Field(default=False, description="Whether agent is enabled")
+    status: str = Field(..., description="Agent status (active, inactive, error)")
+    permissions: dict[str, bool] = Field(default_factory=dict, description="User permissions for this agent")
+    author: str = Field(..., description="Agent author ID")
+    created_at: str = Field(..., alias="createdAt", description="Creation timestamp")
+    updated_at: str = Field(..., alias="updatedAt", description="Last update timestamp")
 
     class Config:
         populate_by_name = True  # Allow both snake_case and camelCase on input

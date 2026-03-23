@@ -117,6 +117,7 @@ class AgentListItem(APIBaseModel):
     protocolVersion: str
     tags: list[str]
     numSkills: int
+    skills: list[AgentSkillOutput]
     enabled: bool
     status: str
     permissions: ResourcePermissions
@@ -164,6 +165,7 @@ class AgentDetailResponse(APIBaseModel):
     version: str
     protocolVersion: str
     capabilities: dict[str, Any]
+    numSkills: int
     skills: list[AgentSkillOutput]
     securitySchemes: dict[str, Any]
     preferredTransport: str
@@ -216,6 +218,18 @@ def convert_to_list_item(agent: Any, acl_permission: int | ResourcePermissions) 
             SHARE=bool(acl_permission & PermissionBits.SHARE),
         )
 
+    skills_output = [
+        AgentSkillOutput(
+            id=skill.id,
+            name=skill.name,
+            description=skill.description,
+            tags=skill.tags or [],
+            inputModes=skill.input_modes if hasattr(skill, "input_modes") else None,
+            outputModes=skill.output_modes if hasattr(skill, "output_modes") else None,
+        )
+        for skill in (agent.card.skills or [])
+    ]
+
     return AgentListItem(
         id=str(agent.id),
         path=agent.path,
@@ -226,6 +240,7 @@ def convert_to_list_item(agent: Any, acl_permission: int | ResourcePermissions) 
         protocolVersion=agent.card.protocol_version,
         tags=agent.tags,
         numSkills=len(agent.card.skills or []),
+        skills=skills_output,
         enabled=agent.isEnabled,
         status=agent.status,
         permissions=permissions,
@@ -304,6 +319,7 @@ def convert_to_detail(agent: Any, acl_permission: int | ResourcePermissions) -> 
         version=agent.card.version,
         protocolVersion=agent.card.protocol_version,
         capabilities=capabilities_dict,
+        numSkills=len(agent.card.skills or []),
         skills=skills_output,
         securitySchemes=security_schemes_dict,
         preferredTransport=agent.card.preferred_transport,
