@@ -455,7 +455,7 @@ Response 200:
   }
 }
 
-**Note:** 
+**Note:**
 - List endpoint uses `ServerListItemResponse` schema
 - Does NOT return `toolFunctions` for performance
 - All field names use camelCase convention
@@ -553,7 +553,7 @@ Response 200:
   "updatedAt": "2026-01-03T15:45:00Z"
 }
 
-**Note:** 
+**Note:**
 - Detail endpoint uses `ServerDetailResponse` schema
 - Includes `toolFunctions` with complete OpenAI function schemas
 - All field names use camelCase convention
@@ -648,7 +648,7 @@ Response 201:
   "updatedAt": "2026-01-04T16:00:00Z"
 }
 
-**Note:** 
+**Note:**
 - Upon registration, uses `ServerDetailResponse` schema
 - Automatically connects to the MCP server and retrieves capabilities
 - All field names use camelCase convention
@@ -806,7 +806,7 @@ Response 200:
   }
 }
 
-**Note:** 
+**Note:**
 - Uses `ServerDetailResponse` schema with snake_case fields
 - Returns tools in MCP's native format (with `input_schema`)
 - Different from `tool_functions` OpenAI format stored in the database
@@ -833,8 +833,8 @@ Response 200:
   "updated_at": "2026-01-04T16:20:00Z"
 }
 
-**Note:** 
-- Uses `ServerDetailResponse` schema with snake_case fields  
+**Note:**
+- Uses `ServerDetailResponse` schema with snake_case fields
 - Health refresh reconnects to the MCP server and updates tools/capabilities if they changed
 ```
 

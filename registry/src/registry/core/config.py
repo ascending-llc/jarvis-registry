@@ -135,7 +135,7 @@ class Settings(BaseSettings):
 
     # ==================== Vector Store ====================
     vector_store_type: str = "weaviate"
-    embedding_provider: str = "aws_bedrock"
+    embeddings_provider: str = "aws_bedrock"
     weaviate_host: str = "127.0.0.1"
     weaviate_port: int = 8080
     weaviate_api_key: str = ""
@@ -155,6 +155,15 @@ class Settings(BaseSettings):
     agentcore_runtime_init_retry_delay_seconds: float = 5.0
     agentcore_a2a_card_retry_attempts: int = 3
     agentcore_a2a_card_retry_delay_seconds: float = 3.0
+
+    # ==================== Azure OpenAI ====================
+    azure_openai_api_key: str | None = None
+    azure_openai_endpoint: str = ""
+    azure_openai_api_version: str = "2024-06-01"
+    azure_openai_resource_name: str = ""
+    azure_openai_embedding_deployment: str = ""
+    azure_openai_llm_deployment: str = ""
+    llm_model: str = "gpt-4"
 
     # ==================== JWT ====================
     jwt_issuer: str = "jarvis-auth-server"
@@ -299,7 +308,7 @@ class Settings(BaseSettings):
     def vector_config(self) -> VectorConfig:
         return VectorConfig(
             vector_store_type=self.vector_store_type,
-            embedding_provider=self.embedding_provider,
+            embeddings_provider=self.embeddings_provider,
             weaviate_host=self.weaviate_host,
             weaviate_port=self.weaviate_port,
             weaviate_api_key=self.weaviate_api_key,
@@ -311,6 +320,12 @@ class Settings(BaseSettings):
             aws_access_key_id=self.aws_access_key_id,
             aws_secret_access_key=self.aws_secret_access_key,
             aws_session_token=self.aws_session_token,
+            azure_openai_api_key=self.azure_openai_api_key,
+            azure_openai_endpoint=self.azure_openai_endpoint,
+            azure_openai_api_version=self.azure_openai_api_version,
+            azure_openai_resource_name=self.azure_openai_resource_name,
+            azure_openai_embedding_deployment=self.azure_openai_embedding_deployment,
+            azure_openai_llm_deployment=self.azure_openai_llm_deployment,
         )
 
     @cached_property
