@@ -2,21 +2,20 @@ import { XMarkIcon } from '@heroicons/react/24/outline';
 import { JarvisEmbed } from 'jarvis-embed';
 import { useEffect, useRef, useState } from 'react';
 
-import SERVICES from '@/services';
+import HELPER from '@/helper';
+import { AuthCookieKey } from '@/services/auth/type';
 
 const JARVIS_URL = 'https://jarvis-demo.ascendingdc.com';
 
 type Props = {
-  serverPath: string;
+  serverName: string;
   onClose: () => void;
 };
 
-const McpPlaygroundModal = ({ serverPath, onClose }: Props) => {
+const McpPlaygroundModal = ({ serverName, onClose }: Props) => {
   const [container, setContainer] = useState<HTMLDivElement | null>(null);
   const [error, setError] = useState<string | null>(null);
   const jarvisRef = useRef<JarvisEmbed | null>(null);
-
-  const serverName = serverPath.replace(/^\//, '');
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -31,33 +30,27 @@ const McpPlaygroundModal = ({ serverPath, onClose }: Props) => {
 
     let destroyed = false;
 
-    SERVICES.AUTH.getToken({ expiresInHours: 1, description: 'Jarvis MCP test' })
-      .then(result => {
-        if (destroyed) return;
+    setError(null);
+    const token = HELPER.getCookieValue(AuthCookieKey.JarvisRegistrySession);
+    if (!token) {
+      setError('Failed to retrieve Jarvis session token');
+      return;
+    }
 
-        const token = result.tokenData?.accessToken;
-        if (!token) {
-          setError('Failed to retrieve access token');
-          return;
-        }
-
-        const embed = new JarvisEmbed({
-          provider: 'direct',
-          token,
-          model: 'anthropic-claude-sonnet-4-6',
-          apiUrl: JARVIS_URL,
-          container,
-          width: '100%',
-          height: '100%',
-          onError: () => setError('Failed to connect to Jarvis'),
-        });
-        embed.setMcpServers([serverName]);
-        jarvisRef.current = embed;
-      })
-      .catch(err => {
-        console.error('[McpPlaygroundModal] getToken failed:', err);
-        setError('Failed to authenticate with Jarvis');
-      });
+    const embed = new JarvisEmbed({
+      provider: 'direct',
+      token,
+      model: 'anthropic-claude-sonnet-4-6',
+      apiUrl: JARVIS_URL,
+      container,
+      width: '100%',
+      height: '100%',
+      onError: () => setError('Failed to connect to Jarvis'),
+    });
+    if (!destroyed) {
+      embed.setMcpServers([serverName]);
+      jarvisRef.current = embed;
+    }
 
     return () => {
       destroyed = true;
@@ -72,7 +65,7 @@ const McpPlaygroundModal = ({ serverPath, onClose }: Props) => {
         <div className='flex items-center justify-between px-4 py-3 border-b border-gray-100 dark:border-gray-700'>
           <div>
             <p className='text-sm font-semibold text-gray-900 dark:text-white'>Playground</p>
-            <p className='text-xs text-gray-400 font-mono'>{serverPath}</p>
+            <p className='text-xs text-gray-400 font-mono'>{serverName}</p>
           </div>
           <button
             onClick={onClose}
