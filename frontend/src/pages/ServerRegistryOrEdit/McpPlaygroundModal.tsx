@@ -2,21 +2,20 @@ import { XMarkIcon } from '@heroicons/react/24/outline';
 import { JarvisEmbed } from 'jarvis-embed';
 import { useEffect, useRef, useState } from 'react';
 
+import HELPER from '@/helper';
 import SERVICES from '@/services';
 
-const JARVIS_URL = 'https://jarvis-demo.ascendingdc.com';
+const JARVIS_URL = HELPER.getJarvisUrl();
 
 type Props = {
-  serverPath: string;
+  serverName: string;
   onClose: () => void;
 };
 
-const McpPlaygroundModal = ({ serverPath, onClose }: Props) => {
+const McpPlaygroundModal = ({ serverName, onClose }: Props) => {
   const [container, setContainer] = useState<HTMLDivElement | null>(null);
   const [error, setError] = useState<string | null>(null);
   const jarvisRef = useRef<JarvisEmbed | null>(null);
-
-  const serverName = serverPath.replace(/^\//, '');
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -54,9 +53,10 @@ const McpPlaygroundModal = ({ serverPath, onClose }: Props) => {
         embed.setMcpServers([serverName]);
         jarvisRef.current = embed;
       })
-      .catch(err => {
-        console.error('[McpPlaygroundModal] getToken failed:', err);
-        setError('Failed to authenticate with Jarvis');
+      .catch(() => {
+        if (!destroyed) {
+          setError('Failed to authenticate with Jarvis');
+        }
       });
 
     return () => {
@@ -72,7 +72,7 @@ const McpPlaygroundModal = ({ serverPath, onClose }: Props) => {
         <div className='flex items-center justify-between px-4 py-3 border-b border-gray-100 dark:border-gray-700'>
           <div>
             <p className='text-sm font-semibold text-gray-900 dark:text-white'>Playground</p>
-            <p className='text-xs text-gray-400 font-mono'>{serverPath}</p>
+            <p className='text-xs text-gray-400 font-mono'>{serverName}</p>
           </div>
           <button
             onClick={onClose}
