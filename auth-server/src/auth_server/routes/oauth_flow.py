@@ -309,17 +309,55 @@ async def approve_device(request: DeviceApprovalRequest):
     return {"status": "approved", "message": "Device verified successfully"}
 
 
+async def _parse_device_token_params(request: Request) -> dict:
+    content_type = request.headers.get("content-type", "")
+
+    if content_type == "application/json":
+        body = await request.json()
+
+        return {
+            "grant_type": body.get("grant_type"),
+            "device_code": body.get("device_code"),
+            "client_id": body.get("client_id"),
+            "code": body.get("code"),
+            "code_verifier": body.get("code_verifier"),
+            "refresh_token": body.get("refresh_token"),
+            "redirect_uri": body.get("redirect_uri"),
+        }
+    elif content_type == "application/x-www-form-urlencoded":
+        form = await request.form()
+
+        return {
+            "grant_type": form.get("grant_type"),
+            "device_code": form.get("device_code"),
+            "client_id": form.get("client_id"),
+            "code": form.get("code"),
+            "code_verifier": form.get("code_verifier"),
+            "refresh_token": form.get("refresh_token"),
+            "redirect_uri": form.get("redirect_uri"),
+        }
+    else:
+        raise HTTPException(
+            status_code=415, detail="content-type must be application/json or application/x-www-form-urlencoded"
+        )
+
+
 @router.post("/oauth2/token", response_model=DeviceTokenResponse)
-async def device_token(
-    request: Request,
-    grant_type: str = Form(...),
-    device_code: str = Form(None),
-    client_id: str = Form(...),
-    code: str = Form(None),
-    code_verifier: str = Form(None),
-    refresh_token: str = Form(None),
-    redirect_uri: str = Form(None),
-):
+async def device_token(request: Request):
+    params = await _parse_device_token_params(request)
+    grant_type: str | None = params["grant_type"]
+    device_code: str | None = params["device_code"]
+    client_id: str | None = params["client_id"]
+    code: str | None = params["code"]
+    code_verifier: str | None = params["code_verifier"]
+    refresh_token: str | None = params["refresh_token"]
+    redirect_uri: str | None = params["redirect_uri"]
+
+    if not grant_type:
+        return oauth_error_response("invalid_request", "grant_type is required")
+    if not client_id:
+        return oauth_error_response("invalid_request", "client_id is required")
+
     logger.info("TOKEN ENDPOINT CALLED")
     logger.info(f"grant_type: {grant_type}")
     user_service = _get_user_service(request)

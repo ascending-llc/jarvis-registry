@@ -387,8 +387,9 @@ class TestOAuth2CallbackStandardFlow:
 class TestOAuth2TokenEndpoint:
     """Test /oauth2/token endpoint with authorization code grant."""
 
+    @pytest.mark.parametrize("content_type", ["form", "json"])
     def test_token_endpoint_with_authorization_code(
-        self, test_client_oauth_callback, clear_device_storage, mock_user_service
+        self, test_client_oauth_callback, clear_device_storage, mock_user_service, content_type
     ):
         """Test token endpoint exchanges authorization code for JWT with user_id."""
         # Create authorization code directly
@@ -412,19 +413,19 @@ class TestOAuth2TokenEndpoint:
             "created_at": current_time,
         }
 
+        payload = {
+            "grant_type": "authorization_code",
+            "code": auth_code,
+            "client_id": "test-client",
+            "redirect_uri": "http://localhost/callback",
+        }
+
         # Exchange code for token
         with patch("auth_server.routes.oauth_flow.jwt.encode") as mock_jwt_encode:
             mock_jwt_encode.return_value = "mock-jwt-token-with-user-id"
 
-            response = test_client_oauth_callback.post(
-                f"{API_PREFIX}/oauth2/token",
-                data={
-                    "grant_type": "authorization_code",
-                    "code": auth_code,
-                    "client_id": "test-client",
-                    "redirect_uri": "http://localhost/callback",
-                },
-            )
+            kwargs = {"json": payload} if content_type == "json" else {"data": payload}
+            response = test_client_oauth_callback.post(f"{API_PREFIX}/oauth2/token", **kwargs)
 
             assert response.status_code == 200
             token_data = response.json()
@@ -444,7 +445,8 @@ class TestOAuth2TokenEndpoint:
             # Code should be deleted after successful exchange
             assert auth_code not in authorization_codes_storage
 
-    def test_token_endpoint_code_already_used(self, test_client_oauth_callback, clear_device_storage):
+    @pytest.mark.parametrize("content_type", ["form", "json"])
+    def test_token_endpoint_code_already_used(self, test_client_oauth_callback, clear_device_storage, content_type):
         """Test token endpoint rejects already-used authorization code."""
         auth_code = secrets.token_urlsafe(32)
         current_time = int(__import__("time").time())
@@ -459,15 +461,15 @@ class TestOAuth2TokenEndpoint:
             "created_at": current_time,
         }
 
-        response = test_client_oauth_callback.post(
-            f"{API_PREFIX}/oauth2/token",
-            data={
-                "grant_type": "authorization_code",
-                "code": auth_code,
-                "client_id": "test-client",
-                "redirect_uri": "http://localhost/callback",
-            },
-        )
+        payload = {
+            "grant_type": "authorization_code",
+            "code": auth_code,
+            "client_id": "test-client",
+            "redirect_uri": "http://localhost/callback",
+        }
+
+        kwargs = {"json": payload} if content_type == "json" else {"data": payload}
+        response = test_client_oauth_callback.post(f"{API_PREFIX}/oauth2/token", **kwargs)
 
         assert response.status_code == 400
         assert response.json()["error"] == "invalid_grant"
@@ -475,3 +477,13 @@ class TestOAuth2TokenEndpoint:
 
         # Code should be deleted
         assert auth_code not in authorization_codes_storage
+
+    def test_token_endpoint_unsupported_content_type(self, test_client_oauth_callback):
+        """Test token endpoint rejects unsupported content-type with 415."""
+        response = test_client_oauth_callback.post(
+            f"{API_PREFIX}/oauth2/token",
+            content="grant_type=authorization_code&client_id=test-client",
+            headers={"Content-Type": "text/plain"},
+        )
+
+        assert response.status_code == 415
