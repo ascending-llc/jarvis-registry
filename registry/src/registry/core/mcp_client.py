@@ -744,7 +744,7 @@ async def _get_from_sse(
 
     logger.info(f"Connecting to SSE server: {mcp_server_url}")
 
-    requires_init = False
+    requires_init = True
     logger.info("SSE transport: always stateful (requiresInit=True)")
 
     # Import httpx for custom client and monkey patching
