@@ -149,6 +149,8 @@ class Settings(BaseSettings):
     aws_access_key_id: str | None = None
     aws_secret_access_key: str | None = None
     aws_session_token: str | None = None
+    # Global fallback only. Federation-specific assumeRoleArn in providerConfig
+    # should take precedence for federated sync workflows.
     agentcore_assume_role_arn: str | None = None
     agentcore_runtime_jwt: str | None = None
     agentcore_runtime_init_retry_attempts: int = 4

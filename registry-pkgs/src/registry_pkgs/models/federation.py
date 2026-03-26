@@ -15,11 +15,21 @@ from registry_pkgs.models.enums import (
 
 class AwsAgentCoreProviderConfig(BaseModel):
     """
-    AWS AgentCore provider configuration
+    AWS AgentCore federation-level provider configuration.
+
+    These fields describe how the federation connects to the AgentCore
+    control plane. They are not child-resource attributes and therefore
+    must not be stored on MCP servers or A2A agents.
     """
 
-    region: str = Field(..., description="AWS region, e.g. us-east-1")
-    assumeRoleArn: str | None = Field(default=None, description="Optional assume role ARN")
+    region: str | None = Field(default=None, description="AWS region, e.g. us-east-1")
+    assumeRoleArn: str | None = Field(
+        default=None,
+        description=(
+            "Federation-level IAM role ARN used for AgentCore control plane operations. "
+            "This federation assumes the role during discovery and sync."
+        ),
+    )
     resourceTagsFilter: dict[str, str] = Field(
         default_factory=dict,
         description="Tag filters used during discovery",
@@ -112,7 +122,7 @@ class Federation(Document):
 
     providerConfig: dict[str, Any] = Field(
         default_factory=dict,
-        description="Provider-specific config payload",
+        description="Federation-level provider connection config payload",
     )
 
     stats: FederationStats = Field(default_factory=FederationStats)

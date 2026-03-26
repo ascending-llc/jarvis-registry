@@ -67,9 +67,9 @@ class AgentCoreClientProvider:
         access_key = settings.aws_access_key_id
         secret_key = settings.aws_secret_access_key
         session_token = settings.aws_session_token
-        assume_role_arn = (
-            self.assume_role_arn if self.assume_role_arn is not None else settings.agentcore_assume_role_arn
-        )
+        # Federation sync must always use the federation-level assumeRoleArn.
+        # Global settings are intentionally not used as an implicit fallback here.
+        assume_role_arn = self.assume_role_arn
 
         if access_key and secret_key:
             base_session = boto3.Session(

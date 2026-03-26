@@ -5,7 +5,6 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from beanie import PydanticObjectId
 from fastapi import HTTPException
-from starlette.background import BackgroundTasks
 
 from registry.api.v1.federation.federation_routes import (
     create_federation,
@@ -75,19 +74,10 @@ def sample_job(sample_federation):
 
 
 @pytest.mark.asyncio
-async def test_create_federation_runs_sync_when_requested(sample_user_context, sample_federation, sample_job):
+async def test_create_federation_does_not_trigger_sync(sample_user_context, sample_federation, sample_job):
     federation_crud_service = MagicMock()
     federation_crud_service.create_federation = AsyncMock(return_value=sample_federation)
-    federation_crud_service.mark_sync_pending = AsyncMock(return_value=sample_federation)
-    federation_crud_service.get_recent_jobs = AsyncMock(return_value=[sample_job])
-
-    federation_job_service = MagicMock()
-    federation_job_service.create_job = AsyncMock(return_value=sample_job)
-
-    federation_sync_service = MagicMock()
-    federation_sync_service.run_sync = AsyncMock(return_value=sample_job)
-
-    background_tasks = BackgroundTasks()
+    federation_crud_service.get_recent_jobs = AsyncMock(return_value=[])
 
     result = await create_federation(
         data=FederationCreateRequest(
@@ -96,19 +86,35 @@ async def test_create_federation_runs_sync_when_requested(sample_user_context, s
             description="Production federation",
             tags=["prod"],
             providerConfig={"region": "us-east-1", "assumeRoleArn": "arn:aws:iam::123456789012:role/TestRole"},
-            syncOnCreate=True,
         ),
-        background_tasks=background_tasks,
         user_context=sample_user_context,
         federation_crud_service=federation_crud_service,
-        federation_job_service=federation_job_service,
-        federation_sync_service=federation_sync_service,
     )
 
-    federation_sync_service.run_sync.assert_not_awaited()
-    assert len(background_tasks.tasks) == 1
     assert result.id == str(sample_federation.id)
-    assert len(result.recentJobs) == 1
+    assert len(result.recentJobs) == 0
+
+
+@pytest.mark.asyncio
+async def test_create_federation_allows_empty_aws_provider_config(sample_user_context, sample_federation):
+    created_federation = SimpleNamespace(**{**sample_federation.__dict__, "providerConfig": {"resourceTagsFilter": {}}})
+    federation_crud_service = MagicMock()
+    federation_crud_service.create_federation = AsyncMock(return_value=created_federation)
+    federation_crud_service.get_recent_jobs = AsyncMock(return_value=[])
+
+    result = await create_federation(
+        data=FederationCreateRequest(
+            providerType=FederationProviderType.AWS_AGENTCORE,
+            displayName="AWS AgentCore Prod",
+            description="Production federation",
+            tags=["prod"],
+            providerConfig={},
+        ),
+        user_context=sample_user_context,
+        federation_crud_service=federation_crud_service,
+    )
+
+    assert result.providerConfig == {"resourceTagsFilter": {}}
 
 
 @pytest.mark.asyncio
@@ -153,6 +159,35 @@ async def test_update_federation_runs_resync_for_provider_changes(sample_user_co
         user_id=sample_user_context["user_id"],
     )
     assert result.version == 2
+
+
+@pytest.mark.asyncio
+async def test_update_federation_requires_aws_region_and_assume_role(sample_user_context, sample_federation):
+    federation_crud_service = MagicMock()
+    federation_crud_service.get_federation = AsyncMock(return_value=sample_federation)
+    federation_crud_service.update_federation = AsyncMock(
+        side_effect=ValueError("AWS AgentCore federation requires providerConfig.region, providerConfig.assumeRoleArn")
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await update_federation(
+            federation_id=str(sample_federation.id),
+            data=FederationUpdateRequest(
+                displayName="AWS AgentCore Prod",
+                description="Updated federation",
+                tags=["prod"],
+                providerConfig={},
+                version=1,
+                syncAfterUpdate=False,
+            ),
+            user_context=sample_user_context,
+            federation_crud_service=federation_crud_service,
+            federation_job_service=MagicMock(),
+            federation_sync_service=MagicMock(),
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "providerConfig.region" in exc_info.value.detail["message"]
 
 
 @pytest.mark.asyncio
@@ -281,6 +316,31 @@ async def test_sync_federation_rejects_running_sync_status(sample_user_context, 
 
     assert exc_info.value.status_code == 409
     assert "cannot start a new sync" in exc_info.value.detail["message"]
+
+
+@pytest.mark.asyncio
+async def test_sync_federation_requires_aws_region_and_assume_role(sample_user_context, sample_federation):
+    federation_missing_config = SimpleNamespace(
+        **{**sample_federation.__dict__, "providerConfig": {"resourceTagsFilter": {}}}
+    )
+    federation_crud_service = MagicMock()
+    federation_crud_service.get_federation = AsyncMock(return_value=federation_missing_config)
+    federation_crud_service.validate_provider_config = MagicMock(
+        side_effect=ValueError("AWS AgentCore federation requires providerConfig.region, providerConfig.assumeRoleArn")
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await sync_federation(
+            federation_id=str(federation_missing_config.id),
+            data=FederationSyncRequest(force=False, reason="manual"),
+            user_context=sample_user_context,
+            federation_crud_service=federation_crud_service,
+            federation_job_service=MagicMock(),
+            federation_sync_service=MagicMock(),
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "providerConfig.region" in exc_info.value.detail["message"]
 
 
 @pytest.mark.asyncio

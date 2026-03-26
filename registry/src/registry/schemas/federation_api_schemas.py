@@ -20,7 +20,6 @@ class FederationCreateRequest(BaseModel):
     description: str | None = None
     tags: list[str] = Field(default_factory=list)
     providerConfig: dict[str, Any] = Field(default_factory=dict)
-    syncOnCreate: bool = True
 
     model_config = ConfigDict(populate_by_name=True, use_enum_values=True)
 

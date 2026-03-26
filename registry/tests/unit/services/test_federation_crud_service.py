@@ -6,7 +6,7 @@ import pytest
 from beanie import PydanticObjectId
 
 from registry.services.federation_crud_service import FederationCrudService
-from registry_pkgs.models.enums import FederationStatus, FederationSyncStatus
+from registry_pkgs.models.enums import FederationProviderType, FederationStatus, FederationSyncStatus
 from registry_pkgs.models.federation import FederationStats
 
 
@@ -81,3 +81,32 @@ async def test_mark_sync_success_updates_stats_and_last_sync():
     assert result.syncStatus == FederationSyncStatus.SUCCESS
     assert result.lastSync == now
     assert result.stats == stats
+
+
+def test_normalize_provider_config_allows_empty_aws_config_for_create():
+    service = FederationCrudService()
+
+    result = service.normalize_provider_config(FederationProviderType.AWS_AGENTCORE, {})
+
+    assert result == {"resourceTagsFilter": {}}
+
+
+def test_validate_provider_config_requires_region_and_assume_role_for_aws():
+    service = FederationCrudService()
+
+    with pytest.raises(ValueError, match="providerConfig.region"):
+        service.validate_provider_config(FederationProviderType.AWS_AGENTCORE, {})
+
+    result = service.validate_provider_config(
+        FederationProviderType.AWS_AGENTCORE,
+        {
+            "region": "us-east-1",
+            "assumeRoleArn": "arn:aws:iam::123456789012:role/test-role",
+        },
+    )
+
+    assert result == {
+        "region": "us-east-1",
+        "assumeRoleArn": "arn:aws:iam::123456789012:role/test-role",
+        "resourceTagsFilter": {},
+    }

@@ -49,6 +49,7 @@ class AgentCoreFederationClient:
         author_id: PydanticObjectId | None = None,
         enrich_protocol_payloads: bool = True,
         region: str | None = None,
+        resource_tags_filter: dict[str, str] | None = None,
     ) -> dict[str, list[Any]]:
         """
         Discover runtime details and classify by protocol.
@@ -57,9 +58,17 @@ class AgentCoreFederationClient:
         - A2A runtime -> A2AAgent
         - MCP runtime -> ExtendedMCPServer
         - HTTP/AGUI/unknown runtime -> skipped_runtimes
+
+        Discovery scope:
+        - If runtime_arns is provided, only those runtimes are resolved.
+        - Otherwise, the client lists every AgentCore runtime in the selected region.
+        - This is a single-region scan, not a multi-region crawl.
+        - If resource_tags_filter is provided, only runtimes whose AWS resource
+          tags fully match the filter are imported.
         """
         selected_region = region or self.region
         control_client = await self._get_control_client(selected_region)
+        normalized_tag_filter = dict(resource_tags_filter or {})
 
         try:
             runtime_summaries = await asyncio.to_thread(self._list_runtime_summaries, control_client)
@@ -79,10 +88,37 @@ class AgentCoreFederationClient:
             selected_summaries.append(summary)
 
         runtime_details = await asyncio.to_thread(self._get_runtime_details, control_client, selected_summaries)
+        total_candidates = len(runtime_details)
+        filtered_out_count = 0
+
+        if normalized_tag_filter:
+            logger.info(
+                "Applying AgentCore runtime tag filter in region %s: filter=%s total_candidates=%d",
+                selected_region,
+                normalized_tag_filter,
+                total_candidates,
+            )
+            runtime_details, filtered_runtimes = await asyncio.to_thread(
+                self._filter_runtime_details_by_tags,
+                control_client,
+                runtime_details,
+                normalized_tag_filter,
+            )
+            filtered_out_count = len(filtered_runtimes)
+        else:
+            filtered_runtimes = []
+
+        logger.info(
+            "AgentCore discovery candidates in region %s: total=%d matched_after_tag_filter=%d filtered_out=%d",
+            selected_region,
+            total_candidates,
+            len(runtime_details),
+            filtered_out_count,
+        )
 
         a2a_agents: list[A2AAgent] = []
         mcp_servers: list[ExtendedMCPServer] = []
-        skipped_runtimes: list[dict[str, Any]] = []
+        skipped_runtimes: list[dict[str, Any]] = list(filtered_runtimes)
 
         for runtime_detail in runtime_details:
             runtime_arn = runtime_detail["agentRuntimeArn"]
@@ -115,6 +151,14 @@ class AgentCoreFederationClient:
                 }
             )
 
+        logger.info(
+            "AgentCore discovery completed in region %s: matched_runtimes=%d mcp_servers=%d a2a_agents=%d skipped=%d",
+            selected_region,
+            len(runtime_details),
+            len(mcp_servers),
+            len(a2a_agents),
+            len(skipped_runtimes),
+        )
         return {
             "a2a_agents": a2a_agents,
             "mcp_servers": mcp_servers,
@@ -128,7 +172,6 @@ class AgentCoreFederationClient:
         access_key = settings.aws_access_key_id
         secret_key = settings.aws_secret_access_key
         session_token = settings.aws_session_token
-        assume_role_arn = settings.agentcore_assume_role_arn
 
         if access_key and secret_key:
             base_session = boto3.Session(
@@ -142,23 +185,7 @@ class AgentCoreFederationClient:
             base_session = boto3.Session(region_name=region)
             logger.info("Initialized AgentCore AWS session with default credential chain")
 
-        session = base_session
-        if assume_role_arn:
-            sts_client = base_session.client("sts")
-            assumed_role = sts_client.assume_role(
-                RoleArn=assume_role_arn,
-                RoleSessionName=f"agentcore-federation-{region}",
-            )
-            credentials = assumed_role["Credentials"]
-            session = boto3.Session(
-                region_name=region,
-                aws_access_key_id=credentials["AccessKeyId"],
-                aws_secret_access_key=credentials["SecretAccessKey"],
-                aws_session_token=credentials["SessionToken"],
-            )
-            logger.info("Initialized AgentCore AWS session via assume role")
-
-        client = session.client("bedrock-agentcore-control", region_name=region)
+        client = base_session.client("bedrock-agentcore-control", region_name=region)
         self._control_clients[region] = client
         return client
 
@@ -199,6 +226,54 @@ class AgentCoreFederationClient:
             )
             details.append({**summary, **detail})
         return details
+
+    def _list_runtime_tags(self, control_client: Any, runtime_arn: str) -> dict[str, str]:
+        response = control_client.list_tags_for_resource(resourceArn=runtime_arn)
+        return dict(response.get("tags", {}) or {})
+
+    @staticmethod
+    def _matches_resource_tags(runtime_tags: dict[str, str], required_tags: dict[str, str]) -> bool:
+        return all(str(runtime_tags.get(key)) == str(expected) for key, expected in required_tags.items())
+
+    def _filter_runtime_details_by_tags(
+        self,
+        control_client: Any,
+        runtime_details: list[dict[str, Any]],
+        required_tags: dict[str, str],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        matched_details: list[dict[str, Any]] = []
+        filtered_runtimes: list[dict[str, Any]] = []
+
+        for runtime_detail in runtime_details:
+            runtime_arn = runtime_detail["agentRuntimeArn"]
+            runtime_name = runtime_detail.get("agentRuntimeName")
+            runtime_tags = self._list_runtime_tags(control_client, runtime_arn)
+            runtime_detail["tags"] = runtime_tags
+
+            if self._matches_resource_tags(runtime_tags, required_tags):
+                matched_details.append(runtime_detail)
+                continue
+
+            logger.info(
+                "Filtered AgentCore runtime due to tag mismatch: runtimeArn=%s runtimeName=%s required=%s actual=%s",
+                runtime_arn,
+                runtime_name,
+                required_tags,
+                runtime_tags,
+            )
+            filtered_runtimes.append(
+                {
+                    "runtimeArn": runtime_arn,
+                    "runtimeId": runtime_detail.get("agentRuntimeId"),
+                    "runtimeName": runtime_name,
+                    "serverProtocol": self._extract_runtime_protocol(runtime_detail) or "UNKNOWN",
+                    "reason": "tag_filter_mismatch",
+                    "requiredTags": required_tags,
+                    "actualTags": runtime_tags,
+                }
+            )
+
+        return matched_details, filtered_runtimes
 
     async def _enrich_mcp_server(self, server: ExtendedMCPServer) -> None:
         config = server.config or {}
@@ -363,6 +438,7 @@ class AgentCoreFederationClient:
                 "workloadIdentityDetails": runtime_detail.get("workloadIdentityDetails"),
                 "protocolConfiguration": runtime_detail.get("protocolConfiguration"),
                 "authorizerConfiguration": runtime_detail.get("authorizerConfiguration"),
+                "runtimeTags": runtime_detail.get("tags", {}),
             },
             wellKnown={
                 "enabled": True,
@@ -414,6 +490,7 @@ class AgentCoreFederationClient:
                 "createdAt": runtime_detail.get("createdAt"),
                 "protocolConfiguration": runtime_detail.get("protocolConfiguration"),
                 "authorizerConfiguration": runtime_detail.get("authorizerConfiguration"),
+                "runtimeTags": runtime_detail.get("tags", {}),
             },
         }
         return ExtendedMCPServer.from_server_info(server_info=server_info, is_enabled=status == "READY")

@@ -54,6 +54,32 @@ async def test_discover_entities_dispatches_to_aws_handler(federation_sync_servi
 
 
 @pytest.mark.asyncio
+async def test_aws_handler_passes_resource_tags_filter_to_client():
+    handler = AwsAgentCoreSyncHandler()
+    federation = _make_federation(
+        FederationProviderType.AWS_AGENTCORE,
+        {
+            "region": "us-east-1",
+            "assumeRoleArn": "arn:aws:iam::123456789012:role/TestRole",
+            "resourceTagsFilter": {"env": "production", "team": "platform"},
+        },
+    )
+    fake_client = MagicMock()
+    fake_client.discover_runtime_entities = AsyncMock(
+        return_value={"mcp_servers": [], "a2a_agents": [], "skipped_runtimes": []}
+    )
+    handler.build_client = MagicMock(return_value=fake_client)
+
+    result = await handler.discover_entities(federation)
+
+    fake_client.discover_runtime_entities.assert_awaited_once_with(
+        author_id=None,
+        resource_tags_filter={"env": "production", "team": "platform"},
+    )
+    assert result == {"mcp_servers": [], "a2a_agents": [], "skipped_runtimes": []}
+
+
+@pytest.mark.asyncio
 async def test_azure_handler_is_registered_and_returns_clear_not_implemented_error(
     federation_sync_service: FederationSyncService,
 ):

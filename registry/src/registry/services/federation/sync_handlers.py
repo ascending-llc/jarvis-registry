@@ -24,6 +24,9 @@ class AwsAgentCoreSyncHandler(BaseFederationSyncHandler):
     provider_type = FederationProviderType.AWS_AGENTCORE
 
     def build_client(self, federation: Federation) -> AgentCoreFederationClient:
+        # Region and assumeRoleArn are federation-level connection settings.
+        # They control how this federation talks to the AgentCore control plane
+        # and should not be duplicated onto child MCP/A2A resources.
         provider_config = dict(federation.providerConfig or {})
         region = provider_config.get("region") or settings.aws_region or "us-east-1"
         assume_role_arn = provider_config.get("assumeRoleArn")
@@ -45,8 +48,14 @@ class AwsAgentCoreSyncHandler(BaseFederationSyncHandler):
         )
 
     async def discover_entities(self, federation: Federation) -> dict[str, list[Any]]:
+        # Federation sync without an explicit runtime selector performs a
+        # full discovery for the resolved region only.
         client = self.build_client(federation)
-        return await client.discover_runtime_entities(author_id=None)
+        provider_config = dict(federation.providerConfig or {})
+        return await client.discover_runtime_entities(
+            author_id=None,
+            resource_tags_filter=dict(provider_config.get("resourceTagsFilter") or {}),
+        )
 
 
 class AzureAiFoundrySyncHandler(BaseFederationSyncHandler):

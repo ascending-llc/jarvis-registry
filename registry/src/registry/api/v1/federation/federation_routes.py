@@ -1,7 +1,7 @@
 import logging
 import math
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi import status as http_status
 
 from registry_pkgs.models.enums import FederationStateMachine, FederationStatus
@@ -175,22 +175,6 @@ def _ensure_delete_allowed(federation) -> None:
     )
 
 
-async def _run_federation_sync_task(
-    federation_sync_service,
-    federation,
-    job,
-    user_id: str | None,
-) -> None:
-    try:
-        await federation_sync_service.run_sync(
-            federation=federation,
-            job=job,
-            user_id=user_id,
-        )
-    except Exception:
-        logger.exception("Background federation sync failed for federation %s", getattr(federation, "id", None))
-
-
 @router.post(
     "",
     response_model=FederationDetailResponse,
@@ -198,27 +182,17 @@ async def _run_federation_sync_task(
 )
 async def create_federation(
     data: FederationCreateRequest,
-    background_tasks: BackgroundTasks,
     user_context: CurrentUser,
     federation_crud_service=Depends(get_federation_crud_service),
-    federation_job_service=Depends(get_federation_job_service),
-    federation_sync_service=Depends(get_federation_sync_service),
 ):
     """
-    Create a new federation.
-    data:
-    user_context:
-    federation_crud_service:
-    federation_job_service:
+    Create a federation definition only.
 
     main logic:
         1.Create a new Federation document with:
             status = active
             syncStatus = idle
         2. Save the Federation document.
-        3. If syncOnCreate = true:
-            3.1. create a new FederationSyncJob with jobType = initial_sync
-            3.2. set Federation syncStatus = pending
     """
     user_id = user_context.get("user_id")
 
@@ -237,33 +211,7 @@ async def create_federation(
             detail=create_error_detail(ErrorCode.INVALID_REQUEST, str(exc)),
         ) from exc
     logger.info(f"Created federation {federation.id}")
-    recent_jobs = []
-    if data.syncOnCreate:
-        job = await federation_job_service.create_job(
-            federation_id=federation.id,
-            job_type="initial_sync",
-            trigger_type="system",
-            triggered_by=user_id,
-            request_snapshot={
-                "providerType": _enum_value(federation.providerType),
-                "providerConfig": federation.providerConfig,
-            },
-        )
-        federation = await federation_crud_service.mark_sync_pending(federation)
-        background_tasks.add_task(
-            _run_federation_sync_task,
-            federation_sync_service,
-            federation,
-            job,
-            user_id,
-        )
-        recent_jobs = [job]
-    else:
-        recent_jobs = await federation_crud_service.get_recent_jobs(federation.id, limit=10)
-
-    if data.syncOnCreate:
-        recent_jobs = await federation_crud_service.get_recent_jobs(federation.id, limit=10)
-        logger.info(f"Created federation {federation.id} ,recent jobs: {recent_jobs}")
+    recent_jobs = await federation_crud_service.get_recent_jobs(federation.id, limit=10)
 
     return FederationDetailResponse(
         id=str(federation.id),
@@ -560,6 +508,13 @@ async def sync_federation(
             detail=create_error_detail(ErrorCode.NOT_FOUND, "Federation not found"),
         )
     _ensure_sync_allowed(federation)
+    try:
+        federation_crud_service.validate_provider_config(federation.providerType, federation.providerConfig)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=http_status.HTTP_400_BAD_REQUEST,
+            detail=create_error_detail(ErrorCode.INVALID_REQUEST, str(exc)),
+        ) from exc
 
     logger.info(f"sync federation {federation.id}, {federation.providerType}")
     active_job = await federation_job_service.get_active_job(federation.id)

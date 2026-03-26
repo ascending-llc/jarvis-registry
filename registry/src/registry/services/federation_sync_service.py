@@ -61,6 +61,9 @@ class FederationSyncService:
         return handler
 
     async def _discover_entities(self, federation: Federation) -> dict[str, list[Any]]:
+        # Provider dispatch happens here. The federation already owns the
+        # provider type and normalized provider config, so the sync service only
+        # needs to select the correct handler and delegate discovery.
         handler = self.get_sync_handler(federation.providerType)
         logger.info("Dispatching federation %s sync to provider handler %s", federation.id, handler.__class__.__name__)
         return await handler.discover_entities(federation)
@@ -71,6 +74,14 @@ class FederationSyncService:
         job: FederationSyncJob,
         user_id: str | None,
     ) -> FederationSyncJob:
+        """
+        Sync execution follows a fixed flow:
+            1. mark job/federation as running
+            2. discover remote resources
+            3. apply the diff into local MongoDB documents
+            4. persist stats and lastSync
+            Any exception moves both the federation and the job into failed state.
+        """
         await self.federation_job_service.mark_syncing(job, FederationJobPhase.DISCOVERING)
         await self.federation_crud_service.mark_syncing(federation)
 
@@ -103,7 +114,7 @@ class FederationSyncService:
                 {"federationRefId": federation.id, "status": {"$ne": "deleted"}}
             ).count()
             agent_count = await A2AAgent.find({"federationRefId": federation.id, "status": {"$ne": "deleted"}}).count()
-            tool_count = 0
+
             mcp_servers = await ExtendedMCPServer.find(
                 {"federationRefId": federation.id, "status": {"$ne": "deleted"}}
             ).to_list()
