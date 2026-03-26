@@ -1211,15 +1211,10 @@ async def get_oauth_metadata_from_server(base_url: str) -> dict | None:
                         metadata_dict = response.json()
 
                         # Merge in the resource URL from the protected resource metadata (RFC 9728 / RFC 8707).
-                        # Prefer the value from /.well-known/oauth-protected-resource; fall back to issuer
-                        # only if neither the protected-resource document nor the AS metadata supply it.
+                        # Only set when explicitly discovered via /.well-known/oauth-protected-resource;
+                        # never conflate the AS issuer with the protected resource identifier.
                         if resource_url:
                             metadata_dict["resource"] = resource_url
-                        elif not metadata_dict.get("resource") and metadata_dict.get("issuer"):
-                            metadata_dict["resource"] = metadata_dict["issuer"]
-                            logger.debug(
-                                f"No explicit resource URL found; falling back to issuer as resource: {metadata_dict['resource']}"
-                            )
 
                         # Validate using Authlib's RFC 8414 implementation
                         try:

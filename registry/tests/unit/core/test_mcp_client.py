@@ -785,8 +785,8 @@ class TestGetOAuthMetadataProtectedResourceDiscovery:
         assert result["issuer"] == "https://mcp.hubspot.com"
 
     @pytest.mark.asyncio
-    async def test_falls_back_to_issuer_when_no_protected_resource_doc(self):
-        """When PR endpoint returns 404, resource falls back to issuer from AS metadata."""
+    async def test_no_resource_when_protected_resource_doc_unavailable(self):
+        """When the PR endpoint returns 404, resource is NOT set — no issuer fallback."""
         from registry.core.mcp_client import get_oauth_metadata_from_server
 
         as_metadata = {
@@ -808,11 +808,12 @@ class TestGetOAuthMetadataProtectedResourceDiscovery:
                 result = await get_oauth_metadata_from_server("https://mcp.example.com")
 
         assert result is not None
-        assert result["resource"] == "https://mcp.example.com"
+        # No PR document → resource must not be set (issuer is NOT used as fallback)
+        assert "resource" not in result
 
     @pytest.mark.asyncio
-    async def test_issuer_fallback_not_applied_when_resource_already_in_as_metadata(self):
-        """Issuer fallback is skipped when the AS metadata already contains a resource field."""
+    async def test_resource_in_as_metadata_preserved_when_pr_unavailable(self):
+        """A resource field already present in AS metadata is kept when the PR endpoint returns 404."""
         from registry.core.mcp_client import get_oauth_metadata_from_server
 
         as_metadata = {
@@ -833,7 +834,7 @@ class TestGetOAuthMetadataProtectedResourceDiscovery:
                 mock_as_cls.return_value = Mock(validate=Mock())
                 result = await get_oauth_metadata_from_server("https://mcp.example.com")
 
-        # resource from AS metadata is preserved; issuer is NOT used as fallback
+        # resource from AS metadata is preserved unchanged
         assert result["resource"] == "https://api.mcp.example.com"
 
     @pytest.mark.asyncio

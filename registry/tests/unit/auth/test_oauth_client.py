@@ -699,7 +699,7 @@ class TestBuildAuthorizationUrlResourceIndicator:
 
 
 class TestExchangeCodeForTokensResourceIndicator:
-    """Tests for RFC 8707 resource parameter and verbose error logging in exchange_code_for_tokens."""
+    """Tests for RFC 8707 resource parameter in exchange_code_for_tokens."""
 
     @pytest.fixture
     def oauth_client(self):
@@ -755,8 +755,8 @@ class TestExchangeCodeForTokensResourceIndicator:
         assert "resource" not in call_kwargs
 
     @pytest.mark.asyncio
-    async def test_returns_none_and_logs_on_http_status_error(self, oauth_client):
-        """HTTPStatusError from the provider returns None (not an exception) after verbose logging."""
+    async def test_returns_none_on_http_status_error(self, oauth_client):
+        """HTTPStatusError from the provider is caught and returns None."""
         flow_metadata = self._make_flow_metadata(resource_url=None)
         mock_request = Mock()
         mock_request.url = "https://example.com/oauth/token"

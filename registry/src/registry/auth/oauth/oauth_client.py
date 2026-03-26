@@ -35,6 +35,22 @@ class OAuthClient:
         """Generate PKCE code_challenge from code_verifier using S256 method."""
         return create_s256_code_challenge(code_verifier)
 
+    @staticmethod
+    def _select_auth_method(supported_methods: list[str] | None) -> str:
+        """
+        Select the token endpoint auth method from the server's advertised list.
+
+        Prefers client_secret_post over client_secret_basic for maximum compatibility
+        with third-party MCP servers (e.g. HubSpot) that only accept POST body credentials.
+        Defaults to client_secret_post when no methods are advertised.
+        """
+        methods = supported_methods or []
+        if "client_secret_post" in methods:
+            return "client_secret_post"
+        if "client_secret_basic" in methods:
+            return "client_secret_basic"
+        return "client_secret_post"  # safe default when server does not advertise methods
+
     def _get_client(self, flow_metadata: MCPOAuthFlowMetadata, code_verifier: str | None = None) -> AsyncOAuth2Client:
         """
         Create Authlib OAuth2 client for the flow.
@@ -49,17 +65,8 @@ class OAuthClient:
         client_info = flow_metadata.client_info
         metadata = flow_metadata.metadata
 
-        # Prefer client_secret_post (credentials in POST body) over client_secret_basic
-        # (credentials in Authorization header). Many third-party MCP servers (e.g. HubSpot)
-        # only accept client_secret_post, while others support both. Using post as the
-        # default keeps maximum compatibility.
-        supported_methods = metadata.token_endpoint_auth_methods_supported or []
-        if "client_secret_post" in supported_methods:
-            auth_method = "client_secret_post"
-        elif "client_secret_basic" in supported_methods:
-            auth_method = "client_secret_basic"
-        else:
-            auth_method = "client_secret_post"  # safe default when server does not advertise methods
+        supported_methods = metadata.token_endpoint_auth_methods_supported
+        auth_method = self._select_auth_method(supported_methods)
         logger.debug(f"Token endpoint auth method selected: {auth_method} (supported: {supported_methods})")
 
         # Create Authlib client
@@ -182,14 +189,6 @@ class OAuthClient:
                 expires_at=token_response.get("expires_at"),  # Authlib calculates this automatically
             )
 
-        except httpx.HTTPStatusError as e:
-            logger.error(
-                f"Token exchange HTTP error: {e.response.status_code} from {e.request.url}\n"
-                f"Request headers: {dict(e.request.headers)}\n"
-                f"Response body: {e.response.text}",
-                exc_info=True,
-            )
-            return None
         except Exception as e:
             logger.error(f"Failed to exchange code for tokens: {e}", exc_info=True)
             return None
@@ -216,10 +215,8 @@ class OAuthClient:
                 return None
 
             # Determine client authentication method
-            auth_methods = oauth_config.get(
-                "token_endpoint_auth_methods_supported", ["client_secret_basic", "client_secret_post"]
-            )
-            auth_method = "client_secret_basic" if "client_secret_basic" in auth_methods else "client_secret_post"
+            auth_methods = oauth_config.get("token_endpoint_auth_methods_supported")
+            auth_method = self._select_auth_method(auth_methods)
 
             # Handle scope format (list or string)
             scopes = oauth_config.get("scope")
