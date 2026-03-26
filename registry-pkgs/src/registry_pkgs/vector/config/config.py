@@ -158,7 +158,7 @@ class BedrockEmbeddingConfig(EmbeddingModelConfig):
     def from_vector_config(cls, config: VectorConfig) -> "BedrockEmbeddingConfig":
         """Create AWS Bedrock config from explicit vector config."""
         region = config.aws_region
-        model = config.bedrock_model
+        model = config.embedding_model
 
         # Required validation
         if not region or region.strip() == "":

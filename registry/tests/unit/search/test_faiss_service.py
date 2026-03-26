@@ -37,10 +37,9 @@ class TestFaissService:
         mock_settings = Mock()
         # Use actual Path objects for proper path operations
         mock_settings.servers_dir = Path("/tmp/test_servers")
-        mock_settings.container_registry_dir = Path("/tmp/test_registry")
-        mock_settings.embeddings_model_dir = Path("/tmp/test_model")
-        mock_settings.embeddings_model_name = "all-MiniLM-L6-v2"
-        mock_settings.embeddings_model_dimensions = 384
+        mock_settings.local_embeddings_model_dir = Path("/tmp/test_model")
+        mock_settings.local_embeddings_model_name = "all-MiniLM-L6-v2"
+        mock_settings.local_embeddings_model_dimensions = 384
         mock_settings.faiss_index_path = Path("/tmp/test_index.faiss")
         mock_settings.faiss_metadata_path = Path("/tmp/test_metadata.json")
         return mock_settings
@@ -109,20 +108,15 @@ class TestFaissService:
         """Test loading embedding model from local path when it exists."""
         with (
             patch("registry.services.search.embedded_service.SentenceTransformer") as mock_transformer,
-            patch("os.environ"),
-            patch.object(Path, "exists") as mock_exists,
-            patch.object(Path, "iterdir") as mock_iterdir,
+            patch.object(Path, "exists", return_value=True),
+            patch.object(Path, "iterdir", return_value=iter([Path("model.bin")])),
         ):
-            # Mock local model exists
-            mock_exists.return_value = True
-            mock_iterdir.return_value = [Path("model.bin")]
-
             mock_transformer_instance = Mock()
             mock_transformer.return_value = mock_transformer_instance
 
             await faiss_service_instance._load_embedding_model()
 
-            mock_transformer.assert_called_once_with(str(mock_settings.embeddings_model_dir))
+            mock_transformer.assert_called_once_with(str(mock_settings.local_embeddings_model_dir))
             assert faiss_service_instance.embedding_model == mock_transformer_instance
 
     @pytest.mark.asyncio
@@ -130,24 +124,16 @@ class TestFaissService:
         """Test downloading embedding model from Hugging Face."""
         with (
             patch("registry.services.search.embedded_service.SentenceTransformer") as mock_transformer,
-            patch("os.environ"),
-            patch.object(Path, "exists") as mock_exists,
-            patch.object(Path, "iterdir") as mock_iterdir,
+            patch.object(Path, "exists", return_value=False),
+            patch.object(Path, "iterdir", return_value=iter([])),
         ):
-            # Mock local model doesn't exist
-            mock_exists.return_value = False
-            mock_iterdir.return_value = []
-
             mock_transformer_instance = Mock()
             mock_transformer.return_value = mock_transformer_instance
 
-            # Mock the settings attribute name (EMBEDDINGS_MODEL_NAME)
-            mock_settings.EMBEDDINGS_MODEL_NAME = mock_settings.embeddings_model_name
-
             await faiss_service_instance._load_embedding_model()
 
-            # The code uses EMBEDDINGS_MODEL_NAME attribute
-            mock_transformer.assert_called_once()
+            # service passes str(...) into SentenceTransformer
+            mock_transformer.assert_called_once_with(str(mock_settings.local_embeddings_model_name))
             assert faiss_service_instance.embedding_model == mock_transformer_instance
 
     @pytest.mark.asyncio
@@ -155,22 +141,14 @@ class TestFaissService:
         """Test handling exception during model loading."""
         with (
             patch("registry.services.search.embedded_service.SentenceTransformer") as mock_transformer,
-            patch("os.environ"),
-            patch.object(Path, "exists") as mock_exists,
-            patch.object(Path, "iterdir") as mock_iterdir,
+            patch.object(Path, "exists", return_value=False),
+            patch.object(Path, "iterdir", return_value=iter([])),
         ):
-            # Mock local model doesn't exist
-            mock_exists.return_value = False
-            mock_iterdir.return_value = []
-            mock_settings.EMBEDDINGS_MODEL_NAME = mock_settings.embeddings_model_name
-
             mock_transformer.side_effect = Exception("Model load failed")
 
-            # The method raises the exception, so we expect it to be raised
             with pytest.raises(Exception, match="Model load failed"):
                 await faiss_service_instance._load_embedding_model()
 
-            # After exception, embedding_model should be None
             assert faiss_service_instance.embedding_model is None
 
     @pytest.mark.asyncio
@@ -181,13 +159,18 @@ class TestFaissService:
             patch("builtins.open", create=True) as mock_open,
             patch.object(Path, "exists") as mock_exists,
         ):
+            # clear calls made during service construction/_initialize_new_index
+            mock_faiss.reset_mock()
+
             # Mock files exist
             mock_exists.return_value = True
 
-            # Mock FAISS index
             mock_index = Mock()
-            mock_index.d = 384  # Matching dimension
+            mock_index.d = 384
             mock_faiss.read_index.return_value = mock_index
+
+            wrapped_index = Mock()
+            mock_faiss.IndexIDMap.return_value = wrapped_index
 
             # Mock metadata file
             mock_metadata = {"metadata": {"service1": {"id": 1, "text": "test"}}, "next_id": 2}
@@ -200,7 +183,7 @@ class TestFaissService:
 
                 await faiss_service_instance._load_faiss_data()
 
-            assert faiss_service_instance.faiss_index == mock_index
+            mock_faiss.read_index.assert_called_once()
             assert faiss_service_instance.metadata_store == mock_metadata["metadata"]
             assert faiss_service_instance.next_id_counter == 2
 

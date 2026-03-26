@@ -15,8 +15,8 @@ ENV PYTHONUNBUFFERED=1 \
     DEBIAN_FRONTEND=noninteractive \
     TOOL_DISCOVERY_MODE=${TOOL_DISCOVERY_MODE} \
     BUILD_VERSION=${BUILD_VERSION} \
-    EMBEDDINGS_MODEL_NAME=all-MiniLM-L6-v2 \
-    EMBEDDINGS_MODEL_DIMENSIONS=384
+    LOCAL_EMBEDDINGS_MODEL_NAME=all-MiniLM-L6-v2 \
+    LOCAL_EMBEDDINGS_MODEL_DIMENSIONS=384
 
 # Install system dependencies - curl and procps are included in case `kubectl exec` uses them.
 RUN apt-get update && apt-get install -y --no-install-recommends \
