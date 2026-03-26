@@ -278,13 +278,13 @@ class BackendConfig(BaseModel):
 
         Required fields:
         - vector_store_type: weaviate
-        - embedding_provider: openai | aws_bedrock
+        - embedding_provider: openai | aws_bedrock | azure_openai
 
         Raises:
             ValueError: If required fields are missing or invalid
         """
         vector_store_type = config.vector_store_type
-        embedding_provider = config.embeddings_provider
+        embedding_provider = config.embedding_provider
 
         # Required validation
         if not vector_store_type or vector_store_type.strip() == "":

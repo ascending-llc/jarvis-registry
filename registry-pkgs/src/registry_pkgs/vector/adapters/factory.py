@@ -1,7 +1,6 @@
 import importlib
 import logging
 from collections.abc import Callable
-from typing import Any
 
 from ..config.config import BackendConfig
 from ..enum.enums import EmbeddingProvider, VectorStoreType
@@ -67,7 +66,7 @@ class VectorStoreFactory:
     """Factory class for creating vector store adapters using registry pattern."""
 
     @classmethod
-    def create_adapter(cls, config: BackendConfig) -> Any | None:
+    def create_adapter(cls, config: BackendConfig) -> VectorStoreAdapter | None:
         """Create vector store adapter.
 
         Args:
@@ -126,11 +125,15 @@ class VectorStoreFactory:
                 importlib.import_module("langchain_openai")
             elif config.embedding_provider == EmbeddingProvider.AWS_BEDROCK:
                 importlib.import_module("langchain_aws")
+            elif config.embedding_provider == EmbeddingProvider.AZURE_OPENAI:
+                importlib.import_module("langchain_openai")
         except ImportError:
             if config.embedding_provider == EmbeddingProvider.OPENAI:
                 missing_packages.append("langchain_openai")
             elif config.embedding_provider == EmbeddingProvider.AWS_BEDROCK:
                 missing_packages.append("langchain_aws")
+            elif config.embedding_provider == EmbeddingProvider.AZURE_OPENAI:
+                missing_packages.append("langchain_openai")
 
         if missing_packages:
             packages_str = ", ".join(missing_packages)

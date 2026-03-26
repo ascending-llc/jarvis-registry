@@ -135,7 +135,7 @@ class Settings(BaseSettings):
 
     # ==================== Vector Store ====================
     vector_store_type: str = "weaviate"
-    embeddings_provider: str = "aws_bedrock"
+    embedding_provider: str = "aws_bedrock"
     weaviate_host: str = "127.0.0.1"
     weaviate_port: int = 8080
     weaviate_api_key: str = ""
@@ -308,7 +308,7 @@ class Settings(BaseSettings):
     def vector_config(self) -> VectorConfig:
         return VectorConfig(
             vector_store_type=self.vector_store_type,
-            embeddings_provider=self.embeddings_provider,
+            embedding_provider=self.embedding_provider,
             weaviate_host=self.weaviate_host,
             weaviate_port=self.weaviate_port,
             weaviate_api_key=self.weaviate_api_key,

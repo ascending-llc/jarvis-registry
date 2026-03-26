@@ -8,7 +8,7 @@ class ChunkingConfig(BaseModel):
 
 class VectorConfig(BaseModel):
     vector_store_type: str = Field(default="weaviate", description="Vector database type")
-    embeddings_provider: str = Field(default="aws_bedrock", description="Embedding provider")
+    embedding_provider: str = Field(default="aws_bedrock", description="Embedding provider")
     weaviate_host: str = Field(default="127.0.0.1", description="Weaviate host address")
     weaviate_port: int = Field(default=8080, description="Weaviate port")
     weaviate_api_key: str | None = Field(default=None, description="Weaviate API key")

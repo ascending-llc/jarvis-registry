@@ -305,6 +305,7 @@ The embeddings module integrates seamlessly with the FAISS search service:
 # In registry/search/service.py
 from registry.embeddings import create_embeddings_client
 
+
 class FaissService:
     async def _load_embedding_model(self):
         self.embedding_model = create_embeddings_client(

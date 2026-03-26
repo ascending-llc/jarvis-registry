@@ -311,7 +311,7 @@ async def run() -> int:
 
         db_client = create_database_client(settings.vector_backend_config)
         print("✓ Connected to vector database successfully!")
-        print(f"✓ Active vector backend: store={settings.vector_store_type}, provider={settings.embeddings_provider}\n")
+        print(f"✓ Active vector backend: store={settings.vector_store_type}, provider={settings.embedding_provider}\n")
 
         container = RegistryContainer(
             settings=settings,
