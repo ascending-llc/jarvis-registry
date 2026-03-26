@@ -6,7 +6,12 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
-from registry.core.mcp_client import _get_from_sse, _get_from_streamable_http, get_tools_and_capabilities_from_server
+from registry.core.mcp_client import (
+    _get_from_sse,
+    _get_from_streamable_http,
+    get_tools_and_capabilities_from_server,
+    initialize_mcp,
+)
 from registry.core.mcp_config import MCPClientConfig
 
 
@@ -127,7 +132,6 @@ class TestMCPClient:
         with (
             patch("registry.core.mcp_client.sse_client") as mock_client,
             patch("registry.core.mcp_client.get_server_strategy") as mock_strategy,
-            patch("httpx.AsyncClient"),
         ):
             strategy = Mock()
             strategy.modify_url = Mock(return_value=base_url)
@@ -158,6 +162,48 @@ class TestMCPClient:
 
             assert result.tools is not None
             assert result.capabilities == mock_capabilities
+            # Regression guard: sse_client should receive headers and never http_client.
+            _, kwargs = mock_client.call_args
+            assert kwargs["headers"] == mock_headers
+            assert "http_client" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_initialize_mcp_sse_uses_headers_not_http_client(self, mock_headers):
+        """Test initialize_mcp uses sse_client(headers=...) for SSE transport."""
+        target_url = "https://example.com/sse"
+
+        with (
+            patch("registry.core.mcp_client.sse_client") as mock_sse_client,
+            patch("registry.core.mcp_client.get_server_strategy") as mock_strategy,
+        ):
+            strategy = Mock()
+            strategy.modify_url = Mock(return_value=target_url)
+            mock_strategy.return_value = strategy
+
+            mock_init_result = Mock()
+
+            mock_session = AsyncMock()
+            mock_session.initialize = AsyncMock(return_value=mock_init_result)
+            mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_session.__aexit__ = AsyncMock(return_value=None)
+
+            mock_sse_context = AsyncMock()
+            mock_sse_context.__aenter__ = AsyncMock(return_value=(Mock(), Mock()))
+            mock_sse_client.return_value = mock_sse_context
+
+            with patch("registry.core.mcp_client.ClientSession") as mock_session_cls:
+                mock_session_cls.return_value = mock_session
+
+                result = await initialize_mcp(
+                    target_url=target_url,
+                    headers=mock_headers,
+                    transport_type="sse",
+                )
+
+            assert result == mock_init_result
+            _, kwargs = mock_sse_client.call_args
+            assert kwargs["headers"] == mock_headers
+            assert "http_client" not in kwargs
 
     @pytest.mark.asyncio
     async def test_get_tools_and_capabilities_from_server_streamable_http(self, mock_headers):
@@ -561,8 +607,8 @@ class TestPerformHealthCheck:
 
         # Mock httpx client
         mock_http_client = AsyncMock()
-        # First call (RFC 8414) returns 404, second call (OIDC) returns 200
-        mock_http_client.get = AsyncMock(side_effect=[mock_response_404, mock_response_200])
+        # Call order: (1) Protected Resource endpoint 404, (2) RFC 8414 endpoint 404, (3) OIDC endpoint 200
+        mock_http_client.get = AsyncMock(side_effect=[mock_response_404, mock_response_404, mock_response_200])
         mock_http_client.__aenter__ = AsyncMock(return_value=mock_http_client)
         mock_http_client.__aexit__ = AsyncMock(return_value=None)
 
@@ -575,8 +621,8 @@ class TestPerformHealthCheck:
                 result = await get_oauth_metadata_from_server(base_url)
 
         assert result == expected_metadata
-        # Verify both endpoints were tried
-        assert mock_http_client.get.call_count == 2
+        # Verify all three endpoints were tried (protected resource + RFC 8414 + OIDC)
+        assert mock_http_client.get.call_count == 3
 
     @pytest.mark.asyncio
     async def test_get_oauth_metadata_from_server_no_metadata(self):
@@ -690,3 +736,153 @@ class TestPerformHealthCheck:
         # Verify the well-known URL uses base domain, not the full path
         call_args = mock_http_client.get.call_args[0][0]
         assert call_args == "https://mcp.atlassian.com/.well-known/oauth-authorization-server"
+
+
+class TestGetOAuthMetadataProtectedResourceDiscovery:
+    """Tests for RFC 9728 protected resource metadata discovery in get_oauth_metadata_from_server."""
+
+    def _make_http_client_mock(self, side_effects):
+        mock_http_client = AsyncMock()
+        mock_http_client.get = AsyncMock(side_effect=side_effects)
+        mock_http_client.__aenter__ = AsyncMock(return_value=mock_http_client)
+        mock_http_client.__aexit__ = AsyncMock(return_value=None)
+        return mock_http_client
+
+    def _make_response(self, status_code, json_body=None):
+        r = Mock()
+        r.status_code = status_code
+        if json_body is not None:
+            r.json = Mock(return_value=json_body)
+        return r
+
+    @pytest.mark.asyncio
+    async def test_merges_resource_from_protected_resource_endpoint(self):
+        """Resource URL from /.well-known/oauth-protected-resource is merged into oauthMetadata."""
+        from registry.core.mcp_client import get_oauth_metadata_from_server
+
+        pr_doc = {"resource": "https://mcp.hubspot.com", "authorization_servers": ["https://mcp.hubspot.com"]}
+        as_metadata = {
+            "issuer": "https://mcp.hubspot.com",
+            "authorization_endpoint": "https://mcp.hubspot.com/oauth/authorize/user",
+            "token_endpoint": "https://mcp.hubspot.com/oauth/v3/token",
+        }
+        # Call order: PR (200), RFC 8414 (200)
+        mock_http_client = self._make_http_client_mock(
+            [
+                self._make_response(200, pr_doc),
+                self._make_response(200, as_metadata),
+            ]
+        )
+
+        with patch("httpx.AsyncClient", return_value=mock_http_client):
+            with patch("registry.core.mcp_client.AuthorizationServerMetadata") as mock_as_cls:
+                mock_as_cls.return_value = Mock(validate=Mock())
+                result = await get_oauth_metadata_from_server("https://mcp.hubspot.com")
+
+        assert result is not None
+        assert result["resource"] == "https://mcp.hubspot.com"
+        # Ensure it came from PR doc, not issuer fallback
+        assert result["issuer"] == "https://mcp.hubspot.com"
+
+    @pytest.mark.asyncio
+    async def test_no_resource_when_protected_resource_doc_unavailable(self):
+        """When the PR endpoint returns 404, resource is NOT set — no issuer fallback."""
+        from registry.core.mcp_client import get_oauth_metadata_from_server
+
+        as_metadata = {
+            "issuer": "https://mcp.example.com",
+            "authorization_endpoint": "https://mcp.example.com/oauth/authorize",
+            "token_endpoint": "https://mcp.example.com/oauth/token",
+        }
+        # Call order: PR (404), RFC 8414 (200)
+        mock_http_client = self._make_http_client_mock(
+            [
+                self._make_response(404),
+                self._make_response(200, as_metadata),
+            ]
+        )
+
+        with patch("httpx.AsyncClient", return_value=mock_http_client):
+            with patch("registry.core.mcp_client.AuthorizationServerMetadata") as mock_as_cls:
+                mock_as_cls.return_value = Mock(validate=Mock())
+                result = await get_oauth_metadata_from_server("https://mcp.example.com")
+
+        assert result is not None
+        # No PR document → resource must not be set (issuer is NOT used as fallback)
+        assert "resource" not in result
+
+    @pytest.mark.asyncio
+    async def test_resource_in_as_metadata_preserved_when_pr_unavailable(self):
+        """A resource field already present in AS metadata is kept when the PR endpoint returns 404."""
+        from registry.core.mcp_client import get_oauth_metadata_from_server
+
+        as_metadata = {
+            "issuer": "https://mcp.example.com",
+            "resource": "https://api.mcp.example.com",  # explicitly set
+            "authorization_endpoint": "https://mcp.example.com/oauth/authorize",
+            "token_endpoint": "https://mcp.example.com/oauth/token",
+        }
+        mock_http_client = self._make_http_client_mock(
+            [
+                self._make_response(404),  # PR → 404
+                self._make_response(200, as_metadata),  # RFC 8414 → 200
+            ]
+        )
+
+        with patch("httpx.AsyncClient", return_value=mock_http_client):
+            with patch("registry.core.mcp_client.AuthorizationServerMetadata") as mock_as_cls:
+                mock_as_cls.return_value = Mock(validate=Mock())
+                result = await get_oauth_metadata_from_server("https://mcp.example.com")
+
+        # resource from AS metadata is preserved unchanged
+        assert result["resource"] == "https://api.mcp.example.com"
+
+    @pytest.mark.asyncio
+    async def test_pr_resource_takes_precedence_over_issuer(self):
+        """Resource from PR document takes precedence over issuer even when AS metadata has issuer."""
+        from registry.core.mcp_client import get_oauth_metadata_from_server
+
+        pr_doc = {"resource": "https://resource.mcp.example.com"}
+        as_metadata = {
+            "issuer": "https://auth.mcp.example.com",  # different from resource
+            "authorization_endpoint": "https://auth.mcp.example.com/authorize",
+            "token_endpoint": "https://auth.mcp.example.com/token",
+        }
+        mock_http_client = self._make_http_client_mock(
+            [
+                self._make_response(200, pr_doc),
+                self._make_response(200, as_metadata),
+            ]
+        )
+
+        with patch("httpx.AsyncClient", return_value=mock_http_client):
+            with patch("registry.core.mcp_client.AuthorizationServerMetadata") as mock_as_cls:
+                mock_as_cls.return_value = Mock(validate=Mock())
+                result = await get_oauth_metadata_from_server("https://mcp.example.com")
+
+        assert result["resource"] == "https://resource.mcp.example.com"
+
+    @pytest.mark.asyncio
+    async def test_pr_endpoint_failure_does_not_block_as_discovery(self):
+        """A network error on the PR endpoint is caught and AS discovery continues normally."""
+        from registry.core.mcp_client import get_oauth_metadata_from_server
+
+        as_metadata = {
+            "issuer": "https://mcp.example.com",
+            "authorization_endpoint": "https://mcp.example.com/oauth/authorize",
+            "token_endpoint": "https://mcp.example.com/oauth/token",
+        }
+        mock_http_client = self._make_http_client_mock(
+            [
+                Exception("Connection refused"),  # PR → network error
+                self._make_response(200, as_metadata),  # RFC 8414 → 200
+            ]
+        )
+
+        with patch("httpx.AsyncClient", return_value=mock_http_client):
+            with patch("registry.core.mcp_client.AuthorizationServerMetadata") as mock_as_cls:
+                mock_as_cls.return_value = Mock(validate=Mock())
+                result = await get_oauth_metadata_from_server("https://mcp.example.com")
+
+        assert result is not None
+        assert result["token_endpoint"] == "https://mcp.example.com/oauth/token"

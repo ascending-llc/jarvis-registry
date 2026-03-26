@@ -95,7 +95,7 @@ async def _downstream_tool_call(
                 )
 
                 raise DownstreamHttpFailureException("Error calling downstream MCP server.")
-            elif resp.headers.get("content-type", "") == "application/json":
+            elif resp.headers.get("content-type", "").startswith("application/json"):
                 # If content-type is application/json, read the whole response body and return the parsed dictionary.
                 raw_body = await resp.aread()
 
@@ -108,7 +108,7 @@ async def _downstream_tool_call(
                     )
 
                 return response_obj
-            elif resp.headers.get("content-type", "") == "text/event-stream":
+            elif resp.headers.get("content-type", "").startswith("text/event-stream"):
                 # Server decided to upgrade to SSE stream, use an EventSource parse the events.
                 event_source = EventSource(resp)
 

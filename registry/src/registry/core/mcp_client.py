@@ -159,9 +159,9 @@ async def initialize_mcp(
     logger.info(f"Initializing MCP connection to {mcp_url} using {transport_type} transport")
 
     try:
-        # Create custom httpx client with headers
-        async with httpx.AsyncClient(headers=headers, timeout=30.0) as http_client:
-            if transport_type == "streamable-http":
+        if transport_type == "streamable-http":
+            # streamable_http_client supports injecting a custom httpx client.
+            async with httpx.AsyncClient(headers=headers, timeout=30.0) as http_client:
                 async with streamable_http_client(url=mcp_url, http_client=http_client) as (read, write, _):
                     async with ClientSession(read, write) as session:
                         # Perform MCP initialization
@@ -169,16 +169,17 @@ async def initialize_mcp(
                         logger.info(f"MCP initialization successful for {target_url}")
                         return init_result
 
-            elif transport_type == "sse":
-                async with sse_client(mcp_url, http_client=http_client) as (read, write):
-                    async with ClientSession(read, write) as session:
-                        # Perform MCP initialization
-                        init_result = await asyncio.wait_for(session.initialize(), timeout=MCPClientConfig.INIT_TIMEOUT)
-                        logger.info(f"MCP initialization successful for {target_url}")
-                        return init_result
-            else:
-                logger.error(f"Unsupported transport type: {transport_type}")
-                return None
+        elif transport_type == "sse":
+            # sse_client does not accept http_client; pass headers directly.
+            async with sse_client(mcp_url, headers=headers) as (read, write):
+                async with ClientSession(read, write) as session:
+                    # Perform MCP initialization
+                    init_result = await asyncio.wait_for(session.initialize(), timeout=MCPClientConfig.INIT_TIMEOUT)
+                    logger.info(f"MCP initialization successful for {target_url}")
+                    return init_result
+        else:
+            logger.error(f"Unsupported transport type: {transport_type}")
+            return None
 
     except ExceptionGroup as eg:
         # Unwrap ExceptionGroup to extract HTTPStatusError (from asyncio.TaskGroup)
@@ -744,7 +745,7 @@ async def _get_from_sse(
 
     logger.info(f"Connecting to SSE server: {mcp_server_url}")
 
-    requires_init = False
+    requires_init = True
     logger.info("SSE transport: always stateful (requiresInit=True)")
 
     # Import httpx for custom client and monkey patching
@@ -763,63 +764,63 @@ async def _get_from_sse(
         httpx.AsyncClient.request = patched_request
 
         try:
-            # Create custom httpx client with headers
-            async with httpx.AsyncClient(headers=headers, timeout=30.0, auth=httpx_auth) as http_client:
-                async with sse_client(mcp_server_url, http_client=http_client) as (read, write):
-                    async with ClientSession(read, write, sampling_callback=None) as session:
-                        init_result = await asyncio.wait_for(session.initialize(), timeout=MCPClientConfig.INIT_TIMEOUT)
-                        tools_response = await asyncio.wait_for(
-                            session.list_tools(), timeout=MCPClientConfig.TOOLS_TIMEOUT
-                        )
+            # sse_client does not accept http_client; pass headers directly.
+            if httpx_auth is not None:
+                logger.debug("SSE transport ignores httpx_auth object; authentication should be provided via headers")
 
-                        # Extract capabilities if requested
-                        capabilities = None
-                        if include_capabilities:
-                            capabilities = _extract_capabilities(init_result)
+            async with sse_client(mcp_server_url, headers=headers) as (read, write):
+                async with ClientSession(read, write, sampling_callback=None) as session:
+                    init_result = await asyncio.wait_for(session.initialize(), timeout=MCPClientConfig.INIT_TIMEOUT)
+                    tools_response = await asyncio.wait_for(session.list_tools(), timeout=MCPClientConfig.TOOLS_TIMEOUT)
 
-                            # If capabilities required but not retrieved, consider it a failed server
-                            if not capabilities:
-                                logger.error(
-                                    f"Failed to retrieve capabilities from {mcp_server_url} - server considered failed"
-                                )
-                                return MCPServerData(None, None, None, None, "Failed to retrieve capabilities")
+                    # Extract capabilities if requested
+                    capabilities = None
+                    if include_capabilities:
+                        capabilities = _extract_capabilities(init_result)
 
-                            logger.info(f"Successfully retrieved capabilities from {mcp_server_url}: {capabilities}")
+                        # If capabilities required but not retrieved, consider it a failed server
+                        if not capabilities:
+                            logger.error(
+                                f"Failed to retrieve capabilities from {mcp_server_url} - server considered failed"
+                            )
+                            return MCPServerData(None, None, None, None, "Failed to retrieve capabilities")
 
-                        # Extract tool details
-                        tool_list = _extract_tool_details(tools_response)
+                        logger.info(f"Successfully retrieved capabilities from {mcp_server_url}: {capabilities}")
 
-                        # Extract resources if requested
-                        resource_list = []
-                        if include_resources:
-                            try:
-                                resources_response = await asyncio.wait_for(
-                                    session.list_resources(), timeout=MCPClientConfig.TOOLS_TIMEOUT
-                                )
-                                resource_list = _extract_resource_details(resources_response)
-                            except Exception as e:
-                                logger.warning(f"Failed to retrieve resources from {mcp_server_url}: {e}")
-                                resource_list = []
+                    # Extract tool details
+                    tool_list = _extract_tool_details(tools_response)
 
-                        # Extract prompts if requested
-                        prompt_list = []
-                        if include_prompts:
-                            try:
-                                prompts_response = await asyncio.wait_for(
-                                    session.list_prompts(), timeout=MCPClientConfig.TOOLS_TIMEOUT
-                                )
-                                prompt_list = _extract_prompt_details(prompts_response)
-                            except Exception as e:
-                                logger.warning(f"Failed to retrieve prompts from {mcp_server_url}: {e}")
-                                prompt_list = []
+                    # Extract resources if requested
+                    resource_list = []
+                    if include_resources:
+                        try:
+                            resources_response = await asyncio.wait_for(
+                                session.list_resources(), timeout=MCPClientConfig.TOOLS_TIMEOUT
+                            )
+                            resource_list = _extract_resource_details(resources_response)
+                        except Exception as e:
+                            logger.warning(f"Failed to retrieve resources from {mcp_server_url}: {e}")
+                            resource_list = []
 
-                        return MCPServerData(
-                            tools=tool_list,
-                            resources=resource_list,
-                            prompts=prompt_list,
-                            capabilities=capabilities,
-                            requires_init=requires_init,
-                        )
+                    # Extract prompts if requested
+                    prompt_list = []
+                    if include_prompts:
+                        try:
+                            prompts_response = await asyncio.wait_for(
+                                session.list_prompts(), timeout=MCPClientConfig.TOOLS_TIMEOUT
+                            )
+                            prompt_list = _extract_prompt_details(prompts_response)
+                        except Exception as e:
+                            logger.warning(f"Failed to retrieve prompts from {mcp_server_url}: {e}")
+                            prompt_list = []
+
+                    return MCPServerData(
+                        tools=tool_list,
+                        resources=resource_list,
+                        prompts=prompt_list,
+                        capabilities=capabilities,
+                        requires_init=requires_init,
+                    )
         finally:
             httpx.AsyncClient.request = original_request
 
@@ -1164,6 +1165,7 @@ async def get_oauth_metadata_from_server(base_url: str) -> dict | None:
         f"{base_domain}/.well-known/oauth-authorization-server",
         f"{base_domain}/.well-known/openid-configuration",
     ]
+    protected_resource_url = f"{base_domain}/.well-known/oauth-protected-resource"
 
     try:
         # Create httpx client with timeout and headers for better compatibility
@@ -1175,6 +1177,30 @@ async def get_oauth_metadata_from_server(base_url: str) -> dict | None:
             },
             follow_redirects=True,
         ) as http_client:
+            # Fetch RFC 9728 protected resource metadata to get the canonical resource URL.
+            # This must be stored in oauthMetadata so that the RFC 8707 resource indicator
+            # is available for both the authorization request and the token exchange.
+            resource_url: str | None = None
+            try:
+                logger.debug(f"Trying OAuth protected resource endpoint: {protected_resource_url}")
+                pr_response = await http_client.get(protected_resource_url)
+                if pr_response.status_code == 200:
+                    pr_dict = pr_response.json()
+                    resource_url = pr_dict.get("resource")
+                    logger.info(
+                        f"Discovered OAuth protected resource metadata from {protected_resource_url}: "
+                        f"resource={resource_url}"
+                    )
+                else:
+                    logger.debug(
+                        f"Protected resource endpoint {protected_resource_url} "
+                        f"returned status {pr_response.status_code}"
+                    )
+            except Exception as e:
+                logger.debug(
+                    f"Protected resource discovery failed for {protected_resource_url}: {type(e).__name__} - {e}"
+                )
+
             # Try each well-known endpoint
             for url in well_known_urls:
                 try:
@@ -1183,6 +1209,12 @@ async def get_oauth_metadata_from_server(base_url: str) -> dict | None:
 
                     if response.status_code == 200:
                         metadata_dict = response.json()
+
+                        # Merge in the resource URL from the protected resource metadata (RFC 9728 / RFC 8707).
+                        # Only set when explicitly discovered via /.well-known/oauth-protected-resource;
+                        # never conflate the AS issuer with the protected resource identifier.
+                        if resource_url:
+                            metadata_dict["resource"] = resource_url
 
                         # Validate using Authlib's RFC 8414 implementation
                         try:

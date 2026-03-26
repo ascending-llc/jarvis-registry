@@ -19,6 +19,7 @@ from ...schemas.oauth_schema import (
     OAuthClientInformation,
     OAuthFlow,
     OAuthMetadata,
+    OAuthProtectedResourceMetadata,
     OAuthTokens,
 )
 
@@ -147,6 +148,9 @@ class FlowStateManager:
 
         server_path = server_path.strip()
 
+        resource_url = oauth_config.get("resource") or (oauth_config.get("additional_params") or {}).get("resource")
+        resource_metadata = OAuthProtectedResourceMetadata(resource=resource_url) if resource_url else None
+
         return MCPOAuthFlowMetadata(  # type: ignore [call-arg]
             server_id=server_id.strip(),
             server_name=server_name.strip(),
@@ -157,6 +161,7 @@ class FlowStateManager:
             code_verifier=code_verifier,
             client_info=self._create_client_info(oauth_config, server_path),
             metadata=self._create_oauth_metadata(oauth_config),
+            resource_metadata=resource_metadata,
         )
 
     def create_flow(
@@ -369,7 +374,7 @@ class FlowStateManager:
         """
         Build OAuth client information from server configuration
         """
-        base_url = settings.registry_url
+        base_url = settings.registry_client_url
         if base_url.endswith("/"):
             base_url = base_url.removesuffix("/")
 
@@ -405,7 +410,7 @@ class FlowStateManager:
             scopes_supported=scopes,
             grant_types_supported=oauth_config.get("grant_types_supported", ["authorization_code", "refresh_token"]),
             token_endpoint_auth_methods_supported=oauth_config.get(
-                "token_endpoint_auth_methods_supported", ["client_secret_basic", "client_secret_post"]
+                "token_endpoint_auth_methods_supported", ["client_secret_post", "client_secret_basic"]
             ),
             response_types_supported=oauth_config.get("response_types_supported", ["code"]),
             code_challenge_methods_supported=oauth_config.get("code_challenge_methods_supported", ["S256", "plain"]),

@@ -36,3 +36,8 @@ export type GetTokenResponse = {
   userScopes: string[];
   requestedScopes: string[];
 };
+
+export enum AuthCookieKey {
+  JarvisRegistrySession = 'jarvis_registry_session',
+  JarvisRegistryRefresh = 'jarvis_registry_refresh',
+}

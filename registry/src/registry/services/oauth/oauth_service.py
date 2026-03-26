@@ -103,6 +103,9 @@ class MCPOAuthService:
             if "response_types_supported" in oauth_metadata:
                 merged_config["response_types_supported"] = oauth_metadata["response_types_supported"]
 
+            if "resource" in oauth_metadata and not merged_config.get("resource"):
+                merged_config["resource"] = oauth_metadata["resource"]
+
         return merged_config
 
     async def initiate_oauth_flow(
