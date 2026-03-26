@@ -70,6 +70,19 @@ async def test_mark_deleted_requires_valid_transition():
 
 
 @pytest.mark.asyncio
+async def test_mark_delete_failed_restores_active_and_failed_sync_status():
+    service = FederationCrudService()
+    federation = _make_federation(status=FederationStatus.DELETING, sync_status=FederationSyncStatus.SYNCING)
+
+    result = await service.mark_delete_failed(federation, "delete failed")
+
+    assert result.status == FederationStatus.ACTIVE
+    assert result.syncStatus == FederationSyncStatus.FAILED
+    assert result.syncMessage == "delete failed"
+    federation.save.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_mark_sync_success_updates_stats_and_last_sync():
     service = FederationCrudService()
     federation = _make_federation(sync_status=FederationSyncStatus.SYNCING)

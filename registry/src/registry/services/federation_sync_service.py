@@ -302,7 +302,7 @@ class FederationSyncService:
             await self.federation_job_service.mark_success(job)
             return job
         except Exception as exc:
-            await self.federation_crud_service.mark_sync_failed(federation, str(exc))
+            await self.federation_crud_service.mark_delete_failed(federation, str(exc))
             await self.federation_job_service.mark_failed(job, FederationJobPhase.FAILED, str(exc))
             raise
 

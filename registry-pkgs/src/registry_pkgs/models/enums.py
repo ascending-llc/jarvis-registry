@@ -74,7 +74,6 @@ class FederationSyncStatus(StrEnum):
     PENDING = "pending"  # Sync job created and waiting to run
     SYNCING = "syncing"  # Sync is currently running
     SUCCESS = "success"  # Last sync completed successfully
-    PARTIAL_SUCCESS = "partial_success"  # Sync partially succeeded
     FAILED = "failed"  # Last sync failed
 
     def is_running(self) -> bool:
@@ -88,7 +87,6 @@ class FederationSyncStatus(StrEnum):
         """Return True when the current sync state is terminal."""
         return self in {
             FederationSyncStatus.SUCCESS,
-            FederationSyncStatus.PARTIAL_SUCCESS,
             FederationSyncStatus.FAILED,
         }
 
@@ -117,7 +115,6 @@ class FederationJobStatus(StrEnum):
     PENDING = "pending"
     SYNCING = "syncing"
     SUCCESS = "success"
-    PARTIAL_SUCCESS = "partial_success"
     FAILED = "failed"
 
     def is_running(self) -> bool:
@@ -131,7 +128,6 @@ class FederationJobStatus(StrEnum):
         """Return True when the job finished with any terminal outcome."""
         return self in {
             FederationJobStatus.SUCCESS,
-            FederationJobStatus.PARTIAL_SUCCESS,
             FederationJobStatus.FAILED,
         }
 
@@ -223,7 +219,11 @@ class FederationStateMachine:
         sync_status: FederationSyncStatus,
     ) -> FederationSyncStatus:
         """Validate and return the sync status for a failed completion."""
-        if sync_status == FederationSyncStatus.PARTIAL_SUCCESS:
+        if sync_status not in {
+            FederationSyncStatus.PENDING,
+            FederationSyncStatus.SYNCING,
+            FederationSyncStatus.FAILED,
+        }:
             raise ValueError(f"Federation in sync status '{sync_status}' cannot transition to failed")
         return FederationSyncStatus.FAILED
 
@@ -240,3 +240,40 @@ class FederationStateMachine:
         if status not in {FederationStatus.ACTIVE, FederationStatus.DELETING, FederationStatus.DISABLED}:
             raise ValueError(f"Federation in status '{status}' cannot transition to deleted")
         return FederationStatus.DELETED
+
+    @staticmethod
+    def transition_to_delete_failed(status: FederationStatus) -> FederationStatus:
+        """Return the lifecycle status after a delete workflow fails and recovery is needed."""
+        if status != FederationStatus.DELETING:
+            raise ValueError(f"Federation in status '{status}' cannot transition to delete failed")
+        return FederationStatus.ACTIVE
+
+
+class FederationJobStateMachine:
+    """Centralized rules for federation job status transitions."""
+
+    @staticmethod
+    def transition_to_syncing(status: FederationJobStatus) -> FederationJobStatus:
+        if status not in {FederationJobStatus.PENDING, FederationJobStatus.SYNCING}:
+            raise ValueError(f"Federation job in status '{status}' cannot transition to syncing")
+        return FederationJobStatus.SYNCING
+
+    @staticmethod
+    def transition_to_success(status: FederationJobStatus) -> FederationJobStatus:
+        if status not in {
+            FederationJobStatus.PENDING,
+            FederationJobStatus.SYNCING,
+            FederationJobStatus.SUCCESS,
+        }:
+            raise ValueError(f"Federation job in status '{status}' cannot transition to success")
+        return FederationJobStatus.SUCCESS
+
+    @staticmethod
+    def transition_to_failed(status: FederationJobStatus) -> FederationJobStatus:
+        if status not in {
+            FederationJobStatus.PENDING,
+            FederationJobStatus.SYNCING,
+            FederationJobStatus.FAILED,
+        }:
+            raise ValueError(f"Federation job in status '{status}' cannot transition to failed")
+        return FederationJobStatus.FAILED

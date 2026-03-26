@@ -596,7 +596,10 @@ async def delete_federation(
         },
     )
 
-    await federation_sync_service.run_delete(federation=federation, job=job)
+    try:
+        await federation_sync_service.run_delete(federation=federation, job=job)
+    except Exception as exc:
+        _raise_sync_error(exc)
 
     return FederationDeleteResponse(
         federationId=str(federation.id),

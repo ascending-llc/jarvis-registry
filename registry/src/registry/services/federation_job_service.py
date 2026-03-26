@@ -6,6 +6,7 @@ from beanie import PydanticObjectId
 
 from registry_pkgs.models.enums import (
     FederationJobPhase,
+    FederationJobStateMachine,
     FederationJobStatus,
     FederationJobType,
     FederationTriggerType,
@@ -56,7 +57,7 @@ class FederationJobService:
         return job
 
     async def mark_syncing(self, job: FederationSyncJob, phase: FederationJobPhase) -> FederationSyncJob:
-        job.status = FederationJobStatus.SYNCING
+        job.status = FederationJobStateMachine.transition_to_syncing(job.status)
         job.phase = phase
         job.startedAt = job.startedAt or datetime.now(UTC)
         await job.save()
@@ -85,24 +86,14 @@ class FederationJobService:
         return job
 
     async def mark_success(self, job: FederationSyncJob) -> FederationSyncJob:
-        job.status = FederationJobStatus.SUCCESS
+        job.status = FederationJobStateMachine.transition_to_success(job.status)
         job.phase = FederationJobPhase.COMPLETED
-        job.finishedAt = datetime.now(UTC)
-        await job.save()
-        return job
-
-    async def mark_partial_success(self, job: FederationSyncJob, error: str | None = None) -> FederationSyncJob:
-        """ """
-        job.status = FederationJobStatus.PARTIAL_SUCCESS
-        job.phase = FederationJobPhase.COMPLETED
-        job.error = error
         job.finishedAt = datetime.now(UTC)
         await job.save()
         return job
 
     async def mark_failed(self, job: FederationSyncJob, phase: FederationJobPhase, error: str) -> FederationSyncJob:
-        """ """
-        job.status = FederationJobStatus.FAILED
+        job.status = FederationJobStateMachine.transition_to_failed(job.status)
         job.phase = phase
         job.error = error
         job.finishedAt = datetime.now(UTC)

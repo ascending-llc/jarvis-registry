@@ -100,3 +100,27 @@ async def test_azure_handler_is_registered_and_returns_clear_not_implemented_err
 
     with pytest.raises(ValueError, match="azure_ai_foundry is not implemented yet"):
         await federation_sync_service._discover_entities(federation)
+
+
+@pytest.mark.asyncio
+async def test_run_delete_restores_active_status_when_delete_fails(federation_sync_service: FederationSyncService):
+    federation = _make_federation(
+        FederationProviderType.AWS_AGENTCORE,
+        {"region": "us-east-1", "assumeRoleArn": "arn:aws:iam::123456789012:role/TestRole"},
+    )
+    federation.status = FederationStatus.DELETING
+    federation.syncStatus = FederationSyncStatus.SYNCING
+    job = SimpleNamespace(id=PydanticObjectId(), jobType="delete_sync", startedAt=datetime.now(UTC))
+
+    federation_sync_service.federation_job_service.mark_syncing = AsyncMock()
+    federation_sync_service.federation_job_service.mark_failed = AsyncMock()
+    federation_sync_service.federation_crud_service.mark_delete_failed = AsyncMock()
+    federation_sync_service._delete_transaction = AsyncMock(side_effect=RuntimeError("delete failed"))
+
+    with pytest.raises(RuntimeError, match="delete failed"):
+        await federation_sync_service.run_delete(federation=federation, job=job)
+
+    federation_sync_service.federation_crud_service.mark_delete_failed.assert_awaited_once_with(
+        federation, "delete failed"
+    )
+    federation_sync_service.federation_job_service.mark_failed.assert_awaited_once()

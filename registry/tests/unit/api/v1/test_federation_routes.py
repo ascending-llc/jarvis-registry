@@ -272,6 +272,34 @@ async def test_delete_federation_returns_deleted_status(sample_user_context, sam
 
 
 @pytest.mark.asyncio
+async def test_delete_federation_maps_provider_failure(sample_user_context, sample_federation, sample_job):
+    federation_crud_service = MagicMock()
+    federation_crud_service.get_federation = AsyncMock(return_value=sample_federation)
+    federation_crud_service.mark_deleting = AsyncMock(return_value=sample_federation)
+
+    federation_job_service = MagicMock()
+    federation_job_service.get_active_job = AsyncMock(return_value=None)
+    federation_job_service.create_job = AsyncMock(return_value=sample_job)
+
+    federation_sync_service = MagicMock()
+    federation_sync_service.run_delete = AsyncMock(
+        side_effect=RuntimeError("Failed to list AgentCore runtimes in us-east-1: Token has expired and refresh failed")
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await delete_federation(
+            federation_id=str(sample_federation.id),
+            user_context=sample_user_context,
+            federation_crud_service=federation_crud_service,
+            federation_job_service=federation_job_service,
+            federation_sync_service=federation_sync_service,
+        )
+
+    assert exc_info.value.status_code == 502
+    assert exc_info.value.detail["error"] == "external_service_error"
+
+
+@pytest.mark.asyncio
 async def test_update_federation_rejects_deleting_status(sample_user_context, sample_federation):
     deleting_federation = SimpleNamespace(**{**sample_federation.__dict__, "status": FederationStatus.DELETING})
     federation_crud_service = MagicMock()

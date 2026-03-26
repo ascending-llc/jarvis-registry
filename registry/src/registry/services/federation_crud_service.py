@@ -202,6 +202,13 @@ class FederationCrudService:
         await federation.save()
         return federation
 
+    async def mark_delete_failed(self, federation: Federation, message: str) -> Federation:
+        federation.status = FederationStateMachine.transition_to_delete_failed(federation.status)
+        federation.syncStatus = FederationStateMachine.transition_to_sync_failed(federation.syncStatus)
+        federation.syncMessage = message
+        await federation.save()
+        return federation
+
     async def mark_deleting(self, federation: Federation) -> Federation:
         next_sync_status = FederationStateMachine.transition_to_sync_pending(
             federation.status,
