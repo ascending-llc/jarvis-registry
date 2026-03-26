@@ -10,8 +10,8 @@ import {
 } from '@heroicons/react/24/outline';
 import type React from 'react';
 import { useCallback, useEffect, useState } from 'react';
+import { HiOutlineShare } from 'react-icons/hi2';
 import { useNavigate } from 'react-router-dom';
-
 import { useGlobal } from '@/contexts/GlobalContext';
 import type { ServerInfo } from '@/contexts/ServerContext';
 import { useServer } from '@/contexts/ServerContext';
@@ -21,6 +21,7 @@ import type { Tool } from '@/services/server/type';
 import UTILS from '@/utils';
 import ServerAuthorizationModal from './ServerAuthorizationModal';
 import ServerConfigModal from './ServerConfigModal';
+import ShareModal from './ShareModal';
 
 interface ServerCardProps {
   server: ServerInfo;
@@ -35,6 +36,7 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
   const [loadingTools, setLoadingTools] = useState(false);
   const [showTools, setShowTools] = useState(false);
   const [showConfig, setShowConfig] = useState(false);
+  const [showShare, setShowShare] = useState(false);
   const [loadingRefresh, setLoadingRefresh] = useState(false);
   const [showApiKeyDialog, setShowApiKeyDialog] = useState(false);
 
@@ -180,11 +182,10 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
   return (
     <>
       <div
-        className={`group rounded-2xl shadow-sm hover:shadow-xl transition-all duration-300 h-full flex flex-col relative ${
-          isAnthropicServer
-            ? 'bg-gradient-to-br from-purple-50 to-indigo-50 dark:from-purple-900/20 dark:to-indigo-900/20 border-2 border-purple-200 dark:border-purple-700 hover:border-purple-300 dark:hover:border-purple-600'
-            : 'bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 hover:border-gray-200 dark:hover:border-gray-600'
-        }`}
+        className={`group rounded-2xl shadow-sm hover:shadow-xl transition-all duration-300 h-full flex flex-col relative ${isAnthropicServer
+          ? 'bg-gradient-to-br from-purple-50 to-indigo-50 dark:from-purple-900/20 dark:to-indigo-900/20 border-2 border-purple-200 dark:border-purple-700 hover:border-purple-300 dark:hover:border-purple-600'
+          : 'bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 hover:border-gray-200 dark:hover:border-gray-600'
+          }`}
       >
         {loading && (
           <div className='absolute inset-0 bg-white/20 dark:bg-black/20 backdrop-blur-sm rounded-2xl flex items-center justify-center z-10'>
@@ -266,6 +267,17 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
               >
                 <CogIcon className='h-3.5 w-3.5' />
               </button>
+
+              {/* Share Button */}
+              {server.permissions?.SHARE &&
+                <button
+                  onClick={() => setShowShare(true)}
+                  className='p-1.5 text-gray-400 hover:text-blue-600 dark:hover:text-blue-300 hover:bg-blue-50 dark:hover:bg-blue-700/50 rounded-lg transition-all duration-200 flex-shrink-0'
+                  title='Share server'
+                >
+                  <HiOutlineShare className='h-3.5 w-3.5' />
+                </button>
+              }
             </div>
           </div>
           {/* content */}
@@ -346,15 +358,14 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
 
               <div className='flex items-center gap-1'>
                 <div
-                  className={`w-2.5 h-2.5 rounded-full ${
-                    server.status === 'active'
-                      ? 'bg-emerald-400 shadow-lg shadow-emerald-400/30'
-                      : server.status === 'inactive'
-                        ? 'bg-orange-400 shadow-lg shadow-orange-400/30'
-                        : server.status === 'error'
-                          ? 'bg-red-400 shadow-lg shadow-red-400/30'
-                          : 'bg-amber-400 shadow-lg shadow-amber-400/30'
-                  }`}
+                  className={`w-2.5 h-2.5 rounded-full ${server.status === 'active'
+                    ? 'bg-emerald-400 shadow-lg shadow-emerald-400/30'
+                    : server.status === 'inactive'
+                      ? 'bg-orange-400 shadow-lg shadow-orange-400/30'
+                      : server.status === 'error'
+                        ? 'bg-red-400 shadow-lg shadow-red-400/30'
+                        : 'bg-amber-400 shadow-lg shadow-amber-400/30'
+                    }`}
                 />
                 <span className='text-xs font-medium text-gray-700 dark:text-gray-300 max-w-[80px] truncate'>
                   {server.status === 'active'
@@ -400,14 +411,12 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
                   className='sr-only peer'
                 />
                 <div
-                  className={`relative w-7 h-4 rounded-full transition-colors duration-200 ease-in-out ${
-                    server.enabled ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'
-                  }`}
+                  className={`relative w-7 h-4 rounded-full transition-colors duration-200 ease-in-out ${server.enabled ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'
+                    }`}
                 >
                   <div
-                    className={`absolute top-0.5 left-0 w-3 h-3 bg-white rounded-full transition-transform duration-200 ease-in-out ${
-                      server.enabled ? 'translate-x-4' : 'translate-x-0'
-                    }`}
+                    className={`absolute top-0.5 left-0 w-3 h-3 bg-white rounded-full transition-transform duration-200 ease-in-out ${server.enabled ? 'translate-x-4' : 'translate-x-0'
+                      }`}
                   />
                 </div>
               </label>
@@ -457,6 +466,10 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
       )}
 
       {showConfig && <ServerConfigModal server={server} isOpen={showConfig} onClose={() => setShowConfig(false)} />}
+
+      {showShare && (
+        <ShareModal itemName={server.title || server.name} resourceId={server.id} isOpen={showShare} onClose={() => setShowShare(false)} />
+      )}
 
       {showApiKeyDialog && (
         <ServerAuthorizationModal
