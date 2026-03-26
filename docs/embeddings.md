@@ -77,13 +77,50 @@ AWS_REGION=us-east-1
 
 #### External Mode with `openai`
 
-Required variables:
+### Option 4: Azure OpenAI
+
+Cloud-based embedding service via Azure-hosted OpenAI models.
+
+```bash
+# In .env
+VECTOR_STORE_TYPE=weaviate
+EMBEDDINGS_PROVIDER=azure_openai
+AZURE_OPENAI_API_KEY=<AZURE_OPENAI_API_KEY>
+AZURE_OPENAI_ENDPOINT=https://example.openai.azure.com
+AZURE_OPENAI_API_VERSION=2024-02-01
+AZURE_OPENAI_DEPLOYMENT_NAME=<AZURE_OPENAI_DEPLOYMENT_NAME>
+AZURE_OPENAI_MODEL=<AZURE_OPENAI_MODEL>
+```
+
+**Characteristics:**
+- Cloud-based service via Azure
+- Requires Azure OpenAI resource and API key
+- API costs apply (Azure pricing)
+- Integrates with Azure security model
+- Data stays within Azure regions
+- Supports private endpoints and VNet integration
+- Enterprise-grade SLA and compliance
+
+## Configuration
 
 - `VECTOR_STORE_TYPE=weaviate`
 - `EMBEDDING_PROVIDER=openai`
 - `OPENAI_API_KEY`
 
-Optional variables:
+| Variable | Description | Default | Required |
+|----------|-------------|---------|----------|
+| `EMBEDDINGS_PROVIDER` | Provider type: `sentence-transformers` or `litellm` | `sentence-transformers` | No |
+| `EMBEDDING_PROVIDER` | New format: `openai`, `aws_bedrock`, `azure_openai` | `aws_bedrock` | For new config |
+| `EMBEDDINGS_MODEL_NAME` | Model identifier | `all-MiniLM-L6-v2` | Yes |
+| `EMBEDDINGS_MODEL_DIMENSIONS` | Embedding dimension | `384` | Yes |
+| `EMBEDDINGS_API_KEY` | API key for cloud provider (OpenAI, Cohere, etc.) | - | For cloud* |
+| `EMBEDDINGS_API_BASE` | Custom API endpoint (LiteLLM only) | - | No |
+| `EMBEDDINGS_AWS_REGION` | AWS region for Bedrock (LiteLLM only) | - | For Bedrock |
+| `AZURE_OPENAI_API_KEY` | Azure OpenAI API key | - | For Azure OpenAI |
+| `AZURE_OPENAI_ENDPOINT` | Azure OpenAI endpoint URL | - | For Azure OpenAI |
+| `AZURE_OPENAI_API_VERSION` | Azure OpenAI API version | `2024-02-01` | No |
+| `AZURE_OPENAI_DEPLOYMENT_NAME` | Azure OpenAI deployment name | - | For Azure OpenAI |
+| `AZURE_OPENAI_MODEL` | Azure OpenAI model name | `text-embedding-3-small` | No |
 
 - `OPENAI_MODEL`
 
@@ -113,6 +150,20 @@ Required variables when `TOOL_DISCOVERY_MODE=embedded`:
 
 - `LOCAL_EMBEDDINGS_MODEL_NAME`
 - `LOCAL_EMBEDDINGS_MODEL_DIMENSIONS`
+
+#### Using Azure OpenAI
+
+```hcl
+vector_store_type                 = "weaviate"
+embedding_provider                = "azure_openai"
+azure_openai_api_key              = <AZURE_OPENAI_API_KEY>
+azure_openai_endpoint             = https://example.openai.azure.com
+azure_openai_api_version          = "2024-02-01"
+azure_openai_deployment_name      = <AZURE_OPENAI_DEPLOYMENT_NAME>
+azure_openai_model                = <AZURE_OPENAI_MODEL>
+```
+
+See [terraform/aws-ecs/terraform.tfvars.example](../terraform/aws-ecs/terraform.tfvars.example) for complete examples.
 
 Notes:
 
@@ -151,6 +202,20 @@ Notes:
 - `EMBEDDING_MODEL` is the model identifier passed through pydantic for Bedrock embeddings.
 - If `OPENAI_MODEL` is not provided, the default is `text-embedding-3-small`.
 - `EMBEDDING_MODEL` is not used for the OpenAI embedding path in the current configuration model.
+
+#### Azure OpenAI
+- `text-embedding-3-small` (1536 dimensions)
+- `text-embedding-3-large` (3072 dimensions)
+- `text-embedding-ada-002` (1536 dimensions)
+
+**Note:** When using Azure OpenAI, you must specify the deployment name (not the model name) in your Azure OpenAI resource.
+
+#### Other Providers
+- Azure OpenAI
+- Anthropic (Claude)
+- Google Vertex AI
+- Hugging Face Inference API
+- And 100+ more via [LiteLLM](https://docs.litellm.ai/docs/embedding/supported_embedding)
 
 ### Common External Models
 
@@ -202,6 +267,18 @@ Symptoms:
 
 - FAISS index is re-initialized on startup
 - semantic search index appears to be rebuilt after changing the model
+
+
+class FaissService:
+    async def _load_embedding_model(self):
+        self.embedding_model = create_embeddings_client(
+            provider=settings.embeddings_provider,
+            model_name=settings.embeddings_model_name,
+            api_key=settings.embeddings_api_key,
+            aws_region=settings.embeddings_aws_region,
+            embedding_dimension=settings.embeddings_model_dimensions,
+        )
+```
 
 What to check:
 

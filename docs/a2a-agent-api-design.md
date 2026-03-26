@@ -268,7 +268,7 @@
 - Agent is created with `enabled: false` by default for safety
 - All agent metadata is auto-fetched from the provided URL
 
-**Error**: 
+**Error**:
 - `400` Validation error or failed to fetch agent card from URL
 - `409` Path already exists
 
@@ -297,7 +297,7 @@
 - `url` (string): Update the agent endpoint URL
 
 **Auto-Fetch Behavior**:
-1. **If `url` is updated**: 
+1. **If `url` is updated**:
    - System fetches new agent card from `{new_url}/.well-known/agent-card.json`
    - All card fields (version, capabilities, skills, etc.) are updated from fetched data
    - `name` and `description` from request override the fetched values if provided
@@ -357,7 +357,7 @@
 - Returns complete agent details after update
 - If URL is changed, automatically re-fetches all agent metadata from new URL
 
-**Error**: 
+**Error**:
 - `400` Validation error or failed to fetch agent card from new URL
 - `404` Agent not found
 - `403` Access denied
@@ -559,7 +559,7 @@ Content-Type: application/json
 async with httpx.AsyncClient(timeout=httpx.Timeout(15.0)) as client:
     resolver = A2ACardResolver(base_url=url, httpx_client=client)
     agent_card = await resolver.get_agent_card()
-    
+
 agent_card_data = agent_card.model_dump(mode="json", exclude_none=True, by_alias=True)
 ```
 

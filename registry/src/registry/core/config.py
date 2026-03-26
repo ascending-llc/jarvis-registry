@@ -154,6 +154,15 @@ class Settings(BaseSettings):
     agentcore_a2a_card_retry_attempts: int = 3
     agentcore_a2a_card_retry_delay_seconds: float = 3.0
 
+    # ==================== Azure OpenAI ====================
+    azure_openai_api_key: str | None = None
+    azure_openai_endpoint: str = ""
+    azure_openai_api_version: str = "2024-06-01"
+    azure_openai_resource_name: str = ""
+    azure_openai_embedding_deployment: str = ""
+    azure_openai_llm_deployment: str = ""
+    llm_model: str = "gpt-4"
+
     # ==================== JWT ====================
     jwt_issuer: str = "jarvis-auth-server"
     jwt_audience: str = "jarvis-services"
@@ -309,6 +318,12 @@ class Settings(BaseSettings):
             aws_access_key_id=self.aws_access_key_id,
             aws_secret_access_key=self.aws_secret_access_key,
             aws_session_token=self.aws_session_token,
+            azure_openai_api_key=self.azure_openai_api_key,
+            azure_openai_endpoint=self.azure_openai_endpoint,
+            azure_openai_api_version=self.azure_openai_api_version,
+            azure_openai_resource_name=self.azure_openai_resource_name,
+            azure_openai_embedding_deployment=self.azure_openai_embedding_deployment,
+            azure_openai_llm_deployment=self.azure_openai_llm_deployment,
         )
 
     @cached_property

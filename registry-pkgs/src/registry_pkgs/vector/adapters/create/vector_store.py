@@ -8,7 +8,7 @@ from ...config import WeaviateConfig
 from ...enum.enums import VectorStoreType
 
 
-@register_vector_store_creator(VectorStoreType.WEAVIATE.value)
+@register_vector_store_creator(VectorStoreType.WEAVIATE)
 def create_weaviate_adapter(config: BackendConfig, embedding) -> VectorStoreAdapter:
     """Create Weaviate adapter."""
     try:
