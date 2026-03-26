@@ -60,13 +60,9 @@ class Settings(BaseSettings):
     anthropic_api_default_limit: int = 100
     anthropic_api_max_limit: int = 1000
 
-    # ====================Local Embeddings ====================
-    # Note: We may not use them later, but we’re doing our best to keep these variables separate to prevent conflicts.
-    local_embeddings_provider: str | None = None
+    # ==================== Local Embeddings ====================
     local_embeddings_model_name: str = "all-MiniLM-L6-v2"
     local_embeddings_model_dimensions: int = 384
-    local_embeddings_api_key: str | None = None
-    local_embeddings_aws_region: str | None = None
 
     # ==================== Search Defaults ====================
     tool_discovery_mode: str = "external"
@@ -111,9 +107,7 @@ class Settings(BaseSettings):
     a2a_scanner_llm_api_key: str | None = None
 
     # ==================== Container Paths ====================
-    container_app_dir: Path = Path("/app")
     container_registry_dir: Path = Path("/app/registry")
-    container_log_dir: Path = Path("/app/logs")
 
     # ==================== Redis ====================
     redis_uri: str = "redis://registry-redis:6379/1"
@@ -149,7 +143,7 @@ class Settings(BaseSettings):
 
     # ==================== AWS ====================
     aws_region: str = "us-east-1"
-    bedrock_model: str = "amazon.titan-embed-text-v2:0"
+    embedding_model: str = "amazon.titan-embed-text-v2:0"
     aws_access_key_id: str | None = None
     aws_secret_access_key: str | None = None
     aws_session_token: str | None = None
@@ -240,7 +234,7 @@ class Settings(BaseSettings):
     def log_dir(self) -> Path:
         if self.is_local_dev:
             return Path.cwd() / "logs"
-        return self.container_log_dir
+        return Path("/app/logs")
 
     @cached_property
     def log_file_path(self) -> Path:
@@ -311,7 +305,7 @@ class Settings(BaseSettings):
             openai_api_key=self.openai_api_key,
             openai_model=self.openai_model,
             aws_region=self.aws_region,
-            bedrock_model=self.bedrock_model,
+            embedding_model=self.embedding_model,
             aws_access_key_id=self.aws_access_key_id,
             aws_secret_access_key=self.aws_secret_access_key,
             aws_session_token=self.aws_session_token,

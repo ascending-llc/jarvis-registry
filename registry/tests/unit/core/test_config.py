@@ -56,12 +56,8 @@ class TestSettings:
         mock_exists.return_value = True
         settings = Settings()
 
-        # Test base paths
-        assert isinstance(settings.container_app_dir, Path)
-        assert isinstance(settings.container_registry_dir, Path)
-        assert isinstance(settings.container_log_dir, Path)
-
         # Test derived paths in container mode
+        assert isinstance(settings.container_registry_dir, Path)
         assert settings.servers_dir == settings.container_registry_dir / "servers"
         assert settings.static_dir == settings.container_registry_dir / "static"
         assert settings.templates_dir == settings.container_registry_dir / "templates"
@@ -80,7 +76,7 @@ class TestSettings:
         settings = Settings()
 
         assert settings.state_file_path == settings.servers_dir / "server_state.json"
-        assert settings.log_file_path == settings.container_log_dir / "registry.log"
+        assert settings.log_file_path == Path("/app/logs/registry.log")
         assert settings.faiss_index_path == settings.servers_dir / "service_index.faiss"
         assert settings.faiss_metadata_path == settings.servers_dir / "service_index_metadata.json"
         assert settings.dotenv_path == settings.container_registry_dir / ".env"
@@ -126,11 +122,9 @@ class TestSettings:
         """Test custom container paths."""
         # Mock that /custom/app exists to simulate container environment
         mock_exists.return_value = True
-        custom_app_dir = Path("/custom/app")
         custom_registry_dir = Path("/custom/registry")
 
-        settings = Settings(container_app_dir=custom_app_dir, container_registry_dir=custom_registry_dir)
+        settings = Settings(container_registry_dir=custom_registry_dir)
 
-        assert settings.container_app_dir == custom_app_dir
         assert settings.container_registry_dir == custom_registry_dir
         assert settings.servers_dir == custom_registry_dir / "servers"

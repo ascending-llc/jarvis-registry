@@ -85,7 +85,7 @@ class EmbeddedFaissService(VectorSearchService):
         self.settings.servers_dir.mkdir(parents=True, exist_ok=True)
 
         try:
-            model_cache_path = self.settings.container_registry_dir / ".cache"
+            model_cache_path = self.settings.local_embeddings_model_dir.parent / ".cache"
             model_cache_path.mkdir(parents=True, exist_ok=True)
 
             # Set cache path for sentence transformers

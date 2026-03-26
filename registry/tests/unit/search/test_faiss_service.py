@@ -37,7 +37,6 @@ class TestFaissService:
         mock_settings = Mock()
         # Use actual Path objects for proper path operations
         mock_settings.servers_dir = Path("/tmp/test_servers")
-        mock_settings.container_registry_dir = Path("/tmp/test_registry")
         mock_settings.local_embeddings_model_dir = Path("/tmp/test_model")
         mock_settings.local_embeddings_model_name = "all-MiniLM-L6-v2"
         mock_settings.local_embeddings_model_dimensions = 384

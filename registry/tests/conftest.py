@@ -65,18 +65,15 @@ def test_settings(temp_dir: Path) -> Settings:
         secret_key="test-secret-key-for-testing-only",
         admin_user="testadmin",
         admin_password="testpassword",
-        container_app_dir=temp_dir / "app",
         container_registry_dir=temp_dir / "app" / "registry",
-        container_log_dir=temp_dir / "app" / "logs",
         health_check_interval_seconds=60,  # Longer for tests
         local_embeddings_model_name="all-MiniLM-L6-v2",
         local_embeddings_model_dimensions=384,
     )
 
     # Create necessary directories
-    test_settings.container_app_dir.mkdir(parents=True, exist_ok=True)
     test_settings.container_registry_dir.mkdir(parents=True, exist_ok=True)
-    test_settings.container_log_dir.mkdir(parents=True, exist_ok=True)
+    test_settings.log_dir.mkdir(parents=True, exist_ok=True)
     test_settings.servers_dir.mkdir(parents=True, exist_ok=True)
     test_settings.static_dir.mkdir(parents=True, exist_ok=True)
     test_settings.templates_dir.mkdir(parents=True, exist_ok=True)
