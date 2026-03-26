@@ -1165,6 +1165,7 @@ async def get_oauth_metadata_from_server(base_url: str) -> dict | None:
         f"{base_domain}/.well-known/oauth-authorization-server",
         f"{base_domain}/.well-known/openid-configuration",
     ]
+    protected_resource_url = f"{base_domain}/.well-known/oauth-protected-resource"
 
     try:
         # Create httpx client with timeout and headers for better compatibility
@@ -1176,6 +1177,30 @@ async def get_oauth_metadata_from_server(base_url: str) -> dict | None:
             },
             follow_redirects=True,
         ) as http_client:
+            # Fetch RFC 9728 protected resource metadata to get the canonical resource URL.
+            # This must be stored in oauthMetadata so that the RFC 8707 resource indicator
+            # is available for both the authorization request and the token exchange.
+            resource_url: str | None = None
+            try:
+                logger.debug(f"Trying OAuth protected resource endpoint: {protected_resource_url}")
+                pr_response = await http_client.get(protected_resource_url)
+                if pr_response.status_code == 200:
+                    pr_dict = pr_response.json()
+                    resource_url = pr_dict.get("resource")
+                    logger.info(
+                        f"Discovered OAuth protected resource metadata from {protected_resource_url}: "
+                        f"resource={resource_url}"
+                    )
+                else:
+                    logger.debug(
+                        f"Protected resource endpoint {protected_resource_url} "
+                        f"returned status {pr_response.status_code}"
+                    )
+            except Exception as e:
+                logger.debug(
+                    f"Protected resource discovery failed for {protected_resource_url}: {type(e).__name__} - {e}"
+                )
+
             # Try each well-known endpoint
             for url in well_known_urls:
                 try:
@@ -1184,6 +1209,12 @@ async def get_oauth_metadata_from_server(base_url: str) -> dict | None:
 
                     if response.status_code == 200:
                         metadata_dict = response.json()
+
+                        # Merge in the resource URL from the protected resource metadata (RFC 9728 / RFC 8707).
+                        # Only set when explicitly discovered via /.well-known/oauth-protected-resource;
+                        # never conflate the AS issuer with the protected resource identifier.
+                        if resource_url:
+                            metadata_dict["resource"] = resource_url
 
                         # Validate using Authlib's RFC 8414 implementation
                         try:
