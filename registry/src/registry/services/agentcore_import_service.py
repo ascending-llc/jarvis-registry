@@ -602,19 +602,30 @@ class AgentCoreImportService:
         existing_metadata: dict[str, Any] | None,
         new_metadata: dict[str, Any] | None,
     ) -> list[str]:
-        old_version = self._extract_runtime_version(existing_metadata)
-        new_version = self._extract_runtime_version(new_metadata)
-        if old_version == new_version:
-            return []
-        return [f"runtimeVersion: {old_version} -> {new_version}"]
+        return self.detect_runtime_version_change(existing_metadata, new_metadata)
 
-    def _extract_runtime_version(self, metadata: dict[str, Any] | None) -> str | None:
+    @staticmethod
+    def extract_runtime_version(metadata: dict[str, Any] | None) -> str | None:
         if not metadata:
             return None
         version = metadata.get("runtimeVersion")
         if version is None:
             return None
         return str(version)
+
+    _extract_runtime_version = extract_runtime_version
+
+    @classmethod
+    def detect_runtime_version_change(
+        cls,
+        existing_metadata: dict[str, Any] | None,
+        new_metadata: dict[str, Any] | None,
+    ) -> list[str]:
+        old_version = cls.extract_runtime_version(existing_metadata)
+        new_version = cls.extract_runtime_version(new_metadata)
+        if old_version == new_version:
+            return []
+        return [f"runtimeVersion: {old_version} -> {new_version}"]
 
     async def _collect_stale_entities(
         self,
@@ -718,11 +729,13 @@ class AgentCoreImportService:
         }
 
     @staticmethod
-    def _extract_runtime_arn(metadata: dict[str, Any] | None) -> str | None:
+    def extract_runtime_arn(metadata: dict[str, Any] | None) -> str | None:
         if not metadata:
             return None
         runtime_arn = metadata.get("runtimeArn")
         return str(runtime_arn) if runtime_arn else None
+
+    _extract_runtime_arn = extract_runtime_arn
 
     async def _resolve_identities(
         self, user_id: str | None, dry_run: bool

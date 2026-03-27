@@ -26,6 +26,8 @@ class MCPServerRepository(Repository[ExtendedMCPServer]):
     sync_server_to_vector_db() that shouldn't be in the base class.
     """
 
+    VECTOR_SCAN_BATCH_SIZE = 500
+
     def __init__(self, db_client: DatabaseClient):
         """
         Initialize MCP Server repository.
@@ -36,34 +38,86 @@ class MCPServerRepository(Repository[ExtendedMCPServer]):
         super().__init__(db_client, ExtendedMCPServer)
         logger.info("MCPServerRepository initialized")
 
+    @staticmethod
+    def _extract_runtime_version(server: ExtendedMCPServer) -> str | None:
+        runtime_version = (server.federationMetadata or {}).get("runtimeVersion")
+        if runtime_version is None:
+            return None
+        return str(runtime_version)
+
+    def _load_existing_docs(self, server_id: str) -> list[Document]:
+        if not self._collection_has_property("server_id"):
+            return []
+        docs = self._load_docs_by_metadata_paginated(
+            filters={"server_id": server_id},
+            batch_size=self.VECTOR_SCAN_BATCH_SIZE,
+        )
+
+        if docs:
+            logger.debug(
+                "Loaded %d existing MCP vector docs for server_id=%s using paginated metadata scan.",
+                len(docs),
+                server_id,
+            )
+        return docs
+
+    def _should_skip_reindex(self, server: ExtendedMCPServer, server_id: str) -> tuple[bool, str | None]:
+        current_version = self._extract_runtime_version(server)
+        if not current_version:
+            return False, None
+        if not self._collection_has_property("runtime_version"):
+            return False, current_version
+
+        existing_docs = self._load_existing_docs(server_id)
+        if not existing_docs:
+            return False, current_version
+
+        expected_docs = server.to_documents()
+        existing_versions = {
+            str(doc.metadata.get("runtime_version"))
+            for doc in existing_docs
+            if doc.metadata.get("runtime_version") is not None
+        }
+
+        if len(existing_docs) != len(expected_docs):
+            logger.info(
+                "Rebuild MCP vector docs for server '%s' (server_id=%s) because document count changed: mongo=%d weaviate=%d",
+                server.serverName,
+                server_id,
+                len(expected_docs),
+                len(existing_docs),
+            )
+            return False, current_version
+
+        if existing_versions == {current_version}:
+            logger.info(
+                "Skip MCP vector rebuild for server '%s' (server_id=%s) because runtime_version=%s already matches Weaviate.",
+                server.serverName,
+                server_id,
+                current_version,
+            )
+            return True, current_version
+
+        logger.info(
+            "Rebuild MCP vector docs for server '%s' (server_id=%s) because runtime_version differs: mongo=%s weaviate=%s",
+            server.serverName,
+            server_id,
+            current_version,
+            sorted(existing_versions) if existing_versions else [],
+        )
+        return False, current_version
+
     async def ensure_collection(self) -> bool:
         """
         Ensure the collection exists in vector database.
         """
-        try:
-            # Check if collection exists
-            if self.adapter.collection_exists(self.collection):
-                logger.info(f"Collection '{self.collection}' already exists")
-                return True
-
-            logger.info(f"Creating collection '{self.collection}'...")
-            store = self.adapter.get_vector_store(self.collection)
-
-            if store:
-                logger.info(f"Collection '{self.collection}' created successfully")
-                return True
-            else:
-                logger.error(f"Failed to create collection '{self.collection}'")
-                return False
-        except Exception as e:
-            logger.error(f"Error ensuring collection '{self.collection}': {e}", exc_info=True)
-            raise
+        return await self._ensure_collection()
 
     async def sync_server_to_vector_db(
         self,
         server: ExtendedMCPServer,
         is_delete: bool = True,
-    ) -> dict[str, int] | None:
+    ) -> dict[str, int | str | None]:
         """
         Full rebuild: delete old server and recreate from server object.
 
@@ -87,6 +141,7 @@ class MCPServerRepository(Repository[ExtendedMCPServer]):
 
             # 2. Delete old server records if requested
             deleted = 0
+            skipped = 0
             if is_delete and server_id:
                 if not collection_existed:
                     logger.info(
@@ -94,7 +149,7 @@ class MCPServerRepository(Repository[ExtendedMCPServer]):
                         self.collection,
                         server_id,
                     )
-                elif not self.adapter.has_property(self.collection, "server_id"):
+                elif not self._collection_has_property("server_id"):
                     logger.info(
                         "Collection '%s' schema has no 'server_id' property. Skip delete step for server_id=%s.",
                         self.collection,
@@ -104,17 +159,43 @@ class MCPServerRepository(Repository[ExtendedMCPServer]):
                     deleted = await self.adelete_by_filter({"server_id": server_id})
                     if deleted > 0:
                         logger.info(f"Deleted {deleted} old record(s) by server_id: {server_id}")
+            elif not is_delete and server_id:
+                should_skip, current_version = self._should_skip_reindex(server, server_id)
+                if should_skip:
+                    skipped = 1
+                    return {
+                        "indexed_tools": 0,
+                        "failed_tools": 0,
+                        "deleted": 0,
+                        "skipped": skipped,
+                        "version": current_version,
+                        "error": None,
+                    }
 
             # 3. Save server object to vector database
             doc_id = await self.asave(server)
             success = doc_id is not None
 
             logger.info(f"Indexed server '{server_name}' (server_id: {server_id}):{'success' if success else 'failed'}")
-            return {"indexed_tools": 1 if success else 0, "failed_tools": 0 if success else 1, "deleted": deleted}
+            return {
+                "indexed_tools": 1 if success else 0,
+                "failed_tools": 0 if success else 1,
+                "deleted": deleted,
+                "skipped": skipped,
+                "version": self._extract_runtime_version(server),
+                "error": None,
+            }
 
         except Exception as e:
             logger.error(f"Full sync failed for server {server.serverName}: {e}", exc_info=True)
-            return None
+            return {
+                "indexed_tools": 0,
+                "failed_tools": 1,
+                "deleted": 0,
+                "skipped": 0,
+                "version": None,
+                "error": str(e),
+            }
 
     async def get_by_server_id(self, server_id: str) -> ExtendedMCPServer | None:
         """

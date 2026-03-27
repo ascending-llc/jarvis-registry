@@ -1,4 +1,5 @@
 import logging
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
@@ -19,6 +20,7 @@ from registry_pkgs.models.federation import (
 )
 from registry_pkgs.models.federation_sync_job import FederationApplySummary, FederationSyncJob
 
+from .agentcore_import_service import AgentCoreImportService
 from .federation.federation_handlers import (
     AwsAgentCoreSyncHandler,
     AzureAiFoundrySyncHandler,
@@ -32,6 +34,19 @@ logger = logging.getLogger(__name__)
 
 def _enum_value(value):
     return value.value if hasattr(value, "value") else value
+
+
+@dataclass
+class FederationSyncMutationResult:
+    """Capture Mongo apply results plus the concrete resources changed in that commit."""
+
+    summary: FederationApplySummary
+    created_mcp: list[ExtendedMCPServer] = field(default_factory=list)
+    updated_mcp: list[ExtendedMCPServer] = field(default_factory=list)
+    deleted_mcp: list[ExtendedMCPServer] = field(default_factory=list)
+    created_a2a: list[A2AAgent] = field(default_factory=list)
+    updated_a2a: list[A2AAgent] = field(default_factory=list)
+    deleted_a2a: list[A2AAgent] = field(default_factory=list)
 
 
 class FederationSyncService:
@@ -88,14 +103,24 @@ class FederationSyncService:
             1. discover remote resources
             2. apply federation/job/resource mutations in one transaction
             3. persist stats and lastSync in the same transaction
+            4. rebuild vector indexes outside the Mongo transaction
+
+        Vector sync is intentionally best-effort. Mongo is the source of truth,
+        so vector failures are logged for repair instead of rolling back the
+        successfully committed federation sync.
             Any exception moves both the federation and the job into failed state.
         """
         try:
             discovered = await self._discover_entities(federation)
-            await self._commit_sync_transaction(
+            mutation_result = await self._commit_sync_transaction(
                 federation=federation,
                 job=job,
                 discovered=discovered,
+            )
+            await self._sync_vector_index_after_commit(
+                federation=federation,
+                job=job,
+                mutation_result=mutation_result,
             )
             return job
 
@@ -117,6 +142,14 @@ class FederationSyncService:
         updated_by: str | None,
         sync_after_update: bool,
     ) -> tuple[Federation, FederationSyncJob | None]:
+        """Update federation metadata and optionally run a config-driven resync.
+
+        A plain update remains a single federation write. When provider config
+        changes and the caller requests a resync, we first commit the updated
+        federation definition plus a pending resync job, then execute the sync
+        as a separate phase.
+        """
+
         normalized_provider_config = self.federation_crud_service.validate_provider_config(
             federation.providerType,
             provider_config,
@@ -162,7 +195,8 @@ class FederationSyncService:
         federation: Federation,
         job: FederationSyncJob,
         discovered: dict[str, list[Any]],
-    ) -> FederationSyncJob:
+    ) -> FederationSyncMutationResult:
+        """Apply the discovered federation state in one Mongo transaction."""
         discovered_mcp = discovered.get("mcp_servers", [])
         discovered_a2a = discovered.get("a2a_agents", [])
 
@@ -174,17 +208,17 @@ class FederationSyncService:
             discovered_agents=len(discovered_a2a),
         )
         await self.federation_job_service.mark_syncing(job, FederationJobPhase.APPLYING)
-        apply_summary = await self._apply_sync_mutations(
+        mutation_result = await self._apply_sync_mutations(
             federation=federation,
             discovered_mcp=discovered_mcp,
             discovered_a2a=discovered_a2a,
         )
-        await self.federation_job_service.update_apply_summary(job, apply_summary)
+        await self.federation_job_service.update_apply_summary(job, mutation_result.summary)
         stats = await self._build_federation_stats(federation.id)
-        last_sync = self._build_last_sync(job, apply_summary)
+        last_sync = self._build_last_sync(job, mutation_result.summary)
         await self.federation_crud_service.mark_sync_success(federation, last_sync, stats)
         await self.federation_job_service.mark_success(job)
-        return job
+        return mutation_result
 
     @use_transaction
     async def update_federation_and_create_resync_job(
@@ -198,6 +232,7 @@ class FederationSyncService:
         version: int,
         updated_by: str | None,
     ) -> tuple[Federation, FederationSyncJob]:
+        """Persist the new federation definition and its pending resync job together."""
         federation = await self.federation_crud_service.update_federation(
             federation=federation,
             display_name=display_name,
@@ -225,11 +260,12 @@ class FederationSyncService:
         self,
         *,
         federation: Federation,
-        job_type: str,
-        trigger_type: str,
+        job_type: FederationJobType,
+        trigger_type: FederationTriggerType,
         triggered_by: str | None,
         request_snapshot: dict[str, Any],
     ) -> FederationSyncJob:
+        """Create the sync job and move the federation into pending in one transaction."""
         job = await self.federation_job_service.create_job(
             federation_id=federation.id,
             job_type=job_type,
@@ -248,15 +284,16 @@ class FederationSyncService:
         reason: str | None,
         triggered_by: str | None,
     ) -> FederationSyncJob:
+        """Start a user-triggered sync using the shared pending-job then run-sync flow."""
         active_job = await self.federation_job_service.get_active_job(federation.id)
         if active_job:
             raise ValueError("Federation already has an active sync job")
 
-        job_type = "force_sync" if force else "full_sync"
+        job_type = FederationJobType.FORCE_SYNC if force else FederationJobType.FULL_SYNC
         job = await self.create_sync_job_and_mark_pending(
             federation=federation,
             job_type=job_type,
-            trigger_type="manual",
+            trigger_type=FederationTriggerType.MANUAL,
             triggered_by=triggered_by,
             request_snapshot={
                 "providerType": _enum_value(federation.providerType),
@@ -277,6 +314,7 @@ class FederationSyncService:
         federation: Federation,
         triggered_by: str | None,
     ) -> FederationSyncJob:
+        """Register the delete job and then execute the delete apply phase."""
         active_job = await self.federation_job_service.get_active_job(federation.id)
         if active_job:
             raise ValueError("Federation already has an active job")
@@ -301,8 +339,12 @@ class FederationSyncService:
         federation: Federation,
         discovered_mcp: list[Any],
         discovered_a2a: list[Any],
-    ) -> FederationApplySummary:
+    ) -> FederationSyncMutationResult:
+        # Keep the apply phase purely about Mongo state convergence. We collect
+        # changed entities here so the caller can rebuild derived indexes after
+        # the transaction commits successfully.
         apply_summary = FederationApplySummary()
+        mutation_result = FederationSyncMutationResult(summary=apply_summary)
         session = self._get_current_session_or_none()
 
         # -------- MCP --------
@@ -330,11 +372,9 @@ class FederationSyncService:
                 server.federationMetadata["providerType"] = _enum_value(federation.providerType)
                 await server.insert(session=session)
                 apply_summary.createdMcpServers += 1
+                mutation_result.created_mcp.append(server)
             else:
-                old_version = (existing.federationMetadata or {}).get("runtimeVersion")
-                new_version = (item.federationMetadata or {}).get("runtimeVersion")
-
-                if str(old_version) == str(new_version):
+                if not self._runtime_metadata_changed(existing.federationMetadata, item.federationMetadata):
                     apply_summary.unchangedMcpServers += 1
                 else:
                     existing.serverName = item.serverName
@@ -346,6 +386,7 @@ class FederationSyncService:
                     existing.federationMetadata = item.federationMetadata
                     await existing.save(session=session)
                     apply_summary.updatedMcpServers += 1
+                    mutation_result.updated_mcp.append(existing)
 
         stale_mcp = [
             item
@@ -356,6 +397,7 @@ class FederationSyncService:
         for stale in stale_mcp:
             await stale.delete(session=session)
             apply_summary.deletedMcpServers += 1
+            mutation_result.deleted_mcp.append(stale)
 
         # -------- A2A --------
         existing_a2a = await A2AAgent.find({"federationRefId": federation.id}, session=session).to_list()
@@ -382,11 +424,9 @@ class FederationSyncService:
                 agent.federationMetadata["providerType"] = _enum_value(federation.providerType)
                 await agent.insert(session=session)
                 apply_summary.createdAgents += 1
+                mutation_result.created_a2a.append(agent)
             else:
-                old_version = (existing.federationMetadata or {}).get("runtimeVersion")
-                new_version = (item.federationMetadata or {}).get("runtimeVersion")
-
-                if str(old_version) == str(new_version):
+                if not self._runtime_metadata_changed(existing.federationMetadata, item.federationMetadata):
                     apply_summary.unchangedAgents += 1
                 else:
                     existing.path = item.path
@@ -398,6 +438,7 @@ class FederationSyncService:
                     existing.federationMetadata = item.federationMetadata
                     await existing.save(session=session)
                     apply_summary.updatedAgents += 1
+                    mutation_result.updated_a2a.append(existing)
 
         stale_a2a = [
             item
@@ -408,8 +449,74 @@ class FederationSyncService:
         for stale in stale_a2a:
             await stale.delete(session=session)
             apply_summary.deletedAgents += 1
+            mutation_result.deleted_a2a.append(stale)
 
-        return apply_summary
+        return mutation_result
+
+    async def _sync_vector_index_after_commit(
+        self,
+        *,
+        federation: Federation,
+        job: FederationSyncJob,
+        mutation_result: FederationSyncMutationResult,
+    ) -> None:
+        """Rebuild derived Weaviate indexes after Mongo commit.
+
+        This runs outside the transaction on purpose: vector storage is a
+        secondary index, not the source of truth. Replaying this step is safe
+        because repository sync methods are implemented as idempotent upserts
+        and deletes keyed by the persisted Mongo resource ids.
+        """
+        errors: list[str] = []
+
+        for server in [*mutation_result.created_mcp, *mutation_result.updated_mcp]:
+            try:
+                result = await self.mcp_server_repo.sync_server_to_vector_db(server, is_delete=False)
+                if not result or result.get("failed_tools"):
+                    detail = result.get("error") if result else None
+                    suffix = f":{detail}" if detail else ""
+                    errors.append(f"mcp upsert failed:{server.serverName}{suffix}")
+            except Exception as exc:
+                errors.append(f"mcp upsert failed:{server.serverName}:{exc}")
+
+        for server in mutation_result.deleted_mcp:
+            try:
+                result = await self.mcp_server_repo.sync_server_to_vector_db(server, is_delete=True)
+                if not result or result.get("failed_tools"):
+                    detail = result.get("error") if result else None
+                    suffix = f":{detail}" if detail else ""
+                    errors.append(f"mcp delete failed:{server.serverName}{suffix}")
+            except Exception as exc:
+                errors.append(f"mcp delete failed:{server.serverName}:{exc}")
+
+        for agent in [*mutation_result.created_a2a, *mutation_result.updated_a2a]:
+            try:
+                result = await self.a2a_agent_repo.sync_agent_to_vector_db(agent, is_delete=False)
+                if not result or result.get("failed"):
+                    detail = result.get("error") if result else None
+                    suffix = f":{detail}" if detail else ""
+                    errors.append(f"a2a upsert failed:{agent.card.name}{suffix}")
+            except Exception as exc:
+                errors.append(f"a2a upsert failed:{agent.card.name}:{exc}")
+
+        for agent in mutation_result.deleted_a2a:
+            try:
+                result = await self.a2a_agent_repo.sync_agent_to_vector_db(agent, is_delete=True)
+                if not result or result.get("failed"):
+                    detail = result.get("error") if result else None
+                    suffix = f":{detail}" if detail else ""
+                    errors.append(f"a2a delete failed:{agent.card.name}{suffix}")
+            except Exception as exc:
+                errors.append(f"a2a delete failed:{agent.card.name}:{exc}")
+
+        if errors:
+            logger.warning(
+                "Federation vector sync completed with errors: federation_id=%s job_id=%s error_count=%d first_error=%s",
+                federation.id,
+                job.id,
+                len(errors),
+                errors[0],
+            )
 
     async def run_delete(
         self,
@@ -421,7 +528,7 @@ class FederationSyncService:
         try:
             await self._delete_transaction(federation)
 
-            # 如果你们当前仍旧直接删向量库，可在事务外处理
+            # If vector records still need explicit deletion, do it outside the transaction.
             stats = FederationStats(mcpServerCount=0, agentCount=0, toolCount=0, importedTotal=0)
             last_sync = FederationLastSync(
                 jobId=job.id,
@@ -498,7 +605,18 @@ class FederationSyncService:
 
     @staticmethod
     def _extract_runtime_arn(metadata: dict[str, Any] | None) -> str | None:
-        if not metadata:
-            return None
-        runtime_arn = metadata.get("runtimeArn")
-        return str(runtime_arn) if runtime_arn else None
+        return AgentCoreImportService.extract_runtime_arn(metadata)
+
+    @staticmethod
+    def _extract_runtime_version(metadata: dict[str, Any] | None) -> str | None:
+        return AgentCoreImportService.extract_runtime_version(metadata)
+
+    @classmethod
+    def _runtime_metadata_changed(
+        cls,
+        existing_metadata: dict[str, Any] | None,
+        new_metadata: dict[str, Any] | None,
+    ) -> bool:
+        # Federation sync currently treats runtime version drift as the canonical
+        # signal that a discovered resource should overwrite the persisted one.
+        return bool(AgentCoreImportService.detect_runtime_version_change(existing_metadata, new_metadata))

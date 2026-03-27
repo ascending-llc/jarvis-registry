@@ -6,6 +6,7 @@ Usage:
     uv run federation-job-admin list-active
     uv run federation-job-admin fail-active <federation_id>
     uv run federation-job-admin set-sync-state <federation_id> --status failed
+    uv run federation-job-admin retry-vector-sync <federation_id>
 
 Examples:
     uv run federation-job-admin show federation-demo-id
@@ -13,11 +14,13 @@ Examples:
     uv run federation-job-admin fail-active federation-demo-id
     uv run federation-job-admin fail-active federation-demo-id --reason "manual recovery after restart"
     uv run federation-job-admin set-sync-state federation-demo-id --status failed --message "manual recovery"
+    uv run federation-job-admin retry-vector-sync federation-demo-id
 """
 
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import sys
 from datetime import UTC, datetime
@@ -27,6 +30,12 @@ from bson import ObjectId
 from pymongo import DESCENDING, MongoClient
 
 from registry.core.config import settings
+from registry_pkgs.database import close_mongodb, init_mongodb
+from registry_pkgs.models import A2AAgent, ExtendedMCPServer
+from registry_pkgs.models.federation import Federation
+from registry_pkgs.vector.client import create_database_client
+from registry_pkgs.vector.repositories.a2a_agent_repository import A2AAgentRepository
+from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRepository
 
 ACTIVE_JOB_STATUSES = ("pending", "syncing")
 SYNC_STATE_CHOICES = ["idle", "pending", "syncing", "success", "failed"]
@@ -58,7 +67,7 @@ def _parse_object_id(raw_value: str) -> ObjectId:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Inspect and repair federation sync jobs and federation sync state.",
+        description="Inspect federation jobs, repair sync state, and rebuild vector indexes from Mongo state.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
@@ -67,6 +76,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "  uv run federation-job-admin fail-active federation-demo-id\n"
             '  uv run federation-job-admin fail-active federation-demo-id --reason "manual recovery"\n'
             "  uv run federation-job-admin set-sync-state federation-demo-id --status failed\n"
+            "  uv run federation-job-admin retry-vector-sync federation-demo-id\n"
         ),
     )
     subparsers = parser.add_subparsers(dest="command")
@@ -102,6 +112,12 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional federation syncMessage",
     )
+
+    retry_vector_parser = subparsers.add_parser(
+        "retry-vector-sync",
+        help="Rebuild Weaviate/vector index for the current federation Mongo state",
+    )
+    retry_vector_parser.add_argument("federation_id", help="Federation ObjectId")
 
     return parser
 
@@ -212,6 +228,88 @@ def _set_sync_state(db, federation_id: ObjectId, status: str, message: str | Non
     )
 
 
+async def _retry_vector_sync(federation_id: ObjectId) -> None:
+    """Rebuild the federation vector index from the current persisted Mongo resources."""
+    await init_mongodb(settings.mongo_config)
+    db_client = create_database_client(settings.vector_backend_config)
+    mcp_repo = MCPServerRepository(db_client)
+    a2a_repo = A2AAgentRepository(db_client)
+
+    try:
+        federation = await Federation.find_one({"_id": federation_id})
+        if federation is None:
+            raise SystemExit(f"Federation not found: {federation_id}")
+
+        mcp_servers = await ExtendedMCPServer.find({"federationRefId": federation_id}).to_list()
+        a2a_agents = await A2AAgent.find({"federationRefId": federation_id}).to_list()
+
+        mcp_indexed = 0
+        mcp_failed = 0
+        mcp_skipped = 0
+        a2a_indexed = 0
+        a2a_failed = 0
+        a2a_skipped = 0
+        errors: list[str] = []
+
+        for server in mcp_servers:
+            try:
+                result = await mcp_repo.sync_server_to_vector_db(server, is_delete=False)
+                if not result or result.get("failed_tools"):
+                    mcp_failed += 1
+                    detail = result.get("error") if result else "sync returned no result"
+                    errors.append(f"mcp:{server.serverName}:{detail}")
+                    continue
+                if result.get("skipped"):
+                    mcp_skipped += int(result["skipped"])
+                    continue
+                mcp_indexed += 1
+            except Exception as exc:
+                mcp_failed += 1
+                errors.append(f"mcp:{server.serverName}:{exc}")
+
+        for agent in a2a_agents:
+            try:
+                result = await a2a_repo.sync_agent_to_vector_db(agent, is_delete=False)
+                if not result or result.get("failed"):
+                    a2a_failed += 1
+                    detail = result.get("error") if result else "sync returned no result"
+                    errors.append(f"a2a:{agent.card.name}:{detail}")
+                    continue
+                if result.get("skipped"):
+                    a2a_skipped += int(result["skipped"])
+                    continue
+                a2a_indexed += 1
+            except Exception as exc:
+                a2a_failed += 1
+                errors.append(f"a2a:{agent.card.name}:{exc}")
+
+        _print_json(
+            {
+                "federationId": federation_id,
+                "displayName": federation.displayName,
+                "scanned": {
+                    "mcpServers": len(mcp_servers),
+                    "a2aAgents": len(a2a_agents),
+                },
+                "result": {
+                    "indexedMcpServers": mcp_indexed,
+                    "failedMcpServers": mcp_failed,
+                    "skippedMcpServers": mcp_skipped,
+                    "indexedA2AAgents": a2a_indexed,
+                    "failedA2AAgents": a2a_failed,
+                    "skippedA2AAgents": a2a_skipped,
+                },
+                "firstError": errors[0] if errors else None,
+                "errors": errors,
+            }
+        )
+    finally:
+        try:
+            db_client.close()
+        finally:
+            await close_mongodb()
+
+
 def main(argv: list[str] | None = None) -> None:
     argv = list(sys.argv[1:] if argv is None else argv)
 
@@ -221,6 +319,10 @@ def main(argv: list[str] | None = None) -> None:
     if not args.command:
         parser.print_help()
         raise SystemExit(1)
+
+    if args.command == "retry-vector-sync":
+        asyncio.run(_retry_vector_sync(_parse_object_id(args.federation_id)))
+        return
 
     client, db = _get_db()
     try:

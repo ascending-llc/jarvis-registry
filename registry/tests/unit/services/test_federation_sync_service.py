@@ -6,8 +6,9 @@ import pytest
 from beanie import PydanticObjectId
 
 from registry.services.federation.federation_handlers import AwsAgentCoreSyncHandler, AzureAiFoundrySyncHandler
-from registry.services.federation_sync_service import FederationSyncService
+from registry.services.federation_sync_service import FederationSyncMutationResult, FederationSyncService
 from registry_pkgs.models.enums import FederationProviderType, FederationStatus, FederationSyncStatus
+from registry_pkgs.models.federation_sync_job import FederationApplySummary
 
 
 @pytest.fixture
@@ -171,3 +172,58 @@ async def test_update_federation_and_create_resync_job_creates_pending_job(
     federation_sync_service.federation_crud_service.mark_sync_pending.assert_awaited_once_with(updated)
     assert result == updated
     assert created_job == job
+
+
+@pytest.mark.asyncio
+async def test_run_sync_calls_vector_sync_after_commit(federation_sync_service: FederationSyncService):
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    job = SimpleNamespace(id=PydanticObjectId(), startedAt=datetime.now(UTC))
+    mutation_result = FederationSyncMutationResult(summary=FederationApplySummary())
+
+    federation_sync_service._discover_entities = AsyncMock(return_value={"mcp_servers": [], "a2a_agents": []})
+    federation_sync_service._commit_sync_transaction = AsyncMock(return_value=mutation_result)
+    federation_sync_service._sync_vector_index_after_commit = AsyncMock()
+    federation_sync_service.federation_crud_service.mark_sync_failed = AsyncMock()
+    federation_sync_service.federation_job_service.mark_failed = AsyncMock()
+
+    result = await federation_sync_service.run_sync(federation=federation, job=job, user_id="user-1")
+
+    assert result == job
+    federation_sync_service._sync_vector_index_after_commit.assert_awaited_once_with(
+        federation=federation,
+        job=job,
+        mutation_result=mutation_result,
+    )
+    federation_sync_service.federation_crud_service.mark_sync_failed.assert_not_awaited()
+    federation_sync_service.federation_job_service.mark_failed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sync_vector_index_after_commit_logs_and_continues_on_vector_failure(
+    federation_sync_service: FederationSyncService,
+):
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    job = SimpleNamespace(id=PydanticObjectId())
+    server = SimpleNamespace(serverName="server-demo")
+    agent = SimpleNamespace(card=SimpleNamespace(name="agent-demo"))
+    mutation_result = FederationSyncMutationResult(
+        summary=FederationApplySummary(),
+        created_mcp=[server],
+        deleted_a2a=[agent],
+    )
+
+    federation_sync_service.mcp_server_repo.sync_server_to_vector_db = AsyncMock(
+        side_effect=RuntimeError("vector down")
+    )
+    federation_sync_service.a2a_agent_repo.sync_agent_to_vector_db = AsyncMock(
+        return_value={"indexed": 0, "failed": 0, "deleted": 1}
+    )
+
+    await federation_sync_service._sync_vector_index_after_commit(
+        federation=federation,
+        job=job,
+        mutation_result=mutation_result,
+    )
+
+    federation_sync_service.mcp_server_repo.sync_server_to_vector_db.assert_awaited_once_with(server, is_delete=False)
+    federation_sync_service.a2a_agent_repo.sync_agent_to_vector_db.assert_awaited_once_with(agent, is_delete=True)
