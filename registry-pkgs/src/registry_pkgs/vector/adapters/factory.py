@@ -14,21 +14,23 @@ _VECTOR_STORE_CREATOR_REGISTRY: dict[str, Callable] = {}
 _EMBEDDING_CREATOR_REGISTRY: dict[str, Callable] = {}
 
 
-def register_vector_store_creator(name: str):
+def register_vector_store_creator(name: VectorStoreType | str):
     """Decorator to register vector store creator function."""
 
     def decorator(creator_func: Callable):
-        _VECTOR_STORE_CREATOR_REGISTRY[name] = creator_func
+        key = name.value if isinstance(name, VectorStoreType) else name
+        _VECTOR_STORE_CREATOR_REGISTRY[key] = creator_func
         return creator_func
 
     return decorator
 
 
-def register_embedding_creator(name: str):
+def register_embedding_creator(name: EmbeddingProvider | str):
     """Decorator to register embedding creator function."""
 
     def decorator(creator_func: Callable):
-        _EMBEDDING_CREATOR_REGISTRY[name] = creator_func
+        key = name.value if isinstance(name, EmbeddingProvider) else name
+        _EMBEDDING_CREATOR_REGISTRY[key] = creator_func
         return creator_func
 
     return decorator
@@ -64,7 +66,7 @@ class VectorStoreFactory:
     """Factory class for creating vector store adapters using registry pattern."""
 
     @classmethod
-    def create_adapter(cls, config: BackendConfig) -> VectorStoreAdapter:
+    def create_adapter(cls, config: BackendConfig) -> VectorStoreAdapter | None:
         """Create vector store adapter.
 
         Args:
@@ -123,11 +125,15 @@ class VectorStoreFactory:
                 importlib.import_module("langchain_openai")
             elif config.embedding_provider == EmbeddingProvider.AWS_BEDROCK:
                 importlib.import_module("langchain_aws")
+            elif config.embedding_provider == EmbeddingProvider.AZURE_OPENAI:
+                importlib.import_module("langchain_openai")
         except ImportError:
             if config.embedding_provider == EmbeddingProvider.OPENAI:
                 missing_packages.append("langchain_openai")
             elif config.embedding_provider == EmbeddingProvider.AWS_BEDROCK:
                 missing_packages.append("langchain_aws")
+            elif config.embedding_provider == EmbeddingProvider.AZURE_OPENAI:
+                missing_packages.append("langchain_openai")
 
         if missing_packages:
             packages_str = ", ".join(missing_packages)

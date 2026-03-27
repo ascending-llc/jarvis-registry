@@ -76,6 +76,12 @@ class WeaviateStore(VectorStoreAdapter):
                 region=self.embedding_config.get("region", "us-east-1"),
                 model=self.embedding_config.get("model", "amazon.titan-embed-text-v2:0"),
             )
+        elif embedding_provider == EmbeddingProvider.AZURE_OPENAI:
+            # Azure OpenAI vectorizer configuration
+            vectorizer_config = wvc.Configure.Vectorizer.text2vec_azure_openai(
+                resource_name=self.embedding_config.get("resource_name", ""),
+                deployment_id=self.embedding_config.get("deployment_name", ""),
+            )
         else:
             vectorizer_config = wvc.Configure.Vectorizer.none()
         return vectorizer_config

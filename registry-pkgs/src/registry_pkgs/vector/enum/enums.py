@@ -12,6 +12,7 @@ class EmbeddingProvider(StrEnum):
 
     OPENAI = "openai"
     AWS_BEDROCK = "aws_bedrock"
+    AZURE_OPENAI = "azure_openai"
 
 
 class LLMProvider(StrEnum):

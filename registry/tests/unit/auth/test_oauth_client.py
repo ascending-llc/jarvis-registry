@@ -399,6 +399,7 @@ class TestOAuthClientAuthorizationUrl:
         mock_metadata.client_info.redirect_uris = ["https://registry.example.com/callback"]
         mock_metadata.client_info.scope = "read write"
         mock_metadata.client_info.additional_params = None
+        mock_metadata.resource_metadata = None
         return mock_metadata
 
     @pytest.mark.asyncio
@@ -451,6 +452,7 @@ class TestOAuthClientTokenExchange:
         mock_metadata.client_info.redirect_uris = ["https://registry.example.com/callback"]
         mock_metadata.client_info.scope = "read write"
         mock_metadata.client_info.additional_params = None
+        mock_metadata.resource_metadata = None
         return mock_metadata
 
     @pytest.mark.asyncio
@@ -585,6 +587,195 @@ class TestOAuthClientRefreshTokens:
 
             # Verify old refresh_token is kept
             assert tokens.refresh_token == old_refresh_token
+
+
+class TestGetClientAuthMethodSelection:
+    """Tests for _get_client auth method selection.
+
+    RFC / compatibility requirement: prefer client_secret_post over client_secret_basic
+    so that third-party MCP servers that only accept POST body credentials (e.g. HubSpot)
+    work out of the box.
+    """
+
+    @pytest.fixture
+    def oauth_client(self):
+        return OAuthClient()
+
+    def _make_flow_metadata(self, auth_methods):
+        flow_metadata = Mock(spec=MCPOAuthFlowMetadata)
+        flow_metadata.metadata = Mock(spec=OAuthMetadata)
+        flow_metadata.metadata.token_endpoint = "https://example.com/oauth/token"
+        flow_metadata.metadata.authorization_endpoint = "https://example.com/oauth/authorize"
+        flow_metadata.metadata.token_endpoint_auth_methods_supported = auth_methods
+        flow_metadata.client_info = Mock(spec=OAuthClientInformation)
+        flow_metadata.client_info.client_id = "test_client_id"
+        flow_metadata.client_info.client_secret = "test_secret"
+        flow_metadata.client_info.redirect_uris = ["https://example.com/callback"]
+        flow_metadata.client_info.scope = "read"
+        flow_metadata.resource_metadata = None
+        return flow_metadata
+
+    def test_prefers_post_when_both_methods_available(self, oauth_client):
+        """When both methods are supported, client_secret_post is chosen."""
+        flow_metadata = self._make_flow_metadata(["client_secret_post", "client_secret_basic"])
+        with patch("registry.auth.oauth.oauth_client.AsyncOAuth2Client") as mock_cls:
+            mock_cls.return_value = Mock()
+            oauth_client._get_client(flow_metadata)
+        assert mock_cls.call_args[1]["token_endpoint_auth_method"] == "client_secret_post"
+
+    def test_prefers_post_even_when_basic_listed_first(self, oauth_client):
+        """client_secret_post wins regardless of list ordering."""
+        flow_metadata = self._make_flow_metadata(["client_secret_basic", "client_secret_post"])
+        with patch("registry.auth.oauth.oauth_client.AsyncOAuth2Client") as mock_cls:
+            mock_cls.return_value = Mock()
+            oauth_client._get_client(flow_metadata)
+        assert mock_cls.call_args[1]["token_endpoint_auth_method"] == "client_secret_post"
+
+    def test_uses_basic_when_only_basic_available(self, oauth_client):
+        """Falls back to client_secret_basic when post is absent from the supported list."""
+        flow_metadata = self._make_flow_metadata(["client_secret_basic"])
+        with patch("registry.auth.oauth.oauth_client.AsyncOAuth2Client") as mock_cls:
+            mock_cls.return_value = Mock()
+            oauth_client._get_client(flow_metadata)
+        assert mock_cls.call_args[1]["token_endpoint_auth_method"] == "client_secret_basic"
+
+    def test_defaults_to_post_when_no_methods_advertised(self, oauth_client):
+        """Defaults to client_secret_post when supported list is empty."""
+        flow_metadata = self._make_flow_metadata([])
+        with patch("registry.auth.oauth.oauth_client.AsyncOAuth2Client") as mock_cls:
+            mock_cls.return_value = Mock()
+            oauth_client._get_client(flow_metadata)
+        assert mock_cls.call_args[1]["token_endpoint_auth_method"] == "client_secret_post"
+
+    def test_defaults_to_post_when_methods_is_none(self, oauth_client):
+        """Defaults to client_secret_post when token_endpoint_auth_methods_supported is None."""
+        flow_metadata = self._make_flow_metadata(None)
+        with patch("registry.auth.oauth.oauth_client.AsyncOAuth2Client") as mock_cls:
+            mock_cls.return_value = Mock()
+            oauth_client._get_client(flow_metadata)
+        assert mock_cls.call_args[1]["token_endpoint_auth_method"] == "client_secret_post"
+
+
+class TestBuildAuthorizationUrlResourceIndicator:
+    """Tests for RFC 8707 resource indicator parameter in build_authorization_url."""
+
+    @pytest.fixture
+    def oauth_client(self):
+        return OAuthClient()
+
+    def _make_flow_metadata(self, resource_url=None):
+        flow_metadata = Mock(spec=MCPOAuthFlowMetadata)
+        flow_metadata.state = "test_state_value"
+        flow_metadata.metadata = Mock(spec=OAuthMetadata)
+        flow_metadata.metadata.authorization_endpoint = "https://example.com/oauth/authorize"
+        flow_metadata.metadata.token_endpoint = "https://example.com/oauth/token"
+        flow_metadata.metadata.token_endpoint_auth_methods_supported = ["client_secret_post"]
+        flow_metadata.client_info = Mock(spec=OAuthClientInformation)
+        flow_metadata.client_info.client_id = "test_client_id"
+        flow_metadata.client_info.client_secret = "test_secret"
+        flow_metadata.client_info.redirect_uris = ["https://example.com/callback"]
+        flow_metadata.client_info.scope = "read"
+        flow_metadata.client_info.additional_params = None
+        flow_metadata.resource_metadata = (
+            OAuthProtectedResourceMetadata(resource=resource_url) if resource_url else None
+        )
+        return flow_metadata
+
+    @pytest.mark.asyncio
+    async def test_includes_resource_param_when_resource_metadata_set(self, oauth_client):
+        """Authorization URL must include the resource parameter (RFC 8707)."""
+        flow_metadata = self._make_flow_metadata(resource_url="https://mcp.hubspot.com")
+        url = await oauth_client.build_authorization_url(flow_metadata, "challenge_abc", "flow_123")
+        # URL-encoded or plain — either form is valid
+        assert "resource=" in url
+        assert "mcp.hubspot.com" in url
+
+    @pytest.mark.asyncio
+    async def test_no_resource_param_when_resource_metadata_none(self, oauth_client):
+        """Authorization URL must NOT include resource parameter when resource_metadata is None."""
+        flow_metadata = self._make_flow_metadata(resource_url=None)
+        url = await oauth_client.build_authorization_url(flow_metadata, "challenge_abc", "flow_123")
+        assert "resource=" not in url
+
+
+class TestExchangeCodeForTokensResourceIndicator:
+    """Tests for RFC 8707 resource parameter in exchange_code_for_tokens."""
+
+    @pytest.fixture
+    def oauth_client(self):
+        return OAuthClient()
+
+    def _make_flow_metadata(self, resource_url=None):
+        flow_metadata = Mock(spec=MCPOAuthFlowMetadata)
+        flow_metadata.code_verifier = "test_verifier_string"
+        flow_metadata.metadata = Mock(spec=OAuthMetadata)
+        flow_metadata.metadata.token_endpoint = "https://example.com/oauth/token"
+        flow_metadata.metadata.token_endpoint_auth_methods_supported = ["client_secret_post"]
+        flow_metadata.client_info = Mock(spec=OAuthClientInformation)
+        flow_metadata.client_info.client_id = "test_client_id"
+        flow_metadata.client_info.client_secret = "test_secret"
+        flow_metadata.client_info.redirect_uris = ["https://example.com/callback"]
+        flow_metadata.client_info.scope = "read"
+        flow_metadata.client_info.additional_params = None
+        flow_metadata.resource_metadata = (
+            OAuthProtectedResourceMetadata(resource=resource_url) if resource_url else None
+        )
+        return flow_metadata
+
+    @pytest.mark.asyncio
+    async def test_passes_resource_to_fetch_token(self, oauth_client):
+        """fetch_token must receive the resource kwarg when resource_metadata is set."""
+        flow_metadata = self._make_flow_metadata(resource_url="https://mcp.hubspot.com")
+        mock_authlib_client = AsyncMock()
+        mock_authlib_client.fetch_token = AsyncMock(
+            return_value={"access_token": "tok", "token_type": "Bearer", "expires_in": 3600}
+        )
+        mock_authlib_client.aclose = AsyncMock()
+
+        with patch.object(oauth_client, "_get_client", return_value=mock_authlib_client):
+            await oauth_client.exchange_code_for_tokens(flow_metadata, "test_code")
+
+        call_kwargs = mock_authlib_client.fetch_token.call_args[1]
+        assert call_kwargs.get("resource") == "https://mcp.hubspot.com"
+
+    @pytest.mark.asyncio
+    async def test_no_resource_when_resource_metadata_none(self, oauth_client):
+        """fetch_token must NOT receive a resource kwarg when resource_metadata is None."""
+        flow_metadata = self._make_flow_metadata(resource_url=None)
+        mock_authlib_client = AsyncMock()
+        mock_authlib_client.fetch_token = AsyncMock(
+            return_value={"access_token": "tok", "token_type": "Bearer", "expires_in": 3600}
+        )
+        mock_authlib_client.aclose = AsyncMock()
+
+        with patch.object(oauth_client, "_get_client", return_value=mock_authlib_client):
+            await oauth_client.exchange_code_for_tokens(flow_metadata, "test_code")
+
+        call_kwargs = mock_authlib_client.fetch_token.call_args[1]
+        assert "resource" not in call_kwargs
+
+    @pytest.mark.asyncio
+    async def test_returns_none_on_http_status_error(self, oauth_client):
+        """HTTPStatusError from the provider is caught and returns None."""
+        flow_metadata = self._make_flow_metadata(resource_url=None)
+        mock_request = Mock()
+        mock_request.url = "https://example.com/oauth/token"
+        mock_request.headers = {"Content-Type": "application/x-www-form-urlencoded"}
+        mock_response_obj = Mock()
+        mock_response_obj.status_code = 500
+        mock_response_obj.text = '{"error":"server_error","error_description":"internal"}'
+        http_error = httpx.HTTPStatusError(
+            "500 Internal Server Error", request=mock_request, response=mock_response_obj
+        )
+
+        mock_authlib_client = AsyncMock()
+        mock_authlib_client.fetch_token = AsyncMock(side_effect=http_error)
+        mock_authlib_client.aclose = AsyncMock()
+
+        with patch.object(oauth_client, "_get_client", return_value=mock_authlib_client):
+            tokens = await oauth_client.exchange_code_for_tokens(flow_metadata, "test_code")
+
+        assert tokens is None
 
 
 if __name__ == "__main__":

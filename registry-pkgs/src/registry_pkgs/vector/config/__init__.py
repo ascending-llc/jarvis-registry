@@ -1,4 +1,5 @@
 from .config import (
+    AzureOpenAIEmbeddingConfig,
     BackendConfig,
     BedrockEmbeddingConfig,
     OpenAIEmbeddingConfig,
@@ -18,4 +19,5 @@ __all__ = [
     "WeaviateConfig",
     "OpenAIEmbeddingConfig",
     "BedrockEmbeddingConfig",
+    "AzureOpenAIEmbeddingConfig",
 ]

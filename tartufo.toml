@@ -41,4 +41,10 @@ exclude-signatures = [
     {signature = '20c7387c76fac87bc98c5858b571628e367c403da266c5d6ba44130335513188', reason = 'OAuth router test dependency override diff is not credential'},
     {signature = '38368f3fc37f1a37fcf5997cd286f46a1516aa0c886783d8808845e05d730538', reason = 'example opaque mock user ID is not credential'},
     {signature = '64c14f4afec33ec4e9362f77f1e43f06596b103999eed03feb38c8e99975e6bd', reason = 'example opaque mock server_id is not credential'},
+    {signature = '83068d1e0ea9faf341447911835dd4b61d8421179a845c762b2a7676b0665b87', reason = 'embeddings example cleanup diff in .env.example is not a credential'},
+    {signature = '99930ac71f87754bb8b1504c83c67466e839b7116f0f21b01b9ef40d97898813', reason = 'embeddings example cleanup diff in .env.example is not a credential'},
+    {signature = '3cfe6ec38debfb1e1e4dacdf086e0c5b41dddb704c7aee4182c0ef39d3cb1bd0', reason = 'embeddings documentation rewrite diff is not a credential'},
+    {signature = '0eabf50262bd3cb68b34d5bd1202ff68a25df41c8f4e93b7044c0b1aa4941bd7', reason = 'embeddings documentation rewrite diff is not a credential'},
+    {signature = '8f08d7dc575048e860396d8b14742263c189f3c8c46bf488287953b723eb856d', reason = 'embeddings documentation rewrite diff is not a credential'},
+    {signature = 'fe1728ad959bcd13833d501bf98d785c7d88e3fe31ae9dba0f7a7c202fcd8b5b', reason = 'embeddings documentation rewrite diff is not a credential'},
 ]

@@ -1,164 +1,214 @@
 # Embeddings Configuration
 
-Flexible, vendor-agnostic embeddings generation for MCP Gateway Registry's semantic search functionality.
+This project has two different embedding configurations, and which one applies depends entirely on `TOOL_DISCOVERY_MODE`.
 
 ## Overview
 
-The MCP Gateway Registry provides semantic search capabilities across MCP servers, tools, and AI agents. You can choose from three embedding provider options to power this search:
+Embeddings are used for semantic search in the registry.
 
-1. **Sentence Transformers** (Default) - Local models
-2. **OpenAI** - Cloud embeddings via API
-3. **Any LiteLLM-supported provider** - Amazon Bedrock Titan, Cohere, and 100+ other models
+Depending on deployment mode, semantic search is handled in one of two ways:
 
-Switch between providers with simple configuration changes - no code modifications required.
+- `embedded`: local FAISS index with a local `sentence-transformers` model
+- `external`: external vector backend with a configured embedding provider such as `aws_bedrock` or `openai`
 
-## Features
+## Which Settings Apply?
 
-- **Vendor-agnostic**: Switch between embeddings providers with configuration changes
-- **Local & Cloud Support**: Use local models or cloud APIs (OpenAI, Cohere, Amazon Bedrock, etc.)
-- **Backward Compatible**: Works seamlessly with existing FAISS indices
-- **Easy Configuration**: Simple environment variable setup
-- **Extensible**: Easy to add new providers
-- **Production-Ready**: Terraform support for AWS deployments
+| `TOOL_DISCOVERY_MODE` | Service Used | Relevant Variables |
+|---|---|---|
+| `embedded` | `EmbeddedFaissService` | `LOCAL_EMBEDDINGS_MODEL_NAME`, `LOCAL_EMBEDDINGS_MODEL_DIMENSIONS` |
+| `external` | External vector backend | `VECTOR_STORE_TYPE`, `EMBEDDING_PROVIDER`, and provider-specific settings such as `EMBEDDING_MODEL`, `AWS_REGION`, `OPENAI_API_KEY`, `OPENAI_MODEL` |
 
-## Quick Start
-
-### Option 1: Sentence Transformers (Default)
-
-Local embedding models that run on your infrastructure.
-
-```bash
-# In .env
-EMBEDDINGS_PROVIDER=sentence-transformers
-EMBEDDINGS_MODEL_NAME=all-MiniLM-L6-v2
-EMBEDDINGS_MODEL_DIMENSIONS=384
-```
-
-**Characteristics:**
-- Runs locally on your infrastructure
-- No API costs
-- No external network calls required
-- Requires CPU/GPU resources
-- Model files stored locally
-- Data stays within your infrastructure
-
-### Option 2: OpenAI
-
-Cloud-based embedding service via OpenAI API.
-
-```bash
-# In .env
-EMBEDDINGS_PROVIDER=litellm
-EMBEDDINGS_MODEL_NAME=openai/text-embedding-ada-002
-EMBEDDINGS_MODEL_DIMENSIONS=1536
-EMBEDDINGS_API_KEY=sk-your-openai-api-key
-```
-
-**Characteristics:**
-- Cloud-based service
-- Requires API key
-- API costs per 1K tokens
-- No local compute resources needed
-- Network dependency
-- Data sent to OpenAI
-
-### Option 3: Amazon Bedrock Titan
-
-Cloud-based embedding service via AWS Bedrock.
-
-```bash
-# In .env
-EMBEDDINGS_PROVIDER=litellm
-EMBEDDINGS_MODEL_NAME=bedrock/amazon.titan-embed-text-v1
-EMBEDDINGS_MODEL_DIMENSIONS=1536
-EMBEDDINGS_AWS_REGION=us-east-1
-# No API key needed - uses IAM
-```
-
-**Characteristics:**
-- Cloud-based service
-- Uses IAM authentication (no API key required)
-- Integrates with AWS security model
-- API costs apply
-- Requires AWS credentials
-- Available in select AWS regions
+In the current container setup, the default is `TOOL_DISCOVERY_MODE=external`.
 
 ## Configuration
 
-### Environment Variables
+### Embedded Mode
+
+Use this configuration when `TOOL_DISCOVERY_MODE=embedded`.
+
+Required variables:
+
+- `TOOL_DISCOVERY_MODE=embedded`
+- `LOCAL_EMBEDDINGS_MODEL_NAME`
+- `LOCAL_EMBEDDINGS_MODEL_DIMENSIONS`
+
+Example:
+
+```bash
+TOOL_DISCOVERY_MODE=embedded
+LOCAL_EMBEDDINGS_MODEL_NAME=all-MiniLM-L6-v2
+LOCAL_EMBEDDINGS_MODEL_DIMENSIONS=384
+```
+
+### External Mode
+
+Use this configuration when `TOOL_DISCOVERY_MODE=external`.
+
+Common variables:
+
+- `TOOL_DISCOVERY_MODE=external`
+- `VECTOR_STORE_TYPE`
+- `EMBEDDING_PROVIDER`
+
+#### External Mode with `aws_bedrock`
+
+Required variables:
+
+- `VECTOR_STORE_TYPE=weaviate`
+- `EMBEDDING_PROVIDER=aws_bedrock`
+- `EMBEDDING_MODEL`
+- `AWS_REGION`
+
+Optional variables:
+
+- `AWS_ACCESS_KEY_ID`
+- `AWS_SECRET_ACCESS_KEY`
+- `AWS_SESSION_TOKEN`
+
+Example:
+
+```bash
+TOOL_DISCOVERY_MODE=external
+VECTOR_STORE_TYPE=weaviate
+EMBEDDING_PROVIDER=aws_bedrock
+EMBEDDING_MODEL=your_bedrock_embedding_model_id
+AWS_REGION=us-east-1
+```
+
+#### External Mode with `openai`
+
+### Option 4: Azure OpenAI
+
+Cloud-based embedding service via Azure-hosted OpenAI models.
+
+```bash
+# In .env
+VECTOR_STORE_TYPE=weaviate
+EMBEDDINGS_PROVIDER=azure_openai
+AZURE_OPENAI_API_KEY=<AZURE_OPENAI_API_KEY>
+AZURE_OPENAI_ENDPOINT=https://example.openai.azure.com
+AZURE_OPENAI_API_VERSION=2024-02-01
+AZURE_OPENAI_DEPLOYMENT_NAME=<AZURE_OPENAI_DEPLOYMENT_NAME>
+AZURE_OPENAI_MODEL=<AZURE_OPENAI_MODEL>
+```
+
+**Characteristics:**
+- Cloud-based service via Azure
+- Requires Azure OpenAI resource and API key
+- API costs apply (Azure pricing)
+- Integrates with Azure security model
+- Data stays within Azure regions
+- Supports private endpoints and VNet integration
+- Enterprise-grade SLA and compliance
+
+## Configuration
+
+- `VECTOR_STORE_TYPE=weaviate`
+- `EMBEDDING_PROVIDER=openai`
+- `OPENAI_API_KEY`
 
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|
 | `EMBEDDINGS_PROVIDER` | Provider type: `sentence-transformers` or `litellm` | `sentence-transformers` | No |
+| `EMBEDDING_PROVIDER` | New format: `openai`, `aws_bedrock`, `azure_openai` | `aws_bedrock` | For new config |
 | `EMBEDDINGS_MODEL_NAME` | Model identifier | `all-MiniLM-L6-v2` | Yes |
 | `EMBEDDINGS_MODEL_DIMENSIONS` | Embedding dimension | `384` | Yes |
 | `EMBEDDINGS_API_KEY` | API key for cloud provider (OpenAI, Cohere, etc.) | - | For cloud* |
 | `EMBEDDINGS_API_BASE` | Custom API endpoint (LiteLLM only) | - | No |
 | `EMBEDDINGS_AWS_REGION` | AWS region for Bedrock (LiteLLM only) | - | For Bedrock |
+| `AZURE_OPENAI_API_KEY` | Azure OpenAI API key | - | For Azure OpenAI |
+| `AZURE_OPENAI_ENDPOINT` | Azure OpenAI endpoint URL | - | For Azure OpenAI |
+| `AZURE_OPENAI_API_VERSION` | Azure OpenAI API version | `2024-02-01` | No |
+| `AZURE_OPENAI_DEPLOYMENT_NAME` | Azure OpenAI deployment name | - | For Azure OpenAI |
+| `AZURE_OPENAI_MODEL` | Azure OpenAI model name | `text-embedding-3-small` | No |
 
-*Not required for AWS Bedrock - use standard AWS credential chain (IAM roles, environment variables, ~/.aws/credentials)
+- `OPENAI_MODEL`
 
-### Terraform Configuration
+Example:
 
-For AWS ECS deployments, configure embeddings in your `terraform.tfvars`:
-
-#### Using Sentence Transformers (Default)
-
-```hcl
-# Local embeddings - no additional configuration needed
-# Uses defaults: sentence-transformers with all-MiniLM-L6-v2
+```bash
+TOOL_DISCOVERY_MODE=external
+VECTOR_STORE_TYPE=weaviate
+EMBEDDING_PROVIDER=openai
+OPENAI_API_KEY=sk-...
+OPENAI_MODEL=text-embedding-3-small
 ```
 
-#### Using OpenAI
+## Embedded FAISS Mode
+
+When `TOOL_DISCOVERY_MODE=embedded`, the registry loads `EmbeddedFaissService` and uses a local `sentence-transformers` model.
+In this mode, local embeddings are file-based models from Hugging Face, not OpenAI or Bedrock API calls.
+
+Relevant settings:
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `LOCAL_EMBEDDINGS_MODEL_NAME` | Hugging Face sentence-transformers model name | `all-MiniLM-L6-v2` |
+| `LOCAL_EMBEDDINGS_MODEL_DIMENSIONS` | Expected embedding dimension for the FAISS index | `384` |
+
+Required variables when `TOOL_DISCOVERY_MODE=embedded`:
+
+- `LOCAL_EMBEDDINGS_MODEL_NAME`
+- `LOCAL_EMBEDDINGS_MODEL_DIMENSIONS`
+
+#### Using Azure OpenAI
 
 ```hcl
-embeddings_provider         = "litellm"
-embeddings_model_name       = "openai/text-embedding-ada-002"
-embeddings_model_dimensions = 1536
-embeddings_api_key          = "sk-proj-YOUR-OPENAI-API-KEY"
-```
-
-#### Using Amazon Bedrock
-
-```hcl
-embeddings_provider         = "litellm"
-embeddings_model_name       = "bedrock/amazon.titan-embed-text-v1"
-embeddings_model_dimensions = 1536
-embeddings_aws_region       = "us-east-1"
-embeddings_api_key          = ""  # Empty for Bedrock (uses IAM)
+vector_store_type                 = "weaviate"
+embedding_provider                = "azure_openai"
+azure_openai_api_key              = <AZURE_OPENAI_API_KEY>
+azure_openai_endpoint             = https://example.openai.azure.com
+azure_openai_api_version          = "2024-02-01"
+azure_openai_deployment_name      = <AZURE_OPENAI_DEPLOYMENT_NAME>
+azure_openai_model                = <AZURE_OPENAI_MODEL>
 ```
 
 See [terraform/aws-ecs/terraform.tfvars.example](../terraform/aws-ecs/terraform.tfvars.example) for complete examples.
 
-## Supported Models
+Notes:
 
-### Sentence Transformers (Local)
+- The model is loaded either from `registry/models/<model-name>` in local development or from `/app/registry/models/<model-name>` in the container.
+- If the model is not already present, `sentence-transformers` downloads it from Hugging Face Hub.
+- The Hugging Face cache is stored next to the local models directory under `.cache`.
+- No local embedding provider, API key, or AWS region setting is used in this mode.
 
-| Model | Dimensions | Description |
-|-------|------------|-------------|
-| `all-MiniLM-L6-v2` | 384 | Fast, lightweight (default) |
-| `all-mpnet-base-v2` | 768 | High quality |
-| `paraphrase-multilingual-MiniLM-L12-v2` | 384 | Multilingual |
+### Common Embedded Models
 
-Any model from [Hugging Face sentence-transformers](https://huggingface.co/models?library=sentence-transformers) is supported.
+| Model | Typical Dimensions | Notes |
+|---|---:|---|
+| `all-MiniLM-L6-v2` | 384 | Default, lightweight |
+| `all-mpnet-base-v2` | 768 | Higher quality, larger model |
+| `paraphrase-multilingual-MiniLM-L12-v2` | 384 | Multilingual use cases |
 
-### LiteLLM (Cloud-based)
+## External Vector Search Mode
 
-LiteLLM supports 100+ embedding models from various providers:
+When `TOOL_DISCOVERY_MODE=external`, the registry does not load `EmbeddedFaissService`.
+Semantic vectorization is handled by the external vector backend configuration instead.
 
-#### OpenAI
-- `openai/text-embedding-3-small` (1536 dimensions)
-- `openai/text-embedding-3-large` (3072 dimensions)
-- `openai/text-embedding-ada-002` (1536 dimensions)
+Relevant settings:
 
-#### Cohere
-- `cohere/embed-english-v3.0` (1024 dimensions)
-- `cohere/embed-multilingual-v3.0` (1024 dimensions)
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `VECTOR_STORE_TYPE` | Vector store backend | `weaviate` |
+| `EMBEDDING_PROVIDER` | Embedding provider for the external vector backend | `aws_bedrock` |
+| `EMBEDDING_MODEL` | Embedding model ID used by the provider | provider-specific default |
+| `AWS_REGION` | AWS region for Bedrock embeddings | `us-east-1` |
+| `OPENAI_API_KEY` | OpenAI API key when `EMBEDDING_PROVIDER=openai` | - |
+| `OPENAI_MODEL` | OpenAI embedding model name | `text-embedding-3-small` |
 
-#### Amazon Bedrock
-- `bedrock/amazon.titan-embed-text-v1` (1536 dimensions)
-- `bedrock/cohere.embed-english-v3` (1024 dimensions)
-- `bedrock/cohere.embed-multilingual-v3` (1024 dimensions)
+Notes:
+
+- In AWS environments, IAM role or the default AWS credential chain is preferred over hardcoded credentials.
+- `EMBEDDING_MODEL` is the model identifier passed through pydantic for Bedrock embeddings.
+- If `OPENAI_MODEL` is not provided, the default is `text-embedding-3-small`.
+- `EMBEDDING_MODEL` is not used for the OpenAI embedding path in the current configuration model.
+
+#### Azure OpenAI
+- `text-embedding-3-small` (1536 dimensions)
+- `text-embedding-3-large` (3072 dimensions)
+- `text-embedding-ada-002` (1536 dimensions)
+
+**Note:** When using Azure OpenAI, you must specify the deployment name (not the model name) in your Azure OpenAI resource.
 
 #### Other Providers
 - Azure OpenAI
@@ -167,94 +217,57 @@ LiteLLM supports 100+ embedding models from various providers:
 - Hugging Face Inference API
 - And 100+ more via [LiteLLM](https://docs.litellm.ai/docs/embedding/supported_embedding)
 
-## Migration Between Providers
+### Common External Models
 
-### Switching Providers
+| Provider | Model | Typical Dimensions |
+|---|---|---:|
+| `aws_bedrock` | `bedrock-model-v2` | 1024 |
+| `aws_bedrock` | `bedrock-model-v1` | 1536 |
+| `openai` | `text-embedding-3-small` | 1536 |
+| `openai` | `text-embedding-3-large` | 3072 |
 
-When you switch embedding providers or models with different dimensions, the registry automatically:
+## Behavior When Settings Change
 
-1. Detects dimension mismatch
-2. Rebuilds the FAISS index
-3. Regenerates embeddings for all registered items
+### Embedded Mode
 
-Example logs when switching from sentence-transformers (384) to OpenAI (1536):
+If you change `LOCAL_EMBEDDINGS_MODEL_NAME` or `LOCAL_EMBEDDINGS_MODEL_DIMENSIONS`, make sure the configured dimension matches the model's real output dimension.
 
-```
-WARNING: Embedding dimension mismatch detected
-  Expected: 384 (from existing index)
-  Got: 1536 (from current model)
-Rebuilding FAISS index with new dimensions...
-Regenerating embeddings for all items...
-Index rebuild complete
-```
+If the configured dimension does not match the existing FAISS index dimension, the registry re-initializes the FAISS index.
 
-### No Code Changes Required
+In practice, this means:
 
-Just update your environment variables or Terraform configuration:
+- switching to a model with a different output dimension requires rebuilding the local FAISS index
+- using the wrong dimension value can cause the system to discard the old index and start a new one
 
-```bash
-# From
-EMBEDDINGS_PROVIDER=sentence-transformers
-EMBEDDINGS_MODEL_NAME=all-MiniLM-L6-v2
-EMBEDDINGS_MODEL_DIMENSIONS=384
+### External Mode
 
-# To
-EMBEDDINGS_PROVIDER=litellm
-EMBEDDINGS_MODEL_NAME=openai/text-embedding-ada-002
-EMBEDDINGS_MODEL_DIMENSIONS=1536
-EMBEDDINGS_API_KEY=sk-your-key
-```
+If you change `EMBEDDING_PROVIDER`, `EMBEDDING_MODEL`, or provider-specific settings, semantic vectorization behavior changes in the external vector backend path.
 
-Restart the service and the index will be automatically rebuilt.
+This does not load `EmbeddedFaissService`, so local FAISS-specific settings do not apply.
 
-## AWS Bedrock Setup
+## Operational Notes
 
-### IAM Permissions
+- `EMBEDDING_MODEL` is the pydantic-backed setting used for external embedding model selection. `BEDROCK_MODEL` is no longer the source of truth for registry vectorization.
+- Because the current container setup defaults to `TOOL_DISCOVERY_MODE=external`, local FAISS embedding settings usually do not need to be added to AWS Secrets Manager.
+- If you change the local sentence-transformers model, make sure `LOCAL_EMBEDDINGS_MODEL_DIMENSIONS` matches the model output dimension, or the FAISS index will be rebuilt.
+- `LOCAL_EMBEDDINGS_MODEL_NAME` and `LOCAL_EMBEDDINGS_MODEL_DIMENSIONS` only apply when `TOOL_DISCOVERY_MODE=embedded`.
+- `EMBEDDING_PROVIDER`, `EMBEDDING_MODEL`, `AWS_REGION`, `OPENAI_API_KEY`, and `OPENAI_MODEL` only apply when `TOOL_DISCOVERY_MODE=external`.
 
-For Amazon Bedrock embeddings, ensure your ECS task role has the following permissions:
+## Troubleshooting
 
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Action": [
-        "bedrock:InvokeModel"
-      ],
-      "Resource": [
-        "arn:aws:bedrock:*::foundation-model/amazon.titan-embed-text-v1"
-      ]
-    }
-  ]
-}
-```
+### Embedded Mode: Model Downloads or Cache Location
 
-### Authentication Methods
+- If the local model is not already present, `sentence-transformers` downloads it from Hugging Face Hub.
+- The cache directory is stored next to the local models directory under `.cache`.
+- In container mode, models live under `/app/registry/models`.
 
-**IAM Roles (Recommended for ECS/EC2/EKS)**
-```bash
-# No additional configuration needed
-# ECS task, EC2 instance, or EKS pod automatically uses attached IAM role
-```
+### Embedded Mode: Dimension Mismatch
 
-## Architecture
+Symptoms:
 
-### Embeddings Module Design
+- FAISS index is re-initialized on startup
+- semantic search index appears to be rebuilt after changing the model
 
-```
-EmbeddingsClient (Abstract Base Class)
-├── SentenceTransformersClient (Local models)
-└── LiteLLMClient (Cloud APIs via LiteLLM)
-```
-
-### Integration with FAISS Search
-
-The embeddings module integrates seamlessly with the FAISS search service:
-
-```python
-# In registry/search/service.py
-from registry.embeddings import create_embeddings_client
 
 class FaissService:
     async def _load_embedding_model(self):
@@ -267,126 +280,97 @@ class FaissService:
         )
 ```
 
-## Performance Considerations
+What to check:
 
-### Local Models (Sentence Transformers)
-- Runs on your infrastructure (CPU/GPU)
-- No external API calls
-- No per-request costs
-- Model files stored locally
-- Network-independent operation
+- `LOCAL_EMBEDDINGS_MODEL_NAME`
+- `LOCAL_EMBEDDINGS_MODEL_DIMENSIONS`
+- whether the configured dimension matches the selected sentence-transformers model
 
-### Cloud APIs (LiteLLM)
-- Runs on provider infrastructure
-- Requires network connectivity
-- API costs apply (varies by provider)
-- No local compute requirements
-- Data transmitted to provider
+### External Mode: Bedrock Authentication
 
-## Troubleshooting
+What to check:
 
-### LiteLLM Not Installed
+- `EMBEDDING_PROVIDER=aws_bedrock`
+- `EMBEDDING_MODEL`
+- `AWS_REGION`
+- IAM role or AWS credential chain
 
-```
-RuntimeError: LiteLLM is not installed. Install it with: uv add litellm
-```
+In AWS environments, IAM-based authentication is preferred over hardcoded credentials.
 
-**Solution:**
-```bash
-uv add litellm
-```
+### External Mode: OpenAI Authentication
 
-### Dimension Mismatch
+What to check:
 
-```
-WARNING: Embedding dimension mismatch: expected 384, got 1536
-```
-
-**Solution:** Update `EMBEDDINGS_MODEL_DIMENSIONS` to match your model's actual output dimension. The system will automatically rebuild the index.
-
-### API Authentication Errors
-
-**OpenAI:**
-```bash
-# Verify API key is set correctly
-echo $EMBEDDINGS_API_KEY
-# Should start with sk-
-```
-
-**Bedrock:**
-```bash
-# Verify AWS credentials
-aws sts get-caller-identity
-
-# Check Bedrock access
-aws bedrock list-foundation-models --region us-east-1
-```
-
-### Missing IAM Permissions
-
-If using AWS ECS and Bedrock, ensure the task execution role has access to the embeddings API key secret:
-
-```bash
-# Check IAM policy in terraform/aws-ecs/modules/mcp-gateway/iam.tf
-# Should include: aws_secretsmanager_secret.embeddings_api_key.arn
-```
+- `EMBEDDING_PROVIDER=openai`
+- `OPENAI_API_KEY`
+- `OPENAI_MODEL` if you are overriding the default
 
 ## API Reference
 
-### Factory Function
+This section summarizes the main code-level configuration entry points used by the registry embeddings flow.
 
-```python
-from registry.embeddings import create_embeddings_client
+### `Settings`
 
-client = create_embeddings_client(
-    provider: str,                    # "sentence-transformers" or "litellm"
-    model_name: str,                  # Model identifier
-    api_key: Optional[str] = None,    # API key (litellm only)
-    aws_region: Optional[str] = None, # AWS region (Bedrock only)
-    embedding_dimension: Optional[int] = None,
-)
-```
+The registry application reads embedding-related settings from `registry.core.config.Settings`.
 
-### Client Methods
+Important fields:
 
-**Generate Embeddings:**
-```python
-embeddings = client.encode(["text1", "text2"])
-# Returns: numpy array of shape (n_texts, embedding_dim)
-```
+- `tool_discovery_mode`
+- `local_embeddings_model_name`
+- `local_embeddings_model_dimensions`
+- `vector_store_type`
+- `embedding_provider`
+- `embedding_model`
+- `aws_region`
+- `openai_api_key`
+- `openai_model`
 
-**Get Dimension:**
-```python
-dim = client.get_embedding_dimension()
-# Returns: int (e.g., 384, 1536)
-```
+### `VectorConfig`
 
-## Best Practices
+External vectorization settings are passed into the shared `registry_pkgs.core.config.VectorConfig` model.
 
-1. Choose the provider that matches your deployment requirements
-2. Consider IAM authentication if deploying on AWS
-3. Monitor costs when using cloud APIs - implement caching if needed
-4. Keep dimension consistent - changing models requires index rebuild
-5. Test search results after switching providers to ensure they meet your requirements
+Important fields:
 
-## Further Reading
+- `vector_store_type`
+- `embedding_provider`
+- `embedding_model`
+- `aws_region`
+- `openai_api_key`
+- `openai_model`
 
-- [LiteLLM Documentation](https://docs.litellm.ai/docs/)
-- [OpenAI Embeddings Guide](https://platform.openai.com/docs/guides/embeddings)
-- [Amazon Bedrock Embeddings](https://docs.aws.amazon.com/bedrock/latest/userguide/embeddings.html)
-- [Sentence Transformers Models](https://www.sbert.net/docs/pretrained_models.html)
-- [FAISS Search Implementation](../registry/search/service.py)
+### `RegistryContainer.vector_service`
 
-## Contributing
+The registry selects the vector search implementation in `RegistryContainer.vector_service`:
 
-To add a new embeddings provider:
+- when `tool_discovery_mode == "external"`, it returns `ExternalVectorSearchService`
+- otherwise, it returns `EmbeddedFaissService`
 
-1. Create a new client class inheriting from `EmbeddingsClient`
-2. Implement `encode()` and `get_embedding_dimension()` methods
-3. Update `create_embeddings_client()` factory function
-4. Add configuration options to `registry/core/config.py`
-5. Update this documentation
+This is the main switch that determines whether local FAISS settings or external embedding provider settings are used.
 
-## License
+### `EmbeddedFaissService`
 
-Apache 2.0 - See [LICENSE](../LICENSE) file for details
+`EmbeddedFaissService` is used only in embedded mode.
+
+Relevant behavior:
+
+- loads a local `sentence-transformers` model using `LOCAL_EMBEDDINGS_MODEL_NAME`
+- validates or initializes the FAISS index using `LOCAL_EMBEDDINGS_MODEL_DIMENSIONS`
+- stores model files under the local embeddings model directory
+- stores Hugging Face cache under the adjacent `.cache` directory
+
+### `BedrockEmbeddingConfig`
+
+For `EMBEDDING_PROVIDER=aws_bedrock`, the external embedding model configuration is derived from:
+
+- `embedding_model`
+- `aws_region`
+- optional AWS credentials
+
+The model value comes from `EMBEDDING_MODEL`, not `BEDROCK_MODEL`.
+
+### `OpenAIEmbeddingConfig`
+
+For `EMBEDDING_PROVIDER=openai`, the external embedding model configuration is derived from:
+
+- `openai_api_key`
+- `openai_model`

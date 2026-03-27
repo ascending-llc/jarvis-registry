@@ -13,7 +13,7 @@
     "autoprefixer": "^10.4.16",
     "axios": "^1.12.0",
     "clsx": "^2.0.0",
-    "jarvis-embed": "github:ascending-llc/jarvis-embed",
+    "@ascending-inc/jarvis-embed": "^0.1.0",
     "patch-package": "^8.0.1",
     "postcss": "^8.4.47",
     "react": "^18.2.0",

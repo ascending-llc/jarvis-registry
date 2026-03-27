@@ -1,5 +1,5 @@
 import { XMarkIcon } from '@heroicons/react/24/outline';
-import { JarvisEmbed } from 'jarvis-embed';
+import { JarvisEmbed } from '@ascending-inc/jarvis-embed';
 import { useEffect, useRef, useState } from 'react';
 
 import HELPER from '@/helper';
