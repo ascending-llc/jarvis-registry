@@ -58,7 +58,6 @@ class FederationStatus(StrEnum):
     ACTIVE = "active"  # Available for normal use
     DELETING = "deleting"  # Delete workflow is in progress
     DELETED = "deleted"  # Soft-deleted and no longer available
-    DISABLED = "disabled"  # Disabled by operator action
 
     def is_active(self) -> bool:
         return self == FederationStatus.ACTIVE
@@ -102,7 +101,6 @@ class FederationSyncStatus(StrEnum):
 class FederationJobType(StrEnum):
     """Types of federation sync jobs."""
 
-    INITIAL_SYNC = "initial_sync"  # First sync after creation
     FULL_SYNC = "full_sync"  # Regular full sync
     CONFIG_RESYNC = "config_resync"  # Triggered by config change
     FORCE_SYNC = "force_sync"  # Forced manual sync
@@ -137,9 +135,7 @@ class FederationJobPhase(StrEnum):
 
     QUEUED = "queued"
     DISCOVERING = "discovering"
-    DIFFING = "diffing"
     APPLYING = "applying"
-    INDEXING = "indexing"
     COMPLETED = "completed"
     FAILED = "failed"
 
@@ -148,7 +144,6 @@ class FederationTriggerType(StrEnum):
     """Source that triggered a federation sync job."""
 
     MANUAL = "manual"  # Triggered manually from the UI
-    SYSTEM = "system"  # Triggered automatically by the system
     API = "api"  # Triggered by an API workflow
 
 
@@ -172,10 +167,7 @@ class FederationStateMachine:
     @staticmethod
     def can_update(status: FederationStatus) -> bool:
         """Return True when federation metadata/config may be updated."""
-        return status in {
-            FederationStatus.ACTIVE,
-            FederationStatus.DISABLED,
-        }
+        return status == FederationStatus.ACTIVE
 
     @staticmethod
     def transition_to_sync_pending(
@@ -237,7 +229,7 @@ class FederationStateMachine:
     @staticmethod
     def transition_to_deleted(status: FederationStatus) -> FederationStatus:
         """Validate and return the lifecycle status for a completed delete."""
-        if status not in {FederationStatus.ACTIVE, FederationStatus.DELETING, FederationStatus.DISABLED}:
+        if status not in {FederationStatus.ACTIVE, FederationStatus.DELETING}:
             raise ValueError(f"Federation in status '{status}' cannot transition to deleted")
         return FederationStatus.DELETED
 

@@ -1,16 +1,22 @@
 import logging
 import math
 
+from beanie import PydanticObjectId
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi import status as http_status
 
-from registry_pkgs.models.enums import FederationStateMachine, FederationStatus
+from registry_pkgs.database.decorators import use_transaction
+from registry_pkgs.models._generated import PrincipalType, ResourceType
+from registry_pkgs.models.enums import FederationStateMachine, FederationStatus, RoleBits
 
 from ....auth.dependencies import CurrentUser
+from ....core.telemetry_decorators import track_registry_operation
 from ....deps import (
+    get_acl_service,
     get_federation_crud_service,
     get_federation_sync_service,
 )
+from ....schemas.acl_schema import ResourcePermissions
 from ....schemas.errors import ErrorCode, create_error_detail
 from ....schemas.federation_api_schemas import (
     FederationCreateRequest,
@@ -26,6 +32,7 @@ from ....schemas.federation_api_schemas import (
     FederationUpdateRequest,
 )
 from ....schemas.server_api_schemas import PaginationMetadata
+from ....services.access_control_service import ACLService
 
 logger = logging.getLogger(__name__)
 
@@ -135,7 +142,7 @@ def _to_last_sync_response(last_sync) -> FederationLastSyncResponse | None:
     )
 
 
-def _to_list_item(item) -> FederationListItemResponse:
+def _to_list_item(item, permissions: ResourcePermissions | None = None) -> FederationListItemResponse:
     return FederationListItemResponse(
         id=str(item.id),
         providerType=item.providerType,
@@ -147,15 +154,18 @@ def _to_list_item(item) -> FederationListItemResponse:
         syncMessage=item.syncMessage,
         stats=_to_stats_response(item.stats),
         lastSync=_to_last_sync_response(item.lastSync),
+        permissions=permissions,
         createdAt=item.createdAt,
         updatedAt=item.updatedAt,
     )
 
 
-def _to_paged_response(items, total: int, page: int, per_page: int) -> FederationPagedResponse:
+def _to_paged_response(
+    items, total: int, page: int, per_page: int, permissions_by_id: dict[str, ResourcePermissions] | None = None
+) -> FederationPagedResponse:
     total_pages = math.ceil(total / per_page) if total > 0 else 0
     return FederationPagedResponse(
-        federations=[_to_list_item(x) for x in items],
+        federations=[_to_list_item(x, permissions_by_id.get(str(x.id)) if permissions_by_id else None) for x in items],
         pagination=PaginationMetadata(
             total=total,
             page=page,
@@ -183,7 +193,11 @@ async def _get_required_federation(federation_id: str, federation_crud_service):
     )
 
 
-async def _to_detail_response(federation, federation_crud_service) -> FederationDetailResponse:
+async def _to_detail_response(
+    federation,
+    federation_crud_service,
+    permissions: ResourcePermissions | None = None,
+) -> FederationDetailResponse:
     recent_jobs = await federation_crud_service.get_recent_jobs(federation.id, limit=10)
     return FederationDetailResponse(
         id=str(federation.id),
@@ -198,6 +212,7 @@ async def _to_detail_response(federation, federation_crud_service) -> Federation
         stats=_to_stats_response(federation.stats),
         lastSync=_to_last_sync_response(federation.lastSync),
         recentJobs=[_to_job_response(j) for j in recent_jobs],
+        permissions=permissions,
         version=federation.version,
         createdBy=federation.createdBy,
         updatedBy=federation.updatedBy,
@@ -218,10 +233,13 @@ def _raise_conflict(message: str) -> None:
     response_model=FederationDetailResponse,
     status_code=http_status.HTTP_201_CREATED,
 )
+@track_registry_operation("create", resource_type="federation")
+@use_transaction
 async def create_federation(
     data: FederationCreateRequest,
     user_context: CurrentUser,
     federation_crud_service=Depends(get_federation_crud_service),
+    acl_service: ACLService = Depends(get_acl_service),
 ):
     """
     Create a federation definition only.
@@ -243,17 +261,30 @@ async def create_federation(
             provider_config=data.providerConfig,
             created_by=user_id,
         )
+        await acl_service.grant_permission(
+            principal_type=PrincipalType.USER,
+            principal_id=PydanticObjectId(user_id),
+            resource_type=ResourceType.FEDERATION,
+            resource_id=federation.id,
+            perm_bits=RoleBits.OWNER,
+        )
     except ValueError as exc:
         raise HTTPException(
             status_code=http_status.HTTP_400_BAD_REQUEST,
             detail=create_error_detail(ErrorCode.INVALID_REQUEST, str(exc)),
         ) from exc
     logger.info(f"Created federation {federation.id}")
-    return await _to_detail_response(federation, federation_crud_service)
+    return await _to_detail_response(
+        federation,
+        federation_crud_service,
+        permissions=ResourcePermissions(VIEW=True, EDIT=True, DELETE=True, SHARE=True),
+    )
 
 
 @router.get("", response_model=FederationPagedResponse)
+@track_registry_operation("list", resource_type="federation")
 async def list_federations(
+    user_context: CurrentUser,
     providerType: str | None = Query(default=None),
     syncStatus: str | None = Query(default=None),
     tag: str | None = Query(default=None),
@@ -264,26 +295,18 @@ async def list_federations(
     per_page: int = Query(default=20, ge=1, le=100),
     pageSize: int | None = Query(default=None, ge=1, le=100, include_in_schema=False),
     federation_crud_service=Depends(get_federation_crud_service),
+    acl_service: ACLService = Depends(get_acl_service),
 ):
     """
     List federations.
-    Args:
-        providerType:
-        syncStatus:
-        tag:
-        tags:
-        query:
-        keyword:
-        page:
-        per_page:
-        pageSize:
-        federation_crud_service:
-
-    Returns:
-
     """
     search_query = query if query is not None else keyword
     effective_per_page = pageSize if pageSize is not None else per_page
+    user_id = user_context.get("user_id")
+    accessible_ids = await acl_service.get_accessible_resource_ids(
+        user_id=PydanticObjectId(user_id),
+        resource_type=ResourceType.FEDERATION,
+    )
 
     items, total = await federation_crud_service.list_federations(
         provider_type=providerType,
@@ -293,14 +316,25 @@ async def list_federations(
         keyword=search_query,
         page=page,
         page_size=effective_per_page,
+        accessible_federation_ids=accessible_ids,
     )
-    return _to_paged_response(items, total, page, effective_per_page)
+    permissions_by_id = {}
+    for federation in items:
+        permissions_by_id[str(federation.id)] = await acl_service.get_user_permissions_for_resource(
+            user_id=PydanticObjectId(user_id),
+            resource_type=ResourceType.FEDERATION,
+            resource_id=federation.id,
+        )
+    return _to_paged_response(items, total, page, effective_per_page, permissions_by_id)
 
 
 @router.get("/{federation_id}", response_model=FederationDetailResponse)
+@track_registry_operation("read", resource_type="federation")
 async def get_federation(
     federation_id: str,
+    user_context: CurrentUser,
     federation_crud_service=Depends(get_federation_crud_service),
+    acl_service: ACLService = Depends(get_acl_service),
 ):
     """
     Get a federation.
@@ -312,16 +346,24 @@ async def get_federation(
 
     """
     federation = await _get_required_federation(federation_id, federation_crud_service)
-    return await _to_detail_response(federation, federation_crud_service)
+    permissions = await acl_service.check_user_permission(
+        user_id=PydanticObjectId(user_context.get("user_id")),
+        resource_type=ResourceType.FEDERATION.value,
+        resource_id=federation.id,
+        required_permission="VIEW",
+    )
+    return await _to_detail_response(federation, federation_crud_service, permissions)
 
 
 @router.put("/{federation_id}", response_model=FederationDetailResponse)
+@track_registry_operation("update", resource_type="federation")
 async def update_federation(
     federation_id: str,
     data: FederationUpdateRequest,
     user_context: CurrentUser,
     federation_crud_service=Depends(get_federation_crud_service),
     federation_sync_service=Depends(get_federation_sync_service),
+    acl_service: ACLService = Depends(get_acl_service),
 ):
     """
     Update a federation.
@@ -336,6 +378,12 @@ async def update_federation(
 
     """
     federation = await _get_required_federation(federation_id, federation_crud_service)
+    permissions = await acl_service.check_user_permission(
+        user_id=PydanticObjectId(user_context.get("user_id")),
+        resource_type=ResourceType.FEDERATION.value,
+        resource_id=federation.id,
+        required_permission="EDIT",
+    )
     if not FederationStateMachine.can_update(federation.status):
         _raise_conflict(f"Federation in status '{federation.status}' cannot be updated")
 
@@ -357,27 +405,21 @@ async def update_federation(
         _raise_federation_value_error(exc)
     except Exception as exc:
         _raise_sync_error(exc)
-    return await _to_detail_response(federation, federation_crud_service)
+    return await _to_detail_response(federation, federation_crud_service, permissions)
 
 
 @router.post("/{federation_id}/sync", response_model=FederationSyncJobResponse)
+@track_registry_operation("sync", resource_type="federation")
 async def sync_federation(
     federation_id: str,
     data: FederationSyncRequest,
     user_context: CurrentUser,
     federation_crud_service=Depends(get_federation_crud_service),
     federation_sync_service=Depends(get_federation_sync_service),
+    acl_service: ACLService = Depends(get_acl_service),
 ):
     """
         sync a federation.
-    Args:
-        federation_id:
-        data:
-        user_context:
-        federation_crud_service:
-        federation_sync_service:
-
-    Returns: FederationSyncJobResponse
 
     main logic:
         1. Validate Request
@@ -420,6 +462,12 @@ async def sync_federation(
                 status = success
     """
     federation = await _get_required_federation(federation_id, federation_crud_service)
+    await acl_service.check_user_permission(
+        user_id=PydanticObjectId(user_context.get("user_id")),
+        resource_type=ResourceType.FEDERATION.value,
+        resource_id=federation.id,
+        required_permission="EDIT",
+    )
     if federation.status != FederationStatus.ACTIVE:
         _raise_conflict(f"Federation in status '{federation.status}' cannot be synced")
     if not FederationStateMachine.can_start_sync(federation.syncStatus):
@@ -447,11 +495,14 @@ async def sync_federation(
 
 
 @router.delete("/{federation_id}", response_model=FederationDeleteResponse)
+@track_registry_operation("delete", resource_type="federation")
+@use_transaction
 async def delete_federation(
     federation_id: str,
     user_context: CurrentUser,
     federation_crud_service=Depends(get_federation_crud_service),
     federation_sync_service=Depends(get_federation_sync_service),
+    acl_service: ACLService = Depends(get_acl_service),
 ):
     """
         Trigger delete job and remove all attached MCP/A2A resources.
@@ -465,6 +516,12 @@ async def delete_federation(
 
     """
     federation = await _get_required_federation(federation_id, federation_crud_service)
+    await acl_service.check_user_permission(
+        user_id=PydanticObjectId(user_context.get("user_id")),
+        resource_type=ResourceType.FEDERATION.value,
+        resource_id=federation.id,
+        required_permission="DELETE",
+    )
     if not FederationStateMachine.can_delete(federation.status):
         _raise_conflict(f"Federation in status '{federation.status}' cannot be deleted")
 
@@ -472,6 +529,10 @@ async def delete_federation(
         job = await federation_sync_service.start_delete(
             federation=federation,
             triggered_by=user_context.get("user_id"),
+        )
+        await acl_service.delete_acl_entries_for_resource(
+            resource_type=ResourceType.FEDERATION,
+            resource_id=federation.id,
         )
         return _to_delete_response(federation, job)
     except ValueError as exc:

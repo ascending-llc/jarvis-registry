@@ -113,6 +113,7 @@ class FederationCrudService:
         keyword: str | None = None,
         page: int = 1,
         page_size: int = 20,
+        accessible_federation_ids: list[str] | None = None,
     ) -> tuple[list[Federation], int]:
         query: dict = {
             "$or": [
@@ -137,6 +138,13 @@ class FederationCrudService:
 
         if keyword:
             and_filters.append({"$text": {"$search": keyword}})
+
+        if accessible_federation_ids is not None:
+            if not accessible_federation_ids:
+                return [], 0
+            and_filters.append(
+                {"_id": {"$in": [PydanticObjectId(resource_id) for resource_id in accessible_federation_ids]}}
+            )
 
         if and_filters:
             query = {"$and": [query, *and_filters]}

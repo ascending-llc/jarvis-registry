@@ -9,10 +9,12 @@ from fastapi import HTTPException
 from registry.api.v1.federation.federation_routes import (
     create_federation,
     delete_federation,
+    get_federation,
     list_federations,
     sync_federation,
     update_federation,
 )
+from registry.schemas.acl_schema import ResourcePermissions
 from registry.schemas.federation_api_schemas import (
     FederationCreateRequest,
     FederationSyncRequest,
@@ -28,12 +30,31 @@ from registry_pkgs.models.enums import (
 )
 
 
+def _unwrap_route(func):
+    while hasattr(func, "__wrapped__"):
+        func = func.__wrapped__
+    return func
+
+
 @pytest.fixture
 def sample_user_context():
     return {
-        "user_id": "test-user-id",
+        "user_id": "000000000000000000000111",
         "username": "testuser",
     }
+
+
+@pytest.fixture
+def acl_service():
+    service = MagicMock()
+    service.grant_permission = AsyncMock()
+    service.get_accessible_resource_ids = AsyncMock(return_value=[])
+    service.get_user_permissions_for_resource = AsyncMock(return_value=ResourcePermissions(VIEW=True))
+    service.check_user_permission = AsyncMock(
+        return_value=ResourcePermissions(VIEW=True, EDIT=True, DELETE=True, SHARE=True)
+    )
+    service.delete_acl_entries_for_resource = AsyncMock(return_value=1)
+    return service
 
 
 @pytest.fixture
@@ -65,7 +86,7 @@ def sample_job(sample_federation):
     return SimpleNamespace(
         id=PydanticObjectId(),
         federationId=sample_federation.id,
-        jobType=FederationJobType.INITIAL_SYNC,
+        jobType=FederationJobType.FULL_SYNC,
         status=FederationJobStatus.SUCCESS,
         phase=FederationJobPhase.COMPLETED,
         startedAt=datetime.now(UTC),
@@ -74,12 +95,12 @@ def sample_job(sample_federation):
 
 
 @pytest.mark.asyncio
-async def test_create_federation_does_not_trigger_sync(sample_user_context, sample_federation, sample_job):
+async def test_create_federation_does_not_trigger_sync(sample_user_context, sample_federation, sample_job, acl_service):
     federation_crud_service = MagicMock()
     federation_crud_service.create_federation = AsyncMock(return_value=sample_federation)
     federation_crud_service.get_recent_jobs = AsyncMock(return_value=[])
 
-    result = await create_federation(
+    result = await _unwrap_route(create_federation)(
         data=FederationCreateRequest(
             providerType=FederationProviderType.AWS_AGENTCORE,
             displayName="AWS AgentCore Prod",
@@ -89,20 +110,29 @@ async def test_create_federation_does_not_trigger_sync(sample_user_context, samp
         ),
         user_context=sample_user_context,
         federation_crud_service=federation_crud_service,
+        acl_service=acl_service,
     )
 
     assert result.id == str(sample_federation.id)
     assert len(result.recentJobs) == 0
+    assert result.permissions == ResourcePermissions(VIEW=True, EDIT=True, DELETE=True, SHARE=True)
+    acl_service.grant_permission.assert_awaited_once_with(
+        principal_type="user",
+        principal_id=PydanticObjectId(sample_user_context["user_id"]),
+        resource_type="federation",
+        resource_id=sample_federation.id,
+        perm_bits=15,
+    )
 
 
 @pytest.mark.asyncio
-async def test_create_federation_allows_empty_aws_provider_config(sample_user_context, sample_federation):
+async def test_create_federation_allows_empty_aws_provider_config(sample_user_context, sample_federation, acl_service):
     created_federation = SimpleNamespace(**{**sample_federation.__dict__, "providerConfig": {"resourceTagsFilter": {}}})
     federation_crud_service = MagicMock()
     federation_crud_service.create_federation = AsyncMock(return_value=created_federation)
     federation_crud_service.get_recent_jobs = AsyncMock(return_value=[])
 
-    result = await create_federation(
+    result = await _unwrap_route(create_federation)(
         data=FederationCreateRequest(
             providerType=FederationProviderType.AWS_AGENTCORE,
             displayName="AWS AgentCore Prod",
@@ -112,13 +142,16 @@ async def test_create_federation_allows_empty_aws_provider_config(sample_user_co
         ),
         user_context=sample_user_context,
         federation_crud_service=federation_crud_service,
+        acl_service=acl_service,
     )
 
     assert result.providerConfig == {"resourceTagsFilter": {}}
 
 
 @pytest.mark.asyncio
-async def test_update_federation_runs_resync_for_provider_changes(sample_user_context, sample_federation, sample_job):
+async def test_update_federation_runs_resync_for_provider_changes(
+    sample_user_context, sample_federation, sample_job, acl_service
+):
     federation_crud_service = MagicMock()
     federation_crud_service.get_federation = AsyncMock(return_value=sample_federation)
     federation_crud_service.validate_provider_config = MagicMock(
@@ -151,6 +184,7 @@ async def test_update_federation_runs_resync_for_provider_changes(sample_user_co
         user_context=sample_user_context,
         federation_crud_service=federation_crud_service,
         federation_sync_service=federation_sync_service,
+        acl_service=acl_service,
     )
 
     federation_sync_service.update_federation_with_optional_resync.assert_awaited_once_with(
@@ -167,7 +201,9 @@ async def test_update_federation_runs_resync_for_provider_changes(sample_user_co
 
 
 @pytest.mark.asyncio
-async def test_update_federation_requires_aws_region_and_assume_role(sample_user_context, sample_federation):
+async def test_update_federation_requires_aws_region_and_assume_role(
+    sample_user_context, sample_federation, acl_service
+):
     federation_crud_service = MagicMock()
     federation_crud_service.get_federation = AsyncMock(return_value=sample_federation)
     federation_sync_service = MagicMock()
@@ -189,6 +225,7 @@ async def test_update_federation_requires_aws_region_and_assume_role(sample_user
             user_context=sample_user_context,
             federation_crud_service=federation_crud_service,
             federation_sync_service=federation_sync_service,
+            acl_service=acl_service,
         )
 
     assert exc_info.value.status_code == 400
@@ -197,7 +234,7 @@ async def test_update_federation_requires_aws_region_and_assume_role(sample_user
 
 @pytest.mark.asyncio
 async def test_update_federation_returns_501_for_unimplemented_provider(
-    sample_user_context, sample_federation, sample_job
+    sample_user_context, sample_federation, sample_job, acl_service
 ):
     azure_federation = SimpleNamespace(
         **{
@@ -230,6 +267,7 @@ async def test_update_federation_returns_501_for_unimplemented_provider(
             user_context=sample_user_context,
             federation_crud_service=federation_crud_service,
             federation_sync_service=federation_sync_service,
+            acl_service=acl_service,
         )
 
     assert exc_info.value.status_code == 501
@@ -237,7 +275,9 @@ async def test_update_federation_returns_501_for_unimplemented_provider(
 
 
 @pytest.mark.asyncio
-async def test_update_federation_skips_resync_when_provider_config_is_unchanged(sample_user_context, sample_federation):
+async def test_update_federation_skips_resync_when_provider_config_is_unchanged(
+    sample_user_context, sample_federation, acl_service
+):
     federation_crud_service = MagicMock()
     federation_crud_service.get_federation = AsyncMock(return_value=sample_federation)
     federation_crud_service.validate_provider_config = MagicMock(return_value=sample_federation.providerConfig)
@@ -263,6 +303,7 @@ async def test_update_federation_skips_resync_when_provider_config_is_unchanged(
         user_context=sample_user_context,
         federation_crud_service=federation_crud_service,
         federation_sync_service=federation_sync_service,
+        acl_service=acl_service,
     )
 
     federation_sync_service.update_federation_with_optional_resync.assert_awaited_once()
@@ -270,30 +311,37 @@ async def test_update_federation_skips_resync_when_provider_config_is_unchanged(
 
 
 @pytest.mark.asyncio
-async def test_delete_federation_returns_deleted_status(sample_user_context, sample_federation, sample_job):
+async def test_delete_federation_returns_deleted_status(
+    sample_user_context, sample_federation, sample_job, acl_service
+):
     federation_crud_service = MagicMock()
     federation_crud_service.get_federation = AsyncMock(return_value=sample_federation)
 
     federation_sync_service = MagicMock()
     federation_sync_service.start_delete = AsyncMock(return_value=sample_job)
 
-    result = await delete_federation(
+    result = await _unwrap_route(delete_federation)(
         federation_id=str(sample_federation.id),
         user_context=sample_user_context,
         federation_crud_service=federation_crud_service,
         federation_sync_service=federation_sync_service,
+        acl_service=acl_service,
     )
 
     federation_sync_service.start_delete.assert_awaited_once_with(
         federation=sample_federation,
         triggered_by=sample_user_context["user_id"],
     )
+    acl_service.delete_acl_entries_for_resource.assert_awaited_once_with(
+        resource_type="federation",
+        resource_id=sample_federation.id,
+    )
     assert result.federationId == str(sample_federation.id)
     assert result.status == "deleted"
 
 
 @pytest.mark.asyncio
-async def test_delete_federation_maps_provider_failure(sample_user_context, sample_federation, sample_job):
+async def test_delete_federation_maps_provider_failure(sample_user_context, sample_federation, sample_job, acl_service):
     federation_crud_service = MagicMock()
     federation_crud_service.get_federation = AsyncMock(return_value=sample_federation)
 
@@ -303,11 +351,12 @@ async def test_delete_federation_maps_provider_failure(sample_user_context, samp
     )
 
     with pytest.raises(HTTPException) as exc_info:
-        await delete_federation(
+        await _unwrap_route(delete_federation)(
             federation_id=str(sample_federation.id),
             user_context=sample_user_context,
             federation_crud_service=federation_crud_service,
             federation_sync_service=federation_sync_service,
+            acl_service=acl_service,
         )
 
     assert exc_info.value.status_code == 502
@@ -315,7 +364,7 @@ async def test_delete_federation_maps_provider_failure(sample_user_context, samp
 
 
 @pytest.mark.asyncio
-async def test_update_federation_rejects_deleting_status(sample_user_context, sample_federation):
+async def test_update_federation_rejects_deleting_status(sample_user_context, sample_federation, acl_service):
     deleting_federation = SimpleNamespace(**{**sample_federation.__dict__, "status": FederationStatus.DELETING})
     federation_crud_service = MagicMock()
     federation_crud_service.get_federation = AsyncMock(return_value=deleting_federation)
@@ -334,6 +383,7 @@ async def test_update_federation_rejects_deleting_status(sample_user_context, sa
             user_context=sample_user_context,
             federation_crud_service=federation_crud_service,
             federation_sync_service=MagicMock(),
+            acl_service=acl_service,
         )
 
     assert exc_info.value.status_code == 409
@@ -341,7 +391,7 @@ async def test_update_federation_rejects_deleting_status(sample_user_context, sa
 
 
 @pytest.mark.asyncio
-async def test_sync_federation_rejects_running_sync_status(sample_user_context, sample_federation):
+async def test_sync_federation_rejects_running_sync_status(sample_user_context, sample_federation, acl_service):
     syncing_federation = SimpleNamespace(**{**sample_federation.__dict__, "syncStatus": FederationSyncStatus.SYNCING})
     federation_crud_service = MagicMock()
     federation_crud_service.get_federation = AsyncMock(return_value=syncing_federation)
@@ -353,6 +403,7 @@ async def test_sync_federation_rejects_running_sync_status(sample_user_context, 
             user_context=sample_user_context,
             federation_crud_service=federation_crud_service,
             federation_sync_service=MagicMock(),
+            acl_service=acl_service,
         )
 
     assert exc_info.value.status_code == 409
@@ -360,7 +411,7 @@ async def test_sync_federation_rejects_running_sync_status(sample_user_context, 
 
 
 @pytest.mark.asyncio
-async def test_sync_federation_requires_aws_region_and_assume_role(sample_user_context, sample_federation):
+async def test_sync_federation_requires_aws_region_and_assume_role(sample_user_context, sample_federation, acl_service):
     federation_missing_config = SimpleNamespace(
         **{**sample_federation.__dict__, "providerConfig": {"resourceTagsFilter": {}}}
     )
@@ -377,6 +428,7 @@ async def test_sync_federation_requires_aws_region_and_assume_role(sample_user_c
             user_context=sample_user_context,
             federation_crud_service=federation_crud_service,
             federation_sync_service=MagicMock(),
+            acl_service=acl_service,
         )
 
     assert exc_info.value.status_code == 400
@@ -385,7 +437,7 @@ async def test_sync_federation_requires_aws_region_and_assume_role(sample_user_c
 
 @pytest.mark.asyncio
 async def test_sync_federation_returns_501_for_unimplemented_provider(
-    sample_user_context, sample_federation, sample_job
+    sample_user_context, sample_federation, sample_job, acl_service
 ):
     azure_federation = SimpleNamespace(
         **{
@@ -410,6 +462,7 @@ async def test_sync_federation_returns_501_for_unimplemented_provider(
             user_context=sample_user_context,
             federation_crud_service=federation_crud_service,
             federation_sync_service=federation_sync_service,
+            acl_service=acl_service,
         )
 
     assert exc_info.value.status_code == 501
@@ -418,7 +471,7 @@ async def test_sync_federation_returns_501_for_unimplemented_provider(
 
 @pytest.mark.asyncio
 async def test_sync_federation_returns_502_for_provider_discovery_failure(
-    sample_user_context, sample_federation, sample_job
+    sample_user_context, sample_federation, sample_job, acl_service
 ):
     federation_crud_service = MagicMock()
     federation_crud_service.get_federation = AsyncMock(return_value=sample_federation)
@@ -435,6 +488,7 @@ async def test_sync_federation_returns_502_for_provider_discovery_failure(
             user_context=sample_user_context,
             federation_crud_service=federation_crud_service,
             federation_sync_service=federation_sync_service,
+            acl_service=acl_service,
         )
 
     assert exc_info.value.status_code == 502
@@ -443,7 +497,7 @@ async def test_sync_federation_returns_502_for_provider_discovery_failure(
 
 @pytest.mark.asyncio
 async def test_sync_federation_creates_pending_job_in_first_transaction(
-    sample_user_context, sample_federation, sample_job
+    sample_user_context, sample_federation, sample_job, acl_service
 ):
     federation_crud_service = MagicMock()
     federation_crud_service.get_federation = AsyncMock(return_value=sample_federation)
@@ -458,6 +512,7 @@ async def test_sync_federation_creates_pending_job_in_first_transaction(
         user_context=sample_user_context,
         federation_crud_service=federation_crud_service,
         federation_sync_service=federation_sync_service,
+        acl_service=acl_service,
     )
 
     federation_sync_service.start_manual_sync.assert_awaited_once_with(
@@ -470,27 +525,13 @@ async def test_sync_federation_creates_pending_job_in_first_transaction(
 
 
 @pytest.mark.asyncio
-async def test_delete_federation_rejects_disabled_status(sample_user_context, sample_federation):
-    disabled_federation = SimpleNamespace(**{**sample_federation.__dict__, "status": FederationStatus.DISABLED})
-    federation_crud_service = MagicMock()
-    federation_crud_service.get_federation = AsyncMock(return_value=disabled_federation)
-
-    with pytest.raises(HTTPException) as exc_info:
-        await delete_federation(
-            federation_id=str(disabled_federation.id),
-            user_context=sample_user_context,
-            federation_crud_service=federation_crud_service,
-            federation_sync_service=MagicMock(),
-        )
-
-    assert exc_info.value.status_code == 409
-    assert "cannot be deleted" in exc_info.value.detail["message"]
-
-
-@pytest.mark.asyncio
-async def test_list_federations_uses_server_style_query_and_pagination(sample_federation):
+async def test_list_federations_uses_server_style_query_and_pagination(
+    sample_federation, sample_user_context, acl_service
+):
     federation_crud_service = MagicMock()
     federation_crud_service.list_federations = AsyncMock(return_value=([sample_federation], 1))
+    acl_service.get_accessible_resource_ids = AsyncMock(return_value=[str(sample_federation.id)])
+    acl_service.get_user_permissions_for_resource = AsyncMock(return_value=ResourcePermissions(VIEW=True))
 
     result = await list_federations(
         providerType="aws_agentcore",
@@ -502,7 +543,9 @@ async def test_list_federations_uses_server_style_query_and_pagination(sample_fe
         page=2,
         per_page=10,
         pageSize=None,
+        user_context=sample_user_context,
         federation_crud_service=federation_crud_service,
+        acl_service=acl_service,
     )
 
     federation_crud_service.list_federations.assert_awaited_once_with(
@@ -513,7 +556,61 @@ async def test_list_federations_uses_server_style_query_and_pagination(sample_fe
         keyword="agentcore",
         page=2,
         page_size=10,
+        accessible_federation_ids=[str(sample_federation.id)],
     )
     assert len(result.federations) == 1
     assert result.pagination.page == 2
     assert result.pagination.perPage == 10
+    assert result.federations[0].permissions == ResourcePermissions(VIEW=True)
+
+
+@pytest.mark.asyncio
+async def test_list_federations_returns_empty_when_user_has_no_access(sample_user_context, acl_service):
+    federation_crud_service = MagicMock()
+    federation_crud_service.list_federations = AsyncMock(return_value=([], 0))
+    acl_service.get_accessible_resource_ids = AsyncMock(return_value=[])
+
+    result = await list_federations(
+        providerType=None,
+        syncStatus=None,
+        tag=None,
+        tags=None,
+        query=None,
+        keyword=None,
+        page=1,
+        per_page=20,
+        pageSize=None,
+        user_context=sample_user_context,
+        federation_crud_service=federation_crud_service,
+        acl_service=acl_service,
+    )
+
+    federation_crud_service.list_federations.assert_awaited_once_with(
+        provider_type=None,
+        sync_status=None,
+        tag=None,
+        tags=None,
+        keyword=None,
+        page=1,
+        page_size=20,
+        accessible_federation_ids=[],
+    )
+    assert result.federations == []
+    assert result.pagination.total == 0
+
+
+@pytest.mark.asyncio
+async def test_get_federation_checks_view_permission(sample_user_context, sample_federation, acl_service):
+    federation_crud_service = MagicMock()
+    federation_crud_service.get_federation = AsyncMock(return_value=sample_federation)
+    federation_crud_service.get_recent_jobs = AsyncMock(return_value=[])
+
+    result = await get_federation(
+        federation_id=str(sample_federation.id),
+        user_context=sample_user_context,
+        federation_crud_service=federation_crud_service,
+        acl_service=acl_service,
+    )
+
+    acl_service.check_user_permission.assert_awaited_once()
+    assert result.permissions == ResourcePermissions(VIEW=True, EDIT=True, DELETE=True, SHARE=True)

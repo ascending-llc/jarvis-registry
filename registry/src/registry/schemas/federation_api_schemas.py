@@ -11,6 +11,7 @@ from registry_pkgs.models.enums import (
     FederationSyncStatus,
 )
 
+from .acl_schema import ResourcePermissions
 from .server_api_schemas import PaginationMetadata
 
 
@@ -94,6 +95,7 @@ class FederationListItemResponse(BaseModel):
 
     stats: FederationStatsResponse
     lastSync: FederationLastSyncResponse | None = None
+    permissions: ResourcePermissions | None = None
 
     createdAt: datetime
     updatedAt: datetime
@@ -128,6 +130,7 @@ class FederationDetailResponse(BaseModel):
     stats: FederationStatsResponse
     lastSync: FederationLastSyncResponse | None = None
     recentJobs: list[FederationSyncJobResponse] = Field(default_factory=list)
+    permissions: ResourcePermissions | None = None
 
     version: int
     createdBy: str | None = None
