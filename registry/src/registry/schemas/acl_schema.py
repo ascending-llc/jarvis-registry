@@ -18,10 +18,13 @@ class ResourcePermissions(BaseModel):
 
 
 class PermissionPrincipalIn(BaseModel):
-    principal_id: str
-    principal_type: PrincipalType
-    perm_bits: int | None = 0
+    principalId: str = Field(alias="principal_id")
+    principalType: PrincipalType = Field(alias="principal_type")
+    permBits: int | None = Field(default=0, alias="perm_bits")
     accessRoleId: str | None = None
+
+    class Config:
+        populate_by_name = True
 
 
 class UpdateResourcePermissionsRequest(BaseModel):
@@ -31,11 +34,39 @@ class UpdateResourcePermissionsRequest(BaseModel):
 
 
 class PermissionPrincipalOut(BaseModel):
-    principal_type: PrincipalType
-    principal_id: str
+    principalType: PrincipalType = Field(serialization_alias="principalType")
+    principalId: str = Field(serialization_alias="principalId")
     name: str | None = None
     email: str | None = None
     accessRoleId: str
+
+    class Config:
+        populate_by_name = True
+
+
+class PrincipalDetailOut(BaseModel):
+    type: str = Field(description="Principal type: user, group, etc.")
+    id: str = Field(description="Principal ID")
+    name: str | None = None
+    email: str | None = None
+    avatar: str | None = None
+    source: str | None = None
+    idOnTheSource: str | None = None
+    accessRoleId: str | None = Field(default=None, description="Access role ID if assigned")
+
+
+class GetResourcePermissionsResponse(BaseModel):
+    resourceType: str
+    resourceId: str
+    principals: list[PrincipalDetailOut]
+    public: bool = Field(default=False, description="Whether the resource has public access")
+
+
+class RoleOut(BaseModel):
+    accessRoleId: str
+    name: str
+    description: str
+    permBits: int
 
 
 class UpdateResourcePermissionsResponse(BaseModel):

@@ -12,13 +12,15 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi import status as http_status
 
 from registry_pkgs.database.decorators import use_transaction
-from registry_pkgs.models._generated import PrincipalType
+from registry_pkgs.models._generated import IAccessRole, PrincipalType
 from registry_pkgs.models.enums import PermissionBits
 
 from ...auth.dependencies import CurrentUser
 from ...deps import get_acl_service
 from ...schemas.acl_schema import (
+    GetResourcePermissionsResponse,
     PermissionPrincipalOut,
+    RoleOut,
     UpdateResourcePermissionsRequest,
     UpdateResourcePermissionsResponse,
 )
@@ -85,6 +87,13 @@ async def update_resource_permissions(
     )
 
     try:
+        await acl_service.validate_at_least_one_owner_remains(
+            resource_type=resource_type,
+            resource_id=PydanticObjectId(resource_id),
+            updated_principals=data.updated,
+            removed_principals=data.removed,
+        )
+
         deleted_count = 0
         updated_count = 0
         if data.public:
@@ -122,19 +131,31 @@ async def update_resource_permissions(
                 result = await acl_service.delete_permission(
                     resource_type=resource_type,
                     resource_id=PydanticObjectId(resource_id),
-                    principal_type=principal.principal_type,
-                    principal_id=PydanticObjectId(principal.principal_id),
+                    principal_type=principal.principalType,
+                    principal_id=PydanticObjectId(principal.principalId),
                 )
                 deleted_count += result
 
         if data.updated:
             for principal in data.updated:
+                role_id = None
+                perm_bits = principal.permBits
+
+                if principal.accessRoleId:
+                    role = await IAccessRole.find_one({"accessRoleId": principal.accessRoleId})
+                    if role:
+                        role_id = role.id
+                        perm_bits = role.permBits
+                    else:
+                        logger.warning(f"Role {principal.accessRoleId} not found, using permBits: {perm_bits}")
+
                 await acl_service.grant_permission(
-                    principal_type=principal.principal_type,
-                    principal_id=PydanticObjectId(principal.principal_id),
+                    principal_type=principal.principalType,
+                    principal_id=PydanticObjectId(principal.principalId),
                     resource_type=resource_type,
                     resource_id=PydanticObjectId(resource_id),
-                    perm_bits=principal.perm_bits,
+                    role_id=role_id,
+                    perm_bits=perm_bits,
                 )
                 updated_count += 1
 
@@ -153,18 +174,50 @@ async def update_resource_permissions(
 
 
 @router.get(
+    "/permissions/{resource_type}/roles",
+    summary="Get all available roles for a resource type",
+    description="Get all available access roles for a specific resource type (e.g., mcpServer, agent).",
+    response_model=list[RoleOut],
+)
+async def get_resource_type_roles(
+    resource_type: str,
+    acl_service: ACLService = Depends(get_acl_service),
+) -> list[RoleOut]:
+    """
+    Get all available roles for a specific resource type.
+    Returns list of roles with accessRoleId, name, description, and permBits.
+    """
+    validate_resource_type(resource_type)
+
+    try:
+        roles = await acl_service.get_roles_by_resource_type(resource_type=resource_type)
+        return roles
+    except Exception as e:
+        logger.error(f"Error fetching roles for resource type {resource_type}: {e}")
+        raise HTTPException(
+            status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "error": "internal_server_error",
+                "message": "An error occurred while fetching roles.",
+            },
+        )
+
+
+@router.get(
     "/permissions/{resource_type}/{resource_id}",
     summary="Get all permissions for a specific resource",
-    description="Get ACL permissions for a specific resource.",
+    description="Get ACL permissions for a specific resource with full principal details.",
+    response_model=GetResourcePermissionsResponse,
 )
 async def get_resource_permissions(
     resource_type: str,
     resource_id: str,
     user_context: dict = Depends(get_user_context),
     acl_service: ACLService = Depends(get_acl_service),
-) -> dict[str, Any]:
+) -> GetResourcePermissionsResponse:
     """
     Get ACL permissions for a specific resource.
+    Returns structured data with principal details (name, email, avatar, etc.) and public status.
     """
     validate_resource_type(resource_type)
 
@@ -181,7 +234,7 @@ async def get_resource_permissions(
             resource_type=resource_type,
             resource_id=PydanticObjectId(resource_id),
         )
-        return result
+        return GetResourcePermissionsResponse(**result)
     except Exception as e:
         logger.error(f"Error fetching resource permissions for {resource_type} {resource_id}: {e}")
         raise HTTPException(

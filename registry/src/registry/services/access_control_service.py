@@ -9,12 +9,13 @@ from fastapi import status as http_status
 from registry_pkgs.database.decorators import get_current_session
 from registry_pkgs.models._generated import (
     IAccessRole,
+    IUser,
     PrincipalType,
 )
 from registry_pkgs.models.enums import PermissionBits
 from registry_pkgs.models.extended_acl_entry import ExtendedAclEntry as IAclEntry
 
-from ..schemas.acl_schema import PermissionPrincipalOut, ResourcePermissions
+from ..schemas.acl_schema import PermissionPrincipalOut, PrincipalDetailOut, ResourcePermissions, RoleOut
 from .group_service import GroupService
 from .user_service import UserService
 
@@ -74,14 +75,26 @@ class ACLService:
         Helper to construct the PermissionPrincipalOut for users and groups.
         """
         return PermissionPrincipalOut(
-            principal_type=principal_type,
-            principal_id=str(obj.id),
+            principalType=principal_type,
+            principalId=str(obj.id),
             name=getattr(obj, "name", None),
             email=getattr(obj, "email", None),
             accessRoleId=str(getattr(obj, "accessRoleId", ""))
             if hasattr(obj, "accessRoleId") and obj.accessRoleId is not None
             else "",
         )
+
+    async def get_role_by_resource_and_permbits(self, resource_type: str, perm_bits: int) -> IAccessRole | None:
+        """
+        Find the AccessRole for a given resource_type and perm_bits.
+        Used to automatically associate a roleId when only perm_bits is provided.
+        """
+        try:
+            role = await IAccessRole.find_one({"resourceType": resource_type, "permBits": perm_bits})
+            return role
+        except Exception as e:
+            logger.error(f"Error finding role for {resource_type} with permBits {perm_bits}: {e}")
+            return None
 
     async def grant_permission(
         self,
@@ -117,6 +130,10 @@ class ACLService:
             if not access_role:
                 raise ValueError("Role not found")
             perm_bits = access_role.permBits
+        elif perm_bits and not role_id:
+            role = await self.get_role_by_resource_and_permbits(resource_type, perm_bits)
+            if role:
+                role_id = role.id
 
         # Check if an ACL entry already exists for this principal/resource
         try:
@@ -252,12 +269,48 @@ class ACLService:
         resource_id: PydanticObjectId,
     ) -> dict[str, Any]:
         """
-        Get all ACL permissions for a specific resource.
+        Get all ACL permissions for a specific resource with full principal details.
+        Returns structured data including principal information and public status.
         """
         try:
             acl_entries = await IAclEntry.find({"resourceType": resource_type, "resourceId": resource_id}).to_list()
 
-            return {"permissions": acl_entries}
+            principals: list[PrincipalDetailOut] = []
+            is_public = False
+
+            for entry in acl_entries:
+                if entry.principalType == PrincipalType.PUBLIC.value:
+                    is_public = True
+                    continue
+
+                if entry.principalType == PrincipalType.USER.value and entry.principalId:
+                    user = await IUser.get(entry.principalId)
+                    if user:
+                        access_role_id = None
+                        if entry.roleId:
+                            role = await IAccessRole.get(entry.roleId)
+                            if role:
+                                access_role_id = role.accessRoleId
+
+                        principals.append(
+                            PrincipalDetailOut(
+                                type="user",
+                                id=str(user.id),
+                                name=user.name,
+                                email=user.email,
+                                avatar=getattr(user, "avatar", None),
+                                source=getattr(user, "source", None),
+                                idOnTheSource=user.idOnTheSource,
+                                accessRoleId=access_role_id,
+                            )
+                        )
+
+            return {
+                "resourceType": resource_type,
+                "resourceId": str(resource_id),
+                "principals": [p.model_dump() for p in principals],
+                "public": is_public,
+            }
         except Exception as e:
             logger.error(f"Error fetching resource permissions for {resource_type} {resource_id}: {e}")
             raise
@@ -385,3 +438,94 @@ class ACLService:
         except Exception as e:
             logger.error(f"Error fetching accessible {resource_type} IDs for user {user_id}: {e}")
             return []
+
+    async def get_roles_by_resource_type(self, resource_type: str) -> list[RoleOut]:
+        """
+        Get all available roles for a specific resource type.
+
+        Args:
+            resource_type: The resource type (e.g., "mcpServer", "agent")
+
+        Returns:
+            List of roles with their accessRoleId, name, description, and permBits
+        """
+        try:
+            roles = await IAccessRole.find({"resourceType": resource_type}).to_list()
+            return [
+                RoleOut(
+                    accessRoleId=role.accessRoleId,
+                    name=role.name,
+                    description=role.description or "",
+                    permBits=role.permBits,
+                )
+                for role in roles
+            ]
+        except Exception as e:
+            logger.error(f"Error fetching roles for resource type {resource_type}: {e}")
+            return []
+
+    async def validate_at_least_one_owner_remains(
+        self,
+        resource_type: str,
+        resource_id: PydanticObjectId,
+        updated_principals: list[Any],
+        removed_principals: list[Any],
+    ) -> None:
+        """
+        Validate that after the update, at least one owner remains for the resource.
+
+        Raises:
+            ValueError: If the update would result in no owners remaining
+        """
+        current_acl_entries = await IAclEntry.find({"resourceType": resource_type, "resourceId": resource_id}).to_list()
+
+        owner_perm_bits = PermissionBits.VIEW | PermissionBits.EDIT | PermissionBits.DELETE | PermissionBits.SHARE
+
+        remaining_owners = []
+        for entry in current_acl_entries:
+            if entry.principalType == PrincipalType.PUBLIC.value:
+                continue
+
+            principal_key = f"{entry.principalType}_{entry.principalId}"
+
+            is_being_removed = any(f"{r.principalType}_{r.principalId}" == principal_key for r in removed_principals)
+
+            if is_being_removed:
+                continue
+
+            updated_principal = next(
+                (u for u in updated_principals if f"{u.principalType}_{u.principalId}" == principal_key),
+                None,
+            )
+
+            if updated_principal:
+                new_perm_bits = updated_principal.permBits
+                if updated_principal.accessRoleId:
+                    role = await IAccessRole.find_one({"accessRoleId": updated_principal.accessRoleId})
+                    if role:
+                        new_perm_bits = role.permBits
+
+                if new_perm_bits == owner_perm_bits:
+                    remaining_owners.append(principal_key)
+            elif entry.permBits == owner_perm_bits:
+                remaining_owners.append(principal_key)
+
+        new_owners = [
+            u
+            for u in updated_principals
+            if f"{u.principalType}_{u.principalId}"
+            not in [f"{e.principalType}_{e.principalId}" for e in current_acl_entries]
+        ]
+
+        for new_principal in new_owners:
+            perm_bits = new_principal.permBits
+            if new_principal.accessRoleId:
+                role = await IAccessRole.find_one({"accessRoleId": new_principal.accessRoleId})
+                if role:
+                    perm_bits = role.permBits
+
+            if perm_bits == owner_perm_bits:
+                remaining_owners.append(f"{new_principal.principalType}_{new_principal.principalId}")
+
+        if not remaining_owners:
+            raise ValueError("At least one owner must remain for the resource")
