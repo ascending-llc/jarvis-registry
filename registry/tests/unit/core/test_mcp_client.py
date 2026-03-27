@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
+from registry.core.exceptions import MisimplementedSpecException
 from registry.core.mcp_client import (
     _get_from_sse,
     _get_from_streamable_http,
@@ -463,6 +464,108 @@ class TestMCPClient:
                 )
 
         assert post_methods == ["initialize"]
+
+    @pytest.mark.asyncio
+    async def test_call_tool_via_sse_ephemeral_rejects_missing_request_id(self, mock_headers):
+        """Test ephemeral SSE rejects tool requests without a JSON-RPC id."""
+
+        request_body = {
+            "jsonrpc": "2.0",
+            "method": "tools/call",
+            "params": {"name": "demo", "arguments": {}},
+        }
+
+        with pytest.raises(MisimplementedSpecException, match="must include a JSON-RPC id"):
+            await call_tool_via_sse_ephemeral(
+                http_client=Mock(),
+                sse_url="https://example.com/sse",
+                headers=mock_headers,
+                request_body=request_body,
+            )
+
+    @pytest.mark.asyncio
+    async def test_call_tool_via_sse_ephemeral_rejects_direct_json_post_response(self, mock_headers):
+        """Test ephemeral SSE rejects direct JSON POST responses instead of treating them as valid."""
+
+        class MockEvent:
+            def __init__(self, event_type, data="", payload=None):
+                self.event = event_type
+                self.data = data
+                self._payload = payload
+
+            def json(self):
+                if self._payload is None:
+                    raise ValueError("No JSON payload")
+                return self._payload
+
+        class MockResponse:
+            def __init__(self, is_success=True, status_code=200, headers=None, body=b""):
+                self.is_success = is_success
+                self.status_code = status_code
+                self.headers = headers or {}
+                self._body = body
+
+            async def aread(self):
+                return self._body
+
+        class MockStreamContext:
+            def __init__(self, response):
+                self._response = response
+
+            async def __aenter__(self):
+                return self._response
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return None
+
+        init_post_started = asyncio.Event()
+
+        class MockHttpClient:
+            def stream(self, method, _url, **kwargs):
+                if method == "GET":
+                    return MockStreamContext(MockResponse(headers={"content-type": "text/event-stream"}))
+
+                request_method = kwargs["json"].get("method")
+                if request_method == "initialize":
+                    init_post_started.set()
+                    return MockStreamContext(MockResponse())
+
+                if request_method == "notifications/initialized":
+                    return MockStreamContext(MockResponse())
+
+                if request_method == "tools/call":
+                    return MockStreamContext(MockResponse(headers={"content-type": "application/json"}))
+
+                raise AssertionError(f"Unexpected stream call: {method} {kwargs}")
+
+        class MockEventSource:
+            def __init__(self, _response):
+                self._response = _response
+
+            async def aiter_sse(self):
+                yield MockEvent("endpoint", "/messages")
+                await init_post_started.wait()
+                yield MockEvent(
+                    "message",
+                    payload={"jsonrpc": "2.0", "id": "1", "result": {"protocolVersion": "2024-11-05"}},
+                )
+                await asyncio.sleep(1)
+
+        request_body = {
+            "jsonrpc": "2.0",
+            "id": "tool-123",
+            "method": "tools/call",
+            "params": {"name": "demo", "arguments": {}},
+        }
+
+        with patch("registry.core.mcp_client.EventSource", MockEventSource):
+            with pytest.raises(MisimplementedSpecException, match="application/json"):
+                await call_tool_via_sse_ephemeral(
+                    http_client=MockHttpClient(),
+                    sse_url="https://example.com/sse",
+                    headers=mock_headers,
+                    request_body=request_body,
+                )
 
     @pytest.fixture
     def mock_headers(self):

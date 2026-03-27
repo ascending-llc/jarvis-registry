@@ -24,7 +24,8 @@ from mcp.client.sse import sse_client
 from mcp.client.streamable_http import streamable_http_client
 from redis import Redis
 
-from .config import MCP_INITIALIZE_REQUEST, MCP_INITIALIZED_NOTIFICATION, settings
+from .config import settings
+from .exceptions import MisimplementedSpecException
 
 # Internal imports
 from .mcp_config import MCPClientConfig
@@ -39,6 +40,22 @@ logger = logging.getLogger(__name__)
 # Sessions expire after 15 minutes of inactivity (MCP server session timeout)
 SESSION_TTL_MINUTES = 15  # MCP session timeout
 SESSION_KEY_PREFIX = "mcp_session:"
+_MCP_PROTOCOL_VERSION = "2024-11-05"
+_MCP_INITIALIZE_REQUEST = {
+    "jsonrpc": "2.0",
+    "id": "1",
+    "method": "initialize",
+    "params": {
+        "protocolVersion": _MCP_PROTOCOL_VERSION,
+        "capabilities": {},
+        "clientInfo": settings.mcp_client_info,
+    },
+}
+_MCP_INITIALIZED_NOTIFICATION = {
+    "jsonrpc": "2.0",
+    "method": "notifications/initialized",
+    "params": {},
+}
 
 
 def _flatten_exception_group_messages(error: BaseException) -> list[str]:
@@ -79,9 +96,11 @@ async def call_tool_via_sse_ephemeral(
       6. Read the matching JSON-RPC tool response from the SSE stream
     """
     request_id = request_body.get("id")
+    if request_id is None:
+        raise MisimplementedSpecException("SSE tool call request must include a JSON-RPC id.")
 
-    init_request = deepcopy(MCP_INITIALIZE_REQUEST)
-    initialized_notification = deepcopy(MCP_INITIALIZED_NOTIFICATION)
+    init_request = deepcopy(_MCP_INITIALIZE_REQUEST)
+    initialized_notification = deepcopy(_MCP_INITIALIZED_NOTIFICATION)
     init_request_id = init_request.get("id")
 
     sse_headers = dict(headers)
@@ -91,27 +110,29 @@ async def call_tool_via_sse_ephemeral(
     loop = asyncio.get_running_loop()
     init_response_future: asyncio.Future[dict[str, Any]] = loop.create_future()
     tool_response_future: asyncio.Future[dict[str, Any]] = loop.create_future()
+    post_endpoint_ready: asyncio.Future[str] = loop.create_future()
+
+    def _fail_pending_responses(error: BaseException) -> None:
+        for response_future in (init_response_future, tool_response_future, post_endpoint_ready):
+            if not response_future.done():
+                response_future.set_exception(error)
 
     def _set_response_future_result(response_obj: dict[str, Any]) -> bool:
         response_id = response_obj.get("id")
+        if response_id is None:
+            error = MisimplementedSpecException("Downstream SSE JSON-RPC response must include an id.")
+            _fail_pending_responses(error)
+            return False
+
         if str(response_id) == str(init_request_id) and not init_response_future.done():
             init_response_future.set_result(response_obj)
             return True
 
-        if request_id is not None and str(response_id) == str(request_id) and not tool_response_future.done():
-            tool_response_future.set_result(response_obj)
-            return True
-
-        if request_id is None and not tool_response_future.done():
+        if str(response_id) == str(request_id) and not tool_response_future.done():
             tool_response_future.set_result(response_obj)
             return True
 
         return False
-
-    def _fail_pending_responses(error: BaseException) -> None:
-        for response_future in (init_response_future, tool_response_future):
-            if not response_future.done():
-                response_future.set_exception(error)
 
     def _raise_for_rpc_error(response_obj: dict[str, Any], action: str) -> None:
         error_obj = response_obj.get("error")
@@ -120,7 +141,7 @@ async def call_tool_via_sse_ephemeral(
                 f"Downstream SSE MCP {action} failed: {json.dumps(error_obj, default=str, sort_keys=True)}"
             )
 
-    async def _pump_responses(stream_ready: asyncio.Future[str]) -> None:
+    async def _pump_responses() -> None:
         try:
             async with http_client.stream("GET", sse_url, headers=sse_headers) as sse_resp:
                 if not sse_resp.is_success:
@@ -129,8 +150,8 @@ async def call_tool_via_sse_ephemeral(
                         "Error opening downstream SSE stream for tool call: "
                         f"status={sse_resp.status_code}, body={raw.decode('utf-8', errors='replace')}"
                     )
-                    if not stream_ready.done():
-                        stream_ready.set_exception(error)
+                    if not post_endpoint_ready.done():
+                        post_endpoint_ready.set_exception(error)
                     raise error
 
                 event_source = EventSource(sse_resp)
@@ -143,22 +164,31 @@ async def call_tool_via_sse_ephemeral(
                         else:
                             new_messages_url = endpoint_path
 
-                        if not stream_ready.done():
-                            stream_ready.set_result(new_messages_url)
+                        if not post_endpoint_ready.done():
+                            post_endpoint_ready.set_result(new_messages_url)
                         continue
 
                     if event.event != "message":
+                        logger.info("Ignoring non-message SSE event during ephemeral SSE tool call: %s", event.event)
                         continue
 
                     try:
                         obj = event.json()
                     except (json.JSONDecodeError, ValueError, TypeError):
+                        logger.info(
+                            "Ignoring malformed SSE message event with non-JSON payload during ephemeral SSE tool call."
+                        )
                         continue
 
                     if not isinstance(obj, dict):
+                        logger.info(
+                            "Ignoring malformed SSE message event with non-object JSON payload: %s",
+                            type(obj).__name__,
+                        )
                         continue
 
                     if obj.get("jsonrpc") != "2.0":
+                        logger.info("Ignoring malformed SSE message missing jsonrpc='2.0': %s", obj)
                         continue
 
                     method = obj.get("method")
@@ -172,17 +202,14 @@ async def call_tool_via_sse_ephemeral(
                         _set_response_future_result(obj)
 
                 raise ValueError("Downstream SSE stream ended without the expected JSON-RPC responses.")
-        except asyncio.CancelledError:
-            raise
         except Exception as error:
             _fail_pending_responses(error)
             raise
 
-    stream_ready: asyncio.Future[str] = asyncio.get_running_loop().create_future()
-    response_task = asyncio.create_task(_pump_responses(stream_ready))
+    response_task = asyncio.create_task(_pump_responses())
 
     try:
-        new_messages_url = await asyncio.wait_for(stream_ready, timeout=timeout_seconds)
+        new_messages_url = await asyncio.wait_for(post_endpoint_ready, timeout=timeout_seconds)
 
         async with http_client.stream("POST", new_messages_url, json=init_request, headers=headers) as init_resp:
             if not init_resp.is_success:
@@ -216,17 +243,11 @@ async def call_tool_via_sse_ephemeral(
                     f"status code: {resp.status_code}, body: {raw_body.decode('utf-8', errors='replace')}"
                 )
 
-            # Some servers may still return direct JSON from POST.
             if resp.headers.get("content-type", "").startswith("application/json"):
-                raw_body = await resp.aread()
-                response_obj = json.loads(raw_body.decode("utf-8"))
-                if not isinstance(response_obj, dict):
-                    raise ValueError(
-                        "Downstream MCP responded with content-type application/json to a tool call, "
-                        "but response body is not a valid JSON object."
-                    )
-                response_task.cancel()
-                return response_obj
+                raise MisimplementedSpecException(
+                    "Downstream SSE MCP server responded to tools/call with application/json instead of delivering "
+                    "the JSON-RPC response on the SSE stream."
+                )
 
         tool_response = await asyncio.wait_for(tool_response_future, timeout=timeout_seconds)
         _raise_for_rpc_error(tool_response, "tool call")
@@ -489,8 +510,8 @@ async def _initialize_mcp_session(
     logger.info(f"🔄 Initializing MCP session using JSON-RPC ({transport_type} transport)")
 
     # JSON-RPC initialize request body (shared by both transports)
-    init_request = deepcopy(MCP_INITIALIZE_REQUEST)
-    initialized_notification = deepcopy(MCP_INITIALIZED_NOTIFICATION)
+    init_request = deepcopy(_MCP_INITIALIZE_REQUEST)
+    initialized_notification = deepcopy(_MCP_INITIALIZED_NOTIFICATION)
 
     try:
         if transport_type == "streamable-http":

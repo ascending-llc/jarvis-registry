@@ -17,31 +17,24 @@ from registry_pkgs.core.config import (
 )
 from registry_pkgs.vector.config import BackendConfig
 
-MCP_PROTOCOL_VERSION = "2024-11-05"
-MCP_CLIENT_INFO_NAME = "jarvis-registry"
-MCP_CLIENT_INFO_VERSION = "1.0.0"
 MCP_CLIENT_INFO = {
-    "name": MCP_CLIENT_INFO_NAME,
-    "version": MCP_CLIENT_INFO_VERSION,
-}
-MCP_INITIALIZE_REQUEST = {
-    "jsonrpc": "2.0",
-    "id": "1",
-    "method": "initialize",
-    "params": {
-        "protocolVersion": MCP_PROTOCOL_VERSION,
-        "capabilities": {},
-        "clientInfo": MCP_CLIENT_INFO,
-    },
-}
-MCP_INITIALIZED_NOTIFICATION = {
-    "jsonrpc": "2.0",
-    "method": "notifications/initialized",
-    "params": {},
+    "name": "jarvis-registry",
+    "version": "1.0.0",
 }
 
 
 class Settings(BaseSettings):
+    """Registry application settings loaded via pydantic-settings."""
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        case_sensitive=False,
+        extra="ignore",
+    )
+
+    # ==================== MCP Client Info ====================
+    mcp_client_info: dict[str, str] = MCP_CLIENT_INFO
+
     """Registry application settings loaded via pydantic-settings."""
 
     model_config = SettingsConfigDict(
