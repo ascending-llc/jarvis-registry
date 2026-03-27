@@ -35,14 +35,6 @@ class Settings(BaseSettings):
     # ==================== MCP Client Info ====================
     mcp_client_info: dict[str, str] = MCP_CLIENT_INFO
 
-    """Registry application settings loaded via pydantic-settings."""
-
-    model_config = SettingsConfigDict(
-        env_file=".env",
-        case_sensitive=False,
-        extra="ignore",
-    )
-
     # ==================== Auth ====================
     secret_key: str = ""
     admin_user: str = "admin"
