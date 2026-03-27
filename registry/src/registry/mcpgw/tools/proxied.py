@@ -31,6 +31,7 @@ from pydantic.networks import AnyUrl
 from ...auth.dependencies import UserContextDict
 from ...auth.oauth.flow_state_manager import FlowStateManager
 from ...auth.oauth.types import ClientBranding, StateMetadata
+from ...core.mcp_client import call_tool_via_sse_ephemeral
 from ...utils.otel_metrics import record_server_request
 from ..core.types import McpAppContext
 from ..exceptions import (
@@ -59,7 +60,12 @@ def _get_mcp_client_service(ctx: Context[ServerSession, McpAppContext]):
 
 
 async def _downstream_tool_call(
-    ctx: Context[ServerSession, McpAppContext], url: str, body: dict[str, Any], headers: dict[str, str]
+    ctx: Context[ServerSession, McpAppContext],
+    url: str,
+    body: dict[str, Any],
+    headers: dict[str, str],
+    transport_type: str = "streamable-http",
+    sse_url: str | None = None,
 ) -> dict:
     """
     Make a tool call to downstream MCP. This function only handles making the HTTP POST request and parsing the response,
@@ -78,15 +84,38 @@ async def _downstream_tool_call(
         MisimplementedSpecException: When the response deviates from the 2025-11-25 MCP spec
         InternalServerException: Other unknown or rare runtime exceptions
     """
-
-    # Get the global `proxy_client: https.AsyncClient` dependency via lifespace context.
     client = ctx.request_context.lifespan_context.proxy_client
 
     response_obj: dict | None = None
 
     try:
+        if transport_type == "sse":
+            if not sse_url:
+                raise MisimplementedSpecException("SSE tool call requires SSE endpoint URL.")
+
+            async def _on_notification(obj: dict[str, Any]) -> None:
+                await forward_notification(ctx.session, obj, related_request_id=ctx.request_id)
+
+            try:
+                return await call_tool_via_sse_ephemeral(
+                    http_client=client,
+                    sse_url=sse_url,
+                    headers=headers,
+                    request_body=body,
+                    on_notification=_on_notification,
+                    timeout_seconds=30,
+                )
+            except ConnectionError as exc:
+                logger.error(str(exc))
+                raise DownstreamHttpFailureException("Error calling downstream MCP server over SSE.") from exc
+            except TimeoutError as exc:
+                raise MisimplementedSpecException(
+                    "Timed out waiting for SSE JSON-RPC response after tool POST (30s)."
+                ) from exc
+            except ValueError as exc:
+                raise MisimplementedSpecException(str(exc)) from exc
+
         async with client.stream("POST", url, json=body, headers=headers) as resp:
-            # In any execution branch, should alway exhaust the response body to avoid leaking TCP connection resources.
             if not resp.is_success:
                 raw_body = await resp.aread()
 
@@ -153,8 +182,6 @@ async def _downstream_tool_call(
         msg = "unexpected exception when making downstream tool call"
         logger.exception(msg)  # Want stack trace here.
 
-        # NOTE: We are NOT handling disconnection of the SSE stream from the server.
-        # For now just treating them as internal server error.
         raise InternalServerException(msg) from exc
 
 
@@ -293,16 +320,18 @@ async def execute_tool_impl(
 
         # Check if server requires initialization (default True for safety/compatibility)
         requires_init = server.config.get("requiresInit", True)
+        transport_type = server.config.get("type", "streamable-http")
 
         state_metadata = _get_state_metadata(ctx.session.client_params)
 
-        # Session management logic - only if server requires initialization
-        session_key = None
-        stored_session_id = None
-        if requires_init:
+        # Session management logic - only for streamable-http when initialization is required.
+        # For SSE we intentionally do not persist/reuse session IDs or messages URLs.
+        # Each SSE tool call opens a fresh stream and completes within _downstream_tool_call.
+        if requires_init and transport_type != "sse":
             # Key format: "user_id:server_id" to track per-user, per-server sessions
             session_key = f"{user_id}:{server_id}"
             session_info = _get_mcp_client_service(ctx).get_session(session_key)
+            stored_session_id = None
 
             if session_info:
                 # Existing session found - check if it's initialized
@@ -320,16 +349,19 @@ async def execute_tool_impl(
                     additional_headers=additional_headers,
                     state_metadata=state_metadata,
                 )
-                # Get transport type from server config (default to streamable-http)
-                transport_type = server.config.get("type", "streamable-http")
                 session_id = await _get_mcp_client_service(ctx).initialize_mcp_session(
-                    target_url, init_headers, session_key, transport_type
+                    target_url,
+                    init_headers,
+                    session_key,
+                    transport_type,
                 )
 
                 if session_id:
                     additional_headers["mcp-Session-Id"] = session_id
                 else:
                     logger.warning("Failed to initialize session, will attempt tool call without session")
+        elif transport_type == "sse":
+            logger.debug("SSE transport selected: using per-call ephemeral downstream session")
         else:
             logger.debug("Stateless server (requiresInit=False), skipping session management")
 
@@ -351,7 +383,14 @@ async def execute_tool_impl(
         }
         logger.info(f"MCP JSON-RPC request body: {json.dumps(mcp_request_body, indent=2)}")
 
-        resp_obj = await _downstream_tool_call(ctx, target_url, mcp_request_body, headers)
+        resp_obj = await _downstream_tool_call(
+            ctx,
+            target_url,
+            mcp_request_body,
+            headers,
+            transport_type=transport_type,
+            sse_url=target_url if transport_type == "sse" else None,
+        )
 
         if "error" in resp_obj:
             error_data = ErrorData.model_validate(resp_obj["error"])

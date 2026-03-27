@@ -9,6 +9,8 @@ import asyncio
 import json
 import logging
 import re
+from collections.abc import Awaitable, Callable
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -16,12 +18,13 @@ from urllib.parse import urlparse
 
 import httpx
 from authlib.oauth2.rfc8414 import AuthorizationServerMetadata
+from httpx_sse import EventSource
 from mcp import ClientSession
 from mcp.client.sse import sse_client
 from mcp.client.streamable_http import streamable_http_client
 from redis import Redis
 
-from .config import settings
+from .config import MCP_INITIALIZE_REQUEST, MCP_INITIALIZED_NOTIFICATION, settings
 
 # Internal imports
 from .mcp_config import MCPClientConfig
@@ -57,6 +60,142 @@ def _format_exception_group(error: ExceptionGroup) -> str:
     return " | ".join(details)
 
 
+async def call_tool_via_sse_ephemeral(
+    http_client: httpx.AsyncClient,
+    sse_url: str,
+    headers: dict[str, str],
+    request_body: dict[str, Any],
+    on_notification: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+    timeout_seconds: int = 30,
+) -> dict[str, Any]:
+    """Execute one tool call over SSE using an ephemeral session lifecycle.
+
+    Flow:
+      1. Open GET /sse and wait for endpoint event
+      2. POST initialize
+      3. POST notifications/initialized
+      4. POST tools/call
+      5. Read matching JSON-RPC response from SSE stream
+    """
+    request_id = request_body.get("id")
+
+    init_request = deepcopy(MCP_INITIALIZE_REQUEST)
+    initialized_notification = deepcopy(MCP_INITIALIZED_NOTIFICATION)
+
+    sse_headers = dict(headers)
+    sse_headers["Accept"] = "text/event-stream"
+    sse_headers.pop("Content-Type", None)
+
+    async def _await_response(stream_ready: asyncio.Future[str]) -> dict[str, Any]:
+        async with http_client.stream("GET", sse_url, headers=sse_headers) as sse_resp:
+            if not sse_resp.is_success:
+                raw = await sse_resp.aread()
+                if not stream_ready.done():
+                    stream_ready.set_exception(
+                        ConnectionError(
+                            "Error opening downstream SSE stream for tool call: "
+                            f"status={sse_resp.status_code}, body={raw.decode('utf-8', errors='replace')}"
+                        )
+                    )
+                raise ConnectionError(
+                    "Error opening downstream SSE stream for tool call: "
+                    f"status={sse_resp.status_code}, body={raw.decode('utf-8', errors='replace')}"
+                )
+
+            event_source = EventSource(sse_resp)
+            async for event in event_source.aiter_sse():
+                if event.event == "endpoint":
+                    endpoint_path = event.data.strip()
+                    if endpoint_path.startswith("/"):
+                        parsed = urlparse(sse_url)
+                        new_messages_url = f"{parsed.scheme}://{parsed.netloc}{endpoint_path}"
+                    else:
+                        new_messages_url = endpoint_path
+
+                    if not stream_ready.done():
+                        stream_ready.set_result(new_messages_url)
+                    continue
+
+                if event.event != "message":
+                    continue
+
+                try:
+                    obj = event.json()
+                except (json.JSONDecodeError, ValueError, TypeError):
+                    continue
+
+                if not isinstance(obj, dict):
+                    continue
+
+                if obj.get("jsonrpc") != "2.0":
+                    continue
+
+                method = obj.get("method")
+                if isinstance(method, str) and method.startswith("notifications/"):
+                    if on_notification is not None:
+                        await on_notification(obj)
+                    continue
+
+                response_id = obj.get("id")
+                has_result_or_error = isinstance(obj.get("result"), dict) or isinstance(obj.get("error"), dict)
+                if has_result_or_error and (request_id is None or str(response_id) == str(request_id)):
+                    return obj
+
+        raise ValueError("Downstream SSE stream ended without a matching JSON-RPC tool response.")
+
+    stream_ready: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+    response_task = asyncio.create_task(_await_response(stream_ready))
+
+    try:
+        new_messages_url = await asyncio.wait_for(stream_ready, timeout=timeout_seconds)
+
+        async with http_client.stream("POST", new_messages_url, json=init_request, headers=headers) as init_resp:
+            if not init_resp.is_success:
+                raw_body = await init_resp.aread()
+                raise ConnectionError(
+                    "Error initializing downstream SSE MCP session: "
+                    f"status code: {init_resp.status_code}, body: {raw_body.decode('utf-8', errors='replace')}"
+                )
+
+        async with http_client.stream(
+            "POST",
+            new_messages_url,
+            json=initialized_notification,
+            headers=headers,
+        ) as initialized_resp:
+            if not initialized_resp.is_success:
+                raw_body = await initialized_resp.aread()
+                raise ConnectionError(
+                    "Error sending initialized notification to downstream SSE MCP session: "
+                    f"status code: {initialized_resp.status_code}, body: {raw_body.decode('utf-8', errors='replace')}"
+                )
+
+        async with http_client.stream("POST", new_messages_url, json=request_body, headers=headers) as resp:
+            if not resp.is_success:
+                raw_body = await resp.aread()
+                raise ConnectionError(
+                    "Error calling downstream MCP server over SSE: "
+                    f"status code: {resp.status_code}, body: {raw_body.decode('utf-8', errors='replace')}"
+                )
+
+            # Some servers may still return direct JSON from POST.
+            if resp.headers.get("content-type", "").startswith("application/json"):
+                raw_body = await resp.aread()
+                response_obj = json.loads(raw_body.decode("utf-8"))
+                if not isinstance(response_obj, dict):
+                    raise ValueError(
+                        "Downstream MCP responded with content-type application/json to a tool call, "
+                        "but response body is not a valid JSON object."
+                    )
+                response_task.cancel()
+                return response_obj
+
+        return await asyncio.wait_for(response_task, timeout=timeout_seconds)
+    finally:
+        if not response_task.done():
+            response_task.cancel()
+
+
 def _get_session(session_key: str, redis_client: Redis | None = None) -> tuple[str, bool] | None:
     """Get session ID and initialization status from Redis if not expired."""
     if not redis_client:
@@ -71,11 +210,9 @@ def _get_session(session_key: str, redis_client: Redis | None = None) -> tuple[s
             return None
 
         # Parse JSON data
-
         data = json.loads(session_data)
         session_id = data.get("session_id")
         initialized = data.get("initialized", False)
-
         logger.debug(f"Session retrieved from Redis: {session_key} (initialized={initialized})")
         return (session_id, initialized)
 
@@ -97,7 +234,8 @@ def _store_session(
 
     try:
         redis_key = f"{SESSION_KEY_PREFIX}{session_key}"
-        session_data = json.dumps({"session_id": session_id, "initialized": initialized})
+        payload: dict[str, Any] = {"session_id": session_id, "initialized": initialized}
+        session_data = json.dumps(payload)
 
         # Store with TTL in seconds
         ttl_seconds = SESSION_TTL_MINUTES * 60
@@ -297,76 +435,78 @@ async def _initialize_mcp_session(
     redis_client: Redis | None = None,
 ) -> str | None:
     """
-    Perform MCP initialization handshake using raw JSON-RPC.
-
-    Sends initialize/initialized handshake and extracts session ID from headers,
-    but does NOT keep the connection open. The session ID is used for subsequent
-    requests which will maintain their own connections.
+    Perform MCP initialization handshake using raw JSON-RPC for streamable-http transport.
 
     Args:
         target_url: MCP server URL
         headers: HTTP headers (including authentication)
         session_key: Session storage key (user_id:server_id)
-        transport_type: Transport type ("streamable-http" or "sse")
+        transport_type: Transport type (only "streamable-http" supported)
 
     Returns:
         Session ID if successful, None otherwise
     """
     logger.info(f"🔄 Initializing MCP session using JSON-RPC ({transport_type} transport)")
 
+    # JSON-RPC initialize request body (shared by both transports)
+    init_request = deepcopy(MCP_INITIALIZE_REQUEST)
+    initialized_notification = deepcopy(MCP_INITIALIZED_NOTIFICATION)
+
     try:
-        # Create httpx client with custom headers for authentication
-        async with httpx.AsyncClient(headers=headers, timeout=30.0) as http_client:
-            # Send initialize request (JSON-RPC 2.0)
-            # The 2025-11-25 MCP spec allows the "id" field to be either str or int.
-            # With other tool call POST requests, we forward the "id" field from the client of mcpgw,
-            # which is provided to us by the `mcp` package and is typed str. Therefore we also use str below for consistency.
-            # Reference: https://modelcontextprotocol.io/specification/2025-11-25/schema#requestid
-            init_request = {
-                "jsonrpc": "2.0",
-                "id": "1",
-                "method": "initialize",
-                "params": {
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": {},
-                    "clientInfo": {"name": "mcp-gateway", "version": "1.0.0"},
-                },
-            }
+        if transport_type == "streamable-http":
+            return await _initialize_mcp_session_http(
+                target_url=target_url,
+                headers=headers,
+                session_key=session_key,
+                init_request=init_request,
+                initialized_notification=initialized_notification,
+                redis_client=redis_client,
+            )
 
-            logger.info("📤 Sending initialize request")
-            response = await http_client.post(target_url, json=init_request)
-            response.raise_for_status()
-
-            # Extract session ID from response headers
-            session_id = response.headers.get("mcp-session-id") or response.headers.get("Mcp-Session-Id")
-
-            if not session_id:
-                logger.warning("⚠️ No session ID in response headers")
-                return None
-
-            logger.info(f"✅ Session ID received: {session_id}")
-
-            # Send initialized notification (completes handshake)
-            initialized_notification = {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}
-
-            # Include session ID in subsequent request
-            headers_with_session = {**headers, "Mcp-Session-Id": session_id}
-
-            logger.info("📤 Sending initialized notification")
-            await http_client.post(target_url, json=initialized_notification, headers=headers_with_session)
-
-            logger.info(f"✅ MCP session fully initialized: {session_id}")
-
-            # Store session as initialized
-            _store_session(session_key, session_id, initialized=True, redis_client=redis_client)
-
-            return session_id
+        logger.warning(
+            "Session initialization is only supported for streamable-http. "
+            f"Skipping session init for transport type: {transport_type}"
+        )
+        return None
 
     except Exception as e:
         logger.error(f"❌ Failed to initialize MCP session: {e}", exc_info=True)
-        # Clear any partial session state
         _clear_session(session_key, redis_client=redis_client)
         return None
+
+
+async def _initialize_mcp_session_http(
+    target_url: str,
+    headers: dict[str, str],
+    session_key: str,
+    init_request: dict,
+    initialized_notification: dict,
+    redis_client: Redis | None = None,
+) -> str | None:
+    """Perform MCP initialization handshake for streamable-http transport."""
+    # streamable-http: POST initialize directly to the endpoint
+    async with httpx.AsyncClient(headers=headers, timeout=30.0) as http_client:
+        logger.info("📤 Sending initialize request")
+        response = await http_client.post(target_url, json=init_request)
+        response.raise_for_status()
+
+        # Extract session ID from response headers
+        session_id = response.headers.get("mcp-session-id") or response.headers.get("Mcp-Session-Id")
+
+        if not session_id:
+            logger.warning("⚠️ No session ID in response headers")
+            return None
+
+        logger.info(f"✅ Session ID received: {session_id}")
+
+        # Send initialized notification (completes handshake)
+        headers_with_session = {**headers, "Mcp-Session-Id": session_id}
+        logger.info("📤 Sending initialized notification")
+        await http_client.post(target_url, json=initialized_notification, headers=headers_with_session)
+
+        logger.info(f"✅ MCP session fully initialized: {session_id}")
+        _store_session(session_key, session_id, initialized=True, redis_client=redis_client)
+        return session_id
 
 
 @dataclass
