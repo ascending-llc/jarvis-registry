@@ -10,7 +10,6 @@ import {
 } from '@heroicons/react/24/outline';
 import type React from 'react';
 import { useCallback, useEffect, useState } from 'react';
-import { HiOutlineShare } from 'react-icons/hi2';
 import { useNavigate } from 'react-router-dom';
 import { useGlobal } from '@/contexts/GlobalContext';
 import type { ServerInfo } from '@/contexts/ServerContext';
@@ -21,7 +20,6 @@ import type { Tool } from '@/services/server/type';
 import UTILS from '@/utils';
 import ServerAuthorizationModal from './ServerAuthorizationModal';
 import ServerConfigModal from './ServerConfigModal';
-import ShareModal from './ShareModal';
 
 interface ServerCardProps {
   server: ServerInfo;
@@ -36,7 +34,6 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
   const [loadingTools, setLoadingTools] = useState(false);
   const [showTools, setShowTools] = useState(false);
   const [showConfig, setShowConfig] = useState(false);
-  const [showShare, setShowShare] = useState(false);
   const [loadingRefresh, setLoadingRefresh] = useState(false);
   const [showApiKeyDialog, setShowApiKeyDialog] = useState(false);
 
@@ -268,16 +265,6 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
                 <CogIcon className='h-3.5 w-3.5' />
               </button>
 
-              {/* Share Button */}
-              {server.permissions?.SHARE &&
-                <button
-                  onClick={() => setShowShare(true)}
-                  className='p-1.5 text-gray-400 hover:text-blue-600 dark:hover:text-blue-300 hover:bg-blue-50 dark:hover:bg-blue-700/50 rounded-lg transition-all duration-200 flex-shrink-0'
-                  title='Share server'
-                >
-                  <HiOutlineShare className='h-3.5 w-3.5' />
-                </button>
-              }
             </div>
           </div>
           {/* content */}
@@ -466,10 +453,6 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
       )}
 
       {showConfig && <ServerConfigModal server={server} isOpen={showConfig} onClose={() => setShowConfig(false)} />}
-
-      {showShare && (
-        <ShareModal itemName={server.title || server.name} resourceId={server.id} isOpen={showShare} onClose={() => setShowShare(false)} />
-      )}
 
       {showApiKeyDialog && (
         <ServerAuthorizationModal

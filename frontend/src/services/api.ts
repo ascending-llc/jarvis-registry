@@ -46,6 +46,8 @@ const API = {
 
   // acl (permissions)
   searchPrincipals: `${BASE_URL}/permissions/search-principals`,
+  getResourceRoles: (resourceType: string) =>
+    `${BASE_URL}/permissions/${resourceType}/roles`,
   getResourcePermissions: (resourceType: string, resourceId: string) =>
     `${BASE_URL}/permissions/${resourceType}/${resourceId}`,
   updateResourcePermissions: (resourceType: string, resourceId: string) =>

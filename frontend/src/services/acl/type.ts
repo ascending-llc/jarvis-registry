@@ -1,8 +1,6 @@
 export interface PrincipalSearchResult {
-  type: 'user' | 'group' | 'role';
-  id: string;
-  principal_type?: 'user' | 'group' | 'role';
-  principal_id?: string;
+  principalType: 'user' | 'group' | 'role';
+  principalId: string;
   name?: string;
   email?: string;
   accessRoleId?: string;
@@ -21,6 +19,13 @@ export interface Principal {
   accessRoleId?: string | null;
 }
 
+export interface Role {
+  accessRoleId: string;
+  name: string;
+  description: string;
+  permBits: number;
+}
+
 export interface GetResourcePermissionsResponse {
   resourceType: string;
   resourceId: string;
@@ -29,10 +34,8 @@ export interface GetResourcePermissionsResponse {
 }
 
 export interface UpdatePrincipal {
-  principal_type: string;
-  principal_id: string;
-  type?: string;
-  id?: string;
+  principalType: string;
+  principalId: string;
   name?: string;
   email?: string;
   avatar?: string;

@@ -3,6 +3,7 @@ import Request from '@/services/request';
 import type {
   GetResourcePermissionsResponse,
   PrincipalSearchResult,
+  Role,
   UpdateResourcePermissionsRequest,
   UpdateResourcePermissionsResponse,
 } from './type';
@@ -21,7 +22,7 @@ export const searchPrincipals = (
   return Request.get(API.searchPrincipals, {
     query,
     limit,
-    principal_types: principalTypes,
+    principalTypes,
   });
 };
 
@@ -35,6 +36,14 @@ export const getResourcePermissions = (
   resourceId: string,
 ): Promise<GetResourcePermissionsResponse> => {
   return Request.get(API.getResourcePermissions(resourceType, resourceId));
+};
+
+/**
+ * Get all available roles for a specific resource type
+ * @param resourceType Type of the resource, e.g., 'mcpServer'
+ */
+export const getResourceRoles = (resourceType: string): Promise<Role[]> => {
+  return Request.get(API.getResourceRoles(resourceType));
 };
 
 /**
@@ -54,6 +63,7 @@ export const updateResourcePermissions = (
 const ACL = {
   searchPrincipals,
   getResourcePermissions,
+  getResourceRoles,
   updateResourcePermissions,
 };
 
