@@ -11,14 +11,18 @@ import { getRoleDisplayDesc, getRoleDisplayName, type PermissionsState, type Pub
 
 // ── RoleDropdown ──
 
+const ROLE_DROPDOWN_BUTTON_WIDTH = 240;
+const ROLE_DROPDOWN_OPTIONS_WIDTH = 320;
+
 interface RoleDropdownProps {
   value: string;
   onChange: (value: string) => void;
   roles: Role[];
   direction?: 'up' | 'down';
+  disabled?: boolean;
 }
 
-export const RoleDropdown: React.FC<RoleDropdownProps> = ({ value, onChange, roles, direction = 'down' }) => {
+export const RoleDropdown: React.FC<RoleDropdownProps> = ({ value, onChange, roles, direction = 'down', disabled = false }) => {
   const selectedRoleName = getRoleDisplayName(
     roles.find(r => r.accessRoleId === value),
     value,
@@ -26,17 +30,23 @@ export const RoleDropdown: React.FC<RoleDropdownProps> = ({ value, onChange, rol
   const buttonRef = useRef<HTMLButtonElement>(null);
 
   return (
-    <Listbox value={value} onChange={onChange}>
+    <Listbox value={value} onChange={onChange} disabled={disabled}>
       {({ open }) => {
         const rect = buttonRef.current?.getBoundingClientRect();
-        const left = rect ? Math.max(8, rect.right - 300) : 0;
+        const left = rect ? Math.max(8, rect.right - ROLE_DROPDOWN_OPTIONS_WIDTH) : 0;
         const top = rect ? (direction === 'up' ? rect.top - 4 : rect.bottom + 4) : 0;
 
         return (
           <div className='relative'>
             <Listbox.Button
               ref={buttonRef}
-              className='relative w-[200px] cursor-default rounded-lg border border-gray-200 bg-transparent dark:border-gray-600 dark:bg-transparent py-2 pl-3 pr-8 text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 focus:outline-none focus:ring-1 focus:ring-gray-300 dark:focus:ring-gray-500 text-left transition-colors'
+              className={`relative w-[240px] rounded-lg border py-2 pl-3 pr-8 text-sm font-medium text-left transition-colors ${
+                disabled
+                  ? 'cursor-not-allowed border-gray-200 bg-gray-100 text-gray-400 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-500'
+                  : 'cursor-default border-gray-200 bg-transparent text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:bg-transparent dark:text-gray-200 dark:hover:bg-gray-700 focus:outline-none focus:ring-1 focus:ring-gray-300 dark:focus:ring-gray-500'
+              }`}
+              style={{ width: ROLE_DROPDOWN_BUTTON_WIDTH }}
+              title={disabled ? 'At least one owner is required' : undefined}
             >
               <span className='block truncate'>MCP Server {selectedRoleName}</span>
               <span className='pointer-events-none absolute inset-y-0 right-0 flex items-center pr-2'>
@@ -53,8 +63,9 @@ export const RoleDropdown: React.FC<RoleDropdownProps> = ({ value, onChange, rol
                   leaveTo='opacity-0'
                 >
                   <Listbox.Options
-                    className='fixed z-[80] max-h-60 w-[300px] overflow-auto rounded-xl border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 p-1.5 text-sm shadow-xl focus:outline-none'
+                    className='fixed z-[80] max-h-60 w-[320px] overflow-auto rounded-xl border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 p-1.5 text-sm shadow-xl focus:outline-none'
                     style={{
+                      width: ROLE_DROPDOWN_OPTIONS_WIDTH,
                       left,
                       top,
                       transform: direction === 'up' ? 'translateY(-100%)' : undefined,
@@ -223,6 +234,7 @@ export const PermissionList: React.FC<PermissionListProps> = ({ permissions, rol
                     value={user.accessRoleId}
                     onChange={(value: string) => permissions.changeRole(user.principalType, user.principalId, value)}
                     roles={roles}
+                    disabled={isLastOwner}
                   />
                   {!isLastOwner ? (
                     <button

@@ -252,6 +252,13 @@ export const useShareModal = ({
   const handleSave = useCallback(async () => {
     setSaving(true);
     try {
+      const ownerRoleId = roles[roles.length - 1]?.accessRoleId ?? '';
+      const ownerCount = permissions.filter(p => p.accessRoleId === ownerRoleId).length;
+      if (ownerRoleId && ownerCount < 1) {
+        showToast?.('At least one owner is required.', 'error');
+        return;
+      }
+
       const updated: UpdatePrincipal[] = permissions.map(p => ({
         principalType: p.principalType,
         principalId: p.principalId,
@@ -288,7 +295,7 @@ export const useShareModal = ({
     } finally {
       setSaving(false);
     }
-  }, [permissions, shareWithEveryone, publicRole, removedPermissions, resourceType, resourceId, showToast, onClose]);
+  }, [permissions, roles, shareWithEveryone, publicRole, removedPermissions, resourceType, resourceId, showToast, onClose]);
 
   return {
     search,
