@@ -30,6 +30,7 @@ class FederationApplySummary(BaseModel):
     updatedAgents: int = 0
     deletedAgents: int = 0
     unchangedAgents: int = 0
+    skippedAgents: int = 0
 
     model_config = ConfigDict(populate_by_name=True)
 

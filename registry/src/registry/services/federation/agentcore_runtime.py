@@ -53,10 +53,15 @@ class _SigV4HttpxAuth(httpx.Auth):
 
 class AgentCoreRuntimeInvoker:
     """
-    Runtime data-plane invoker.
+    AgentCore Runtime data-plane invoker.
 
-    Keeps IAM and JWT execution paths separate so federation client can stay focused
-    on discovery + model transformation.
+    Official API mapping used by this class:
+    - MCP capability discovery uses `InvokeAgentRuntime` and MCP JSON-RPC methods
+      such as `initialize`, `tools/list`, `resources/list`, and `prompts/list`.
+    - A2A card discovery uses `GetAgentCard`.
+
+    IAM and JWT execution paths stay separate so federation discovery code can
+    remain focused on model transformation instead of transport details.
     """
 
     def __init__(
@@ -67,10 +72,10 @@ class AgentCoreRuntimeInvoker:
     ):
         self.client_provider = client_provider
         self.extract_region_from_arn = extract_region_from_arn
-        self._runtime_init_retry_attempts = max(1, int(settings.agentcore_runtime_init_retry_attempts or 4))
-        self._runtime_init_retry_delay_seconds = float(settings.agentcore_runtime_init_retry_delay_seconds or 5.0)
-        self._a2a_card_retry_attempts = max(1, int(settings.agentcore_a2a_card_retry_attempts or 3))
-        self._a2a_card_retry_delay_seconds = float(settings.agentcore_a2a_card_retry_delay_seconds or 3.0)
+        self._invoke_runtime_retry_attempts = max(1, int(settings.agentcore_invoke_runtime_retry_attempts or 4))
+        self._invoke_runtime_retry_delay_seconds = float(settings.agentcore_invoke_runtime_retry_delay_seconds or 5.0)
+        self._get_agent_card_retry_attempts = max(1, int(settings.agentcore_get_agent_card_retry_attempts or 3))
+        self._get_agent_card_retry_delay_seconds = float(settings.agentcore_get_agent_card_retry_delay_seconds or 3.0)
 
     async def enrich_mcp_server(
         self,
@@ -85,7 +90,7 @@ class AgentCoreRuntimeInvoker:
             return
 
         try:
-            result = await self.fetch_mcp_payloads(
+            result = await self.fetch_mcp_runtime_capabilities(
                 runtime_url=runtime_url,
                 transport_type=config.get("type"),
                 metadata=server.federationMetadata or {},
@@ -131,6 +136,9 @@ class AgentCoreRuntimeInvoker:
         region: str,
         assume_role_arn: str | None = None,
     ) -> None:
+        """
+        docs: https://docs.aws.amazon.com/bedrock-agentcore/latest/APIReference/API_GetAgentCard.html
+        """
         runtime_arn = self._resolve_runtime_arn(
             metadata=agent.federationMetadata or {},
             runtime_detail=runtime_detail,
@@ -158,7 +166,7 @@ class AgentCoreRuntimeInvoker:
         )
 
         try:
-            card_data = await self.fetch_a2a_card(
+            card_data = await self.fetch_a2a_agent_card(
                 card_url=card_url,
                 metadata=agent.federationMetadata or {},
                 runtime_detail=runtime_detail,
@@ -206,7 +214,7 @@ class AgentCoreRuntimeInvoker:
         agent.federationMetadata = metadata
 
     @staticmethod
-    def detect_runtime_auth_mode(
+    def detect_agentcore_data_plane_auth_mode(
         metadata: dict[str, Any],
         runtime_detail: dict[str, Any] | None = None,
     ) -> str:
@@ -220,7 +228,7 @@ class AgentCoreRuntimeInvoker:
             return "JWT"
         return "IAM"
 
-    async def fetch_mcp_payloads(
+    async def fetch_mcp_runtime_capabilities(
         self,
         *,
         runtime_url: str,
@@ -230,9 +238,16 @@ class AgentCoreRuntimeInvoker:
         runtime_detail: dict[str, Any] | None = None,
         assume_role_arn: str | None = None,
     ) -> MCPServerData:
-        mode = self.detect_runtime_auth_mode(metadata=metadata, runtime_detail=runtime_detail)
+        """
+        Discover MCP tools/resources/prompts for an AgentCore runtime.
+
+        Official API mapping:
+        - IAM path: `InvokeAgentRuntime` with MCP JSON-RPC methods
+        - JWT path: HTTP call to the runtime invocation endpoint
+        """
+        mode = self.detect_agentcore_data_plane_auth_mode(metadata=metadata, runtime_detail=runtime_detail)
         if mode == "IAM":
-            sdk_result = await self._fetch_mcp_payloads_via_sdk(
+            sdk_result = await self._invoke_mcp_runtime_via_sdk(
                 metadata=metadata,
                 runtime_detail=runtime_detail,
                 region=region,
@@ -242,7 +257,7 @@ class AgentCoreRuntimeInvoker:
                 return sdk_result
 
             # Fallback path for IAM: use SigV4-authenticated MCP transport over HTTP.
-            http_fallback = await self._fetch_mcp_payloads_via_http_with_retry(
+            http_fallback = await self._fetch_mcp_runtime_capabilities_via_http_with_retry(
                 runtime_url=runtime_url,
                 transport_type=transport_type,
                 metadata=metadata,
@@ -254,7 +269,7 @@ class AgentCoreRuntimeInvoker:
                 return http_fallback
             return sdk_result
 
-        return await self._fetch_mcp_payloads_via_http_with_retry(
+        return await self._fetch_mcp_runtime_capabilities_via_http_with_retry(
             runtime_url=runtime_url,
             transport_type=transport_type,
             metadata=metadata,
@@ -305,7 +320,7 @@ class AgentCoreRuntimeInvoker:
             "responseText": response_text if not response_json else None,
         }
 
-    async def fetch_a2a_card(
+    async def fetch_a2a_agent_card(
         self,
         *,
         card_url: str,
@@ -314,9 +329,16 @@ class AgentCoreRuntimeInvoker:
         runtime_detail: dict[str, Any] | None = None,
         assume_role_arn: str | None = None,
     ) -> dict[str, Any]:
-        mode = self.detect_runtime_auth_mode(metadata=metadata, runtime_detail=runtime_detail)
+        """
+        Fetch the A2A agent card for an AgentCore runtime.
+
+        Official API mapping:
+        - IAM path: `GetAgentCard`
+        - JWT path: HTTP GET on `/.well-known/agent-card.json`
+        """
+        mode = self.detect_agentcore_data_plane_auth_mode(metadata=metadata, runtime_detail=runtime_detail)
         if mode == "IAM":
-            return await self._fetch_a2a_card_via_sdk(
+            return await self._get_a2a_agent_card_via_sdk(
                 metadata=metadata,
                 runtime_detail=runtime_detail,
                 region=region,
@@ -329,12 +351,16 @@ class AgentCoreRuntimeInvoker:
             region=region,
             assume_role_arn=assume_role_arn,
         )
-        async with httpx.AsyncClient(timeout=20.0, headers=headers, auth=httpx_auth) as client:
+        async with httpx.AsyncClient(
+            timeout=settings.agentcore_jwt_http_timeout_seconds,
+            headers=headers,
+            auth=httpx_auth,
+        ) as client:
             response = await client.get(card_url)
             response.raise_for_status()
             return response.json()
 
-    async def _fetch_mcp_payloads_via_http(
+    async def _fetch_mcp_runtime_capabilities_via_http(
         self,
         *,
         runtime_url: str,
@@ -359,7 +385,7 @@ class AgentCoreRuntimeInvoker:
             httpx_auth=httpx_auth,
         )
 
-    async def _fetch_mcp_payloads_via_http_with_retry(
+    async def _fetch_mcp_runtime_capabilities_via_http_with_retry(
         self,
         *,
         runtime_url: str,
@@ -370,8 +396,8 @@ class AgentCoreRuntimeInvoker:
         assume_role_arn: str | None = None,
     ) -> MCPServerData:
         last_result: MCPServerData | None = None
-        for attempt in range(1, self._runtime_init_retry_attempts + 1):
-            result = await self._fetch_mcp_payloads_via_http(
+        for attempt in range(1, self._invoke_runtime_retry_attempts + 1):
+            result = await self._fetch_mcp_runtime_capabilities_via_http(
                 runtime_url=runtime_url,
                 transport_type=transport_type,
                 metadata=metadata,
@@ -382,11 +408,11 @@ class AgentCoreRuntimeInvoker:
             last_result = result
             if not result.error_message or not self._is_runtime_init_timeout_text(result.error_message):
                 return result
-            if attempt < self._runtime_init_retry_attempts:
-                await asyncio.sleep(self._runtime_init_retry_delay_seconds * attempt)
+            if attempt < self._invoke_runtime_retry_attempts:
+                await asyncio.sleep(self._invoke_runtime_retry_delay_seconds * attempt)
         return last_result or MCPServerData(None, None, None, None, "MCP HTTP retry failed")
 
-    async def _fetch_a2a_card_via_sdk(
+    async def _get_a2a_agent_card_via_sdk(
         self,
         *,
         metadata: dict[str, Any],
@@ -408,7 +434,7 @@ class AgentCoreRuntimeInvoker:
             raise ValueError("GetAgentCard returned unexpected payload")
         return card
 
-    async def _fetch_mcp_payloads_via_sdk(
+    async def _invoke_mcp_runtime_via_sdk(
         self,
         *,
         metadata: dict[str, Any],
@@ -711,14 +737,14 @@ class AgentCoreRuntimeInvoker:
         Retry transient runtime initialization timeout errors from AgentCore runtime.
         """
         last_exc: Exception | None = None
-        for attempt in range(1, self._runtime_init_retry_attempts + 1):
+        for attempt in range(1, self._invoke_runtime_retry_attempts + 1):
             try:
                 return await asyncio.to_thread(operation)
             except Exception as exc:
                 last_exc = exc
-                if not self._is_runtime_init_timeout_error(exc) or attempt == self._runtime_init_retry_attempts:
+                if not self._is_runtime_init_timeout_error(exc) or attempt == self._invoke_runtime_retry_attempts:
                     raise
-                await asyncio.sleep(self._runtime_init_retry_delay_seconds * attempt)
+                await asyncio.sleep(self._invoke_runtime_retry_delay_seconds * attempt)
         if last_exc:
             raise last_exc
         raise RuntimeError("retry operation failed without exception")
@@ -728,14 +754,14 @@ class AgentCoreRuntimeInvoker:
         Retry transient runtime initialization timeout errors for async operations.
         """
         last_exc: Exception | None = None
-        for attempt in range(1, self._runtime_init_retry_attempts + 1):
+        for attempt in range(1, self._invoke_runtime_retry_attempts + 1):
             try:
                 return await operation()
             except Exception as exc:
                 last_exc = exc
-                if not self._is_runtime_init_timeout_error(exc) or attempt == self._runtime_init_retry_attempts:
+                if not self._is_runtime_init_timeout_error(exc) or attempt == self._invoke_runtime_retry_attempts:
                     raise
-                await asyncio.sleep(self._runtime_init_retry_delay_seconds * attempt)
+                await asyncio.sleep(self._invoke_runtime_retry_delay_seconds * attempt)
         if last_exc:
             raise last_exc
         raise RuntimeError("retry async operation failed without exception")
@@ -745,14 +771,21 @@ class AgentCoreRuntimeInvoker:
         Retry A2A card fetch for known transient runtime-side failures.
         """
         last_exc: Exception | None = None
-        for attempt in range(1, self._a2a_card_retry_attempts + 1):
+        for attempt in range(1, self._get_agent_card_retry_attempts + 1):
             try:
                 return await asyncio.to_thread(operation)
             except Exception as exc:
                 last_exc = exc
-                if not self._is_retryable_a2a_card_error(exc) or attempt == self._a2a_card_retry_attempts:
+                if not self._is_retryable_a2a_card_error(exc) or attempt == self._get_agent_card_retry_attempts:
                     raise
-                await asyncio.sleep(self._a2a_card_retry_delay_seconds * attempt)
+                logger.warning(
+                    "Retrying A2A GetAgentCard after transient runtime error (attempt=%s/%s, backoff_seconds=%s): %s",
+                    attempt,
+                    self._get_agent_card_retry_attempts,
+                    self._get_agent_card_retry_delay_seconds * attempt,
+                    exc,
+                )
+                await asyncio.sleep(self._get_agent_card_retry_delay_seconds * attempt)
         if last_exc:
             raise last_exc
         raise RuntimeError("A2A card retry operation failed without exception")
@@ -900,7 +933,7 @@ class AgentCoreRuntimeInvoker:
         - IAM: SigV4 request signing
         - JWT: Bearer token header
         """
-        mode = self.detect_runtime_auth_mode(metadata=metadata, runtime_detail=runtime_detail)
+        mode = self.detect_agentcore_data_plane_auth_mode(metadata=metadata, runtime_detail=runtime_detail)
         if mode == "JWT":
             token = settings.agentcore_runtime_jwt
             if not token:

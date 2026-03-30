@@ -227,3 +227,61 @@ async def test_sync_vector_index_after_commit_logs_and_continues_on_vector_failu
 
     federation_sync_service.mcp_server_repo.sync_server_to_vector_db.assert_awaited_once_with(server, is_delete=False)
     federation_sync_service.a2a_agent_repo.sync_agent_to_vector_db.assert_awaited_once_with(agent, is_delete=True)
+
+
+class _FakeQuery:
+    def __init__(self, items):
+        self._items = items
+
+    async def to_list(self):
+        return list(self._items)
+
+
+@pytest.mark.asyncio
+async def test_apply_sync_mutations_skips_a2a_insert_when_path_belongs_to_another_resource(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    conflicting_agent = SimpleNamespace(
+        id=PydanticObjectId(),
+        path="/agentcore/a2a/hosted-agent-257ko",
+        federationRefId=PydanticObjectId(),
+        federationMetadata={"runtimeArn": "arn:existing"},
+    )
+    discovered_agent = SimpleNamespace(
+        id=PydanticObjectId(),
+        path="/agentcore/a2a/hosted-agent-257ko",
+        card=SimpleNamespace(name="hosted_agent_257ko"),
+        tags=[],
+        status="active",
+        isEnabled=True,
+        wellKnown=None,
+        federationRefId=None,
+        federationMetadata={"runtimeArn": "arn:new", "runtimeVersion": "1"},
+        insert=AsyncMock(),
+    )
+
+    def _fake_mcp_find(*_args, **_kwargs):
+        return _FakeQuery([])
+
+    def _fake_a2a_find(query, session=None):
+        if "federationRefId" in query:
+            return _FakeQuery([])
+        if "path" in query:
+            return _FakeQuery([conflicting_agent])
+        raise AssertionError(f"unexpected query: {query}")
+
+    monkeypatch.setattr("registry.services.federation_sync_service.ExtendedMCPServer.find", _fake_mcp_find)
+    monkeypatch.setattr("registry.services.federation_sync_service.A2AAgent.find", _fake_a2a_find)
+
+    result = await federation_sync_service._apply_sync_mutations(
+        federation=federation,
+        discovered_mcp=[],
+        discovered_a2a=[discovered_agent],
+    )
+
+    assert result.summary.skippedAgents == 1
+    assert result.summary.createdAgents == 0
+    assert result.created_a2a == []
+    discovered_agent.insert.assert_not_awaited()

@@ -31,7 +31,7 @@ class FederationUpdateRequest(BaseModel):
     tags: list[str] = Field(default_factory=list)
     providerConfig: dict[str, Any] = Field(default_factory=dict)
     version: int
-    syncAfterUpdate: bool = True
+    syncAfterUpdate: bool = False
 
     model_config = ConfigDict(populate_by_name=True, use_enum_values=True)
 

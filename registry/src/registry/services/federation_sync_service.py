@@ -406,6 +406,13 @@ class FederationSyncService:
             for item in existing_a2a
             if self._extract_runtime_arn(item.federationMetadata)
         }
+        discovered_a2a_paths = sorted({item.path for item in discovered_a2a if getattr(item, "path", None)})
+        existing_a2a_by_path: dict[str, A2AAgent] = {}
+        if discovered_a2a_paths:
+            existing_a2a_by_path = {
+                item.path: item
+                for item in await A2AAgent.find({"path": {"$in": discovered_a2a_paths}}, session=session).to_list()
+            }
 
         discovered_a2a_ids: set[str] = set()
 
@@ -416,6 +423,24 @@ class FederationSyncService:
 
             discovered_a2a_ids.add(remote_id)
             existing = existing_a2a_by_remote.get(remote_id)
+            path_conflict = existing_a2a_by_path.get(item.path) if getattr(item, "path", None) else None
+
+            if existing is None and path_conflict is not None:
+                if path_conflict.federationRefId == federation.id:
+                    existing = path_conflict
+                    existing_a2a_by_remote[remote_id] = existing
+                else:
+                    logger.warning(
+                        "Skipping federated A2A sync because path is already owned by another agent: "
+                        "federation_id=%s runtime_arn=%s path=%s existing_agent_id=%s existing_federation_ref_id=%s",
+                        federation.id,
+                        remote_id,
+                        item.path,
+                        getattr(path_conflict, "id", None),
+                        getattr(path_conflict, "federationRefId", None),
+                    )
+                    apply_summary.skippedAgents += 1
+                    continue
 
             if existing is None:
                 agent = item
@@ -425,7 +450,25 @@ class FederationSyncService:
                 await agent.insert(session=session)
                 apply_summary.createdAgents += 1
                 mutation_result.created_a2a.append(agent)
+                existing_a2a_by_remote[remote_id] = agent
+                if getattr(agent, "path", None):
+                    existing_a2a_by_path[agent.path] = agent
             else:
+                if existing.path != item.path and path_conflict is not None and path_conflict.id != existing.id:
+                    logger.warning(
+                        "Skipping federated A2A update because target path is already owned by another agent: "
+                        "federation_id=%s runtime_arn=%s existing_agent_id=%s existing_path=%s target_path=%s "
+                        "conflict_agent_id=%s conflict_federation_ref_id=%s",
+                        federation.id,
+                        remote_id,
+                        getattr(existing, "id", None),
+                        existing.path,
+                        item.path,
+                        getattr(path_conflict, "id", None),
+                        getattr(path_conflict, "federationRefId", None),
+                    )
+                    apply_summary.skippedAgents += 1
+                    continue
                 if not self._runtime_metadata_changed(existing.federationMetadata, item.federationMetadata):
                     apply_summary.unchangedAgents += 1
                 else:
@@ -439,6 +482,8 @@ class FederationSyncService:
                     await existing.save(session=session)
                     apply_summary.updatedAgents += 1
                     mutation_result.updated_a2a.append(existing)
+                    if getattr(existing, "path", None):
+                        existing_a2a_by_path[existing.path] = existing
 
         stale_a2a = [
             item

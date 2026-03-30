@@ -52,8 +52,10 @@ class FederationCrudService:
     def validate_provider_config(
         provider_type: FederationProviderType, provider_config: dict[str, Any]
     ) -> dict[str, Any]:
+        """
+        region、assumeRoleArn fields must have values
+        """
         provider_config = FederationCrudService.normalize_provider_config(provider_type, provider_config)
-
         if provider_type == FederationProviderType.AWS_AGENTCORE:
             missing_fields = [
                 field_name for field_name in ("region", "assumeRoleArn") if not provider_config.get(field_name)
@@ -61,7 +63,6 @@ class FederationCrudService:
             if missing_fields:
                 missing_field_list = ", ".join(f"providerConfig.{field_name}" for field_name in missing_fields)
                 raise ValueError(f"AWS AgentCore federation requires {missing_field_list}")
-
         return provider_config
 
     async def create_federation(

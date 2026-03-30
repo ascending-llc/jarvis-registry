@@ -108,7 +108,7 @@ class AgentCoreFederationClient:
         a2a_agents: list[A2AAgent] = []
         mcp_servers: list[ExtendedMCPServer] = []
         skipped_runtimes: list[dict[str, Any]] = list(filtered_runtimes)
-
+        logger.debug(f"runtime_details: {runtime_details}")
         for runtime_detail in runtime_details:
             runtime_arn = runtime_detail["runtimeArn"]
             runtime_id = runtime_detail["agentRuntimeId"]

@@ -153,10 +153,15 @@ class Settings(BaseSettings):
     # should take precedence for federated sync workflows.
     agentcore_assume_role_arn: str | None = None
     agentcore_runtime_jwt: str | None = None
-    agentcore_runtime_init_retry_attempts: int = 4
-    agentcore_runtime_init_retry_delay_seconds: float = 5.0
-    agentcore_a2a_card_retry_attempts: int = 3
-    agentcore_a2a_card_retry_delay_seconds: float = 3.0
+    # AgentCore data-plane settings:
+    # - InvokeAgentRuntime: MCP tools/resources/prompts discovery
+    # - GetAgentCard: A2A agent-card discovery via AWS SDK
+    # - JWT HTTP timeout: JWT/HTTP fallback only
+    agentcore_invoke_runtime_retry_attempts: int = 4
+    agentcore_invoke_runtime_retry_delay_seconds: float = 5.0
+    agentcore_get_agent_card_retry_attempts: int = 5
+    agentcore_get_agent_card_retry_delay_seconds: float = 5.0
+    agentcore_jwt_http_timeout_seconds: float = 20.0
 
     # ==================== JWT ====================
     jwt_issuer: str = "jarvis-auth-server"

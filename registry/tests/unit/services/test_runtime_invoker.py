@@ -66,13 +66,13 @@ class TestAgentCoreRuntimeInvoker:
         assert isinstance(request_id_2, str)
         assert request_id_1 != request_id_2
 
-    def test_detect_runtime_auth_mode_defaults_to_iam(self):
+    def test_detect_agentcore_data_plane_auth_mode_defaults_to_iam(self):
         invoker = _build_invoker()
-        assert invoker.detect_runtime_auth_mode(metadata={}) == "IAM"
+        assert invoker.detect_agentcore_data_plane_auth_mode(metadata={}) == "IAM"
 
-    def test_detect_runtime_auth_mode_detects_jwt(self):
+    def test_detect_agentcore_data_plane_auth_mode_detects_jwt(self):
         invoker = _build_invoker()
-        mode = invoker.detect_runtime_auth_mode(
+        mode = invoker.detect_agentcore_data_plane_auth_mode(
             metadata={"authorizerConfiguration": {"customJWTAuthorizerConfiguration": {"discoveryUrl": "x"}}}
         )
         assert mode == "JWT"
@@ -130,7 +130,7 @@ class TestAgentCoreRuntimeInvoker:
         assert notification_mock.await_args.kwargs["mcp_session_id"] == "mcp-session-1"
 
     @pytest.mark.asyncio
-    async def test_fetch_mcp_payloads_via_sdk_initializes_before_list_calls(self, monkeypatch):
+    async def test_invoke_mcp_runtime_via_sdk_initializes_before_list_calls(self, monkeypatch):
         invoker = _build_invoker()
 
         class _FakeClient:
@@ -162,7 +162,7 @@ class TestAgentCoreRuntimeInvoker:
         monkeypatch.setattr(invoker, "_initialize_mcp_session", initialize_mock)
         monkeypatch.setattr(invoker, "_invoke_mcp_jsonrpc", _fake_invoke_mcp_jsonrpc)
 
-        result = await invoker._fetch_mcp_payloads_via_sdk(
+        result = await invoker._invoke_mcp_runtime_via_sdk(
             metadata={"runtimeArn": "arn:aws:bedrock-agentcore:us-east-1:account-id:runtime/runtime-demo-1"},
             region="us-east-1",
             runtime_detail=None,
@@ -180,15 +180,15 @@ class TestAgentCoreRuntimeInvoker:
         ]
 
     @pytest.mark.asyncio
-    async def test_fetch_mcp_payloads_iam_prefers_sdk_success(self, monkeypatch):
+    async def test_fetch_mcp_runtime_capabilities_iam_prefers_sdk_success(self, monkeypatch):
         invoker = _build_invoker()
         sdk = MCPServerData(tools=[], resources=[], prompts=[], capabilities={}, error_message=None)
         sdk_mock = AsyncMock(return_value=sdk)
         http_mock = AsyncMock()
-        monkeypatch.setattr(invoker, "_fetch_mcp_payloads_via_sdk", sdk_mock)
-        monkeypatch.setattr(invoker, "_fetch_mcp_payloads_via_http_with_retry", http_mock)
+        monkeypatch.setattr(invoker, "_invoke_mcp_runtime_via_sdk", sdk_mock)
+        monkeypatch.setattr(invoker, "_fetch_mcp_runtime_capabilities_via_http_with_retry", http_mock)
 
-        result = await invoker.fetch_mcp_payloads(
+        result = await invoker.fetch_mcp_runtime_capabilities(
             runtime_url="https://example.com/invocations",
             transport_type="streamable-http",
             metadata={"runtimeArn": "arn:aws:bedrock-agentcore:us-east-1:account-id:runtime/runtime-demo"},
@@ -201,16 +201,16 @@ class TestAgentCoreRuntimeInvoker:
         http_mock.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_fetch_mcp_payloads_iam_falls_back_to_http(self, monkeypatch):
+    async def test_fetch_mcp_runtime_capabilities_iam_falls_back_to_http(self, monkeypatch):
         invoker = _build_invoker()
         sdk = MCPServerData(tools=None, resources=None, prompts=None, capabilities=None, error_message="sdk failed")
         http = MCPServerData(tools=[], resources=[], prompts=[], capabilities={}, error_message=None)
         sdk_mock = AsyncMock(return_value=sdk)
         http_mock = AsyncMock(return_value=http)
-        monkeypatch.setattr(invoker, "_fetch_mcp_payloads_via_sdk", sdk_mock)
-        monkeypatch.setattr(invoker, "_fetch_mcp_payloads_via_http_with_retry", http_mock)
+        monkeypatch.setattr(invoker, "_invoke_mcp_runtime_via_sdk", sdk_mock)
+        monkeypatch.setattr(invoker, "_fetch_mcp_runtime_capabilities_via_http_with_retry", http_mock)
 
-        result = await invoker.fetch_mcp_payloads(
+        result = await invoker.fetch_mcp_runtime_capabilities(
             runtime_url="https://example.com/invocations",
             transport_type="streamable-http",
             metadata={"runtimeArn": "arn:aws:bedrock-agentcore:us-east-1:account-id:runtime/runtime-demo"},
@@ -226,7 +226,9 @@ class TestAgentCoreRuntimeInvoker:
     async def test_enrich_a2a_agent_uses_runtime_arn_from_metadata(self, monkeypatch):
         invoker = _build_invoker()
         agent = _build_fake_a2a_agent(runtime_arn="arn:aws:bedrock-agentcore:us-east-1:account-id:runtime/runtime-demo")
-        monkeypatch.setattr(invoker, "fetch_a2a_card", AsyncMock(return_value={"name": "demo-a2a", "version": "2"}))
+        monkeypatch.setattr(
+            invoker, "fetch_a2a_agent_card", AsyncMock(return_value={"name": "demo-a2a", "version": "2"})
+        )
         monkeypatch.setattr(
             A2AAgent,
             "from_a2a_agent_card",
@@ -255,15 +257,15 @@ class TestAgentCoreRuntimeInvoker:
         assert agent.federationMetadata["enrichmentError"] == "a2a enrichment failed: missing runtime ARN"
 
     @pytest.mark.asyncio
-    async def test_fetch_mcp_payloads_jwt_uses_http_only(self, monkeypatch):
+    async def test_fetch_mcp_runtime_capabilities_jwt_uses_http_only(self, monkeypatch):
         invoker = _build_invoker()
         sdk_mock = AsyncMock()
         http = MCPServerData(tools=[], resources=[], prompts=[], capabilities={}, error_message=None)
         http_mock = AsyncMock(return_value=http)
-        monkeypatch.setattr(invoker, "_fetch_mcp_payloads_via_sdk", sdk_mock)
-        monkeypatch.setattr(invoker, "_fetch_mcp_payloads_via_http_with_retry", http_mock)
+        monkeypatch.setattr(invoker, "_invoke_mcp_runtime_via_sdk", sdk_mock)
+        monkeypatch.setattr(invoker, "_fetch_mcp_runtime_capabilities_via_http_with_retry", http_mock)
 
-        result = await invoker.fetch_mcp_payloads(
+        result = await invoker.fetch_mcp_runtime_capabilities(
             runtime_url="https://example.com/invocations",
             transport_type="streamable-http",
             metadata={"authorizerConfiguration": {"customJWTAuthorizerConfiguration": {"discoveryUrl": "x"}}},

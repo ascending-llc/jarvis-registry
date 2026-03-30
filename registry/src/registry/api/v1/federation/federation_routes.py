@@ -8,7 +8,6 @@ from fastapi import status as http_status
 from registry_pkgs.database.decorators import use_transaction
 from registry_pkgs.models._generated import PrincipalType
 from registry_pkgs.models.enums import FederationStateMachine, FederationStatus, RoleBits
-from registry_pkgs.models.extended_acl_entry import ExtendedResourceType
 
 from ....auth.dependencies import CurrentUser
 from ....core.telemetry_decorators import track_registry_operation
@@ -38,6 +37,7 @@ from ....services.access_control_service import ACLService
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/federations", tags=["federations"])
+FEDERATION_RESOURCE_TYPE = "federation"
 
 
 def _enum_value(value):
@@ -265,7 +265,7 @@ async def create_federation(
         await acl_service.grant_permission(
             principal_type=PrincipalType.USER,
             principal_id=PydanticObjectId(user_id),
-            resource_type=ExtendedResourceType.FEDERATION,
+            resource_type=FEDERATION_RESOURCE_TYPE,
             resource_id=federation.id,
             perm_bits=RoleBits.OWNER,
         )
@@ -306,7 +306,7 @@ async def list_federations(
     user_id = user_context.get("user_id")
     accessible_ids = await acl_service.get_accessible_resource_ids(
         user_id=PydanticObjectId(user_id),
-        resource_type=ExtendedResourceType.FEDERATION,
+        resource_type=FEDERATION_RESOURCE_TYPE,
     )
 
     items, total = await federation_crud_service.list_federations(
@@ -323,7 +323,7 @@ async def list_federations(
     for federation in items:
         permissions_by_id[str(federation.id)] = await acl_service.get_user_permissions_for_resource(
             user_id=PydanticObjectId(user_id),
-            resource_type=ExtendedResourceType.FEDERATION,
+            resource_type=FEDERATION_RESOURCE_TYPE,
             resource_id=federation.id,
         )
     return _to_paged_response(items, total, page, effective_per_page, permissions_by_id)
@@ -343,7 +343,7 @@ async def get_federation(
     federation = await _get_required_federation(federation_id, federation_crud_service)
     permissions = await acl_service.check_user_permission(
         user_id=PydanticObjectId(user_context.get("user_id")),
-        resource_type=ExtendedResourceType.FEDERATION,
+        resource_type=FEDERATION_RESOURCE_TYPE,
         resource_id=federation.id,
         required_permission="VIEW",
     )
@@ -368,7 +368,7 @@ async def update_federation(
     federation = await _get_required_federation(federation_id, federation_crud_service)
     permissions = await acl_service.check_user_permission(
         user_id=PydanticObjectId(user_context.get("user_id")),
-        resource_type=ExtendedResourceType.FEDERATION,
+        resource_type=FEDERATION_RESOURCE_TYPE,
         resource_id=federation.id,
         required_permission="EDIT",
     )
@@ -452,7 +452,7 @@ async def sync_federation(
     federation = await _get_required_federation(federation_id, federation_crud_service)
     await acl_service.check_user_permission(
         user_id=PydanticObjectId(user_context.get("user_id")),
-        resource_type=ExtendedResourceType.FEDERATION,
+        resource_type=FEDERATION_RESOURCE_TYPE,
         resource_id=federation.id,
         required_permission="EDIT",
     )
@@ -499,7 +499,7 @@ async def delete_federation(
     federation = await _get_required_federation(federation_id, federation_crud_service)
     await acl_service.check_user_permission(
         user_id=PydanticObjectId(user_context.get("user_id")),
-        resource_type=ExtendedResourceType.FEDERATION,
+        resource_type=FEDERATION_RESOURCE_TYPE,
         resource_id=federation.id,
         required_permission="DELETE",
     )
@@ -511,7 +511,7 @@ async def delete_federation(
             triggered_by=user_context.get("user_id"),
         )
         await acl_service.delete_acl_entries_for_resource(
-            resource_type=ExtendedResourceType.FEDERATION,
+            resource_type=FEDERATION_RESOURCE_TYPE,
             resource_id=federation.id,
         )
         return _to_delete_response(federation, job)
