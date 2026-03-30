@@ -10,10 +10,8 @@ from typing import Annotated
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 
-from registry.core.config import settings
-
 # Configure logging
-logging.basicConfig(level=settings.log_level, format=settings.log_format)
+logging.basicConfig(level="INFO", format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +49,14 @@ logger.info(
 
 # Initialize FastMCP server
 mcp = FastMCP("CurrentTimeAPI", host="0.0.0.0", port=int(args.port))
-mcp.settings.mount_path = "/currenttime"
+mount_path = os.environ.get("MCP_MOUNT_PATH", "").strip()
+if mount_path:
+    if not mount_path.startswith("/"):
+        mount_path = f"/{mount_path}"
+    mcp.settings.mount_path = mount_path
+    logger.info(f"Using FastMCP mount_path: {mount_path}")
+else:
+    logger.info("No FastMCP mount_path configured (standalone mode)")
 
 
 @mcp.prompt()

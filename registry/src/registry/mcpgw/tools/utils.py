@@ -28,9 +28,9 @@ from registry_pkgs.models.extended_mcp_server import MCPServerDocument
 
 from ...auth.dependencies import UserContextDict, effective_scopes_from_context
 from ...auth.oauth.types import StateMetadata
+from ...core.exceptions import InternalServerException, UrlElicitationRequiredException
 from ...schemas.errors import AuthenticationError, OAuthReAuthRequiredError, OAuthTokenError
 from ...services.server_service import build_complete_headers_for_server
-from ..exceptions import InternalServerException, UrlElicitationRequiredException
 
 if TYPE_CHECKING:
     from ...services.oauth.oauth_service import MCPOAuthService

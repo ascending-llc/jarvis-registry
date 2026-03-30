@@ -17,6 +17,11 @@ from registry_pkgs.core.config import (
 )
 from registry_pkgs.vector.config import BackendConfig
 
+MCP_CLIENT_INFO = {
+    "name": "jarvis-registry",
+    "version": "1.0.0",
+}
+
 
 class Settings(BaseSettings):
     """Registry application settings loaded via pydantic-settings."""
@@ -26,6 +31,9 @@ class Settings(BaseSettings):
         case_sensitive=False,
         extra="ignore",
     )
+
+    # ==================== MCP Client Info ====================
+    mcp_client_info: dict[str, str] = MCP_CLIENT_INFO
 
     # ==================== Auth ====================
     secret_key: str = ""

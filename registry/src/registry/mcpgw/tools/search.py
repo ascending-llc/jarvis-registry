@@ -8,8 +8,8 @@ from pydantic import Field
 
 from ...api.v1.search_routes import SearchRequest, search_servers_impl
 from ...auth.dependencies import UserContextDict
+from ...core.exceptions import InternalServerException
 from ..core.types import McpAppContext
-from ..exceptions import InternalServerException
 
 logger = logging.getLogger(__name__)
 
