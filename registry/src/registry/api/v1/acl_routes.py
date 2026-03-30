@@ -130,11 +130,14 @@ async def update_resource_permissions(
 
         if data.removed:
             for principal in data.removed:
+                principal_id = (
+                    None if principal.principalType == PrincipalType.PUBLIC else PydanticObjectId(principal.principalId)
+                )
                 result = await acl_service.delete_permission(
                     resource_type=resource_type,
                     resource_id=PydanticObjectId(resource_id),
                     principal_type=principal.principalType,
-                    principal_id=PydanticObjectId(principal.principalId),
+                    principal_id=principal_id,
                 )
                 deleted_count += result
 
@@ -151,9 +154,12 @@ async def update_resource_permissions(
                     else:
                         logger.warning(f"Role {principal.accessRoleId} not found, using permBits: {perm_bits}")
 
+                principal_id = (
+                    None if principal.principalType == PrincipalType.PUBLIC else PydanticObjectId(principal.principalId)
+                )
                 await acl_service.grant_permission(
                     principal_type=principal.principalType,
-                    principal_id=PydanticObjectId(principal.principalId),
+                    principal_id=principal_id,
                     resource_type=resource_type,
                     resource_id=PydanticObjectId(resource_id),
                     role_id=role_id,
