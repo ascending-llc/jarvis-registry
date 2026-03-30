@@ -188,62 +188,173 @@ These methods are implemented in `registry/services/access_control_service.py` a
 
 ### API Endpoints
 
-The following REST API endpoints are exposed for ACL management:
+The following REST API endpoints are exposed for ACL management. All endpoints use **camelCase** for request and response field names.
 
-- **GET `/permissions/search-principals`**
-    - **Purpose:** Search for principals (users, groups) by query string. Enables the ACL management UI to look up principals for permission assignment
-    - **Query Parameters:**
-        - `query` (string, required): The search string for principal name, email, or username.
-        - `limit` (int, optional): Maximum number of results to return (default: 30).
-        - `principal_types` (list of string, optional): Filter by principal type (e.g., `user`, `group`, etc).
-    - **Response:**
-        ```json
-        [
-            {
-                "principal_type": "user | group | role",
-                "principal_id": str,
-                "name": Optional[str] = None,
-                "email": Optional[str] = None,
-                "accessRoleId": str,
-            },
-        ]
-        ```
+#### 1. Search for Principals
 
-- **GET `/permissions/{resource_type}/{resource_id}`**
-    - **Purpose:** Get all ACL permissions for a specific resource. Allows the ACL management UI to display which principals have access and whether the resource is public
-    - **Response:**
-        ```json
-        {
-            "permissions": [
-                {
-                    "principal_type": "user",
-                    "principal_id": "<id>",
-                    "perm_bits": 1,
-                    "role_id": "<role_id>",
-                    "granted_at": "2024-01-01T00:00:00Z",
-                    "updated_at": "2024-01-01T00:00:00Z"
-                },
-            ]
-        }
-        ```
+**GET `/permissions/search-principals`**
 
-- **PUT `/permissions/{resource_type}/{resource_id}`**
-    - **Purpose:** Update ACL permissions for a specific resource.
-    - **Request:**
-        ```json
+Search for principals (users, groups) by query string. Used in the ACL sharing UI to find users/groups for permission assignment.
+
+**Query Parameters:**
+- `query` (string, required): Search string for principal name, email, or username
+- `limit` (int, optional): Maximum number of results to return (default: 30)
+- `principalTypes` (list of string, optional): Filter by principal type (e.g., `user`, `group`)
+
+**Response:** `200 OK`
+```json
+[
+    {
+        "principalType": "user",
+        "principalId": "68277281e5d4dd8bbeb261d4",
+        "name": "Ryo",
+        "email": "ryo.h@ascendingdc.com",
+        "accessRoleId": "mcpServer_owner"
+    }
+]
+```
+
+---
+
+#### 2. Get Available Roles for Resource Type (NEW)
+
+**GET `/permissions/{resource_type}/roles`**
+
+Get all available access roles for a specific resource type (e.g., mcpServer, agent). Used by the frontend to populate role selection dropdowns.
+
+**Path Parameters:**
+- `resource_type` (string, required): Type of resource (e.g., `mcpServer`, `agent`)
+
+**Response:** `200 OK`
+```json
+[
+    {
+        "accessRoleId": "mcpServer_viewer",
+        "name": "com_ui_mcp_server_role_viewer",
+        "description": "com_ui_mcp_server_role_viewer_desc",
+        "permBits": 1
+    },
+    {
+        "accessRoleId": "mcpServer_editor",
+        "name": "com_ui_mcp_server_role_editor",
+        "description": "com_ui_mcp_server_role_editor_desc",
+        "permBits": 3
+    },
+    {
+        "accessRoleId": "mcpServer_owner",
+        "name": "com_ui_mcp_server_role_owner",
+        "description": "com_ui_mcp_server_role_owner_desc",
+        "permBits": 15
+    }
+]
+```
+
+---
+
+#### 3. Get Resource Permissions
+
+**GET `/permissions/{resource_type}/{resource_id}`**
+
+Get all ACL permissions for a specific resource with full principal details. Returns which users have access, their roles, and whether the resource is public.
+
+**Path Parameters:**
+- `resource_type` (string, required): Type of resource (e.g., `mcpServer`, `agent`)
+- `resource_id` (string, required): ID of the resource
+
+**Response:** `200 OK`
+```json
+{
+    "resourceType": "mcpServer",
+    "resourceId": "69c5440b74d340f5198fd1a4",
+    "principals": [
         {
-            "public": true,
-            "removed": [ ... ],
-            "updated": [ ... ]
-        }
-        ```
-    - **Response:**
-        ```json
+            "type": "user",
+            "id": "68277281e5d4dd8bbeb261d4",
+            "name": "Ryo",
+            "email": "ryo.h@ascendingdc.com",
+            "avatar": "avatar-1774274914691.png?manual=true",
+            "source": "local",
+            "idOnTheSource": "06910f4c-ed4f-4697-89c6-2c3d5d53bb9e",
+            "accessRoleId": null
+        },
         {
-            "message": "Updated <count> and deleted <count> permissions",
-            "results": {"resource_id": "<id>"}
+            "type": "user",
+            "id": "68277223e5d4dd8bbeb26177",
+            "name": "Daoqi Zhang",
+            "email": "daoqi.zhang@ascendingdc.com",
+            "source": "local",
+            "idOnTheSource": "0e4dbb6e-05ad-4eab-b6c0-8b55bf42edfc",
+            "accessRoleId": "mcpServer_owner"
+        },
+        {
+            "type": "user",
+            "id": "684b224c0b065c7d6ccc66d6",
+            "name": "Kaiqi Yu",
+            "email": "kaiqi.yu@ascendingdc.com",
+            "source": "local",
+            "idOnTheSource": "1c00bd92-b7f3-41a5-85a6-3a9ad70d1fb7",
+            "accessRoleId": "mcpServer_viewer"
         }
-            ```
+    ],
+    "public": false
+}
+```
+
+---
+
+#### 4. Update Resource Permissions
+
+**PUT `/permissions/{resource_type}/{resource_id}`**
+
+Update ACL permissions for a specific resource. Supports adding/updating/removing principals and setting public access.
+
+**Path Parameters:**
+- `resource_type` (string, required): Type of resource (e.g., `mcpServer`, `agent`)
+- `resource_id` (string, required): ID of the resource
+
+**Request Body:**
+```json
+{
+    "updated": [
+        {
+            "principalType": "user",
+            "principalId": "684b224c0b065c7d6ccc66d6",
+            "accessRoleId": "mcpServer_editor",
+            "permBits": 3
+        }
+    ],
+    "removed": [
+        {
+            "principalType": "user",
+            "principalId": "68277281e5d4dd8bbeb261d4"
+        }
+    ],
+    "public": false
+}
+```
+
+**Notes:**
+- `accessRoleId` is preferred and will automatically map to the corresponding `permBits`
+- If only `permBits` is provided, the system will automatically find and associate the corresponding role
+- The system validates that at least one owner remains after the update
+
+**Response:** `200 OK`
+```json
+{
+    "message": "Updated 1 and deleted 1 permissions",
+    "results": {
+        "resourceId": "69c5440b74d340f5198fd1a4"
+    }
+}
+```
+
+**Error Response:** `400 Bad Request`
+```json
+{
+    "error": "validation_error",
+    "message": "At least one owner must remain for the resource"
+}
+```
 
 ## Additional Considerations
 

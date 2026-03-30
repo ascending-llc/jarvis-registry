@@ -37,13 +37,15 @@ def get_user_context(user_context: CurrentUser):
 
 @router.get(
     "/permissions/search-principals",
+    response_model=list[PermissionPrincipalOut],
+    response_model_by_alias=True,
     summary="Search for principals",
     description="Search for principals by query string. Used for ACL sharing UI.",
 )
 async def search_principals(
     query: str,
     limit: int | None = None,
-    principal_types: list[str] | None = Query(None),
+    principalTypes: list[str] | None = Query(None, alias="principal_types"),
     acl_service: ACLService = Depends(get_acl_service),
 ) -> list[PermissionPrincipalOut]:
     """
@@ -51,7 +53,7 @@ async def search_principals(
     Returns a paginated response with metadata.
     """
     try:
-        response = await acl_service.search_principals(query=query, limit=limit, principal_types=principal_types)
+        response = await acl_service.search_principals(query=query, limit=limit, principal_types=principalTypes)
         return response
     except Exception as e:
         logger.error(f"Error searching principals: {e}")
@@ -63,9 +65,10 @@ async def search_principals(
 
 @router.put(
     "/permissions/{resource_type}/{resource_id}",
+    response_model=UpdateResourcePermissionsResponse,
+    response_model_by_alias=True,
     summary="Update ACL permissions for a specific resource",
     description="Update ACL permissions for a specific resource",
-    response_model=UpdateResourcePermissionsResponse,
 )
 @use_transaction
 async def update_resource_permissions(
@@ -161,7 +164,7 @@ async def update_resource_permissions(
         logger.info(f"Updated permissions for resource {resource_id}: {updated_count} updated, {deleted_count} deleted")
         return UpdateResourcePermissionsResponse(
             message=f"Updated {updated_count} and deleted {deleted_count} permissions",
-            results={"resource_id": resource_id},
+            results={"resourceId": resource_id},
         )
 
     except Exception as e:
@@ -174,9 +177,10 @@ async def update_resource_permissions(
 
 @router.get(
     "/permissions/{resource_type}/roles",
+    response_model=list[RoleOut],
+    response_model_by_alias=True,
     summary="Get all available roles for a resource type",
     description="Get all available access roles for a specific resource type (e.g., mcpServer, agent).",
-    response_model=list[RoleOut],
 )
 async def get_resource_type_roles(
     resource_type: str,
@@ -204,9 +208,10 @@ async def get_resource_type_roles(
 
 @router.get(
     "/permissions/{resource_type}/{resource_id}",
+    response_model=GetResourcePermissionsResponse,
+    response_model_by_alias=True,
     summary="Get all permissions for a specific resource",
     description="Get ACL permissions for a specific resource with full principal details.",
-    response_model=GetResourcePermissionsResponse,
 )
 async def get_resource_permissions(
     resource_type: str,

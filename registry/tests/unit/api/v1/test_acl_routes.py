@@ -44,7 +44,7 @@ async def test_search_principals_uses_injected_acl_service():
     result = await search_principals(
         query="test",
         limit=5,
-        principal_types=[PrincipalType.USER.value],
+        principalTypes=[PrincipalType.USER.value],
         acl_service=acl_service,
     )
 
@@ -103,7 +103,7 @@ async def test_update_resource_permissions_uses_injected_acl_service(sample_user
     acl_service.validate_at_least_one_owner_remains.assert_awaited_once()
     assert acl_service.delete_permission.await_count == 2
     acl_service.grant_permission.assert_awaited_once()
-    assert result.results["resource_id"] == resource_id
+    assert result.results["resourceId"] == resource_id
 
 
 @pytest.mark.asyncio
