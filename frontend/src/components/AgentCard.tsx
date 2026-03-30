@@ -60,6 +60,7 @@ const AgentCard: React.FC<AgentCardProps> = ({ agent }) => {
   const { handleAgentUpdate } = useServer();
   const [loading, setLoading] = useState(false);
   const [showSkills, setShowSkills] = useState(false);
+  const canEdit = !!agent.permissions?.EDIT;
 
   const numSkills = 'numSkills' in agent ? agent.numSkills : agent.skills?.length || 0;
   const hasSkillsDetails = 'skills' in agent && Array.isArray(agent.skills) && agent.skills.length > 0;
@@ -254,13 +255,19 @@ const AgentCard: React.FC<AgentCardProps> = ({ agent }) => {
             {/* Controls */}
             <div className='flex items-center gap-2'>
               {/* Toggle Switch */}
-              <label className='relative inline-flex items-center cursor-pointer' onClick={e => e.stopPropagation()}>
+              <label
+                className={`relative inline-flex items-center ${canEdit ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'}`}
+                onClick={e => e.stopPropagation()}
+                title={canEdit ? 'Toggle agent status' : 'No edit permission'}
+              >
                 <input
                   type='checkbox'
                   checked={agent.enabled}
                   className='sr-only peer'
+                  disabled={!canEdit || loading}
                   onChange={e => {
                     e.stopPropagation();
+                    if (!canEdit) return;
                     handleToggleAgent(agent.id, e.target.checked);
                   }}
                 />

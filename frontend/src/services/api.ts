@@ -43,6 +43,15 @@ const API = {
   toggleAgentState: (id: string) => `${AGENT_BASE_URL}/${id}/toggle`,
   getAgentSkills: (id: string) => `${AGENT_BASE_URL}/${id}/skills`,
   getWellKnownAgentCards: `${AGENT_BASE_URL}/.well-known/agent-cards`,
+
+  // acl (permissions)
+  searchPrincipals: `${BASE_URL}/permissions/search-principals`,
+  getResourceRoles: (resourceType: string) =>
+    `${BASE_URL}/permissions/${resourceType}/roles`,
+  getResourcePermissions: (resourceType: string, resourceId: string) =>
+    `${BASE_URL}/permissions/${resourceType}/${resourceId}`,
+  updateResourcePermissions: (resourceType: string, resourceId: string) =>
+    `${BASE_URL}/permissions/${resourceType}/${resourceId}`,
 };
 
 export default API;
