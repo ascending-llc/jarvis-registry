@@ -275,7 +275,7 @@ Get all ACL permissions for a specific resource with full principal details. Ret
             "avatar": "avatar-1774274914691.png?manual=true",
             "source": "local",
             "idOnTheSource": "06910f4c-ed4f-4697-89c6-2c3d5d53bb9e",
-            "accessRoleId": null
+            "accessRoleId": "mcpServer_owner"
         },
         {
             "type": "user",
@@ -284,7 +284,7 @@ Get all ACL permissions for a specific resource with full principal details. Ret
             "email": "daoqi.zhang@ascendingdc.com",
             "source": "local",
             "idOnTheSource": "0e4dbb6e-05ad-4eab-b6c0-8b55bf42edfc",
-            "accessRoleId": "mcpServer_owner"
+            "accessRoleId": "mcpServer_editor"
         },
         {
             "type": "user",
