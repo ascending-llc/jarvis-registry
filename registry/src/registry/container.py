@@ -4,6 +4,7 @@ import logging
 from functools import cached_property
 from typing import TYPE_CHECKING
 
+import httpx
 from redis import Redis
 
 from registry_pkgs.vector.client import DatabaseClient
@@ -172,6 +173,15 @@ class RegistryContainer:
     def agent_scanner_service(self) -> AgentScannerService:
         return AgentScannerService()
 
+    @cached_property
+    def mcp_proxy_client(self) -> httpx.AsyncClient:
+        """Shared httpx client for MCP proxy connection pooling."""
+        return httpx.AsyncClient(
+            timeout=httpx.Timeout(30.0, read=60.0),
+            follow_redirects=True,
+            limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
+        )
+
     async def startup(self) -> None:
         """Warm services that need async initialization before the app can serve traffic."""
         logger.info("Initializing services via registry container...")
@@ -199,6 +209,7 @@ class RegistryContainer:
     async def shutdown(self) -> None:
         """Shutdown services that hold background tasks or external resources."""
         await self.health_service.shutdown()
+        await self.mcp_proxy_client.aclose()
 
     def _initialize_federation(self) -> None:
         """Run optional federation sync on startup without failing the whole application."""

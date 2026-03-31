@@ -2,106 +2,62 @@
 Dynamic MCP server proxy routes.
 """
 
+import json
 import logging
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from registry_pkgs.models.extended_mcp_server import MCPServerDocument
 
-from ..auth.dependencies import CurrentUser, effective_scopes_from_context
-from ..schemas.errors import AuthenticationError, MissingUserIdError, OAuthReAuthRequiredError, OAuthTokenError
-from ..services.server_service import build_complete_headers_for_server
+from ..auth.dependencies import CurrentUser
+from ..core.exceptions import InternalServerException, UrlElicitationRequiredException
+from ..deps import get_mcp_proxy_client, get_oauth_service, get_server_service
+from ..mcpgw.tools.utils import build_authenticated_headers
+from ..services.oauth.oauth_service import MCPOAuthService
+from ..services.server_service import ServerServiceV1
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["MCP Proxy"])
 
-# Shared httpx client for connection pooling
-proxy_client = httpx.AsyncClient(
-    timeout=httpx.Timeout(30.0, read=60.0),
-    follow_redirects=True,
-    limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
-)
 
-
-async def _build_authenticated_headers(
-    server: MCPServerDocument, auth_context: dict[str, Any], additional_headers: dict[str, str] | None = None
-) -> dict[str, str]:
-    """
-    Build complete headers with authentication for MCP server requests.
-    Consolidates auth logic used by all proxy endpoints.
-
-    Args:
-        server: MCP server document
-        auth_context: Gateway authentication context (user, client_id, scopes, jwt_token)
-        additional_headers: Optional additional headers to merge
-
-    Returns:
-        Complete headers dict with authentication
-
-    Raises:
-        HTTPException: For auth errors (401 with appropriate details)
-    """
-    # Validate user_id is present
-    if not auth_context.get("user_id"):
-        logger.error(f"Missing user_id in auth_context. Available keys: {list(auth_context.keys())}")
-        raise HTTPException(status_code=401, detail="Invalid authentication context: missing user_id")
-
-    # Build base headers (filter out empty values to avoid httpx errors)
-    effective_scopes = effective_scopes_from_context(auth_context)
-    headers = {
-        "X-User-Id": auth_context.get("user_id") or "",
-        "X-Username": auth_context.get("username") or "",
-        "X-Client-Id": auth_context.get("client_id") or "",
-        "X-Scopes": " ".join(effective_scopes),
-    }
-    # Remove empty header values (httpx requires non-empty strings)
-    headers = {k: v for k, v in headers.items() if v}
-
-    # Merge additional headers if provided
-    if additional_headers:
-        headers.update(additional_headers)
-
-    # Build complete authentication headers (OAuth, apiKey, custom)
+async def _extract_request_id(request: Request) -> str | int | None:
+    """Extract JSON-RPC request ID from request body."""
     try:
-        user_id = auth_context.get("user_id")  # Already validated above
-        auth_headers = await build_complete_headers_for_server(server, user_id)
+        body = await request.body()
+        if body:
+            json_body = json.loads(body)
+            return json_body.get("id")
+    except Exception:
+        pass
+    return None
 
-        # Merge auth headers with case-insensitive override logic
-        # Protected headers that won't be overridden by auth headers
-        protected_headers = {"x-user-id", "x-username", "x-client-id", "x-scopes", "accept"}
 
-        # Build a case-insensitive map of existing header names to their original keys
-        lowercase_header_map = {k.lower(): k for k in headers}
+def _build_jsonrpc_error_result(request_id: str | int | None, error_text: str) -> dict[str, Any]:
+    """Build JSON-RPC result response with isError=true."""
+    return {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "result": {"content": [{"type": "text", "text": error_text}], "isError": True},
+    }
 
-        for auth_key, auth_value in auth_headers.items():
-            auth_key_lower = auth_key.lower()
-            if auth_key_lower in protected_headers:
-                continue
 
-            # Remove any existing header with same name (case-insensitive)
-            existing_key = lowercase_header_map.get(auth_key_lower)
-            if existing_key is not None:
-                headers.pop(existing_key, None)
+def _build_jsonrpc_error(request_id: str | int | None, code: int, message: str, data: Any = None) -> dict[str, Any]:
+    """Build JSON-RPC error response."""
+    error_response = {"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}}
+    if data is not None:
+        error_response["error"]["data"] = data
+    return error_response
 
-            # Add/override with the auth header and update the lowercase map
-            headers[auth_key] = auth_value
-            lowercase_header_map[auth_key_lower] = auth_key
 
-        logger.debug(f"Built complete authentication headers for {server.serverName}")
-        return headers
+def _generate_elicitation_id(auth_url: str) -> str:
+    """Generate elicitation ID from auth URL."""
+    import hashlib
 
-    except OAuthReAuthRequiredError as e:
-        raise HTTPException(
-            status_code=401, detail="OAuth re-authentication required", headers={"X-OAuth-URL": e.auth_url or ""}
-        )
-    except MissingUserIdError as e:
-        raise HTTPException(status_code=401, detail=f"User authentication required: {str(e)}")
-    except (OAuthTokenError, AuthenticationError) as e:
-        raise HTTPException(status_code=401, detail=f"Authentication error: {str(e)}")
+    return hashlib.sha256(auth_url.encode()).hexdigest()[:16]
 
 
 def _build_target_url(server: MCPServerDocument, remaining_path: str = "") -> str:
@@ -117,13 +73,13 @@ def _build_target_url(server: MCPServerDocument, remaining_path: str = "") -> st
         Complete target URL
 
     Raises:
-        HTTPException: If server URL is not configured
+        InternalServerException: If server URL is not configured
     """
     config = server.config or {}
     base_url = config.get("url")
 
     if not base_url:
-        raise HTTPException(status_code=500, detail="Server URL not configured")
+        raise InternalServerException("Server URL not configured")
 
     # If no remaining path, return base URL as-is
     if not remaining_path:
@@ -137,7 +93,12 @@ def _build_target_url(server: MCPServerDocument, remaining_path: str = "") -> st
 
 
 async def proxy_to_mcp_server(
-    request: Request, target_url: str, auth_context: dict[str, Any], server: MCPServerDocument
+    request: Request,
+    target_url: str,
+    auth_context: dict[str, Any],
+    server: MCPServerDocument,
+    oauth_service: MCPOAuthService,
+    proxy_client: httpx.AsyncClient,
 ) -> Response:
     """
     Proxy request to MCP server with auth headers.
@@ -148,11 +109,15 @@ async def proxy_to_mcp_server(
         target_url: Backend MCP server URL
         auth_context: Gateway authentication context
         server: MCPServerDocument
+        oauth_service: OAuth service for building auth headers
+        proxy_client: Shared httpx client for connection pooling
     """
+    request_id = await _extract_request_id(request)
+
     # Build proxy headers - start with request headers
     headers = dict(request.headers)
 
-    # Add context headers for tracing/logging (filter out None values)
+    # Add context headers for tracing/logging
     context_headers = {
         "X-Auth-Method": auth_context.get("auth_method") or "",
         "X-Server-Name": auth_context.get("server_name") or "",
@@ -165,8 +130,43 @@ async def proxy_to_mcp_server(
     headers.pop("host", None)
     headers.pop("Authorization", None)
 
-    # Build complete authentication headers using shared helper
-    headers = await _build_authenticated_headers(server=server, auth_context=auth_context, additional_headers=headers)
+    # Build complete authentication headers using shared utility
+    try:
+        headers = await build_authenticated_headers(
+            oauth_service=oauth_service, server=server, auth_context=auth_context, additional_headers=headers
+        )
+    except UrlElicitationRequiredException as exc:
+        elicitation_id = _generate_elicitation_id(exc.auth_url)
+        error_data = {
+            "elicitations": [
+                {
+                    "mode": "url",
+                    "message": f"The tokens for the '{exc.server_name}' MCP server managed by Jarvis Registry have expired. "
+                    "Please follow the URL to perform re-authorization in a browser window and come back again.",
+                    "url": exc.auth_url,
+                    "elicitationId": elicitation_id,
+                }
+            ]
+        }
+        return JSONResponse(
+            status_code=200,
+            content=_build_jsonrpc_error(
+                request_id,
+                -32042,
+                "OAuth re-authentication required. Please complete the authorization flow.",
+                error_data,
+            ),
+        )
+    except InternalServerException as exc:
+        logger.error(f"Internal server exception: {exc}")
+        return JSONResponse(
+            status_code=200, content=_build_jsonrpc_error(request_id, -32603, f"Internal server error: {str(exc)}")
+        )
+    except Exception as exc:
+        logger.exception(f"Unexpected exception building auth headers: {exc}")
+        return JSONResponse(
+            status_code=200, content=_build_jsonrpc_error(request_id, -32603, f"Internal server error: {str(exc)}")
+        )
 
     body = await request.body()
 
@@ -177,7 +177,6 @@ async def proxy_to_mcp_server(
         logger.debug(f"Accept: {accept_header}, Client SSE: {client_accepts_sse}")
 
         if not client_accepts_sse:
-            # Regular HTTP request
             response = await proxy_client.request(method=request.method, url=target_url, headers=headers, content=body)
 
             if response.status_code >= 400:
@@ -197,7 +196,6 @@ async def proxy_to_mcp_server(
                 media_type=response.headers.get("content-type"),
             )
 
-        # Client accepts SSE - check if backend returns SSE
         logger.debug("Client accepts SSE - checking backend response type")
 
         stream_context = proxy_client.stream(request.method, target_url, headers=headers, content=body)
@@ -229,7 +227,6 @@ async def proxy_to_mcp_server(
                 media_type=backend_content_type or "application/octet-stream",
             )
 
-        # Backend is returning true SSE - keep stream open and forward it
         logger.info("Streaming SSE from backend")
 
         response_headers = dict(backend_response.headers)
@@ -261,10 +258,10 @@ async def proxy_to_mcp_server(
 
     except httpx.TimeoutException:
         logger.error(f"Timeout proxying to {target_url}")
-        return JSONResponse(status_code=504, content={"error": "Gateway timeout"})
+        return JSONResponse(status_code=200, content=_build_jsonrpc_error(request_id, -32603, "Gateway timeout"))
     except Exception as e:
-        logger.error(f"Error proxying to {target_url}: {e}")
-        return JSONResponse(status_code=502, content={"error": "Bad gateway", "detail": str(e)})
+        logger.exception(f"Error proxying to {target_url}: {e}")
+        return JSONResponse(status_code=200, content=_build_jsonrpc_error(request_id, -32603, f"Bad gateway: {str(e)}"))
 
 
 async def extract_server_path_from_request(request_path: str, server_service) -> str | None:
@@ -314,54 +311,78 @@ async def clear_session_endpoint(request: Request, server_id: str, user_context:
     )
 
 
-@router.api_route("/{full_path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
-async def dynamic_mcp_proxy(request: Request, full_path: str):
+@router.api_route("/{full_path:path}", methods=["GET", "POST"])
+async def dynamic_mcp_proxy(
+    request: Request,
+    full_path: str,
+    server_service: ServerServiceV1 = Depends(get_server_service),
+    oauth_service: MCPOAuthService = Depends(get_oauth_service),
+    proxy_client: httpx.AsyncClient = Depends(get_mcp_proxy_client),
+):
     """
     Dynamic catch-all route for MCP server proxying.
-    This replaces nginx {{LOCATION_BLOCKS}}.
+    Enables developers to connect directly to all MCP servers through the registry.
 
     CRITICAL: This catch-all route matches ANY path pattern, so it must be defined LAST.
     FastAPI matches routes in order, so this will capture all unmatched routes.
+
+    MCP protocol only uses GET and POST methods.
     """
     path = f"/{full_path}"
-
-    # Get server service from container
-    container = request.app.state.container
-    server_service = container.server_service
+    request_id = await _extract_request_id(request)
 
     # Extract registered server path from request URL
     server_path = await extract_server_path_from_request(path, server_service)
     if not server_path:
-        raise HTTPException(status_code=404, detail="Not found")
+        return JSONResponse(
+            status_code=200,
+            content=_build_jsonrpc_error_result(request_id, f"Server not found for path: {path}"),
+        )
 
     # Get server by the extracted path
     server = await server_service.get_server_by_path(server_path)
     if not server:
-        raise HTTPException(status_code=404, detail="Not found")
+        return JSONResponse(
+            status_code=200,
+            content=_build_jsonrpc_error_result(request_id, f"Server not found for path: {server_path}"),
+        )
 
     # Check if server is enabled
     config = server.config or {}
     if not config.get("enabled", False):
-        return JSONResponse(status_code=503, content={"error": "Service disabled", "service": server.path})
+        return JSONResponse(
+            status_code=200,
+            content=_build_jsonrpc_error_result(request_id, f"Server '{server.serverName}' is disabled"),
+        )
 
     # Get auth context from middleware
     auth_context = getattr(request.state, "user", None)
     if not auth_context:
         logger.warning(f"Auth failed for {path}: No authentication context")
-        raise HTTPException(status_code=401, detail="Authentication required")
+        return JSONResponse(
+            status_code=200,
+            content=_build_jsonrpc_error(request_id, -32603, "Authentication context not found (internal error)"),
+        )
 
     # Extract remaining path after server path
     remaining_path = path[len(server_path) :].lstrip("/")
 
-    # Build target URL using shared helper
-    target_url = _build_target_url(server, remaining_path)
+    # Build target URL
+    try:
+        target_url = _build_target_url(server, remaining_path)
+    except Exception as exc:
+        logger.error(f"Error building target URL: {exc}")
+        return JSONResponse(
+            status_code=200, content=_build_jsonrpc_error(request_id, -32603, f"Server URL not configured: {str(exc)}")
+        )
 
     # Proxy the request
     logger.info(f"Proxying {request.method} {path} → {target_url}")
-    return await proxy_to_mcp_server(request=request, target_url=target_url, auth_context=auth_context, server=server)
-
-
-async def shutdown_proxy_client():
-    """Cleanup proxy client on shutdown."""
-    await proxy_client.aclose()
-    logger.info("Proxy client closed")
+    return await proxy_to_mcp_server(
+        request=request,
+        target_url=target_url,
+        auth_context=auth_context,
+        server=server,
+        oauth_service=oauth_service,
+        proxy_client=proxy_client,
+    )

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import httpx
 from fastapi import Depends, Request
 
 from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRepository
@@ -93,3 +94,7 @@ def get_a2a_agent_service(container: RegistryContainer = Depends(get_container))
 
 def get_agentcore_import_service(container: RegistryContainer = Depends(get_container)) -> AgentCoreImportService:
     return container.agentcore_import_service
+
+
+def get_mcp_proxy_client(container: RegistryContainer = Depends(get_container)) -> httpx.AsyncClient:
+    return container.mcp_proxy_client
