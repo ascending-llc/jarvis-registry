@@ -67,6 +67,7 @@ class FederationLastSyncSummaryResponse(BaseModel):
     unchangedAgents: int = 0
 
     errors: int = 0
+    errorMessages: list[str] = Field(default_factory=list)
 
     model_config = ConfigDict(populate_by_name=True, use_enum_values=True, from_attributes=True)
 

@@ -130,6 +130,7 @@ def _to_last_sync_response(last_sync) -> FederationLastSyncResponse | None:
             deletedAgents=int(getattr(summary, "deletedAgents", 0) or 0),
             unchangedAgents=int(getattr(summary, "unchangedAgents", 0) or 0),
             errors=int(getattr(summary, "errors", 0) or 0),
+            errorMessages=list(getattr(summary, "errorMessages", []) or []),
         )
 
     job_id = getattr(last_sync, "jobId", None)

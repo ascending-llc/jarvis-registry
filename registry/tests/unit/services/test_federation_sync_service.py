@@ -204,20 +204,16 @@ async def test_sync_vector_index_after_commit_logs_and_continues_on_vector_failu
 ):
     federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
     job = SimpleNamespace(id=PydanticObjectId())
-    server = SimpleNamespace(serverName="server-demo")
-    agent = SimpleNamespace(card=SimpleNamespace(name="agent-demo"))
     mutation_result = FederationSyncMutationResult(
-        summary=FederationApplySummary(),
-        created_mcp=[server],
-        deleted_a2a=[agent],
+        summary=FederationApplySummary(createdMcpServers=1, deletedAgents=1),
+        changed_mcp_runtime_arns={"arn:mcp:1"},
+        changed_a2a_runtime_arns={"arn:a2a:1"},
     )
 
-    federation_sync_service.mcp_server_repo.sync_server_to_vector_db = AsyncMock(
-        side_effect=RuntimeError("vector down")
-    )
-    federation_sync_service.a2a_agent_repo.sync_agent_to_vector_db = AsyncMock(
-        return_value={"indexed": 0, "failed": 0, "deleted": 1}
-    )
+    federation_sync_service._sync_mcp_vectors_for_runtime = AsyncMock(side_effect=RuntimeError("vector down"))
+    federation_sync_service._sync_a2a_vectors_for_runtime = AsyncMock()
+    federation_sync_service._current_mcp_runtime_arns = AsyncMock(return_value=[])
+    federation_sync_service._current_a2a_runtime_arns = AsyncMock(return_value=[])
 
     await federation_sync_service._sync_vector_index_after_commit(
         federation=federation,
@@ -225,8 +221,89 @@ async def test_sync_vector_index_after_commit_logs_and_continues_on_vector_failu
         mutation_result=mutation_result,
     )
 
-    federation_sync_service.mcp_server_repo.sync_server_to_vector_db.assert_awaited_once_with(server, is_delete=False)
-    federation_sync_service.a2a_agent_repo.sync_agent_to_vector_db.assert_awaited_once_with(agent, is_delete=True)
+    federation_sync_service._sync_mcp_vectors_for_runtime.assert_awaited_once_with(federation.id, "arn:mcp:1")
+    federation_sync_service._sync_a2a_vectors_for_runtime.assert_awaited_once_with(federation.id, "arn:a2a:1")
+
+
+@pytest.mark.asyncio
+async def test_sync_vector_index_after_commit_rebuilds_only_changed_runtimes(
+    federation_sync_service: FederationSyncService,
+):
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    job = SimpleNamespace(id=PydanticObjectId())
+    mutation_result = FederationSyncMutationResult(
+        summary=FederationApplySummary(createdMcpServers=1, updatedAgents=1),
+        changed_mcp_runtime_arns={"arn:mcp:1"},
+        changed_a2a_runtime_arns={"arn:a2a:1"},
+    )
+
+    federation_sync_service._sync_mcp_vectors_for_runtime = AsyncMock()
+    federation_sync_service._sync_a2a_vectors_for_runtime = AsyncMock()
+    federation_sync_service._current_mcp_runtime_arns = AsyncMock(return_value=[])
+    federation_sync_service._current_a2a_runtime_arns = AsyncMock(return_value=[])
+
+    await federation_sync_service._sync_vector_index_after_commit(
+        federation=federation,
+        job=job,
+        mutation_result=mutation_result,
+    )
+
+    federation_sync_service._sync_mcp_vectors_for_runtime.assert_awaited_once_with(federation.id, "arn:mcp:1")
+    federation_sync_service._sync_a2a_vectors_for_runtime.assert_awaited_once_with(federation.id, "arn:a2a:1")
+
+
+@pytest.mark.asyncio
+async def test_sync_vector_index_after_commit_rebuilds_missing_weaviate_docs_even_without_mongo_changes(
+    federation_sync_service: FederationSyncService,
+):
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    job = SimpleNamespace(id=PydanticObjectId())
+    mutation_result = FederationSyncMutationResult(summary=FederationApplySummary())
+
+    federation_sync_service._current_mcp_runtime_arns = AsyncMock(return_value=["arn:mcp:missing"])
+    federation_sync_service._current_a2a_runtime_arns = AsyncMock(return_value=["arn:a2a:missing"])
+    federation_sync_service.mcp_server_repo.has_runtime_identity.return_value = False
+    federation_sync_service.a2a_agent_repo.has_runtime_identity.return_value = False
+    federation_sync_service._sync_mcp_vectors_for_runtime = AsyncMock()
+    federation_sync_service._sync_a2a_vectors_for_runtime = AsyncMock()
+
+    await federation_sync_service._sync_vector_index_after_commit(
+        federation=federation,
+        job=job,
+        mutation_result=mutation_result,
+    )
+
+    federation_sync_service._sync_mcp_vectors_for_runtime.assert_awaited_once_with(federation.id, "arn:mcp:missing")
+    federation_sync_service._sync_a2a_vectors_for_runtime.assert_awaited_once_with(federation.id, "arn:a2a:missing")
+
+
+@pytest.mark.asyncio
+async def test_sync_vector_index_after_commit_logs_summary_when_nothing_to_rebuild(
+    federation_sync_service: FederationSyncService,
+    caplog,
+):
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    job = SimpleNamespace(id=PydanticObjectId())
+    mutation_result = FederationSyncMutationResult(summary=FederationApplySummary())
+
+    federation_sync_service._current_mcp_runtime_arns = AsyncMock(return_value=["arn:mcp:1"])
+    federation_sync_service._current_a2a_runtime_arns = AsyncMock(return_value=["arn:a2a:1"])
+    federation_sync_service.mcp_server_repo.has_runtime_identity.return_value = True
+    federation_sync_service.a2a_agent_repo.has_runtime_identity.return_value = True
+    federation_sync_service._sync_mcp_vectors_for_runtime = AsyncMock()
+    federation_sync_service._sync_a2a_vectors_for_runtime = AsyncMock()
+
+    with caplog.at_level("INFO"):
+        await federation_sync_service._sync_vector_index_after_commit(
+            federation=federation,
+            job=job,
+            mutation_result=mutation_result,
+        )
+
+    assert "Federation vector sync plan" in caplog.text
+    assert "mcp_rebuild=0" in caplog.text
+    assert "a2a_rebuild=0" in caplog.text
+    assert "Federation vector sync completed" in caplog.text
 
 
 class _FakeQuery:
@@ -283,5 +360,64 @@ async def test_apply_sync_mutations_skips_a2a_insert_when_path_belongs_to_anothe
 
     assert result.summary.skippedAgents == 1
     assert result.summary.createdAgents == 0
-    assert result.created_a2a == []
     discovered_agent.insert.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_commit_sync_transaction_marks_federation_failed_when_resource_enrichment_fails(
+    federation_sync_service: FederationSyncService,
+):
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    job = SimpleNamespace(
+        id=PydanticObjectId(),
+        jobType="full_sync",
+        startedAt=datetime.now(UTC),
+        discoverySummary=SimpleNamespace(discoveredMcpServers=1, discoveredAgents=1),
+    )
+    summary = FederationApplySummary(errors=1, errorMessages=["A2A agent pharmacy_fraud_a2a: boom"])
+    mutation_result = FederationSyncMutationResult(summary=summary)
+
+    federation_sync_service.federation_job_service.mark_syncing = AsyncMock()
+    federation_sync_service.federation_crud_service.mark_syncing = AsyncMock()
+    federation_sync_service.federation_job_service.update_discovery_summary = AsyncMock()
+    federation_sync_service._apply_sync_mutations = AsyncMock(return_value=mutation_result)
+    federation_sync_service.federation_job_service.update_apply_summary = AsyncMock()
+    federation_sync_service._build_federation_stats = AsyncMock(return_value=SimpleNamespace())
+    federation_sync_service.federation_crud_service.mark_sync_failed = AsyncMock()
+    federation_sync_service.federation_crud_service.mark_sync_success = AsyncMock()
+    federation_sync_service.federation_job_service.mark_failed = AsyncMock()
+    federation_sync_service.federation_job_service.mark_success = AsyncMock()
+
+    result = await FederationSyncService._commit_sync_transaction.__wrapped__(
+        federation_sync_service,
+        federation=federation,
+        job=job,
+        discovered={"mcp_servers": [SimpleNamespace()], "a2a_agents": [SimpleNamespace()]},
+    )
+
+    assert result == mutation_result
+    federation_sync_service.federation_crud_service.mark_sync_failed.assert_awaited_once()
+    federation_sync_service.federation_crud_service.mark_sync_success.assert_not_awaited()
+    federation_sync_service.federation_job_service.mark_failed.assert_awaited_once()
+    federation_sync_service.federation_job_service.mark_success.assert_not_awaited()
+
+
+def test_build_last_sync_carries_error_count_and_failed_status():
+    job = SimpleNamespace(
+        id=PydanticObjectId(),
+        jobType="full_sync",
+        startedAt=datetime.now(UTC),
+        discoverySummary=SimpleNamespace(discoveredMcpServers=1, discoveredAgents=2),
+    )
+    summary = FederationApplySummary(
+        unchangedMcpServers=1,
+        unchangedAgents=2,
+        errors=1,
+        errorMessages=["A2A agent pharmacy_fraud_a2a: boom"],
+    )
+
+    last_sync = FederationSyncService._build_last_sync(job, summary)
+
+    assert last_sync.status == FederationSyncStatus.FAILED
+    assert last_sync.summary.errors == 1
+    assert last_sync.summary.errorMessages == ["A2A agent pharmacy_fraud_a2a: boom"]

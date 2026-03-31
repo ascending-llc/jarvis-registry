@@ -216,9 +216,16 @@ class A2AAgent(Document):
             "is_enabled": self.isEnabled,
             "tags": self.tags,
         }
+        # Federation metadata lets vector sync target one federated A2A runtime precisely.
+        if self.federationRefId is not None:
+            base_metadata["federation_id"] = str(self.federationRefId)
         runtime_version = (self.federationMetadata or {}).get("runtimeVersion")
         if runtime_version is not None:
-            base_metadata["runtime_version"] = str(runtime_version)
+            base_metadata["runtimeVersion"] = str(runtime_version)
+        # Keep runtimeArn for debugging and future runtime-scoped repair.
+        runtime_arn = (self.federationMetadata or {}).get("runtimeArn")
+        if runtime_arn:
+            base_metadata["runtimeArn"] = runtime_arn
 
         docs: list[LangChainDocument] = [
             LangChainDocument(

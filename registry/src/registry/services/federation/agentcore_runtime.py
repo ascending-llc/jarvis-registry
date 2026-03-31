@@ -74,7 +74,7 @@ class AgentCoreRuntimeInvoker:
         self.extract_region_from_arn = extract_region_from_arn
         self._invoke_runtime_retry_attempts = max(1, int(settings.agentcore_invoke_runtime_retry_attempts or 4))
         self._invoke_runtime_retry_delay_seconds = float(settings.agentcore_invoke_runtime_retry_delay_seconds or 5.0)
-        self._get_agent_card_retry_attempts = max(1, int(settings.agentcore_get_agent_card_retry_attempts or 3))
+        self._get_agent_card_retry_attempts = max(1, int(settings.agentcore_get_agent_card_retry_attempts or 1))
         self._get_agent_card_retry_delay_seconds = float(settings.agentcore_get_agent_card_retry_delay_seconds or 3.0)
 
     async def enrich_mcp_server(

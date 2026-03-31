@@ -213,9 +213,19 @@ class FederationCrudService:
         await federation.save(session=self._get_current_session_or_none())
         return federation
 
-    async def mark_sync_failed(self, federation: Federation, message: str) -> Federation:
+    async def mark_sync_failed(
+        self,
+        federation: Federation,
+        message: str,
+        last_sync=None,
+        stats: FederationStats | None = None,
+    ) -> Federation:
         federation.syncStatus = FederationStateMachine.transition_to_sync_failed(federation.syncStatus)
         federation.syncMessage = message
+        if last_sync is not None:
+            federation.lastSync = last_sync
+        if stats is not None:
+            federation.stats = stats
         await federation.save(session=self._get_current_session_or_none())
         return federation
 

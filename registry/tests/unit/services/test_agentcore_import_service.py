@@ -378,11 +378,11 @@ class TestAgentCoreImportService:
     async def test_detect_runtime_version_change_supports_int(self, service):
         existing = {"runtimeVersion": 2}
         new_data = {"runtimeVersion": 3}
-        assert service._detect_runtime_version_change(existing, new_data) == ["runtimeVersion: 2 -> 3"]
+        assert service.detect_runtime_version_change(existing, new_data) == ["runtimeVersion: 2 -> 3"]
 
     async def test_detect_runtime_version_change_handles_missing_version(self, service):
-        assert service._detect_runtime_version_change({"sourceType": "runtime"}, {"sourceType": "runtime"}) == []
-        assert service._detect_runtime_version_change({"sourceType": "runtime"}, {"runtimeVersion": "1"}) == [
+        assert service.detect_runtime_version_change({"sourceType": "runtime"}, {"sourceType": "runtime"}) == []
+        assert service.detect_runtime_version_change({"sourceType": "runtime"}, {"runtimeVersion": "1"}) == [
             "runtimeVersion: None -> 1"
         ]
 

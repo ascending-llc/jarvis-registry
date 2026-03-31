@@ -43,11 +43,17 @@ class A2AAgentRepository(Repository[A2AAgent]):
             )
         return docs
 
+    def _runtime_version_property_name(self) -> str | None:
+        if self._collection_has_property("runtimeVersion"):
+            return "runtimeVersion"
+        return None
+
     def _should_skip_reindex(self, agent: A2AAgent, agent_id: str) -> tuple[bool, str | None]:
         current_version = self._extract_runtime_version(agent)
         if not current_version:
             return False, None
-        if not self._collection_has_property("runtime_version"):
+        version_property = self._runtime_version_property_name()
+        if not version_property:
             return False, current_version
 
         existing_docs = self._load_existing_docs(agent_id)
@@ -56,9 +62,9 @@ class A2AAgentRepository(Repository[A2AAgent]):
 
         expected_docs = agent.to_documents()
         existing_versions = {
-            str(doc.metadata.get("runtime_version"))
+            str(doc.metadata.get(version_property))
             for doc in existing_docs
-            if doc.metadata.get("runtime_version") is not None
+            if doc.metadata.get(version_property) is not None
         }
 
         if len(existing_docs) != len(expected_docs):
@@ -185,3 +191,26 @@ class A2AAgentRepository(Repository[A2AAgent]):
         except Exception as e:
             logger.error("Failed to delete A2A vector docs for %s: %s", log_name, e, exc_info=True)
             return False
+
+    async def delete_by_runtime_identity(self, federation_id: str, runtime_arn: str) -> int:
+        """Delete one federated A2A runtime slice from Weaviate by federation + runtime."""
+        if not self._collection_has_property("federation_id") or not self._collection_has_property("runtimeArn"):
+            logger.info(
+                "Collection '%s' missing federation_id/runtimeArn. Skip runtime delete for federation_id=%s runtimeArn=%s.",
+                self.collection,
+                federation_id,
+                runtime_arn,
+            )
+            return 0
+        return await self.adelete_by_filter({"federation_id": federation_id, "runtimeArn": runtime_arn})
+
+    def has_runtime_identity(self, federation_id: str, runtime_arn: str) -> bool:
+        """Return whether Weaviate already contains docs for one federated A2A runtime."""
+        if not self._collection_has_property("federation_id") or not self._collection_has_property("runtimeArn"):
+            return False
+        docs = self.adapter.filter_by_metadata(
+            filters={"federation_id": federation_id, "runtimeArn": runtime_arn},
+            limit=1,
+            collection_name=self.collection,
+        )
+        return bool(docs)

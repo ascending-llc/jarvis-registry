@@ -264,9 +264,16 @@ class ExtendedMCPServer(Document):
             "status": self.status,
             "enabled": is_enabled,
         }
+        # Federation metadata lets vector sync target one federated MCP runtime precisely.
+        if self.federationRefId is not None:
+            metadata["federation_id"] = str(self.federationRefId)
         runtime_version = (self.federationMetadata or {}).get("runtimeVersion")
         if runtime_version is not None:
-            metadata["runtime_version"] = str(runtime_version)
+            metadata["runtimeVersion"] = str(runtime_version)
+        # Keep runtimeArn for debugging and future runtime-scoped repair.
+        runtime_arn = (self.federationMetadata or {}).get("runtimeArn")
+        if runtime_arn:
+            metadata["runtimeArn"] = runtime_arn
         if self.tags:
             metadata["tags"] = list(self.tags)
         return metadata

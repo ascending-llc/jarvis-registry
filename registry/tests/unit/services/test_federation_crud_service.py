@@ -96,6 +96,21 @@ async def test_mark_sync_success_updates_stats_and_last_sync():
     assert result.stats == stats
 
 
+@pytest.mark.asyncio
+async def test_mark_sync_failed_updates_last_sync_and_stats_when_provided():
+    service = FederationCrudService()
+    federation = _make_federation(sync_status=FederationSyncStatus.SYNCING)
+    last_sync = object()
+    stats = FederationStats(mcpServerCount=1, agentCount=2, toolCount=3, importedTotal=3)
+
+    result = await service.mark_sync_failed(federation, "one resource failed", last_sync=last_sync, stats=stats)
+
+    assert result.syncStatus == FederationSyncStatus.FAILED
+    assert result.syncMessage == "one resource failed"
+    assert result.lastSync == last_sync
+    assert result.stats == stats
+
+
 def test_normalize_provider_config_allows_empty_aws_config_for_create():
     service = FederationCrudService()
 

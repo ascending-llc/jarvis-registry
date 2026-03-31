@@ -31,6 +31,8 @@ class FederationApplySummary(BaseModel):
     deletedAgents: int = 0
     unchangedAgents: int = 0
     skippedAgents: int = 0
+    errors: int = 0
+    errorMessages: list[str] = Field(default_factory=list)
 
     model_config = ConfigDict(populate_by_name=True)
 

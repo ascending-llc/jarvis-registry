@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from langchain_core.documents import Document
@@ -29,14 +29,14 @@ class _FakeAdapter:
 @pytest.mark.asyncio
 async def test_a2a_sync_skips_reindex_when_runtime_version_matches():
     repo = A2AAgentRepository(
-        SimpleNamespace(adapter=_FakeAdapter([Document(page_content="x", metadata={"runtime_version": "7"})]))
+        SimpleNamespace(adapter=_FakeAdapter([Document(page_content="x", metadata={"runtimeVersion": "7"})]))
     )
     repo.asave = AsyncMock()
     agent = SimpleNamespace(
         id="agent-demo-id",
         card=SimpleNamespace(name="demo-agent", version="1.0.0", skills=[]),
         federationMetadata={"runtimeVersion": "7"},
-        to_documents=lambda: [Document(page_content="x", metadata={"runtime_version": "7"})],
+        to_documents=lambda: [Document(page_content="x", metadata={"runtimeVersion": "7"})],
     )
 
     result = await repo.sync_agent_to_vector_db(agent, is_delete=False)
@@ -49,14 +49,14 @@ async def test_a2a_sync_skips_reindex_when_runtime_version_matches():
 @pytest.mark.asyncio
 async def test_mcp_sync_skips_reindex_when_runtime_version_matches():
     repo = MCPServerRepository(
-        SimpleNamespace(adapter=_FakeAdapter([Document(page_content="x", metadata={"runtime_version": "11"})]))
+        SimpleNamespace(adapter=_FakeAdapter([Document(page_content="x", metadata={"runtimeVersion": "11"})]))
     )
     repo.asave = AsyncMock()
     server = SimpleNamespace(
         id="server-demo-id",
         serverName="demo-server",
         federationMetadata={"runtimeVersion": "11"},
-        to_documents=lambda: [Document(page_content="x", metadata={"runtime_version": "11"})],
+        to_documents=lambda: [Document(page_content="x", metadata={"runtimeVersion": "11"})],
     )
 
     result = await repo.sync_server_to_vector_db(server, is_delete=False)
@@ -69,7 +69,7 @@ async def test_mcp_sync_skips_reindex_when_runtime_version_matches():
 @pytest.mark.asyncio
 async def test_mcp_sync_rebuilds_when_doc_count_differs_even_if_version_matches():
     repo = MCPServerRepository(
-        SimpleNamespace(adapter=_FakeAdapter([Document(page_content="x", metadata={"runtime_version": "11"})]))
+        SimpleNamespace(adapter=_FakeAdapter([Document(page_content="x", metadata={"runtimeVersion": "11"})]))
     )
     repo.asave = AsyncMock(return_value=["doc-1", "doc-2"])
     server = SimpleNamespace(
@@ -77,8 +77,8 @@ async def test_mcp_sync_rebuilds_when_doc_count_differs_even_if_version_matches(
         serverName="demo-server",
         federationMetadata={"runtimeVersion": "11"},
         to_documents=lambda: [
-            Document(page_content="x", metadata={"runtime_version": "11"}),
-            Document(page_content="y", metadata={"runtime_version": "11"}),
+            Document(page_content="x", metadata={"runtimeVersion": "11"}),
+            Document(page_content="y", metadata={"runtimeVersion": "11"}),
         ],
     )
 
@@ -90,9 +90,22 @@ async def test_mcp_sync_rebuilds_when_doc_count_differs_even_if_version_matches(
 
 
 def test_mcp_load_existing_docs_pages_beyond_first_batch():
-    docs = [Document(page_content=f"doc-{i}", metadata={"runtime_version": "11"}) for i in range(505)]
+    docs = [Document(page_content=f"doc-{i}", metadata={"runtimeVersion": "11"}) for i in range(505)]
     repo = MCPServerRepository(SimpleNamespace(adapter=_FakeAdapter(docs)))
 
     loaded = repo._load_existing_docs("server-demo-id")
 
     assert len(loaded) == 505
+
+
+def test_mcp_has_runtime_identity_checks_federation_and_runtime():
+    repo = MCPServerRepository(SimpleNamespace(adapter=_FakeAdapter([Document(page_content="x", metadata={})])))
+
+    assert repo.has_runtime_identity("fed-1", "arn:runtime:1") is True
+
+
+def test_a2a_has_runtime_identity_returns_false_when_schema_missing():
+    repo = A2AAgentRepository(SimpleNamespace(adapter=_FakeAdapter([])))
+    repo._collection_has_property = MagicMock(return_value=False)
+
+    assert repo.has_runtime_identity("fed-1", "arn:runtime:1") is False

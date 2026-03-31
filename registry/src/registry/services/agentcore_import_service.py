@@ -192,14 +192,14 @@ class AgentCoreImportService:
                 )
 
         discovered_mcp_ids = {
-            self._extract_runtime_arn(item.federationMetadata)
+            self.extract_runtime_arn(item.federationMetadata)
             for item in discovered_mcp
-            if self._extract_runtime_arn(item.federationMetadata)
+            if self.extract_runtime_arn(item.federationMetadata)
         }
         discovered_a2a_ids = {
-            self._extract_runtime_arn(item.federationMetadata)
+            self.extract_runtime_arn(item.federationMetadata)
             for item in discovered_a2a
-            if self._extract_runtime_arn(item.federationMetadata)
+            if self.extract_runtime_arn(item.federationMetadata)
         }
         all_discovered_runtime_arns = (
             discovered_mcp_ids
@@ -305,7 +305,7 @@ class AgentCoreImportService:
         """
         Import single server with conflict handling.
         """
-        runtime_arn = self._extract_runtime_arn(discovered_server.federationMetadata)
+        runtime_arn = self.extract_runtime_arn(discovered_server.federationMetadata)
         if not runtime_arn:
             raise ValueError("discovered server is missing runtimeArn in federationMetadata")
 
@@ -440,7 +440,7 @@ class AgentCoreImportService:
         viewer_id: PydanticObjectId | None,
         dry_run: bool,
     ) -> dict[str, Any]:
-        runtime_arn = self._extract_runtime_arn(discovered_agent.federationMetadata)
+        runtime_arn = self.extract_runtime_arn(discovered_agent.federationMetadata)
         if not runtime_arn:
             raise ValueError("discovered A2A agent is missing runtimeArn in federationMetadata")
 
@@ -592,17 +592,10 @@ class AgentCoreImportService:
         existing: ExtendedMCPServer,
         new_data: ExtendedMCPServer,
     ) -> list[str]:
-        return self._detect_runtime_version_change(existing.federationMetadata, new_data.federationMetadata)
+        return self.detect_runtime_version_change(existing.federationMetadata, new_data.federationMetadata)
 
     def _detect_a2a_changes(self, existing: A2AAgent, new_data: A2AAgent) -> list[str]:
-        return self._detect_runtime_version_change(existing.federationMetadata, new_data.federationMetadata)
-
-    def _detect_runtime_version_change(
-        self,
-        existing_metadata: dict[str, Any] | None,
-        new_metadata: dict[str, Any] | None,
-    ) -> list[str]:
-        return self.detect_runtime_version_change(existing_metadata, new_metadata)
+        return self.detect_runtime_version_change(existing.federationMetadata, new_data.federationMetadata)
 
     @staticmethod
     def extract_runtime_version(metadata: dict[str, Any] | None) -> str | None:
@@ -612,8 +605,6 @@ class AgentCoreImportService:
         if version is None:
             return None
         return str(version)
-
-    _extract_runtime_version = extract_runtime_version
 
     @classmethod
     def detect_runtime_version_change(
@@ -643,7 +634,7 @@ class AgentCoreImportService:
         existing_a2a = await A2AAgent.find({"federationMetadata.runtimeArn": {"$exists": True, "$ne": None}}).to_list()
 
         for server in existing_mcp:
-            runtime_arn = self._extract_runtime_arn(server.federationMetadata)
+            runtime_arn = self.extract_runtime_arn(server.federationMetadata)
             if not runtime_arn:
                 continue
             if (server.federationMetadata or {}).get("sourceType") != "runtime":
@@ -655,7 +646,7 @@ class AgentCoreImportService:
                 stale_mcp.append(server)
 
         for agent in existing_a2a:
-            runtime_arn = self._extract_runtime_arn(agent.federationMetadata)
+            runtime_arn = self.extract_runtime_arn(agent.federationMetadata)
             if not runtime_arn:
                 continue
             if (agent.federationMetadata or {}).get("sourceType") != "runtime":
@@ -676,7 +667,7 @@ class AgentCoreImportService:
     ) -> dict[str, Any]:
         server_name = stale_server.serverName
         server_id = str(stale_server.id) if stale_server.id else None
-        runtime_arn = self._extract_runtime_arn(stale_server.federationMetadata)
+        runtime_arn = self.extract_runtime_arn(stale_server.federationMetadata)
 
         if dry_run:
             return {
@@ -706,7 +697,7 @@ class AgentCoreImportService:
     ) -> dict[str, Any]:
         agent_name = stale_agent.card.name
         agent_id = str(stale_agent.id) if stale_agent.id else None
-        runtime_arn = self._extract_runtime_arn(stale_agent.federationMetadata)
+        runtime_arn = self.extract_runtime_arn(stale_agent.federationMetadata)
 
         if dry_run:
             return {
@@ -734,8 +725,6 @@ class AgentCoreImportService:
             return None
         runtime_arn = metadata.get("runtimeArn")
         return str(runtime_arn) if runtime_arn else None
-
-    _extract_runtime_arn = extract_runtime_arn
 
     async def _resolve_identities(
         self, user_id: str | None, dry_run: bool

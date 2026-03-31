@@ -61,11 +61,17 @@ class MCPServerRepository(Repository[ExtendedMCPServer]):
             )
         return docs
 
+    def _runtime_version_property_name(self) -> str | None:
+        if self._collection_has_property("runtimeVersion"):
+            return "runtimeVersion"
+        return None
+
     def _should_skip_reindex(self, server: ExtendedMCPServer, server_id: str) -> tuple[bool, str | None]:
         current_version = self._extract_runtime_version(server)
         if not current_version:
             return False, None
-        if not self._collection_has_property("runtime_version"):
+        version_property = self._runtime_version_property_name()
+        if not version_property:
             return False, current_version
 
         existing_docs = self._load_existing_docs(server_id)
@@ -74,9 +80,9 @@ class MCPServerRepository(Repository[ExtendedMCPServer]):
 
         expected_docs = server.to_documents()
         existing_versions = {
-            str(doc.metadata.get("runtime_version"))
+            str(doc.metadata.get(version_property))
             for doc in existing_docs
-            if doc.metadata.get("runtime_version") is not None
+            if doc.metadata.get(version_property) is not None
         }
 
         if len(existing_docs) != len(expected_docs):
@@ -213,6 +219,29 @@ class MCPServerRepository(Repository[ExtendedMCPServer]):
         except Exception as e:
             logger.error(f"Get by server_id failed: {e}")
             return None
+
+    async def delete_by_runtime_identity(self, federation_id: str, runtime_arn: str) -> int:
+        """Delete one federated MCP runtime slice from Weaviate by federation + runtime."""
+        if not self._collection_has_property("federation_id") or not self._collection_has_property("runtimeArn"):
+            logger.info(
+                "Collection '%s' missing federation_id/runtimeArn. Skip runtime delete for federation_id=%s runtimeArn=%s.",
+                self.collection,
+                federation_id,
+                runtime_arn,
+            )
+            return 0
+        return await self.adelete_by_filter({"federation_id": federation_id, "runtimeArn": runtime_arn})
+
+    def has_runtime_identity(self, federation_id: str, runtime_arn: str) -> bool:
+        """Return whether Weaviate already contains docs for one federated MCP runtime."""
+        if not self._collection_has_property("federation_id") or not self._collection_has_property("runtimeArn"):
+            return False
+        docs = self.adapter.filter_by_metadata(
+            filters={"federation_id": federation_id, "runtimeArn": runtime_arn},
+            limit=1,
+            collection_name=self.collection,
+        )
+        return bool(docs)
 
     async def get_all_docs_by_server_id(self, server_id: str) -> dict[str, list[Any]]:
         """

@@ -159,7 +159,7 @@ class Settings(BaseSettings):
     # - JWT HTTP timeout: JWT/HTTP fallback only
     agentcore_invoke_runtime_retry_attempts: int = 4
     agentcore_invoke_runtime_retry_delay_seconds: float = 5.0
-    agentcore_get_agent_card_retry_attempts: int = 5
+    agentcore_get_agent_card_retry_attempts: int = 2
     agentcore_get_agent_card_retry_delay_seconds: float = 5.0
     agentcore_jwt_http_timeout_seconds: float = 20.0
 
