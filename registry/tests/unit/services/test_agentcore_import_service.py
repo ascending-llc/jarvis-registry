@@ -170,8 +170,7 @@ class TestAgentCoreImportService:
         assert kwargs["data"].title == discovered.config["title"]
         assert kwargs["data"].url == discovered.config["url"]
         assert kwargs["data"].authProvider == discovered.config["authProvider"]
-        assert kwargs["data"].transport == discovered.config["type"]
-        assert kwargs["data"].supportedTransports == [discovered.config["type"]]
+        assert kwargs["data"].type == discovered.config["type"]
         assert kwargs["data"].requiresOauth is True
         assert kwargs["data"].initTimeout == discovered.config["initDuration"]
         assert created_server.federationId == discovered.federationId

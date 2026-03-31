@@ -7,7 +7,7 @@ from ..enum.enums import EmbeddingProvider, VectorStoreType
 class VectorStoreConfig(BaseModel):
     """Base class for vector store configuration."""
 
-    type: str
+    type: VectorStoreType
 
     @classmethod
     def from_vector_config(cls, config: VectorConfig) -> "VectorStoreConfig":
@@ -18,7 +18,7 @@ class VectorStoreConfig(BaseModel):
 class EmbeddingModelConfig(BaseModel):
     """Base class for embedding model configuration."""
 
-    provider: str
+    provider: EmbeddingProvider
 
     @classmethod
     def from_vector_config(cls, config: VectorConfig) -> "EmbeddingModelConfig":
@@ -31,21 +31,25 @@ _VECTOR_STORE_REGISTRY: dict[str, type[VectorStoreConfig]] = {}
 _EMBEDDING_MODEL_REGISTRY: dict[str, type[EmbeddingModelConfig]] = {}
 
 
-def register_vector_store_config(name: str):
+def register_vector_store_config(name: VectorStoreType | str):
     """Decorator to register vector store config class."""
 
     def decorator(config_class: type[VectorStoreConfig]):
-        _VECTOR_STORE_REGISTRY[name] = config_class
+        # Extract string value from enum if needed
+        key = name.value if isinstance(name, VectorStoreType) else name
+        _VECTOR_STORE_REGISTRY[key] = config_class
         return config_class
 
     return decorator
 
 
-def register_embedding_model_config(name: str):
+def register_embedding_model_config(name: EmbeddingProvider | str):
     """Decorator to register embedding model config class."""
 
     def decorator(config_class: type[EmbeddingModelConfig]):
-        _EMBEDDING_MODEL_REGISTRY[name] = config_class
+        # Extract string value from enum if needed
+        key = name.value if isinstance(name, EmbeddingProvider) else name
+        _EMBEDDING_MODEL_REGISTRY[key] = config_class
         return config_class
 
     return decorator
@@ -77,7 +81,7 @@ def get_registered_embedding_models() -> list:
     return list(_EMBEDDING_MODEL_REGISTRY.keys())
 
 
-@register_vector_store_config(VectorStoreType.WEAVIATE.value)
+@register_vector_store_config(VectorStoreType.WEAVIATE)
 class WeaviateConfig(VectorStoreConfig):
     """Weaviate vector store configuration."""
 
@@ -109,7 +113,7 @@ class WeaviateConfig(VectorStoreConfig):
             raise ValueError("WEAVIATE_HOST cannot be empty")
 
         return cls(
-            type=VectorStoreType.WEAVIATE.value,
+            type=VectorStoreType.WEAVIATE,
             host=host.strip(),
             port=port_int,
             api_key=config.weaviate_api_key,
@@ -117,7 +121,7 @@ class WeaviateConfig(VectorStoreConfig):
         )
 
 
-@register_embedding_model_config(EmbeddingProvider.OPENAI.value)
+@register_embedding_model_config(EmbeddingProvider.OPENAI)
 class OpenAIEmbeddingConfig(EmbeddingModelConfig):
     """OpenAI embedding model configuration."""
 
@@ -142,10 +146,10 @@ class OpenAIEmbeddingConfig(EmbeddingModelConfig):
         if not model or model.strip() == "":
             model = "text-embedding-3-small"
 
-        return cls(provider=EmbeddingProvider.OPENAI.value, api_key=api_key.strip(), model=model.strip())
+        return cls(provider=EmbeddingProvider.OPENAI, api_key=api_key.strip(), model=model.strip())
 
 
-@register_embedding_model_config(EmbeddingProvider.AWS_BEDROCK.value)
+@register_embedding_model_config(EmbeddingProvider.AWS_BEDROCK)
 class BedrockEmbeddingConfig(EmbeddingModelConfig):
     """AWS Bedrock embedding model configuration."""
 
@@ -158,11 +162,14 @@ class BedrockEmbeddingConfig(EmbeddingModelConfig):
     def from_vector_config(cls, config: VectorConfig) -> "BedrockEmbeddingConfig":
         """Create AWS Bedrock config from explicit vector config."""
         region = config.aws_region
-        model = config.bedrock_model
+        model = config.embedding_model
 
         # Required validation
         if not region or region.strip() == "":
             raise ValueError("aws_region must be set in the supplied vector config")
+
+        # Strip whitespace before validation
+        region = region.strip()
 
         # Region format validation
         valid_regions = ["us-east-1", "us-west-2", "eu-west-1", "ap-southeast-1", "ap-northeast-1"]
@@ -176,11 +183,85 @@ class BedrockEmbeddingConfig(EmbeddingModelConfig):
             model = "amazon.titan-embed-text-v2:0"
 
         return cls(
-            provider=EmbeddingProvider.AWS_BEDROCK.value,
-            region=region.strip(),
+            provider=EmbeddingProvider.AWS_BEDROCK,
+            region=region,
             model=model.strip(),
             access_key_id=config.aws_access_key_id,
             secret_access_key=config.aws_secret_access_key,
+        )
+
+
+@register_embedding_model_config(EmbeddingProvider.AZURE_OPENAI)
+class AzureOpenAIEmbeddingConfig(EmbeddingModelConfig):
+    """Azure OpenAI embedding model configuration."""
+
+    api_key: str = Field(description="Azure OpenAI API key")
+    endpoint: str = Field(description="Azure OpenAI endpoint URL")
+    api_version: str = Field(description="Azure OpenAI API version")
+    resource_name: str = Field(description="Azure OpenAI resource name")
+    deployment_name: str = Field(description="Azure OpenAI deployment name")
+
+    @classmethod
+    def from_vector_config(cls, config: VectorConfig) -> "AzureOpenAIEmbeddingConfig":
+        """Create Azure OpenAI config from explicit vector config."""
+        api_key = config.azure_openai_api_key
+        endpoint = config.azure_openai_endpoint
+        api_version = config.azure_openai_api_version
+        resource_name = config.azure_openai_resource_name
+        deployment_name = config.azure_openai_embedding_deployment
+
+        # Required validation
+        if not api_key or api_key.strip() == "":
+            raise ValueError(
+                "azure_openai_api_key must be set in the supplied vector config. "
+                "Please set the AZURE_OPENAI_API_KEY environment variable."
+            )
+
+        if not endpoint or endpoint.strip() == "":
+            raise ValueError(
+                "azure_openai_endpoint must be set in the supplied vector config. "
+                "Please set the AZURE_OPENAI_ENDPOINT environment variable."
+            )
+
+        if not deployment_name or deployment_name.strip() == "":
+            raise ValueError(
+                "azure_openai_embedding_deployment must be set in the supplied vector config. "
+                "Please set the AZURE_OPENAI_EMBEDDING_DEPLOYMENT environment variable."
+            )
+
+        # Endpoint format validation
+        endpoint = endpoint.strip()
+        if not endpoint.startswith("https://"):
+            raise ValueError("azure_openai_endpoint must start with 'https://'")
+
+        if not endpoint.endswith(".openai.azure.com") and not endpoint.endswith(".openai.azure.com/"):
+            raise ValueError("azure_openai_endpoint must be a valid Azure OpenAI endpoint (*.openai.azure.com)")
+
+        # Extract resource_name from endpoint if not provided
+        if not resource_name or resource_name.strip() == "":
+            # Extract from endpoint: https://resource-name.openai.azure.com/ -> resource-name
+            import re
+
+            match = re.match(r"https://([^.]+)\.openai\.azure\.com", endpoint)
+            if match:
+                resource_name = match.group(1)
+            else:
+                raise ValueError(
+                    "Failed to extract resource_name from endpoint. "
+                    "Please set AZURE_OPENAI_RESOURCE_NAME environment variable."
+                )
+
+        # API version validation
+        if not api_version or api_version.strip() == "":
+            api_version = "2024-06-01"
+
+        return cls(
+            provider=EmbeddingProvider.AZURE_OPENAI,
+            api_key=api_key.strip(),
+            endpoint=endpoint.rstrip("/"),
+            api_version=api_version.strip(),
+            resource_name=resource_name.strip(),
+            deployment_name=deployment_name.strip(),
         )
 
 
@@ -197,7 +278,7 @@ class BackendConfig(BaseModel):
 
         Required fields:
         - vector_store_type: weaviate
-        - embedding_provider: openai | aws_bedrock
+        - embedding_provider: openai | aws_bedrock | azure_openai
 
         Raises:
             ValueError: If required fields are missing or invalid

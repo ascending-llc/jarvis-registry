@@ -1,9 +1,11 @@
 import { TrashIcon } from '@heroicons/react/24/outline';
 import type React from 'react';
 import { useEffect, useState } from 'react';
+import { HiOutlineShare } from 'react-icons/hi2';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 
 import McpIcon from '@/assets/McpIcon';
+import ShareModal from '@/components/ShareModal';
 import { useGlobal } from '@/contexts/GlobalContext';
 import { useServer } from '@/contexts/ServerContext';
 import SERVICES from '@/services';
@@ -114,6 +116,7 @@ const ServerRegistryOrEdit: React.FC = () => {
 
   const [loading, setLoading] = useState(false);
   const [playgroundOpen, setPlaygroundOpen] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [serverDetail, setServerDetail] = useState<GetServersDetailResponse | null>(null);
   const [formData, setFormData] = useState<ServerConfig>(INIT_DATA);
@@ -303,88 +306,103 @@ const ServerRegistryOrEdit: React.FC = () => {
   return (
     <>
       {playgroundOpen && (
-        <McpPlaygroundModal
-          serverName={serverDetail?.serverName || ''}
-          onClose={() => setPlaygroundOpen(false)}
+        <McpPlaygroundModal serverName={serverDetail?.serverName || ''} onClose={() => setPlaygroundOpen(false)} />
+      )}
+      {shareOpen && id && (
+        <ShareModal
+          itemName={formData.title || serverDetail?.title || 'MCP Server'}
+          resourceId={id}
+          isOpen={shareOpen}
+          onClose={() => setShareOpen(false)}
         />
       )}
       <div className='h-full overflow-y-auto custom-scrollbar -mr-4 sm:-mr-6 lg:-mr-8'>
-      <div className='mx-auto flex flex-col w-3/4 min-h-full bg-white dark:bg-gray-800 rounded-lg'>
-        {/* Header */}
-        <div className='px-6 py-6 flex items-center gap-4 border-b border-gray-100 dark:border-gray-700'>
-          <div className='flex items-center justify-center p-3 rounded-xl bg-[#F3E8FF] dark:bg-purple-900/30'>
-            <McpIcon className='h-8 w-8 text-purple-600 dark:text-purple-300' />
-          </div>
-          <div>
-            <h1 className='text-2xl font-bold text-gray-900 dark:text-white'>
-              {isReadOnly ? 'View MCP Server' : isEditMode ? 'Edit MCP Server' : 'Register MCP Server'}
-            </h1>
-            <p className='text-base text-gray-500 dark:text-gray-400 mt-0.5'>
-              Configure a Model Context Protocol server
-            </p>
-          </div>
-        </div>
-        {/* Content */}
-        <div className='px-6 py-4 flex-1 flex flex-col'>
-          {loadingDetail ? (
-            <div className='flex-1 flex items-center justify-center min-h-[200px]'>
-              <div className='animate-spin rounded-full h-8 w-8 border-b-2 border-purple-600'></div>
+        <div className='mx-auto flex flex-col w-3/4 min-h-full bg-white dark:bg-gray-800 rounded-lg'>
+          {/* Header */}
+          <div className='px-6 py-6 flex items-center gap-4 border-b border-gray-100 dark:border-gray-700'>
+            <div className='flex items-center justify-center p-3 rounded-xl bg-[#F3E8FF] dark:bg-purple-900/30'>
+              <McpIcon className='h-8 w-8 text-purple-600 dark:text-purple-300' />
             </div>
-          ) : (
-            <MainConfigForm
-              formData={formData}
-              serverDetail={serverDetail}
-              updateField={updateField}
-              errors={errors}
-              isEditMode={isEditMode}
-              isReadOnly={isReadOnly}
-            />
-          )}
-        </div>
-        {/* Footer */}
-        <div className='px-6 py-4 border-t border-gray-100 dark:border-gray-700 flex flex-wrap items-center justify-between gap-4'>
-          <div>
-            {isEditMode && !isReadOnly && serverDetail?.permissions?.DELETE && (
-              <button
-                onClick={handleDelete}
-                disabled={loading}
-                className='inline-flex items-center px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm text-sm font-medium text-red-500 dark:text-red-400 bg-white dark:bg-gray-800 hover:bg-red-50 dark:hover:bg-red-900/20 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 disabled:opacity-50 disabled:cursor-not-allowed'
-              >
-                <TrashIcon className='h-4 w-4' />
-              </button>
+            <div>
+              <h1 className='text-2xl font-bold text-gray-900 dark:text-white'>
+                {isReadOnly ? 'View MCP Server' : isEditMode ? 'Edit MCP Server' : 'Register MCP Server'}
+              </h1>
+              <p className='text-base text-gray-500 dark:text-gray-400 mt-0.5'>
+                Configure a Model Context Protocol server
+              </p>
+            </div>
+          </div>
+          {/* Content */}
+          <div className='px-6 py-4 flex-1 flex flex-col'>
+            {loadingDetail ? (
+              <div className='flex-1 flex items-center justify-center min-h-[200px]'>
+                <div className='animate-spin rounded-full h-8 w-8 border-b-2 border-purple-600'></div>
+              </div>
+            ) : (
+              <MainConfigForm
+                formData={formData}
+                serverDetail={serverDetail}
+                updateField={updateField}
+                errors={errors}
+                isEditMode={isEditMode}
+                isReadOnly={isReadOnly}
+              />
             )}
           </div>
-          <div className='flex gap-3'>
-            <button
-              onClick={goBack}
-              disabled={loading}
-              className='min-w-[80px] sm:min-w-[120px] md:min-w-[160px] px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm text-sm font-medium text-gray-700 dark:text-gray-200 bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 disabled:opacity-50 disabled:cursor-not-allowed'
-            >
-              Cancel
-            </button>
-            {isReadOnly && (
+          {/* Footer */}
+          <div className='px-6 py-4 border-t border-gray-100 dark:border-gray-700 flex flex-wrap items-center justify-between gap-4'>
+          <div className='flex items-center gap-3'>
+              {isEditMode && !isReadOnly && serverDetail?.permissions?.DELETE && (
+                <button
+                  onClick={handleDelete}
+                  disabled={loading}
+                  className='inline-flex items-center px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm text-sm font-medium text-red-500 dark:text-red-400 bg-white dark:bg-gray-800 hover:bg-red-50 dark:hover:bg-red-900/20 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 disabled:opacity-50 disabled:cursor-not-allowed'
+                >
+                  <TrashIcon className='h-4 w-4' />
+                </button>
+              )}
+              {isEditMode && !!id && serverDetail?.permissions?.SHARE && (
+                <button
+                  onClick={() => setShareOpen(true)}
+                  disabled={loading || loadingDetail}
+                  className='inline-flex items-center px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm text-sm font-medium text-purple-600 dark:text-purple-400 bg-white dark:bg-gray-800 hover:bg-purple-50 dark:hover:bg-purple-900/20 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 disabled:opacity-50 disabled:cursor-not-allowed'
+                >
+                  <HiOutlineShare className='h-4 w-4' />
+                </button>
+              )}
+            </div>
+            <div className='flex gap-3'>
               <button
-                onClick={() => setPlaygroundOpen(true)}
-                disabled={loading || loadingDetail}
-                className='min-w-[80px] sm:min-w-[120px] md:min-w-[160px] px-4 py-2 border border-purple-300 dark:border-purple-600 rounded-md shadow-sm text-sm font-medium text-purple-700 dark:text-purple-300 bg-white dark:bg-gray-800 hover:bg-purple-50 dark:hover:bg-purple-900/20 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 disabled:opacity-50 disabled:cursor-not-allowed'
-              >
-                Playground
-            </button>)
-            }
-            {!isReadOnly && (
-              <button
-                onClick={handleSave}
+                onClick={goBack}
                 disabled={loading}
-                className='inline-flex items-center justify-center gap-2 min-w-[80px] sm:min-w-[120px] md:min-w-[160px] px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-purple-700 hover:bg-purple-800 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 disabled:opacity-50 disabled:cursor-not-allowed'
+                className='min-w-[80px] sm:min-w-[120px] md:min-w-[160px] px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm text-sm font-medium text-gray-700 dark:text-gray-200 bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 disabled:opacity-50 disabled:cursor-not-allowed'
               >
-                {loading && <div className='animate-spin rounded-full h-4 w-4 border-b-2 border-white'></div>}
-                {isEditMode ? 'Update' : 'Create'}
+                Cancel
               </button>
-            )}
+
+              {isReadOnly && (
+                <button
+                  onClick={() => setPlaygroundOpen(true)}
+                  disabled={loading || loadingDetail}
+                  className='min-w-[80px] sm:min-w-[120px] md:min-w-[160px] px-4 py-2 border border-purple-300 dark:border-purple-600 rounded-md shadow-sm text-sm font-medium text-purple-700 dark:text-purple-300 bg-white dark:bg-gray-800 hover:bg-purple-50 dark:hover:bg-purple-900/20 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 disabled:opacity-50 disabled:cursor-not-allowed'
+                >
+                  Playground
+                </button>
+              )}
+              {!isReadOnly && (
+                <button
+                  onClick={handleSave}
+                  disabled={loading}
+                  className='inline-flex items-center justify-center gap-2 min-w-[80px] sm:min-w-[120px] md:min-w-[160px] px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-purple-700 hover:bg-purple-800 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 disabled:opacity-50 disabled:cursor-not-allowed'
+                >
+                  {loading && <div className='animate-spin rounded-full h-4 w-4 border-b-2 border-white'></div>}
+                  {isEditMode ? 'Update' : 'Create'}
+                </button>
+              )}
+            </div>
           </div>
         </div>
       </div>
-    </div>
     </>
   );
 };

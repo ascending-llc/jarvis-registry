@@ -47,10 +47,9 @@ class ServerCreateRequest(APIBaseModel):
     numStars: int = Field(default=0, description="Star count")
     isPython: bool = Field(default=False, description="Is Python-based")
     license: str | None = Field(default=None, description="License type")
+    type: str | None = Field(default=None, description="Transport type (e.g., streamable-http, sse, stdio)")
     authType: str | None = Field(default=None, description="Authentication type")
     authProvider: str | None = Field(default=None, description="Authentication provider")
-    supportedTransports: list[str] = Field(default_factory=list, description="Supported transports")
-    transport: str | dict[str, Any] | None = Field(default=None, description="Transport configuration (string or dict)")
     startup: bool = Field(default=False, description="Start on system startup")
     chatMenu: bool = Field(default=True, description="Show in chat menu")
     toolList: list[dict[str, Any]] = Field(default_factory=list, description="List of tools")
@@ -101,8 +100,6 @@ class ServerUpdateRequest(APIBaseModel):
     license: str | None = None
     authType: str | None = None
     authProvider: str | None = None
-    supportedTransports: list[str] | None = None
-    transport: str | dict[str, Any] | None = None
     startup: bool | None = None
     chatMenu: bool | None = None
     toolList: list[dict[str, Any]] | None = None

@@ -35,6 +35,22 @@ class OAuthClient:
         """Generate PKCE code_challenge from code_verifier using S256 method."""
         return create_s256_code_challenge(code_verifier)
 
+    @staticmethod
+    def _select_auth_method(supported_methods: list[str] | None) -> str:
+        """
+        Select the token endpoint auth method from the server's advertised list.
+
+        Prefers client_secret_post over client_secret_basic for maximum compatibility
+        with third-party MCP servers (e.g. HubSpot) that only accept POST body credentials.
+        Defaults to client_secret_post when no methods are advertised.
+        """
+        methods = supported_methods or []
+        if "client_secret_post" in methods:
+            return "client_secret_post"
+        if "client_secret_basic" in methods:
+            return "client_secret_basic"
+        return "client_secret_post"  # safe default when server does not advertise methods
+
     def _get_client(self, flow_metadata: MCPOAuthFlowMetadata, code_verifier: str | None = None) -> AsyncOAuth2Client:
         """
         Create Authlib OAuth2 client for the flow.
@@ -49,11 +65,9 @@ class OAuthClient:
         client_info = flow_metadata.client_info
         metadata = flow_metadata.metadata
 
-        # Determine client authentication method
-        auth_method = "client_secret_post"
-        if metadata.token_endpoint_auth_methods_supported:
-            if "client_secret_basic" in metadata.token_endpoint_auth_methods_supported:
-                auth_method = "client_secret_basic"
+        supported_methods = metadata.token_endpoint_auth_methods_supported
+        auth_method = self._select_auth_method(supported_methods)
+        logger.debug(f"Token endpoint auth method selected: {auth_method} (supported: {supported_methods})")
 
         # Create Authlib client
         client = AsyncOAuth2Client(
@@ -105,6 +119,10 @@ class OAuthClient:
         if client_info.additional_params:
             params.update(client_info.additional_params)
 
+        # Add resource parameter for RFC 8707 Resource Indicator support
+        if flow_metadata.resource_metadata and flow_metadata.resource_metadata.resource:
+            params["resource"] = flow_metadata.resource_metadata.resource
+
         # Build authorization URL using Authlib
         authorization_url, _ = client.create_authorization_url(
             metadata.authorization_endpoint,
@@ -146,6 +164,10 @@ class OAuthClient:
             extra_params = {}
             if flow_metadata.client_info.additional_params:
                 extra_params.update(flow_metadata.client_info.additional_params)
+
+            # Add resource parameter for RFC 8707 Resource Indicator support
+            if flow_metadata.resource_metadata and flow_metadata.resource_metadata.resource:
+                extra_params["resource"] = flow_metadata.resource_metadata.resource
 
             # Exchange code for tokens using Authlib
             # Authlib automatically handles PKCE, client authentication, and token response parsing
@@ -193,10 +215,8 @@ class OAuthClient:
                 return None
 
             # Determine client authentication method
-            auth_methods = oauth_config.get(
-                "token_endpoint_auth_methods_supported", ["client_secret_basic", "client_secret_post"]
-            )
-            auth_method = "client_secret_basic" if "client_secret_basic" in auth_methods else "client_secret_post"
+            auth_methods = oauth_config.get("token_endpoint_auth_methods_supported")
+            auth_method = self._select_auth_method(auth_methods)
 
             # Handle scope format (list or string)
             scopes = oauth_config.get("scope")

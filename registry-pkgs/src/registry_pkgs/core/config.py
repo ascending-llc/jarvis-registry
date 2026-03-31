@@ -16,10 +16,17 @@ class VectorConfig(BaseModel):
     openai_api_key: str | None = Field(default=None, description="OpenAI API key")
     openai_model: str = Field(default="text-embedding-3-small", description="OpenAI embedding model")
     aws_region: str = Field(default="us-east-1", description="AWS region for Bedrock")
-    bedrock_model: str = Field(default="amazon.titan-embed-text-v2:0", description="AWS Bedrock model")
+    embedding_model: str = Field(default="amazon.titan-embed-text-v2:0", description="Embedding model ID")
     aws_access_key_id: str | None = Field(default=None, description="AWS access key ID")
     aws_secret_access_key: str | None = Field(default=None, description="AWS secret access key")
     aws_session_token: str | None = Field(default=None, description="AWS session token")
+    azure_openai_api_key: str | None = Field(default=None, description="Azure OpenAI API key")
+    azure_openai_endpoint: str = Field(default="", description="Azure OpenAI endpoint URL")
+    azure_openai_api_version: str = Field(default="2024-06-01", description="Azure OpenAI API version")
+    azure_openai_resource_name: str = Field(default="", description="Azure OpenAI resource name")
+    azure_openai_embedding_deployment: str = Field(default="", description="Azure OpenAI embedding deployment name")
+    azure_openai_llm_deployment: str = Field(default="", description="Azure OpenAI LLM deployment name")
+    llm_model: str = Field(default="gpt-4", description="LLM model name")
 
 
 class MongoConfig(BaseModel):

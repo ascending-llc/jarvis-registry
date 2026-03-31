@@ -85,7 +85,7 @@ class EmbeddedFaissService(VectorSearchService):
         self.settings.servers_dir.mkdir(parents=True, exist_ok=True)
 
         try:
-            model_cache_path = self.settings.container_registry_dir / ".cache"
+            model_cache_path = self.settings.local_embeddings_model_dir.parent / ".cache"
             model_cache_path.mkdir(parents=True, exist_ok=True)
 
             # Set cache path for sentence transformers
@@ -95,17 +95,19 @@ class EmbeddedFaissService(VectorSearchService):
             os.environ["SENTENCE_TRANSFORMERS_HOME"] = str(model_cache_path)
 
             # Check if local model exists
-            model_path = self.settings.embeddings_model_dir
+            model_path = self.settings.local_embeddings_model_dir
             model_exists = model_path.exists() and any(model_path.iterdir()) if model_path.exists() else False
 
             if model_exists:
-                logger.info(f"Loading SentenceTransformer model from local path: {self.settings.embeddings_model_dir}")
-                self.embedding_model = SentenceTransformer(str(self.settings.embeddings_model_dir))
+                logger.info(
+                    f"Loading SentenceTransformer model from local path: {self.settings.local_embeddings_model_dir}"
+                )
+                self.embedding_model = SentenceTransformer(str(self.settings.local_embeddings_model_dir))
             else:
                 logger.info(
-                    f"Local model not found at {self.settings.embeddings_model_dir}, downloading from Hugging Face"
+                    f"Local model not found at {self.settings.local_embeddings_model_dir}, downloading from Hugging Face"
                 )
-                self.embedding_model = SentenceTransformer(str(self.settings.embeddings_model_name))
+                self.embedding_model = SentenceTransformer(str(self.settings.local_embeddings_model_name))
 
             # Restore original environment variable
             if original_st_home:
@@ -137,9 +139,9 @@ class EmbeddedFaissService(VectorSearchService):
                 )
 
                 # Check dimension compatibility
-                if self.faiss_index and self.faiss_index.d != self.settings.embeddings_model_dimensions:
+                if self.faiss_index and self.faiss_index.d != self.settings.local_embeddings_model_dimensions:
                     logger.warning(
-                        f"Loaded FAISS index dimension ({self.faiss_index.d}) differs from expected ({self.settings.embeddings_model_dimensions}). Re-initializing."
+                        f"Loaded FAISS index dimension ({self.faiss_index.d}) differs from expected ({self.settings.local_embeddings_model_dimensions}). Re-initializing."
                     )
                     self._initialize_new_index()
 
@@ -152,7 +154,7 @@ class EmbeddedFaissService(VectorSearchService):
 
     def _initialize_new_index(self):
         """Initialize a new FAISS index."""
-        self.faiss_index = faiss.IndexIDMap(faiss.IndexFlatL2(self.settings.embeddings_model_dimensions))
+        self.faiss_index = faiss.IndexIDMap(faiss.IndexFlatL2(self.settings.local_embeddings_model_dimensions))
         self.metadata_store = {}
         self.next_id_counter = 0
 

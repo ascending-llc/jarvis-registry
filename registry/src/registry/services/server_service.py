@@ -357,13 +357,14 @@ def _build_config_from_request(data: ServerCreateRequest, server_name: str = Non
     # Get all data with DB field names applied
     all_data = data.to_db_dict()
 
+    # Canonical transport source is `type`.
+    resolved_transport = all_data.get("type") or "streamable-http"
+
     # Build MCP-specific configuration (stored in config object)
     config = {
         "title": all_data.get("title"),
         "description": all_data.get("description", ""),
-        "type": all_data.get("supportedTransports", ["streamable-http"])[0]
-        if all_data.get("supportedTransports")
-        else "streamable-http",
+        "type": resolved_transport,
         "url": all_data.get("url"),
         "capabilities": "{}",  # Default empty JSON string
     }
