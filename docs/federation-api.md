@@ -34,7 +34,6 @@ azure_ai_foundry
 
 ```text
 active
-disabled
 deleting
 deleted
 ```
@@ -52,7 +51,6 @@ failed
 ### federation jobType
 
 ```text
-initial_sync
 full_sync
 config_resync
 force_sync

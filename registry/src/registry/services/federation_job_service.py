@@ -39,7 +39,8 @@ class FederationJobService:
                         FederationJobStatus.SYNCING.value,
                     ]
                 },
-            }
+            },
+            sort=[("createdAt", -1)],
         )
 
     async def create_job(

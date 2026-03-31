@@ -25,6 +25,7 @@ import json
 import sys
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import quote_plus, urlsplit
 
 from bson import ObjectId
 from pymongo import DESCENDING, MongoClient
@@ -54,7 +55,25 @@ def _print_json(payload: Any) -> None:
 
 
 def _get_db():
-    client = MongoClient(settings.mongo_uri)
+    config = settings.mongo_config
+    parsed = urlsplit(config.mongo_uri)
+    db_name = parsed.path.lstrip("/")
+    if not db_name:
+        raise SystemExit("MongoDB database name is required in settings.mongo_uri")
+
+    query_params = f"?{parsed.query}" if parsed.query else ""
+    base_uri = f"{parsed.scheme}://{parsed.netloc}"
+    if config.mongodb_username and config.mongodb_password:
+        escaped_username = quote_plus(config.mongodb_username)
+        escaped_password = quote_plus(config.mongodb_password)
+        protocol, rest = base_uri.split("://", 1)
+        if "@" in rest:
+            rest = rest.split("@", 1)[1]
+        mongo_uri = f"{protocol}://{escaped_username}:{escaped_password}@{rest}/{db_name}{query_params}"
+    else:
+        mongo_uri = f"{base_uri}/{db_name}{query_params}"
+
+    client = MongoClient(mongo_uri)
     return client, client.get_default_database()
 
 
@@ -230,12 +249,14 @@ def _set_sync_state(db, federation_id: ObjectId, status: str, message: str | Non
 
 async def _retry_vector_sync(federation_id: ObjectId) -> None:
     """Rebuild the federation vector index from the current persisted Mongo resources."""
-    await init_mongodb(settings.mongo_config)
-    db_client = create_database_client(settings.vector_backend_config)
-    mcp_repo = MCPServerRepository(db_client)
-    a2a_repo = A2AAgentRepository(db_client)
+    db_client = None
 
     try:
+        await init_mongodb(settings.mongo_config)
+        db_client = create_database_client(settings.vector_backend_config)
+        mcp_repo = MCPServerRepository(db_client)
+        a2a_repo = A2AAgentRepository(db_client)
+
         federation = await Federation.find_one({"_id": federation_id})
         if federation is None:
             raise SystemExit(f"Federation not found: {federation_id}")
@@ -305,7 +326,8 @@ async def _retry_vector_sync(federation_id: ObjectId) -> None:
         )
     finally:
         try:
-            db_client.close()
+            if db_client is not None:
+                db_client.close()
         finally:
             await close_mongodb()
 

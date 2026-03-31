@@ -302,32 +302,45 @@ async def list_federations(
     """
     List federations.
     """
-    search_query = query if query is not None else keyword
-    effective_per_page = pageSize if pageSize is not None else per_page
-    user_id = user_context.get("user_id")
-    accessible_ids = await acl_service.get_accessible_resource_ids(
-        user_id=PydanticObjectId(user_id),
-        resource_type=FEDERATION_RESOURCE_TYPE,
-    )
-
-    items, total = await federation_crud_service.list_federations(
-        provider_type=providerType,
-        sync_status=syncStatus,
-        tag=tag,
-        tags=tags,
-        keyword=search_query,
-        page=page,
-        page_size=effective_per_page,
-        accessible_federation_ids=accessible_ids,
-    )
-    permissions_by_id = {}
-    for federation in items:
-        permissions_by_id[str(federation.id)] = await acl_service.get_user_permissions_for_resource(
+    try:
+        search_query = query if query is not None else keyword
+        effective_per_page = pageSize if pageSize is not None else per_page
+        user_id = user_context.get("user_id")
+        accessible_ids = await acl_service.get_accessible_resource_ids(
             user_id=PydanticObjectId(user_id),
             resource_type=FEDERATION_RESOURCE_TYPE,
-            resource_id=federation.id,
         )
-    return _to_paged_response(items, total, page, effective_per_page, permissions_by_id)
+
+        items, total = await federation_crud_service.list_federations(
+            provider_type=providerType,
+            sync_status=syncStatus,
+            tag=tag,
+            tags=tags,
+            keyword=search_query,
+            page=page,
+            page_size=effective_per_page,
+            accessible_federation_ids=accessible_ids,
+        )
+        permissions_by_id = {}
+        for federation in items:
+            permissions_by_id[str(federation.id)] = await acl_service.get_user_permissions_for_resource(
+                user_id=PydanticObjectId(user_id),
+                resource_type=FEDERATION_RESOURCE_TYPE,
+                resource_id=federation.id,
+            )
+        return _to_paged_response(items, total, page, effective_per_page, permissions_by_id)
+    except HTTPException:
+        logger.exception("Failed to list federations due to HTTP exception")
+        raise
+    except Exception as exc:
+        logger.exception("Unexpected error while listing federations")
+        raise HTTPException(
+            status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=create_error_detail(
+                ErrorCode.INTERNAL_ERROR,
+                "Internal server error",
+            ),
+        ) from exc
 
 
 @router.get("/{federation_id}", response_model=FederationDetailResponse)
@@ -341,14 +354,27 @@ async def get_federation(
     """
     Get a federation.
     """
-    federation = await _get_required_federation(federation_id, federation_crud_service)
-    permissions = await acl_service.check_user_permission(
-        user_id=PydanticObjectId(user_context.get("user_id")),
-        resource_type=FEDERATION_RESOURCE_TYPE,
-        resource_id=federation.id,
-        required_permission="VIEW",
-    )
-    return await _to_detail_response(federation, federation_crud_service, permissions)
+    try:
+        federation = await _get_required_federation(federation_id, federation_crud_service)
+        permissions = await acl_service.check_user_permission(
+            user_id=PydanticObjectId(user_context.get("user_id")),
+            resource_type=FEDERATION_RESOURCE_TYPE,
+            resource_id=federation.id,
+            required_permission="VIEW",
+        )
+        return await _to_detail_response(federation, federation_crud_service, permissions)
+    except HTTPException:
+        logger.exception("Failed to get federation %s due to HTTP exception", federation_id)
+        raise
+    except Exception as exc:
+        logger.exception("Unexpected error while getting federation %s", federation_id)
+        raise HTTPException(
+            status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=create_error_detail(
+                ErrorCode.INTERNAL_ERROR,
+                "Internal server error",
+            ),
+        ) from exc
 
 
 @router.put("/{federation_id}", response_model=FederationDetailResponse)
