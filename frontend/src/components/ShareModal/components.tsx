@@ -22,7 +22,13 @@ interface RoleDropdownProps {
   disabled?: boolean;
 }
 
-export const RoleDropdown: React.FC<RoleDropdownProps> = ({ value, onChange, roles, direction = 'down', disabled = false }) => {
+export const RoleDropdown: React.FC<RoleDropdownProps> = ({
+  value,
+  onChange,
+  roles,
+  direction = 'down',
+  disabled = false,
+}) => {
   const selectedRoleName = getRoleDisplayName(
     roles.find(r => r.accessRoleId === value),
     value,
@@ -195,7 +201,7 @@ export const PermissionList: React.FC<PermissionListProps> = ({ permissions, rol
   const ownerRoleId = roles[roles.length - 1]?.accessRoleId ?? '';
 
   return (
-    <div className='max-h-[340px] overflow-y-auto rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800'>
+    <div className='rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800'>
       {permissions.loading ? (
         <div className='flex items-center justify-center p-8'>
           <div className='animate-spin rounded-full h-6 w-6 border-b-2 border-purple-600' />
@@ -267,7 +273,7 @@ interface PublicShareProps {
 
 export const PublicShare: React.FC<PublicShareProps> = ({ publicShare, roles }) => {
   return (
-    <div className='flex flex-col gap-4 mb-14'>
+    <div className='flex flex-col gap-4 mb-6'>
       <div className='flex items-center justify-between'>
         <div className='flex items-center gap-2'>
           <RiGlobalLine
