@@ -36,7 +36,7 @@ This ACL service will be foundational for enforcing secure access and will be co
 
 ### Objectives
 
-- Design an ACL service that allows admins to share an MCP Server or Agent with:
+- Design an ACL service that allows admins to share resources (MCP Servers, Agents, Prompt Groups, Remote Agents) with:
   - Everyone (public)
   - Specific user groups
   - Specific users
@@ -51,7 +51,7 @@ An ACLService is already implemented in the Jarvis project. Prior to defining th
 ### Terminology
 - **Principals**: Entities that can be granted permissions (individual users, groups, public, and roles)
 - **Roles**: Predefined sets of permissions. Each role is associated with a resource type  and maps to permission bits (permBits)
-- **Resources**: Items that require access control (mcp servers, agents), identified by resourceType and resourceId.
+- **Resources**: Items that require access control (MCP servers, agents, prompt groups, remote agents), identified by resourceType and resourceId.
 - **Permissions**: Numeric bitmasks that define allowed actions (view, edit).
 
 ### Existing ACL Service
@@ -118,7 +118,7 @@ sequenceDiagram
 Required Fields:
 - `principalType`: String - The type of principal (user, group, or public)
 - `principalId?`: Mixed - The ID of the principal (objectId for user/group, null for "public")
-- `resourceType`: String - The type of resource (MCP Server, Agent)
+- `resourceType`: String - The type of resource (mcpServer, agent, promptGroup, remoteAgent)
 - `resourceId`: ObjectId - The ID of the resource
 - `permBits`: Number - The permission bits
 
@@ -138,7 +138,7 @@ MongoDB `ACLEntry`
   principalType: "user" | "group" | "public",
   principalId: "..." | null,
   principalModel: "..." | null,
-  resourceType: "mcpServer" | "agent"
+  resourceType: "mcpServer" | "agent" | "promptGroup" | "remoteAgent"
   resourceId: ObjectId("..."),
   permBits: NumberLong(1),
   roleId: ObjectId("...") | null,
@@ -209,10 +209,15 @@ Search for principals (users, groups) by query string. Used in the ACL sharing U
         "principalId": "68277281e5d4dd8bbeb261d4",
         "name": "Ryo",
         "email": "ryo.h@ascendingdc.com",
-        "accessRoleId": "mcpServer_owner"
+        "accessRoleId": "remoteAgent_owner"
     }
 ]
 ```
+
+**Note:** The `accessRoleId` value depends on the resource type being queried. For example:
+- MCP Servers: `mcpServer_viewer`, `mcpServer_editor`, `mcpServer_owner`
+- Remote Agents: `remoteAgent_viewer`, `remoteAgent_editor`, `remoteAgent_owner`
+- Prompt Groups: `promptGroup_viewer`, `promptGroup_editor`, `promptGroup_owner`
 
 ---
 
@@ -220,12 +225,14 @@ Search for principals (users, groups) by query string. Used in the ACL sharing U
 
 **GET `/permissions/{resource_type}/roles`**
 
-Get all available access roles for a specific resource type (e.g., mcpServer, agent). Used by the frontend to populate role selection dropdowns.
+Get all available access roles for a specific resource type. Used by the frontend to populate role selection dropdowns.
 
 **Path Parameters:**
-- `resource_type` (string, required): Type of resource (e.g., `mcpServer`, `agent`)
+- `resource_type` (string, required): Type of resource. Valid values: `mcpServer`, `agent`, `promptGroup`, `remoteAgent`
 
-**Response:** `200 OK`
+**Response Examples:**
+
+For `mcpServer`:
 ```json
 [
     {
@@ -261,7 +268,7 @@ Get all ACL permissions for a specific resource with full principal details. Ret
 - `resource_type` (string, required): Type of resource (e.g., `mcpServer`, `agent`)
 - `resource_id` (string, required): ID of the resource
 
-**Response:** `200 OK`
+**Response Example (for mcpServer):**
 ```json
 {
     "resourceType": "mcpServer",
@@ -309,10 +316,31 @@ Get all ACL permissions for a specific resource with full principal details. Ret
 Update ACL permissions for a specific resource. Supports adding/updating/removing principals and setting public access.
 
 **Path Parameters:**
-- `resource_type` (string, required): Type of resource (e.g., `mcpServer`, `agent`)
+- `resource_type` (string, required): Type of resource. Valid values: `mcpServer`, `agent`, `promptGroup`, `remoteAgent`
 - `resource_id` (string, required): ID of the resource
 
-**Request Body:**
+**Request Body Example (for remoteAgent):**
+```json
+{
+    "updated": [
+        {
+            "principalType": "user",
+            "principalId": "684b224c0b065c7d6ccc66d6",
+            "accessRoleId": "remoteAgent_editor",
+            "permBits": 3
+        }
+    ],
+    "removed": [
+        {
+            "principalType": "user",
+            "principalId": "68277281e5d4dd8bbeb261d4"
+        }
+    ],
+    "public": false
+}
+```
+
+**Request Body Example (for mcpServer):**
 ```json
 {
     "updated": [
