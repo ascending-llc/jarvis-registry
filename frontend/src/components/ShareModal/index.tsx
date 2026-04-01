@@ -9,7 +9,7 @@ import { type ShareModalProps, useShareModal } from './useShareModal';
 export const ShareModal: React.FC<ShareModalProps> = props => {
   const { isOpen, onClose, itemName, resourceType } = props;
   const { search, permissions, publicShare, roles, saving, handleSave } = useShareModal(props);
-  const resourceLabel = resourceType === 'agent' ? 'Agent' : 'MCP Server';
+  const resourceLabel = resourceType === 'remoteAgent' ? 'Agent' : 'MCP Server';
 
   return (
     <Transition.Root show={isOpen} as={Fragment}>
