@@ -1,11 +1,17 @@
-# Pure new RBAC scopes for registry server/agent APIs.
-# Scopes configuration for role-based permissions focused on server/agent APIs.
+# Pure new RBAC scopes for registry server/agent/federation APIs.
+# Scopes configuration for role-based permissions focused on first-class resource APIs.
+#
+# Federation authorization uses a two-layer model:
+# - scopes control access to federation-related endpoints
+# - ACL controls access to a specific federation resource
+# Therefore `federations-read` / `federations-write` do not replace resource ACL;
+# they work together with the generic `/permissions/{resource_type}/{resource_id}` APIs.
 #
 # Roles:
 # - registry-admin: full access
-# - registry-power-user: create/delete/share servers, read agents
-# - register-user: create servers and agents, cannot share
-# - register-read-only: read-only access to servers and agents
+# - registry-power-user: create/update/delete federation/server/agent resources and manage ACL
+# - register-user: create/update/delete federation/server/agent resources, but not share them
+# - register-read-only: read-only access to federation/server/agent resources
 
 group_mappings:
   jarvis-registry-admin:
@@ -13,6 +19,9 @@ group_mappings:
     - agents-read
     - agents-write
     - server-write
+    - federations-read
+    - federations-write
+    - federations-share
     - servers-share
     - agents-share
     - system-ops
@@ -25,6 +34,9 @@ group_mappings:
     - agents-read
     - agents-write
     - server-write
+    - federations-read
+    - federations-write
+    - federations-share
     - servers-share
     - agents-share
     - user-read
@@ -36,12 +48,15 @@ group_mappings:
     - agents-read
     - agents-write
     - server-write
+    - federations-read
+    - federations-write
     - user-read
     - acl-read
     - mcp-proxy-ops
   jarvis-registry-read-only:
     - servers-read
     - agents-read
+    - federations-read
     - user-read
     - acl-read
 
@@ -119,12 +134,50 @@ server-write:
     method: POST
     endpoint: /servers/{server_id}/toggle
 
+federations-read:
+  # Federation read scopes only allow access to federation read endpoints.
+  # Resource-level visibility is still filtered by ACL at runtime.
+  - action: list_federations
+    method: GET
+    endpoint: /federations
+  - action: get_federation
+    method: GET
+    endpoint: /federations/{federation_id}
+
+federations-write:
+  # Federation write scopes allow create/update/sync/delete endpoints.
+  # Update/sync/delete still require resource-level ACL permissions such as EDIT/DELETE.
+  - action: create_federation
+    method: POST
+    endpoint: /federations
+  - action: update_federation
+    method: PUT
+    endpoint: /federations/{federation_id}
+  - action: delete_federation
+    method: DELETE
+    endpoint: /federations/{federation_id}
+  - action: sync_federation
+    method: POST
+    endpoint: /federations/{federation_id}/sync
+
+federations-share:
+  # Federation share only manages ACL on the federation resource itself.
+  # It does not cascade to synced MCP servers or A2A agents under that federation.
+  # Child resources remain independently shareable through `servers-share` and `agents-share`.
+  - action: share_federation
+    method: PUT
+    endpoint: /permissions/federation/{resource_id}
+
 servers-share:
+  # MCP servers stay independently shareable even when they were created by federation sync.
+  # Sharing a federation does not imply sharing any `/permissions/mcpServer/{resource_id}` ACL.
   - action: share_service
     method: PUT
     endpoint: /permissions/mcpServer/{resource_id}
 
 agents-share:
+  # A2A agents stay independently shareable even when they were created by federation sync.
+  # Sharing a federation does not imply sharing any `/permissions/agent/{resource_id}` ACL.
   - action: share_agent
     method: PUT
     endpoint: /permissions/agent/{resource_id}
@@ -187,6 +240,7 @@ user-read:
     endpoint: /mcp/oauth/token/{server_id}
 
 acl-read:
+  # Generic ACL read APIs are also used for federation resources via resource_type=federation.
   - action: search_principals
     method: GET
     endpoint: /permissions/search-principals
@@ -195,6 +249,7 @@ acl-read:
     endpoint: /permissions/{resource_type}/{resource_id}
 
 acl-write:
+  # Generic ACL write APIs are also used for federation resources via resource_type=federation.
   - action: update_resource_permissions
     method: PUT
     endpoint: /permissions/{resource_type}/{resource_id}

@@ -121,6 +121,8 @@ class TestMongoDBConnection:
             assert "Token" in model_names
             assert "IAction" in model_names
             assert "Key" in model_names
+            assert "Federation" in model_names
+            assert "FederationSyncJob" in model_names
 
     @pytest.mark.asyncio
     async def test_connect_db_only_once(self):

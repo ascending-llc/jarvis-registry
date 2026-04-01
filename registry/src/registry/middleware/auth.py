@@ -115,7 +115,6 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
                 auth_ctx.set_success(True)
 
                 logger.info(f"User {user_context.get('username')} authenticated via {auth_source}")
-                return await call_next(request)
 
             except AuthenticationError as e:
                 auth_ctx.set_success(False)
@@ -141,8 +140,10 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
 
             except Exception as e:
                 auth_ctx.set_success(False)
-                logger.error(f"Auth error for {path}: {e}")
+                logger.exception(f"Auth error for {path}: {e}")
                 return JSONResponse(status_code=500, content={"detail": "Authentication error"})
+
+        return await call_next(request)
 
     def _match_path(self, path: str, compiled_patterns: list[tuple]) -> bool:
         """

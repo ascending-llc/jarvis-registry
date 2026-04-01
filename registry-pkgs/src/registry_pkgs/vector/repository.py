@@ -83,6 +83,55 @@ class Repository[T: VectorStorable]:
         """Lazily resolve the underlying adapter when a vector operation runs."""
         return self.db_client.adapter
 
+    def _collection_has_property(self, property_name: str) -> bool:
+        """Check whether the backing collection exposes a given metadata property."""
+        return self.adapter.has_property(self.collection, property_name)
+
+    async def _ensure_collection(self) -> bool:
+        """Ensure the backing vector collection exists before repository operations run."""
+        try:
+            if self.adapter.collection_exists(self.collection):
+                logger.info("Collection '%s' already exists", self.collection)
+                return True
+
+            logger.info("Creating collection '%s'...", self.collection)
+            store = self.adapter.get_vector_store(self.collection)
+            if store:
+                logger.info("Collection '%s' created successfully", self.collection)
+                return True
+
+            logger.error("Failed to create collection '%s'", self.collection)
+            return False
+        except Exception as e:
+            logger.error("Error ensuring collection '%s': %s", self.collection, e, exc_info=True)
+            raise
+
+    def _load_docs_by_metadata_paginated(
+        self,
+        *,
+        filters: dict[str, Any],
+        batch_size: int = 500,
+    ) -> list[Document]:
+        """Load all matching documents by metadata using offset-based pagination."""
+        docs: list[Document] = []
+        offset = 0
+
+        while True:
+            batch = self.adapter.filter_by_metadata(
+                filters,
+                limit=batch_size,
+                offset=offset,
+                collection_name=self.collection,
+            )
+            if not batch:
+                break
+            docs.extend(batch)
+            if len(batch) < batch_size:
+                break
+            offset += batch_size
+
+        return docs
+
     # ========================================
     # CRUD Operations with Smart Update Detection
     # ========================================
