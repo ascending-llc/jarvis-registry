@@ -202,12 +202,12 @@ def _create_entra_provider(resolved_settings, oauth2_config: dict) -> EntraIdPro
     )
 
 
-def _get_provider_health_info() -> dict:
+async def _get_provider_health_info() -> dict:
     """Get health information for the current provider."""
     try:
         provider = get_auth_provider()
         if hasattr(provider, "get_provider_info"):
-            return provider.get_provider_info()
+            return await provider.get_provider_info()
         else:
             return {"provider_type": settings.auth_provider, "status": "unknown"}
     except Exception as e:
