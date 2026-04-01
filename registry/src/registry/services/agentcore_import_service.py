@@ -469,7 +469,7 @@ class AgentCoreImportService:
 
             applied = await self._update_a2a_agent(existing=existing, new_data=discovered_agent, changes=changes)
             await self._ensure_acl_permissions(
-                resource_type=ResourceType.AGENT,
+                resource_type=ResourceType.REMOTE_AGENT,
                 resource_id=existing.id,
                 owner_id=owner_id,
                 viewer_id=viewer_id,
@@ -523,7 +523,7 @@ class AgentCoreImportService:
         await discovered_agent.insert(session=self._get_current_session_or_none())
 
         await self._ensure_acl_permissions(
-            resource_type=ResourceType.AGENT,
+            resource_type=ResourceType.REMOTE_AGENT,
             resource_id=discovered_agent.id,
             owner_id=owner_id,
             viewer_id=viewer_id,

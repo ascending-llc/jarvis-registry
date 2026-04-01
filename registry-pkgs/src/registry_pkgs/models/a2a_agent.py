@@ -110,7 +110,7 @@ class A2AAgent(Document):
     - Agent creation automatically creates ACL entry granting creator OWNER permissions
     - Update/Delete operations require appropriate ACL permissions (EDIT/DELETE)
     - Query operations filter based on ACL visibility (VIEW permission)
-    - Permissions managed via ACLService using ResourceType.AGENT
+    - Permissions managed via ACLService using ResourceType.REMOTE_AGENT
     """
 
     # ========== Registry-specific Fields ==========
