@@ -7,8 +7,9 @@ import { PermissionList, PrincipalSearch, PublicShare } from './components';
 import { type ShareModalProps, useShareModal } from './useShareModal';
 
 export const ShareModal: React.FC<ShareModalProps> = props => {
-  const { isOpen, onClose, itemName } = props;
+  const { isOpen, onClose, itemName, resourceType } = props;
   const { search, permissions, publicShare, roles, saving, handleSave } = useShareModal(props);
+  const resourceLabel = resourceType === 'remoteAgent' ? 'Agent' : 'MCP Server';
 
   return (
     <Transition.Root show={isOpen} as={Fragment}>
@@ -64,13 +65,13 @@ export const ShareModal: React.FC<ShareModalProps> = props => {
               <PrincipalSearch search={search} />
 
               <div className='min-h-0 flex-1 overflow-y-auto pr-1 mb-6'>
-                <PermissionList permissions={permissions} roles={roles} />
+                <PermissionList permissions={permissions} roles={roles} resourceLabel={resourceLabel} />
 
                 {/* Divider */}
                 <div className='my-6 border-t border-gray-200 dark:border-gray-700' />
 
                 {/* Section: Share with everyone */}
-                <PublicShare publicShare={publicShare} roles={roles} />
+                <PublicShare publicShare={publicShare} roles={roles} resourceLabel={resourceLabel} />
 
                 {/* Footer */}
                 <div className='flex items-center justify-end gap-3'>

@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import ANY, AsyncMock
 
 import pytest
 from beanie import PydanticObjectId
@@ -8,7 +8,6 @@ from beanie import PydanticObjectId
 from registry.services.agentcore_import_service import AgentCoreImportService
 from registry_pkgs.models import ExtendedMCPServer
 from registry_pkgs.models._generated import ResourceType
-from registry_pkgs.models.enums import FederationSource
 
 
 class _FakeRepo:
@@ -74,10 +73,11 @@ class _FakeServer:
         self.status = "active"
         self.numTools = 0
         self.author = PydanticObjectId()
-        self.federationSource = FederationSource.AGENTCORE
-        self.federationId = federation_id
-        self.federationSyncedAt = datetime.now(UTC)
-        self.federationMetadata = {"sourceType": "gateway_target", "runtimeVersion": "1"}
+        self.federationMetadata = {
+            "sourceType": "gateway_target",
+            "runtimeArn": federation_id,
+            "runtimeVersion": "1",
+        }
         self.createdAt = datetime.now(UTC)
         self.updatedAt = datetime.now(UTC)
         self.save = AsyncMock()
@@ -173,22 +173,21 @@ class TestAgentCoreImportService:
         assert kwargs["data"].type == discovered.config["type"]
         assert kwargs["data"].requiresOauth is True
         assert kwargs["data"].initTimeout == discovered.config["initDuration"]
-        assert created_server.federationId == discovered.federationId
+        assert created_server.federationMetadata == discovered.federationMetadata
         assert len(repo.synced) == 1
 
     async def test_import_from_runtime_continues_on_error(self, service, monkeypatch):
         discovered_1 = _FakeServer(name="srv-1", federation_id="fed-1")
         discovered_2 = _FakeServer(name="srv-2", federation_id="fed-2")
 
-        service.federation_client = SimpleNamespace(
-            discover_runtime_entities=self._async_return(
-                {
-                    "mcp_servers": [discovered_1, discovered_2],
-                    "a2a_agents": [],
-                    "skipped_runtimes": [],
-                }
-            )
+        discover_runtime_entities = AsyncMock(
+            return_value={
+                "mcp_servers": [discovered_1, discovered_2],
+                "a2a_agents": [],
+                "skipped_runtimes": [],
+            }
         )
+        service.federation_client = SimpleNamespace(discover_runtime_entities=discover_runtime_entities)
 
         monkeypatch.setattr(
             service,
@@ -213,9 +212,21 @@ class TestAgentCoreImportService:
 
         monkeypatch.setattr(service, "_import_single_server_in_transaction", _fake_import_single_server)
 
-        result = await service.import_from_runtime(dry_run=False, user_id="dummy")
+        result = await service.import_from_runtime(
+            dry_run=False,
+            user_id="dummy",
+            aws_region="us-west-2",
+            runtime_arn="arn:aws:bedrock-agentcore:us-west-2:123456789012:runtime/test",
+        )
+
+        discover_runtime_entities.assert_awaited_once_with(
+            runtime_arns=["arn:aws:bedrock-agentcore:us-west-2:123456789012:runtime/test"],
+            author_id=ANY,
+            region="us-west-2",
+        )
 
         assert result["discovered"]["mcp_servers"] == 2
+        assert result["runtime_filter_count"] == 1
         assert result["created"]["mcp_servers"] == 1
         assert result["skipped"]["mcp_servers"] == 1
         assert len(result["errors"]) == 1
@@ -246,9 +257,7 @@ class TestAgentCoreImportService:
             status="active",
             isEnabled=True,
             wellKnown=None,
-            federationId="fed-a2a-new",
-            federationMetadata={"sourceType": "runtime"},
-            federationSource=FederationSource.AGENTCORE,
+            federationMetadata={"sourceType": "runtime", "runtimeArn": "fed-a2a-new"},
             createdAt=datetime.now(UTC),
             updatedAt=datetime.now(UTC),
             author=None,
@@ -276,8 +285,7 @@ class TestAgentCoreImportService:
             status="inactive",
             isEnabled=False,
             wellKnown=None,
-            federationId="fed-a2a-upd",
-            federationMetadata={"sourceType": "runtime", "runtimeVersion": "1"},
+            federationMetadata={"sourceType": "runtime", "runtimeArn": "fed-a2a-upd", "runtimeVersion": "1"},
             save=AsyncMock(),
         )
         new_data = SimpleNamespace(
@@ -287,8 +295,7 @@ class TestAgentCoreImportService:
             status="active",
             isEnabled=True,
             wellKnown=None,
-            federationId="fed-a2a-upd",
-            federationMetadata={"sourceType": "runtime", "runtimeVersion": "2"},
+            federationMetadata={"sourceType": "runtime", "runtimeArn": "fed-a2a-upd", "runtimeVersion": "2"},
         )
 
         changes = await service._update_a2a_agent(existing=existing, new_data=new_data)
@@ -302,12 +309,11 @@ class TestAgentCoreImportService:
     async def test_collects_stale_entities(self, service, monkeypatch):
         stale_server = _FakeServer(name="stale-mcp", federation_id="arn:runtime:stale")
         stale_server.id = PydanticObjectId()
-        stale_server.federationMetadata = {"sourceType": "runtime"}
+        stale_server.federationMetadata = {"sourceType": "runtime", "runtimeArn": "arn:runtime:stale"}
         stale_agent = SimpleNamespace(
             id=PydanticObjectId(),
-            federationId="arn:runtime:stale2",
             card=SimpleNamespace(name="stale-a2a"),
-            federationMetadata={"sourceType": "runtime"},
+            federationMetadata={"sourceType": "runtime", "runtimeArn": "arn:runtime:stale2"},
         )
 
         find_mock_mcp = SimpleNamespace(to_list=self._async_return([stale_server]))
@@ -371,11 +377,11 @@ class TestAgentCoreImportService:
     async def test_detect_runtime_version_change_supports_int(self, service):
         existing = {"runtimeVersion": 2}
         new_data = {"runtimeVersion": 3}
-        assert service._detect_runtime_version_change(existing, new_data) == ["runtimeVersion: 2 -> 3"]
+        assert service.detect_runtime_version_change(existing, new_data) == ["runtimeVersion: 2 -> 3"]
 
     async def test_detect_runtime_version_change_handles_missing_version(self, service):
-        assert service._detect_runtime_version_change({"sourceType": "runtime"}, {"sourceType": "runtime"}) == []
-        assert service._detect_runtime_version_change({"sourceType": "runtime"}, {"runtimeVersion": "1"}) == [
+        assert service.detect_runtime_version_change({"sourceType": "runtime"}, {"sourceType": "runtime"}) == []
+        assert service.detect_runtime_version_change({"sourceType": "runtime"}, {"runtimeVersion": "1"}) == [
             "runtimeVersion: None -> 1"
         ]
 

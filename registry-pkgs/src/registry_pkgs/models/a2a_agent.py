@@ -59,8 +59,6 @@ from langchain_core.documents import Document as LangChainDocument
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 from pymongo import IndexModel
 
-from .enums import FederationSource
-
 logger = logging.getLogger(__name__)
 
 # ========== Constants ==========
@@ -110,7 +108,7 @@ class A2AAgent(Document):
     - Agent creation automatically creates ACL entry granting creator OWNER permissions
     - Update/Delete operations require appropriate ACL permissions (EDIT/DELETE)
     - Query operations filter based on ACL visibility (VIEW permission)
-    - Permissions managed via ACLService using ResourceType.AGENT
+    - Permissions managed via ACLService using ResourceType.REMOTE_AGENT
     """
 
     # ========== Registry-specific Fields ==========
@@ -134,10 +132,7 @@ class A2AAgent(Document):
     createdAt: datetime = Field(default_factory=lambda: datetime.now(UTC), description="Creation timestamp")
     updatedAt: datetime = Field(default_factory=lambda: datetime.now(UTC), description="Last update timestamp")
 
-    # Federation sync fields (root level)
-    federationSource: FederationSource | None = None
-    federationId: str | None = None
-    federationSyncedAt: datetime | None = None
+    federationRefId: PydanticObjectId | None = None
     federationMetadata: dict[str, Any] | None = None
 
     # ========== Settings ==========
@@ -155,7 +150,8 @@ class A2AAgent(Document):
             [("card.name", "text")],
             [("author", 1)],
             [("registeredBy", 1)],
-            IndexModel([("federationSource", 1), ("federationId", 1)], unique=True, sparse=True),
+            IndexModel([("federationRefId", 1)]),
+            IndexModel([("federationMetadata.runtimeArn", 1)], sparse=True),
         ]
 
     # ========== Lifecycle Hooks ==========
@@ -220,9 +216,16 @@ class A2AAgent(Document):
             "is_enabled": self.isEnabled,
             "tags": self.tags,
         }
+        # Federation metadata lets vector sync target one federated A2A runtime precisely.
+        if self.federationRefId is not None:
+            base_metadata["federation_id"] = str(self.federationRefId)
         runtime_version = (self.federationMetadata or {}).get("runtimeVersion")
         if runtime_version is not None:
-            base_metadata["runtime_version"] = str(runtime_version)
+            base_metadata["runtimeVersion"] = str(runtime_version)
+        # Keep runtimeArn for debugging and future runtime-scoped repair.
+        runtime_arn = (self.federationMetadata or {}).get("runtimeArn")
+        if runtime_arn:
+            base_metadata["runtimeArn"] = runtime_arn
 
         docs: list[LangChainDocument] = [
             LangChainDocument(
@@ -344,9 +347,7 @@ class A2AAgent(Document):
             registeredBy=registry_fields.get("registeredBy"),
             registeredAt=registry_fields.get("registeredAt"),
             wellKnown=registry_fields.get("wellKnown"),
-            federationSource=registry_fields.get("federationSource"),
-            federationId=registry_fields.get("federationId"),
-            federationSyncedAt=registry_fields.get("federationSyncedAt"),
+            federationRefId=registry_fields.get("federationRefId"),
             federationMetadata=registry_fields.get("federationMetadata"),
         )
 

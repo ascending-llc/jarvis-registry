@@ -372,7 +372,7 @@ class WeaviateStore(VectorStoreAdapter):
         collection = self.get_collection(collection_name)
         normalized_filters = self.normalize_filters(filters)
         try:
-            response = collection.query.fetch_objects(filters=normalized_filters, limit=limit)
+            response = collection.query.fetch_objects(filters=normalized_filters, limit=limit, **kwargs)
             docs = self.get_document_response(response)
             return docs
         except Exception as e:

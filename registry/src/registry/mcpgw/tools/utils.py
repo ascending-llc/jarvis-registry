@@ -7,6 +7,8 @@ from __future__ import annotations
 import logging
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Literal
+from urllib.parse import parse_qs, urlsplit
+from uuid import UUID
 
 from httpx_sse import ServerSentEvent
 from mcp.server.session import ServerSession
@@ -27,6 +29,7 @@ from pydantic import ValidationError
 from registry_pkgs.models.extended_mcp_server import MCPServerDocument
 
 from ...auth.dependencies import UserContextDict, effective_scopes_from_context
+from ...auth.oauth.flow_state_manager import FlowStateManager
 from ...auth.oauth.types import StateMetadata
 from ...core.exceptions import InternalServerException, UrlElicitationRequiredException
 from ...schemas.errors import AuthenticationError, OAuthReAuthRequiredError, OAuthTokenError
@@ -273,3 +276,31 @@ def build_target_url(server: MCPServerDocument, remaining_path: str = "") -> str
         base_url += "/"
 
     return base_url + remaining_path
+
+
+def parse_elicitation_id(auth_url: str) -> str | None:
+    """
+    Parse the auth_url to obtain the elicitation_id from the "state" query string parameter.
+    """
+
+    try:
+        parsed = urlsplit(auth_url)
+
+        qs_dict = parse_qs(parsed.query)
+
+        state_str = qs_dict["state"][0]
+
+        state_dict = FlowStateManager.decode_state(state_str)
+
+        elicitation_id = state_dict["meta"]["elicitation_id"]
+
+        if UUID(elicitation_id).version != 4:
+            logger.error("elicitation_id from the state dictionary is not a valid UUID4 string.")
+
+            return None
+
+        return elicitation_id
+    except Exception:
+        logger.exception("failed to extract elicitation_id from auth_url.")
+
+        return None

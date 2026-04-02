@@ -7,6 +7,7 @@ from .api.system_routes import router as system_router
 from .api.v1.a2a.agent_routes import router as a2a_agent_router
 from .api.v1.acl_routes import router as acl_router
 from .api.v1.federation.agentcore_routes import router as agentcore_federation_router
+from .api.v1.federation.federation_routes import router as federation_router
 from .api.v1.mcp.connection_router import router as connection_router
 from .api.v1.mcp.oauth_router import router as oauth_router
 from .api.v1.meta_routes import router as meta_router
@@ -32,6 +33,11 @@ def register_routers(app: FastAPI) -> None:
     app.include_router(acl_router, prefix=f"/api/{settings.api_version}", tags=["ACL Management"])
     app.include_router(
         agentcore_federation_router,
+        prefix=f"/api/{settings.api_version}",
+        tags=["AgentCore Management"],
+    )
+    app.include_router(
+        federation_router,
         prefix=f"/api/{settings.api_version}",
         tags=["Federation Management"],
     )
