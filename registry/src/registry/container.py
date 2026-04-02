@@ -20,7 +20,10 @@ from .services.a2a_agent_service import A2AAgentService
 from .services.access_control_service import ACLService
 from .services.agent_scanner import AgentScannerService
 from .services.agentcore_import_service import AgentCoreImportService
+from .services.federation_crud_service import FederationCrudService
+from .services.federation_job_service import FederationJobService
 from .services.federation_service import FederationService
+from .services.federation_sync_service import FederationSyncService
 from .services.group_service import GroupService
 from .services.oauth.connection_service import MCPConnectionService
 from .services.oauth.mcp_service import MCPService
@@ -180,6 +183,25 @@ class RegistryContainer:
             timeout=httpx.Timeout(30.0, read=60.0),
             follow_redirects=True,
             limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
+        )
+
+    @cached_property
+    def federation_crud_service(self) -> FederationCrudService:
+        return FederationCrudService()
+
+    @cached_property
+    def federation_job_service(self) -> FederationJobService:
+        return FederationJobService()
+
+    @cached_property
+    def federation_sync_service(self) -> FederationSyncService:
+        return FederationSyncService(
+            federation_crud_service=self.federation_crud_service,
+            federation_job_service=self.federation_job_service,
+            mcp_server_repo=self.mcp_server_repo,
+            a2a_agent_repo=self.a2a_agent_repo,
+            acl_service=self.acl_service,
+            user_service=self.user_service,
         )
 
     async def startup(self) -> None:

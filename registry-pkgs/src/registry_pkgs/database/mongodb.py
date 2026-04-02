@@ -24,6 +24,8 @@ from ..models.extended_acl_entry import ExtendedAclEntry as IAclEntry
 from ..models.extended_mcp_server import (
     ExtendedMCPServer as MCPServerDocument,
 )
+from ..models.federation import Federation
+from ..models.federation_sync_job import FederationSyncJob
 
 
 class MongoDB:
@@ -101,6 +103,8 @@ class MongoDB:
                 "IAction": IAction,
                 "Key": Key,
                 "A2AAgent": A2AAgent,
+                "Federation": Federation,
+                "FederationSyncJob": FederationSyncJob,
             }
             MCPServerDocument.model_rebuild(_types_namespace=rebuild_namespace)
             Token.model_rebuild(_types_namespace=rebuild_namespace)
@@ -108,6 +112,8 @@ class MongoDB:
             IAction.model_rebuild(_types_namespace=rebuild_namespace)
             Key.model_rebuild(_types_namespace=rebuild_namespace)
             A2AAgent.model_rebuild(_types_namespace=rebuild_namespace)
+            Federation.model_rebuild(_types_namespace=rebuild_namespace)
+            FederationSyncJob.model_rebuild(_types_namespace=rebuild_namespace)
 
             # Initialize Beanie with all document models
             await init_beanie(
@@ -122,6 +128,8 @@ class MongoDB:
                     IAction,
                     Key,
                     A2AAgent,
+                    Federation,
+                    FederationSyncJob,
                 ],
             )
         except Exception:

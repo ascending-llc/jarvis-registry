@@ -200,7 +200,7 @@ const AgentRegistryOrEdit: React.FC = () => {
         <ShareModal
           itemName={formData.title || agentDetail?.name || 'Agent'}
           resourceId={id}
-          resourceType='agent'
+          resourceType='remoteAgent'
           isOpen={shareOpen}
           onClose={() => setShareOpen(false)}
         />

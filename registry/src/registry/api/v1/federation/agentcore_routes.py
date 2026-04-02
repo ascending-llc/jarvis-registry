@@ -15,6 +15,8 @@ router = APIRouter()
 
 class AgentCoreRuntimeSyncRequest(BaseModel):
     dryRun: bool = Field(default=False, description="Preview only, no persistence")
+    awsRegion: str | None = Field(default=None, description="Optional AWS region override for AgentCore discovery")
+    runtimeArn: str | None = Field(default=None, description="Optional runtime ARN to sync a single runtime")
 
 
 class AgentCoreSyncCounter(BaseModel):
@@ -70,6 +72,8 @@ async def sync_agentcore_runtime(
         result = await agentcore_import_service.import_from_runtime(
             dry_run=data.dryRun,
             user_id=user_context.get("user_id"),
+            aws_region=data.awsRegion,
+            runtime_arn=data.runtimeArn,
         )
         return AgentCoreRuntimeSyncResponse(**result)
     except ValueError as exc:

@@ -5,6 +5,8 @@ This module extends the auto-generated IAclEntry with a more flexible principalI
 The base model (_generated/aclEntry.py) should NOT be modified as it's auto-generated.
 """
 
+from enum import StrEnum
+
 from beanie import PydanticObjectId
 from pydantic import Field
 from pymongo import IndexModel
@@ -12,13 +14,20 @@ from pymongo import IndexModel
 from ._generated.aclEntry import IAclEntry
 
 
+class ExtendedResourceType(StrEnum):
+    AGENT = "agent"
+    PROMPTGROUP = "promptGroup"
+    MCPSERVER = "mcpServer"
+    REMOTE_AGENT = "remoteAgent"
+    FEDERATION = "federation"
+
+
 class ExtendedAclEntry(IAclEntry):
     """
     Extended ACL Entry Document
-    principalId is ObjectId, str, or None
-    roleId, inheritedFrom,grantedBy are ObjectIds and cannot be subject to string pattern constraints
     """
 
+    resourceType: ExtendedResourceType = Field(...)
     principalId: PydanticObjectId | str | None = Field(default=None)
     roleId: PydanticObjectId | None = Field(default=None)  # references IAccessRole collection
     inheritedFrom: PydanticObjectId | None = Field(default=None)

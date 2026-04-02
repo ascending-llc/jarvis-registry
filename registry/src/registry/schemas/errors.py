@@ -78,12 +78,16 @@ class ErrorCode:
     INTERNAL_ERROR = "internal_error"
     DATABASE_ERROR = "database_error"
     EXTERNAL_SERVICE_ERROR = "external_service_error"
+    NOT_IMPLEMENTED = "not_implemented"
 
     # MCP Specific
     HEALTH_CHECK_FAILED = "health_check_failed"
     TOOL_RETRIEVAL_FAILED = "tool_retrieval_failed"
     SERVER_CONNECTION_FAILED = "server_connection_failed"
     OAUTH_ERROR = "oauth_error"
+
+    CONFLICT = "conflict"
+    NOT_FOUND = "not_found"
 
 
 def create_error_detail(error_code: str, message: str) -> dict[str, Any]:

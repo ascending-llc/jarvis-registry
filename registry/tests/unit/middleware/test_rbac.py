@@ -618,6 +618,40 @@ class TestIntegrationScenarios:
         resp = client.put("/permissions/agent/xyz789")
         assert resp.status_code == 200
 
+    def test_share_federation_permissions(self, monkeypatch):
+        """federations-share scope allows sharing federation ACLs only."""
+        from registry.middleware import rbac as rbac_module
+
+        mock_settings = MagicMock()
+        mock_settings.api_version = "v1"
+        mock_settings.scopes_config = {
+            "federations-share": [{"endpoint": "/permissions/federation/{resource_id}", "method": "PUT"}],
+        }
+        monkeypatch.setattr(rbac_module, "settings", mock_settings)
+
+        app = self._build_app()
+
+        @app.put("/permissions/federation/{resource_id}")
+        def share_federation(resource_id: str):
+            return {"shared": resource_id}
+
+        @app.put("/permissions/mcpServer/{resource_id}")
+        def share_server(resource_id: str):
+            return {"shared": resource_id}
+
+        @app.put("/permissions/agent/{resource_id}")
+        def share_agent(resource_id: str):
+            return {"shared": resource_id}
+
+        app.add_middleware(ScopePermissionMiddleware)
+        app.add_middleware(self._auth_middleware_factory({"scopes": ["federations-share"]}))
+
+        client = TestClient(app)
+
+        assert client.put("/permissions/federation/fed123").status_code == 200
+        assert client.put("/permissions/mcpServer/server123").status_code == 403
+        assert client.put("/permissions/agent/agent123").status_code == 403
+
     def test_group_to_scope_mapping(self, monkeypatch):
         """Maps groups to scopes when explicit scopes missing."""
         from registry.middleware import rbac as rbac_module

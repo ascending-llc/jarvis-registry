@@ -271,7 +271,7 @@ class TestACLService:
         with pytest.raises(HTTPException) as exc_info:
             await service.check_user_permission(
                 user_id=PydanticObjectId(),
-                resource_type=ResourceType.MCPSERVER.value,
+                resource_type=ResourceType.MCPSERVER,
                 resource_id=PydanticObjectId(),
                 required_permission="EDIT",
             )
@@ -323,7 +323,7 @@ class TestACLService:
 
         result = await service.get_accessible_resource_ids(
             user_id=PydanticObjectId(),
-            resource_type=ResourceType.MCPSERVER.value,
+            resource_type=ResourceType.MCPSERVER,
         )
         # rid1 appears twice but should be deduplicated; rid2 has no VIEW bit
         assert result == [str(rid1)]
@@ -336,6 +336,6 @@ class TestACLService:
         mock_acl_entry.find.return_value.to_list = AsyncMock(side_effect=Exception("fail"))
         result = await service.get_accessible_resource_ids(
             user_id=PydanticObjectId(),
-            resource_type=ResourceType.MCPSERVER.value,
+            resource_type=ResourceType.MCPSERVER,
         )
         assert result == []

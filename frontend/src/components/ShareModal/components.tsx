@@ -18,11 +18,19 @@ interface RoleDropdownProps {
   value: string;
   onChange: (value: string) => void;
   roles: Role[];
+  resourceLabel?: string;
   direction?: 'up' | 'down';
   disabled?: boolean;
 }
 
-export const RoleDropdown: React.FC<RoleDropdownProps> = ({ value, onChange, roles, direction = 'down', disabled = false }) => {
+export const RoleDropdown: React.FC<RoleDropdownProps> = ({
+  value,
+  onChange,
+  roles,
+  resourceLabel = 'MCP Server',
+  direction = 'down',
+  disabled = false,
+}) => {
   const selectedRoleName = getRoleDisplayName(
     roles.find(r => r.accessRoleId === value),
     value,
@@ -48,7 +56,9 @@ export const RoleDropdown: React.FC<RoleDropdownProps> = ({ value, onChange, rol
               style={{ width: ROLE_DROPDOWN_BUTTON_WIDTH }}
               title={disabled ? 'At least one owner is required' : undefined}
             >
-              <span className='block truncate'>MCP Server {selectedRoleName}</span>
+              <span className='block truncate'>
+                {resourceLabel} {selectedRoleName}
+              </span>
               <span className='pointer-events-none absolute inset-y-0 right-0 flex items-center pr-2'>
                 <HiOutlineChevronDown className='h-4 w-4 text-gray-400 dark:text-gray-400' aria-hidden='true' />
               </span>
@@ -87,7 +97,7 @@ export const RoleDropdown: React.FC<RoleDropdownProps> = ({ value, onChange, rol
                           <>
                             <div className='flex flex-col'>
                               <span className={`block truncate ${selected ? 'font-medium' : 'font-normal'}`}>
-                                MCP Server {getRoleDisplayName(option)}
+                                {resourceLabel} {getRoleDisplayName(option)}
                               </span>
                               <span
                                 className={`block text-xs mt-0.5 ${selected ? 'text-gray-500 dark:text-gray-400' : 'text-gray-400 dark:text-gray-500'}`}
@@ -189,13 +199,14 @@ export const PrincipalSearch: React.FC<PrincipalSearchProps> = ({ search }) => {
 interface PermissionListProps {
   permissions: PermissionsState;
   roles: Role[];
+  resourceLabel?: string;
 }
 
-export const PermissionList: React.FC<PermissionListProps> = ({ permissions, roles }) => {
+export const PermissionList: React.FC<PermissionListProps> = ({ permissions, roles, resourceLabel = 'MCP Server' }) => {
   const ownerRoleId = roles[roles.length - 1]?.accessRoleId ?? '';
 
   return (
-    <div className='max-h-[340px] overflow-y-auto rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800'>
+    <div className='rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800'>
       {permissions.loading ? (
         <div className='flex items-center justify-center p-8'>
           <div className='animate-spin rounded-full h-6 w-6 border-b-2 border-purple-600' />
@@ -234,6 +245,7 @@ export const PermissionList: React.FC<PermissionListProps> = ({ permissions, rol
                     value={user.accessRoleId}
                     onChange={(value: string) => permissions.changeRole(user.principalType, user.principalId, value)}
                     roles={roles}
+                    resourceLabel={resourceLabel}
                     disabled={isLastOwner}
                   />
                   {!isLastOwner ? (
@@ -263,11 +275,12 @@ export const PermissionList: React.FC<PermissionListProps> = ({ permissions, rol
 interface PublicShareProps {
   publicShare: PublicShareState;
   roles: Role[];
+  resourceLabel?: string;
 }
 
-export const PublicShare: React.FC<PublicShareProps> = ({ publicShare, roles }) => {
+export const PublicShare: React.FC<PublicShareProps> = ({ publicShare, roles, resourceLabel = 'MCP Server' }) => {
   return (
-    <div className='flex flex-col gap-4 mb-14'>
+    <div className='flex flex-col gap-4 mb-6'>
       <div className='flex items-center justify-between'>
         <div className='flex items-center gap-2'>
           <RiGlobalLine
@@ -282,8 +295,8 @@ export const PublicShare: React.FC<PublicShareProps> = ({ publicShare, roles }) 
               <QuestionMarkCircleIcon className='h-5 w-5' />
             </button>
             <div className='absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block w-72 p-3 bg-white border border-gray-200 dark:bg-gray-800 dark:border-gray-700 text-xs text-gray-700 dark:text-gray-300 rounded-lg shadow-xl z-[70]'>
-              This MCP Server will be available to everyone. Please ensure this MCP Server is suitable for sharing with
-              everyone. Please protect your data.
+              This {resourceLabel} will be available to everyone. Please ensure this {resourceLabel} is suitable for
+              sharing with everyone. Please protect your data.
             </div>
           </div>
         </div>
@@ -309,7 +322,13 @@ export const PublicShare: React.FC<PublicShareProps> = ({ publicShare, roles }) 
             <HiOutlineShieldCheck className='h-5 w-5 text-purple-600 dark:text-purple-400' />
             <span className='font-semibold text-gray-800 dark:text-gray-200'>Permission level for everyone</span>
           </div>
-          <RoleDropdown value={publicShare.role} onChange={publicShare.setRole} roles={roles} direction='up' />
+          <RoleDropdown
+            value={publicShare.role}
+            onChange={publicShare.setRole}
+            roles={roles}
+            resourceLabel={resourceLabel}
+            direction='up'
+          />
         </div>
       )}
     </div>

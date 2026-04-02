@@ -144,6 +144,6 @@ async def test_create_agent_uses_injected_services(sample_user_context):
     acl_service.grant_permission.assert_awaited_once()
     call_args = acl_service.grant_permission.call_args
     assert call_args.kwargs["principal_type"] == PrincipalType.USER
-    assert call_args.kwargs["resource_type"] == ResourceType.AGENT
+    assert call_args.kwargs["resource_type"] == ResourceType.REMOTE_AGENT
     assert call_args.kwargs["perm_bits"] == RoleBits.OWNER
     assert result.name == "Test Agent"

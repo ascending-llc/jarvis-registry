@@ -56,7 +56,7 @@ from pydantic import Field
 from pymongo import IndexModel
 
 from ..core.config import ChunkingConfig
-from ..models.enums import FederationSource, ServerEntityType
+from ..models.enums import ServerEntityType
 
 logger = logging.getLogger(__name__)
 
@@ -152,10 +152,7 @@ class ExtendedMCPServer(Document):
     createdAt: datetime | None = Field(default=None, alias="createdAt")
     updatedAt: datetime | None = Field(default=None, alias="updatedAt")
 
-    # Federation sync fields (root level, source tracking metadata)
-    federationSource: FederationSource | None = None
-    federationId: str | None = None
-    federationSyncedAt: datetime | None = None
+    federationRefId: PydanticObjectId | None = None
     federationMetadata: dict[str, Any] | None = None
 
     class Settings:
@@ -163,7 +160,8 @@ class ExtendedMCPServer(Document):
         keep_nulls = False
         use_state_management = True
         indexes = [
-            IndexModel([("federationSource", 1), ("federationId", 1)], unique=True, sparse=True),
+            IndexModel([("federationRefId", 1)]),
+            IndexModel([("federationMetadata.runtimeArn", 1)], sparse=True),
         ]
 
     # ========== Vector Search Integration (Weaviate) ==========
@@ -266,13 +264,16 @@ class ExtendedMCPServer(Document):
             "status": self.status,
             "enabled": is_enabled,
         }
-        if self.federationSource:
-            metadata["federation_source"] = self.federationSource.value if self.federationSource else None
-        if self.federationId:
-            metadata["federation_id"] = self.federationId
+        # Federation metadata lets vector sync target one federated MCP runtime precisely.
+        if self.federationRefId is not None:
+            metadata["federation_id"] = str(self.federationRefId)
         runtime_version = (self.federationMetadata or {}).get("runtimeVersion")
         if runtime_version is not None:
-            metadata["runtime_version"] = str(runtime_version)
+            metadata["runtimeVersion"] = str(runtime_version)
+        # Keep runtimeArn for debugging and future runtime-scoped repair.
+        runtime_arn = (self.federationMetadata or {}).get("runtimeArn")
+        if runtime_arn:
+            metadata["runtimeArn"] = runtime_arn
         if self.tags:
             metadata["tags"] = list(self.tags)
         return metadata
@@ -526,9 +527,7 @@ class ExtendedMCPServer(Document):
             status=status,
             tags=server_info.get("tags", []),
             author=server_info.get("author") or PydanticObjectId(),
-            federationSource=server_info.get("federationSource"),
-            federationId=server_info.get("federationId"),
-            federationSyncedAt=server_info.get("federationSyncedAt"),
+            federationRefId=server_info.get("federationRefId"),
             federationMetadata=server_info.get("federationMetadata"),
         )
 

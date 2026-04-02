@@ -263,7 +263,7 @@ class TestExtendedMCPServerStructure:
 
         docs = server.to_documents()
         assert docs
-        assert docs[0].metadata.get("runtime_version") == "7"
+        assert docs[0].metadata.get("runtimeVersion") == "7"
 
     def test_tool_documents_use_downstream_mcp_tool_name_only(self):
         server = ExtendedMCPServer.model_construct(
@@ -326,4 +326,4 @@ class TestExtendedMCPServerStructure:
 
         docs = agent.to_documents()
         assert docs
-        assert docs[0].metadata.get("runtime_version") == "11"
+        assert docs[0].metadata.get("runtimeVersion") == "11"
