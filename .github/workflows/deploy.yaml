@@ -94,7 +94,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: build-images
     env:
-      DEPLOYMENT_NAME: mcpgateway-registry
+      DEPLOYMENT_NAME: registry-backend
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -146,7 +146,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: build-images
     env:
-      DEPLOYMENT_NAME: mcpgateway-frontend
+      DEPLOYMENT_NAME: registry-frontend
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
