@@ -27,7 +27,6 @@ class PermissionBits:
 class RoleBits:
     VIEWER = PermissionBits.VIEW  # 1
     EDITOR = PermissionBits.VIEW | PermissionBits.EDIT  # 3
-    MANAGER = PermissionBits.VIEW | PermissionBits.EDIT | PermissionBits.DELETE  # 7
     OWNER = PermissionBits.VIEW | PermissionBits.EDIT | PermissionBits.DELETE | PermissionBits.SHARE  # 15
 
 
