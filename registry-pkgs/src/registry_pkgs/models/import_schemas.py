@@ -149,7 +149,7 @@ class BeanieModelGenerator:
             if self.github_token:
                 headers["Authorization"] = f"token {self.github_token}"
 
-            async with httpx.AsyncClient(verify=False) as client:
+            async with httpx.AsyncClient(verify=False, follow_redirects=True) as client:
                 response = await client.get(api_url, headers=headers)
                 if response.status_code != 200:
                     raise Exception(f"HTTP {response.status_code}")
@@ -171,7 +171,7 @@ class BeanieModelGenerator:
             download_url = f"https://api.github.com/repos/{owner}/{repo}/releases/assets/{asset_id}"
             headers["Accept"] = "application/octet-stream"
 
-            async with httpx.AsyncClient(verify=False) as client:
+            async with httpx.AsyncClient(verify=False, follow_redirects=True) as client:
                 response = await client.get(download_url, headers=headers)
                 if response.status_code != 200:
                     raise Exception(f"HTTP {response.status_code}")
@@ -207,7 +207,7 @@ class BeanieModelGenerator:
             if self.github_token:
                 headers["Authorization"] = f"token {self.github_token}"
 
-            async with httpx.AsyncClient(verify=False) as client:
+            async with httpx.AsyncClient(verify=False, follow_redirects=True) as client:
                 response = await client.get(api_url, headers=headers)
                 if response.status_code != 200:
                     raise Exception(f"HTTP {response.status_code}")
