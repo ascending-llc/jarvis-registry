@@ -7,7 +7,7 @@ from fastapi import HTTPException
 from fastapi import status as http_status
 
 from registry_pkgs.database.decorators import get_current_session
-from registry_pkgs.models._generated import (
+from registry_pkgs.models import (
     IAccessRole,
     IUser,
     PrincipalType,

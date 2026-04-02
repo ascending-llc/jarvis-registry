@@ -6,7 +6,7 @@ from fastapi import HTTPException
 
 from registry.schemas.acl_schema import ResourcePermissions
 from registry.services.access_control_service import ACLService
-from registry_pkgs.models._generated import ResourceType
+from registry_pkgs.models import ResourceType
 from registry_pkgs.models.enums import PermissionBits, RoleBits
 
 

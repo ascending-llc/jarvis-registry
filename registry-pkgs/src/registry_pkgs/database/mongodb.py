@@ -11,21 +11,18 @@ from beanie import init_beanie
 from pymongo import AsyncMongoClient
 
 from ..core.config import MongoConfig
-from ..models._generated import (
+from ..models import (
+    A2AAgent,
+    ExtendedAclEntry,
+    ExtendedMCPServerDocument,
+    Federation,
+    FederationSyncJob,
     IAccessRole,
-    IAction,
     IGroup,
     IUser,
     Key,
     Token,
 )
-from ..models.a2a_agent import A2AAgent
-from ..models.extended_acl_entry import ExtendedAclEntry
-from ..models.extended_mcp_server import (
-    ExtendedMCPServer as MCPServerDocument,
-)
-from ..models.federation import Federation
-from ..models.federation_sync_job import FederationSyncJob
 
 
 class MongoDB:
@@ -98,18 +95,19 @@ class MongoDB:
                 "IAccessRole": IAccessRole,
                 "IGroup": IGroup,
                 "ExtendedAclEntry": ExtendedAclEntry,
-                "MCPServerDocument": MCPServerDocument,
+                "ExtendedMCPServerDocument": ExtendedMCPServerDocument,
                 "Token": Token,
-                "IAction": IAction,
                 "Key": Key,
                 "A2AAgent": A2AAgent,
                 "Federation": Federation,
                 "FederationSyncJob": FederationSyncJob,
             }
-            MCPServerDocument.model_rebuild(_types_namespace=rebuild_namespace)
-            Token.model_rebuild(_types_namespace=rebuild_namespace)
+            IUser.model_rebuild(_types_namespace=rebuild_namespace)
+            IAccessRole.model_rebuild(_types_namespace=rebuild_namespace)
+            IGroup.model_rebuild(_types_namespace=rebuild_namespace)
             ExtendedAclEntry.model_rebuild(_types_namespace=rebuild_namespace)
-            IAction.model_rebuild(_types_namespace=rebuild_namespace)
+            ExtendedMCPServerDocument.model_rebuild(_types_namespace=rebuild_namespace)
+            Token.model_rebuild(_types_namespace=rebuild_namespace)
             Key.model_rebuild(_types_namespace=rebuild_namespace)
             A2AAgent.model_rebuild(_types_namespace=rebuild_namespace)
             Federation.model_rebuild(_types_namespace=rebuild_namespace)
@@ -120,12 +118,11 @@ class MongoDB:
                 database=db,
                 document_models=[
                     IUser,
-                    MCPServerDocument,
                     IAccessRole,
-                    ExtendedAclEntry,
                     IGroup,
+                    ExtendedAclEntry,
+                    ExtendedMCPServerDocument,
                     Token,
-                    IAction,
                     Key,
                     A2AAgent,
                     Federation,

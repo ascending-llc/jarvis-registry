@@ -9,7 +9,7 @@ from enum import StrEnum
 
 from pydantic import Field
 
-from ._generated.aclEntry import IAclEntry
+from ._generated import IAclEntry
 
 
 class ExtendedResourceType(StrEnum):

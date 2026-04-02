@@ -32,7 +32,7 @@ from pymongo import DESCENDING, MongoClient
 
 from registry.core.config import settings
 from registry_pkgs.database import close_mongodb, init_mongodb
-from registry_pkgs.models import A2AAgent, ExtendedMCPServer
+from registry_pkgs.models import A2AAgent, ExtendedMCPServerDocument
 from registry_pkgs.models.federation import Federation
 from registry_pkgs.vector.client import create_database_client
 from registry_pkgs.vector.repositories.a2a_agent_repository import A2AAgentRepository
@@ -261,7 +261,7 @@ async def _retry_vector_sync(federation_id: ObjectId) -> None:
         if federation is None:
             raise SystemExit(f"Federation not found: {federation_id}")
 
-        mcp_servers = await ExtendedMCPServer.find({"federationRefId": federation_id}).to_list()
+        mcp_servers = await ExtendedMCPServerDocument.find({"federationRefId": federation_id}).to_list()
         a2a_agents = await A2AAgent.find({"federationRefId": federation_id}).to_list()
 
         mcp_indexed = 0
