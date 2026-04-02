@@ -116,7 +116,7 @@ class TestMongoDBConnection:
             assert "IUser" in model_names
             assert "MCPServerDocument" in model_names or "ExtendedMCPServer" in model_names
             assert "IAccessRole" in model_names
-            assert "IAclEntry" in model_names or "ExtendedAclEntry" in model_names
+            assert "ExtendedAclEntry" in model_names
             assert "IGroup" in model_names
             assert "Token" in model_names
             assert "IAction" in model_names

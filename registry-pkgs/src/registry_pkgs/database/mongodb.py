@@ -20,7 +20,7 @@ from ..models._generated import (
     Token,
 )
 from ..models.a2a_agent import A2AAgent
-from ..models.extended_acl_entry import ExtendedAclEntry as IAclEntry
+from ..models.extended_acl_entry import ExtendedAclEntry
 from ..models.extended_mcp_server import (
     ExtendedMCPServer as MCPServerDocument,
 )
@@ -97,7 +97,7 @@ class MongoDB:
                 "IUser": IUser,
                 "IAccessRole": IAccessRole,
                 "IGroup": IGroup,
-                "IAclEntry": IAclEntry,
+                "ExtendedAclEntry": ExtendedAclEntry,
                 "MCPServerDocument": MCPServerDocument,
                 "Token": Token,
                 "IAction": IAction,
@@ -108,7 +108,7 @@ class MongoDB:
             }
             MCPServerDocument.model_rebuild(_types_namespace=rebuild_namespace)
             Token.model_rebuild(_types_namespace=rebuild_namespace)
-            IAclEntry.model_rebuild(_types_namespace=rebuild_namespace)
+            ExtendedAclEntry.model_rebuild(_types_namespace=rebuild_namespace)
             IAction.model_rebuild(_types_namespace=rebuild_namespace)
             Key.model_rebuild(_types_namespace=rebuild_namespace)
             A2AAgent.model_rebuild(_types_namespace=rebuild_namespace)
@@ -122,7 +122,7 @@ class MongoDB:
                     IUser,
                     MCPServerDocument,
                     IAccessRole,
-                    IAclEntry,
+                    ExtendedAclEntry,
                     IGroup,
                     Token,
                     IAction,

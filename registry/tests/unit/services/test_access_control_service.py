@@ -13,18 +13,18 @@ from registry_pkgs.models.enums import PermissionBits, RoleBits
 class TestACLService:
     @pytest.mark.asyncio
     @patch("registry.services.access_control_service.get_current_session")
-    @patch("registry.services.access_control_service.IAclEntry")
+    @patch("registry.services.access_control_service.ExtendedAclEntry")
     async def test_grant_permission_new_entry(self, mock_acl_entry, mock_get_session):
         service = ACLService(user_service=Mock(), group_service=Mock())
         mock_get_session.return_value = AsyncMock()  # Mock session
         mock_acl_entry.find_one = AsyncMock(return_value=None)
 
-        # IAclEntry() returns an AsyncMock, whose insert is also an AsyncMock
+        # ExtendedAclEntry() returns an AsyncMock, whose insert is also an AsyncMock
         new_entry = AsyncMock()
         new_entry.insert = AsyncMock()
         mock_acl_entry.return_value = new_entry
         with (
-            patch("registry.services.access_control_service.IAclEntry", mock_acl_entry),
+            patch("registry.services.access_control_service.ExtendedAclEntry", mock_acl_entry),
             patch(
                 "registry.services.access_control_service.IAccessRole.find_one",
                 AsyncMock(return_value=MagicMock(permBits=PermissionBits.EDIT)),
@@ -44,7 +44,7 @@ class TestACLService:
 
     @pytest.mark.asyncio
     @patch("registry.services.access_control_service.get_current_session")
-    @patch("registry.services.access_control_service.IAclEntry")
+    @patch("registry.services.access_control_service.ExtendedAclEntry")
     async def test_grant_permission_update_existing(self, mock_acl_entry, mock_get_session):
         service = ACLService(user_service=Mock(), group_service=Mock())
         mock_get_session.return_value = AsyncMock()  # Mock session
@@ -87,7 +87,7 @@ class TestACLService:
 
     @pytest.mark.asyncio
     @patch("registry.services.access_control_service.get_current_session")
-    @patch("registry.services.access_control_service.IAclEntry")
+    @patch("registry.services.access_control_service.ExtendedAclEntry")
     async def test_delete_acl_entries_for_resource(self, mock_acl_entry, mock_get_session):
         service = ACLService(user_service=Mock(), group_service=Mock())
         mock_get_session.return_value = AsyncMock()  # Mock session
@@ -100,7 +100,7 @@ class TestACLService:
         assert deleted == 2
 
     @pytest.mark.asyncio
-    @patch("registry.services.access_control_service.IAclEntry")
+    @patch("registry.services.access_control_service.ExtendedAclEntry")
     async def test_delete_acl_entries_for_resource_exception(self, mock_acl_entry):
         service = ACLService(user_service=Mock(), group_service=Mock())
         mock_acl_entry.find.return_value.delete = AsyncMock(side_effect=Exception("fail"))
@@ -110,7 +110,7 @@ class TestACLService:
         assert deleted == 0
 
     @pytest.mark.asyncio
-    @patch("registry.services.access_control_service.IAclEntry")
+    @patch("registry.services.access_control_service.ExtendedAclEntry")
     async def test_get_user_permissions_for_resource_edit_only(self, mock_acl_entry):
         """EDIT bit (2) should only grant EDIT, not VIEW."""
         service = ACLService(user_service=Mock(), group_service=Mock())
@@ -137,7 +137,7 @@ class TestACLService:
 
     @pytest.mark.asyncio
     @patch("registry.services.access_control_service.get_current_session")
-    @patch("registry.services.access_control_service.IAclEntry")
+    @patch("registry.services.access_control_service.ExtendedAclEntry")
     async def test_delete_permission(self, mock_acl_entry, mock_get_session):
         service = ACLService(user_service=Mock(), group_service=Mock())
         mock_get_session.return_value = AsyncMock()  # Mock session
@@ -153,7 +153,7 @@ class TestACLService:
         assert deleted_count == 1
 
     @pytest.mark.asyncio
-    @patch("registry.services.access_control_service.IAclEntry")
+    @patch("registry.services.access_control_service.ExtendedAclEntry")
     async def test_delete_permission_exception(self, mock_acl_entry):
         service = ACLService(user_service=Mock(), group_service=Mock())
         mock_acl_entry.find.return_value.delete = AsyncMock(side_effect=Exception("fail"))
@@ -166,7 +166,7 @@ class TestACLService:
         assert deleted == 0
 
     @pytest.mark.asyncio
-    @patch("registry.services.access_control_service.IAclEntry")
+    @patch("registry.services.access_control_service.ExtendedAclEntry")
     async def test_get_user_permissions_for_resource_owner(self, mock_acl_entry):
         """User with OWNER bits should resolve all permissions."""
         service = ACLService(user_service=Mock(), group_service=Mock())
@@ -192,7 +192,7 @@ class TestACLService:
         assert perms.SHARE is True
 
     @pytest.mark.asyncio
-    @patch("registry.services.access_control_service.IAclEntry")
+    @patch("registry.services.access_control_service.ExtendedAclEntry")
     async def test_get_user_permissions_for_resource_no_match(self, mock_acl_entry):
         """No ACL entry should return all-False permissions."""
         service = ACLService(user_service=Mock(), group_service=Mock())
@@ -215,7 +215,7 @@ class TestACLService:
         assert perms.SHARE is False
 
     @pytest.mark.asyncio
-    @patch("registry.services.access_control_service.IAclEntry")
+    @patch("registry.services.access_control_service.ExtendedAclEntry")
     async def test_get_user_permissions_for_resource_exception(self, mock_acl_entry):
         """Exception should return all-False permissions."""
         service = ACLService(user_service=Mock(), group_service=Mock())
@@ -231,7 +231,7 @@ class TestACLService:
         assert perms == ResourcePermissions()
 
     @pytest.mark.asyncio
-    @patch("registry.services.access_control_service.IAclEntry")
+    @patch("registry.services.access_control_service.ExtendedAclEntry")
     async def test_check_user_permission_allowed(self, mock_acl_entry):
         """User with VIEW should pass the VIEW check."""
         service = ACLService(user_service=Mock(), group_service=Mock())
@@ -254,7 +254,7 @@ class TestACLService:
         assert perms.VIEW is True
 
     @pytest.mark.asyncio
-    @patch("registry.services.access_control_service.IAclEntry")
+    @patch("registry.services.access_control_service.ExtendedAclEntry")
     async def test_check_user_permission_denied(self, mock_acl_entry):
         """User with VIEW-only should be denied EDIT."""
         service = ACLService(user_service=Mock(), group_service=Mock())
@@ -278,7 +278,7 @@ class TestACLService:
         assert exc_info.value.status_code == 403
 
     @pytest.mark.asyncio
-    @patch("registry.services.access_control_service.IAclEntry")
+    @patch("registry.services.access_control_service.ExtendedAclEntry")
     async def test_check_user_permission_no_entry(self, mock_acl_entry):
         """No ACL entry should raise 403."""
         service = ACLService(user_service=Mock(), group_service=Mock())
@@ -300,7 +300,7 @@ class TestACLService:
         assert exc_info.value.status_code == 403
 
     @pytest.mark.asyncio
-    @patch("registry.services.access_control_service.IAclEntry")
+    @patch("registry.services.access_control_service.ExtendedAclEntry")
     async def test_get_accessible_resource_ids(self, mock_acl_entry):
         """Should return deduplicated resource IDs with VIEW bit set."""
         service = ACLService(user_service=Mock(), group_service=Mock())
@@ -329,7 +329,7 @@ class TestACLService:
         assert result == [str(rid1)]
 
     @pytest.mark.asyncio
-    @patch("registry.services.access_control_service.IAclEntry")
+    @patch("registry.services.access_control_service.ExtendedAclEntry")
     async def test_get_accessible_resource_ids_exception(self, mock_acl_entry):
         """Exception should return empty list."""
         service = ACLService(user_service=Mock(), group_service=Mock())

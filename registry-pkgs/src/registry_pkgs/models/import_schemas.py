@@ -485,7 +485,7 @@ class BeanieModelGenerator:
             "user": "IUser",
             "User": "IUser",
             "AccessRole": "IAccessRole",
-            "AclEntry": "IAclEntry",
+            "AclEntry": "ExtendedAclEntry",
             "Group": "IGroup",
         }
 
