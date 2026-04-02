@@ -272,3 +272,6 @@ mcp-proxy-ops:
   - action: connection_mcp
     method: GET,POST
     endpoint: /proxy/mcpgw/mcp
+  - action: proxy_to_mcp_servers
+    method: GET,POST
+    endpoint: /proxy/{path}
