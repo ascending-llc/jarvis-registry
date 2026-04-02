@@ -37,7 +37,7 @@ dependencies = [
 ]
 
 [project.scripts]
-import-schemas = "registry_pkgs.models.import_schemas:main"
+import-schemas = "registry_pkgs.cli.import_schemas:main"
 
 [build-system]
 requires = ["setuptools>=67", "wheel"]
