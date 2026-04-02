@@ -15,6 +15,12 @@ from a2a.client import A2ACardResolver, A2AClientHTTPError
 from a2a.types import AgentCard
 from beanie import PydanticObjectId
 
+from registry.core.exceptions import (
+    A2AAgentCardNotFoundException,
+    A2AAgentCardParseException,
+    A2AAgentCardTransportException,
+    A2AAgentCardUpstreamException,
+)
 from registry_pkgs.models.a2a_agent import STATUS_ACTIVE, A2AAgent
 
 from ..schemas.a2a_agent_api_schemas import AgentCreateRequest, AgentUpdateRequest
@@ -24,6 +30,67 @@ logger = logging.getLogger(__name__)
 
 class A2AAgentService:
     """Service for A2A Agent operations"""
+
+    async def _resolve_agent_card_with_fallback(
+        self,
+        base_url: str,
+        timeout_seconds: float,
+    ) -> AgentCard:
+        """Fetch agent card from known well-known paths with deterministic error semantics."""
+        timeout = httpx.Timeout(timeout_seconds)
+        last_404_error: Exception | None = None
+        first_non_404_http_error: Exception | None = None
+        first_transport_error: Exception | None = None
+        first_parse_error: Exception | None = None
+
+        well_known_paths = [".well-known/agent-card.json", ".well-known/agent.json"]
+
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            for path in well_known_paths:
+                try:
+                    resolver = A2ACardResolver(
+                        base_url=base_url,
+                        httpx_client=client,
+                        agent_card_path=path,
+                    )
+                    agent_card = await resolver.get_agent_card()
+                    logger.info(f"Successfully fetched agent card from {base_url}/{path}: {agent_card.name}")
+                    return agent_card
+                except A2AClientHTTPError as e:
+                    if e.status_code == 404:
+                        logger.debug(f"Agent card not found at {base_url}/{path}, trying next path")
+                        last_404_error = e
+                        continue
+
+                    logger.error(f"HTTP error (non-404) fetching from {base_url}/{path}: {e}")
+                    if first_non_404_http_error is None:
+                        first_non_404_http_error = e
+                except (httpx.HTTPError, httpx.TimeoutException) as e:
+                    logger.error(f"Transport error fetching from {base_url}/{path}: {e}")
+                    if first_transport_error is None:
+                        first_transport_error = e
+                except Exception as e:
+                    logger.error(f"Error parsing or validating card from {base_url}/{path}: {e}")
+                    if first_parse_error is None:
+                        first_parse_error = e
+
+        if first_non_404_http_error is not None:
+            raise A2AAgentCardUpstreamException(
+                f"Failed to fetch agent card from {base_url}: {first_non_404_http_error}"
+            )
+
+        if first_transport_error is not None:
+            raise A2AAgentCardTransportException(f"Failed to fetch agent card from {base_url}: {first_transport_error}")
+
+        if first_parse_error is not None:
+            raise A2AAgentCardParseException(f"Failed to parse agent card from {base_url}: {first_parse_error}")
+
+        if last_404_error is not None:
+            raise A2AAgentCardNotFoundException(
+                f"Agent card not found at {base_url} (tried: {', '.join(well_known_paths)})"
+            )
+
+        raise A2AAgentCardUpstreamException(f"Failed to fetch agent card from {base_url} for unknown reason")
 
     async def _fetch_agent_card_from_url(self, url: str) -> AgentCard:
         """
@@ -36,59 +103,24 @@ class A2AAgentService:
             Validated AgentCard from remote endpoint
 
         Raises:
-            ValueError: If fetching or validation fails
+            A2AAgentCardNotFoundException: If both known well-known endpoints return 404
+            A2AAgentCardTransportException: If transport/network failures occur
+            A2AAgentCardUpstreamException: If upstream returns non-404 errors
+            A2AAgentCardParseException: If payload cannot be parsed/validated
         """
         try:
             logger.info(f"Fetching agent card from {url} using SDK")
-
-            timeout = httpx.Timeout(15.0)
-            agent_card = None
-            last_error = None
-
-            # Try multiple well-known paths (agent-card.json first, then agent.json)
-            well_known_paths = [".well-known/agent-card.json", ".well-known/agent.json"]
-
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                for path in well_known_paths:
-                    try:
-                        resolver = A2ACardResolver(
-                            base_url=url,
-                            httpx_client=client,
-                            agent_card_path=path,
-                        )
-                        agent_card = await resolver.get_agent_card()
-                        logger.info(f"Successfully fetched agent card from {url}/{path}: {agent_card.name}")
-                        break
-                    except A2AClientHTTPError as e:
-                        if e.status_code == 404:
-                            logger.debug(f"Agent card not found at {url}/{path}, trying next path")
-                            last_error = e
-                            continue
-                        else:
-                            logger.error(f"HTTP error (non-404) fetching from {url}/{path}: {e}")
-                            raise ValueError(f"Failed to fetch agent card from {url}/{path}: {str(e)}")
-                    except Exception as e:
-                        logger.debug(f"Error fetching from {url}/{path}: {e}")
-                        last_error = e
-                        continue
-
-            if not agent_card:
-                error_msg = f"Failed to fetch agent card from {url} (tried: {', '.join(well_known_paths)})"
-                if last_error:
-                    error_msg += f". Last error: {str(last_error)}"
-                logger.error(error_msg)
-                raise ValueError(error_msg)
-
-            return agent_card
-
-        except ValueError:
+            return await self._resolve_agent_card_with_fallback(base_url=url, timeout_seconds=15.0)
+        except (
+            A2AAgentCardNotFoundException,
+            A2AAgentCardTransportException,
+            A2AAgentCardUpstreamException,
+            A2AAgentCardParseException,
+        ):
             raise
-        except (httpx.HTTPError, httpx.TimeoutException) as e:
-            logger.error(f"HTTP error fetching agent card from {url}: {e}", exc_info=True)
-            raise ValueError(f"Failed to fetch agent card from {url}: {str(e)}")
         except Exception as e:
-            logger.error(f"Error fetching agent card from {url}: {e}", exc_info=True)
-            raise ValueError(f"Failed to fetch agent card from {url}: {str(e)}")
+            logger.error(f"Unexpected error fetching agent card from {url}: {e}", exc_info=True)
+            raise A2AAgentCardUpstreamException(f"Failed to fetch agent card from {url}: {e}")
 
     async def list_agents(
         self,
@@ -465,6 +497,8 @@ class A2AAgentService:
         Raises:
             ValueError: If agent not found, well-known not enabled, or sync fails
         """
+        agent: A2AAgent | None = None
+
         try:
             agent = await A2AAgent.get(PydanticObjectId(agent_id))
             if not agent:
@@ -477,47 +511,10 @@ class A2AAgentService:
             if not agent.wellKnown.url:
                 raise ValueError("Well-known URL is not configured")
 
-            # Use SDK to fetch and validate agent card with fallback
+            # Use shared fallback helper for deterministic exception semantics.
             logger.info(f"Fetching agent card from {agent.wellKnown.url} using SDK")
-
-            timeout = httpx.Timeout(10.0)
-            updated_card = None
-            last_error = None
             base_url = str(agent.wellKnown.url).rsplit("/.well-known", 1)[0]
-
-            # Try multiple well-known paths (agent-card.json first, then agent.json)
-            well_known_paths = [".well-known/agent-card.json", ".well-known/agent.json"]
-
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                for path in well_known_paths:
-                    try:
-                        resolver = A2ACardResolver(
-                            base_url=base_url,
-                            httpx_client=client,
-                            agent_card_path=path,
-                        )
-                        updated_card = await resolver.get_agent_card()
-                        logger.info(f"Successfully fetched agent card from {base_url}/{path}")
-                        break
-                    except A2AClientHTTPError as e:
-                        if e.status_code == 404:
-                            logger.debug(f"Agent card not found at {base_url}/{path}, trying next path")
-                            last_error = e
-                            continue
-                        else:
-                            logger.error(f"HTTP error (non-404) fetching from {base_url}/{path}: {e}")
-                            raise ValueError(f"Failed to sync agent card from {base_url}/{path}: {str(e)}")
-                    except Exception as e:
-                        logger.debug(f"Error fetching from {base_url}/{path}: {e}")
-                        last_error = e
-                        continue
-
-            if not updated_card:
-                error_msg = f"Failed to fetch agent card from {base_url} (tried: {', '.join(well_known_paths)})"
-                if last_error:
-                    error_msg += f". Last error: {str(last_error)}"
-                logger.error(error_msg)
-                raise ValueError(error_msg)
+            updated_card = await self._resolve_agent_card_with_fallback(base_url=base_url, timeout_seconds=10.0)
 
             # Track changes
             changes = []
@@ -564,7 +561,7 @@ class A2AAgentService:
                 "changes": changes if changes else ["No changes detected"],
             }
 
-        except (httpx.HTTPError, httpx.TimeoutException) as e:
+        except A2AAgentCardTransportException as e:
             # Update sync error status
             if agent and agent.wellKnown:
                 agent.wellKnown.lastSyncStatus = "failed"
@@ -572,7 +569,16 @@ class A2AAgentService:
                 await agent.save()
 
             logger.error(f"HTTP error syncing agent {agent_id}: {e}", exc_info=True)
-            raise ValueError(f"Failed to fetch agent card: {str(e)}")
+            raise
+
+        except (A2AAgentCardNotFoundException, A2AAgentCardUpstreamException, A2AAgentCardParseException) as e:
+            if agent and agent.wellKnown:
+                agent.wellKnown.lastSyncStatus = "failed"
+                agent.wellKnown.syncError = str(e)
+                await agent.save()
+
+            logger.error(f"Error syncing agent {agent_id}: {e}", exc_info=True)
+            raise
 
         except ValueError:
             raise
