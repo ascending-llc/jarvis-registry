@@ -34,6 +34,7 @@ auth-server = { workspace = true }
 seed-data = "scripts.seed_mongodb:cli"
 sync-mongo-weaviate = "scripts.sync_mongo_to_weaviate:cli"
 sync-version = "scripts.sync_version:main"
+federation-job-admin = "scripts.federation_job_admin:cli"
 
 [build-system]
 requires = ["setuptools>=67", "wheel"]

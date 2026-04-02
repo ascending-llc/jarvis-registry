@@ -26,23 +26,25 @@ def sample_user_context():
 
 @pytest.mark.asyncio
 async def test_search_principals_uses_injected_acl_service():
+    from registry.schemas.acl_schema import PermissionPrincipalOut
+
     acl_service = MagicMock()
     acl_service.search_principals = AsyncMock(
         return_value=[
-            {
-                "principal_type": PrincipalType.USER,
-                "principal_id": TEST_PRINCIPAL_ID,
-                "name": "Test User",
-                "email": "test@example.com",
-                "accessRoleId": "viewer",
-            }
+            PermissionPrincipalOut(
+                principalType=PrincipalType.USER,
+                principalId=TEST_PRINCIPAL_ID,
+                name="Test User",
+                email="test@example.com",
+                accessRoleId="viewer",
+            )
         ]
     )
 
     result = await search_principals(
         query="test",
         limit=5,
-        principal_types=[PrincipalType.USER.value],
+        principalTypes=[PrincipalType.USER.value],
         acl_service=acl_service,
     )
 
@@ -51,7 +53,7 @@ async def test_search_principals_uses_injected_acl_service():
         limit=5,
         principal_types=[PrincipalType.USER.value],
     )
-    assert result[0]["principal_id"] == TEST_PRINCIPAL_ID
+    assert result[0].principalId == TEST_PRINCIPAL_ID
 
 
 @pytest.mark.asyncio
@@ -60,6 +62,7 @@ async def test_update_resource_permissions_uses_injected_acl_service(sample_user
     principal_id = str(PydanticObjectId())
     acl_service = MagicMock()
     acl_service.check_user_permission = AsyncMock()
+    acl_service.validate_at_least_one_owner_remains = AsyncMock()
     acl_service.delete_permission = AsyncMock(return_value=1)
     acl_service.grant_permission = AsyncMock(return_value=MagicMock(id=PydanticObjectId()))
 
@@ -67,16 +70,16 @@ async def test_update_resource_permissions_uses_injected_acl_service(sample_user
         public=False,
         updated=[
             PermissionPrincipalIn(
-                principal_type=PrincipalType.USER,
-                principal_id=principal_id,
-                perm_bits=PermissionBits.VIEW,
+                principalType=PrincipalType.USER,
+                principalId=principal_id,
+                permBits=PermissionBits.VIEW,
             )
         ],
         removed=[
             PermissionPrincipalIn(
-                principal_type=PrincipalType.USER,
-                principal_id=principal_id,
-                perm_bits=PermissionBits.VIEW,
+                principalType=PrincipalType.USER,
+                principalId=principal_id,
+                permBits=PermissionBits.VIEW,
             )
         ],
     )
@@ -97,9 +100,10 @@ async def test_update_resource_permissions_uses_injected_acl_service(sample_user
         )
 
     acl_service.check_user_permission.assert_awaited_once()
+    acl_service.validate_at_least_one_owner_remains.assert_awaited_once()
     assert acl_service.delete_permission.await_count == 2
     acl_service.grant_permission.assert_awaited_once()
-    assert result.results["resource_id"] == resource_id
+    assert result.results["resourceId"] == resource_id
 
 
 @pytest.mark.asyncio
@@ -107,7 +111,14 @@ async def test_get_resource_permissions_uses_injected_acl_service(sample_user_co
     resource_id = str(PydanticObjectId())
     acl_service = MagicMock()
     acl_service.check_user_permission = AsyncMock()
-    acl_service.get_resource_permissions = AsyncMock(return_value={"public": False, "updated": []})
+    acl_service.get_resource_permissions = AsyncMock(
+        return_value={
+            "resourceType": ResourceType.MCPSERVER.value,
+            "resourceId": resource_id,
+            "principals": [],
+            "public": False,
+        }
+    )
 
     result = await get_resource_permissions(
         resource_type=ResourceType.MCPSERVER.value,
@@ -118,4 +129,7 @@ async def test_get_resource_permissions_uses_injected_acl_service(sample_user_co
 
     acl_service.check_user_permission.assert_awaited_once()
     acl_service.get_resource_permissions.assert_awaited_once()
-    assert result == {"public": False, "updated": []}
+    assert result.resourceType == ResourceType.MCPSERVER.value
+    assert result.resourceId == resource_id
+    assert result.principals == []
+    assert result.public is False

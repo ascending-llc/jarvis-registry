@@ -95,7 +95,7 @@ async def list_agents(
         user_id = user_context.get("user_id")
         accessible_ids = await acl_service.get_accessible_resource_ids(
             user_id=PydanticObjectId(user_id),
-            resource_type=ResourceType.AGENT.value,
+            resource_type=ResourceType.REMOTE_AGENT.value,
         )
 
         # List agents
@@ -112,7 +112,7 @@ async def list_agents(
         for agent in agents:
             perms = await acl_service.get_user_permissions_for_resource(
                 user_id=PydanticObjectId(user_id),
-                resource_type=ResourceType.AGENT.value,
+                resource_type=ResourceType.REMOTE_AGENT.value,
                 resource_id=agent.id,
             )
             agent_items.append(convert_to_list_item(agent, acl_permission=perms))
@@ -217,7 +217,7 @@ async def get_agent(
         # Check VIEW permission
         permissions = await acl_service.check_user_permission(
             user_id=PydanticObjectId(user_id),
-            resource_type=ResourceType.AGENT.value,
+            resource_type=ResourceType.REMOTE_AGENT.value,
             resource_id=PydanticObjectId(agent_id),
             required_permission="VIEW",
         )
@@ -281,7 +281,7 @@ async def create_agent(
         await acl_service.grant_permission(
             principal_type=PrincipalType.USER,
             principal_id=PydanticObjectId(user_id),
-            resource_type=ResourceType.AGENT,
+            resource_type=ResourceType.REMOTE_AGENT,
             resource_id=agent.id,
             perm_bits=RoleBits.OWNER,
         )
@@ -347,7 +347,7 @@ async def update_agent(
         # Check EDIT permission and get permissions for response
         permissions = await acl_service.check_user_permission(
             user_id=PydanticObjectId(user_id),
-            resource_type=ResourceType.AGENT.value,
+            resource_type=ResourceType.REMOTE_AGENT.value,
             resource_id=PydanticObjectId(agent_id),
             required_permission="EDIT",
         )
@@ -405,7 +405,7 @@ async def delete_agent(
         # Check DELETE permission
         await acl_service.check_user_permission(
             user_id=PydanticObjectId(user_id),
-            resource_type=ResourceType.AGENT.value,
+            resource_type=ResourceType.REMOTE_AGENT.value,
             resource_id=PydanticObjectId(agent_id),
             required_permission="DELETE",
         )
@@ -416,7 +416,7 @@ async def delete_agent(
         if successful_delete:
             # Delete all associated ACL permission records
             deleted_count = await acl_service.delete_acl_entries_for_resource(
-                resource_type=ResourceType.AGENT,
+                resource_type=ResourceType.REMOTE_AGENT,
                 resource_id=PydanticObjectId(agent_id),
             )
             logger.info(f"Removed {deleted_count} ACL permissions for agent {agent_id}")
@@ -472,7 +472,7 @@ async def toggle_agent(
         # Check EDIT permission and get permissions for response
         permissions = await acl_service.check_user_permission(
             user_id=PydanticObjectId(user_id),
-            resource_type=ResourceType.AGENT.value,
+            resource_type=ResourceType.REMOTE_AGENT.value,
             resource_id=PydanticObjectId(agent_id),
             required_permission="EDIT",
         )
@@ -527,7 +527,7 @@ async def get_agent_skills(
         # Check VIEW permission
         await acl_service.check_user_permission(
             user_id=PydanticObjectId(user_id),
-            resource_type=ResourceType.AGENT.value,
+            resource_type=ResourceType.REMOTE_AGENT.value,
             resource_id=PydanticObjectId(agent_id),
             required_permission="VIEW",
         )
@@ -579,7 +579,7 @@ async def sync_wellknown(
         # Check EDIT permission
         await acl_service.check_user_permission(
             user_id=PydanticObjectId(user_id),
-            resource_type=ResourceType.AGENT.value,
+            resource_type=ResourceType.REMOTE_AGENT.value,
             resource_id=PydanticObjectId(agent_id),
             required_permission="EDIT",
         )

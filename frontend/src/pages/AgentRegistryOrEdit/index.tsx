@@ -1,10 +1,12 @@
 import { TrashIcon } from '@heroicons/react/24/outline';
 import type React from 'react';
 import { useCallback, useEffect, useState } from 'react';
+import { HiOutlineShare } from 'react-icons/hi2';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 
 import AgentIcon from '@/assets/AgentIcon';
 import CalendarIcon from '@/assets/CalendarIcon';
+import ShareModal from '@/components/ShareModal';
 import { useGlobal } from '@/contexts/GlobalContext';
 import { useServer } from '@/contexts/ServerContext';
 import SERVICES from '@/services';
@@ -23,6 +25,25 @@ const STATUS_STYLE: Record<string, { pill: string; dot: string; label: string }>
 const getStatusStyle = (status?: string) =>
   STATUS_STYLE[status ?? ''] ?? { pill: 'bg-amber-500/15 text-amber-300', dot: 'bg-amber-400', label: 'Unknown' };
 
+const getErrorMessage = (error: unknown, fallback: string): string => {
+  if (typeof error === 'string') return error;
+  if (error && typeof error === 'object') {
+    const err = error as {
+      detail?: string | { message?: string; error?: string };
+      message?: string;
+      error?: string;
+    };
+    if (typeof err.detail === 'string') return err.detail;
+    if (err.detail && typeof err.detail === 'object') {
+      if (typeof err.detail.message === 'string') return err.detail.message;
+      if (typeof err.detail.error === 'string') return err.detail.error;
+    }
+    if (typeof err.message === 'string') return err.message;
+    if (typeof err.error === 'string') return err.error;
+  }
+  return fallback;
+};
+
 const AgentRegistryOrEdit: React.FC = () => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -32,6 +53,7 @@ const AgentRegistryOrEdit: React.FC = () => {
 
   const [loading, setLoading] = useState(false);
   const [loadingDetail, setLoadingDetail] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
   const [agentDetail, setAgentDetail] = useState<Agent | null>(null);
   const [formData, setFormData] = useState<AgentConfig>(INIT_DATA);
   const [errors, setErrors] = useState<Record<string, string | undefined>>({});
@@ -138,8 +160,8 @@ const AgentRegistryOrEdit: React.FC = () => {
       showToast('Agent deleted successfully', 'success');
       navigate('/', { replace: true });
       refreshAgentData(true);
-    } catch (error: any) {
-      showToast(error?.detail || error, 'error');
+    } catch (error) {
+      showToast(getErrorMessage(error, 'Failed to delete agent'), 'error');
     }
   };
 
@@ -165,16 +187,26 @@ const AgentRegistryOrEdit: React.FC = () => {
         refreshAgentData(true);
       }
       goBack();
-    } catch (error: any) {
-      showToast(error?.detail || error, 'error');
+    } catch (error) {
+      showToast(getErrorMessage(error, isEditMode ? 'Failed to update agent' : 'Failed to create agent'), 'error');
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className='h-full overflow-y-auto custom-scrollbar -mr-4 sm:-mr-6 lg:-mr-8'>
-      <div className='mx-auto flex flex-col w-3/4 min-h-full bg-white dark:bg-gray-800 rounded-lg'>
+    <>
+      {shareOpen && id && (
+        <ShareModal
+          itemName={formData.title || agentDetail?.name || 'Agent'}
+          resourceId={id}
+          resourceType='remoteAgent'
+          isOpen={shareOpen}
+          onClose={() => setShareOpen(false)}
+        />
+      )}
+      <div className='h-full overflow-y-auto custom-scrollbar -mr-4 sm:-mr-6 lg:-mr-8'>
+        <div className='mx-auto flex flex-col w-3/4 min-h-full bg-white dark:bg-gray-800 rounded-lg'>
         {/* Header */}
         <div className='px-6 py-6 flex items-center gap-4 border-b border-gray-100 dark:border-gray-700'>
           <div className='flex items-center justify-center p-3 rounded-xl bg-[#F3E8FF] dark:bg-purple-900/30'>
@@ -236,7 +268,7 @@ const AgentRegistryOrEdit: React.FC = () => {
         </div>
         {/* Footer */}
         <div className='px-6 py-4 border-t border-gray-100 dark:border-gray-700 flex flex-wrap items-center justify-between gap-4'>
-          <div>
+          <div className='flex items-center gap-3'>
             {isEditMode && !isReadOnly && (
               <button
                 onClick={handleDelete}
@@ -244,6 +276,15 @@ const AgentRegistryOrEdit: React.FC = () => {
                 className='inline-flex items-center px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm text-sm font-medium text-red-500 dark:text-red-400 bg-white dark:bg-gray-800 hover:bg-red-50 dark:hover:bg-red-900/20 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors'
               >
                 <TrashIcon className='h-4 w-4' />
+              </button>
+            )}
+            {isEditMode && !!id && agentDetail?.permissions?.SHARE && (
+              <button
+                onClick={() => setShareOpen(true)}
+                disabled={loading || loadingDetail}
+                className='inline-flex items-center px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm text-sm font-medium text-purple-600 dark:text-purple-400 bg-white dark:bg-gray-800 hover:bg-purple-50 dark:hover:bg-purple-900/20 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors'
+              >
+                <HiOutlineShare className='h-4 w-4' />
               </button>
             )}
           </div>
@@ -277,8 +318,9 @@ const AgentRegistryOrEdit: React.FC = () => {
             )}
           </div>
         </div>
+        </div>
       </div>
-    </div>
+    </>
   );
 };
 

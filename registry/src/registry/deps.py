@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import httpx
 from fastapi import Depends, Request
 
 from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRepository
@@ -11,7 +12,10 @@ from .health.service import HealthMonitoringService
 from .services.a2a_agent_service import A2AAgentService
 from .services.access_control_service import ACLService
 from .services.agentcore_import_service import AgentCoreImportService
+from .services.federation_crud_service import FederationCrudService
+from .services.federation_job_service import FederationJobService
 from .services.federation_service import FederationService
+from .services.federation_sync_service import FederationSyncService
 from .services.group_service import GroupService
 from .services.oauth.connection_service import MCPConnectionService
 from .services.oauth.mcp_service import MCPService
@@ -93,3 +97,19 @@ def get_a2a_agent_service(container: RegistryContainer = Depends(get_container))
 
 def get_agentcore_import_service(container: RegistryContainer = Depends(get_container)) -> AgentCoreImportService:
     return container.agentcore_import_service
+
+
+def get_mcp_proxy_client(container: RegistryContainer = Depends(get_container)) -> httpx.AsyncClient:
+    return container.mcp_proxy_client
+
+
+def get_federation_crud_service(container: RegistryContainer = Depends(get_container)) -> FederationCrudService:
+    return container.federation_crud_service
+
+
+def get_federation_job_service(container: RegistryContainer = Depends(get_container)) -> FederationJobService:
+    return container.federation_job_service
+
+
+def get_federation_sync_service(container: RegistryContainer = Depends(get_container)) -> FederationSyncService:
+    return container.federation_sync_service

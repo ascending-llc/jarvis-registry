@@ -11,7 +11,6 @@ import {
 import type React from 'react';
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-
 import { useGlobal } from '@/contexts/GlobalContext';
 import type { ServerInfo } from '@/contexts/ServerContext';
 import { useServer } from '@/contexts/ServerContext';
@@ -52,6 +51,7 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
   }, [showTools]);
 
   const { connectionState, requiresOauth } = server || {};
+  const canEdit = !!server?.permissions?.EDIT;
 
   const getAuthStatusIcon = useCallback(() => {
     if (!requiresOauth) return null;
@@ -194,22 +194,24 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
 
         <div className='p-4 pb-3'>
           {/* Header */}
-          <div className='flex items-start justify-between mb-3'>
+          <div className='flex items-start justify-between mb-3 gap-2'>
             <div className='flex-1 min-w-0'>
-              <div className='flex flex-wrap items-center gap-1.5 mb-2'>
+              <div className='flex items-center gap-1.5 mb-2 min-w-0'>
                 {server.permissions?.VIEW ? (
                   <h3
-                    className='text-base font-bold text-gray-900 dark:text-white truncate max-w-[160px] cursor-pointer hover:text-purple-600 dark:hover:text-purple-400 transition-colors'
+                    className='text-base font-bold text-gray-900 dark:text-white truncate min-w-0 flex-1 cursor-pointer hover:text-purple-600 dark:hover:text-purple-400 transition-colors'
                     onClick={() => navigate(`/server-edit?id=${server.id}&isReadOnly=true`)}
                   >
                     {server.title}
                   </h3>
                 ) : (
-                  <h3 className='text-base font-bold text-gray-900 dark:text-white truncate max-w-[160px]'>
+                  <h3 className='text-base font-bold text-gray-900 dark:text-white truncate min-w-0 flex-1'>
                     {server.title}
                   </h3>
                 )}
+              </div>
 
+              <div className='flex flex-wrap items-center gap-1.5 mb-2'>
                 {server.official && (
                   <span className='px-1.5 py-0.5 text-xs font-semibold bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300 rounded-full flex-shrink-0 whitespace-nowrap'>
                     OFFICIAL
@@ -238,7 +240,7 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
               </code>
             </div>
 
-            <div className='flex gap-1'>
+            <div className='flex gap-1 flex-shrink-0'>
               {requiresOauth && (
                 <button
                   className='group/auth p-1.5 text-amber-500 hover:bg-gray-50 dark:hover:bg-gray-700/50 rounded-lg transition-all duration-200 flex-shrink-0'
@@ -392,11 +394,15 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
               </button>
 
               {/* Toggle Switch */}
-              <label className='relative inline-flex items-center cursor-pointer'>
+              <label
+                className={`relative inline-flex items-center ${canEdit ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'}`}
+                title={canEdit ? 'Toggle server status' : 'No edit permission'}
+              >
                 <input
                   type='checkbox'
                   checked={server.enabled}
                   onChange={e => handleToggleServer(server.id, e.target.checked)}
+                  disabled={!canEdit || loading}
                   className='sr-only peer'
                 />
                 <div

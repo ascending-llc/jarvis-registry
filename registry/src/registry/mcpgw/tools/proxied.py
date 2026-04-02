@@ -9,8 +9,6 @@ import json
 import logging
 from collections.abc import Callable
 from typing import Annotated, Any
-from urllib.parse import parse_qs, urlsplit
-from uuid import UUID
 
 from httpx_sse import EventSource
 from mcp.server.fastmcp import Context
@@ -29,7 +27,6 @@ from pydantic import Field
 from pydantic.networks import AnyUrl
 
 from ...auth.dependencies import UserContextDict
-from ...auth.oauth.flow_state_manager import FlowStateManager
 from ...auth.oauth.types import ClientBranding, StateMetadata
 from ...core.exceptions import (
     DownstreamHttpFailureException,
@@ -42,7 +39,13 @@ from ...core.mcp_client import call_tool_via_sse_ephemeral
 from ...utils.otel_metrics import record_server_request
 from ..core.types import McpAppContext
 from .types import get_meta_field
-from .utils import build_authenticated_headers, build_target_url, forward_notification, parse_data_field
+from .utils import (
+    build_authenticated_headers,
+    build_target_url,
+    forward_notification,
+    parse_data_field,
+    parse_elicitation_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -237,34 +240,6 @@ def _support_url_elicitation(client_params: InitializeRequestParams | None) -> b
     return elicitation.url is not None
 
 
-def _get_elicitation_id(auth_url: str) -> str | None:
-    """
-    Parse the auth_url to obtain the elicitation_id from the "state" query string parameter.
-    """
-
-    try:
-        parsed = urlsplit(auth_url)
-
-        qs_dict = parse_qs(parsed.query)
-
-        state_str = qs_dict["state"][0]
-
-        state_dict = FlowStateManager.decode_state(state_str)
-
-        elicitation_id = state_dict["meta"]["elicitation_id"]
-
-        if UUID(elicitation_id).version != 4:
-            logger.error("elicitation_id from the state dictionary is not a valid UUID4 string.")
-
-            return None
-
-        return elicitation_id
-    except Exception:
-        logger.exception("failed to extract elicitation_id from auth_url.")
-
-        return None
-
-
 async def execute_tool_impl(
     ctx: Context[ServerSession, McpAppContext],
     tool_name: str,
@@ -414,7 +389,7 @@ async def execute_tool_impl(
             "in a browser window, finish re-authorization, and come back to retry the same tool call again."
         )
 
-        elicitation_id = _get_elicitation_id(auth_url)
+        elicitation_id = parse_elicitation_id(auth_url)
         if elicitation_id is not None and _support_url_elicitation(ctx.session.client_params):
             msg = template.format("provided URL")
 

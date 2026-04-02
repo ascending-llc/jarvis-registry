@@ -39,7 +39,11 @@ async def test_sync_agentcore_runtime_uses_injected_service(sample_user_context)
     )
 
     result = await sync_agentcore_runtime(
-        data=AgentCoreRuntimeSyncRequest(dryRun=True),
+        data=AgentCoreRuntimeSyncRequest(
+            dryRun=True,
+            awsRegion="us-west-2",
+            runtimeArn="arn:aws:bedrock-agentcore:us-west-2:123456789012:runtime/test",
+        ),
         user_context=sample_user_context,
         agentcore_import_service=agentcore_import_service,
     )
@@ -47,6 +51,8 @@ async def test_sync_agentcore_runtime_uses_injected_service(sample_user_context)
     agentcore_import_service.import_from_runtime.assert_awaited_once_with(
         dry_run=True,
         user_id=sample_user_context["user_id"],
+        aws_region="us-west-2",
+        runtime_arn="arn:aws:bedrock-agentcore:us-west-2:123456789012:runtime/test",
     )
     assert result.runtime_filter_count == 1
     assert result.created.mcp_servers == 1
