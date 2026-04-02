@@ -40,15 +40,6 @@ jobs:
       with:
         github-token: ${{ secrets.JARVIS_RELEASE_ACCESS_TOKEN }}
 
-    - name: Import schema
-      id: import-schema
-      run: |
-        echo "Using SCHEMA_VERSION: ${{ steps.get-schema.outputs.schema-version }}"
-        uv run --package registry-pkgs import-schemas \
-        --tag "${{ steps.get-schema.outputs.schema-version }}" \
-        --output-dir ./registry-pkgs/src/registry_pkgs/models \
-        --token "${{ secrets.JARVIS_RELEASE_ACCESS_TOKEN }}"
-
     - name: Run all tests and generate coverage report (registry + auth-server + packages)
       run: |
         uv run poe test-all-cov

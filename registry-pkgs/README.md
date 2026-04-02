@@ -38,25 +38,6 @@ gh auth login
 
 Run `uv sync` from project root, NOT this workspace member folder (`registry-pkgs`).
 
-### Generate Models
-
-Run the following command **from project root** to download schemas from a GitHub release and generate Python models,
-using GitHub CLI for authentication.
-
-```bash
-uv run --package registry-pkgs import-schemas \
---tag asc0.5.1 \
---output-dir ./registry-pkgs/src/registry_pkgs/models \
---token $(gh auth token)
-```
-
-**Available options:**
-- `--tag`: GitHub release version/tag (required)
-- `--files`: Space-separated list of JSON schema files (required)
-- `--output-dir`: Output directory for generated models (default: `./models`)
-- `--repo`: GitHub repository (default: `ascending-llc/jarvis-api`)
-- `--token`: GitHub Personal Access Token for private repos
-
 ## Structure
 
 ```

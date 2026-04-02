@@ -6,23 +6,23 @@ Supports two modes: Local (read from local files) and Remote (download from GitH
 
 Usage:
     # Local mode - convert from local JSON files
-    python import_schemas.py --mode local --input-dir DIR --files FILE1 FILE2 ... --output-dir DIR
+    uv run import-schemas --mode local --input-dir DIR --files FILE1 FILE2 ... --output-dir DIR
 
     # Remote mode - download from GitHub Release
-    python import_schemas.py --mode remote --tag VERSION --files FILE1 FILE2 ... --output-dir DIR
+    uv run import-schemas --mode remote --tag VERSION --files FILE1 FILE2 ... --output-dir DIR
 
 Examples:
     # Local mode - convert from local directory (recommended for development)
-    python import_schemas.py --mode local --input-dir ./dist/json-schemas --files user.json token.json --output-dir ./models
+    uv run import-schemas --mode local --input-dir ./dist/json-schemas --files user.json token.json --output-dir ./models
 
     # Local mode - batch conversion
-    python import_schemas.py --mode local --input-dir ./dist/json-schemas --files user.json token.json mcpServer.json session.json --output-dir ./app/models
+    uv run import-schemas --mode local --input-dir ./dist/json-schemas --files user.json token.json mcpServer.json session.json --output-dir ./app/models
 
     # Remote mode - download from GitHub Release (private repository)
-    python import_schemas.py --mode remote --tag asc0.4.0 --files user.json token.json --output-dir ./models --token GitHub_Token --repo ascending-llc/jarvis-api
+    uv run import-schemas --mode remote --tag asc0.4.0 --files user.json token.json --output-dir ./models --token GitHub_Token --repo ascending-llc/jarvis-api
 
     # Remote mode - public repository (--mode remote is default, can be omitted)
-    python import_schemas.py --tag asc0.4.0 --files user.json token.json --output-dir ./models
+    uv run import-schemas --tag asc0.4.0 --files user.json token.json --output-dir ./models
 
 Features:
     - No third-party dependencies (uses only Python stdlib)
@@ -47,6 +47,25 @@ from pathlib import Path
 from typing import Any
 
 
+class NestedModels:
+    def __init__(self) -> None:
+        self._models: list[list[str]] = []
+        self._identifiers: set[str] = set()
+
+    def append(self, model: list[str]) -> None:
+        if len(model) == 0:
+            return
+
+        if model[0] in self._identifiers:
+            return
+
+        self._identifiers.add(model[0])
+        self._models.append(model)
+
+    def to_list(self) -> list[list[str]]:
+        return self._models
+
+
 class BeanieModelGenerator:
     """Generate Beanie ODM models from JSON Schema"""
 
@@ -66,8 +85,8 @@ class BeanieModelGenerator:
         self.generated_dir.mkdir(parents=True, exist_ok=True)
         self.github_repo = github_repo
         self.github_token = github_token
-        self.imported_types = set()
-        self.nested_models = []  # Store nested model definitions
+        self.imported_types: set[str] = set()
+        self.nested_models = NestedModels()  # Store nested model definitions
 
     def cleanup_generated_files(self):
         """
@@ -265,7 +284,7 @@ class BeanieModelGenerator:
             tuple: (model_code, class_name, enum_class_names)
         """
         self.imported_types = set()
-        self.nested_models = []  # Reset nested models
+        self.nested_models = NestedModels()
 
         title = schema.get("title", "Document")
         collection_name = schema.get("x-collection", title.lower())
@@ -308,8 +327,9 @@ class BeanieModelGenerator:
 
         # Add nested model definitions in reverse order (so dependencies come first)
         # This ensures that nested models referenced by other nested models are defined first
-        if self.nested_models:
-            for nested_model in reversed(self.nested_models):
+        nested_models_list = self.nested_models.to_list()
+        if len(nested_models_list) > 0:
+            for nested_model in reversed(nested_models_list):
                 lines.extend(nested_model)
                 lines.append("")
                 lines.append("")
@@ -318,7 +338,7 @@ class BeanieModelGenerator:
         lines.append(f"class {title}(Document):")
         lines.append('    """')
         lines.append(f"    {title} Model")
-        lines.append("    ")
+        lines.append("")
 
         if "x-generated" in schema:
             gen_info = schema["x-generated"]
@@ -960,13 +980,10 @@ class BeanieModelGenerator:
         lines.append("")
         lines.append("## Regenerate Models")
         lines.append("")
-        lines.append("To regenerate these models, run:")
+        lines.append("To regenerate these models, run the following command from project root.")
         lines.append("")
         lines.append("```bash")
-        lines.append(f"uv run import-schemas --tag {version} \\")
-        lines.append(f"  --files {' '.join(files)} \\")
-        lines.append("  --output-dir ./models \\")
-        lines.append("  --token $(gh auth token)")
+        lines.append("uv run poe generate-schemas")
         lines.append("```")
         lines.append("")
         lines.append("## Files Generated")
@@ -976,8 +993,8 @@ class BeanieModelGenerator:
             lines.append(f"- `{module}.py`")
         lines.append("")
 
-        with open(readme_file, "w", encoding="utf-8") as f:
-            f.write("\n".join(lines))
+        with open(readme_file, "w", encoding="utf-8") as fr:
+            fr.write("\n".join(lines))
 
         return readme_file
 
@@ -985,8 +1002,8 @@ class BeanieModelGenerator:
         """Save schema version to .schema-version file"""
         version_file = self.generated_dir / ".schema-version"
 
-        with open(version_file, "w", encoding="utf-8") as f:
-            f.write(f"{version}\n")
+        with open(version_file, "w", encoding="utf-8") as fw:
+            fw.write(f"{version}\n")
 
         return version_file
 
@@ -1000,19 +1017,19 @@ def main():
         epilog="""
 Examples:
   # Local mode - convert specific files
-  python import_schemas.py --mode local --input-dir ./dist/json-schemas --files user.json token.json --output-dir ./models
+  uv run import-schemas --mode local --input-dir ./dist/json-schemas --files user.json token.json --output-dir ./models
 
   # Local mode - convert all .json files in directory
-  python import_schemas.py --mode local --input-dir ./dist/json-schemas --output-dir ./models
+  uv run import-schemas --mode local --input-dir ./dist/json-schemas --output-dir ./models
 
   # Remote mode - download specific files from GitHub Release
-  python import_schemas.py --mode remote --tag asc0.4.0 --files user.json token.json --output-dir ./models --token ghp_xxxxx
+  uv run import-schemas --mode remote --tag asc0.4.0 --files user.json token.json --output-dir ./models --token ghp_xxxxx
 
   # Remote mode - download all .json files from GitHub Release
-  python import_schemas.py --mode remote --tag asc0.4.0 --output-dir ./models --token ghp_xxxxx
+  uv run import-schemas --mode remote --tag asc0.4.0 --output-dir ./models --token ghp_xxxxx
 
   # Remote mode (default) - download all files from public repository
-  python import_schemas.py --tag asc0.4.0 --output-dir ./models
+  uv run import-schemas --tag asc0.4.0 --output-dir ./models
 
 GitHub Release URL format:
   https://github.com/{repo}/releases/download/{tag}/{filename}

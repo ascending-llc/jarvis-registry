@@ -59,13 +59,6 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Generate registry-pkgs model code from schemas
-        run: >
-          uv run --package registry-pkgs import-schemas
-          --tag "${{ steps.schema.outputs.schema-version }}"
-          --output-dir ./registry-pkgs/src/registry_pkgs/models
-          --token "${{ secrets.JARVIS_RELEASE_ACCESS_TOKEN }}"
-
       - name: Display generated model code
         run: ls -al ./registry-pkgs/src/registry_pkgs/models/_generated/
 

@@ -35,6 +35,7 @@ seed-data = "scripts.seed_mongodb:cli"
 sync-mongo-weaviate = "scripts.sync_mongo_to_weaviate:cli"
 sync-version = "scripts.sync_version:main"
 federation-job-admin = "scripts.federation_job_admin:cli"
+import-schemas = "scripts.import_schemas:main"
 
 [build-system]
 requires = ["setuptools>=67", "wheel"]
@@ -72,6 +73,32 @@ printf '   registry-pkgs → %s\n' $(grep -m1 '^version = ' registry-pkgs/pyproj
 printf '   registry      → %s\n' $(grep -m1 '^version = ' registry/pyproject.toml | cut -d'\"' -f2) && \
 printf '   auth-server   → %s\n' $(grep -m1 '^version = ' auth-server/pyproject.toml | cut -d'\"' -f2)""", help = "Show versions across all projects" }
 version-sync = { script = "scripts.sync_version:main", help = "Sync version across all projects (usage: poe version-sync 0.2.0)" }
+
+generate-schemas = { shell = """
+DEST="registry-pkgs/src/registry_pkgs/models/_generated/"
+
+[ -d "$DEST" ] && rm -rf "$DEST"
+
+SCHEMA_VERSION=""
+SCHEMA_VERSION=$(gh api repos/ascending-llc/jarvis-api/releases/latest --jq '.tag_name' || echo "")
+
+if [ -z "$SCHEMA_VERSION" ]; then
+  echo "Failed to fetch the latest release from jarvis-api" >&2
+
+  exit 1
+fi
+
+uv run import-schemas \
+  --tag "$SCHEMA_VERSION" \
+  --files accessRole.json group.json user.json key.json aclEntry.json token.json mcpServer.json \
+  --output-dir "$(dirname "$DEST")" \
+  --token "$(gh auth token)"
+
+if [ "$?" == "0" ]; then
+  uv run ruff check --fix "$DEST"
+  uv run ruff format "$DEST"
+fi
+""", help = "(Re)generate MongoDB Beanie document classes from the latest imported schemas." }
 
 # Run all tests across all projects
 test-all = { shell = "cd registry && uv run poe test && cd ../auth-server && uv run poe test && cd ../registry-pkgs && uv run poe test" }
