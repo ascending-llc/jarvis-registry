@@ -487,7 +487,7 @@ class ExtendedMCPServerDocument(MCPServerDocument):
     @classmethod
     def from_server_info(cls, server_info: dict[str, Any], is_enabled: bool = False) -> "ExtendedMCPServerDocument":
         """
-        Create ExtendedMCPServer instance from server info dictionary.
+        Create ExtendedMCPServerDocument instance from server info dictionary.
 
         Args:
             server_info: Server information dictionary (must contain 'path' and 'server_name')
