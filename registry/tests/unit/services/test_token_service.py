@@ -10,7 +10,7 @@ from beanie import PydanticObjectId
 from registry.schemas.enums import TokenType
 from registry.schemas.oauth_schema import OAuthClientInformation, OAuthTokens
 from registry.services.oauth.token_service import TokenService
-from registry_pkgs.models._generated.token import Token
+from registry_pkgs.models import Token
 
 
 class TestTokenServiceBasicMethods:

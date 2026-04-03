@@ -114,13 +114,13 @@ class TestMongoDBConnection:
             model_names = [model.__name__ for model in document_models]
 
             assert "IUser" in model_names
-            assert "MCPServerDocument" in model_names or "ExtendedMCPServer" in model_names
             assert "IAccessRole" in model_names
-            assert "IAclEntry" in model_names or "ExtendedAclEntry" in model_names
             assert "IGroup" in model_names
+            assert "ExtendedAclEntry" in model_names
+            assert "ExtendedMCPServerDocument" in model_names
             assert "Token" in model_names
-            assert "IAction" in model_names
             assert "Key" in model_names
+            assert "A2AAgent" in model_names
             assert "Federation" in model_names
             assert "FederationSyncJob" in model_names
 

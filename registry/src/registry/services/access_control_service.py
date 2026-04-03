@@ -7,13 +7,13 @@ from fastapi import HTTPException
 from fastapi import status as http_status
 
 from registry_pkgs.database.decorators import get_current_session
-from registry_pkgs.models._generated import (
+from registry_pkgs.models import (
     IAccessRole,
     IUser,
     PrincipalType,
 )
 from registry_pkgs.models.enums import PermissionBits
-from registry_pkgs.models.extended_acl_entry import ExtendedAclEntry as IAclEntry
+from registry_pkgs.models.extended_acl_entry import ExtendedAclEntry
 
 from ..schemas.acl_schema import PermissionPrincipalOut, PrincipalDetailOut, ResourcePermissions, RoleOut
 from .group_service import GroupService
@@ -37,8 +37,8 @@ class ACLService:
         role_id: PydanticObjectId | None,
         perm_bits: int | None,
         session=None,
-    ) -> IAclEntry:
-        acl_entry = await IAclEntry.find_one(
+    ) -> ExtendedAclEntry:
+        acl_entry = await ExtendedAclEntry.find_one(
             {
                 "principalType": principal_type,
                 "principalId": principal_id,
@@ -56,7 +56,7 @@ class ACLService:
             await acl_entry.save(session=session)
             return acl_entry
 
-        new_entry = IAclEntry(
+        new_entry = ExtendedAclEntry(
             principalType=principal_type,
             principalId=principal_id,
             resourceType=resource_type,
@@ -104,7 +104,7 @@ class ACLService:
         resource_id: PydanticObjectId,
         role_id: PydanticObjectId | None = None,
         perm_bits: int | None = None,
-    ) -> IAclEntry:
+    ) -> ExtendedAclEntry:
         """
         Grant ACL permission to a principal (user or group) for a specific resource.
 
@@ -117,7 +117,7 @@ class ACLService:
                 perm_bits (Optional[int]): Permission bits to assign (overrides role if provided).
 
         Returns:
-                IAclEntry: The upserted or newly created ACL entry.
+                ExtendedAclEntry: The upserted or newly created ACL entry.
 
         Raises:
                 ValueError: If required parameters are missing or invalid, or if upsert fails.
@@ -187,7 +187,7 @@ class ACLService:
             if perm_bits_to_delete:
                 query["permBits"] = {"$lte": perm_bits_to_delete}
 
-            result = await IAclEntry.find(query).delete(session=session)
+            result = await ExtendedAclEntry.find(query).delete(session=session)
             return result.deleted_count
         except Exception as e:
             logger.error(f"Error deleting ACL entries for {resource_type}/{resource_id}: {e}")
@@ -223,7 +223,7 @@ class ACLService:
                 "principalType": principal_type,
                 "principalId": principal_id,
             }
-            result = await IAclEntry.find(query).delete(session=session)
+            result = await ExtendedAclEntry.find(query).delete(session=session)
             return result.deleted_count
         except Exception as e:
             logger.error(f"Error revoking ACL entry for resource {resource_type} with ID {resource_id}: {e}")
@@ -273,7 +273,9 @@ class ACLService:
         Returns structured data including principal information and public status.
         """
         try:
-            acl_entries = await IAclEntry.find({"resourceType": resource_type, "resourceId": resource_id}).to_list()
+            acl_entries = await ExtendedAclEntry.find(
+                {"resourceType": resource_type, "resourceId": resource_id}
+            ).to_list()
 
             principals: list[PrincipalDetailOut] = []
             is_public = False
@@ -330,7 +332,7 @@ class ACLService:
         """
         try:
             acl_entries = (
-                await IAclEntry.find(
+                await ExtendedAclEntry.find(
                     {
                         "resourceType": resource_type,
                         "resourceId": resource_id,
@@ -415,7 +417,7 @@ class ACLService:
                 Returns an empty list on error.
         """
         try:
-            acl_entries = await IAclEntry.find(
+            acl_entries = await ExtendedAclEntry.find(
                 {
                     "resourceType": resource_type,
                     "$or": [
@@ -477,7 +479,9 @@ class ACLService:
         Raises:
             ValueError: If the update would result in no owners remaining
         """
-        current_acl_entries = await IAclEntry.find({"resourceType": resource_type, "resourceId": resource_id}).to_list()
+        current_acl_entries = await ExtendedAclEntry.find(
+            {"resourceType": resource_type, "resourceId": resource_id}
+        ).to_list()
 
         owner_perm_bits = PermissionBits.VIEW | PermissionBits.EDIT | PermissionBits.DELETE | PermissionBits.SHARE
 

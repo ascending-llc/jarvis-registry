@@ -10,7 +10,7 @@ from typing import Any
 
 from langchain_core.documents import Document
 
-from ...models import ExtendedMCPServer
+from ...models import ExtendedMCPServerDocument
 from ...models.enums import ServerEntityType
 from ..client import DatabaseClient
 from ..repository import Repository
@@ -18,7 +18,7 @@ from ..repository import Repository
 logger = logging.getLogger(__name__)
 
 
-class MCPServerRepository(Repository[ExtendedMCPServer]):
+class MCPServerRepository(Repository[ExtendedMCPServerDocument]):
     """
     Specialized repository for MCP Server operations.
 
@@ -35,11 +35,11 @@ class MCPServerRepository(Repository[ExtendedMCPServer]):
         Args:
             db_client: Database client instance
         """
-        super().__init__(db_client, ExtendedMCPServer)
+        super().__init__(db_client, ExtendedMCPServerDocument)
         logger.info("MCPServerRepository initialized")
 
     @staticmethod
-    def _extract_runtime_version(server: ExtendedMCPServer) -> str | None:
+    def _extract_runtime_version(server: ExtendedMCPServerDocument) -> str | None:
         runtime_version = (server.federationMetadata or {}).get("runtimeVersion")
         if runtime_version is None:
             return None
@@ -66,7 +66,7 @@ class MCPServerRepository(Repository[ExtendedMCPServer]):
             return "runtimeVersion"
         return None
 
-    def _should_skip_reindex(self, server: ExtendedMCPServer, server_id: str) -> tuple[bool, str | None]:
+    def _should_skip_reindex(self, server: ExtendedMCPServerDocument, server_id: str) -> tuple[bool, str | None]:
         current_version = self._extract_runtime_version(server)
         if not current_version:
             return False, None
@@ -121,7 +121,7 @@ class MCPServerRepository(Repository[ExtendedMCPServer]):
 
     async def sync_server_to_vector_db(
         self,
-        server: ExtendedMCPServer,
+        server: ExtendedMCPServerDocument,
         is_delete: bool = True,
     ) -> dict[str, int | str | None]:
         """
@@ -203,7 +203,7 @@ class MCPServerRepository(Repository[ExtendedMCPServer]):
                 "error": str(e),
             }
 
-    async def get_by_server_id(self, server_id: str) -> ExtendedMCPServer | None:
+    async def get_by_server_id(self, server_id: str) -> ExtendedMCPServerDocument | None:
         """
         Get server by MongoDB server_id (stored in metadata).
 
@@ -287,7 +287,7 @@ class MCPServerRepository(Repository[ExtendedMCPServer]):
 
     async def smart_sync(
         self,
-        server: ExtendedMCPServer,
+        server: ExtendedMCPServerDocument,
     ) -> bool:
         """
         Smart incremental sync with fine-grained comparison by entity type.
@@ -509,7 +509,7 @@ class MCPServerRepository(Repository[ExtendedMCPServer]):
 
         return doc_map
 
-    async def _update_metadata_only(self, server: ExtendedMCPServer, server_id: str) -> bool:
+    async def _update_metadata_only(self, server: ExtendedMCPServerDocument, server_id: str) -> bool:
         """
         Update only metadata for all existing docs (no re-vectorization).
 
@@ -570,7 +570,7 @@ class MCPServerRepository(Repository[ExtendedMCPServer]):
 
     async def sync_by_enabled_status(
         self,
-        server: ExtendedMCPServer,
+        server: ExtendedMCPServerDocument,
         enabled: bool,
     ) -> bool:
         """

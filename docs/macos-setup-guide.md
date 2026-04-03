@@ -137,29 +137,6 @@ ls -la ${HOME}/mcp-gateway/models/all-MiniLM-L6-v2/
 
 **Note**: This command automatically creates the necessary directory structure and downloads all required model files (~90MB). If you don't have `huggingface-cli` command installed, install it first with `uv pip install huggingface_hub[cli]` or `uv tool install huggingface-cli`.
 
-### Import Database Schemas (Optional for Local Dev)
-
-If you need to import database schemas from the jarvis-api repository for local development, you can do so using the import-schemas tool:
-
-```bash
-# Authenticate with GitHub CLI (for private repository access)
-gh auth login
-
-# Run the following commands from project root.
-uv run --package registry-pkgs import-schemas \
---tag asc0.4.5 \
---output-dir ./registry-pkgs/src/registry_pkgs/models \
---token $(gh auth token)
-
-# Verify schemas were imported
-ls -la ./registry-pkgs/src/registry_pkgs/models/_generated
-```
-
-**Important Notes**:
-- In CI/CD, the schemas will be automatically imported before generating Python wheels.
-  Then the wheels that contain generated model code will be used for Docker builds.
-- When `--files` is omitted, **all .json files** from the release will be imported
-
 ### Create Docker Compose Override File
 
 ```bash

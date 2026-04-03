@@ -9,7 +9,7 @@ from registry.api.v1.acl_routes import (
     update_resource_permissions,
 )
 from registry.schemas.acl_schema import PermissionPrincipalIn, UpdateResourcePermissionsRequest
-from registry_pkgs.models._generated import PrincipalType, ResourceType
+from registry_pkgs.models import PrincipalType, ResourceType
 from registry_pkgs.models.enums import PermissionBits
 
 TEST_PRINCIPAL_ID = "000000000000000000000001"

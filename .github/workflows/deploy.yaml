@@ -28,12 +28,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@v2
+        uses: actions/setup-python@v6
         with:
           python-version: 3.9
 
@@ -55,7 +55,7 @@ jobs:
           echo "role=${{ secrets[steps.config.outputs.aws_deploy_role] }}" >> $GITHUB_OUTPUT
 
       - name: Assume IAM role
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ steps.set-role.outputs.role }}
           role-session-name: deployment-role-session
@@ -97,7 +97,7 @@ jobs:
       DEPLOYMENT_NAME: registry-backend
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -119,7 +119,7 @@ jobs:
           echo "role=${{ secrets[steps.config.outputs.aws_deploy_role] }}" >> $GITHUB_OUTPUT
 
       - name: Assume IAM role
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ steps.set-role.outputs.role }}
           role-session-name: deployment-role-session
@@ -149,7 +149,7 @@ jobs:
       DEPLOYMENT_NAME: registry-frontend
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -171,7 +171,7 @@ jobs:
           echo "role=${{ secrets[steps.config.outputs.aws_deploy_role] }}" >> $GITHUB_OUTPUT
 
       - name: Assume IAM role
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ steps.set-role.outputs.role }}
           role-session-name: deployment-role-session
@@ -201,7 +201,7 @@ jobs:
       DEPLOYMENT_NAME: auth-server
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -223,7 +223,7 @@ jobs:
           echo "role=${{ secrets[steps.config.outputs.aws_deploy_role] }}" >> $GITHUB_OUTPUT
 
       - name: Assume IAM role
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ steps.set-role.outputs.role }}
           role-session-name: deployment-role-session

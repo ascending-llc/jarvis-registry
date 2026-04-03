@@ -9,8 +9,7 @@ from registry.services.federation.agentcore_clients import AgentCoreClientProvid
 from registry.services.federation.agentcore_discovery import AgentCoreFederationClient
 from registry.services.federation.agentcore_runtime import AgentCoreRuntimeInvoker
 from registry_pkgs.database.decorators import get_current_session, use_transaction
-from registry_pkgs.models import A2AAgent, ExtendedMCPServer
-from registry_pkgs.models._generated import PrincipalType, ResourceType
+from registry_pkgs.models import A2AAgent, ExtendedMCPServerDocument, PrincipalType, ResourceType
 from registry_pkgs.models.enums import PermissionBits, RoleBits
 from registry_pkgs.vector.repositories.a2a_agent_repository import A2AAgentRepository
 from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRepository
@@ -297,7 +296,7 @@ class AgentCoreImportService:
 
     async def _import_single_server(
         self,
-        discovered_server: ExtendedMCPServer,
+        discovered_server: ExtendedMCPServerDocument,
         owner_id: PydanticObjectId | None,
         viewer_id: PydanticObjectId | None,
         dry_run: bool,
@@ -309,7 +308,7 @@ class AgentCoreImportService:
         if not runtime_arn:
             raise ValueError("discovered server is missing runtimeArn in federationMetadata")
 
-        existing = await ExtendedMCPServer.find_one({"federationMetadata.runtimeArn": runtime_arn})
+        existing = await ExtendedMCPServerDocument.find_one({"federationMetadata.runtimeArn": runtime_arn})
 
         if existing:
             changes = self._detect_changes(existing, discovered_server)
@@ -372,10 +371,10 @@ class AgentCoreImportService:
 
     async def _create_server(
         self,
-        discovered_server: ExtendedMCPServer,
+        discovered_server: ExtendedMCPServerDocument,
         owner_id: PydanticObjectId | None,
         viewer_id: PydanticObjectId | None,
-    ) -> ExtendedMCPServer:
+    ) -> ExtendedMCPServerDocument:
         """
         Create a new federated server and wire ACL/vector sync.
         """
@@ -554,8 +553,8 @@ class AgentCoreImportService:
 
     async def _update_server(
         self,
-        existing: ExtendedMCPServer,
-        new_data: ExtendedMCPServer,
+        existing: ExtendedMCPServerDocument,
+        new_data: ExtendedMCPServerDocument,
         changes: list[str] | None = None,
     ) -> list[str]:
         """
@@ -588,8 +587,8 @@ class AgentCoreImportService:
 
     def _detect_changes(
         self,
-        existing: ExtendedMCPServer,
-        new_data: ExtendedMCPServer,
+        existing: ExtendedMCPServerDocument,
+        new_data: ExtendedMCPServerDocument,
     ) -> list[str]:
         return self.detect_runtime_version_change(existing.federationMetadata, new_data.federationMetadata)
 
@@ -623,11 +622,11 @@ class AgentCoreImportService:
         all_discovered_runtime_arns: set[str],
         discovered_mcp_ids: set[str],
         discovered_a2a_ids: set[str],
-    ) -> tuple[list[ExtendedMCPServer], list[A2AAgent]]:
-        stale_mcp: list[ExtendedMCPServer] = []
+    ) -> tuple[list[ExtendedMCPServerDocument], list[A2AAgent]]:
+        stale_mcp: list[ExtendedMCPServerDocument] = []
         stale_a2a: list[A2AAgent] = []
 
-        existing_mcp = await ExtendedMCPServer.find(
+        existing_mcp = await ExtendedMCPServerDocument.find(
             {"federationMetadata.runtimeArn": {"$exists": True, "$ne": None}}
         ).to_list()
         existing_a2a = await A2AAgent.find({"federationMetadata.runtimeArn": {"$exists": True, "$ne": None}}).to_list()
@@ -661,7 +660,7 @@ class AgentCoreImportService:
     async def _delete_stale_server(
         self,
         *,
-        stale_server: ExtendedMCPServer,
+        stale_server: ExtendedMCPServerDocument,
         dry_run: bool,
     ) -> dict[str, Any]:
         server_name = stale_server.serverName
@@ -782,7 +781,7 @@ class AgentCoreImportService:
     @use_transaction
     async def _import_single_server_in_transaction(
         self,
-        discovered_server: ExtendedMCPServer,
+        discovered_server: ExtendedMCPServerDocument,
         owner_id: PydanticObjectId | None,
         viewer_id: PydanticObjectId | None,
     ) -> dict[str, Any]:

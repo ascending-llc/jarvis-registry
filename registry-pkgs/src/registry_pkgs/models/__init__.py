@@ -1,29 +1,38 @@
 """
 Beanie ODM Models
 
-Exports auto-generated models from _generated/ and static models
+Exports all Beanie document classes used by this project. Some of them are auto-generated from schemas of Jarvis Chat,
+some of them extend the auto-generated class, some of them are newly written in this project.
+
+Also exports two enum types `PrincipalType` and `ResourceType`, so that other modules don't need to import from `_generated`.
 """
 
+from ._generated import (
+    IAccessRole,
+    IGroup,
+    IUser,
+    Key,
+    PrincipalType,
+    ResourceType,
+    Token,
+)
 from .a2a_agent import A2AAgent
-from .enums import ToolDiscoveryMode
-from .extended_mcp_server import ExtendedMCPServer, MCPServerDocument
+from .extended_acl_entry import ExtendedAclEntry
+from .extended_mcp_server import ExtendedMCPServerDocument
+from .federation import Federation
+from .federation_sync_job import FederationSyncJob
 
-# Export auto-generated models from _generated/
-try:
-    from ._generated import *  # noqa: F403, F401
-    from ._generated import __all__ as _generated_all
-
-    __all__ = [
-        "A2AAgent",
-        "ExtendedMCPServer",
-        "MCPServerDocument",
-        "ToolDiscoveryMode",
-    ] + _generated_all
-except ImportError:
-    # _generated doesn't exist yet - will be created by import-schemas
-    __all__ = [
-        "A2AAgent",
-        "ExtendedMCPServer",
-        "MCPServerDocument",
-        "ToolDiscoveryMode",
-    ]
+__all__ = [
+    "A2AAgent",
+    "ExtendedAclEntry",
+    "ExtendedMCPServerDocument",
+    "Federation",
+    "FederationSyncJob",
+    "IAccessRole",
+    "IGroup",
+    "IUser",
+    "Key",
+    "Token",
+    "PrincipalType",
+    "ResourceType",
+]

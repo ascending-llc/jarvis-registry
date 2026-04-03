@@ -26,7 +26,7 @@ from mcp.types import (
 )
 from pydantic import ValidationError
 
-from registry_pkgs.models.extended_mcp_server import MCPServerDocument
+from registry_pkgs.models.extended_mcp_server import ExtendedMCPServerDocument
 
 from ...auth.dependencies import UserContextDict, effective_scopes_from_context
 from ...auth.oauth.flow_state_manager import FlowStateManager
@@ -153,7 +153,7 @@ def parse_data_field(
 
 async def build_authenticated_headers(
     oauth_service: MCPOAuthService,
-    server: MCPServerDocument,
+    server: ExtendedMCPServerDocument,
     auth_context: UserContextDict,
     additional_headers: dict[str, str] | None = None,
     *,
@@ -246,7 +246,7 @@ async def build_authenticated_headers(
         raise InternalServerException("internal server error when building OAuth token on behalf of user")
 
 
-def build_target_url(server: MCPServerDocument, remaining_path: str = "") -> str:
+def build_target_url(server: ExtendedMCPServerDocument, remaining_path: str = "") -> str:
     """
     Build complete target URL for proxying to MCP server.
     Consolidates URL building logic used across all proxy endpoints.
