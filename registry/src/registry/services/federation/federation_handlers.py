@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
 from typing import Any
 
 from registry.services.federation.agentcore_discovery import AgentCoreFederationClient
 from registry.services.federation.agentcore_runtime import AgentCoreRuntimeInvoker
+from registry.services.federation.azure_ai_foundry_client import AzureAIFoundryFederationClient
 from registry_pkgs.models.enums import FederationProviderType
-from registry_pkgs.models.federation import Federation
+from registry_pkgs.models.federation import AwsAgentCoreProviderConfig, Federation
 
 from ...core.config import settings
 
@@ -18,30 +18,6 @@ class BaseFederationSyncHandler(ABC):
     @abstractmethod
     async def discover_entities(self, federation: Federation) -> dict[str, list[Any]]:
         raise NotImplementedError
-
-
-@dataclass(frozen=True)
-class AwsAgentCoreConnectionConfig:
-    """
-    Canonical AWS connection settings for federation sync.
-
-    Boundary rule:
-    - `providerConfig` remains camelCase because it mirrors API/storage shape.
-    - Service-layer execution uses snake_case only.
-    """
-
-    region: str
-    assume_role_arn: str | None
-    resource_tags_filter: dict[str, str]
-
-    @classmethod
-    def from_provider_config(cls, provider_config: dict[str, Any] | None) -> AwsAgentCoreConnectionConfig:
-        raw_config = dict(provider_config or {})
-        return cls(
-            region=raw_config.get("region") or settings.aws_region or "us-east-1",
-            assume_role_arn=raw_config.get("assumeRoleArn"),
-            resource_tags_filter=dict(raw_config.get("resourceTagsFilter") or {}),
-        )
 
 
 class AwsAgentCoreSyncHandler(BaseFederationSyncHandler):
@@ -59,17 +35,20 @@ class AwsAgentCoreSyncHandler(BaseFederationSyncHandler):
         )
 
     async def discover_entities(self, federation: Federation) -> dict[str, list[Any]]:
-        connection = AwsAgentCoreConnectionConfig.from_provider_config(federation.providerConfig)
+        provider_config = AwsAgentCoreProviderConfig(**dict(federation.providerConfig or {}))
+        region = provider_config.region or settings.aws_region or "us-east-1"
+        assume_role_arn = provider_config.assumeRoleArn
+        resource_tags_filter = dict(provider_config.resourceTagsFilter or {})
         discovered = await self.discovery_client.discover_runtime_entities(
-            region=connection.region,
+            region=region,
             author_id=None,
-            assume_role_arn=connection.assume_role_arn,
-            resource_tags_filter=connection.resource_tags_filter,
+            assume_role_arn=assume_role_arn,
+            resource_tags_filter=resource_tags_filter,
         )
         await self._enrich_discovered_entities(
             discovered,
-            region=connection.region,
-            assume_role_arn=connection.assume_role_arn,
+            region=region,
+            assume_role_arn=assume_role_arn,
         )
         return discovered
 
@@ -99,8 +78,26 @@ class AwsAgentCoreSyncHandler(BaseFederationSyncHandler):
 class AzureAiFoundrySyncHandler(BaseFederationSyncHandler):
     provider_type = FederationProviderType.AZURE_AI_FOUNDRY
 
+    def __init__(
+        self,
+        discovery_client_factory: type[AzureAIFoundryFederationClient] = AzureAIFoundryFederationClient,
+    ):
+        self.discovery_client_factory = discovery_client_factory
+
     async def discover_entities(self, federation: Federation) -> dict[str, list[Any]]:
-        raise ValueError(
-            "Federation provider azure_ai_foundry is not implemented yet. "
-            "The sync handler hook is ready; only the Azure discovery adapter is pending."
+        raw_config = dict(federation.providerConfig or {})
+        project_endpoint = (raw_config.get("projectEndpoint") or settings.azure_ai_project_endpoint or "").strip()
+        if not project_endpoint:
+            raise ValueError("Azure AI Foundry federation requires providerConfig.projectEndpoint")
+        metadata_filter = dict(raw_config.get("metadataFilter") or {})
+
+        discovery_client = self.discovery_client_factory(
+            project_endpoint=project_endpoint,
+            metadata_filter=metadata_filter,
         )
+        discovered = await discovery_client.discover_entities(author_id=None)
+        return {
+            "mcp_servers": [],
+            "a2a_agents": discovered.get("a2a_agents", []),
+            "skipped_agents": discovered.get("skipped_agents", []),
+        }

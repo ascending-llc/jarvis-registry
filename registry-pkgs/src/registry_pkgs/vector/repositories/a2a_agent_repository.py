@@ -24,6 +24,8 @@ class A2AAgentRepository(Repository[A2AAgent]):
     def _extract_runtime_version(agent: A2AAgent) -> str | None:
         runtime_version = (agent.federationMetadata or {}).get("runtimeVersion")
         if runtime_version is None:
+            runtime_version = (agent.federationMetadata or {}).get("agentVersion")
+        if runtime_version is None:
             return None
         return str(runtime_version)
 
@@ -44,6 +46,8 @@ class A2AAgentRepository(Repository[A2AAgent]):
         return docs
 
     def _runtime_version_property_name(self) -> str | None:
+        if self._collection_has_property("agentVersion"):
+            return "agentVersion"
         if self._collection_has_property("runtimeVersion"):
             return "runtimeVersion"
         return None

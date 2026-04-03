@@ -57,6 +57,11 @@ def _raise_sync_error(exc: Exception) -> None:
             status_code=http_status.HTTP_502_BAD_GATEWAY,
             detail=create_error_detail(ErrorCode.EXTERNAL_SERVICE_ERROR, message),
         ) from exc
+    if "Failed to list Azure AI Foundry agents" in message:
+        raise HTTPException(
+            status_code=http_status.HTTP_502_BAD_GATEWAY,
+            detail=create_error_detail(ErrorCode.EXTERNAL_SERVICE_ERROR, message),
+        ) from exc
 
     raise HTTPException(
         status_code=http_status.HTTP_400_BAD_REQUEST,

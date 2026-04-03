@@ -233,45 +233,52 @@ async def test_update_federation_requires_aws_region_and_assume_role(
 
 
 @pytest.mark.asyncio
-async def test_update_federation_returns_501_for_unimplemented_provider(
+async def test_update_federation_runs_resync_for_azure_provider_changes(
     sample_user_context, sample_federation, sample_job, acl_service
 ):
     azure_federation = SimpleNamespace(
         **{
             **sample_federation.__dict__,
             "providerType": FederationProviderType.AZURE_AI_FOUNDRY,
-            "providerConfig": {"subscriptionId": "sub-a"},
+            "displayName": "Azure Federation",
+            "providerConfig": {"projectEndpoint": "https://old.projects.ai.azure.com"},
+        }
+    )
+    updated_federation = SimpleNamespace(
+        **{
+            **azure_federation.__dict__,
+            "providerConfig": {"projectEndpoint": "https://new.projects.ai.azure.com"},
+            "version": 2,
         }
     )
 
     federation_crud_service = MagicMock()
     federation_crud_service.get_federation = AsyncMock(return_value=azure_federation)
-    federation_crud_service.validate_provider_config = MagicMock(return_value={"subscriptionId": "sub-b"})
+    federation_crud_service.get_recent_jobs = AsyncMock(return_value=[sample_job])
 
     federation_sync_service = MagicMock()
     federation_sync_service.update_federation_with_optional_resync = AsyncMock(
-        side_effect=ValueError("Federation provider azure_ai_foundry is not implemented yet.")
+        return_value=(updated_federation, sample_job)
     )
 
-    with pytest.raises(HTTPException) as exc_info:
-        await update_federation(
-            federation_id=str(azure_federation.id),
-            data=FederationUpdateRequest(
-                displayName="Azure Federation",
-                description="Updated federation",
-                tags=["prod"],
-                providerConfig={"subscriptionId": "sub-b"},
-                version=1,
-                syncAfterUpdate=True,
-            ),
-            user_context=sample_user_context,
-            federation_crud_service=federation_crud_service,
-            federation_sync_service=federation_sync_service,
-            acl_service=acl_service,
-        )
+    result = await update_federation(
+        federation_id=str(azure_federation.id),
+        data=FederationUpdateRequest(
+            displayName="Azure Federation",
+            description="Updated federation",
+            tags=["prod"],
+            providerConfig={"projectEndpoint": "https://new.projects.ai.azure.com"},
+            version=1,
+            syncAfterUpdate=True,
+        ),
+        user_context=sample_user_context,
+        federation_crud_service=federation_crud_service,
+        federation_sync_service=federation_sync_service,
+        acl_service=acl_service,
+    )
 
-    assert exc_info.value.status_code == 501
-    assert "not implemented yet" in exc_info.value.detail["message"]
+    federation_sync_service.update_federation_with_optional_resync.assert_awaited_once()
+    assert result.version == 2
 
 
 @pytest.mark.asyncio
@@ -436,13 +443,12 @@ async def test_sync_federation_requires_aws_region_and_assume_role(sample_user_c
 
 
 @pytest.mark.asyncio
-async def test_sync_federation_returns_501_for_unimplemented_provider(
-    sample_user_context, sample_federation, sample_job, acl_service
-):
+async def test_sync_federation_runs_for_azure_provider(sample_user_context, sample_federation, sample_job, acl_service):
     azure_federation = SimpleNamespace(
         **{
             **sample_federation.__dict__,
             "providerType": FederationProviderType.AZURE_AI_FOUNDRY,
+            "providerConfig": {"projectEndpoint": "https://example.projects.ai.azure.com"},
             "syncStatus": FederationSyncStatus.IDLE,
         }
     )
@@ -451,22 +457,19 @@ async def test_sync_federation_returns_501_for_unimplemented_provider(
     federation_crud_service.get_federation = AsyncMock(return_value=azure_federation)
 
     federation_sync_service = MagicMock()
-    federation_sync_service.start_manual_sync = AsyncMock(
-        side_effect=ValueError("Federation provider azure_ai_foundry is not implemented yet.")
+    federation_sync_service.start_manual_sync = AsyncMock(return_value=sample_job)
+
+    result = await sync_federation(
+        federation_id=str(azure_federation.id),
+        data=FederationSyncRequest(force=False, reason="manual"),
+        user_context=sample_user_context,
+        federation_crud_service=federation_crud_service,
+        federation_sync_service=federation_sync_service,
+        acl_service=acl_service,
     )
 
-    with pytest.raises(HTTPException) as exc_info:
-        await sync_federation(
-            federation_id=str(azure_federation.id),
-            data=FederationSyncRequest(force=False, reason="manual"),
-            user_context=sample_user_context,
-            federation_crud_service=federation_crud_service,
-            federation_sync_service=federation_sync_service,
-            acl_service=acl_service,
-        )
-
-    assert exc_info.value.status_code == 501
-    assert "not implemented yet" in exc_info.value.detail["message"]
+    federation_sync_service.start_manual_sync.assert_awaited_once()
+    assert result.id == str(sample_job.id)
 
 
 @pytest.mark.asyncio

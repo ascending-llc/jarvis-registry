@@ -63,6 +63,8 @@ class FederationCrudService:
             if missing_fields:
                 missing_field_list = ", ".join(f"providerConfig.{field_name}" for field_name in missing_fields)
                 raise ValueError(f"AWS AgentCore federation requires {missing_field_list}")
+        if provider_type == FederationProviderType.AZURE_AI_FOUNDRY and not provider_config.get("projectEndpoint"):
+            raise ValueError("Azure AI Foundry federation requires providerConfig.projectEndpoint")
         return provider_config
 
     async def create_federation(

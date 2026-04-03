@@ -30,12 +30,6 @@ class RoleBits:
     OWNER = PermissionBits.VIEW | PermissionBits.EDIT | PermissionBits.DELETE | PermissionBits.SHARE  # 15
 
 
-class FederationSource(StrEnum):
-    AGENTCORE = "agentcore"
-    ANTHROPIC = "anthropic"
-    ASOR = "asor"
-
-
 class OAuthProviderType(StrEnum):
     COGNITO = "cognito"
     AUTH0 = "auth0"

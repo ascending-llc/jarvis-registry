@@ -115,6 +115,24 @@ class TestSettings:
             settings = Settings()
             assert settings.admin_user == "lowercase_user"
 
+    @patch.dict(
+        "os.environ",
+        {
+            "AZURE_AI_PROJECT_ENDPOINT": "https://example.projects.ai.azure.com",
+            "AZURE_CLIENT_ID": "client-id",
+            "AZURE_CLIENT_SECRET": "client-secret",
+            "AZURE_TENANT_ID": "tenant-id",
+        },
+        clear=True,
+    )
+    def test_azure_ai_foundry_environment_variables(self):
+        settings = Settings()
+
+        assert settings.azure_ai_project_endpoint == "https://example.projects.ai.azure.com"
+        assert settings.azure_client_id == "client-id"
+        assert settings.azure_client_secret == "client-secret"
+        assert settings.azure_tenant_id == "tenant-id"
+
     @pytest.mark.skip(reason="servers_dir removed in PR-113 (MongoDB migration)")
     @patch.dict(os.environ, {}, clear=True)
     @patch("pathlib.Path.exists")
