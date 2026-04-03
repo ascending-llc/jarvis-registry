@@ -362,6 +362,12 @@ class BeanieModelGenerator:
 
         lines.append("")
         lines.append("    class Settings:")
+        lines.append('        """')
+        lines.append("        Index definitions are intentionally left out to avoid conflicts.")
+        lines.append("        Consult Mongoose schema definitions in the jarvis-api project for index information.")
+        lines.append("        Note that you cannot know whether a WRITE operation **is possible** to violate")
+        lines.append("        a unique index constraint without knowing the index information.")
+        lines.append('        """')
         lines.append(f'        name = "{collection_name}"')
 
         # Configure Beanie to not save None values to MongoDB

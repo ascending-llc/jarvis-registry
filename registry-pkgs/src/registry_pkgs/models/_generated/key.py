@@ -20,5 +20,12 @@ class Key(Document):
     tenantId: str | None = Field(default=None)
 
     class Settings:
+        """
+        Index definitions are intentionally left out to avoid conflicts.
+        Consult Mongoose schema definitions in the jarvis-api project for index information.
+        Note that you cannot know whether a WRITE operation **is possible** to violate
+        a unique index constraint without knowing the index information.
+        """
+
         name = "keys"
         keep_nulls = False

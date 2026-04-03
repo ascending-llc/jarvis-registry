@@ -6,21 +6,17 @@ readme = "README.md"
 requires-python = ">=3.12,<3.13"
 # Root workspace dependencies needed for scripts
 dependencies = [
-    # root must depend on all workspace members, referencing them by distribution names
-    "registry-pkgs",
-    "registry",
-    "auth-server",
-    # External direct dependencies
-    "python-dotenv>=1.0.0",
-    "inflection>=0.5.1",
+  # root must depend on all workspace members, referencing them by distribution names
+  "registry-pkgs",
+  "registry",
+  "auth-server",
+  # External direct dependencies
+  "python-dotenv>=1.0.0",
+  "inflection>=0.5.1",
 ]
 
 [tool.uv.workspace]
-members = [
-    "registry-pkgs",
-    "registry",
-    "auth-server",
-]
+members = ["registry-pkgs", "registry", "auth-server"]
 
 [tool.uv.sources]
 registry-pkgs = { workspace = true }
@@ -47,89 +43,163 @@ packages = ["scripts"]
 
 [dependency-groups]
 dev = [
-    "poethepoet>=0.40.0",
-    "ruff>=0.15.0",
-    "pre-commit>=4.0.0",
-    "pytest>=8.0.0",
-    "pytest-asyncio>=0.23.0",
-    "pytest-cov>=4.1.0",
-    "pytest-mock>=3.12.0",
-    "pytest-xdist>=3.5.0",
-    "coverage[toml]>=7.4.0",
-    "pytest-html>=4.1.1",
-    "pytest-json-report>=1.5.0",
-    "factory-boy>=3.3.0",
-    "faker>=24.0.0",
-    "types-pyyaml>=6.0.12.20250915",
-    "mypy>=1.0.0",
+  "poethepoet>=0.40.0",
+  "ruff>=0.15.0",
+  "pre-commit>=4.0.0",
+  "pytest>=8.0.0",
+  "pytest-asyncio>=0.23.0",
+  "pytest-cov>=4.1.0",
+  "pytest-mock>=3.12.0",
+  "pytest-xdist>=3.5.0",
+  "coverage[toml]>=7.4.0",
+  "pytest-html>=4.1.1",
+  "pytest-json-report>=1.5.0",
+  "factory-boy>=3.3.0",
+  "faker>=24.0.0",
+  "types-pyyaml>=6.0.12.20250915",
+  "mypy>=1.0.0",
 ]
 
-[tool.poe.tasks]
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+exclude = [
+  ".git",
+  ".venv",
+  "__pycache__",
+  "build",
+  "dist",
+  "*.egg-info",
+  "node_modules",
+  "frontend",
+]
+
+[tool.ruff.lint]
+select = [
+  "E",   # pycodestyle errors
+  "W",   # pycodestyle warnings
+  "F",   # Pyflakes
+  "I",   # isort
+  "B",   # flake8-bugbear
+  "C4",  # flake8-comprehensions
+  "UP",  # pyupgrade
+  "SIM", # flake8-simplify
+]
+ignore = [
+  "E501",   # line too long (handled by formatter)
+  "E402",   # module level import not at top of file (sometimes intentional)
+  "E722",   # bare except (will fix incrementally)
+  "B008",   # do not perform function calls in argument defaults (FastAPI uses this pattern)
+  "B019",   # lru_cache on methods (acceptable in this codebase)
+  "B904",   # raise-without-from-inside-except (too noisy)
+  "SIM102", # nested if statements (sometimes clearer)
+  "SIM105", # use contextlib.suppress (try-except-pass is clearer)
+  "SIM108", # use ternary operator (not always clearer)
+  "SIM117", # multiple with statements (sometimes clearer nested)
+]
+
+[tool.ruff.lint.isort]
+# Each value must be the import name of one of our own packages in this workspace.
+known-first-party = ["registry_pkgs", "auth_utils", "registry", "auth_server"]
+
+[tool.ruff.lint.per-file-ignores]
+# Import order matters some files. Exclude them from automatic import sorting.
+"registry-pkgs/src/registry_pkgs/vector/__init__.py" = ["I001"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+[tool.bandit]
+exclude_dirs = ["tests", "frontend", ".venv", "node_modules"]
+# B101: assert warnings (used in tests)
+# B104: hardcoded bind_all_interfaces (required for containers)
+# B105: hardcoded_password_string (false positives on 'id', 'access', 'Bearer' - these are OAuth token type identifiers)
+# B106: hardcoded_password_funcarg (false positives on 'Bearer' - this is the OAuth 2.0 standard token type)
+skips = ["B101", "B104", "B105", "B106"]
+
 # Version management
-version = { shell = """
+[tool.poe.tasks.version]
+help = "Show versions across all projects"
+shell = """
 printf "\n📦 Workspace versions:\n" && \
 printf '   Root          → %s\n' $(grep -m1 '^version = ' pyproject.toml | cut -d'\"' -f2) && \
 printf '   registry-pkgs → %s\n' $(grep -m1 '^version = ' registry-pkgs/pyproject.toml | cut -d'\"' -f2) && \
 printf '   registry      → %s\n' $(grep -m1 '^version = ' registry/pyproject.toml | cut -d'\"' -f2) && \
-printf '   auth-server   → %s\n' $(grep -m1 '^version = ' auth-server/pyproject.toml | cut -d'\"' -f2)""", help = "Show versions across all projects" }
-version-sync = { script = "scripts.sync_version:main", help = "Sync version across all projects (usage: poe version-sync 0.2.0)" }
+printf '   auth-server   → %s\n' $(grep -m1 '^version = ' auth-server/pyproject.toml | cut -d'\"' -f2)"""
 
-generate-schemas = { shell = """
-DEST="registry-pkgs/src/registry_pkgs/models/_generated/"
-
-[ -d "$DEST" ] && rm -rf "$DEST"
-
-SCHEMA_VERSION=""
-SCHEMA_VERSION=$(gh api repos/ascending-llc/jarvis-api/releases/latest --jq '.tag_name' || echo "")
-
-if [ -z "$SCHEMA_VERSION" ]; then
-  echo "Failed to fetch the latest release from jarvis-api" >&2
-
-  exit 1
-fi
-
-uv run import-schemas \
-  --tag "$SCHEMA_VERSION" \
-  --files accessRole.json group.json user.json key.json aclEntry.json token.json mcpServer.json \
-  --output-dir "$(dirname "$DEST")" \
-  --token "$(gh auth token)"
-
-if [ "$?" == "0" ]; then
-  uv run ruff check --fix "$DEST"
-  uv run ruff format "$DEST"
-fi
-""", help = "(Re)generate MongoDB Beanie document classes from the latest imported schemas." }
+[tool.poe.tasks.version-sync]
+help = "Sync version across all projects (usage: poe version-sync 0.2.0)"
+script = "scripts.sync_version:main"
 
 # Run all tests across all projects
-test-all = { shell = "cd registry && uv run poe test && cd ../auth-server && uv run poe test && cd ../registry-pkgs && uv run poe test" }
-test-all-cov = { shell = "cd registry && uv run poe test-cov && cd ../auth-server && uv run poe test-cov && cd ../registry-pkgs && uv run poe test-cov" }
+[tool.poe.tasks.test-all]
+shell = "cd registry && uv run poe test && cd ../auth-server && uv run poe test && cd ../registry-pkgs && uv run poe test"
+
+[tool.poe.tasks.test-all-cov]
+shell = "cd registry && uv run poe test-cov && cd ../auth-server && uv run poe test-cov && cd ../registry-pkgs && uv run poe test-cov"
 
 # registry tests
-test-registry = { shell = "cd registry && uv run poe test" }
-test-registry-cov = { shell = "cd registry && uv run poe test-cov" }
+[tool.poe.tasks.test-registry]
+shell = "cd registry && uv run poe test"
+
+[tool.poe.tasks.test-registry-cov]
+shell = "cd registry && uv run poe test-cov"
 
 # auth-server tests
-test-auth-server = { shell = "cd auth-server && uv run poe test" }
-test-auth-server-cov = { shell = "cd auth-server && uv run poe test-cov" }
+[tool.poe.tasks.test-auth-server]
+shell = "cd auth-server && uv run poe test"
+
+[tool.poe.tasks.test-auth-server-cov]
+shell = "cd auth-server && uv run poe test-cov"
 
 # registry-pkgs tests
-test-registry-pkgs = { shell = "cd registry-pkgs && uv run poe test" }
-test-registry-pkgs-cov = { shell = "cd registry-pkgs && uv run poe test-cov" }
+[tool.poe.tasks.test-registry-pkgs]
+shell = "cd registry-pkgs && uv run poe test"
+
+[tool.poe.tasks.test-registry-pkgs-cov]
+shell = "cd registry-pkgs && uv run poe test-cov"
 
 # Linting and formatting
-lint = { shell = "uv run ruff check .", help = "Run ruff linter" }
-lint-fix = { shell = "uv run ruff check --fix .", help = "Run ruff linter with auto-fix" }
-format = { shell = "uv run ruff format .", help = "Format code with ruff" }
-format-check = { shell = "uv run ruff format --check .", help = "Check code formatting" }
-check = { shell = "uv run ruff check . && uv run ruff format --check .", help = "Run all code quality checks" }
-fix = { shell = "uv run ruff check --fix . && uv run ruff format .", help = "Fix all auto-fixable issues and format" }
+[tool.poe.tasks.lint]
+help = "Run ruff linter"
+shell = "uv run ruff check ."
+
+[tool.poe.tasks.lint-fix]
+help = "Run ruff linter with auto-fix"
+shell = "uv run ruff check --fix ."
+
+[tool.poe.tasks.format]
+help = "Format code with ruff"
+shell = "uv run ruff format ."
+
+[tool.poe.tasks.format-check]
+help = "Check code formatting"
+shell = "uv run ruff format --check ."
+
+[tool.poe.tasks.check]
+help = "Run all code quality checks"
+shell = "uv run ruff check . && uv run ruff format --check ."
+
+[tool.poe.tasks.fix]
+help = "Fix all auto-fixable issues and format"
+shell = "uv run ruff check --fix . && uv run ruff format ."
 
 # Pre-commit hooks
-hooks-install = { shell = "uv run pre-commit install -t pre-commit -t post-merge", help = "Install pre-commit and post-merge stage hooks" }
-hooks-run = { shell = "uv run pre-commit run --all-files", help = "Run pre-commit on all files" }
+[tool.poe.tasks.hooks-install]
+help = "Install pre-commit and post-merge stage hooks"
+shell = "uv run pre-commit install -t pre-commit -t post-merge"
 
-# Prepare Python-related artifacts for docker build.
-build-artifacts = { shell = """
+[tool.poe.tasks.hooks-run]
+help = "Run pre-commit on all files"
+shell = "uv run pre-commit run --all-files"
+
+# Prepare and cleanup Python-related artifacts for docker build.
+[tool.poe.tasks.build-artifacts]
+help = "Generate artifacts for Docker build and put them in the build-artifacts/ folder."
+shell = """
 xargs -I % bash -c 'uv build --package % --wheel --no-build-logs --out-dir build-artifacts' <<EOF
 registry-pkgs
 registry
@@ -137,9 +207,11 @@ auth-server
 EOF
 uv export --package registry --package registry-pkgs --no-hashes --no-annotate --no-emit-workspace --quiet -o build-artifacts/requirements-registry.txt
 uv export --package auth-server --package registry-pkgs --no-hashes --no-annotate --no-emit-workspace --quiet -o build-artifacts/requirements-auth-server.txt
-""", help = "Generate artifacts for Docker build and put them in the build-artifacts/ folder." }
+"""
 
-cleanup-artifacts = { shell = """
+[tool.poe.tasks.cleanup-artifacts]
+help = "Clean up build artifacts, coverage reports, and logs."
+shell = """
 _clean_member() {
   xargs -I % bash -c "([ -d '$1/%' ] && rm -rf '$1/%') || ([ -f '$1/%' ] && rm '$1/%') || true" <<-EOF
   build
@@ -164,65 +236,40 @@ auth-server
 registry
 registry-pkgs
 EOF
-""", help = "Clean up build artifacts, coverage reports, and logs." }
+"""
 
-[tool.ruff]
-target-version = "py312"
-line-length = 120
-exclude = [
-    ".git",
-    ".venv",
-    "__pycache__",
-    "build",
-    "dist",
-    "*.egg-info",
-    "node_modules",
-    "frontend",
-    "registry-pkgs/src/registry_pkgs/models/_generated",
-]
+# Generate Beanie Document classes from Mongoose schemas in jarvis-api.
+[tool.poe.tasks.generate-schemas]
+help = "(Re)generate MongoDB Beanie document classes from the latest imported schemas."
+shell = """
+DEST="registry-pkgs/src/registry_pkgs/models/_generated/"
 
-[tool.ruff.lint]
-select = [
-    "E",   # pycodestyle errors
-    "W",   # pycodestyle warnings
-    "F",   # Pyflakes
-    "I",   # isort
-    "B",   # flake8-bugbear
-    "C4",  # flake8-comprehensions
-    "UP",  # pyupgrade
-    "SIM", # flake8-simplify
-]
-ignore = [
-    "E501",   # line too long (handled by formatter)
-    "E402",   # module level import not at top of file (sometimes intentional)
-    "E722",   # bare except (will fix incrementally)
-    "B008",   # do not perform function calls in argument defaults (FastAPI uses this pattern)
-    "B019",   # lru_cache on methods (acceptable in this codebase)
-    "B904",   # raise-without-from-inside-except (too noisy)
-    "SIM102", # nested if statements (sometimes clearer)
-    "SIM105", # use contextlib.suppress (try-except-pass is clearer)
-    "SIM108", # use ternary operator (not always clearer)
-    "SIM117", # multiple with statements (sometimes clearer nested)
-]
+[ -d "$DEST" ] && rm -rf "$DEST"
 
-[tool.ruff.lint.isort]
-# Each value must be the import name of one of our own packages in this workspace.
-known-first-party = ["registry_pkgs", "auth_utils", "registry", "auth_server"]
+RESOLVED_VERSION="${version}"
+if [ -z "$RESOLVED_VERSION" ]; then
+  RESOLVED_VERSION=$(gh api repos/ascending-llc/jarvis-api/releases/latest --jq '.tag_name' || echo "")
+fi
 
-[tool.ruff.lint.per-file-ignores]
-# Import order matters some files. Exclude them from automatic import sorting.
-"registry-pkgs/src/registry_pkgs/vector/__init__.py" = ["I001"]
+if [ -z "$RESOLVED_VERSION" ]; then
+  echo "Failed to fetch the latest release from jarvis-api" >&2
+  exit 1
+fi
 
-[tool.ruff.format]
-quote-style = "double"
-indent-style = "space"
-skip-magic-trailing-comma = false
-line-ending = "auto"
+uv run import-schemas \
+  --tag "$RESOLVED_VERSION" \
+  --files accessRole.json group.json user.json key.json aclEntry.json token.json mcpServer.json \
+  --output-dir "$(dirname "$DEST")" \
+  --token "$(gh auth token)"
 
-[tool.bandit]
-exclude_dirs = ["tests", "frontend", ".venv", "node_modules"]
-# B101: assert warnings (used in tests)
-# B104: hardcoded bind_all_interfaces (required for containers)
-# B105: hardcoded_password_string (false positives on 'id', 'access', 'Bearer' - these are OAuth token type identifiers)
-# B106: hardcoded_password_funcarg (false positives on 'Bearer' - this is the OAuth 2.0 standard token type)
-skips = ["B101", "B104", "B105", "B106"]
+if [ "$?" == "0" ]; then
+  uv run ruff check --fix "$DEST"
+  uv run ruff format "$DEST"
+fi
+"""
+
+[[tool.poe.tasks.generate-schemas.args]]
+help = "Schema version tag (e.g. asc0.4.5). Defaults to latest release."
+name = "version"
+positional = true
+default = ""
