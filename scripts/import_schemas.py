@@ -47,6 +47,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from inflection import underscore
+
 
 class NestedModels:
     def __init__(self) -> None:
@@ -850,6 +852,7 @@ class BeanieModelGenerator:
     def save_model(self, model_code: str, filename: str) -> Path:
         """Save generated model to file in _generated directory"""
         module_name = Path(filename).stem
+        module_name = underscore(module_name)
         py_file = self.generated_dir / f"{module_name}.py"
 
         with open(py_file, "w", encoding="utf-8") as f:

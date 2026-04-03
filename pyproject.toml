@@ -10,9 +10,9 @@ dependencies = [
     "registry-pkgs",
     "registry",
     "auth-server",
-
     # External direct dependencies
     "python-dotenv>=1.0.0",
+    "inflection>=0.5.1",
 ]
 
 [tool.uv.workspace]

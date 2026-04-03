@@ -2,14 +2,14 @@
 Auto-generated Beanie ODM Models
 
 DO NOT EDIT - This directory is auto-generated
-Generated at: 2026-04-03T00:44:15.890414+00:00
+Generated at: 2026-04-03T00:52:00.391204+00:00
 """
 
-from .accessRole import IAccessRole
-from .aclEntry import IAclEntry, PrincipalModel, PrincipalType, ResourceType
+from .access_role import IAccessRole
+from .acl_entry import IAclEntry, PrincipalModel, PrincipalType, ResourceType
 from .group import IGroup
 from .key import Key
-from .mcpServer import MCPServerDocument
+from .mcp_server import MCPServerDocument
 from .token import Token
 from .user import IUser, SystemRoles
 
