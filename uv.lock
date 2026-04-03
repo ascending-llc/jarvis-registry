@@ -1590,6 +1590,7 @@ version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "auth-server" },
+    { name = "inflection" },
     { name = "python-dotenv" },
     { name = "registry" },
     { name = "registry-pkgs" },
@@ -1617,6 +1618,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "auth-server", editable = "auth-server" },
+    { name = "inflection", specifier = ">=0.5.1" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "registry", editable = "registry" },
     { name = "registry-pkgs", editable = "registry-pkgs" },

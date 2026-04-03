@@ -5,7 +5,7 @@ from beanie import PydanticObjectId
 
 from registry.api.v1.server.server_routes import create_server
 from registry.schemas.server_api_schemas import ServerCreateRequest
-from registry_pkgs.models._generated import PrincipalType, ResourceType
+from registry_pkgs.models import PrincipalType, ResourceType
 from registry_pkgs.models.enums import RoleBits
 
 

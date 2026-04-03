@@ -1,7 +1,7 @@
 import logging
 from typing import Any
 
-from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
+from registry_pkgs.models.extended_mcp_server import ExtendedMCPServerDocument
 from registry_pkgs.vector.enum.enums import RerankerProvider, SearchType
 from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRepository
 
@@ -45,7 +45,7 @@ class ExternalVectorSearchService(VectorSearchService):
                 raise Exception("Database client not initialized")
             self._initialized = True
 
-            collection_name = ExtendedMCPServer.COLLECTION_NAME
+            collection_name = ExtendedMCPServerDocument.COLLECTION_NAME
             adapter = self.client.adapter
 
             if hasattr(adapter, "collection_exists"):
@@ -116,7 +116,7 @@ class ExternalVectorSearchService(VectorSearchService):
                 server_info["path"] = service_path
 
             # Create server instance from server_info
-            server = ExtendedMCPServer.from_server_info(server_info=server_info, is_enabled=is_enabled)
+            server = ExtendedMCPServerDocument.from_server_info(server_info=server_info, is_enabled=is_enabled)
 
             # Use specialized repository's sync method
             result = await self.mcp_server_repo.sync_server_to_vector_db(server=server, is_delete=True)
@@ -218,7 +218,7 @@ class ExternalVectorSearchService(VectorSearchService):
             logger.error(f"Search failed: {e}", exc_info=True)
             return []
 
-    def _servers_to_results(self, servers: list[ExtendedMCPServer]) -> list[dict[str, Any]]:
+    def _servers_to_results(self, servers: list[ExtendedMCPServerDocument]) -> list[dict[str, Any]]:
         """
         Convert ExtendedMCPServer instances to result dictionaries.
 

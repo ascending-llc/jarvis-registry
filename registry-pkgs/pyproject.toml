@@ -38,9 +38,6 @@ dependencies = [
     "opentelemetry-exporter-otlp-proto-http",
 ]
 
-[project.scripts]
-import-schemas = "registry_pkgs.models.import_schemas:cli_main"
-
 [build-system]
 requires = ["setuptools>=67", "wheel"]
 build-backend = "setuptools.build_meta"

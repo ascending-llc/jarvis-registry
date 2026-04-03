@@ -17,7 +17,7 @@ from datetime import UTC, datetime, timedelta
 
 from dotenv import load_dotenv
 
-from registry_pkgs.models._generated import PrincipalType, ResourceType
+from registry_pkgs.models import PrincipalType, ResourceType
 from registry_pkgs.models.enums import PermissionBits, RoleBits
 
 # Load environment variables from .env file
@@ -25,29 +25,11 @@ load_dotenv()
 
 from registry.utils.crypto_utils import encrypt_auth_fields
 from registry_pkgs.database.mongodb import MongoDB
-from registry_pkgs.models._generated.key import Key
-from registry_pkgs.models._generated.token import Token
-from registry_pkgs.models._generated.user import IUser
-from registry_pkgs.models.extended_acl_entry import IAclEntry
-from registry_pkgs.models.extended_mcp_server import MCPServerDocument
-
-# Try to import IGroup if it exists, otherwise we'll skip group seeding
-try:
-    from registry_pkgs.models._generated import IGroup
-
-    HAS_GROUP_MODEL = True
-except ImportError:
-    IGroup = None
-    HAS_GROUP_MODEL = False
-    print("Warning: IGroup model not found. Skipping group seeding.")
+from registry_pkgs.models import ExtendedAclEntry, ExtendedMCPServerDocument, IGroup, IUser, Key, Token
 
 
 async def seed_groups():
     """Seed sample groups based on scopes.yml group_mappings."""
-    if not HAS_GROUP_MODEL:
-        print("Skipping groups seeding (IGroup model not available)")
-        return []
-
     print("Seeding groups...")
 
     # Groups from scopes.yml group_mappings
@@ -628,7 +610,9 @@ async def seed_mcp_servers(users):
     created_servers = []
     for server_data in servers_data:
         # Check if server already exists
-        existing_server = await MCPServerDocument.find_one(MCPServerDocument.serverName == server_data["serverName"])
+        existing_server = await ExtendedMCPServerDocument.find_one(
+            ExtendedMCPServerDocument.serverName == server_data["serverName"]
+        )
         if existing_server:
             print(f"  Server {server_data['serverName']} already exists, skipping...")
             created_servers.append(existing_server)
@@ -636,7 +620,7 @@ async def seed_mcp_servers(users):
             # Encrypt sensitive authentication fields before storing
             server_data["config"] = encrypt_auth_fields(server_data["config"])
 
-            server = MCPServerDocument(**server_data)
+            server = ExtendedMCPServerDocument(**server_data)
             await server.insert()
             created_servers.append(server)
 
@@ -664,7 +648,7 @@ async def seed_acl_entries(users, servers):
     for server in servers:
         # Create a public entry
         print(f"Seeding public ACL Entry for server: {server.id}")
-        existing_public_acl = await IAclEntry.find_one(
+        existing_public_acl = await ExtendedAclEntry.find_one(
             {
                 "principalType": PrincipalType.PUBLIC,
                 "principalId": None,
@@ -676,7 +660,7 @@ async def seed_acl_entries(users, servers):
             print(f"  Public ACL entry for server {server.serverName} already exists, skipping...")
             acl_entries.append(existing_public_acl)
         else:
-            public_acl_entry = IAclEntry(
+            public_acl_entry = ExtendedAclEntry(
                 principalType=PrincipalType.PUBLIC,
                 principalId=None,
                 resourceType=ResourceType.MCPSERVER.value,
@@ -696,7 +680,7 @@ async def seed_acl_entries(users, servers):
             if user.id == admin_user.id or user.id == server.author:
                 perm_bits = RoleBits.OWNER
 
-                existing_acl = await IAclEntry.find_one(
+                existing_acl = await ExtendedAclEntry.find_one(
                     {
                         "principalType": PrincipalType.USER,
                         "principalId": user.id,
@@ -708,7 +692,7 @@ async def seed_acl_entries(users, servers):
                     print(f"  ACL entry for user {user} and server {server.serverName} already exists, skipping...")
                     acl_entries.append(existing_acl)
                 else:
-                    acl_entry = IAclEntry(
+                    acl_entry = ExtendedAclEntry(
                         principalType=PrincipalType.USER,
                         principalId=user.id,
                         resourceType=ResourceType.MCPSERVER.value,
@@ -743,15 +727,14 @@ async def clean_database():
         token_count = await Token.delete_all()
         print(f"  Deleted {token_count.deleted_count} tokens")
 
-        server_count = await MCPServerDocument.delete_all()
+        server_count = await ExtendedMCPServerDocument.delete_all()
         print(f"  Deleted {server_count.deleted_count} MCP servers")
 
-        acl_count = await IAclEntry.delete_all()
+        acl_count = await ExtendedAclEntry.delete_all()
         print(f"  Deleted {acl_count.deleted_count} ACL Entries")
 
-        if HAS_GROUP_MODEL:
-            group_count = await IGroup.delete_all()
-            print(f"  Deleted {group_count.deleted_count} groups")
+        group_count = await IGroup.delete_all()
+        print(f"  Deleted {group_count.deleted_count} groups")
 
         print("\n" + "=" * 60)
         print("✅ Database cleaned successfully!")

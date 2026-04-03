@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi import status as http_status
 
 from registry_pkgs.database.decorators import use_transaction
-from registry_pkgs.models._generated import PrincipalType, ResourceType
+from registry_pkgs.models import PrincipalType, ResourceType
 from registry_pkgs.models.enums import RoleBits
 
 from ....auth.dependencies import CurrentUser

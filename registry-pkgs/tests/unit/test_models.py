@@ -8,21 +8,17 @@ from beanie import PydanticObjectId
 from pydantic import ValidationError
 
 from registry_pkgs.models.a2a_agent import A2AAgent
-from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer, MCPServerDocument
+from registry_pkgs.models.extended_mcp_server import ExtendedMCPServerDocument
 
 
 class TestExtendedMCPServerStructure:
     """Test ExtendedMCPServer model structure matches design specification."""
 
-    def test_model_alias(self):
-        """Verify MCPServerDocument is an alias for ExtendedMCPServer."""
-        assert MCPServerDocument is ExtendedMCPServer
-
     def test_required_fields(self):
         """Test that required fields are enforced."""
         # Use Pydantic's model_validate without triggering Beanie's Document.__init__
         with pytest.raises(ValidationError) as exc_info:
-            ExtendedMCPServer.model_validate({}, strict=False)
+            ExtendedMCPServerDocument.model_validate({}, strict=False)
 
         errors = exc_info.value.errors()
         required_fields = {error["loc"][0] for error in errors if error["type"] == "missing"}
@@ -54,7 +50,7 @@ class TestExtendedMCPServerStructure:
         }
 
         # Use model_construct to bypass Beanie's collection check
-        server = ExtendedMCPServer.model_construct(**server_dict)
+        server = ExtendedMCPServerDocument.model_construct(**server_dict)
 
         # Root-level fields should NOT be in config
         assert "status" not in server.config
@@ -108,7 +104,7 @@ class TestExtendedMCPServerStructure:
             "path": "/mcp/github",
         }
 
-        server = ExtendedMCPServer.model_construct(**server_dict)
+        server = ExtendedMCPServerDocument.model_construct(**server_dict)
 
         # Verify config fields are stored correctly
         assert server.config["title"] == "GitHub Server"
@@ -130,7 +126,7 @@ class TestExtendedMCPServerStructure:
             "path": "/mcp/test",
         }
 
-        server = ExtendedMCPServer.model_construct(**server_dict)
+        server = ExtendedMCPServerDocument.model_construct(**server_dict)
 
         # Verify defaults (model_construct doesn't apply defaults, so we need to check field definitions)
         # These would be set by Pydantic during normal instantiation
@@ -152,7 +148,7 @@ class TestExtendedMCPServerStructure:
             "errorMessage": "Connection timeout",
         }
 
-        server = ExtendedMCPServer.model_construct(**server_dict)
+        server = ExtendedMCPServerDocument.model_construct(**server_dict)
 
         assert server.lastConnected == now
         assert server.lastError == now
@@ -170,7 +166,7 @@ class TestExtendedMCPServerStructure:
                 "path": f"/mcp/{status}",
                 "status": status,
             }
-            server = ExtendedMCPServer.model_construct(**server_dict)
+            server = ExtendedMCPServerDocument.model_construct(**server_dict)
             assert server.status == status
 
     def test_tags_array(self):
@@ -183,7 +179,7 @@ class TestExtendedMCPServerStructure:
             "tags": ["github", "git", "vcs"],
         }
 
-        server = ExtendedMCPServer.model_construct(**server_dict)
+        server = ExtendedMCPServerDocument.model_construct(**server_dict)
 
         assert isinstance(server.tags, list)
         assert len(server.tags) == 3
@@ -191,9 +187,9 @@ class TestExtendedMCPServerStructure:
 
     def test_beanie_settings(self):
         """Test Beanie document settings are configured correctly."""
-        assert ExtendedMCPServer.Settings.name == "mcpservers"
-        assert ExtendedMCPServer.Settings.keep_nulls is False
-        assert ExtendedMCPServer.Settings.use_state_management is True
+        assert ExtendedMCPServerDocument.Settings.name == "mcpservers"
+        assert ExtendedMCPServerDocument.Settings.keep_nulls is False
+        assert ExtendedMCPServerDocument.Settings.use_state_management is True
 
     def test_oauth_config_structure(self):
         """Test server with OAuth configuration in config object."""
@@ -220,7 +216,7 @@ class TestExtendedMCPServerStructure:
             "path": "/mcp/oauth",
         }
 
-        server = ExtendedMCPServer.model_construct(**server_dict)
+        server = ExtendedMCPServerDocument.model_construct(**server_dict)
 
         assert server.config["requiresOAuth"] is True
         assert "oauth" in server.config
@@ -237,12 +233,12 @@ class TestExtendedMCPServerStructure:
             "numTools": 5,
         }
 
-        server = ExtendedMCPServer.model_construct(**server_dict)
+        server = ExtendedMCPServerDocument.model_construct(**server_dict)
 
         assert server.numTools == 5
 
     def test_to_documents_includes_runtime_version_metadata(self):
-        server = ExtendedMCPServer.model_construct(
+        server = ExtendedMCPServerDocument.model_construct(
             id=PydanticObjectId(),
             serverName="versioned-server",
             config={
@@ -266,7 +262,7 @@ class TestExtendedMCPServerStructure:
         assert docs[0].metadata.get("runtimeVersion") == "7"
 
     def test_tool_documents_use_downstream_mcp_tool_name_only(self):
-        server = ExtendedMCPServer.model_construct(
+        server = ExtendedMCPServerDocument.model_construct(
             id=PydanticObjectId(),
             serverName="tool-server",
             config={
@@ -299,7 +295,7 @@ class TestExtendedMCPServerStructure:
         assert tool_doc.metadata["tool_name"] == "downstream_tool"
         assert "original_mcp_name" not in tool_doc.metadata
 
-        result = ExtendedMCPServer.from_document(tool_doc)
+        result = ExtendedMCPServerDocument.from_document(tool_doc)
         assert result["tool_name"] == "downstream_tool"
         assert "original_mcp_name" not in result
 

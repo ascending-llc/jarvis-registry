@@ -38,7 +38,7 @@ from registry.schemas.a2a_agent_api_schemas import (
     convert_to_skills_response,
 )
 from registry_pkgs.database.decorators import use_transaction
-from registry_pkgs.models._generated import PrincipalType, ResourceType
+from registry_pkgs.models import PrincipalType, ResourceType
 from registry_pkgs.models.enums import RoleBits
 
 from ....schemas.acl_schema import ResourcePermissions

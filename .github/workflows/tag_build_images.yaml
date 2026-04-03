@@ -32,7 +32,7 @@ jobs:
       new_version: ${{ steps.tag.outputs.tag }}
     steps:
     - name: Checkout Code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
         fetch-depth: 0
     - name: Get current version from latest tag
