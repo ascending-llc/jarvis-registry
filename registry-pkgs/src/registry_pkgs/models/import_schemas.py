@@ -25,7 +25,7 @@ Examples:
     python import_schemas.py --tag asc0.4.0 --files user.json token.json --output-dir ./models
 
 Features:
-    - No third-party dependencies (uses only Python stdlib)
+    - Minimal dependencies (requires httpx for remote mode)
     - Local mode: Fast, no network required, ideal for development
     - Remote mode: Download from GitHub Release, ideal for CI/CD
     - Generates Beanie Document classes with proper type hints

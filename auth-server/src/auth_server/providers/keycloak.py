@@ -194,7 +194,7 @@ class KeycloakProvider(AuthProvider):
             logger.error(f"Failed to exchange code for token: {e}")
             raise ValueError(f"Token exchange failed: {e}")
 
-    async def get_user_info(self, access_token: str) -> dict[str, Any]:
+    async def get_user_info(self, access_token: str, id_token: str | None = None) -> dict[str, Any]:
         """Get user information from Keycloak."""
         try:
             logger.debug("Fetching user info from Keycloak")
