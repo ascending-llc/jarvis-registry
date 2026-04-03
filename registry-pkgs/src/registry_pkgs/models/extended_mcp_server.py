@@ -160,12 +160,10 @@ class ExtendedMCPServerDocument(MCPServerDocument):
         keep_nulls = False
         use_state_management = True
 
-        # Index settings must be manually kept in sync, because we are adding additional indices based on new fields.
+        # NOTE: We MUST NOT repeat indices already defined in jarvis-api or define an index that conflicts with it.
+        # Better not to mention any fields defined by jarvis-api. It's safe to define indices on our own fields.
         indexes = [
-            [("serverName", 1)],
-            [("author", 1)],
             IndexModel([("federationRefId", 1)]),
-            [("updatedAt", -1), ("_id", 1)],
             IndexModel([("federationMetadata.runtimeArn", 1)], sparse=True),
         ]
 
