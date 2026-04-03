@@ -9,7 +9,7 @@ All schemas use camelCase for API input/output and for MongoDB storage.
 
 from pydantic import BaseModel, Field
 
-from registry_pkgs.models._generated import PrincipalType
+from registry_pkgs.models import PrincipalType
 
 from .case_conversion import APIBaseModel
 

@@ -310,7 +310,7 @@ def track_tool_discovery[F: Callable[..., Any]](func: F) -> F:
 
     Example:
         @track_tool_discovery
-        async def retrieve_from_server(self, server: MCPServerDocument, ...) -> Tuple[...]:
+        async def retrieve_from_server(self, server: ExtendedMCPServerDocument, ...) -> Tuple[...]:
             ...
     """
 

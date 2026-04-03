@@ -6,36 +6,39 @@ Supports two modes: Local (read from local files) and Remote (download from GitH
 
 Usage:
     # Local mode - convert from local JSON files
-    python import_schemas.py --mode local --input-dir DIR --files FILE1 FILE2 ... --output-dir DIR
+    uv run import-schemas --mode local --input-dir DIR --files FILE1 FILE2 ... --output-dir DIR
 
     # Remote mode - download from GitHub Release
-    python import_schemas.py --mode remote --tag VERSION --files FILE1 FILE2 ... --output-dir DIR
+    uv run import-schemas --mode remote --tag VERSION --files FILE1 FILE2 ... --output-dir DIR
 
 Examples:
     # Local mode - convert from local directory (recommended for development)
-    python import_schemas.py --mode local --input-dir ./dist/json-schemas --files user.json token.json --output-dir ./models
+    uv run import-schemas --mode local --input-dir ./dist/json-schemas --files user.json token.json --output-dir ./models
 
     # Local mode - batch conversion
-    python import_schemas.py --mode local --input-dir ./dist/json-schemas --files user.json token.json mcpServer.json session.json --output-dir ./app/models
+    uv run import-schemas --mode local --input-dir ./dist/json-schemas --files user.json token.json mcpServer.json session.json --output-dir ./app/models
 
     # Remote mode - download from GitHub Release (private repository)
-    python import_schemas.py --mode remote --tag asc0.4.0 --files user.json token.json --output-dir ./models --token GitHub_Token --repo ascending-llc/jarvis-api
+    uv run import-schemas --mode remote --tag asc0.4.0 --files user.json token.json --output-dir ./models --token GitHub_Token --repo ascending-llc/jarvis-api
 
     # Remote mode - public repository (--mode remote is default, can be omitted)
-    python import_schemas.py --tag asc0.4.0 --files user.json token.json --output-dir ./models
+    uv run import-schemas --tag asc0.4.0 --files user.json token.json --output-dir ./models
 
 Features:
     - No third-party dependencies (uses only Python stdlib)
     - Local mode: Fast, no network required, ideal for development
     - Remote mode: Download from GitHub Release, ideal for CI/CD
     - Generates Beanie Document classes with proper type hints
-    - Handles indexes, timestamps, references (Link), and nested documents
+    - Handles timestamps, references (Link), and nested documents
     - Generates StrEnum classes from JSON Schema $defs (x-enum-members)
     - Cross-platform compatible (Windows/Linux/macOS)
+    - Intentionally skipping index definition - indices are always maintained from the jarvis-api side.
 """
 
+import argparse
 import json
 import re
+import shutil
 import ssl
 import sys
 import urllib.error
@@ -43,6 +46,27 @@ import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+from inflection import underscore
+
+
+class NestedModels:
+    def __init__(self) -> None:
+        self._models: list[list[str]] = []
+        self._identifiers: set[str] = set()
+
+    def append(self, model: list[str]) -> None:
+        if len(model) == 0:
+            return
+
+        if model[0] in self._identifiers:
+            return
+
+        self._identifiers.add(model[0])
+        self._models.append(model)
+
+    def to_list(self) -> list[list[str]]:
+        return self._models
 
 
 class BeanieModelGenerator:
@@ -64,15 +88,14 @@ class BeanieModelGenerator:
         self.generated_dir.mkdir(parents=True, exist_ok=True)
         self.github_repo = github_repo
         self.github_token = github_token
-        self.imported_types = set()
-        self.nested_models = []  # Store nested model definitions
+        self.imported_types: set[str] = set()
+        self.nested_models = NestedModels()  # Store nested model definitions
 
     def cleanup_generated_files(self):
         """
         Clean up existing generated files and caches to prevent import issues.
         Removes all .py files in _generated/ and all __pycache__ directories.
         """
-        import shutil
 
         if not self.generated_dir.exists():
             return
@@ -264,13 +287,12 @@ class BeanieModelGenerator:
             tuple: (model_code, class_name, enum_class_names)
         """
         self.imported_types = set()
-        self.nested_models = []  # Reset nested models
+        self.nested_models = NestedModels()
 
         title = schema.get("title", "Document")
         collection_name = schema.get("x-collection", title.lower())
         properties = schema.get("properties", {})
         required_fields = schema.get("required", [])
-        indexes = schema.get("x-indexes", [])
         has_timestamps = schema.get("x-timestamps", False)
 
         # Parse $defs for named enum definitions
@@ -284,8 +306,6 @@ class BeanieModelGenerator:
                 enum_key = tuple(enum_def.get("enum", []))
                 if enum_key:
                     self._schema_enum_lookup[enum_key] = enum_name
-
-        field_level_indexes = self._collect_field_indexes(properties)
 
         lines = []
 
@@ -307,8 +327,9 @@ class BeanieModelGenerator:
 
         # Add nested model definitions in reverse order (so dependencies come first)
         # This ensures that nested models referenced by other nested models are defined first
-        if self.nested_models:
-            for nested_model in reversed(self.nested_models):
+        nested_models_list = self.nested_models.to_list()
+        if len(nested_models_list) > 0:
+            for nested_model in reversed(nested_models_list):
                 lines.extend(nested_model)
                 lines.append("")
                 lines.append("")
@@ -317,7 +338,7 @@ class BeanieModelGenerator:
         lines.append(f"class {title}(Document):")
         lines.append('    """')
         lines.append(f"    {title} Model")
-        lines.append("    ")
+        lines.append("")
 
         if "x-generated" in schema:
             gen_info = schema["x-generated"]
@@ -341,6 +362,12 @@ class BeanieModelGenerator:
 
         lines.append("")
         lines.append("    class Settings:")
+        lines.append('        """')
+        lines.append("        Index definitions are intentionally left out to avoid conflicts.")
+        lines.append("        Consult Mongoose schema definitions in the jarvis-api project for index information.")
+        lines.append("        Note that you cannot know whether a WRITE operation **is possible** to violate")
+        lines.append("        a unique index constraint without knowing the index information.")
+        lines.append('        """')
         lines.append(f'        name = "{collection_name}"')
 
         # Configure Beanie to not save None values to MongoDB
@@ -349,16 +376,6 @@ class BeanieModelGenerator:
 
         if has_timestamps:
             lines.append("        use_state_management = True")
-
-        all_indexes = field_level_indexes + indexes
-        if all_indexes:
-            lines.append("")
-            lines.append("        indexes = [")
-            for idx in all_indexes:
-                idx_line = self._generate_index(idx)
-                if idx_line:
-                    lines.append(f"            {idx_line},")
-            lines.append("        ]")
 
         imports = self._generate_imports(has_timestamps)
 
@@ -485,7 +502,7 @@ class BeanieModelGenerator:
             "user": "IUser",
             "User": "IUser",
             "AccessRole": "IAccessRole",
-            "AclEntry": "ExtendedAclEntry",
+            "AclEntry": "IAclEntry",
             "Group": "IGroup",
         }
 
@@ -501,7 +518,14 @@ class BeanieModelGenerator:
         return ref_name
 
     def _collect_field_indexes(self, properties: dict[str, Any]) -> list[dict[str, Any]]:
-        """Collect field-level index definitions from x-index, x-unique, and x-sparse"""
+        """
+        Collect field-level index definitions from x-index, x-unique, and x-sparse.
+        This method is defined but not used, because jarvis-api should be the source of truth on indices.
+        Whenever its backend connects to MongoDB via Mongoose,
+        it makes sure indices are all created according to schema definitions.
+        The Python side is only concerned with the field shape of the collections,
+        it doesn't need to **define** indices via Beanie again.
+        """
         field_indexes = []
 
         for field_name, field_def in properties.items():
@@ -710,7 +734,10 @@ class BeanieModelGenerator:
 
     def _generate_index(self, index_def: dict[str, Any]) -> str:
         """
-        Generate index definition for Settings.indexes
+        Generate index definition for Settings.indexes. This method is defined but not used, because jarvis-api
+        should be the source of truth on indices. Whenever its backend connects to MongoDB via Mongoose,
+        it makes sure indices are all created according to schema definitions. The Python side is only concerned
+        with the field shape of the collections, it doesn't need to **define** indices via Beanie again.
 
         Rules (Updated to fix Beanie/PyMongo compatibility):
         - No options → list: [("field1", 1), ("field2", -1)]
@@ -826,15 +853,12 @@ class BeanieModelGenerator:
 
         imports.append(f"from beanie import {', '.join(beanie_imports)}")
 
-        # Add IndexModel import if needed
-        if "IndexModel" in self.imported_types:
-            imports.append("from pymongo import IndexModel")
-
         return "\n".join(imports)
 
     def save_model(self, model_code: str, filename: str) -> Path:
         """Save generated model to file in _generated directory"""
         module_name = Path(filename).stem
+        module_name = underscore(module_name)
         py_file = self.generated_dir / f"{module_name}.py"
 
         with open(py_file, "w", encoding="utf-8") as f:
@@ -959,14 +983,19 @@ class BeanieModelGenerator:
         lines.append("")
         lines.append("## Regenerate Models")
         lines.append("")
-        lines.append("To regenerate these models, run:")
+        lines.append("To regenerate these models from the latest schemas, run the following command from project root.")
         lines.append("")
         lines.append("```bash")
-        lines.append(f"uv run import-schemas --tag {version} \\")
-        lines.append(f"  --files {' '.join(files)} \\")
-        lines.append("  --output-dir ./models \\")
-        lines.append("  --token $(gh auth token)")
+        lines.append("uv run poe generate-schemas")
         lines.append("```")
+        lines.append("")
+        lines.append("To regenerate from a specific version tag, provide a positional argument like below.")
+        lines.append("")
+        lines.append("```bash")
+        lines.append("uv run poe generate-schemas asc0.5.1")
+        lines.append("```")
+        lines.append("")
+        lines.append("**The generated files should be Git tracked.**")
         lines.append("")
         lines.append("## Files Generated")
         lines.append("")
@@ -975,8 +1004,8 @@ class BeanieModelGenerator:
             lines.append(f"- `{module}.py`")
         lines.append("")
 
-        with open(readme_file, "w", encoding="utf-8") as f:
-            f.write("\n".join(lines))
+        with open(readme_file, "w", encoding="utf-8") as fr:
+            fr.write("\n".join(lines))
 
         return readme_file
 
@@ -984,15 +1013,14 @@ class BeanieModelGenerator:
         """Save schema version to .schema-version file"""
         version_file = self.generated_dir / ".schema-version"
 
-        with open(version_file, "w", encoding="utf-8") as f:
-            f.write(f"{version}\n")
+        with open(version_file, "w", encoding="utf-8") as fw:
+            fw.write(f"{version}\n")
 
         return version_file
 
 
 def main():
     """Main entry point"""
-    import argparse
 
     parser = argparse.ArgumentParser(
         description="Convert JSON schemas to Beanie ODM models (supports local and remote modes)",
@@ -1000,19 +1028,19 @@ def main():
         epilog="""
 Examples:
   # Local mode - convert specific files
-  python import_schemas.py --mode local --input-dir ./dist/json-schemas --files user.json token.json --output-dir ./models
+  uv run import-schemas --mode local --input-dir ./dist/json-schemas --files user.json token.json --output-dir ./models
 
   # Local mode - convert all .json files in directory
-  python import_schemas.py --mode local --input-dir ./dist/json-schemas --output-dir ./models
+  uv run import-schemas --mode local --input-dir ./dist/json-schemas --output-dir ./models
 
   # Remote mode - download specific files from GitHub Release
-  python import_schemas.py --mode remote --tag asc0.4.0 --files user.json token.json --output-dir ./models --token ghp_xxxxx
+  uv run import-schemas --mode remote --tag asc0.4.0 --files user.json token.json --output-dir ./models --token ghp_xxxxx
 
   # Remote mode - download all .json files from GitHub Release
-  python import_schemas.py --mode remote --tag asc0.4.0 --output-dir ./models --token ghp_xxxxx
+  uv run import-schemas --mode remote --tag asc0.4.0 --output-dir ./models --token ghp_xxxxx
 
   # Remote mode (default) - download all files from public repository
-  python import_schemas.py --tag asc0.4.0 --output-dir ./models
+  uv run import-schemas --tag asc0.4.0 --output-dir ./models
 
 GitHub Release URL format:
   https://github.com/{repo}/releases/download/{tag}/{filename}

@@ -7,7 +7,7 @@ from beanie import PydanticObjectId
 
 from registry.api.v1.a2a.agent_routes import create_agent, get_agent_stats, list_agents
 from registry.schemas.a2a_agent_api_schemas import AgentCreateRequest, AgentSkillInput
-from registry_pkgs.models._generated import PrincipalType, ResourceType
+from registry_pkgs.models import PrincipalType, ResourceType
 from registry_pkgs.models.enums import RoleBits
 
 
