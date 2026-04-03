@@ -50,17 +50,14 @@ jobs:
           github-token: ${{ secrets.JARVIS_RELEASE_ACCESS_TOKEN }}
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
       - name: Install the latest version of uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@v8
         with:
           enable-cache: true
-
-      - name: Display generated model code
-        run: ls -al ./registry-pkgs/src/registry_pkgs/models/_generated/
 
       - name: Build artifacts
         run: uv run poe build-artifacts
@@ -69,7 +66,7 @@ jobs:
         run: ls -al build-artifacts
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: wheels-and-locks
           path: build-artifacts/
@@ -80,16 +77,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ inputs.git_ref || github.sha }}
           fetch-depth: 0
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Assume IAM role
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           role-session-name: deployment-role-session
@@ -100,7 +97,7 @@ jobs:
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Azure login (OIDC)
-        uses: azure/login@v2
+        uses: azure/login@v3
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -135,7 +132,7 @@ jobs:
           fi
 
       - name: Download build artifact - wheels and locks
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: wheels-and-locks
           path: build-artifacts/
@@ -144,7 +141,7 @@ jobs:
         run: ls -al build-artifacts
 
       - name: Build and push mcp-gateway registry image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           platforms: linux/amd64
           context: .
@@ -167,16 +164,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ inputs.git_ref || github.sha }}
           fetch-depth: 0
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Assume IAM role
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           role-session-name: deployment-role-session
@@ -187,7 +184,7 @@ jobs:
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Azure login (OIDC)
-        uses: azure/login@v2
+        uses: azure/login@v3
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -213,7 +210,7 @@ jobs:
           fi
 
       - name: Build and push mcp-gateway registry frontend image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           platforms: linux/amd64
           context: .
@@ -227,16 +224,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ inputs.git_ref || github.sha }}
           fetch-depth: 0
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Assume IAM role
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           role-session-name: deployment-role-session
@@ -247,7 +244,7 @@ jobs:
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Azure login (OIDC)
-        uses: azure/login@v2
+        uses: azure/login@v3
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -273,7 +270,7 @@ jobs:
           fi
 
       - name: Download build artifact - wheels and locks
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: wheels-and-locks
           path: build-artifacts/
@@ -282,7 +279,7 @@ jobs:
         run: ls -al build-artifacts
 
       - name: Build and push mcp-gateway auth-server image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           platforms: linux/amd64
           context: .

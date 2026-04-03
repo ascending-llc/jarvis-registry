@@ -18,21 +18,20 @@ jobs:
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
 
     - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v6
       with:
         python-version: ${{ matrix.python-version }}
 
     - name: Install the latest version of uv
-      uses: astral-sh/setup-uv@v7
+      uses: astral-sh/setup-uv@v8
       with:
         enable-cache: true
 
     - name: Install dependencies with uv
-      run: |
-        uv sync
+      run: uv sync
 
     - name: Get latest schema version
       id: get-schema
@@ -41,8 +40,7 @@ jobs:
         github-token: ${{ secrets.JARVIS_RELEASE_ACCESS_TOKEN }}
 
     - name: Run all tests and generate coverage report (registry + auth-server + packages)
-      run: |
-        uv run poe test-all-cov
+      run: uv run poe test-all-cov
 
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@v3

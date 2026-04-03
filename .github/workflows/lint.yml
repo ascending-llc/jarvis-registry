@@ -14,15 +14,15 @@ jobs:
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
 
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v6
       with:
         python-version: "3.12"
 
     - name: Install the latest version of uv
-      uses: astral-sh/setup-uv@v7
+      uses: astral-sh/setup-uv@v8
       with:
         enable-cache: true
 
@@ -44,10 +44,10 @@ jobs:
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
 
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v6
       with:
         python-version: "3.12"
 
@@ -61,7 +61,7 @@ jobs:
         bandit -r registry/ -f json -o bandit-report.json || true
 
     - name: Upload security report
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       if: always()
       with:
         name: bandit-reports
