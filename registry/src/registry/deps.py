@@ -11,7 +11,6 @@ from .core.session_store import SessionStore
 from .health.service import HealthMonitoringService
 from .services.a2a_agent_service import A2AAgentService
 from .services.access_control_service import ACLService
-from .services.agentcore_import_service import AgentCoreImportService
 from .services.federation_crud_service import FederationCrudService
 from .services.federation_job_service import FederationJobService
 from .services.federation_service import FederationService
@@ -93,10 +92,6 @@ def get_server_service(container: RegistryContainer = Depends(get_container)) ->
 
 def get_a2a_agent_service(container: RegistryContainer = Depends(get_container)) -> A2AAgentService:
     return container.a2a_agent_service
-
-
-def get_agentcore_import_service(container: RegistryContainer = Depends(get_container)) -> AgentCoreImportService:
-    return container.agentcore_import_service
 
 
 def get_mcp_proxy_client(container: RegistryContainer = Depends(get_container)) -> httpx.AsyncClient:
