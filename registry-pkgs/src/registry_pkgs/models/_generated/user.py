@@ -4,7 +4,6 @@ from typing import Any
 
 from beanie import Document
 from pydantic import BaseModel, Field
-from pymongo import IndexModel
 
 
 class SystemRoles(StrEnum):
@@ -77,10 +76,3 @@ class IUser(Document):
         name = "users"
         keep_nulls = False
         use_state_management = True
-
-        indexes = [
-            [("email", 1)],
-            [("tenantId", 1)],
-            IndexModel([("email", 1), ("tenantId", 1)], unique=True),
-            IndexModel([("tenantId", 1)], unique=True),
-        ]

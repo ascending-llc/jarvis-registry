@@ -8,7 +8,7 @@ This directory contains auto-generated Beanie ODM models from JSON schemas.
 
 - **Repository**: ascending-llc/jarvis-api
 - **Version**: asc0.5.1
-- **Generated at**: 2026-04-02T21:45:44.372228+00:00
+- **Generated at**: 2026-04-03T00:44:15.890568+00:00
 - **Files**: 7
 
 ## Regenerate Models

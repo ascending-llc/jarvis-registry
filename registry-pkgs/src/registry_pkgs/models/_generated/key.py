@@ -2,7 +2,6 @@ from datetime import datetime
 
 from beanie import Document, PydanticObjectId
 from pydantic import Field
-from pymongo import IndexModel
 
 
 class Key(Document):
@@ -23,8 +22,3 @@ class Key(Document):
     class Settings:
         name = "keys"
         keep_nulls = False
-
-        indexes = [
-            [("tenantId", 1)],
-            IndexModel([("expiresAt", 1)], expireAfterSeconds=0),
-        ]

@@ -4,7 +4,6 @@ from typing import Any
 
 from beanie import Document, PydanticObjectId
 from pydantic import Field
-from pymongo import IndexModel
 
 
 class PrincipalModel(StrEnum):
@@ -58,13 +57,3 @@ class IAclEntry(Document):
         name = "aclentries"
         keep_nulls = False
         use_state_management = True
-
-        indexes = [
-            [("principalId", 1)],
-            [("resourceId", 1)],
-            IndexModel([("inheritedFrom", 1)], sparse=True),
-            [("tenantId", 1)],
-            [("principalId", 1), ("principalType", 1), ("resourceType", 1), ("resourceId", 1), ("tenantId", 1)],
-            [("resourceId", 1), ("principalType", 1), ("principalId", 1), ("tenantId", 1)],
-            [("principalId", 1), ("permBits", 1), ("resourceType", 1), ("tenantId", 1)],
-        ]

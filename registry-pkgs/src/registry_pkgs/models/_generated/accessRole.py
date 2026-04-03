@@ -3,7 +3,6 @@ from typing import Literal
 
 from beanie import Document
 from pydantic import Field
-from pymongo import IndexModel
 
 
 class IAccessRole(Document):
@@ -30,9 +29,3 @@ class IAccessRole(Document):
         name = "accessroles"
         keep_nulls = False
         use_state_management = True
-
-        indexes = [
-            [("accessRoleId", 1)],
-            [("tenantId", 1)],
-            IndexModel([("accessRoleId", 1), ("tenantId", 1)], unique=True),
-        ]

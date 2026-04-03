@@ -3,7 +3,6 @@ from typing import Any
 
 from beanie import Document, PydanticObjectId
 from pydantic import Field
-from pymongo import IndexModel
 
 
 class MCPServerDocument(Document):
@@ -26,11 +25,3 @@ class MCPServerDocument(Document):
         name = "mcpservers"
         keep_nulls = False
         use_state_management = True
-
-        indexes = [
-            [("serverName", 1)],
-            [("author", 1)],
-            [("tenantId", 1)],
-            IndexModel([("serverName", 1), ("tenantId", 1)], unique=True),
-            [("updatedAt", -1), ("_id", 1)],
-        ]

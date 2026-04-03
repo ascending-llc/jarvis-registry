@@ -3,7 +3,6 @@ from typing import Any
 
 from beanie import Document, PydanticObjectId
 from pydantic import Field
-from pymongo import IndexModel
 
 
 class Token(Document):
@@ -28,8 +27,3 @@ class Token(Document):
     class Settings:
         name = "tokens"
         keep_nulls = False
-
-        indexes = [
-            [("tenantId", 1)],
-            IndexModel([("expiresAt", 1)], expireAfterSeconds=0),
-        ]

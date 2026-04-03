@@ -3,7 +3,6 @@ from typing import Literal
 
 from beanie import Document
 from pydantic import Field
-from pymongo import IndexModel
 
 
 class IGroup(Document):
@@ -29,15 +28,3 @@ class IGroup(Document):
         name = "groups"
         keep_nulls = False
         use_state_management = True
-
-        indexes = [
-            [("name", 1)],
-            [("email", 1)],
-            [("tenantId", 1)],
-            IndexModel(
-                [("idOnTheSource", 1), ("source", 1), ("tenantId", 1)],
-                unique=True,
-                partialFilterExpression={"idOnTheSource": {"$exists": True}},
-            ),
-            [("memberIds", 1)],
-        ]

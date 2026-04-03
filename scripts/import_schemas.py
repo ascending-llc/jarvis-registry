@@ -29,9 +29,10 @@ Features:
     - Local mode: Fast, no network required, ideal for development
     - Remote mode: Download from GitHub Release, ideal for CI/CD
     - Generates Beanie Document classes with proper type hints
-    - Handles indexes, timestamps, references (Link), and nested documents
+    - Handles timestamps, references (Link), and nested documents
     - Generates StrEnum classes from JSON Schema $defs (x-enum-members)
     - Cross-platform compatible (Windows/Linux/macOS)
+    - Intentionally skipping index definition - indices are always maintained from the jarvis-api side.
 """
 
 import argparse
@@ -290,7 +291,6 @@ class BeanieModelGenerator:
         collection_name = schema.get("x-collection", title.lower())
         properties = schema.get("properties", {})
         required_fields = schema.get("required", [])
-        indexes = schema.get("x-indexes", [])
         has_timestamps = schema.get("x-timestamps", False)
 
         # Parse $defs for named enum definitions
@@ -304,8 +304,6 @@ class BeanieModelGenerator:
                 enum_key = tuple(enum_def.get("enum", []))
                 if enum_key:
                     self._schema_enum_lookup[enum_key] = enum_name
-
-        field_level_indexes = self._collect_field_indexes(properties)
 
         lines = []
 
@@ -370,16 +368,6 @@ class BeanieModelGenerator:
 
         if has_timestamps:
             lines.append("        use_state_management = True")
-
-        all_indexes = field_level_indexes + indexes
-        if all_indexes:
-            lines.append("")
-            lines.append("        indexes = [")
-            for idx in all_indexes:
-                idx_line = self._generate_index(idx)
-                if idx_line:
-                    lines.append(f"            {idx_line},")
-            lines.append("        ]")
 
         imports = self._generate_imports(has_timestamps)
 
@@ -522,7 +510,14 @@ class BeanieModelGenerator:
         return ref_name
 
     def _collect_field_indexes(self, properties: dict[str, Any]) -> list[dict[str, Any]]:
-        """Collect field-level index definitions from x-index, x-unique, and x-sparse"""
+        """
+        Collect field-level index definitions from x-index, x-unique, and x-sparse.
+        This method is defined but not used, because jarvis-api should be the source of truth on indices.
+        Whenever its backend connects to MongoDB via Mongoose,
+        it makes sure indices are all created according to schema definitions.
+        The Python side is only concerned with the field shape of the collections,
+        it doesn't need to **define** indices via Beanie again.
+        """
         field_indexes = []
 
         for field_name, field_def in properties.items():
@@ -731,7 +726,10 @@ class BeanieModelGenerator:
 
     def _generate_index(self, index_def: dict[str, Any]) -> str:
         """
-        Generate index definition for Settings.indexes
+        Generate index definition for Settings.indexes. This method is defined but not used, because jarvis-api
+        should be the source of truth on indices. Whenever its backend connects to MongoDB via Mongoose,
+        it makes sure indices are all created according to schema definitions. The Python side is only concerned
+        with the field shape of the collections, it doesn't need to **define** indices via Beanie again.
 
         Rules (Updated to fix Beanie/PyMongo compatibility):
         - No options → list: [("field1", 1), ("field2", -1)]
@@ -846,10 +844,6 @@ class BeanieModelGenerator:
             beanie_imports.append("Link")
 
         imports.append(f"from beanie import {', '.join(beanie_imports)}")
-
-        # Add IndexModel import if needed
-        if "IndexModel" in self.imported_types:
-            imports.append("from pymongo import IndexModel")
 
         return "\n".join(imports)
 
