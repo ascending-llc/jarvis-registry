@@ -2,7 +2,7 @@
 Auto-generated Beanie ODM Models
 
 DO NOT EDIT - This directory is auto-generated
-Generated at: 2026-04-03T01:50:05.690421+00:00
+Generated at: 2026-04-03T01:55:56.015074+00:00
 """
 
 from .access_role import IAccessRole

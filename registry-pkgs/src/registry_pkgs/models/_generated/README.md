@@ -8,16 +8,24 @@ This directory contains auto-generated Beanie ODM models from JSON schemas.
 
 - **Repository**: ascending-llc/jarvis-api
 - **Version**: asc0.5.1
-- **Generated at**: 2026-04-03T01:50:05.690569+00:00
+- **Generated at**: 2026-04-03T01:55:56.015321+00:00
 - **Files**: 7
 
 ## Regenerate Models
 
-To regenerate these models, run the following command from project root.
+To regenerate these models from the latest schemas, run the following command from project root.
 
 ```bash
 uv run poe generate-schemas
 ```
+
+To regenerate from a specific version tag, provide a positional argument like below.
+
+```bash
+uv run poe generate-schemas asc0.5.1
+```
+
+**The generated files should be Git tracked.**
 
 ## Files Generated
 
