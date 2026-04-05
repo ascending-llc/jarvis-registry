@@ -1,17 +1,18 @@
 site_name: Jarvis Registry
 site_description: Connect any AI copilot to your enterprise tools through a single gateway with built-in security, auto-discovery, and full observability.
 site_author: ASCENDING Inc
-site_url: https://github.com/ascending-llc/jarvis-registry
+site_url: https://ascending-llc.github.io/jarvis-registry/
 # Repository
 repo_name: ascending-llc/jarvis-registry
 repo_url: https://github.com/ascending-llc/jarvis-registry
 
 # Copyright
-copyright: Copyright &copy; 2025 ASCENDING Inc
+copyright: Copyright &copy; 2025-Present ASCENDING Inc
 
 # Configuration
 theme:
   name: material
+  custom_dir: docs/overrides
   palette:
     # Palette toggle for light mode
     - scheme: default
@@ -43,6 +44,10 @@ theme:
     - content.code.annotate
   logo: img/jarvis_vertical_logo_w_text_light_bkg.svg
   favicon: frontend/src/assets/favicon-64x64.png
+
+# Extra CSS
+extra_css:
+  - stylesheets/extra.css
 
 # Plugins
 plugins:
