@@ -1,0 +1,1553 @@
+# MCP Gateway & Registry - High-Level Summary
+
+This project provides an enterprise-ready gateway and registry for Model Context Protocol (MCP) servers, enabling centralized management, secure access, and dynamic tool discovery for AI agents and development teams. The core goal is to transform the chaos of managing hundreds of individual MCP server connections into a unified, governed platform with comprehensive authentication, fine-grained access control, and intelligent tool discovery capabilities.
+
+The repository provides:
+
+1. **Centralized Gateway & Registry**: A unified platform for managing and accessing MCP servers across an organization
+2. **Enterprise Authentication**: Multi-provider OAuth 2.0 support with Keycloak, Amazon Cognito, and custom identity providers
+3. **Fine-Grained Access Control**: Scope-based authorization at server, method, and individual tool levels
+4. **Dynamic Tool Discovery**: AI-powered semantic search using FAISS and sentence transformers for autonomous tool discovery
+5. **Comprehensive Observability**: Dual-path metrics collection with SQLite and OpenTelemetry for detailed analytics
+6. **Production-Ready Deployment**: Docker-based deployment with support for EC2, EKS, and container orchestration
+
+Key features include: centralized server management, OAuth 2.0/3.0 authentication flows, token vending service, automated token refresh, dynamic tool discovery and invocation, real-time health monitoring, Grafana dashboards, security scanning integration, and Anthropic MCP Registry compatibility.
+
+---
+
+# MCP Gateway & Registry
+
+## 1. Overview
+
+- **Project Name:** MCP Gateway & Registry
+- **Purpose:** Enterprise-ready platform for managing, securing, and accessing Model Context Protocol (MCP) servers at scale
+- **Core Goal:** Transform scattered MCP server connections into a centralized, governed platform with unified authentication and intelligent tool discovery
+- **Communication:** Uses MCP protocol over SSE (Server-Sent Events) and Streamable HTTP
+- **Key Components:** Gateway (Nginx reverse proxy), Registry (Web UI & API), Auth Server (OAuth/JWT), MCP Servers, Metrics Service, Token Refresh Service
+
+## 2. Core Problem Solved
+
+**Transform this chaos:**
+- AI agents require separate connections to each MCP server
+- Each developer configures VS Code, Cursor, Claude Code individually
+- Developers must install and manage MCP servers locally
+- No standard authentication flow for enterprise tools
+- Scattered API keys and credentials across tools
+- No visibility into what tools teams are using
+- Security risks from unmanaged tool sprawl
+- No dynamic tool discovery for autonomous agents
+
+**Into this organized approach:**
+- AI agents connect to one gateway, access multiple MCP servers
+- Single configuration point for VS Code, Cursor, Claude Code
+- Central IT manages cloud-hosted MCP infrastructure
+- Developers use standard OAuth 2LO/3LO flows
+- Centralized credential management with secure vault integration
+- Complete visibility and audit trail for all tool usage
+- Enterprise-grade security with governed tool access
+- Dynamic tool discovery and invocation for autonomous workflows
+
+## 3. Architecture Overview
+
+### 3.1. Core Architectural Decision: Reverse Proxy Pattern
+
+The MCP Gateway uses a **reverse proxy architecture** (Nginx-based) rather than an application-layer gateway:
+
+**Key Benefits:**
+- **Performance**: Direct proxy routing with minimal overhead (~1-2ms)
+- **Protocol Independence**: Can proxy any protocol (HTTP, WebSocket, SSE, gRPC)
+- **Scalability**: Each MCP server scales independently
+- **Implementation**: Allows Python development while Nginx handles message routing
+- **Future-Proof**: Supports A2A (Agent-to-Agent) and other protocols without gateway changes
+
+**Architecture Flow:**
+```
+AI Agent/Coding Assistant
+    ↓ Multiple Endpoints
+┌─────────────────┐
+│  Nginx Gateway  │
+│  /fininfo/      │ ──auth_request──> Auth Server
+│  /mcpgw/        │                        │
+│  /currenttime/  │ <──auth_headers───────┘
+└─────────────────┘
+    │ │ │
+    │ │ └─── localhost:8003 (currenttime)
+    │ └───── localhost:8002 (mcpgw)
+    └─────── localhost:8001 (fininfo)
+```
+
+**Alternative Considered:**
+- Tools Gateway Pattern: Single endpoint with tool aggregation
+- Trade-offs: Better developer experience but requires Go/Rust for performance and adds complexity
+
+### 3.2. High-Level Component Architecture
+
+```
+┌─────────────────────────────────────┐
+│      Human Users / AI Agents        │
+└──────────────┬──────────────────────┘
+               │
+               ↓
+┌──────────────────────────────────────┐
+│   Identity Provider (Keycloak/      │
+│   Cognito) - OAuth 2.0/OIDC          │
+└──────────────┬───────────────────────┘
+               │
+               ↓
+┌──────────────────────────────────────┐
+│   MCP Gateway & Registry (EC2/EKS)   │
+│   ┌────────────────────────────────┐ │
+│   │  NGINX Reverse Proxy Router    │ │
+│   └──────┬─────────────────────────┘ │
+│          │                            │
+│   ┌──────┴─────────┬────────────┐    │
+│   │ Auth Server    │ Registry   │    │
+│   │ (Dual Auth)    │ Web UI     │    │
+│   └────────────────┴────────────┘    │
+│                                       │
+│   ┌──────────────────────────────┐   │
+│   │  Local MCP Servers           │   │
+│   │  - MCP Server 1, 2, ...N     │   │
+│   └──────────────────────────────┘   │
+└──────────────┬───────────────────────┘
+               │
+               ↓
+┌──────────────────────────────────────┐
+│  External Systems & Data Sources     │
+│  - EKS/EC2 Cluster MCP Servers       │
+│  - API Gateway + Lambda Functions    │
+│  - Databases, External APIs          │
+└──────────────────────────────────────┘
+```
+
+### 3.3. Key Architectural Components
+
+**Gateway Layer:**
+- **Nginx Reverse Proxy**: Path-based routing, SSL termination, load balancing
+- **Auth Server**: Dual authentication (Keycloak/Cognito), token validation, scope enforcement
+- **Registry Web UI**: Server management, health monitoring, user administration
+- **Registry MCP Server**: Dynamic tool discovery, intelligent tool finder
+
+**Identity & Access:**
+- **Keycloak/Cognito**: Primary identity provider
+- **OAuth 2.0/3.0**: User authentication and authorization
+- **JWT Tokens**: Secure, stateless authentication
+- **Fine-Grained Access Control**: Scope-based permissions at server, method, and tool levels
+
+**MCP Server Layer:**
+- **Local MCP Servers**: Co-located with gateway (SSE transport)
+- **Remote MCP Servers**: EKS/EC2 clusters (SSE/Streamable HTTP)
+- **Serverless MCP**: API Gateway + Lambda functions
+
+**Observability:**
+- **Metrics Service**: Dual-path collection (SQLite + OpenTelemetry)
+- **Prometheus**: Time-series metrics storage
+- **Grafana**: Real-time dashboards and alerting
+- **CloudWatch/Datadog**: Cloud-native monitoring integration
+
+## 4. Authentication & Authorization
+
+### 4.1. Three-Layer Authentication System
+
+**Layer 1: Ingress Authentication (2LO/M2M)**
+- Purpose: Controls who can access the MCP Gateway
+- Providers: Keycloak (M2M service accounts), Cognito (M2M/2LO)
+- Headers: `X-Authorization`, `X-Client-Id`, `X-Keycloak-Realm`, `X-User-Pool-Id`
+- Methods: Machine-to-Machine (JWT tokens), User sessions (OAuth PKCE)
+
+**Layer 2: Fine-Grained Access Control (FGAC)**
+- Purpose: Controls which tools/methods within MCP servers can be accessed
+- Based on: User/agent scopes and group memberships
+- Validation: Applied at gateway level after ingress auth
+- Granularity: Server-level, method-level, individual tool-level
+
+**Layer 3: Egress Authentication (3LO)**
+- Purpose: Allows MCP servers to act on user's behalf with external services
+- Providers: Atlassian, Google, GitHub, Microsoft, custom OAuth providers
+- Headers: `Authorization`, provider-specific headers (e.g., `X-Atlassian-Cloud-Id`)
+- Validation: MCP server validates with its IdP
+
+### 4.2. Dual Token System
+
+AI agents carry BOTH ingress and egress tokens:
+
+```json
+{
+  "headers": {
+    // Ingress Authentication (for Gateway) - Keycloak
+    "X-Authorization": "Bearer {keycloak_jwt_token}",
+    "X-Client-Id": "{agent_client_id}",
+    "X-Keycloak-Realm": "mcp-gateway",
+    "X-Keycloak-URL": "http://localhost:8080",
+
+    // OR Cognito
+    "X-Authorization": "Bearer {cognito_jwt_token}",
+    "X-User-Pool-Id": "{cognito_user_pool_id}",
+    "X-Client-Id": "{cognito_client_id}",
+    "X-Region": "{aws_region}",
+
+    // Egress Authentication (for MCP Server) - Example: Atlassian
+    "Authorization": "Bearer {atlassian_oauth_token}",
+    "X-Atlassian-Cloud-Id": "{atlassian_cloud_id}"
+  }
+}
+```
+
+### 4.3. Complete Authentication Flow
+
+```
+1. One-Time Setup:
+   User → Keycloak/Cognito (2LO) → Ingress Token
+   User → External IdP (3LO, consent) → Egress Token
+   User → Agent Configuration (both tokens)
+
+2. Runtime (Every Request):
+   Agent → Gateway (dual tokens)
+   Gateway → Keycloak/Cognito (validate ingress)
+   Gateway → Apply FGAC (check permissions)
+   Gateway → MCP Server (forward egress token)
+   MCP Server → External IdP (validate egress)
+   MCP Server → Response (via Gateway)
+```
+
+### 4.4. Fine-Grained Access Control (FGAC)
+
+**Scope Types:**
+- **UI Scopes**: Registry management permissions
+  - `mcp-registry-admin`: Full administrative access
+  - `mcp-registry-user`: Limited user access
+  - `mcp-registry-developer`: Service registration and management
+  - `mcp-registry-operator`: Operational access without registration
+
+- **Server Scopes**: MCP server access
+  - `mcp-servers-unrestricted/read`: Read all servers
+  - `mcp-servers-unrestricted/execute`: Execute all tools
+  - `mcp-servers-restricted/read`: Limited read access
+  - `mcp-servers-restricted/execute`: Limited execute access
+
+**Methods vs Tools:**
+- **MCP Methods**: Protocol operations (`initialize`, `tools/list`, `tools/call`)
+- **Individual Tools**: Specific functions within servers
+
+**Example Access Control:**
+```yaml
+# User can list tools but only execute specific ones
+mcp-servers-restricted/execute:
+  - server: fininfo
+    methods:
+      - tools/list        # Can list all tools
+      - tools/call        # Can call tools
+    tools:
+      - get_stock_aggregates   # But only these specific tools
+      - print_stock_data
+```
+
+**Validation Logic:**
+1. Input Validation: Validate server name, method, tool name, user scopes
+2. Scope Iteration: Check each user scope for matching permissions
+3. Server Matching: Find server configurations that match the requested server
+4. Method Validation: Check if the requested method is allowed
+5. Tool Validation: For `tools/call`, validate specific tool permissions
+6. Access Decision: Grant access if any scope allows the operation
+
+**Group Mappings:**
+```yaml
+group_mappings:
+  mcp-registry-admin:
+    - mcp-registry-admin                    # UI permissions
+    - mcp-servers-unrestricted/read         # Server read access
+    - mcp-servers-unrestricted/execute      # Server execute access
+
+  mcp-registry-user:
+    - mcp-registry-user                     # Limited UI permissions
+    - mcp-servers-restricted/read           # Limited server access
+```
+
+**Note**: All group names and scope names are completely customizable by administrators. Names must be configured consistently in both the Identity Provider (IdP) and `scopes.yml` configuration file.
+
+## 4.5. Agent-to-Agent (A2A) Protocol Integration
+
+The MCP Gateway supports Agent-to-Agent (A2A) communication, enabling AI agents to securely register themselves and their capabilities with the central registry, creating a self-managed agent ecosystem.
+
+### 4.5.1. A2A Agent Architecture
+
+```
+Agent Application (AI Code)
+    ↓ M2M Token (Keycloak Service Account)
+┌─────────────────────────────────────┐
+│  Agent Registry API (/api/agents)   │
+│  - POST /api/agents/register        │
+│  - GET /api/agents                  │
+│  - GET /api/agents/{path}           │
+│  - PUT /api/agents/{path}           │
+│  - DELETE /api/agents/{path}        │
+│  - POST /api/agents/{path}/toggle   │
+└─────────────────────────────────────┘
+    ↓
+┌─────────────────────────────────────┐
+│  Agent State Management             │
+│  - registry/agents/agent_state.json │
+│  - registry/agents/{name}.json      │
+└─────────────────────────────────────┘
+```
+
+### 4.5.2. Agent Registration Flow
+
+**Step 1: Agent Authentication**
+- Agent obtains M2M token from Keycloak service account
+- Tokens expire in 5 minutes and must be regenerated before use
+- Token validation includes expiration checks via JWT payload decoding
+
+**Step 2: Agent Registration**
+- Agent calls POST `/api/agents/register` with:
+  - Agent metadata (name, description, version)
+  - Protocol version (e.g., "1.0")
+  - Agent skills/capabilities (MCP tools provided by agent)
+  - Security configuration (bearer tokens, oauth)
+  - Visibility settings (public/private)
+  - Trust level (verified/unverified)
+
+**Step 3: Agent Access Control**
+- Agent permissions defined in `auth_server/scopes.yml`
+- Three-tier structure:
+  1. **UI-Scopes**: Agent registry permissions (list_agents, get_agent, publish_agent, modify_agent, delete_agent)
+  2. **Group Mappings**: Maps Keycloak groups to scope names
+  3. **Individual group scopes**: Detailed agent and MCP server access
+
+**Step 4: Agent CRUD Operations**
+- CREATE: Register new agent with skills
+- READ: Retrieve agent metadata and capabilities
+- UPDATE: Modify agent description, tags, skills
+- DELETE: Remove agent from registry
+- TOGGLE: Enable/disable agent availability
+
+### 4.5.3. Agent Access Control Example
+
+**Scopes Configuration (auth_server/scopes.yml):**
+```yaml
+UI-Scopes:
+  mcp-registry-admin:
+    list_agents:
+      - all              # Admin sees all agents
+    get_agent:
+      - all
+    publish_agent:
+      - all
+    modify_agent:
+      - all
+    delete_agent:
+      - all
+
+  registry-users-lob1:
+    list_agents:
+      - /code-reviewer    # LOB1 sees specific agents
+      - /test-automation
+    get_agent:
+      - /code-reviewer
+      - /test-automation
+
+group_mappings:
+  mcp-registry-admin:
+    - mcp-registry-admin
+  registry-users-lob1:
+    - registry-users-lob1
+```
+
+**Agent Permissions Table:**
+```
+Agent | Group | Can List | Can Get | Can Publish | Can Modify | Can Delete
+------|-------|----------|---------|-------------|------------|----------
+admin | admin | all      | all     | all         | all        | all
+lob1  | lob1  | 2 agents | 2       | own agents  | own        | own agents
+lob2  | lob2  | 2 agents | 2       | own agents  | own        | own agents
+```
+
+### 4.5.4. Agent State Management
+
+**Agent State File (registry/agents/agent_state.json):**
+```json
+{
+  "agents": {
+    "/code-reviewer": {
+      "path": "/code-reviewer",
+      "name": "Code Reviewer Agent",
+      "enabled": true,
+      "registered_at": "2024-11-09T14:45:00Z",
+      "last_modified": "2024-11-09T14:50:00Z"
+    },
+    "/data-analysis": {
+      "path": "/data-analysis",
+      "name": "Data Analysis Agent",
+      "enabled": true,
+      "registered_at": "2024-11-09T15:00:00Z"
+    }
+  }
+}
+```
+
+**Individual Agent File (registry/agents/code-reviewer.json):**
+```json
+{
+  "protocol_version": "1.0",
+  "name": "Code Reviewer Agent",
+  "description": "Reviews code for quality and best practices",
+  "path": "/code-reviewer",
+  "url": "https://agent.example.com",
+  "skills": [
+    {
+      "id": "review-python",
+      "name": "Python Code Review",
+      "description": "Reviews Python code",
+      "parameters": {
+        "code_snippet": {"type": "string"}
+      }
+    }
+  ],
+  "security": ["bearer"],
+  "tags": ["code-review", "qa"],
+  "visibility": "public",
+  "trust_level": "verified"
+}
+```
+
+### 4.5.5. Agent CLI & Testing
+
+**Agent CRUD Test Script (tests/agent_crud_test.sh):**
+- Demonstrates all CRUD operations (create, read, update, delete, toggle)
+- Includes token validation with JWT expiration checking
+- Tests agent state persistence
+- Verifies agent re-registration after deletion
+- Supports custom token paths and environment variables
+
+**Usage:**
+```bash
+# Generate fresh credentials
+./credentials-provider/generate_creds.sh
+
+# Run CRUD tests with default token
+bash tests/agent_crud_test.sh
+
+# Run with custom token path
+bash tests/agent_crud_test.sh /path/to/token.json
+
+# Run with environment variable
+TOKEN_FILE=/path/to/token.json bash tests/agent_crud_test.sh
+```
+
+### 4.5.6. Access Control Testing
+
+**LOB Bot Access Control Tests (tests/run-lob-bot-tests.sh):**
+- Tests MCP service access permissions (Tests 1-6)
+- Tests agent registry API permissions (Tests 7-14)
+- Validates bot-specific agent visibility
+- Ensures agents can only access permitted agents
+- Confirms admin sees all agents
+
+**Test Coverage:**
+```
+Part 1: MCP Service Access (6 tests)
+- Tests 1-6: Verify bots can only call permitted MCP services
+
+Part 2: Agent Registry API (8 tests)
+- Tests 7-9: LOB1 agent access control
+- Tests 10-12: LOB2 agent access control
+- Tests 13-14: Admin agent access (see all)
+```
+
+**Running Access Control Tests:**
+```bash
+# Generate tokens for all bots
+./keycloak/setup/generate-agent-token.sh admin-bot
+./keycloak/setup/generate-agent-token.sh lob1-bot
+./keycloak/setup/generate-agent-token.sh lob2-bot
+
+# Run 14 comprehensive tests
+bash tests/run-lob-bot-tests.sh
+```
+
+### 4.5.7. Code Structure for A2A Agent Management
+
+**CLI Module (cli/agent_mgmt.py):**
+- Agent registration and lifecycle management
+- CRUD operations on agent metadata
+- Argument validation and error handling
+- Structured logging and status reporting
+
+**Key Functions:**
+- `register_agent()`: Register new agent in registry
+- `get_agent()`: Retrieve agent metadata
+- `update_agent()`: Modify agent settings
+- `delete_agent()`: Remove agent from registry
+- `toggle_agent()`: Enable/disable agent
+- `list_agents()`: Get agents filtered by permissions
+
+**API Routes (registry/api/agent_routes.py):**
+- Implements Agent Registry REST API endpoints
+- Access control enforcement via scopes
+- Token validation and authentication
+- Agent state persistence and management
+
+**Data Models (registry/models/):**
+- Agent schema validation
+- Skill/capability definitions
+- Security configuration models
+- State tracking models
+
+**Implementation Notes:**
+- JWT token validation with expiration checks (5-minute TTL)
+- Base64 padding for JWT payload decoding
+- Proper HTTP status codes (200, 201, 204, 400, 403, 404)
+- Comprehensive error messages for debugging
+- Agent state file updates on registration/deletion
+- File-based persistence for agent metadata
+
+## 5. Dynamic Tool Discovery
+
+### 5.1. Overview
+
+Traditional AI agents are limited to pre-configured tools. Dynamic Tool Discovery enables agents to:
+1. Discover new tools through natural language queries
+2. Automatically find relevant tools from hundreds of MCP servers
+3. Dynamically invoke discovered tools without prior configuration
+4. Expand capabilities on-demand based on user requests
+
+### 5.2. How It Works
+
+```
+1. Natural Language Query → Agent receives user request
+2. Semantic Search → intelligent_tool_finder uses sentence transformers
+3. FAISS Index Search → Searches embeddings of all registered tools
+4. Relevance Ranking → Returns tools ranked by semantic similarity
+5. Tool Invocation → Agent uses invoke_mcp_tool with discovered info
+```
+
+### 5.3. Architecture Components
+
+**Discovery Layer:**
+- **Sentence Transformer**: Neural network for semantic text understanding (all-MiniLM-L6-v2, 384 dimensions)
+- **FAISS Index**: High-performance vector similarity search
+- **Cosine Similarity**: Mathematical measure of semantic similarity
+- **Tool Metadata**: Server information, tool schemas, descriptions
+
+**Key Technologies:**
+- FAISS (Facebook AI Similarity Search)
+- Sentence Transformers
+- Cosine similarity scoring
+- MCP Protocol
+
+### 5.4. Usage Patterns
+
+**Pattern 1: Direct Developer Usage**
+```python
+# Discover tools
+tools = await intelligent_tool_finder(
+    natural_language_query="what time is it in Tokyo",
+    session_cookie="your_session_cookie_here"
+)
+
+# Use discovered tool
+result = await invoke_mcp_tool(
+    mcp_registry_url="https://registry.com/mcpgw/sse",
+    server_name=tools[0]["service_path"],
+    tool_name=tools[0]["tool_name"],
+    arguments={"tz_name": "Asia/Tokyo"},
+    auth_token=auth_token,
+    ...
+)
+```
+
+**Pattern 2: Agent Integration (Autonomous)**
+```python
+# Agent has access to both tools as available capabilities
+# 1. intelligent_tool_finder - discovers tools
+# 2. invoke_mcp_tool - executes discovered tools
+
+# Agent autonomously:
+# - Identifies need for specialized tool
+# - Calls intelligent_tool_finder with description
+# - Receives tool information and usage instructions
+# - Calls invoke_mcp_tool with discovered tool details
+```
+
+### 5.5. API Reference
+
+**intelligent_tool_finder**
+
+Parameters:
+- `natural_language_query` (str, required): Query describing the task
+- `username` (str, optional): Username for authentication
+- `password` (str, optional): Password for authentication
+- `session_cookie` (str, optional): Session cookie for authentication
+- `top_k_services` (int, optional): Number of top services to consider (default: 3)
+- `top_n_tools` (int, optional): Number of best matching tools to return (default: 1)
+
+Returns:
+```python
+[
+    {
+        "tool_name": "current_time_by_timezone",
+        "tool_parsed_description": {
+            "main": "Get current time for a specific timezone",
+            "parameters": {...}
+        },
+        "tool_schema": {...},
+        "service_path": "/currenttime",
+        "service_name": "Current Time Server",
+        "overall_similarity_score": 0.89
+    }
+]
+```
+
+### 5.6. Implementation Details
+
+**FAISS Index Creation:**
+1. Tool Metadata Collection: Gathers descriptions, schemas, server info
+2. Text Embedding: Creates vector embeddings using sentence transformers
+3. Index Building: Constructs FAISS index for fast similarity search
+4. Automatic Updates: Refreshes index when servers are added/modified
+
+**Semantic Search Process:**
+1. Embed the natural language query
+2. Search FAISS for top_k_services
+3. Collect tools from top services
+4. Embed all candidate tool descriptions
+5. Calculate cosine similarity and rank
+
+**Performance Optimizations:**
+- Lazy Loading: FAISS index and models loaded on-demand
+- Caching: Embeddings and metadata cached
+- Async Processing: Embedding operations in separate threads
+- Memory Efficiency: Float32 precision for embeddings
+
+## 6. Registry API & Management
+
+### 6.1. Registry REST API
+
+**Authentication Required**: Session cookie obtained via `/login` endpoint
+
+**Core Endpoints:**
+- `GET /login` - Display login form
+- `POST /login` - Authenticate user, create session cookie (required first step)
+- `POST /logout` - Invalidate session
+- `POST /register` - Register new MCP service
+- `POST /toggle/{service_path}` - Enable/disable service
+- `POST /edit/{service_path}` - Update service details
+- `GET /api/server_details/{service_path}` - Get service details
+- `GET /api/tools/{service_path}` - Get service tools
+- `POST /api/refresh/{service_path}` - Trigger health check/tool discovery
+- `WebSocket /ws/health_status` - Real-time health status updates
+
+**Registration Parameters:**
+- `name`: Display name
+- `description`: Service description
+- `path`: URL path (e.g., `/weather`)
+- `proxy_pass_url`: Backend URL
+- `tags`: Comma-separated tags
+- `num_tools`: Number of tools
+- `num_stars`: Star rating
+- `is_python`: Python-based flag
+- `license`: License information
+
+### 6.2. Anthropic MCP Registry API Compatibility
+
+**Full compatibility** with Anthropic's MCP Registry REST API specification (v0.1):
+
+**Endpoints:**
+- `GET /v0.1/servers` - List all servers (with pagination)
+- `GET /v0.1/servers/{server_name}/versions` - List server versions
+- `GET /v0.1/servers/{server_name}/versions/{version}` - Get version details
+
+**Authentication**: JWT Bearer token (short-lived, typically 5-15 minutes)
+
+**Token Generation:**
+1. Login to Registry Web Interface
+2. Generate JWT Token from UI
+3. Tokens stored in `.oauth-tokens/mcp-registry-api-tokens-YYYY-MM-DD.json`
+4. Use Bearer token in Authorization header
+
+**Example Usage:**
+```bash
+ACCESS_TOKEN=$(cat token-file.json | jq -r '.tokens.access_token')
+
+# List servers
+curl -X GET "http://localhost/v0.1/servers?limit=10" \
+  -H "Authorization: Bearer $ACCESS_TOKEN"
+
+# Get server versions
+curl -X GET "http://localhost/v0.1/servers/io.mcpgateway%2Fatlassian/versions" \
+  -H "Authorization: Bearer $ACCESS_TOKEN"
+
+# Get server details
+curl -X GET "http://localhost/v0.1/servers/io.mcpgateway%2Fatlassian/versions/latest" \
+  -H "Authorization: Bearer $ACCESS_TOKEN"
+```
+
+**Import from Anthropic Registry:**
+```bash
+# Import curated servers from Anthropic's registry
+./cli/import_anthropic_servers.py --select
+```
+
+### 6.3. Service Management CLI
+
+**Location**: `cli/mcp_services.py`
+
+**Key Commands:**
+```bash
+# List all servers
+uv run python cli/mcp_services.py list-servers
+
+# Health check
+uv run python cli/mcp_services.py health-check --server-name atlassian
+
+# Create group
+uv run python cli/mcp_services.py create-group \
+  --group-name mcp-servers-finance \
+  --scope-suffix read
+
+# Assign server to group
+uv run python cli/mcp_services.py assign-server-to-group \
+  --server-name fininfo \
+  --group-name mcp-servers-finance
+
+# User management
+uv run python cli/mcp_services.py create-user \
+  --username john.doe \
+  --groups mcp-servers-finance
+
+# List groups
+uv run python cli/mcp_services.py list-groups
+```
+
+## 7. Configuration & Setup
+
+### 7.1. Main Environment Configuration
+
+**File**: `.env` (Project root)
+
+**Core Variables:**
+- `REGISTRY_URL`: Public URL of registry
+- `ADMIN_USER`, `ADMIN_PASSWORD`: Registry admin credentials
+- `AUTH_PROVIDER`: `keycloak` or `cognito`
+- `AWS_REGION`: AWS region for services
+
+**Keycloak Configuration (if AUTH_PROVIDER=keycloak):**
+- `KEYCLOAK_URL`: Internal URL (`http://keycloak:8080`)
+- `KEYCLOAK_EXTERNAL_URL`: External URL for browser access
+- `KEYCLOAK_REALM`: Realm name (`mcp-gateway`)
+- `KEYCLOAK_ADMIN`, `KEYCLOAK_ADMIN_PASSWORD`: Admin credentials
+- `KEYCLOAK_CLIENT_ID`, `KEYCLOAK_CLIENT_SECRET`: Web client credentials (auto-generated)
+- `KEYCLOAK_M2M_CLIENT_ID`, `KEYCLOAK_M2M_CLIENT_SECRET`: M2M credentials (auto-generated)
+
+**Cognito Configuration (if AUTH_PROVIDER=cognito):**
+- `COGNITO_USER_POOL_ID`: User Pool ID
+- `COGNITO_CLIENT_ID`: App Client ID
+- `COGNITO_CLIENT_SECRET`: App Client Secret
+- `COGNITO_DOMAIN`: Cognito domain (optional)
+
+**Getting Keycloak Credentials:**
+```bash
+# Initialize Keycloak and generate credentials
+cd keycloak/setup
+./init-keycloak.sh
+
+# Retrieve existing credentials
+./get-all-client-credentials.sh
+```
+
+### 7.2. OAuth Environment Configuration
+
+**File**: `credentials-provider/oauth/.env`
+
+**Ingress Authentication:**
+```bash
+# Keycloak
+KEYCLOAK_URL=https://mcpgateway.ddns.net
+KEYCLOAK_REALM=mcp-gateway
+KEYCLOAK_M2M_CLIENT_ID=mcp-gateway-m2m
+KEYCLOAK_M2M_CLIENT_SECRET=ZJqbsamnQs79hbUbkJLB...
+
+# OR Cognito
+INGRESS_OAUTH_USER_POOL_ID=us-east-1_vm1115QSU
+INGRESS_OAUTH_CLIENT_ID=5v2rav1v93...
+INGRESS_OAUTH_CLIENT_SECRET=1i888fnolv6k5sa1b8s5k839pdm...
+```
+
+**Egress Authentication (Multiple Providers):**
+```bash
+# Pattern: EGRESS_OAUTH_CLIENT_ID_N, EGRESS_OAUTH_CLIENT_SECRET_N
+EGRESS_OAUTH_CLIENT_ID_1=your_atlassian_client_id
+EGRESS_OAUTH_CLIENT_SECRET_1=your_atlassian_client_secret
+EGRESS_OAUTH_REDIRECT_URI_1=http://localhost:8080/callback
+EGRESS_PROVIDER_NAME_1=atlassian
+EGRESS_MCP_SERVER_NAME_1=atlassian
+```
+
+### 7.3. OAuth Providers Configuration
+
+**File**: `auth_server/oauth2_providers.yml`
+
+**Keycloak Provider:**
+```yaml
+keycloak:
+  display_name: "Keycloak"
+  client_id: "${KEYCLOAK_CLIENT_ID}"
+  client_secret: "${KEYCLOAK_CLIENT_SECRET}"
+  auth_url: "${KEYCLOAK_URL}/realms/${KEYCLOAK_REALM}/protocol/openid-connect/auth"
+  token_url: "${KEYCLOAK_URL}/realms/${KEYCLOAK_REALM}/protocol/openid-connect/token"
+  user_info_url: "${KEYCLOAK_URL}/realms/${KEYCLOAK_REALM}/protocol/openid-connect/userinfo"
+  logout_url: "${KEYCLOAK_URL}/realms/${KEYCLOAK_REALM}/protocol/openid-connect/logout"
+  scopes: ["openid", "email", "profile"]
+  groups_claim: "groups"
+  enabled: true
+```
+
+### 7.4. Scopes Configuration
+
+**File**: `auth_server/scopes.yml`
+
+**Group Mappings:**
+```yaml
+group_mappings:
+  mcp-registry-admin:
+    - mcp-registry-admin
+    - mcp-servers-unrestricted/read
+    - mcp-servers-unrestricted/execute
+
+  mcp-registry-user:
+    - mcp-registry-user
+    - mcp-servers-restricted/read
+```
+
+**UI Scopes:**
+```yaml
+UI-Scopes:
+  mcp-registry-admin:
+    list_service: [all]
+    register_service: [all]
+    health_check_service: [all]
+    toggle_service: [all]
+    modify_service: [all]
+```
+
+**Server Scopes:**
+```yaml
+mcp-servers-restricted/execute:
+  - server: fininfo
+    methods:
+      - initialize
+      - tools/list
+      - tools/call
+    tools:
+      - get_stock_aggregates
+      - print_stock_data
+```
+
+### 7.5. Credential Generation
+
+**Quick Start:**
+```bash
+# Configure environment
+cp .env.example .env
+cp credentials-provider/oauth/.env.example credentials-provider/oauth/.env
+# Edit both .env files with your credentials
+
+# Generate all credentials
+./credentials-provider/generate_creds.sh
+
+# Available options:
+# --all              # Run all authentication flows (default)
+# --ingress-only     # Only MCP Gateway authentication
+# --egress-only      # Only external provider authentication
+# --agentcore-only   # Only AgentCore token generation
+# --keycloak-only    # Only Keycloak token generation
+# --provider google  # Specify provider for egress auth
+# --verbose          # Enable debug logging
+```
+
+**Generated Configuration Files:**
+- `.oauth-tokens/vscode_mcp.json` - VS Code MCP configuration
+- `.oauth-tokens/mcp.json` - Roocode/Claude Code configuration
+- `.oauth-tokens/ingress.json` - Ingress tokens
+- `.oauth-tokens/egress.json` - Egress tokens
+- `.oauth-tokens/agent-{name}-m2m-token.json` - Agent-specific tokens
+
+### 7.6. Keycloak Setup
+
+**Initial Setup:**
+```bash
+cd keycloak/setup
+./init-keycloak.sh
+```
+
+**This creates:**
+- `mcp-gateway` realm
+- Web and M2M clients with configurations
+- Required groups (`mcp-servers-unrestricted`, `mcp-servers-restricted`)
+- Group mappers for JWT token claims
+- Initial admin and test users
+
+**Service Account Management:**
+```bash
+# Create individual agent service account
+./setup-agent-service-account.sh --agent-id sre-agent --group mcp-servers-unrestricted
+
+# Create shared M2M service account
+./setup-m2m-service-account.sh
+```
+
+**Token Generation:**
+```bash
+# Generate M2M token for ingress
+uv run python credentials-provider/token_refresher.py
+
+# Generate agent-specific token
+uv run python credentials-provider/token_refresher.py --agent-id sre-agent
+```
+
+## 8. Observability & Monitoring
+
+### 8.1. Dual-Path Metrics System
+
+**Architecture:**
+```
+Auth Server Middleware → Metrics Service API → Dual Path:
+                                               ├─> SQLite Database (detailed storage)
+                                               └─> OpenTelemetry (Prometheus/Grafana)
+```
+
+**Database Tables:**
+- `auth_metrics`: Authentication requests and validation
+- `tool_metrics`: Tool execution details (calls, methods, client info)
+- `discovery_metrics`: Tool discovery/search queries
+- `metrics`: Raw metrics data (all types)
+- `api_keys`: API key management for metrics service
+
+### 8.2. Accessing SQLite Metrics
+
+**Connect to Database:**
+```bash
+# Via container
+docker compose exec metrics-db sh
+sqlite3 /var/lib/sqlite/metrics.db
+
+# Or copy locally
+docker compose cp metrics-db:/var/lib/sqlite/metrics.db ./metrics.db
+sqlite3 ./metrics.db
+```
+
+**Sample Queries:**
+
+**Authentication Success Rate:**
+```sql
+SELECT
+    server,
+    COUNT(*) as total,
+    SUM(success) as successful,
+    ROUND(100.0 * SUM(success) / COUNT(*), 2) as success_pct,
+    ROUND(AVG(duration_ms), 2) as avg_ms
+FROM auth_metrics
+GROUP BY server
+ORDER BY total DESC;
+```
+
+**Tool Usage Summary:**
+```sql
+SELECT
+    tool_name,
+    COUNT(*) as calls,
+    SUM(success) as successful,
+    ROUND(AVG(duration_ms), 2) as avg_ms,
+    COUNT(DISTINCT client_name) as unique_clients
+FROM tool_metrics
+GROUP BY tool_name
+ORDER BY calls DESC;
+```
+
+**Slowest Tool Executions:**
+```sql
+SELECT
+    tool_name,
+    server_name,
+    ROUND(duration_ms, 2) as duration_ms,
+    datetime(timestamp) as time,
+    success
+FROM tool_metrics
+ORDER BY duration_ms DESC
+LIMIT 20;
+```
+
+### 8.3. OpenTelemetry Metrics
+
+**Prometheus Endpoint**: `http://localhost:9465/metrics`
+
+**Available Metrics:**
+- `mcp_auth_requests_total` - Counter of authentication requests
+- `mcp_auth_request_duration_seconds` - Histogram of auth request durations
+- `mcp_tool_executions_total` - Counter of tool executions
+- `mcp_tool_execution_duration_seconds` - Histogram of tool execution durations
+- `mcp_tool_discovery_total` - Counter of discovery requests
+- `mcp_tool_discovery_duration_seconds` - Histogram of discovery durations
+- `mcp_protocol_latency_seconds` - Histogram of protocol flow latencies
+- `mcp_health_checks_total` - Counter of health checks
+
+**OTLP Export Configuration:**
+```bash
+# In .env
+OTEL_OTLP_ENDPOINT=http://otel-collector:4318
+```
+
+### 8.4. OpenTelemetry Collector Setup
+
+**Add to docker-compose.yml:**
+```yaml
+otel-collector:
+  image: otel/opentelemetry-collector-contrib:latest
+  command: ["--config=/etc/otel-collector-config.yaml"]
+  volumes:
+    - ./config/otel-collector-config.yaml:/etc/otel-collector-config.yaml
+  ports:
+    - "4318:4318"   # OTLP HTTP receiver
+    - "4317:4317"   # OTLP gRPC receiver
+    - "8889:8889"   # Prometheus exporter metrics
+  restart: unless-stopped
+```
+
+**Basic Configuration (config/otel-collector-config.yaml):**
+```yaml
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 10s
+    send_batch_size: 1024
+
+exporters:
+  prometheus:
+    endpoint: "0.0.0.0:8889"
+    namespace: mcp_gateway
+
+  logging:
+    loglevel: info
+
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [prometheus, logging]
+```
+
+**Cloud Backends:**
+- **AWS CloudWatch**: `awscloudwatch` exporter
+- **Datadog**: `datadog` exporter with API key
+- **New Relic**: `otlphttp/newrelic` with license key
+- **Grafana Cloud**: `otlphttp/grafanacloud` with auth
+- **Honeycomb**: `otlphttp/honeycomb` with API key
+
+### 8.5. Grafana Dashboards
+
+**Access**: `http://localhost:3000` (admin/admin)
+
+**Pre-configured Dashboards:**
+1. **Authentication Metrics**: Success rates, request volume, error codes, response times
+2. **Tool Execution Metrics**: Most used tools, client distribution, success rates, performance trends
+3. **Discovery Metrics**: Search query volume, result counts, performance breakdown
+4. **System Health**: Overall request volume, error rates, performance percentiles (p50, p95, p99)
+
+**Sample PromQL Queries:**
+```promql
+# Authentication success rate
+rate(mcp_auth_requests_total{success="true"}[5m]) / rate(mcp_auth_requests_total[5m])
+
+# Average tool execution duration by server
+rate(mcp_tool_execution_duration_seconds_sum[5m]) / rate(mcp_tool_execution_duration_seconds_count[5m])
+
+# Top 5 most used tools
+topk(5, sum by (tool_name) (rate(mcp_tool_executions_total[5m])))
+
+# 95th percentile request duration
+histogram_quantile(0.95, rate(mcp_auth_request_duration_seconds_bucket[5m]))
+```
+
+### 8.6. Monitoring Best Practices
+
+**Key Metrics to Monitor:**
+- Authentication Success Rate: >95%
+- Tool Execution Success Rate: >90%
+- Average Response Time: <100ms (auth), <500ms (tools)
+- Error Rate: <5%
+- Discovery Query Performance: <50ms (embedding time)
+
+**Alert Configuration:**
+- Authentication failure rate >10%
+- Tool execution errors >5%
+- Response time p95 >1000ms
+- Discovery query failures
+
+**Data Retention:**
+- SQLite database: 90 days (configurable via `METRICS_RETENTION_DAYS`)
+- Prometheus: 200 hours (configurable in `prometheus.yml`)
+
+## 9. Installation & Deployment
+
+### 9.1. Quick Start (5 Minutes)
+
+```bash
+# 1. Clone and setup
+git clone https://github.com/agentic-community/mcp-gateway-registry.git
+cd mcp-gateway-registry
+
+# 2. Configure environment
+cp .env.example .env
+# Edit .env with your credentials
+
+# 3. Generate authentication credentials
+./credentials-provider/generate_creds.sh
+
+# 4. Install prerequisites
+curl -LsSf https://astral.sh/uv/install.sh | sh
+sudo apt-get update && sudo apt-get install -y docker.io docker-compose
+
+# 5. Deploy
+./build_and_run.sh
+
+# 6. Access registry
+open http://localhost:7860
+```
+
+### 9.2. Pre-built Images (Instant Setup)
+
+**Benefits:** No build time, no Node.js required, no frontend compilation, consistent tested images
+
+```bash
+# Step 1: Clone and setup
+git clone https://github.com/agentic-community/mcp-gateway-registry.git
+cd mcp-gateway-registry
+cp .env.example .env
+
+# Step 2: Download embeddings model
+hf download sentence-transformers/all-MiniLM-L6-v2 --local-dir ${HOME}/mcp-gateway/models/all-MiniLM-L6-v2
+
+# Step 3: Configure environment
+# Complete: Initial Environment Configuration guide
+export DOCKERHUB_ORG=mcpgateway
+
+# Step 4: Deploy with pre-built images
+./build_and_run.sh --prebuilt
+
+# Step 5: Initialize Keycloak
+# Complete: Initialize Keycloak Configuration guide
+
+# Step 6: Access registry
+open http://localhost:7860
+
+# Step 7: Create first agent account
+# Complete: Create Your First AI Agent Account guide
+
+# Step 8: Restart auth server
+docker-compose down auth-server && docker-compose rm -f auth-server && docker-compose up -d auth-server
+
+# Step 9: Test the setup
+# Complete: Testing with mcp_client.py and agent.py guide
+```
+
+### 9.3. Amazon EC2 Deployment
+
+**System Requirements:**
+- **Minimum (Development)**: t3.large (2 vCPU, 8GB RAM), 20GB SSD
+- **Recommended (Production)**: t3.2xlarge (8 vCPU, 32GB RAM), 50GB+ SSD
+
+**Detailed Setup:**
+```bash
+# 1. Create directories
+mkdir -p ${HOME}/mcp-gateway/{servers,auth_server,secrets,logs}
+cp -r registry/servers ${HOME}/mcp-gateway/
+cp auth_server/scopes.yml ${HOME}/mcp-gateway/auth_server/
+
+# 2. Configure environment
+cp .env.example .env
+nano .env  # Configure required values
+
+# 3. Generate credentials
+cp credentials-provider/oauth/.env.example credentials-provider/oauth/.env
+nano credentials-provider/oauth/.env
+./credentials-provider/generate_creds.sh
+
+# 4. Install dependencies
+curl -LsSf https://astral.sh/uv/install.sh | sh
+source $HOME/.local/bin/env
+uv venv --python 3.12 && source .venv/bin/activate
+
+sudo apt-get update
+sudo apt-get install --reinstall docker.io -y
+sudo apt-get install -y docker-compose
+sudo usermod -a -G docker $USER
+newgrp docker
+
+# 5. Deploy services
+./build_and_run.sh
+```
+
+### 9.4. HTTPS Configuration
+
+**Option A: Let's Encrypt**
+```bash
+# Install certbot
+sudo apt-get install -y certbot
+
+# Get certificate
+sudo certbot certonly --standalone -d your-domain.com
+
+# Copy certificates
+mkdir -p ${HOME}/mcp-gateway/ssl/{certs,private}
+cp /etc/letsencrypt/live/your-domain/fullchain.pem ${HOME}/mcp-gateway/ssl/certs/
+cp /etc/letsencrypt/live/your-domain/privkey.pem ${HOME}/mcp-gateway/ssl/private/
+chmod 644 ${HOME}/mcp-gateway/ssl/certs/fullchain.pem
+chmod 600 ${HOME}/mcp-gateway/ssl/private/privkey.pem
+
+# Deploy
+./build_and_run.sh
+```
+
+**Certificate Renewal (Cron):**
+```bash
+sudo crontab -e
+# Add:
+0 0,12 * * * certbot renew --quiet && cp /etc/letsencrypt/live/your-domain/fullchain.pem ${HOME}/mcp-gateway/ssl/certs/fullchain.pem && cp /etc/letsencrypt/live/your-domain/privkey.pem ${HOME}/mcp-gateway/ssl/private/privkey.pem && docker compose restart registry
+```
+
+### 9.5. Amazon EKS Deployment
+
+For production Kubernetes deployments, see [EKS deployment guide](https://github.com/aws-samples/amazon-eks-machine-learning-with-terraform-and-kubeflow/tree/master/examples/agentic/mcp-gateway-microservices).
+
+**Key Benefits:**
+- High Availability: Multi-AZ pod distribution
+- Auto Scaling: Horizontal pod autoscaling based on metrics
+- Service Mesh: Istio integration for advanced traffic management
+- Observability: Native CloudWatch and Prometheus integration
+- Security: Pod security policies and network policies
+
+### 9.6. Post-Installation Verification
+
+```bash
+# Check service status
+docker-compose ps
+docker-compose logs -f
+
+# Test web interface
+open http://localhost:7860
+
+# Test authentication
+cd tests
+./mcp_cmds.sh ping
+
+# Configure AI assistants
+./credentials-provider/generate_creds.sh
+cp .oauth-tokens/vscode-mcp.json ~/.vscode/settings.json
+```
+
+## 10. Testing & Integration
+
+### 10.1. MCP Testing Tools
+
+**Test Script**: `tests/mcp_cmds.sh`
+
+```bash
+# Test basic connectivity
+./tests/mcp_cmds.sh basic
+
+# Test MCP connectivity with authentication
+./tests/mcp_cmds.sh ping
+
+# List available tools (filtered by permissions)
+./tests/mcp_cmds.sh list
+
+# Call specific tools
+./tests/mcp_cmds.sh call debug_auth_context '{}'
+./tests/mcp_cmds.sh call intelligent_tool_finder '{"natural_language_query": "quantum"}'
+./tests/mcp_cmds.sh call currenttime current_time_by_timezone '{"tz_name": "America/New_York"}'
+
+# Test against different gateway URLs
+GATEWAY_URL=https://your-domain.com/mcp ./tests/mcp_cmds.sh ping
+./tests/mcp_cmds.sh --url https://your-domain.com/mcp list
+```
+
+**Python MCP Client**: `cli/mcp_client.py`
+```bash
+# Core operations
+uv run python cli/mcp_client.py --operation ping
+uv run python cli/mcp_client.py --operation list
+uv run python cli/mcp_client.py --operation call --tool-name get_stock_aggregates --arguments '{"ticker": "AAPL"}'
+```
+
+**Python Agent**: `agents/agent.py`
+```bash
+# Full-featured agent with AI capabilities
+uv run python agents/agent.py --user-query "What time is it in Tokyo?"
+```
+
+### 10.2. Anthropic API Testing
+
+**Test Script**: `cli/test_anthropic_api.py`
+
+```bash
+# Run all tests
+uv run python cli/test_anthropic_api.py --token-file /path/to/token-file.json
+
+# Test specific endpoint
+uv run python cli/test_anthropic_api.py \
+  --token-file /path/to/token-file.json \
+  --test list-servers \
+  --limit 10
+
+# Get server details
+uv run python cli/test_anthropic_api.py \
+  --token-file /path/to/token-file.json \
+  --test get-server \
+  --server-name io.mcpgateway/atlassian
+```
+
+### 10.3. Credential Validation
+
+```bash
+# Validate all OAuth configurations
+cd credentials-provider
+./generate_creds.sh --verbose
+
+# Test specific authentication flows
+./generate_creds.sh --ingress-only --verbose    # MCP Gateway auth
+./generate_creds.sh --egress-only --verbose     # External provider auth
+./generate_creds.sh --agentcore-only --verbose  # AgentCore auth
+```
+
+## 11. Security Features
+
+### 11.1. Security Scanning
+
+**Integrated Vulnerability Detection** with [Cisco AI Defence MCP Scanner](https://github.com/cisco-ai-defense/mcp-scanner):
+- Automated security scanning during server registration
+- Periodic registry-wide scans
+- Detailed security reports with vulnerability details, severity assessments, and remediation recommendations
+- Automatic protection: Servers with security issues automatically disabled
+- Compliance ready: Security audit trails and vulnerability tracking
+
+### 11.2. Security Best Practices
+
+**Token Storage:**
+- Tokens stored with `600` permissions in `.oauth-tokens/`
+- Never commit `.env` files to version control
+- Use secure secret management for production
+
+**Network Security:**
+- HTTPS-only for production
+- PKCE where supported
+- SSL/TLS certificate management
+
+**Access Control:**
+- Follow principle of least privilege
+- Regular group membership reviews
+- Scope-based authorization at server, method, and tool levels
+
+**Token Lifecycle:**
+- Ingress tokens: 1-hour expiry, auto-refresh via client credentials
+- Egress tokens: Provider-specific, refresh tokens where available
+- Automated refresh service for continuous monitoring
+
+**Audit & Compliance:**
+- Complete audit trails (Nginx access logs + auth server logs + IdP logs)
+- Comprehensive metrics for compliance reporting
+- Security event tracking and monitoring
+
+### 11.3. Token Refresh Service
+
+**Automated Token Refresh Service** provides:
+- Continuous monitoring of all OAuth tokens for expiration
+- Proactive refresh before tokens expire (configurable 1-hour buffer)
+- Automatic MCP config generation for coding assistants
+- Service discovery for both OAuth and no-auth services
+- Background operation with comprehensive logging
+
+**Start the service:**
+```bash
+./start_token_refresher.sh
+```
+
+**Generated configurations:**
+- `.oauth-tokens/vscode_mcp.json` - VS Code extensions
+- `.oauth-tokens/mcp.json` - Claude Code/Roocode
+- Standard configuration format for custom MCP clients
+
+## 12. Enterprise Features
+
+### 12.1. AI Coding Assistants Integration
+
+**Supported Assistants:**
+- VS Code with MCP extension
+- Cursor
+- Claude Code (Roo Code)
+- Cline
+
+**Setup:**
+```bash
+# Generate configurations
+./credentials-provider/generate_creds.sh
+
+# VS Code
+cp .oauth-tokens/vscode-mcp.json ~/.vscode/settings.json
+
+# Roo Code
+cp .oauth-tokens/mcp.json ~/.vscode/mcp-settings.json
+```
+
+### 12.2. Anthropic MCP Registry Integration
+
+**Features:**
+- Import servers from Anthropic's official MCP Registry
+- Full REST API compatibility
+- Unified access through your gateway with centralized auth
+
+**Import servers:**
+```bash
+./cli/import_anthropic_servers.py --select
+```
+
+### 12.3. Token Vending Service
+
+**Capabilities:**
+- JWT token generation for M2M authentication
+- Service account provisioning
+- Automated token lifecycle management
+- Integration with identity providers
+
+**Usage:**
+```bash
+# Generate token for agent
+uv run python credentials-provider/token_refresher.py --agent-id sre-agent
+
+# Check generated token
+cat .oauth-tokens/agent-sre-agent-m2m-token.json
+```
+
+## 13. Troubleshooting
+
+### 13.1. Common Issues
+
+**Services won't start:**
+```bash
+# Check Docker daemon
+sudo systemctl status docker
+
+# Check environment variables
+cat .env | grep -v SECRET
+
+# View detailed logs
+docker-compose logs --tail=50
+```
+
+**Authentication failures:**
+```bash
+# Verify Cognito/Keycloak configuration
+aws cognito-idp describe-user-pool --user-pool-id YOUR_POOL_ID
+
+# Test credential generation
+cd credentials-provider && ./generate_creds.sh --verbose
+```
+
+**Network connectivity issues:**
+```bash
+# Check port availability
+sudo netstat -tlnp | grep -E ':(80|443|7860|8080)'
+
+# Test internal services
+curl -v http://localhost:7860/health
+```
+
+**Permission denied errors:**
+- Check user's Cognito/Keycloak group memberships
+- Verify scope mappings in `scopes.yml`
+- Ensure tool names match exactly
+- Regenerate tokens after group changes
+
+**HTTPS not working:**
+```bash
+# Check certificate files
+ls -la ${HOME}/mcp-gateway/ssl/certs/ ${HOME}/mcp-gateway/ssl/private/
+
+# Check container logs
+docker compose logs registry | grep -i ssl
+
+# Verify port 443
+sudo netstat -tlnp | grep 443
+```
+
+### 13.2. Debugging Tools
+
+**Enable Verbose Logging:**
+```python
+# In auth_server/server.py or relevant module
+logging.basicConfig(level=logging.DEBUG)
+```
+
+**Authentication Event Logging:**
+```python
+def log_auth_event(event_type: str, username: str = None, details: dict = None):
+    logger.info(f"AUTH_EVENT: {event_type}", extra={
+        'username': username,
+        'event_type': event_type,
+        'details': details,
+        'timestamp': datetime.utcnow().isoformat()
+    })
+```
+
+**Health Check:**
+```bash
+curl http://localhost:7860/health
+```
+
+## 14. Additional Resources
+
+### 14.1. Documentation Links
+
+- [Complete Setup Guide](docs/complete-setup-guide.md) - Step-by-step from scratch on AWS EC2
+- [Installation Guide](docs/installation.md) - Complete setup instructions for EC2 and EKS
+- [Quick Start Tutorial](docs/quick-start.md) - Get running in 5 minutes
+- [Configuration Reference](docs/configuration.md) - Environment variables and settings
+- [Authentication Guide](docs/auth.md) - OAuth and identity provider integration
+- [Keycloak Integration](docs/keycloak-integration.md) - Enterprise identity with agent audit trails
+- [Amazon Cognito Setup](docs/cognito.md) - Step-by-step IdP configuration
+- [Fine-Grained Access Control](docs/scopes.md) - Permission management and security
+- [Dynamic Tool Discovery](docs/dynamic-tool-discovery.md) - Autonomous agent capabilities
+- [AI Coding Assistants Setup](docs/ai-coding-assistants-setup.md) - VS Code, Cursor, Claude Code integration
+- [API Reference](docs/registry_api.md) - Programmatic registry management
+- [Anthropic Registry API](docs/anthropic_registry_api.md) - REST API compatibility
+- [Service Management](docs/service-management.md) - Server lifecycle and operations
+- [Token Refresh Service](docs/token-refresh-service.md) - Automated token refresh and lifecycle management
+- [Observability Guide](docs/OBSERVABILITY.md) - Metrics, monitoring, and OpenTelemetry setup
+- [Troubleshooting Guide](docs/FAQ.md) - Common issues and solutions
+- [Architectural Decision](docs/design/architectural-decision-reverse-proxy-vs-application-layer-gateway.md) - Reverse proxy vs application layer gateway
+- [Registry Auth Architecture](docs/registry-auth-architecture.md) - Internal authentication mechanisms
+
+### 14.2. Community & Support
+
+**Getting Help:**
+- [FAQ & Troubleshooting](docs/FAQ.md) - Common questions and solutions
+- [GitHub Issues](https://github.com/agentic-community/mcp-gateway-registry/issues) - Bug reports and feature requests
+- [GitHub Discussions](https://github.com/agentic-community/mcp-gateway-registry/discussions) - Community support and ideas
+
+**Contributing:**
+- [Contributing Guide](CONTRIBUTING.md) - How to contribute code and documentation
+- [Code of Conduct](CODE_OF_CONDUCT.md) - Community guidelines and expectations
+- [Security Policy](SECURITY.md) - Responsible disclosure process
+
+### 14.3. License
+
+This project is licensed under the Apache-2.0 License - see the [LICENSE](LICENSE) file for details.
+
+---
+
+*Part of the [Agentic Community](https://github.com/agentic-community) ecosystem - building the future of AI-driven development.*

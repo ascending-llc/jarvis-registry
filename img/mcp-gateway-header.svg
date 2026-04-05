@@ -1,0 +1,183 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg viewBox="0 0 1600 350" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background gradient -->
+  <defs>
+    <linearGradient id="bgGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#081F2D" />
+      <stop offset="100%" stop-color="#0E3D5A" />
+    </linearGradient>
+
+    <!-- Connection lines -->
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="5" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1600" height="350" fill="url(#bgGradient)" />
+
+  <!-- Chaotic side - Random connections (LEFT SIDE) -->
+  <g>
+    <!-- Chaotic nodes - left side -->
+    <g>
+      <circle cx="150" cy="130" r="6" fill="#e74c3c" />
+      <circle cx="220" cy="100" r="6" fill="#e74c3c" />
+      <circle cx="300" cy="170" r="6" fill="#e74c3c" />
+      <circle cx="360" cy="110" r="6" fill="#e74c3c" />
+      <circle cx="430" cy="190" r="6" fill="#e74c3c" />
+      <circle cx="480" cy="80" r="6" fill="#e74c3c" />
+      <circle cx="250" cy="150" r="6" fill="#e74c3c" />
+
+      <circle cx="180" cy="220" r="6" fill="#e74c3c" />
+      <circle cx="250" cy="270" r="6" fill="#e74c3c" />
+      <circle cx="330" cy="240" r="6" fill="#e74c3c" />
+      <circle cx="400" cy="290" r="6" fill="#e74c3c" />
+      <circle cx="480" cy="250" r="6" fill="#e74c3c" />
+      <circle cx="420" cy="310" r="6" fill="#e74c3c" />
+    </g>
+
+    <!-- Chaotic connections - left side -->
+    <g stroke="#e74c3c" stroke-width="1.5" opacity="0.8">
+      <line x1="150" y1="130" x2="220" y2="100" />
+      <line x1="220" y1="100" x2="360" y2="110" />
+      <line x1="300" y1="170" x2="430" y2="190" />
+      <line x1="360" y1="110" x2="480" y2="80" />
+      <line x1="430" y1="190" x2="250" y2="150" />
+
+      <line x1="180" y1="220" x2="250" y2="270" />
+      <line x1="250" y1="270" x2="330" y2="240" />
+      <line x1="330" y1="240" x2="480" y2="250" />
+      <line x1="400" y1="290" x2="420" y2="310" />
+
+      <line x1="150" y1="130" x2="180" y2="220" />
+      <line x1="220" y1="100" x2="330" y2="240" />
+      <line x1="360" y1="110" x2="250" y2="270" />
+      <line x1="430" y1="190" x2="400" y2="290" />
+      <line x1="480" y1="80" x2="480" y2="250" />
+      <line x1="300" y1="170" x2="420" y2="310" />
+    </g>
+  </g>
+
+  <!-- MCP Gateway structure in the middle -->
+  <g>
+    <!-- Central gateway structure -->
+    <rect x="720" y="75" width="160" height="200" rx="15" ry="15" fill="#2c3e50" stroke="#3498db" stroke-width="3" />
+
+    <!-- Gateway details -->
+    <rect x="735" y="95" width="130" height="30" rx="5" ry="5" fill="#34495e" />
+    <rect x="735" y="135" width="130" height="30" rx="5" ry="5" fill="#34495e" />
+    <rect x="735" y="175" width="130" height="30" rx="5" ry="5" fill="#34495e" />
+    <rect x="735" y="215" width="130" height="30" rx="5" ry="5" fill="#34495e" />
+
+    <!-- Gateway lights -->
+    <circle cx="750" cy="110" r="4" fill="#e74c3c" />
+    <circle cx="750" cy="150" r="4" fill="#9b59b6" />
+    <circle cx="750" cy="190" r="4" fill="#f39c12" />
+    <circle cx="750" cy="230" r="4" fill="#3498db" />
+
+    <!-- Gateway flows - chaos to order -->
+    <g filter="url(#glow)">
+      <!-- Flows from chaos (left) into gateway -->
+      <path d="M600,110 C650,110 680,110 710,110" stroke="#e74c3c" stroke-width="2" fill="none" />
+      <path d="M600,160 C650,160 680,150 710,150" stroke="#9b59b6" stroke-width="2" fill="none" />
+      <path d="M600,210 C650,210 680,190 710,190" stroke="#f39c12" stroke-width="2" fill="none" />
+
+      <!-- Flows from gateway to order (right) -->
+      <path d="M890,110 C940,110 980,90 1000,90" stroke="#e74c3c" stroke-width="2" fill="none" />
+      <path d="M890,150 C940,150 980,130 1000,130" stroke="#9b59b6" stroke-width="2" fill="none" />
+      <path d="M890,190 C940,190 980,180 1000,180" stroke="#f39c12" stroke-width="2" fill="none" />
+      <path d="M890,230 C940,230 980,210 1000,210" stroke="#3498db" stroke-width="2" fill="none" />
+    </g>
+  </g>
+
+  <!-- Ordered side - Grid pattern representing structure (RIGHT SIDE) -->
+  <g>
+    <!-- Organized grid lines - right side -->
+    <g stroke="#3498db" stroke-width="1" opacity="0.3">
+      <!-- Vertical lines -->
+      <line x1="1100" y1="50" x2="1100" y2="300" />
+      <line x1="1150" y1="50" x2="1150" y2="300" />
+      <line x1="1200" y1="50" x2="1200" y2="300" />
+      <line x1="1250" y1="50" x2="1250" y2="300" />
+      <line x1="1300" y1="50" x2="1300" y2="300" />
+      <line x1="1350" y1="50" x2="1350" y2="300" />
+      <line x1="1400" y1="50" x2="1400" y2="300" />
+      <line x1="1450" y1="50" x2="1450" y2="300" />
+      <line x1="1500" y1="50" x2="1500" y2="300" />
+
+      <!-- Horizontal lines -->
+      <line x1="1100" y1="50" x2="1500" y2="50" />
+      <line x1="1100" y1="100" x2="1500" y2="100" />
+      <line x1="1100" y1="150" x2="1500" y2="150" />
+      <line x1="1100" y1="200" x2="1500" y2="200" />
+      <line x1="1100" y1="250" x2="1500" y2="250" />
+      <line x1="1100" y1="300" x2="1500" y2="300" />
+    </g>
+
+    <!-- Ordered data nodes - right side -->
+    <g>
+      <circle cx="1150" cy="100" r="6" fill="#3498db" />
+      <circle cx="1250" cy="100" r="6" fill="#3498db" />
+      <circle cx="1350" cy="100" r="6" fill="#3498db" />
+      <circle cx="1450" cy="100" r="6" fill="#3498db" />
+
+      <circle cx="1150" cy="200" r="6" fill="#3498db" />
+      <circle cx="1250" cy="200" r="6" fill="#3498db" />
+      <circle cx="1350" cy="200" r="6" fill="#3498db" />
+      <circle cx="1450" cy="200" r="6" fill="#3498db" />
+
+      <circle cx="1150" cy="300" r="6" fill="#3498db" />
+      <circle cx="1250" cy="300" r="6" fill="#3498db" />
+      <circle cx="1350" cy="300" r="6" fill="#3498db" />
+      <circle cx="1450" cy="300" r="6" fill="#3498db" />
+    </g>
+
+    <!-- Ordered connections - right side -->
+    <g stroke="#3498db" stroke-width="1.5">
+      <line x1="1150" y1="100" x2="1250" y2="100" />
+      <line x1="1250" y1="100" x2="1350" y2="100" />
+      <line x1="1350" y1="100" x2="1450" y2="100" />
+
+      <line x1="1150" y1="200" x2="1250" y2="200" />
+      <line x1="1250" y1="200" x2="1350" y2="200" />
+      <line x1="1350" y1="200" x2="1450" y2="200" />
+
+      <line x1="1150" y1="300" x2="1250" y2="300" />
+      <line x1="1250" y1="300" x2="1350" y2="300" />
+      <line x1="1350" y1="300" x2="1450" y2="300" />
+
+      <line x1="1150" y1="100" x2="1150" y2="200" />
+      <line x1="1250" y1="100" x2="1250" y2="200" />
+      <line x1="1350" y1="100" x2="1350" y2="200" />
+      <line x1="1450" y1="100" x2="1450" y2="200" />
+
+      <line x1="1150" y1="200" x2="1150" y2="300" />
+      <line x1="1250" y1="200" x2="1250" y2="300" />
+      <line x1="1350" y1="200" x2="1350" y2="300" />
+      <line x1="1450" y1="200" x2="1450" y2="300" />
+    </g>
+  </g>
+
+  <!-- Title text -->
+  <g>
+    <text x="800" y="45" font-family="Arial, sans-serif" font-size="36" font-weight="bold" text-anchor="middle" fill="white">MCP GATEWAY</text>
+  </g>
+
+  <!-- Small decorative elements -->
+  <g opacity="0.7">
+    <circle cx="250" cy="40" r="2" fill="white" />
+    <circle cx="380" cy="25" r="1.5" fill="white" />
+    <circle cx="500" cy="50" r="3" fill="white" />
+    <circle cx="1180" cy="30" r="2" fill="white" />
+    <circle cx="1320" cy="45" r="1.5" fill="white" />
+    <circle cx="1450" cy="35" r="3" fill="white" />
+
+    <circle cx="280" cy="310" r="2" fill="white" />
+    <circle cx="420" cy="330" r="1.5" fill="white" />
+    <circle cx="550" cy="300" r="3" fill="white" />
+    <circle cx="1250" cy="320" r="2" fill="white" />
+    <circle cx="1380" cy="300" r="1.5" fill="white" />
+    <circle cx="1520" cy="315" r="3" fill="white" />
+  </g>
+</svg>
