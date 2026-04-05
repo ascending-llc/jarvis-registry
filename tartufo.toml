@@ -73,4 +73,5 @@ exclude-signatures = [
     {signature = 'fe1728ad959bcd13833d501bf98d785c7d88e3fe31ae9dba0f7a7c202fcd8b5b', reason = 'example opaque mock principalId is not a credential'},
     {signature = '8f45dd284bd4efd3e0784852777133fb19f36f99c3c5ee6446122588232ab9e6', reason = 'example opaque mock principalId is not a credential'},
     {signature = '9f5bdee1190a259a85019ee82bb0d13e367016045fa7255602fa744ac48ee34b', reason = 'example opaque mock principalId is not a credential'},
+    {signature = 'f848ccdd1f99495fac11bee79c21028ba550e0c90d45cbeaab0c256502a40453', reason = 'README.md rewrite diff is not a credential'},
 ]

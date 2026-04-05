@@ -1,8 +1,7 @@
 site_name: Jarvis Registry
 site_description: Connect any AI copilot to your enterprise tools through a single gateway with built-in security, auto-discovery, and full observability.
 site_author: ASCENDING Inc
-site_url: https://agentic-community.github.io/mcp-gateway-registry/
-
+site_url: https://github.com/ascending-llc/jarvis-registry
 # Repository
 repo_name: ascending-llc/jarvis-registry
 repo_url: https://github.com/ascending-llc/jarvis-registry
