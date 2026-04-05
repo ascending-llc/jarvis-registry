@@ -1,14 +1,14 @@
-site_name: MCP Gateway & Registry
-site_description: Enterprise-grade MCP server registry and reverse proxy with OAuth authentication and fine-grained access control
-site_author: Agentic Community
+site_name: Jarvis Registry
+site_description: Connect any AI copilot to your enterprise tools through a single gateway with built-in security, auto-discovery, and full observability.
+site_author: ASCENDING Inc
 site_url: https://agentic-community.github.io/mcp-gateway-registry/
 
 # Repository
-repo_name: agentic-community/mcp-gateway-registry
-repo_url: https://github.com/agentic-community/mcp-gateway-registry
+repo_name: ascending-llc/jarvis-registry
+repo_url: https://github.com/ascending-llc/jarvis-registry
 
 # Copyright
-copyright: Copyright &copy; 2025 Agentic Community
+copyright: Copyright &copy; 2025 ASCENDING Inc
 
 # Configuration
 theme:
@@ -79,8 +79,8 @@ markdown_extensions:
   - pymdownx.keys
   - pymdownx.magiclink:
       repo_url_shorthand: true
-      user: agentic-community
-      repo: mcp-gateway-registry
+      user: ascending-llc
+      repo: jarvis-registry
   - pymdownx.mark
   - pymdownx.smartsymbols
   - pymdownx.superfences:
@@ -96,42 +96,48 @@ markdown_extensions:
 
 # Page tree
 nav:
-  - Home: index.md
-  - Getting Started:
+  - Jarvis Registry: index.md
+  - Why use Registry: FEATURES.md
+  - Get Started:
     - Quick Start: quick-start.md
     - Installation: installation.md
     - Configuration: configuration.md
-    - FAQ: FAQ.md
-  - Authentication & Security:
+  - Authentication:
     - Authentication Guide: auth.md
-    - Amazon Cognito Setup: cognito.md
-    - Microsoft Entra ID Setup: entra-id-setup.md
-    - Microsoft Entra ID Implementation: entra-id-implementation.md
-    - Access Control & Scopes: scopes.md
-    - JWT Token Vending: jwt-token-vending.md
-    - Security Policy: SECURITY.md
-  - Architecture & Development:
-    - Registry API: registry_api.md
-    - Dynamic Tool Discovery: dynamic-tool-discovery.md
-    - Architecture Overview: registry-auth-architecture.md
-    - Detailed Architecture: registry-auth-detailed.md
-  - Integration:
-    - AI Coding Assistants: ai-coding-assistants-setup.md
-    - MCP-Gateway CLI Guide: mcp-registry-cli.md
-  - Contributing:
-    - Contributing Guide: CONTRIBUTING.md
-    - Code of Conduct: CODE_OF_CONDUCT.md
-  - Legal:
+    - Keycloak Integration: keycloak-integration.md
+    - Amazon Cognito: cognito.md
+    - Microsoft Entra ID: entra-id-setup.md
+  - Core Design:
+    - Security Control Design: design/security-design.md
+    - RBAC & Scopes: design/scopes.md
+    - ACL Connector Service: design/acl-connector-service.md
+    - A2A Agent API: design/a2a-agent-api-design.md
+    - Agent Workflow: design/agent-workflow.md
+    - AgentCore Integration: design/agentcore.md
+    - Federation Guide: design/federation.md
+    - Federation API: design/federation-api.md
+    - DB Persistence: design/mcp_db_persistence_design.md
+  - Project:
+    - Contributing: CONTRIBUTING.md
     - License: LICENSE.md
+    - Code of Conduct: CODE_OF_CONDUCT.md
     - Notice: NOTICE.md
 
 # Extra
 extra:
   social:
+    - icon: fontawesome/solid/globe
+      link: https://ascendingdc.com/jarvis-ai/
+      name: Jarvis AI by ASCENDING Inc
+    - icon: fontawesome/brands/youtube
+      link: https://www.youtube.com/channel/UCi5_sn38igXkk-4hsR0JGtw
+      name: ASCENDING Inc on YouTube
+    - icon: fontawesome/brands/linkedin
+      link: https://www.linkedin.com/company/ascendingllc/mycompany/
+      name: ASCENDING Inc on LinkedIn
     - icon: fontawesome/brands/github
-      link: https://github.com/agentic-community/mcp-gateway-registry
-    - icon: fontawesome/brands/discord
-      link: https://discord.gg/agentic-community
+      link: https://github.com/ascending-llc/jarvis-registry
+      name: GitHub Repository
   generator: false
 
 # Analytics (optional - add your Google Analytics ID if needed)
