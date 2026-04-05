@@ -1,5 +1,5 @@
 <div align="center">
-<img src="registry/static/mcp_gateway_horizontal_white_logo.png" alt="Jarvis Gateway & Registry Logo" width="100%">
+<img src="docs/img/jarvis_vertical_logo_w_text_light_bkg.svg" alt="Jarvis Gateway & Registry Logo" width="100%">
 
 **Unified Agent & MCP Server Registry – Enterprise-Ready Gateway for AI Development Tools**
 

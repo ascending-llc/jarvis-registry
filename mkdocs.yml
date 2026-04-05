@@ -42,8 +42,8 @@ theme:
     - toc.integrate
     - content.code.copy
     - content.code.annotate
-  logo: img/mcp_gateway_horizontal_white_logo.png
-  favicon: img/registry.png
+  logo: img/jarvis_vertical_logo_w_text_light_bkg.svg
+  favicon: frontend/src/assets/favicon-64x64.png
 
 # Plugins
 plugins:

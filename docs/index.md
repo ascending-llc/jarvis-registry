@@ -1,5 +1,5 @@
 <div align="center">
-<img src="img/mcp_gateway_horizontal_white_logo.png" alt="Jarvis Registry Logo" width="100%">
+<img src="img/jarvis_vertical_logo_w_text_light_bkg.svg" alt="Jarvis Registry Logo" width="100%">
 
 **Connect any AI copilot or autonomous agent to your enterprise tools — through a single, secure MCP gateway with built-in identity, access control, and full observability.**
 
