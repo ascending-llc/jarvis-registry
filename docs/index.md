@@ -9,18 +9,18 @@
 
 ## What is Jarvis Registry?
 
-**Jarvis Registry** is an open-source, enterprise-grade **MCP (Model Context Protocol) Gateway and Registry** built by [ASCENDING Inc](https://ascendingdc.com/jarvis-ai/). It solves one of the hardest problems in enterprise AI: giving AI copilots and autonomous agents **secure, governed access** to internal tools and data — without fragmented integrations or security blind spots.
+**Jarvis Registry** is an open-source, enterprise-grade **MCP (Model Context Protocol) and A2A Agent Gateway and Workflow Orchestration platform** built by [ASCENDING Inc](https://ascendingdc.com/jarvis-ai/). It solves one of the hardest problems in enterprise AI: giving AI copilots and autonomous agents **secure, governed access** to internal tools and data — without fragmented integrations or security blind spots.
 
-Jarvis Registry acts as a **centralized control plane** that sits between your AI clients (copilots, IDEs, agents) and your enterprise MCP servers. Every request flows through NGINX, is authenticated against your Identity Provider (Keycloak, Amazon Cognito, or Microsoft Entra ID), and checked against fine-grained ACL policies — before a single tool is invoked.
+Jarvis Registry acts as a **centralized control plane** that sits between your AI clients (copilots, IDEs, agents) and your enterprise MCP servers. Every request is authenticated against your Identity Provider (Keycloak, Amazon Cognito, or Microsoft Entra ID) and checked against fine-grained ACL policies — before a single tool is invoked.
 
-Whether you are plugging GitHub Copilot into internal APIs, orchestrating fleets of autonomous A2A agents, or federating tools across cloud environments, Jarvis Registry gives you the **security, discoverability, and auditability** that enterprise deployments demand.
+Whether you are plugging your favorite AI copilot (Claude, OpenAI, or Jarvis Chat) into internal APIs, orchestrating fleets of autonomous A2A agents, or federating tools across cloud environments, Jarvis Registry gives you the **security, discoverability, and auditability** that enterprise deployments demand.
 
 ---
 
 ## See It in Action
 
 <div align="center">
-<iframe width="800" height="450" src="https://www.youtube.com/embed/EUqWc_mAaXs" title="Jarvis Registry Demo" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe>
+<iframe width="560" height="315" src="https://www.youtube.com/embed/EUqWc_mAaXs?si=WUdFaOM06cQliV1o" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
 </div>
 
 ---
@@ -29,12 +29,12 @@ Whether you are plugging GitHub Copilot into internal APIs, orchestrating fleets
 
 | Capability | Description |
 |---|---|
-| **MCP Gateway & Reverse Proxy** | Single authenticated entry point (NGINX) for all AI clients and agents using MCP over SSE or Streamable HTTP |
+| **Gateway & Reverse Proxy** | Single authenticated entry point for all AI clients and agents using MCP/Agent over SSE or Streamable HTTP |
 | **AI Copilot Integration** | Connect Cursor, Claude Desktop, GitHub Copilot, VS Code, and any MCP-compatible copilot to enterprise tools |
-| **A2A Agent Orchestration** | Register and manage autonomous agents; orchestrator agents coordinate worker agents through the same secure gateway |
+| **A2A Agent Workflow** | Register and manage autonomous agents; orchestrator agents coordinate worker agents through the same secure gateway |
 | **Identity & Access Management** | OAuth 2.0/OIDC with Keycloak, Amazon Cognito, and Microsoft Entra ID — no custom auth code needed |
 | **Fine-Grained Access Control** | ACL engine enforces scope-based, role-based permissions down to the individual tool level |
-| **Dynamic Tool Discovery** | Semantic and tag-based search so agents find the right MCP tool at runtime |
+| **Skill & Context-Based Discovery** | Semantic search over skills, descriptions, and tags so agents and copilots find the right MCP server or A2A agent at runtime |
 | **Service Registry** | Centralized catalog of all registered MCP servers, tools, and agent capabilities |
 | **Audit & Observability** | Full request logging, OpenTelemetry tracing, and Prometheus metrics |
 
@@ -43,112 +43,67 @@ Whether you are plugging GitHub Copilot into internal APIs, orchestrating fleets
 ## Architecture Overview
 
 ```mermaid
-flowchart TB
-    subgraph AIClients["AI Clients"]
-        subgraph Copilots["AI Copilots & IDEs"]
-            Cursor["Cursor / Claude Desktop"]
-            GHCop["GitHub Copilot / VS Code"]
-        end
-        subgraph A2AOrch["A2A Agent Orchestration"]
+flowchart LR
+    subgraph Clients["① AI Entry Points"]
+        Copilot["AI Copilot\n(Claude / OpenAI / Jarvis Chat\nCursor / GitHub Copilot)"]
+        A2AAgent["A2A Agents\n(Orchestrator + Workers)"]
+    end
+
+    subgraph JarvisGW["Jarvis Registry"]
+        direction TB
+
+        Discovery["② Skill & Context Discovery\n(Semantic Search · Tags · Skills)"]
+
+        subgraph Workflow["③ Agent Workflow Orchestration"]
             Orch["Orchestrator Agent"]
-            Worker1["Worker Agent 1"]
-            Worker2["Worker Agent 2"]
+            Workers["Worker Agents"]
+            Orch -->|"delegate tasks"| Workers
         end
-    end
 
-    subgraph JarvisGW["Jarvis Registry — MCP Gateway"]
-        NGINX["NGINX Reverse Proxy\n(Single Entry Point)"]
-
-        subgraph SecurityLayer["Security Layer"]
+        subgraph Security["④ Security & Access Control"]
+            ACL["Fine-Grained ACL\n(Scope · Role · Tool-level)"]
             AuthSrv["Auth Server\n(OAuth 2.0 / JWT)"]
-            ACL["ACL Engine\n(Fine-Grained Access Control)"]
         end
 
-        subgraph RegistryServices["Registry Services"]
-            RegUI["Registry Web UI\n(Service Catalog)"]
-            RegMCP["Registry MCP Server\n(Tool Discovery)"]
-        end
-
-        subgraph MCPServers["MCP Servers"]
-            MCP1["MCP Server 1"]
-            MCP2["MCP Server 2"]
-            MCP3["MCP Server 3"]
-        end
+        MCPServers["⑤ MCP Servers\n& Enterprise Tools"]
     end
 
-    IdP["Identity Provider\n(Keycloak / Cognito / Entra ID)"]
-
-    subgraph Enterprise["Enterprise Backends"]
-        DB1[(Database)]
-        IntAPI["Internal API"]
-        CloudSvc["Cloud Services\n(AWS / Azure)"]
+    subgraph External["Integrations"]
+        IdP["Identity Provider\n(Keycloak · Cognito · Entra ID)"]
+        OTEL["⑥ Observability\n(OpenTelemetry · Prometheus\nGrafana · Jaeger)"]
     end
 
-    Cursor -->|"MCP (SSE / Streamable HTTP)"| NGINX
-    GHCop -->|"MCP (SSE / Streamable HTTP)"| NGINX
-    Orch -->|"A2A Protocol (MCP)"| NGINX
-    Orch -- "orchestrate" --> Worker1
-    Orch -- "orchestrate" --> Worker2
-    Worker1 -->|"MCP (SSE / Streamable HTTP)"| NGINX
-    Worker2 -->|"MCP (SSE / Streamable HTTP)"| NGINX
+    Copilot -->|"MCP / SSE / Streamable HTTP"| Discovery
+    A2AAgent -->|"A2A Protocol"| Discovery
 
-    NGINX -->|"1 · Validate Bearer Token"| AuthSrv
-    AuthSrv <-->|"Verify Identity"| IdP
-    AuthSrv -->|"2 · Enforce Permissions"| ACL
-    NGINX -->|"3 · Tool Discovery"| RegMCP
-    RegUI -.->|"Browse Catalog"| NGINX
-    NGINX -->|"4 · Route Authenticated Request"| MCP1
-    NGINX -->|"4 · Route Authenticated Request"| MCP2
-    NGINX -->|"4 · Route Authenticated Request"| MCP3
+    Discovery --> Workflow
+    Discovery --> Security
 
-    MCP1 --> DB1
-    MCP2 --> IntAPI
-    MCP3 --> CloudSvc
+    Security -->|"verify token"| AuthSrv
+    AuthSrv <-->|"authenticate & authorize"| IdP
+    AuthSrv -->|"enforce permissions"| ACL
 
-    classDef copilot fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
-    classDef a2a fill:#f3e5f5,stroke:#6a1b9a,stroke-width:2px
-    classDef nginx fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+    Workflow --> MCPServers
+    ACL --> MCPServers
+
+    MCPServers -.->|"traces · metrics · logs"| OTEL
+
+    classDef entry fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    classDef discovery fill:#e8eaf6,stroke:#283593,stroke-width:2px
+    classDef workflow fill:#f3e5f5,stroke:#6a1b9a,stroke-width:2px
     classDef security fill:#fff8e1,stroke:#e65100,stroke-width:2px
-    classDef registry fill:#e8eaf6,stroke:#283593,stroke-width:2px
     classDef mcp fill:#fce4ec,stroke:#b71c1c,stroke-width:2px
-    classDef idp fill:#ffebee,stroke:#c62828,stroke-width:2px
-    classDef backend fill:#f1f8e9,stroke:#33691e,stroke-width:2px
+    classDef idp fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+    classDef otel fill:#f1f8e9,stroke:#33691e,stroke-width:2px
 
-    class Cursor,GHCop copilot
-    class Orch,Worker1,Worker2 a2a
-    class NGINX nginx
-    class AuthSrv,ACL security
-    class RegUI,RegMCP registry
-    class MCP1,MCP2,MCP3 mcp
+    class Copilot,A2AAgent entry
+    class Discovery discovery
+    class Orch,Workers workflow
+    class ACL,AuthSrv security
+    class MCPServers mcp
     class IdP idp
-    class DB1,IntAPI,CloudSvc backend
+    class OTEL otel
 ```
-
----
-
-## Quick Start
-
-Get Jarvis Registry running locally in minutes:
-
-```bash
-# Clone the repository
-git clone https://github.com/ascending-llc/jarvis-registry.git
-cd jarvis-registry
-
-# Copy and configure environment
-cp .env.example .env
-# Edit .env with your identity provider credentials
-
-# Start all services
-docker-compose up -d
-
-# Open the registry UI
-open http://localhost:7860
-```
-
-See the full [Get Started](quick-start.md) guide for detailed instructions.
-
----
 
 ## Built by ASCENDING Inc
 
