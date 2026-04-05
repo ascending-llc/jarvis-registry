@@ -47,7 +47,7 @@ Incoming Request
 `UnifiedAuthMiddleware` runs on every request. It accepts two credential forms:
 
 - **JWT Bearer token** — signed HS256 or RS256 token issued by the auth server or a trusted IdP (Keycloak, Cognito, Entra ID). Verified via `verify_access_token()` / `decode_jwt()`.
-- **Session cookie** (`mcp-gateway-session`) — for browser users who went through the OAuth2 login flow.
+- **Session cookies** (`jarvis_registry_session` and `jarvis_registry_refresh` by default) — for browser users who went through the OAuth2 login flow. These cookie names are configurable via application settings, so deployed environments may use different names.
 
 On success, identity and group membership are stored in `request.state.user` as a `UserContextDict`. Public paths (health check, OAuth callbacks, login) are exempted and never reach the layers below.
 
