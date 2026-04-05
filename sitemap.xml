@@ -1,191 +1,191 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
     <url>
-         <loc>https://github.com/ascending-llc/jarvis-registry/</loc>
+         <loc>https://ascending-llc.github.io/jarvis-registry/</loc>
          <lastmod>2026-04-05</lastmod>
     </url>
     <url>
-         <loc>https://github.com/ascending-llc/jarvis-registry/CODE_OF_CONDUCT/</loc>
+         <loc>https://ascending-llc.github.io/jarvis-registry/CODE_OF_CONDUCT/</loc>
          <lastmod>2026-04-05</lastmod>
     </url>
     <url>
-         <loc>https://github.com/ascending-llc/jarvis-registry/CONTRIBUTING/</loc>
+         <loc>https://ascending-llc.github.io/jarvis-registry/CONTRIBUTING/</loc>
          <lastmod>2026-04-05</lastmod>
     </url>
     <url>
-         <loc>https://github.com/ascending-llc/jarvis-registry/FEATURES/</loc>
+         <loc>https://ascending-llc.github.io/jarvis-registry/FEATURES/</loc>
          <lastmod>2026-04-05</lastmod>
     </url>
     <url>
-         <loc>https://github.com/ascending-llc/jarvis-registry/LICENSE/</loc>
+         <loc>https://ascending-llc.github.io/jarvis-registry/LICENSE/</loc>
          <lastmod>2026-04-05</lastmod>
     </url>
     <url>
-         <loc>https://github.com/ascending-llc/jarvis-registry/NOTICE/</loc>
+         <loc>https://ascending-llc.github.io/jarvis-registry/NOTICE/</loc>
          <lastmod>2026-04-05</lastmod>
     </url>
     <url>
-         <loc>https://github.com/ascending-llc/jarvis-registry/SECURITY/</loc>
+         <loc>https://ascending-llc.github.io/jarvis-registry/SECURITY/</loc>
          <lastmod>2026-04-05</lastmod>
     </url>
     <url>
-         <loc>https://github.com/ascending-llc/jarvis-registry/a2a-agent-management/</loc>
+         <loc>https://ascending-llc.github.io/jarvis-registry/a2a-agent-management/</loc>
          <lastmod>2026-04-05</lastmod>
     </url>
     <url>
-         <loc>https://github.com/ascending-llc/jarvis-registry/anthropic-registry-import/</loc>
+         <loc>https://ascending-llc.github.io/jarvis-registry/anthropic-registry-import/</loc>
          <lastmod>2026-04-05</lastmod>
     </url>
     <url>
-         <loc>https://github.com/ascending-llc/jarvis-registry/anthropic_registry_api/</loc>
+         <loc>https://ascending-llc.github.io/jarvis-registry/anthropic_registry_api/</loc>
          <lastmod>2026-04-05</lastmod>
     </url>
     <url>
-         <loc>https://github.com/ascending-llc/jarvis-registry/api-reference/</loc>
+         <loc>https://ascending-llc.github.io/jarvis-registry/api-reference/</loc>
          <lastmod>2026-04-05</lastmod>
     </url>
     <url>
-         <loc>https://github.com/ascending-llc/jarvis-registry/auth/</loc>
+         <loc>https://ascending-llc.github.io/jarvis-registry/auth/</loc>
          <lastmod>2026-04-05</lastmod>
     </url>
     <url>
-         <loc>https://github.com/ascending-llc/jarvis-registry/cli/</loc>
+         <loc>https://ascending-llc.github.io/jarvis-registry/cli/</loc>
          <lastmod>2026-04-05</lastmod>
     </url>
     <url>
-         <loc>https://github.com/ascending-llc/jarvis-registry/cognito/</loc>
+         <loc>https://ascending-llc.github.io/jarvis-registry/cognito/</loc>
          <lastmod>2026-04-05</lastmod>
     </url>
     <url>
-         <loc>https://github.com/ascending-llc/jarvis-registry/complete-setup-guide/</loc>
+         <loc>https://ascending-llc.github.io/jarvis-registry/complete-setup-guide/</loc>
          <lastmod>2026-04-05</lastmod>
     </url>
     <url>
-         <loc>https://github.com/ascending-llc/jarvis-registry/configuration/</loc>
+         <loc>https://ascending-llc.github.io/jarvis-registry/configuration/</loc>
          <lastmod>2026-04-05</lastmod>
     </url>
     <url>
-         <loc>https://github.com/ascending-llc/jarvis-registry/dynamic-tool-discovery/</loc>
+         <loc>https://ascending-llc.github.io/jarvis-registry/dynamic-tool-discovery/</loc>
          <lastmod>2026-04-05</lastmod>
     </url>
     <url>
-         <loc>https://github.com/ascending-llc/jarvis-registry/embeddings/</loc>
+         <loc>https://ascending-llc.github.io/jarvis-registry/embeddings/</loc>
          <lastmod>2026-04-05</lastmod>
     </url>
     <url>
-         <loc>https://github.com/ascending-llc/jarvis-registry/entra-id-setup/</loc>
+         <loc>https://ascending-llc.github.io/jarvis-registry/entra-id-setup/</loc>
          <lastmod>2026-04-05</lastmod>
     </url>
     <url>
-         <loc>https://github.com/ascending-llc/jarvis-registry/in-session-re-auth/</loc>
+         <loc>https://ascending-llc.github.io/jarvis-registry/in-session-re-auth/</loc>
          <lastmod>2026-04-05</lastmod>
     </url>
     <url>
-         <loc>https://github.com/ascending-llc/jarvis-registry/installation/</loc>
+         <loc>https://ascending-llc.github.io/jarvis-registry/installation/</loc>
          <lastmod>2026-04-05</lastmod>
     </url>
     <url>
-         <loc>https://github.com/ascending-llc/jarvis-registry/jwt-token-vending/</loc>
+         <loc>https://ascending-llc.github.io/jarvis-registry/jwt-token-vending/</loc>
          <lastmod>2026-04-05</lastmod>
     </url>
     <url>
-         <loc>https://github.com/ascending-llc/jarvis-registry/keycloak-integration/</loc>
+         <loc>https://ascending-llc.github.io/jarvis-registry/keycloak-integration/</loc>
          <lastmod>2026-04-05</lastmod>
     </url>
     <url>
-         <loc>https://github.com/ascending-llc/jarvis-registry/macos-setup-guide/</loc>
+         <loc>https://ascending-llc.github.io/jarvis-registry/macos-setup-guide/</loc>
          <lastmod>2026-04-05</lastmod>
     </url>
     <url>
-         <loc>https://github.com/ascending-llc/jarvis-registry/podman-apple-silicon/</loc>
+         <loc>https://ascending-llc.github.io/jarvis-registry/podman-apple-silicon/</loc>
          <lastmod>2026-04-05</lastmod>
     </url>
     <url>
-         <loc>https://github.com/ascending-llc/jarvis-registry/prebuilt-images/</loc>
+         <loc>https://ascending-llc.github.io/jarvis-registry/prebuilt-images/</loc>
          <lastmod>2026-04-05</lastmod>
     </url>
     <url>
-         <loc>https://github.com/ascending-llc/jarvis-registry/quick-start/</loc>
+         <loc>https://ascending-llc.github.io/jarvis-registry/quick-start/</loc>
          <lastmod>2026-04-05</lastmod>
     </url>
     <url>
-         <loc>https://github.com/ascending-llc/jarvis-registry/registry-auth-architecture/</loc>
+         <loc>https://ascending-llc.github.io/jarvis-registry/registry-auth-architecture/</loc>
          <lastmod>2026-04-05</lastmod>
     </url>
     <url>
-         <loc>https://github.com/ascending-llc/jarvis-registry/registry-auth-detailed/</loc>
+         <loc>https://ascending-llc.github.io/jarvis-registry/registry-auth-detailed/</loc>
          <lastmod>2026-04-05</lastmod>
     </url>
     <url>
-         <loc>https://github.com/ascending-llc/jarvis-registry/registry_api/</loc>
+         <loc>https://ascending-llc.github.io/jarvis-registry/registry_api/</loc>
          <lastmod>2026-04-05</lastmod>
     </url>
     <url>
-         <loc>https://github.com/ascending-llc/jarvis-registry/scan_report_example/</loc>
+         <loc>https://ascending-llc.github.io/jarvis-registry/scan_report_example/</loc>
          <lastmod>2026-04-05</lastmod>
     </url>
     <url>
-         <loc>https://github.com/ascending-llc/jarvis-registry/security-scanner/</loc>
+         <loc>https://ascending-llc.github.io/jarvis-registry/security-scanner/</loc>
          <lastmod>2026-04-05</lastmod>
     </url>
     <url>
-         <loc>https://github.com/ascending-llc/jarvis-registry/service-management/</loc>
+         <loc>https://ascending-llc.github.io/jarvis-registry/service-management/</loc>
          <lastmod>2026-04-05</lastmod>
     </url>
     <url>
-         <loc>https://github.com/ascending-llc/jarvis-registry/testing/</loc>
+         <loc>https://ascending-llc.github.io/jarvis-registry/testing/</loc>
          <lastmod>2026-04-05</lastmod>
     </url>
     <url>
-         <loc>https://github.com/ascending-llc/jarvis-registry/token-refresh-service/</loc>
+         <loc>https://ascending-llc.github.io/jarvis-registry/token-refresh-service/</loc>
          <lastmod>2026-04-05</lastmod>
     </url>
     <url>
-         <loc>https://github.com/ascending-llc/jarvis-registry/archived/auth-backup/</loc>
+         <loc>https://ascending-llc.github.io/jarvis-registry/archived/auth-backup/</loc>
          <lastmod>2026-04-05</lastmod>
     </url>
     <url>
-         <loc>https://github.com/ascending-llc/jarvis-registry/archived/auth-legacy/</loc>
+         <loc>https://ascending-llc.github.io/jarvis-registry/archived/auth-legacy/</loc>
          <lastmod>2026-04-05</lastmod>
     </url>
     <url>
-         <loc>https://github.com/ascending-llc/jarvis-registry/design/a2a-agent-api-design/</loc>
+         <loc>https://ascending-llc.github.io/jarvis-registry/design/a2a-agent-api-design/</loc>
          <lastmod>2026-04-05</lastmod>
     </url>
     <url>
-         <loc>https://github.com/ascending-llc/jarvis-registry/design/acl-connector-service/</loc>
+         <loc>https://ascending-llc.github.io/jarvis-registry/design/acl-connector-service/</loc>
          <lastmod>2026-04-05</lastmod>
     </url>
     <url>
-         <loc>https://github.com/ascending-llc/jarvis-registry/design/agent-workflow/</loc>
+         <loc>https://ascending-llc.github.io/jarvis-registry/design/agent-workflow/</loc>
          <lastmod>2026-04-05</lastmod>
     </url>
     <url>
-         <loc>https://github.com/ascending-llc/jarvis-registry/design/agentcore/</loc>
+         <loc>https://ascending-llc.github.io/jarvis-registry/design/agentcore/</loc>
          <lastmod>2026-04-05</lastmod>
     </url>
     <url>
-         <loc>https://github.com/ascending-llc/jarvis-registry/design/entra-id-implementation/</loc>
+         <loc>https://ascending-llc.github.io/jarvis-registry/design/entra-id-implementation/</loc>
          <lastmod>2026-04-05</lastmod>
     </url>
     <url>
-         <loc>https://github.com/ascending-llc/jarvis-registry/design/federation-api/</loc>
+         <loc>https://ascending-llc.github.io/jarvis-registry/design/federation-api/</loc>
          <lastmod>2026-04-05</lastmod>
     </url>
     <url>
-         <loc>https://github.com/ascending-llc/jarvis-registry/design/federation/</loc>
+         <loc>https://ascending-llc.github.io/jarvis-registry/design/federation/</loc>
          <lastmod>2026-04-05</lastmod>
     </url>
     <url>
-         <loc>https://github.com/ascending-llc/jarvis-registry/design/mcp_db_persistence_design/</loc>
+         <loc>https://ascending-llc.github.io/jarvis-registry/design/mcp_db_persistence_design/</loc>
          <lastmod>2026-04-05</lastmod>
     </url>
     <url>
-         <loc>https://github.com/ascending-llc/jarvis-registry/design/scopes/</loc>
+         <loc>https://ascending-llc.github.io/jarvis-registry/design/scopes/</loc>
          <lastmod>2026-04-05</lastmod>
     </url>
     <url>
-         <loc>https://github.com/ascending-llc/jarvis-registry/design/security-design/</loc>
+         <loc>https://ascending-llc.github.io/jarvis-registry/design/security-design/</loc>
          <lastmod>2026-04-05</lastmod>
     </url>
 </urlset>
