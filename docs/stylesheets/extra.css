@@ -1,0 +1,96 @@
+/* ============================================================
+   Dynamic logo: show/hide per theme
+   Light logo is shown by default; swapped to dark on slate.
+   !important needed to override Material's .md-logo img rules.
+   ============================================================ */
+.md-logo__dark                                        { display: none !important; }
+body[data-md-color-scheme="slate"] .md-logo__dark    { display: block !important; }
+body[data-md-color-scheme="slate"] .md-logo__light   { display: none !important; }
+
+.md-header__button.md-logo img,
+.md-header__button.md-logo svg {
+  height: 2rem;
+  width: auto;
+}
+
+/* ============================================================
+   Header — dark/black bar matching ASCENDING Inc brand
+   (adjust --ascending-header-bg to exact hex if needed)
+   ============================================================ */
+:root {
+  --ascending-header-bg: #0a0a0a;
+  --ascending-accent:    #1e6fd9;   /* blue accent — tweak to match site */
+  --ascending-header-text: #ffffff;
+}
+
+/* Both light and dark themes get the same dark header */
+.md-header {
+  background-color: var(--ascending-header-bg) !important;
+  color: var(--ascending-header-text) !important;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+/* Navigation tabs bar */
+.md-tabs {
+  background-color: var(--ascending-header-bg) !important;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.md-tabs__link {
+  color: rgba(255, 255, 255, 0.75) !important;
+  font-weight: 500;
+}
+
+.md-tabs__link:hover,
+.md-tabs__link--active {
+  color: #ffffff !important;
+}
+
+.md-tabs__item--active .md-tabs__link::after {
+  background-color: var(--ascending-accent) !important;
+}
+
+/* Header icon buttons (search, repo, etc.) */
+.md-header__button {
+  color: var(--ascending-header-text) !important;
+  opacity: 0.85;
+}
+
+.md-header__button:hover {
+  opacity: 1;
+}
+
+/* Site title in header */
+.md-header__title {
+  color: var(--ascending-header-text) !important;
+  font-weight: 600;
+}
+
+/* Search bar */
+.md-search__form {
+  background-color: rgba(255, 255, 255, 0.1) !important;
+  border-radius: 4px;
+}
+
+.md-search__input {
+  color: var(--ascending-header-text) !important;
+}
+
+.md-search__input::placeholder {
+  color: rgba(255, 255, 255, 0.5) !important;
+}
+
+/* ============================================================
+   Accent color overrides (links, active states, code blocks)
+   ============================================================ */
+[data-md-color-scheme="default"] {
+  --md-accent-fg-color: var(--ascending-accent);
+  --md-primary-fg-color: var(--ascending-header-bg);
+  --md-primary-fg-color--light: #1a1a1a;
+  --md-primary-fg-color--dark: #000000;
+}
+
+[data-md-color-scheme="slate"] {
+  --md-accent-fg-color: var(--ascending-accent);
+  --md-primary-fg-color: var(--ascending-header-bg);
+}
