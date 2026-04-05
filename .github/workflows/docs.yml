@@ -1,0 +1,32 @@
+name: Deploy Docs
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "docs/**"
+      - "mkdocs.yml"
+      - "pyproject.toml"
+  workflow_dispatch: # allow manual trigger from GitHub UI
+
+permissions:
+  contents: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # required for git-revision-date-localized plugin
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync --all-groups
+
+      - name: Deploy to GitHub Pages
+        run: uv run mkdocs gh-deploy --force
