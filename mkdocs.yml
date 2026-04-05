@@ -43,7 +43,7 @@ theme:
     - content.code.copy
     - content.code.annotate
   logo: img/jarvis_vertical_logo_w_text_light_bkg.svg
-  favicon: frontend/src/assets/favicon-64x64.png
+  favicon: img/favicon-64x64.png
 
 # Extra CSS
 extra_css:
