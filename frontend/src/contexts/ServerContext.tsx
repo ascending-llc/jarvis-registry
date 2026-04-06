@@ -3,6 +3,7 @@ import { createContext, type ReactNode, useCallback, useContext, useEffect, useM
 import { getBasePath } from '@/config';
 import SERVICES from '@/services';
 import type { Agent, AgentItem } from '@/services/agent/type';
+import type { Federation } from '@/services/federation/type';
 import { ServerConnection } from '@/services/mcp/type';
 import type { PermissionType, Server } from '@/services/server/type';
 
@@ -42,6 +43,13 @@ interface AgentStats {
   withIssues: number;
 }
 
+export interface FederationListStats {
+  total: number;
+  enabled: number;
+  disabled: number;
+  withIssues: number;
+}
+
 interface ServerContextType {
   // Server state
   servers: ServerInfo[];
@@ -57,17 +65,26 @@ interface ServerContextType {
   agentLoading: boolean;
   agentError: string | null;
 
+  // Federation state
+  federations: Federation[];
+  setFederations: React.Dispatch<React.SetStateAction<Federation[]>>;
+  federationStats: FederationListStats;
+  federationsLoading: boolean;
+  federationsError: string | null;
+
   // Shared state
-  viewMode: 'servers' | 'agents';
-  setViewMode: (mode: 'servers' | 'agents') => void;
+  viewMode: 'servers' | 'agents' | 'external';
+  setViewMode: (mode: 'servers' | 'agents' | 'external') => void;
   activeFilter: string;
   setActiveFilter: (filter: string) => void;
 
   // Actions
   refreshServerData: (notLoading?: boolean) => Promise<ServerInfo[]>;
   refreshAgentData: (notLoading?: boolean) => Promise<void>;
+  refreshFederationData: (notLoading?: boolean) => Promise<void>;
   handleServerUpdate: (id: string, updates: Partial<ServerInfo>) => void;
   handleAgentUpdate: (id: string, updates: Partial<AgentItem>) => void;
+  handleFederationUpdate: (id: string, updates: Partial<Federation>) => void;
   getServerStatusByPolling: (serverId: string, callback?: (state: ServerConnection | undefined) => void) => void;
   cancelPolling: (serverId?: string) => void;
 }
@@ -89,12 +106,15 @@ interface ServerProviderProps {
 export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
   const [servers, setServers] = useState<ServerInfo[]>([]);
   const [agents, setAgents] = useState<AgentItem[]>([]);
-  const [viewMode, setViewMode] = useState<'servers' | 'agents'>('servers');
+  const [federations, setFederations] = useState<Federation[]>([]);
+  const [viewMode, setViewMode] = useState<'servers' | 'agents' | 'external'>('servers');
   const [activeFilter, setActiveFilter] = useState<string>('all');
   const [serverLoading, setServerLoading] = useState(true);
   const [agentLoading, setAgentLoading] = useState(true);
+  const [federationsLoading, setFederationsLoading] = useState(true);
   const [serverError, setServerError] = useState<string | null>(null);
   const [agentError, setAgentError] = useState<string | null>(null);
+  const [federationsError, setFederationsError] = useState<string | null>(null);
   const timeoutRef = useRef<Record<string, NodeJS.Timeout>>({});
 
   // Calculate server stats
@@ -117,6 +137,17 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
       withIssues: agents.filter(a => a.status === 'inactive' || a.status === 'error').length,
     }),
     [agents],
+  );
+
+  // Calculate federation stats
+  const federationStats = useMemo<FederationListStats>(
+    () => ({
+      total: federations.length,
+      enabled: federations.filter(f => f.status === 'active').length,
+      disabled: federations.filter(f => f.status !== 'active').length,
+      withIssues: federations.filter(f => f.syncStatus === 'failed').length,
+    }),
+    [federations],
   );
 
   // Helper function to map backend health status to frontend status
@@ -220,11 +251,29 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
     }
   }, []);
 
+  const handleFederationUpdate = (id: string, updates: Partial<Federation>) => {
+    setFederations(prev => prev.map(fed => (fed.id === id ? { ...fed, ...updates } : fed)));
+  };
+
+  const refreshFederationData = useCallback(async (notLoading?: boolean) => {
+    try {
+      if (!notLoading) setFederationsLoading(true);
+      setFederationsError(null);
+      const result = await SERVICES.FEDERATION.getFederations();
+      setFederations(result?.federations || []);
+    } catch (error: any) {
+      setFederationsError(error?.detail?.message || 'Failed to fetch federations');
+    } finally {
+      setFederationsLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     const isOnLoginPage = typeof window !== 'undefined' && window.location.pathname === `${getBasePath()}/login`;
     if (isOnLoginPage) {
       setServerLoading(false);
       setAgentLoading(false);
+      setFederationsLoading(false);
       return () => {
         Object.values(timeoutRef.current).forEach(timeout => {
           clearTimeout(timeout);
@@ -234,6 +283,7 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
     }
     refreshServerData();
     refreshAgentData();
+    refreshFederationData();
     return () => {
       Object.values(timeoutRef.current).forEach(timeout => {
         clearTimeout(timeout);
@@ -319,6 +369,12 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
     agentLoading,
     agentError,
 
+    federations,
+    setFederations,
+    federationStats,
+    federationsLoading,
+    federationsError,
+
     viewMode,
     setViewMode,
     activeFilter,
@@ -326,8 +382,10 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
 
     refreshServerData,
     refreshAgentData,
+    refreshFederationData,
     handleServerUpdate,
     handleAgentUpdate,
+    handleFederationUpdate,
     getServerStatusByPolling,
     cancelPolling,
   };

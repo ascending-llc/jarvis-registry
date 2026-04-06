@@ -8,6 +8,7 @@ import { ServerProvider } from './contexts/ServerContext';
 import { ThemeProvider } from './contexts/ThemeContext';
 import AgentRegistryOrEdit from './pages/AgentRegistryOrEdit';
 import Dashboard from './pages/Dashboard';
+import FederationRegistryOrEdit from './pages/FederationRegistryOrEdit';
 import Login from './pages/Login';
 import OAuthCallback from './pages/OAuthCallback';
 import ServerRegistryOrEdit from './pages/ServerRegistryOrEdit';
@@ -76,6 +77,26 @@ function App() {
                     <ProtectedRoute>
                       <Layout>
                         <AgentRegistryOrEdit />
+                      </Layout>
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path='/federation-registry'
+                  element={
+                    <ProtectedRoute>
+                      <Layout>
+                        <FederationRegistryOrEdit />
+                      </Layout>
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path='/federation-edit'
+                  element={
+                    <ProtectedRoute>
+                      <Layout>
+                        <FederationRegistryOrEdit />
                       </Layout>
                     </ProtectedRoute>
                   }
