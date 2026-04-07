@@ -135,7 +135,7 @@ async def get_auth_config(request: Request):
     """Return the authentication configuration info"""
     try:
         auth_provider = request.app.state.container.get_auth_provider()
-        provider_info = auth_provider.get_provider_info()
+        provider_info = await auth_provider.get_provider_info()
 
         if provider_info.get("provider_type") == "keycloak":
             return {

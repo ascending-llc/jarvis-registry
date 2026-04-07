@@ -6,8 +6,8 @@ import json
 import logging
 
 import boto3
+import httpx
 import jwt
-import requests
 from botocore.exceptions import ClientError
 from jwt.api_jwk import PyJWK
 
@@ -32,15 +32,16 @@ class SimplifiedCognitoValidator:
             self._cognito_clients[region] = boto3.client("cognito-idp", region_name=region)
         return self._cognito_clients[region]
 
-    def _get_jwks(self, user_pool_id: str, region: str) -> dict:
+    async def _get_jwks(self, user_pool_id: str, region: str) -> dict:
         cache_key = f"{region}:{user_pool_id}"
         if cache_key not in self._jwks_cache:
             try:
                 issuer = f"https://cognito-idp.{region}.amazonaws.com/{user_pool_id}"
                 jwks_url = f"{issuer}/.well-known/jwks.json"
-                response = requests.get(jwks_url, timeout=10)
-                response.raise_for_status()
-                jwks = response.json()
+                async with httpx.AsyncClient() as client:
+                    response = await client.get(jwks_url, timeout=10)
+                    response.raise_for_status()
+                    jwks = response.json()
                 self._jwks_cache[cache_key] = jwks
                 logger.debug(f"Retrieved JWKS for {cache_key} with {len(jwks.get('keys', []))} keys")
             except Exception as e:
@@ -48,7 +49,9 @@ class SimplifiedCognitoValidator:
                 raise ValueError(f"Cannot retrieve JWKS: {e}")
         return self._jwks_cache[cache_key]
 
-    def validate_jwt_token(self, access_token: str, user_pool_id: str, client_id: str, region: str = None) -> dict:
+    async def validate_jwt_token(
+        self, access_token: str, user_pool_id: str, client_id: str, region: str = None
+    ) -> dict:
         if not region:
             region = self.default_region
         try:
@@ -57,7 +60,7 @@ class SimplifiedCognitoValidator:
             if not kid:
                 raise ValueError("Token missing 'kid' in header")
 
-            jwks = self._get_jwks(user_pool_id, region)
+            jwks = await self._get_jwks(user_pool_id, region)
             signing_key = None
             for key in jwks.get("keys", []):
                 if key.get("kid") == kid:
@@ -196,7 +199,7 @@ class SimplifiedCognitoValidator:
             logger.error(error_msg)
             raise ValueError(f"Self-signed token validation failed: {e}")
 
-    def validate_token(self, access_token: str, user_pool_id: str, client_id: str, region: str = None) -> dict:
+    async def validate_token(self, access_token: str, user_pool_id: str, client_id: str, region: str = None) -> dict:
         if not region:
             region = self.default_region
         try:
@@ -208,7 +211,7 @@ class SimplifiedCognitoValidator:
             pass
 
         try:
-            jwt_claims = self.validate_jwt_token(access_token, user_pool_id, client_id, region)
+            jwt_claims = await self.validate_jwt_token(access_token, user_pool_id, client_id, region)
             scopes = []
             if "scope" in jwt_claims:
                 scopes = jwt_claims["scope"].split() if jwt_claims["scope"] else []
