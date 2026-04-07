@@ -354,7 +354,7 @@ class Settings(BaseSettings):
         numeric_level = getattr(logging, self.log_level.upper(), logging.INFO)
 
         registry_logger = logging.getLogger(__package__.split(".")[0])
-
+        registry_logger.propagate = False
         registry_logger.setLevel(numeric_level)
 
         if len(registry_logger.handlers) == 0:
@@ -365,7 +365,7 @@ class Settings(BaseSettings):
             registry_logger.addHandler(handler)
 
         registry_pkgs_logger = logging.getLogger("registry_pkgs")
-
+        registry_pkgs_logger.propagate = False
         registry_pkgs_logger.setLevel(numeric_level)
 
         if len(registry_pkgs_logger.handlers) == 0:

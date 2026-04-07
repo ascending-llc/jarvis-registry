@@ -177,7 +177,7 @@ class AuthSettings(BaseSettings):
         numeric_level = getattr(logging, self.log_level.upper(), logging.INFO)
 
         auth_server_logger = logging.getLogger(__package__.split(".")[0])
-
+        auth_server_logger.propagate = False
         auth_server_logger.setLevel(numeric_level)
 
         if len(auth_server_logger.handlers) == 0:
@@ -188,7 +188,7 @@ class AuthSettings(BaseSettings):
             auth_server_logger.addHandler(handler)
 
         registry_pkgs_logger = logging.getLogger("registry_pkgs")
-
+        registry_pkgs_logger.propagate = False
         registry_pkgs_logger.setLevel(numeric_level)
 
         if len(registry_pkgs_logger.handlers) == 0:
