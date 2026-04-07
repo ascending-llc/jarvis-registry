@@ -9,14 +9,18 @@ import logging
 import math
 from typing import Annotated, Literal
 
-import httpx
-from a2a.client import A2ACardResolver
 from beanie import PydanticObjectId
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi import status as http_status
 from fastapi.responses import JSONResponse
 
 from registry.auth.dependencies import CurrentUser
+from registry.core.exceptions import (
+    A2AAgentCardNotFoundException,
+    A2AAgentCardParseException,
+    A2AAgentCardTransportException,
+    A2AAgentCardUpstreamException,
+)
 from registry.core.telemetry_decorators import track_registry_operation
 from registry.deps import get_a2a_agent_service, get_acl_service
 from registry.schemas.a2a_agent_api_schemas import (
@@ -595,6 +599,24 @@ async def sync_wellknown(
             changes=result["changes"],
         )
 
+    except A2AAgentCardNotFoundException as e:
+        error_msg = str(e)
+        raise HTTPException(
+            status_code=http_status.HTTP_404_NOT_FOUND,
+            detail=create_error_detail(ErrorCode.RESOURCE_NOT_FOUND, error_msg),
+        )
+    except A2AAgentCardTransportException as e:
+        error_msg = str(e)
+        raise HTTPException(
+            status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=create_error_detail(ErrorCode.SERVICE_UNAVAILABLE, error_msg),
+        )
+    except (A2AAgentCardUpstreamException, A2AAgentCardParseException) as e:
+        error_msg = str(e)
+        raise HTTPException(
+            status_code=http_status.HTTP_502_BAD_GATEWAY,
+            detail=create_error_detail(ErrorCode.EXTERNAL_SERVICE_ERROR, error_msg),
+        )
     except ValueError as e:
         error_msg = str(e)
 
@@ -616,10 +638,6 @@ async def sync_wellknown(
             status_code=http_status.HTTP_400_BAD_REQUEST,
             detail=create_error_detail(ErrorCode.EXTERNAL_SERVICE_ERROR, error_msg),
         )
-
-    except HTTPException:
-        logger.exception("HTTPException in sync_wellknown")
-        raise
     except Exception as e:
         logger.error(f"Error syncing well-known for agent {agent_id}: {e}", exc_info=True)
         raise HTTPException(
@@ -635,6 +653,7 @@ async def sync_wellknown(
 )
 async def get_agent_wellknown_card(
     url: Annotated[str, Query(description="The A2A agent URL to fetch card from")],
+    a2a_agent_service: A2AAgentService = Depends(get_a2a_agent_service),
 ) -> JSONResponse:
     """
     Get agent card in A2A protocol format from well-known endpoint by URL.
@@ -652,23 +671,8 @@ async def get_agent_wellknown_card(
                 detail=create_error_detail(ErrorCode.INVALID_REQUEST, "Invalid URL format"),
             )
 
-        # Fetch agent card from the provided URL using SDK
-        logger.info(f"Fetching agent card from {url} using SDK")
-
-        timeout = httpx.Timeout(15.0)
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resolver = A2ACardResolver(
-                base_url=url,
-                httpx_client=client,
-            )
-            # SDK handles fetching, parsing, and validation
-            agent_card = await resolver.get_agent_card()
-
-        if not agent_card:
-            raise HTTPException(
-                status_code=http_status.HTTP_404_NOT_FOUND,
-                detail=create_error_detail(ErrorCode.RESOURCE_NOT_FOUND, f"Agent card not found at {url}"),
-            )
+        # Use service layer method with built-in fallback logic
+        agent_card = await a2a_agent_service._fetch_agent_card_from_url(url)
 
         # Convert agent card to dict
         agent_card_data = agent_card.model_dump(mode="json", exclude_none=True, by_alias=True)
@@ -681,9 +685,24 @@ async def get_agent_wellknown_card(
         logger.info(f"Successfully fetched and returned agent card from URL: {url}")
         return JSONResponse(content=agent_card_data, headers=headers)
 
-    except HTTPException:
-        logger.exception("HTTPException in get_agent_wellknown_card")
-        raise
+    except A2AAgentCardNotFoundException as e:
+        error_msg = str(e)
+        raise HTTPException(
+            status_code=http_status.HTTP_404_NOT_FOUND,
+            detail=create_error_detail(ErrorCode.RESOURCE_NOT_FOUND, error_msg),
+        )
+    except A2AAgentCardTransportException as e:
+        error_msg = str(e)
+        raise HTTPException(
+            status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=create_error_detail(ErrorCode.SERVICE_UNAVAILABLE, error_msg),
+        )
+    except (A2AAgentCardUpstreamException, A2AAgentCardParseException) as e:
+        error_msg = str(e)
+        raise HTTPException(
+            status_code=http_status.HTTP_502_BAD_GATEWAY,
+            detail=create_error_detail(ErrorCode.EXTERNAL_SERVICE_ERROR, error_msg),
+        )
     except Exception as e:
         logger.error(f"Error getting well-known agent card from URL {url}: {e}", exc_info=True)
         raise HTTPException(
