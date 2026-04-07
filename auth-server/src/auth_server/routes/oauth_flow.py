@@ -669,7 +669,7 @@ async def oauth2_callback(
                         raise ValueError("No ID token and access token claims unavailable")
             elif provider == "entra":
                 auth_provider = _get_auth_provider(request, "entra")
-                user_info = auth_provider.get_user_info(
+                user_info = await auth_provider.get_user_info(
                     access_token=token_data.get("access_token"), id_token=token_data.get("id_token")
                 )
                 mapped_user = {
@@ -992,7 +992,7 @@ async def validate_request(request: Request):
                     # Provider-specific validation
                     if hasattr(auth_provider, "validate_token"):
                         # For Keycloak, Entra ID, etc. - no additional headers needed
-                        validation_result = auth_provider.validate_token(access_token)
+                        validation_result = await auth_provider.validate_token(access_token)
                         logger.info(f"Token validation successful using {auth_provider.__class__.__name__}")
                     else:
                         # Fallback to old validation for compatibility
@@ -1009,7 +1009,7 @@ async def validate_request(request: Request):
                             )
 
                         # Use old validator for backward compatibility
-                        validation_result = _get_validator(request).validate_token(
+                        validation_result = await _get_validator(request).validate_token(
                             access_token=access_token, user_pool_id=user_pool_id, client_id=client_id, region=region
                         )
 

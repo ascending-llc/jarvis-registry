@@ -12,7 +12,7 @@ class AuthProvider(ABC):
     """Abstract base class for authentication providers."""
 
     @abstractmethod
-    def validate_token(self, token: str, **kwargs: Any) -> dict[str, Any]:
+    async def validate_token(self, token: str, **kwargs: Any) -> dict[str, Any]:
         """Validate an access token and return user info.
 
         Args:
@@ -36,7 +36,7 @@ class AuthProvider(ABC):
         pass
 
     @abstractmethod
-    def get_jwks(self) -> dict[str, Any]:
+    async def get_jwks(self) -> dict[str, Any]:
         """Get JSON Web Key Set for token validation.
 
         Returns:
@@ -69,7 +69,7 @@ class AuthProvider(ABC):
         pass
 
     @abstractmethod
-    def get_user_info(self, access_token: str, id_token: str | None = None) -> dict[str, Any]:
+    async def get_user_info(self, access_token: str, id_token: str | None = None) -> dict[str, Any]:
         """Get user information from access token.
 
         Args:
@@ -115,7 +115,7 @@ class AuthProvider(ABC):
         pass
 
     @abstractmethod
-    def refresh_token(self, refresh_token: str) -> dict[str, Any]:
+    async def refresh_token(self, refresh_token: str) -> dict[str, Any]:
         """Refresh an access token using a refresh token.
 
         Args:
@@ -130,7 +130,7 @@ class AuthProvider(ABC):
         pass
 
     @abstractmethod
-    def validate_m2m_token(self, token: str) -> dict[str, Any]:
+    async def validate_m2m_token(self, token: str) -> dict[str, Any]:
         """Validate a machine-to-machine token.
 
         Args:
@@ -145,7 +145,7 @@ class AuthProvider(ABC):
         pass
 
     @abstractmethod
-    def get_m2m_token(
+    async def get_m2m_token(
         self, client_id: str | None = None, client_secret: str | None = None, scope: str | None = None
     ) -> dict[str, Any]:
         """Get a machine-to-machine token using client credentials.
