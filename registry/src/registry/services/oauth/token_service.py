@@ -10,7 +10,7 @@ from registry_pkgs.models import IUser, Token
 from ...schemas.enums import TokenType
 from ...schemas.oauth_schema import OAuthClientInformation, OAuthTokens
 from ...services.user_service import UserService
-from ...utils.crypto_utils import decrypt_auth_fields, encrypt_value
+from ...utils.crypto_utils import decrypt_value, encrypt_value
 
 logger = logging.getLogger(__name__)
 
@@ -578,7 +578,7 @@ class TokenService:
         user_obj_id = str(user.id)
 
         # 1. Serialize client_info to JSON
-        client_info_json = json.dumps(client_info.dict())
+        client_info_json = json.dumps(client_info.model_dump())
 
         # 2. Encrypt the JSON directly (not using encrypt_auth_fields which only handles specific fields)
         encrypted = encrypt_value(client_info_json)
@@ -644,12 +644,12 @@ class TokenService:
             }
         )
 
-        if not token_doc:
+        if token_doc is None:
             logger.debug(f"No client credentials found for user={user_id}, service={service_name}")
             return None, None
 
         # Decrypt
-        decrypted = decrypt_auth_fields({"token": token_doc.token})["token"]
+        decrypted = decrypt_value(token_doc.token)
 
         # Parse JSON to OAuthClientInformation
         client_info_dict = json.loads(decrypted)

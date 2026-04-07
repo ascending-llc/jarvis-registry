@@ -583,7 +583,7 @@ class TestTokenServiceClientCredentials:
         service_name = "test_service"
 
         # Mock stored token with encrypted data
-        client_info_json = json.dumps(mock_client_info.dict())
+        client_info_json = json.dumps(mock_client_info.model_dump())
 
         mock_token = Mock(spec=Token)
         mock_token.token = "encrypted_iv:encrypted_ciphertext"
@@ -594,15 +594,15 @@ class TestTokenServiceClientCredentials:
             # Mock Token.find_one
             with patch.object(Token, "find_one", AsyncMock(return_value=mock_token)):
                 # Mock decrypt_auth_fields to return decrypted JSON
-                with patch("registry.services.oauth.token_service.decrypt_auth_fields") as mock_decrypt:
-                    mock_decrypt.return_value = {"token": client_info_json}
+                with patch("registry.services.oauth.token_service.decrypt_value") as mock_decrypt:
+                    mock_decrypt.return_value = client_info_json
 
                     client_info, metadata = await token_service.get_oauth_client_credentials(
                         user_id=user_id, service_name=service_name
                     )
 
                     # Verify decryption was called
-                    mock_decrypt.assert_called_once_with({"token": "encrypted_iv:encrypted_ciphertext"})
+                    mock_decrypt.assert_called_once_with(mock_token.token)
 
                     # Verify result
                     assert isinstance(client_info, OAuthClientInformation)
