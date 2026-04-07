@@ -169,7 +169,6 @@ dependencies = [
     { name = "python-multipart" },
     { name = "pyyaml" },
     { name = "registry-pkgs" },
-    { name = "requests" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -189,7 +188,6 @@ requires-dist = [
     { name = "python-multipart", specifier = ">=0.0.6" },
     { name = "pyyaml", specifier = ">=6.0.0" },
     { name = "registry-pkgs", editable = "registry-pkgs" },
-    { name = "requests", specifier = ">=2.28.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.34.0" },
 ]
 
@@ -2787,7 +2785,6 @@ dependencies = [
     { name = "pytz" },
     { name = "pyyaml" },
     { name = "registry-pkgs" },
-    { name = "requests" },
     { name = "rich" },
     { name = "starlette" },
     { name = "strands-agents" },
@@ -2831,7 +2828,6 @@ requires-dist = [
     { name = "pytz", specifier = ">=2025.2" },
     { name = "pyyaml", specifier = ">=6.0.0" },
     { name = "registry-pkgs", editable = "registry-pkgs" },
-    { name = "requests", specifier = ">=2.31.0" },
     { name = "rich", specifier = ">=13.0.0" },
     { name = "starlette", marker = "python_full_version < '3.14'", specifier = ">=0.27" },
     { name = "starlette", marker = "python_full_version >= '3.14'", specifier = ">=0.48.0" },
