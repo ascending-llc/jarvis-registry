@@ -62,7 +62,15 @@ class TokenService:
 
         Returns:
             Created or updated Token document
+
+        Raises:
+            ValueError: If tokens.access_token is None
         """
+        if not tokens.access_token:
+            raise ValueError(
+                f"Cannot store access token: access_token is missing for user={user_id}, service={service_name}"
+            )
+
         identifier = self._get_access_identifier(service_name)
         user = await self.get_user(user_id)
         user_obj_id = str(user.id)
@@ -295,7 +303,7 @@ class TokenService:
             access_token=access_token.token if access_token else None,
             refresh_token=refresh_token.token if refresh_token else None,
             token_type="Bearer",
-            expires_in=self._calculate_expires_in(access_token.expiresAt) if access_token else 0,
+            expires_in=self._calculate_expires_in(access_token.expiresAt) if access_token else None,
             expires_at=int(access_token.expiresAt.timestamp()) if access_token and access_token.expiresAt else None,
         )
 

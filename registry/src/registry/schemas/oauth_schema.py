@@ -26,6 +26,11 @@ class OAuthTokens(BaseModel):
             return int(time.time()) + info.data["expires_in"]
         return v
 
+    def model_post_init(self, __context: Any) -> None:
+        """Validate that at least one token (access or refresh) is present"""
+        if not self.access_token and not self.refresh_token:
+            raise ValueError("At least one of access_token or refresh_token must be provided")
+
 
 class OAuthClientInformation(BaseModel):
     """OAuth client information"""

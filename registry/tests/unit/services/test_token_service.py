@@ -264,7 +264,8 @@ class TestTokenServiceGetTokens:
                 assert isinstance(result, OAuthTokens)
                 assert result.access_token is None
                 assert result.refresh_token == "test_refresh_token"
-                assert result.expires_in == 0
+                assert result.expires_in is None
+                assert result.expires_at is None
 
 
 class TestTokenServiceDeleteTokens:
