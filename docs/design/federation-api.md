@@ -48,6 +48,8 @@ success
 failed
 ```
 
+`lastSync.status` uses the same enum. It represents the latest sync attempt snapshot for the federation, so it may also be `pending` or `syncing` while a job is in progress.
+
 ### federation jobType
 
 ```text
@@ -197,6 +199,11 @@ Create only stores the federation definition. It does not trigger an automatic s
 Compatibility notes:
 - `keyword` is still accepted as a deprecated alias for `query`
 - `pageSize` is still accepted as a deprecated alias for `per_page`
+
+Response note:
+- `lastSync` reflects the latest sync attempt snapshot for the federation
+- when a sync job is queued or running, `lastSync.status` may be `pending` or `syncing`
+- if a sync attempt fails before the apply phase, `lastSync` is still updated to that failed attempt instead of preserving the older success snapshot
 
 ### Success Response
 

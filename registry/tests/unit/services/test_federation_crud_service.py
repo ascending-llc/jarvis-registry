@@ -7,7 +7,7 @@ from beanie import PydanticObjectId
 
 from registry.services.federation_crud_service import FederationCrudService
 from registry_pkgs.models.enums import FederationProviderType, FederationStatus, FederationSyncStatus
-from registry_pkgs.models.federation import FederationStats
+from registry_pkgs.models.federation import FederationLastSync, FederationStats
 
 
 def _make_federation(
@@ -40,12 +40,38 @@ async def test_mark_sync_pending_uses_state_machine():
 
 
 @pytest.mark.asyncio
+async def test_mark_sync_pending_updates_last_sync_when_provided():
+    service = FederationCrudService()
+    federation = _make_federation(sync_status=FederationSyncStatus.SUCCESS)
+    last_sync = FederationLastSync(status=FederationSyncStatus.PENDING)
+
+    result = await service.mark_sync_pending(federation, last_sync=last_sync)
+
+    assert result.syncStatus == FederationSyncStatus.PENDING
+    assert result.lastSync == last_sync
+    federation.save.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_mark_sync_pending_rejects_invalid_status_transition():
     service = FederationCrudService()
     federation = _make_federation(status=FederationStatus.DELETING, sync_status=FederationSyncStatus.SUCCESS)
 
     with pytest.raises(ValueError, match="cannot transition to sync pending"):
         await service.mark_sync_pending(federation)
+
+
+@pytest.mark.asyncio
+async def test_mark_syncing_updates_last_sync_when_provided():
+    service = FederationCrudService()
+    federation = _make_federation(sync_status=FederationSyncStatus.PENDING)
+    last_sync = FederationLastSync(status=FederationSyncStatus.SYNCING)
+
+    result = await service.mark_syncing(federation, last_sync=last_sync)
+
+    assert result.syncStatus == FederationSyncStatus.SYNCING
+    assert result.lastSync == last_sync
+    federation.save.assert_awaited_once()
 
 
 @pytest.mark.asyncio

@@ -150,7 +150,7 @@ async def test_update_federation_and_create_resync_job_creates_pending_job(
             "version": 2,
         }
     )
-    job = SimpleNamespace(id=PydanticObjectId())
+    job = SimpleNamespace(id=PydanticObjectId(), jobType="config_resync", createdAt=datetime.now(UTC))
 
     federation_sync_service.federation_crud_service.update_federation = AsyncMock(return_value=updated)
     federation_sync_service.federation_job_service.create_job = AsyncMock(return_value=job)
@@ -169,7 +169,11 @@ async def test_update_federation_and_create_resync_job_creates_pending_job(
 
     federation_sync_service.federation_crud_service.update_federation.assert_awaited_once()
     federation_sync_service.federation_job_service.create_job.assert_awaited_once()
-    federation_sync_service.federation_crud_service.mark_sync_pending.assert_awaited_once_with(updated)
+    federation_sync_service.federation_crud_service.mark_sync_pending.assert_awaited_once()
+    assert federation_sync_service.federation_crud_service.mark_sync_pending.await_args.args[0] == updated
+    assert federation_sync_service.federation_crud_service.mark_sync_pending.await_args.kwargs["last_sync"].status == (
+        FederationSyncStatus.PENDING
+    )
     assert result == updated
     assert created_job == job
 
@@ -196,6 +200,30 @@ async def test_run_sync_calls_vector_sync_after_commit(federation_sync_service: 
     )
     federation_sync_service.federation_crud_service.mark_sync_failed.assert_not_awaited()
     federation_sync_service.federation_job_service.mark_failed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_run_sync_updates_last_sync_when_discovery_fails(federation_sync_service: FederationSyncService):
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    job = SimpleNamespace(
+        id=PydanticObjectId(),
+        jobType="full_sync",
+        createdAt=datetime.now(UTC),
+        startedAt=None,
+    )
+
+    federation_sync_service._discover_entities = AsyncMock(side_effect=RuntimeError("discovery failed"))
+    federation_sync_service.federation_crud_service.mark_sync_failed = AsyncMock()
+    federation_sync_service.federation_job_service.mark_failed = AsyncMock()
+
+    with pytest.raises(RuntimeError, match="discovery failed"):
+        await federation_sync_service.run_sync(federation=federation, job=job, user_id="user-1")
+
+    federation_sync_service.federation_crud_service.mark_sync_failed.assert_awaited_once()
+    failed_last_sync = federation_sync_service.federation_crud_service.mark_sync_failed.await_args.kwargs["last_sync"]
+    assert failed_last_sync.status == FederationSyncStatus.FAILED
+    assert failed_last_sync.summary is not None
+    assert failed_last_sync.summary.errorMessages == ["discovery failed"]
 
 
 @pytest.mark.asyncio
@@ -400,6 +428,41 @@ async def test_commit_sync_transaction_marks_federation_failed_when_resource_enr
     federation_sync_service.federation_crud_service.mark_sync_success.assert_not_awaited()
     federation_sync_service.federation_job_service.mark_failed.assert_awaited_once()
     federation_sync_service.federation_job_service.mark_success.assert_not_awaited()
+    assert federation_sync_service.federation_crud_service.mark_syncing.await_args.kwargs["last_sync"].status == (
+        FederationSyncStatus.SYNCING
+    )
+
+
+def test_build_pending_last_sync_uses_pending_status():
+    now = datetime.now(UTC)
+    job = SimpleNamespace(
+        id=PydanticObjectId(),
+        jobType="full_sync",
+        createdAt=now,
+        startedAt=None,
+    )
+
+    last_sync = FederationSyncService._build_pending_last_sync(job)
+
+    assert last_sync.status == FederationSyncStatus.PENDING
+    assert last_sync.startedAt == now
+
+
+def test_build_failed_last_sync_adds_error_summary():
+    now = datetime.now(UTC)
+    job = SimpleNamespace(
+        id=PydanticObjectId(),
+        jobType="full_sync",
+        createdAt=now,
+        startedAt=None,
+    )
+
+    last_sync = FederationSyncService._build_failed_last_sync(job, "discovery failed")
+
+    assert last_sync.status == FederationSyncStatus.FAILED
+    assert last_sync.summary is not None
+    assert last_sync.summary.errors == 1
+    assert last_sync.summary.errorMessages == ["discovery failed"]
 
 
 def test_build_last_sync_carries_error_count_and_failed_status():

@@ -16,6 +16,7 @@ from registry_pkgs.models.federation import (
     AwsAgentCoreProviderConfig,
     AzureAiFoundryProviderConfig,
     Federation,
+    FederationLastSync,
     FederationStats,
 )
 from registry_pkgs.models.federation_sync_job import FederationSyncJob
@@ -187,21 +188,35 @@ class FederationCrudService:
         await federation.save(session=self._get_current_session_or_none())
         return federation
 
-    async def mark_sync_pending(self, federation: Federation) -> Federation:
+    async def mark_sync_pending(
+        self,
+        federation: Federation,
+        *,
+        last_sync: FederationLastSync | None = None,
+    ) -> Federation:
         federation.syncStatus = FederationStateMachine.transition_to_sync_pending(
             federation.status,
             federation.syncStatus,
         )
         federation.syncMessage = None
+        if last_sync is not None:
+            federation.lastSync = last_sync
         await federation.save(session=self._get_current_session_or_none())
         return federation
 
-    async def mark_syncing(self, federation: Federation) -> Federation:
+    async def mark_syncing(
+        self,
+        federation: Federation,
+        *,
+        last_sync: FederationLastSync | None = None,
+    ) -> Federation:
         federation.syncStatus = FederationStateMachine.transition_to_syncing(
             federation.status,
             federation.syncStatus,
         )
         federation.syncMessage = None
+        if last_sync is not None:
+            federation.lastSync = last_sync
         await federation.save(session=self._get_current_session_or_none())
         return federation
 
