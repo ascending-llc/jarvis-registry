@@ -7,8 +7,8 @@ import yaml
 # Constants
 SECRET_NAME = os.environ.get("SECRET_NAME")
 REGION_NAME = os.environ.get("AWS_REGION", "us-east-1")
-OUTPUT_FILE = "kubernetes/mcpgateway_env_externalsecret.yaml"
-EXTERNAL_SECRET_NAME = "mcpgateway-env"
+OUTPUT_FILE = "kubernetes/registry_env_externalsecret.yaml"
+EXTERNAL_SECRET_NAME = "registry-env"
 SECRETSTORE_NAME = "secretstore-jarvis"
 
 # Initialize Secrets Manager client

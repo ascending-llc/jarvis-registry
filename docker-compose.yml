@@ -24,7 +24,7 @@ services:
     networks:
       default:
         aliases:
-          - mcpgateway-registry
+          - registry-backend
     environment:
       - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID}
       - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET}
