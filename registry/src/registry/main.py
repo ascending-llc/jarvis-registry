@@ -114,6 +114,11 @@ async def _shutdown_container(app: FastAPI, resources: _RuntimeResources) -> Non
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Own the full application lifecycle around one app-scoped dependency container."""
+
+    # Set the level on the root logger to WARNING to avoid noise. This must be done in the lifespan function
+    # because uvicorn does something about logging on start up.
+    logging.getLogger().setLevel(logging.WARNING)
+
     logger.info("Starting MCP Gateway Registry")
     resources = _RuntimeResources()
 
