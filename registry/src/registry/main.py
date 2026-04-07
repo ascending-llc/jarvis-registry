@@ -24,8 +24,6 @@ if TYPE_CHECKING:
 
     from .mcpgw.core.types import McpAppContext
 
-settings.configure_logging()
-
 logger = logging.getLogger(__name__)
 
 app: FastAPI
@@ -148,9 +146,6 @@ app = create_app(lifespan=lifespan, gateway_mcp_app=gateway_mcp_app)
 
 
 if __name__ == "__main__":
-    # Configure logging before starting server
-    settings.configure_logging()
-
     uvicorn.run(
         "registry.main:app",
         host="0.0.0.0",  # nosec B104 - it's fine to bind to 0.0.0.0 in a container.

@@ -346,8 +346,34 @@ class Settings(BaseSettings):
         return BackendConfig.from_vector_config(self.vector_config)
 
     def configure_logging(self) -> None:
+        """
+        We set hanlders on two named loggers `registry` and `registry_pkgs` only.
+        This is to avoid the noises if we were to place the handler on the root logger.
+        """
+
         numeric_level = getattr(logging, self.log_level.upper(), logging.INFO)
-        logging.basicConfig(level=numeric_level, format=self.log_format, force=True)
+
+        registry_logger = logging.getLogger(__package__.split(".")[0])
+
+        registry_logger.setLevel(numeric_level)
+
+        if len(registry_logger.handlers) == 0:
+            handler = logging.StreamHandler()
+
+            handler.setFormatter(logging.Formatter(self.log_format))
+
+            registry_logger.addHandler(handler)
+
+        registry_pkgs_logger = logging.getLogger("registry_pkgs")
+
+        registry_pkgs_logger.setLevel(numeric_level)
+
+        if len(registry_pkgs_logger.handlers) == 0:
+            handler = logging.StreamHandler()
+
+            handler.setFormatter(logging.Formatter(self.log_format))
+
+            registry_pkgs_logger.addHandler(handler)
 
     @cached_property
     def scopes_config(self) -> dict[str, Any]:
