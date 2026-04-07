@@ -10,7 +10,7 @@ from .enums import OAuthFlowStatus
 class OAuthTokens(BaseModel):
     """OAuth tokens"""
 
-    access_token: str = Field(..., description="Access token")
+    access_token: str | None = Field(None, description="Access token (can be None if expired/deleted)")
     token_type: str = Field("Bearer", description="Token type")
     expires_in: int | None = Field(None, description="Expiration time (seconds)")
     refresh_token: str | None = Field(None, description="Refresh token")

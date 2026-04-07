@@ -29,9 +29,16 @@ class TokenService:
         user = await self.get_user(user_id)
         return str(user.id)
 
-    def _get_client_identifier(self, service_name: str) -> str:
+    def _get_access_identifier(self, service_name: str) -> str:
         """Build access token identifier"""
         return f"mcp:{service_name}"
+
+    def _get_client_identifier(self, service_name: str) -> str:
+        """
+        Deprecated: Use _get_access_identifier instead.
+        This method is kept for backward compatibility.
+        """
+        return self._get_access_identifier(service_name)
 
     def _get_refresh_identifier(self, service_name: str) -> str:
         """Build refresh token identifier"""
@@ -41,22 +48,22 @@ class TokenService:
         """Build client credentials identifier"""
         return f"mcp:{service_name}:client"
 
-    async def store_oauth_client_token(
+    async def store_oauth_access_token(
         self, user_id: str, service_name: str, tokens: OAuthTokens, metadata: dict[str, Any] | None = None
     ) -> Token:
         """
-        Store OAuth client token (access token)
+        Store OAuth access token
 
         Args:
             user_id: User ID
-            service_name: Service name (e.g., notion, agentcore, etc.)
+            service_name: Service name (e.g., notion, github, etc.)
             tokens: OAuth tokens object
             metadata: Additional metadata (e.g., OAuth configuration)
 
         Returns:
             Created or updated Token document
         """
-        identifier = self._get_client_identifier(service_name)
+        identifier = self._get_access_identifier(service_name)
         user = await self.get_user(user_id)
         user_obj_id = str(user.id)
 
@@ -67,7 +74,7 @@ class TokenService:
         existing_token = await Token.find_one(
             {
                 "userId": PydanticObjectId(user_obj_id),
-                "type": TokenType.MCP_OAUTH.value,
+                "type": TokenType.MCP_OAUTH_ACCESS.value,
                 "identifier": identifier,
             }
         )
@@ -86,7 +93,7 @@ class TokenService:
             # Create new token
             token_doc = Token(
                 userId=PydanticObjectId(user_obj_id),
-                type=TokenType.MCP_OAUTH.value,
+                type=TokenType.MCP_OAUTH_ACCESS.value,
                 identifier=identifier,
                 token=tokens.access_token,
                 expiresAt=expires_at,
@@ -96,6 +103,15 @@ class TokenService:
             await token_doc.insert()
             logger.info(f"Created OAuth access token for user={user_id}, service={service_name}")
             return token_doc
+
+    async def store_oauth_client_token(
+        self, user_id: str, service_name: str, tokens: OAuthTokens, metadata: dict[str, Any] | None = None
+    ) -> Token:
+        """
+        Deprecated: Use store_oauth_access_token instead.
+        This method is kept for backward compatibility.
+        """
+        return await self.store_oauth_access_token(user_id, service_name, tokens, metadata)
 
     async def store_oauth_refresh_token(
         self, user_id: str, service_name: str, tokens: OAuthTokens, metadata: dict[str, Any] | None = None
@@ -170,11 +186,11 @@ class TokenService:
             metadata: Additional metadata (e.g., OAuth configuration)
 
         Returns:
-            Dictionary containing client and refresh tokens
+            Dictionary containing access and refresh tokens
         """
         try:
             # Store access token
-            client_token = await self.store_oauth_client_token(
+            access_token = await self.store_oauth_access_token(
                 user_id=user_id, service_name=service_name, tokens=tokens, metadata=metadata
             )
 
@@ -183,15 +199,15 @@ class TokenService:
                 user_id=user_id, service_name=service_name, tokens=tokens, metadata=metadata
             )
 
-            return {"client": client_token, "refresh": refresh_token}
+            return {"access": access_token, "refresh": refresh_token}
 
         except Exception as e:
             logger.error(f"Failed to store OAuth tokens: {e}", exc_info=True)
             raise
 
-    async def get_oauth_client_token(self, user_id: str, service_name: str) -> Token | None:
+    async def get_oauth_access_token(self, user_id: str, service_name: str) -> Token | None:
         """
-        Get OAuth client token
+        Get OAuth access token
 
         Args:
             user_id: User ID
@@ -200,13 +216,13 @@ class TokenService:
         Returns:
             Token document or None
         """
-        identifier = self._get_client_identifier(service_name)
+        identifier = self._get_access_identifier(service_name)
         user_obj_id = await self.get_user_by_user_id(user_id)
 
         token = await Token.find_one(
             {
                 "userId": PydanticObjectId(user_obj_id),
-                "type": TokenType.MCP_OAUTH.value,
+                "type": TokenType.MCP_OAUTH_ACCESS.value,
                 "identifier": identifier,
             }
         )
@@ -218,6 +234,13 @@ class TokenService:
             return None
 
         return token
+
+    async def get_oauth_client_token(self, user_id: str, service_name: str) -> Token | None:
+        """
+        Deprecated: Use get_oauth_access_token instead.
+        This method is kept for backward compatibility.
+        """
+        return await self.get_oauth_access_token(user_id, service_name)
 
     async def get_oauth_refresh_token(self, user_id: str, service_name: str) -> Token | None:
         """
@@ -257,22 +280,23 @@ class TokenService:
             service_name: Service name
 
         Returns:
-            OAuthTokens object or None
+            OAuthTokens object or None (only if both access and refresh tokens are missing)
         """
-        client_token = await self.get_oauth_client_token(user_id, service_name)
-
-        if not client_token:
-            return None
-
+        access_token = await self.get_oauth_access_token(user_id, service_name)
         refresh_token = await self.get_oauth_refresh_token(user_id, service_name)
 
+        # Return None only if both tokens are missing
+        if not access_token and not refresh_token:
+            return None
+
         # Convert to OAuthTokens object
+        # Even if access token is missing, we return the refresh token so it can be used to get a new access token
         return OAuthTokens(  # nosec B106 - "Bearer" is token type, not token value
-            access_token=client_token.token,
+            access_token=access_token.token if access_token else None,
             refresh_token=refresh_token.token if refresh_token else None,
             token_type="Bearer",
-            expires_in=self._calculate_expires_in(client_token.expiresAt),
-            expires_at=int(client_token.expiresAt.timestamp()) if client_token.expiresAt else None,
+            expires_in=self._calculate_expires_in(access_token.expiresAt) if access_token else 0,
+            expires_at=int(access_token.expiresAt.timestamp()) if access_token and access_token.expiresAt else None,
         )
 
     async def delete_oauth_tokens(self, user_id: str, service_name: str) -> bool:
@@ -288,13 +312,13 @@ class TokenService:
         """
         user_obj_id = await self.get_user_by_user_id(user_id)
 
-        # Delete access token (mcp_oauth)
-        client_identifier = self._get_client_identifier(service_name)
+        # Delete access token (mcp_oauth_access)
+        access_identifier = self._get_access_identifier(service_name)
         client_result = await Token.find_one(
             {
                 "userId": PydanticObjectId(user_obj_id),
-                "type": TokenType.MCP_OAUTH.value,
-                "identifier": client_identifier,
+                "type": TokenType.MCP_OAUTH_ACCESS.value,
+                "identifier": access_identifier,
             }
         )
 
@@ -391,12 +415,12 @@ class TokenService:
         Returns:
             True if expired/missing, False if valid
         """
-        client_token = await self.get_oauth_client_token(user_id, service_name)
+        access_token = await self.get_oauth_access_token(user_id, service_name)
 
-        if not client_token:
+        if not access_token:
             return True
 
-        return self._is_token_expired(client_token)
+        return self._is_token_expired(access_token)
 
     async def has_refresh_token(self, user_id: str, service_name: str) -> bool:
         """
@@ -421,13 +445,13 @@ class TokenService:
                 - token_doc: Token document or None if not exists
                 - is_valid: True if token exists and not expired, False otherwise
         """
-        identifier = self._get_client_identifier(service_name)
+        identifier = self._get_access_identifier(service_name)
         user_obj_id = await self.get_user_by_user_id(user_id)
 
         token = await Token.find_one(
             {
                 "userId": PydanticObjectId(user_obj_id),
-                "type": TokenType.MCP_OAUTH.value,
+                "type": TokenType.MCP_OAUTH_ACCESS.value,
                 "identifier": identifier,
             }
         )

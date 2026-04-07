@@ -47,6 +47,6 @@ class HealthStatus(StrEnum):
 class TokenType(StrEnum):
     """Token type enumeration"""
 
-    MCP_OAUTH = "mcp_oauth"  # Access token
+    MCP_OAUTH_ACCESS = "mcp_oauth"  # Access token (renamed from MCP_OAUTH, value unchanged for DB compatibility)
     MCP_OAUTH_REFRESH = "mcp_oauth_refresh"  # Refresh token
     MCP_OAUTH_CLIENT = "mcp_oauth_client"  # Client credentials (client_id, client_secret)
