@@ -45,6 +45,11 @@ DEFAULT_TOKEN_LIFETIME_HOURS = settings.default_token_lifetime_hours
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application startup and shutdown lifecycle management."""
+
+    # Set the level on the root logger to WARNING to avoid noise. This must be done in the lifespan function
+    # because uvicorn does something about logging on start up.
+    logging.getLogger().setLevel(logging.WARNING)
+
     logger.info("🚀 Starting Auth Server...")
 
     try:

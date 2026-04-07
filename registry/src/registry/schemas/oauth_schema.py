@@ -10,7 +10,7 @@ from .enums import OAuthFlowStatus
 class OAuthTokens(BaseModel):
     """OAuth tokens"""
 
-    access_token: str = Field(..., description="Access token")
+    access_token: str | None = Field(None, description="Access token (can be None if expired/deleted)")
     token_type: str = Field("Bearer", description="Token type")
     expires_in: int | None = Field(None, description="Expiration time (seconds)")
     refresh_token: str | None = Field(None, description="Refresh token")
@@ -25,6 +25,11 @@ class OAuthTokens(BaseModel):
         if v is None and info.data.get("expires_in") is not None:
             return int(time.time()) + info.data["expires_in"]
         return v
+
+    def model_post_init(self, __context: Any) -> None:
+        """Validate that at least one token (access or refresh) is present"""
+        if not self.access_token and not self.refresh_token:
+            raise ValueError("At least one of access_token or refresh_token must be provided")
 
 
 class OAuthClientInformation(BaseModel):

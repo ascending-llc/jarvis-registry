@@ -1,3 +1,4 @@
+import logging
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -321,12 +322,18 @@ async def test_sync_vector_index_after_commit_logs_summary_when_nothing_to_rebui
     federation_sync_service._sync_mcp_vectors_for_runtime = AsyncMock()
     federation_sync_service._sync_a2a_vectors_for_runtime = AsyncMock()
 
-    with caplog.at_level("INFO"):
-        await federation_sync_service._sync_vector_index_after_commit(
-            federation=federation,
-            job=job,
-            mutation_result=mutation_result,
-        )
+    registry_logger = logging.getLogger("registry")
+    registry_logger.addHandler(caplog.handler)
+
+    try:
+        with caplog.at_level("INFO", logger="registry"):
+            await federation_sync_service._sync_vector_index_after_commit(
+                federation=federation,
+                job=job,
+                mutation_result=mutation_result,
+            )
+    finally:
+        registry_logger.removeHandler(caplog.handler)
 
     assert "Federation vector sync plan" in caplog.text
     assert "mcp_rebuild=0" in caplog.text
