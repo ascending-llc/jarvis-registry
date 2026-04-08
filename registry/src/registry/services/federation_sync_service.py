@@ -45,6 +45,33 @@ class FederationSyncMutationResult:
     changed_a2a_runtime_arns: set[str] = field(default_factory=set)
 
 
+@dataclass
+class FederationSyncPlan:
+    """Read-only diff plan shared by dry-run preview and real apply."""
+
+    summary: FederationApplySummary
+    federation_id: Any
+    provider_type: Any
+    discovered_mcp_count: int
+    discovered_a2a_count: int
+    mcp_creates: list[tuple[Any, str]] = field(default_factory=list)
+    mcp_updates: list[tuple[Any, Any, str]] = field(default_factory=list)
+    mcp_deletes: list[tuple[Any, str | None]] = field(default_factory=list)
+    a2a_creates: list[tuple[Any, str]] = field(default_factory=list)
+    a2a_updates: list[tuple[Any, Any, str]] = field(default_factory=list)
+    a2a_deletes: list[tuple[Any, str | None]] = field(default_factory=list)
+
+
+@dataclass
+class FederationSyncPreviewResult:
+    provider_type: Any
+    provider_config: dict[str, Any]
+    summary: FederationApplySummary
+    discovered_mcp_count: int
+    discovered_a2a_count: int
+    message: str | None = None
+
+
 class FederationSyncService:
     def __init__(
         self,
@@ -174,6 +201,33 @@ class FederationSyncService:
             await self.federation_job_service.mark_failed(job, FederationJobPhase.FAILED, str(exc))
             raise
 
+    async def preview_manual_sync(
+        self,
+        *,
+        federation: Federation,
+        reason: str | None,
+        triggered_by: str | None,
+    ) -> FederationSyncPreviewResult:
+        """Run provider discovery and local diff without mutating persisted state."""
+        del reason, triggered_by
+        discovered = await self._discover_entities(federation)
+        sync_plan = await self._build_sync_plan(
+            federation=federation,
+            discovered_mcp=discovered.get("mcp_servers", []),
+            discovered_a2a=discovered.get("a2a_agents", []),
+        )
+        message = None
+        if sync_plan.summary.errorMessages:
+            message = self._summarize_sync_errors(sync_plan.summary.errorMessages)
+        return FederationSyncPreviewResult(
+            provider_type=federation.providerType,
+            provider_config=dict(federation.providerConfig or {}),
+            summary=sync_plan.summary,
+            discovered_mcp_count=sync_plan.discovered_mcp_count,
+            discovered_a2a_count=sync_plan.discovered_a2a_count,
+            message=message,
+        )
+
     async def update_federation_with_optional_resync(
         self,
         *,
@@ -255,11 +309,12 @@ class FederationSyncService:
             discovered_agents=len(discovered_a2a),
         )
         await self.federation_job_service.mark_syncing(job, FederationJobPhase.APPLYING)
-        mutation_result = await self._apply_sync_mutations(
+        sync_plan = await self._build_sync_plan(
             federation=federation,
             discovered_mcp=discovered_mcp,
             discovered_a2a=discovered_a2a,
         )
+        mutation_result = await self._apply_sync_plan(sync_plan)
         await self.federation_job_service.update_apply_summary(job, mutation_result.summary)
         stats = await self._build_federation_stats(federation.id)
         last_sync = self._build_last_sync(job, mutation_result.summary)
@@ -343,7 +398,6 @@ class FederationSyncService:
         self,
         *,
         federation: Federation,
-        force: bool,
         reason: str | None,
         triggered_by: str | None,
     ) -> FederationSyncJob:
@@ -352,10 +406,9 @@ class FederationSyncService:
         if active_job:
             raise ValueError("Federation already has an active sync job")
 
-        job_type = FederationJobType.FORCE_SYNC if force else FederationJobType.FULL_SYNC
         job = await self.create_sync_job_and_mark_pending(
             federation=federation,
-            job_type=job_type,
+            job_type=FederationJobType.FULL_SYNC,
             trigger_type=FederationTriggerType.MANUAL,
             triggered_by=triggered_by,
             request_snapshot={
@@ -396,21 +449,24 @@ class FederationSyncService:
         await self.run_delete(federation=federation, job=job)
         return job
 
-    async def _apply_sync_mutations(
+    async def _build_sync_plan(
         self,
         *,
         federation: Federation,
         discovered_mcp: list[Any],
         discovered_a2a: list[Any],
-    ) -> FederationSyncMutationResult:
-        # Keep the apply phase purely about Mongo state convergence. We collect
-        # changed entities here so the caller can rebuild derived indexes after
-        # the transaction commits successfully.
+    ) -> FederationSyncPlan:
+        """Compare discovered resources against Mongo state without mutating it."""
         apply_summary = FederationApplySummary()
-        mutation_result = FederationSyncMutationResult(summary=apply_summary)
+        sync_plan = FederationSyncPlan(
+            summary=apply_summary,
+            federation_id=federation.id,
+            provider_type=federation.providerType,
+            discovered_mcp_count=len(discovered_mcp),
+            discovered_a2a_count=len(discovered_a2a),
+        )
         session = self._get_current_session_or_none()
 
-        # -------- MCP --------
         existing_mcp = await ExtendedMCPServerDocument.find(
             {"federationRefId": federation.id}, session=session
         ).to_list()
@@ -431,33 +487,19 @@ class FederationSyncService:
             existing = existing_mcp_by_remote.get(remote_id)
 
             if existing is None:
-                server = item
-                server.federationRefId = federation.id
-                server.federationMetadata = server.federationMetadata or {}
-                server.federationMetadata["providerType"] = _enum_value(federation.providerType)
-                await server.insert(session=session)
                 apply_summary.createdMcpServers += 1
-                mutation_result.changed_mcp_runtime_arns.add(remote_id)
+                sync_plan.mcp_creates.append((item, remote_id))
             else:
                 if not self._runtime_metadata_changed(existing.federationMetadata, item.federationMetadata):
                     apply_summary.unchangedMcpServers += 1
                 else:
-                    existing.serverName = item.serverName
-                    existing.path = item.path
-                    existing.tags = list(item.tags or [])
-                    existing.config = dict(item.config or {})
-                    existing.status = item.status or existing.status
-                    existing.numTools = item.numTools
-                    existing.federationMetadata = item.federationMetadata
-                    await existing.save(session=session)
                     apply_summary.updatedMcpServers += 1
-                    mutation_result.changed_mcp_runtime_arns.add(remote_id)
+                    sync_plan.mcp_updates.append((existing, item, remote_id))
 
             error_message = self._extract_resource_error(item)
             if error_message:
                 self._record_apply_error(
                     apply_summary,
-                    mutation_result,
                     f"MCP server {getattr(item, 'serverName', remote_id)}: {error_message}",
                 )
 
@@ -468,13 +510,9 @@ class FederationSyncService:
             and self._extract_runtime_arn(item.federationMetadata) not in discovered_mcp_ids
         ]
         for stale in stale_mcp:
-            stale_runtime_arn = self._extract_runtime_arn(stale.federationMetadata)
-            await stale.delete(session=session)
             apply_summary.deletedMcpServers += 1
-            if stale_runtime_arn:
-                mutation_result.changed_mcp_runtime_arns.add(stale_runtime_arn)
+            sync_plan.mcp_deletes.append((stale, self._extract_runtime_arn(stale.federationMetadata)))
 
-        # -------- A2A --------
         existing_a2a = await A2AAgent.find({"federationRefId": federation.id}, session=session).to_list()
         existing_a2a_by_remote = {
             self._extract_runtime_arn(item.federationMetadata): item
@@ -518,16 +556,11 @@ class FederationSyncService:
                     continue
 
             if existing is None:
-                agent = item
-                agent.federationRefId = federation.id
-                agent.federationMetadata = agent.federationMetadata or {}
-                agent.federationMetadata["providerType"] = _enum_value(federation.providerType)
-                await agent.insert(session=session)
                 apply_summary.createdAgents += 1
-                mutation_result.changed_a2a_runtime_arns.add(remote_id)
-                existing_a2a_by_remote[remote_id] = agent
-                if getattr(agent, "path", None):
-                    existing_a2a_by_path[agent.path] = agent
+                sync_plan.a2a_creates.append((item, remote_id))
+                existing_a2a_by_remote[remote_id] = item
+                if getattr(item, "path", None):
+                    existing_a2a_by_path[item.path] = item
             else:
                 if existing.path != item.path and path_conflict is not None and path_conflict.id != existing.id:
                     logger.warning(
@@ -547,25 +580,16 @@ class FederationSyncService:
                 if not self._runtime_metadata_changed(existing.federationMetadata, item.federationMetadata):
                     apply_summary.unchangedAgents += 1
                 else:
-                    existing.path = item.path
-                    existing.card = item.card
-                    existing.tags = list(item.tags or [])
-                    existing.status = item.status
-                    existing.isEnabled = item.isEnabled
-                    existing.wellKnown = item.wellKnown
-                    existing.federationMetadata = item.federationMetadata
-                    await existing.save(session=session)
                     apply_summary.updatedAgents += 1
-                    mutation_result.changed_a2a_runtime_arns.add(remote_id)
-                    if getattr(existing, "path", None):
-                        existing_a2a_by_path[existing.path] = existing
+                    sync_plan.a2a_updates.append((existing, item, remote_id))
+                    if getattr(item, "path", None):
+                        existing_a2a_by_path[item.path] = existing
 
             error_message = self._extract_resource_error(item)
             if error_message:
                 agent_name = getattr(getattr(item, "card", None), "name", None) or remote_id
                 self._record_apply_error(
                     apply_summary,
-                    mutation_result,
                     f"A2A agent {agent_name}: {error_message}",
                 )
 
@@ -576,9 +600,59 @@ class FederationSyncService:
             and self._extract_runtime_arn(item.federationMetadata) not in discovered_a2a_ids
         ]
         for stale in stale_a2a:
-            stale_runtime_arn = self._extract_runtime_arn(stale.federationMetadata)
-            await stale.delete(session=session)
             apply_summary.deletedAgents += 1
+            sync_plan.a2a_deletes.append((stale, self._extract_runtime_arn(stale.federationMetadata)))
+
+        return sync_plan
+
+    async def _apply_sync_plan(self, sync_plan: FederationSyncPlan) -> FederationSyncMutationResult:
+        """Apply a previously computed sync plan inside the current transaction."""
+        session = self._get_current_session_or_none()
+        mutation_result = FederationSyncMutationResult(summary=sync_plan.summary)
+
+        for server, remote_id in sync_plan.mcp_creates:
+            server.federationRefId = sync_plan.federation_id
+            server.federationMetadata = server.federationMetadata or {}
+            server.federationMetadata["providerType"] = _enum_value(sync_plan.provider_type)
+            await server.insert(session=session)
+            mutation_result.changed_mcp_runtime_arns.add(remote_id)
+
+        for existing, item, remote_id in sync_plan.mcp_updates:
+            existing.serverName = item.serverName
+            existing.path = item.path
+            existing.tags = list(item.tags or [])
+            existing.config = dict(item.config or {})
+            existing.status = item.status or existing.status
+            existing.numTools = item.numTools
+            existing.federationMetadata = item.federationMetadata
+            await existing.save(session=session)
+            mutation_result.changed_mcp_runtime_arns.add(remote_id)
+
+        for stale, stale_runtime_arn in sync_plan.mcp_deletes:
+            await stale.delete(session=session)
+            if stale_runtime_arn:
+                mutation_result.changed_mcp_runtime_arns.add(stale_runtime_arn)
+
+        for agent, remote_id in sync_plan.a2a_creates:
+            agent.federationRefId = sync_plan.federation_id
+            agent.federationMetadata = agent.federationMetadata or {}
+            agent.federationMetadata["providerType"] = _enum_value(sync_plan.provider_type)
+            await agent.insert(session=session)
+            mutation_result.changed_a2a_runtime_arns.add(remote_id)
+
+        for existing, item, remote_id in sync_plan.a2a_updates:
+            existing.path = item.path
+            existing.card = item.card
+            existing.tags = list(item.tags or [])
+            existing.status = item.status
+            existing.isEnabled = item.isEnabled
+            existing.wellKnown = item.wellKnown
+            existing.federationMetadata = item.federationMetadata
+            await existing.save(session=session)
+            mutation_result.changed_a2a_runtime_arns.add(remote_id)
+
+        for stale, stale_runtime_arn in sync_plan.a2a_deletes:
+            await stale.delete(session=session)
             if stale_runtime_arn:
                 mutation_result.changed_a2a_runtime_arns.add(stale_runtime_arn)
 
@@ -820,7 +894,6 @@ class FederationSyncService:
     @staticmethod
     def _record_apply_error(
         apply_summary: FederationApplySummary,
-        mutation_result: FederationSyncMutationResult,
         error_message: str,
     ) -> None:
         apply_summary.errors += 1

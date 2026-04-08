@@ -1,5 +1,6 @@
 import logging
 import math
+from types import SimpleNamespace
 
 from beanie import PydanticObjectId
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -27,6 +28,8 @@ from ....schemas.federation_api_schemas import (
     FederationListItemResponse,
     FederationPagedResponse,
     FederationStatsResponse,
+    FederationSyncDryRunResponse,
+    FederationSyncDryRunSummaryResponse,
     FederationSyncJobResponse,
     FederationSyncRequest,
     FederationUpdateRequest,
@@ -102,6 +105,31 @@ def _to_job_response(job) -> FederationSyncJobResponse:
         phase=job.phase.value if hasattr(job.phase, "value") else str(job.phase),
         startedAt=job.startedAt,
         finishedAt=job.finishedAt,
+    )
+
+
+def _to_dry_run_response(result) -> FederationSyncDryRunResponse:
+    summary = getattr(result, "summary", None)
+    return FederationSyncDryRunResponse(
+        dryRun=True,
+        providerType=result.provider_type,
+        providerConfig=dict(getattr(result, "provider_config", {}) or {}),
+        summary=FederationSyncDryRunSummaryResponse(
+            discoveredMcpServers=int(getattr(result, "discovered_mcp_count", 0) or 0),
+            discoveredAgents=int(getattr(result, "discovered_a2a_count", 0) or 0),
+            createdMcpServers=int(getattr(summary, "createdMcpServers", 0) or 0),
+            updatedMcpServers=int(getattr(summary, "updatedMcpServers", 0) or 0),
+            deletedMcpServers=int(getattr(summary, "deletedMcpServers", 0) or 0),
+            unchangedMcpServers=int(getattr(summary, "unchangedMcpServers", 0) or 0),
+            createdAgents=int(getattr(summary, "createdAgents", 0) or 0),
+            updatedAgents=int(getattr(summary, "updatedAgents", 0) or 0),
+            deletedAgents=int(getattr(summary, "deletedAgents", 0) or 0),
+            unchangedAgents=int(getattr(summary, "unchangedAgents", 0) or 0),
+            skippedAgents=int(getattr(summary, "skippedAgents", 0) or 0),
+            errors=int(getattr(summary, "errors", 0) or 0),
+            errorMessages=list(getattr(summary, "errorMessages", []) or []),
+        ),
+        message=getattr(result, "message", None),
     )
 
 
@@ -428,7 +456,48 @@ async def update_federation(
     return await _to_detail_response(federation, federation_crud_service, permissions)
 
 
-@router.post("/{federation_id}/sync", response_model=FederationSyncJobResponse)
+def _with_effective_provider_config(federation, provider_config: dict):
+    if dict(getattr(federation, "providerConfig", {}) or {}) == dict(provider_config or {}):
+        return federation
+    if hasattr(federation, "model_copy"):
+        return federation.model_copy(update={"providerConfig": provider_config})
+    return SimpleNamespace(**{**federation.__dict__, "providerConfig": provider_config})
+
+
+def _require_syncable_federation(federation, *, dry_run: bool) -> None:
+    if federation.status != FederationStatus.ACTIVE:
+        _raise_conflict(f"Federation in status '{federation.status}' cannot be synced")
+    if dry_run:
+        return
+    if not FederationStateMachine.can_start_sync(federation.syncStatus):
+        _raise_conflict(f"Federation in sync status '{federation.syncStatus}' cannot start a new sync")
+
+
+def _resolve_sync_provider_config(data: FederationSyncRequest, federation):
+    if not data.dryRun and data.providerConfig is not None:
+        raise HTTPException(
+            status_code=http_status.HTTP_400_BAD_REQUEST,
+            detail=create_error_detail(
+                ErrorCode.INVALID_REQUEST,
+                "providerConfig override is only supported when dryRun=true",
+            ),
+        )
+    if data.dryRun and data.providerConfig is not None:
+        return data.providerConfig
+    return federation.providerConfig
+
+
+def _validate_sync_provider_config(federation_crud_service, provider_type, provider_config: dict) -> dict:
+    try:
+        return federation_crud_service.validate_provider_config(provider_type, provider_config)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=http_status.HTTP_400_BAD_REQUEST,
+            detail=create_error_detail(ErrorCode.INVALID_REQUEST, str(exc)),
+        ) from exc
+
+
+@router.post("/{federation_id}/sync", response_model=FederationSyncJobResponse | FederationSyncDryRunResponse)
 @track_registry_operation("sync", resource_type="federation")
 async def sync_federation(
     federation_id: str,
@@ -446,7 +515,7 @@ async def sync_federation(
         2. Create Sync Job
             Create FederationSyncJob
             Set:
-                jobType = full_sync / force_sync
+                jobType = full_sync
                 status = pending
                 Update Federation:
                 syncStatus = pending
@@ -488,24 +557,29 @@ async def sync_federation(
         resource_id=federation.id,
         required_permission="EDIT",
     )
-    if federation.status != FederationStatus.ACTIVE:
-        _raise_conflict(f"Federation in status '{federation.status}' cannot be synced")
-    if not FederationStateMachine.can_start_sync(federation.syncStatus):
-        _raise_conflict(f"Federation in sync status '{federation.syncStatus}' cannot start a new sync")
-    try:
-        federation_crud_service.validate_provider_config(federation.providerType, federation.providerConfig)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=http_status.HTTP_400_BAD_REQUEST,
-            detail=create_error_detail(ErrorCode.INVALID_REQUEST, str(exc)),
-        ) from exc
+    _require_syncable_federation(federation, dry_run=data.dryRun)
+    requested_provider_config = _resolve_sync_provider_config(data, federation)
+    normalized_provider_config = _validate_sync_provider_config(
+        federation_crud_service,
+        federation.providerType,
+        requested_provider_config,
+    )
+    effective_federation = _with_effective_provider_config(federation, normalized_provider_config)
+    triggered_by = user_context.get("user_id")
+
     try:
         logger.info(f"sync federation {federation.id}, {federation.providerType}")
+        if data.dryRun:
+            result = await federation_sync_service.preview_manual_sync(
+                federation=effective_federation,
+                reason=data.reason,
+                triggered_by=triggered_by,
+            )
+            return _to_dry_run_response(result)
         job = await federation_sync_service.start_manual_sync(
-            federation=federation,
-            force=data.force,
+            federation=effective_federation,
             reason=data.reason,
-            triggered_by=user_context.get("user_id"),
+            triggered_by=triggered_by,
         )
         return _to_job_response(job)
     except ValueError as exc:

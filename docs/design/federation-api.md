@@ -55,7 +55,6 @@ failed
 ```text
 full_sync
 config_resync
-force_sync
 delete_sync
 ```
 
@@ -417,8 +416,9 @@ Response shape is the same as `POST /federations`.
 
 ```json
 {
-  "force": false,
-  "reason": "manual refresh"
+  "dryRun": false,
+  "reason": "manual refresh",
+  "providerConfig": null
 }
 ```
 
@@ -426,11 +426,14 @@ Response shape is the same as `POST /federations`.
 
 | Field | Type | Required | Description |
 |---|---|---:|---|
-| `force` | `boolean` | No | Reserved flag, default `false` |
+| `dryRun` | `boolean` | No | When `true`, perform discovery and diff only. No job is created and no data is written. Default `false`. |
 | `reason` | `string \| null` | No | Manual trigger reason |
+| `providerConfig` | `object \| null` | No | Only supported when `dryRun=true`. Uses request-scoped provider config for this test only and does not persist it. |
 
-For `aws_agentcore`, sync validates the stored federation config before discovery starts.
-The federation must already have both `providerConfig.region` and `providerConfig.assumeRoleArn`.
+For `aws_agentcore`, sync validates the effective provider config before discovery starts.
+When `dryRun=false`, the effective config is the stored federation config.
+When `dryRun=true`, the request may temporarily override it with `providerConfig`.
+The effective config must include both `providerConfig.region` and `providerConfig.assumeRoleArn`.
 
 ### Success Response
 
@@ -447,6 +450,43 @@ Status: `200 OK`
   "finishedAt": "2026-03-26T07:21:05Z"
 }
 ```
+
+### Dry-Run Success Response
+
+Status: `200 OK`
+
+```json
+{
+  "dryRun": true,
+  "providerType": "aws_agentcore",
+  "providerConfig": {
+    "region": "us-east-1",
+    "assumeRoleArn": "arn:aws:iam::123456789012:role/TestRole"
+  },
+  "summary": {
+    "discoveredMcpServers": 1,
+    "discoveredAgents": 0,
+    "createdMcpServers": 1,
+    "updatedMcpServers": 0,
+    "deletedMcpServers": 0,
+    "unchangedMcpServers": 0,
+    "createdAgents": 0,
+    "updatedAgents": 0,
+    "deletedAgents": 0,
+    "unchangedAgents": 0,
+    "skippedAgents": 0,
+    "errors": 0,
+    "errorMessages": []
+  },
+  "message": null
+}
+```
+
+When `dryRun=true`:
+- the request may provide a temporary `providerConfig`
+- no `FederationSyncJob` is created
+- federation `syncStatus`, `lastSync`, `stats`, and child resources are unchanged
+- vector sync is not executed
 
 ### Error Responses
 

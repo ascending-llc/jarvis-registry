@@ -204,6 +204,36 @@ async def test_run_sync_calls_vector_sync_after_commit(federation_sync_service: 
 
 
 @pytest.mark.asyncio
+async def test_preview_manual_sync_does_not_mutate_or_create_jobs(federation_sync_service: FederationSyncService):
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    summary = FederationApplySummary(createdMcpServers=1)
+    sync_plan = SimpleNamespace(summary=summary, discovered_mcp_count=1, discovered_a2a_count=0)
+
+    federation_sync_service._discover_entities = AsyncMock(
+        return_value={"mcp_servers": [SimpleNamespace()], "a2a_agents": []}
+    )
+    federation_sync_service._build_sync_plan = AsyncMock(return_value=sync_plan)
+    federation_sync_service.federation_job_service.create_job = AsyncMock()
+    federation_sync_service.federation_crud_service.mark_sync_pending = AsyncMock()
+    federation_sync_service.federation_crud_service.mark_syncing = AsyncMock()
+    federation_sync_service._sync_vector_index_after_commit = AsyncMock()
+
+    result = await federation_sync_service.preview_manual_sync(
+        federation=federation,
+        reason="test",
+        triggered_by="user-1",
+    )
+
+    assert result.provider_type == federation.providerType
+    assert result.discovered_mcp_count == 1
+    assert result.summary.createdMcpServers == 1
+    federation_sync_service.federation_job_service.create_job.assert_not_awaited()
+    federation_sync_service.federation_crud_service.mark_sync_pending.assert_not_awaited()
+    federation_sync_service.federation_crud_service.mark_syncing.assert_not_awaited()
+    federation_sync_service._sync_vector_index_after_commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_run_sync_updates_last_sync_when_discovery_fails(federation_sync_service: FederationSyncService):
     federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
     job = SimpleNamespace(
@@ -350,7 +380,7 @@ class _FakeQuery:
 
 
 @pytest.mark.asyncio
-async def test_apply_sync_mutations_skips_a2a_insert_when_path_belongs_to_another_resource(
+async def test_build_sync_plan_skips_a2a_insert_when_path_belongs_to_another_resource(
     federation_sync_service: FederationSyncService,
     monkeypatch,
 ):
@@ -387,7 +417,7 @@ async def test_apply_sync_mutations_skips_a2a_insert_when_path_belongs_to_anothe
     monkeypatch.setattr("registry.services.federation_sync_service.ExtendedMCPServerDocument.find", _fake_mcp_find)
     monkeypatch.setattr("registry.services.federation_sync_service.A2AAgent.find", _fake_a2a_find)
 
-    result = await federation_sync_service._apply_sync_mutations(
+    result = await federation_sync_service._build_sync_plan(
         federation=federation,
         discovered_mcp=[],
         discovered_a2a=[discovered_agent],
@@ -415,7 +445,14 @@ async def test_commit_sync_transaction_marks_federation_failed_when_resource_enr
     federation_sync_service.federation_job_service.mark_syncing = AsyncMock()
     federation_sync_service.federation_crud_service.mark_syncing = AsyncMock()
     federation_sync_service.federation_job_service.update_discovery_summary = AsyncMock()
-    federation_sync_service._apply_sync_mutations = AsyncMock(return_value=mutation_result)
+    federation_sync_service._build_sync_plan = AsyncMock(
+        return_value=SimpleNamespace(
+            summary=summary,
+            discovered_mcp_count=1,
+            discovered_a2a_count=1,
+        )
+    )
+    federation_sync_service._apply_sync_plan = AsyncMock(return_value=mutation_result)
     federation_sync_service.federation_job_service.update_apply_summary = AsyncMock()
     federation_sync_service._build_federation_stats = AsyncMock(return_value=SimpleNamespace())
     federation_sync_service.federation_crud_service.mark_sync_failed = AsyncMock()
