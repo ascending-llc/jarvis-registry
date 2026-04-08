@@ -12,7 +12,7 @@ import React, { Fragment, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import SERVICES from '@/services';
-import logo from '../assets/logo.svg';
+import logo from '../assets/jarvis_logo_w_text_light_bkg.svg';
 import { useAuth } from '../contexts/AuthContext';
 import { useServer } from '../contexts/ServerContext';
 import { useTheme } from '../contexts/ThemeContext';

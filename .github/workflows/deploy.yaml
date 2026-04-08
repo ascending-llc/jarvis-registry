@@ -1,4 +1,4 @@
-name: MCP Gateway Deployment Pipeline
+name: Registry Deployment Pipeline
 on:
   workflow_dispatch:
     inputs:
@@ -18,7 +18,7 @@ on:
 
 
 
-run-name: Deploy MCP Gateway for ${{ inputs.application }}
+run-name: Deploy Registry for ${{ inputs.application }}
 
 permissions:
   id-token: write
@@ -64,19 +64,19 @@ jobs:
       - name: Update kubeconfig
         run: aws eks update-kubeconfig --name ${{ steps.config.outputs.eks_cluster_name }} --region ${{ inputs.region }}
 
-      - name: Sync mcp gateway env variables
+      - name: Sync registry env variables
         env:
           AWS_REGION: ${{ inputs.region }}
           SECRET_NAME: ${{ steps.config.outputs.secret_name }}
         run: |
-          echo "Generating new mcp gateway env YAML..."
-          python .github/workflows/utils/generate_k8s_mcp_gateway_env.py
+          echo "Generating new registry env YAML..."
+          python .github/workflows/utils/generate_k8s_registry_env.py
 
           echo "Applying new env vars..."
-          kubectl apply -f kubernetes/mcpgateway_env_externalsecret.yaml -n ${{ inputs.application  }}
+          kubectl apply -f kubernetes/registry_env_externalsecret.yaml -n ${{ inputs.application  }}
 
           echo "Updating env vars in EKS pods..."
-          kubectl annotate es mcpgateway-env force-sync=$(date +%s) --overwrite -n ${{ inputs.application  }}
+          kubectl annotate es registry-env force-sync=$(date +%s) --overwrite -n ${{ inputs.application  }}
 
   build-images:
     uses: ./.github/workflows/build-images-reusable.yaml
@@ -94,7 +94,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: build-images
     env:
-      DEPLOYMENT_NAME: mcpgateway-registry
+      DEPLOYMENT_NAME: registry-backend
     steps:
       - name: Checkout Code
         uses: actions/checkout@v6
@@ -136,7 +136,7 @@ jobs:
         env:
           image: ${{ steps.login-ecr.outputs.registry }}/jarvis/registry:${{ github.sha }}
         run: |
-          kubectl set image deploy/${{ env.DEPLOYMENT_NAME }} mcpgateway-registry=$image -n ${{ inputs.application  }}
+          kubectl set image deploy/${{ env.DEPLOYMENT_NAME }} registry-backend=$image -n ${{ inputs.application  }}
 
       - name: Check pod status
         run: |
@@ -146,7 +146,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: build-images
     env:
-      DEPLOYMENT_NAME: mcpgateway-frontend
+      DEPLOYMENT_NAME: registry-frontend
     steps:
       - name: Checkout Code
         uses: actions/checkout@v6
@@ -188,7 +188,7 @@ jobs:
         env:
           image: ${{ steps.login-ecr.outputs.registry }}/jarvis/registry-frontend:${{ github.sha }}
         run: |
-          kubectl set image deploy/${{ env.DEPLOYMENT_NAME }} mcpgateway-frontend=$image -n ${{ inputs.application  }}
+          kubectl set image deploy/${{ env.DEPLOYMENT_NAME }} registry-frontend=$image -n ${{ inputs.application  }}
 
       - name: Check pod status
         run: |

@@ -3,13 +3,13 @@ import type React from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 
-import logo from '@/assets/logo.svg';
+import logo from '@/assets/jarvis_logo_w_text_light_bkg.svg';
 
 // Common layout components to reduce duplication
 const PageLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => (
   <div className='min-h-screen bg-white dark:bg-gray-900 flex flex-col'>
     <header className='bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700 py-4 text-center'>
-      <img src={logo} alt='LibreChat' className='h-12 w-auto mx-auto' />
+      <img src={logo} alt='Jarvis Registry Logo' className='h-12 w-auto mx-auto' />
     </header>
     <main className='flex-grow flex items-center justify-center px-4 py-8'>{children}</main>
     <Footer />

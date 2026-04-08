@@ -4,12 +4,12 @@ Cognito utilities for token generation and AWS Cognito operations.
 
 import logging
 
-import requests
+import httpx
 
 logger = logging.getLogger(__name__)
 
 
-def generate_token(
+async def generate_token(
     client_id: str, client_secret: str, user_pool_id: str, region: str, scopes: list[str] = None, domain: str = None
 ) -> dict:
     """
@@ -46,10 +46,11 @@ def generate_token(
         token_url = f"{cognito_domain}/oauth2/token"
 
         logger.info(f"Requesting token from {token_url}")
-        response = requests.post(token_url, headers=headers, data=data, timeout=10)
-        response.raise_for_status()
+        async with httpx.AsyncClient() as client:
+            response = await client.post(token_url, headers=headers, data=data, timeout=10)
+            response.raise_for_status()
+            token_data = response.json()
 
-        token_data = response.json()
         logger.info("Successfully obtained client credentials token")
         return token_data
 

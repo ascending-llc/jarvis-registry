@@ -45,6 +45,11 @@ DEFAULT_TOKEN_LIFETIME_HOURS = settings.default_token_lifetime_hours
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application startup and shutdown lifecycle management."""
+
+    # Set the level on the root logger to WARNING to avoid noise. This must be done in the lifespan function
+    # because uvicorn does something about logging on start up.
+    logging.getLogger().setLevel(logging.WARNING)
+
     logger.info("🚀 Starting Auth Server...")
 
     try:
@@ -135,7 +140,7 @@ async def get_auth_config(request: Request):
     """Return the authentication configuration info"""
     try:
         auth_provider = request.app.state.container.get_auth_provider()
-        provider_info = auth_provider.get_provider_info()
+        provider_info = await auth_provider.get_provider_info()
 
         if provider_info.get("provider_type") == "keycloak":
             return {

@@ -2,12 +2,11 @@
 
 import logging
 import time
-from functools import lru_cache
 from typing import Any
 from urllib.parse import urlencode
 
+import httpx
 import jwt
-import requests
 from authlib.integrations.requests_client import OAuth2Session
 
 from .base import AuthProvider
@@ -67,13 +66,13 @@ class KeycloakProvider(AuthProvider):
             f"Initialized Keycloak provider for realm '{realm}' at {keycloak_url} (external: {self.keycloak_external_url})"
         )
 
-    def validate_token(self, token: str, **kwargs: Any) -> dict[str, Any]:
+    async def validate_token(self, token: str, **kwargs: Any) -> dict[str, Any]:
         """Validate Keycloak JWT token."""
         try:
             logger.debug("Validating Keycloak JWT token")
 
             # Get JWKS for validation
-            jwks = self.get_jwks()
+            jwks = await self.get_jwks()
 
             # Decode token header to get key ID
             unverified_header = jwt.get_unverified_header(token)
@@ -146,7 +145,7 @@ class KeycloakProvider(AuthProvider):
             logger.error(f"Keycloak token validation error: {e}")
             raise ValueError(f"Token validation failed: {e}")
 
-    def get_jwks(self) -> dict[str, Any]:
+    async def get_jwks(self) -> dict[str, Any]:
         """Get JSON Web Key Set from Keycloak with caching."""
         current_time = time.time()
 
@@ -157,11 +156,12 @@ class KeycloakProvider(AuthProvider):
 
         try:
             logger.debug(f"Fetching JWKS from {self.jwks_url}")
-            response = requests.get(self.jwks_url, timeout=10)
-            response.raise_for_status()
+            async with httpx.AsyncClient() as client:
+                response = await client.get(self.jwks_url, timeout=10)
+                response.raise_for_status()
 
-            self._jwks_cache = response.json()
-            self._jwks_cache_time = current_time
+                self._jwks_cache = response.json()
+                self._jwks_cache_time = current_time
 
             logger.debug("JWKS fetched and cached successfully")
             return self._jwks_cache
@@ -194,21 +194,21 @@ class KeycloakProvider(AuthProvider):
             logger.error(f"Failed to exchange code for token: {e}")
             raise ValueError(f"Token exchange failed: {e}")
 
-    def get_user_info(self, access_token: str) -> dict[str, Any]:
+    async def get_user_info(self, access_token: str, id_token: str | None = None) -> dict[str, Any]:
         """Get user information from Keycloak."""
         try:
             logger.debug("Fetching user info from Keycloak")
 
             headers = {"Authorization": f"Bearer {access_token}"}
-            response = requests.get(self.userinfo_url, headers=headers, timeout=10)
-            response.raise_for_status()
+            async with httpx.AsyncClient() as client:
+                response = await client.get(self.userinfo_url, headers=headers, timeout=10)
+                response.raise_for_status()
+                user_info = response.json()
 
-            user_info = response.json()
             logger.debug(f"User info retrieved for: {user_info.get('preferred_username', 'unknown')}")
-
             return user_info
 
-        except requests.RequestException as e:
+        except httpx.HTTPError as e:
             logger.error(f"Failed to get user info: {e}")
             raise ValueError(f"User info retrieval failed: {e}")
 
@@ -240,7 +240,7 @@ class KeycloakProvider(AuthProvider):
 
         return logout_url
 
-    def refresh_token(self, refresh_token: str) -> dict[str, Any]:
+    async def refresh_token(self, refresh_token: str) -> dict[str, Any]:
         """Refresh an access token using a refresh token."""
         try:
             logger.debug("Refreshing access token")
@@ -252,24 +252,24 @@ class KeycloakProvider(AuthProvider):
                 "client_secret": self.client_secret,
             }
 
-            response = requests.post(self.token_url, data=data, timeout=10)
-            response.raise_for_status()
+            async with httpx.AsyncClient() as client:
+                response = await client.post(self.token_url, data=data, timeout=10)
+                response.raise_for_status()
+                token_data = response.json()
 
-            token_data = response.json()
             logger.debug("Token refresh successful")
-
             return token_data
 
-        except requests.RequestException as e:
+        except httpx.HTTPError as e:
             logger.error(f"Failed to refresh token: {e}")
             raise ValueError(f"Token refresh failed: {e}")
 
-    def validate_m2m_token(self, token: str) -> dict[str, Any]:
+    async def validate_m2m_token(self, token: str) -> dict[str, Any]:
         """Validate a machine-to-machine token."""
         # M2M tokens use the same validation as regular tokens
-        return self.validate_token(token)
+        return await self.validate_token(token)
 
-    def get_m2m_token(
+    async def get_m2m_token(
         self, client_id: str | None = None, client_secret: str | None = None, scope: str | None = None
     ) -> dict[str, Any]:
         """Get machine-to-machine token using client credentials."""
@@ -283,46 +283,47 @@ class KeycloakProvider(AuthProvider):
                 "scope": scope or "openid",
             }
 
-            response = requests.post(self.token_url, data=data, timeout=10)
-            response.raise_for_status()
+            async with httpx.AsyncClient() as client:
+                response = await client.post(self.token_url, data=data, timeout=10)
+                response.raise_for_status()
+                token_data = response.json()
 
-            token_data = response.json()
             logger.debug("M2M token generation successful")
-
             return token_data
 
-        except requests.RequestException as e:
+        except httpx.HTTPError as e:
             logger.error(f"Failed to get M2M token: {e}")
             raise ValueError(f"M2M token generation failed: {e}")
 
-    @lru_cache(maxsize=1)
-    def _get_openid_configuration(self) -> dict[str, Any]:
+    async def _get_openid_configuration(self) -> dict[str, Any]:
         """Get OpenID Connect configuration from Keycloak."""
         try:
             logger.debug(f"Fetching OpenID configuration from {self.config_url}")
-            response = requests.get(self.config_url, timeout=10)
-            response.raise_for_status()
+            async with httpx.AsyncClient() as client:
+                response = await client.get(self.config_url, timeout=10)
+                response.raise_for_status()
+                config = response.json()
 
-            config = response.json()
             logger.debug("OpenID configuration retrieved successfully")
-
             return config
 
-        except requests.RequestException as e:
+        except httpx.HTTPError as e:
             logger.error(f"Failed to get OpenID configuration: {e}")
             raise ValueError(f"OpenID configuration retrieval failed: {e}")
 
-    def _check_keycloak_health(self) -> bool:
+    async def _check_keycloak_health(self) -> bool:
         """Check if Keycloak is healthy and accessible."""
         try:
             health_url = f"{self.keycloak_url}/health/ready"
-            response = requests.get(health_url, timeout=5)
-            return response.status_code == 200
+            async with httpx.AsyncClient() as client:
+                response = await client.get(health_url, timeout=5)
+                return response.status_code == 200
         except Exception:
             return False
 
-    def get_provider_info(self) -> dict[str, Any]:
+    async def get_provider_info(self) -> dict[str, Any]:
         """Get provider-specific information."""
+        healthy = await self._check_keycloak_health()
         return {
             "provider_type": "keycloak",
             "keycloak_url": self.keycloak_url,
@@ -336,5 +337,5 @@ class KeycloakProvider(AuthProvider):
                 "logout": self.logout_url,
                 "config": self.config_url,
             },
-            "healthy": self._check_keycloak_health(),
+            "healthy": healthy,
         }

@@ -25,7 +25,7 @@ Examples:
     python import_schemas.py --tag asc0.4.0 --files user.json token.json --output-dir ./models
 
 Features:
-    - No third-party dependencies (uses only Python stdlib)
+    - Minimal dependencies (requires httpx for remote mode)
     - Local mode: Fast, no network required, ideal for development
     - Remote mode: Download from GitHub Release, ideal for CI/CD
     - Generates Beanie Document classes with proper type hints
@@ -36,13 +36,12 @@ Features:
 
 import json
 import re
-import ssl
 import sys
-import urllib.error
-import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+import httpx
 
 
 class BeanieModelGenerator:
@@ -131,7 +130,7 @@ class BeanieModelGenerator:
 
         return schema
 
-    def download_schema(self, tag: str, filename: str) -> dict[str, Any]:
+    async def download_schema(self, tag: str, filename: str) -> dict[str, Any]:
         """
         Download JSON schema from GitHub Release using API.
 
@@ -150,14 +149,11 @@ class BeanieModelGenerator:
             if self.github_token:
                 headers["Authorization"] = f"token {self.github_token}"
 
-            # Create SSL context that doesn't verify certificates (for Windows compatibility)
-            ssl_context = ssl._create_unverified_context()  # nosec B323 - needed for Windows compatibility
-
-            req = urllib.request.Request(api_url, headers=headers)
-            with urllib.request.urlopen(req, context=ssl_context) as response:  # nosec B310 - the schema is HTTPS and doesn't allow variation
-                if response.status != 200:
-                    raise Exception(f"HTTP {response.status}")
-                release_data = json.loads(response.read().decode("utf-8"))
+            async with httpx.AsyncClient(verify=False, follow_redirects=True) as client:
+                response = await client.get(api_url, headers=headers)
+                if response.status_code != 200:
+                    raise Exception(f"HTTP {response.status_code}")
+                release_data = response.json()
 
             asset_id = None
             for asset in release_data.get("assets", []):
@@ -175,24 +171,24 @@ class BeanieModelGenerator:
             download_url = f"https://api.github.com/repos/{owner}/{repo}/releases/assets/{asset_id}"
             headers["Accept"] = "application/octet-stream"
 
-            req = urllib.request.Request(download_url, headers=headers)
-            with urllib.request.urlopen(req, context=ssl_context) as response:  # nosec B310 - the schema is HTTPS and doesn't allow variation
-                if response.status != 200:
-                    raise Exception(f"HTTP {response.status}")
-                content = response.read().decode("utf-8")
+            async with httpx.AsyncClient(verify=False, follow_redirects=True) as client:
+                response = await client.get(download_url, headers=headers)
+                if response.status_code != 200:
+                    raise Exception(f"HTTP {response.status_code}")
+                content = response.text
                 schema = json.loads(content)
                 return schema
 
-        except urllib.error.HTTPError as e:
-            if e.code == 404:
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
                 raise Exception(f"Release '{tag}' or file '{filename}' not found") from e
-            elif e.code == 401:
+            elif e.response.status_code == 401:
                 raise Exception("Invalid or missing GitHub token") from e
             raise
         except Exception:
             raise
 
-    def list_release_json_files(self, tag: str) -> list[str]:
+    async def list_release_json_files(self, tag: str) -> list[str]:
         """
         List all .json files available in a GitHub Release.
 
@@ -211,24 +207,21 @@ class BeanieModelGenerator:
             if self.github_token:
                 headers["Authorization"] = f"token {self.github_token}"
 
-            # Create SSL context that doesn't verify certificates (for Windows compatibility)
-            ssl_context = ssl._create_unverified_context()  # nosec B323 - needed for Windows compatibility
-
-            req = urllib.request.Request(api_url, headers=headers)
-            with urllib.request.urlopen(req, context=ssl_context) as response:  # nosec B310 - the schema is HTTPS and doesn't allow variation
-                if response.status != 200:
-                    raise Exception(f"HTTP {response.status}")
-                release_data = json.loads(response.read().decode("utf-8"))
+            async with httpx.AsyncClient(verify=False, follow_redirects=True) as client:
+                response = await client.get(api_url, headers=headers)
+                if response.status_code != 200:
+                    raise Exception(f"HTTP {response.status_code}")
+                release_data = response.json()
 
             # Extract all .json filenames
             json_files = [asset["name"] for asset in release_data.get("assets", []) if asset["name"].endswith(".json")]
 
             return json_files
 
-        except urllib.error.HTTPError as e:
-            if e.code == 404:
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
                 raise Exception(f"Release '{tag}' not found") from e
-            elif e.code == 401:
+            elif e.response.status_code == 401:
                 raise Exception("Invalid or missing GitHub token") from e
             raise
         except Exception:
@@ -990,7 +983,7 @@ class BeanieModelGenerator:
         return version_file
 
 
-def main():
+async def main():
     """Main entry point"""
     import argparse
 
@@ -1121,7 +1114,7 @@ GitHub Release URL format:
         if not args.files:
             print("Discovering all .json files in release...")
             try:
-                args.files = generator.list_release_json_files(args.tag)
+                args.files = await generator.list_release_json_files(args.tag)
                 print(f"Found {len(args.files)} .json file(s): {', '.join(args.files)}")
             except Exception as e:
                 print(f"Error discovering files: {e}")
@@ -1132,7 +1125,7 @@ GitHub Release URL format:
         for filename in args.files:
             try:
                 print(f"Downloading: {filename}")
-                schema = generator.download_schema(args.tag, filename)
+                schema = await generator.download_schema(args.tag, filename)
                 model_code, class_name, enum_names = generator.generate_model(schema)
                 py_file = generator.save_model(model_code, filename)
                 generated_files.append(py_file)
@@ -1174,5 +1167,12 @@ GitHub Release URL format:
     return 1 if failed_files else 0
 
 
+def cli_main():
+    """Synchronous entry point for console script."""
+    import asyncio
+
+    return asyncio.run(main())
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(cli_main())

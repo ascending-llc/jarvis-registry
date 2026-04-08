@@ -3,8 +3,8 @@ import time
 from typing import Any
 from urllib.parse import urlencode
 
+import httpx
 import jwt
-import requests
 from authlib.integrations.requests_client import OAuth2Session
 
 from ..core.config import settings
@@ -99,7 +99,7 @@ class EntraIdProvider(AuthProvider):
             f"claims: username={username_claim}, email={email_claim}, groups={groups_claim}, name={name_claim}"
         )
 
-    def validate_token(self, token: str, **kwargs: Any) -> dict[str, Any]:
+    async def validate_token(self, token: str, **kwargs: Any) -> dict[str, Any]:
         """Validate Entra ID JWT token.
 
         Args:
@@ -124,7 +124,7 @@ class EntraIdProvider(AuthProvider):
             logger.debug("Validating Entra ID JWT token")
 
             # Get JWKS for validation
-            jwks = self.get_jwks()
+            jwks = await self.get_jwks()
 
             # Decode token header to get key ID
             unverified_header = jwt.get_unverified_header(token)
@@ -194,7 +194,7 @@ class EntraIdProvider(AuthProvider):
             logger.error(f"Entra ID token validation error: {e}")
             raise ValueError(f"Token validation failed: {e}")
 
-    def get_jwks(self) -> dict[str, Any]:
+    async def get_jwks(self) -> dict[str, Any]:
         """Get JSON Web Key Set from Entra ID with caching."""
         current_time = time.time()
         # Check if cache is still valid
@@ -204,11 +204,12 @@ class EntraIdProvider(AuthProvider):
 
         try:
             logger.debug(f"Fetching JWKS from {self.jwks_url}")
-            response = requests.get(self.jwks_url, timeout=10)
-            response.raise_for_status()
+            async with httpx.AsyncClient() as client:
+                response = await client.get(self.jwks_url, timeout=10)
+                response.raise_for_status()
 
-            self._jwks_cache = response.json()
-            self._jwks_cache_time = current_time
+                self._jwks_cache = response.json()
+                self._jwks_cache_time = current_time
 
             logger.debug("JWKS fetched and cached successfully")
             return self._jwks_cache
@@ -285,7 +286,7 @@ class EntraIdProvider(AuthProvider):
             logger.warning(f"Failed to extract user info from {token_type} token: {e}")
             return None
 
-    def _fetch_user_info_from_graph(self, access_token: str) -> dict[str, Any]:
+    async def _fetch_user_info_from_graph(self, access_token: str) -> dict[str, Any]:
         """Fetch user information from Microsoft Graph API.
 
         Args:
@@ -300,9 +301,10 @@ class EntraIdProvider(AuthProvider):
         try:
             logger.debug("Fetching user info from Microsoft Graph API")
             headers = {"Authorization": f"Bearer {access_token}"}
-            response = requests.get(self.userinfo_url, headers=headers, timeout=10)
-            response.raise_for_status()
-            graph_data = response.json()
+            async with httpx.AsyncClient() as client:
+                response = await client.get(self.userinfo_url, headers=headers, timeout=10)
+                response.raise_for_status()
+                graph_data = response.json()
             logger.info(f"User info fetched from Microsoft Graph API: {graph_data}")
 
             # Map Microsoft Graph response to standard format
@@ -324,11 +326,11 @@ class EntraIdProvider(AuthProvider):
             logger.info(f"User info fetched from Microsoft Graph API: {user_info}")
             return user_info
 
-        except requests.RequestException as e:
+        except httpx.HTTPError as e:
             logger.error(f"Failed to fetch user info from Graph API: {e}")
             raise ValueError(f"Graph API request failed: {e}")
 
-    def get_user_groups(self, access_token: str) -> list:
+    async def get_user_groups(self, access_token: str) -> list:
         """Get user's group memberships from Microsoft Graph API.
 
         Args:
@@ -343,9 +345,10 @@ class EntraIdProvider(AuthProvider):
             groups_url = (
                 f"{self.graph_url}/v1.0/me/transitiveMemberOf/microsoft.graph.group?$count=true&$select=id,displayName"
             )
-            response = requests.get(groups_url, headers=headers, timeout=10)
-            response.raise_for_status()
-            groups_data = response.json()
+            async with httpx.AsyncClient() as client:
+                response = await client.get(groups_url, headers=headers, timeout=10)
+                response.raise_for_status()
+                groups_data = response.json()
 
             # Extract group display names
             groups = [group.get("displayName") for group in groups_data.get("value", [])]
@@ -356,7 +359,7 @@ class EntraIdProvider(AuthProvider):
             logger.warning(f"Failed to fetch user groups: {e}")
             return []
 
-    def get_user_info(self, access_token: str, id_token: str | None = None) -> dict[str, Any]:
+    async def get_user_info(self, access_token: str, id_token: str | None = None) -> dict[str, Any]:
         """Get user information from token or Microsoft Graph API.
 
         This method supports flexible user info extraction:
@@ -395,10 +398,10 @@ class EntraIdProvider(AuthProvider):
             # Fallback to Microsoft Graph API if token extraction failed
             if not user_info:
                 logger.info("Token extraction failed, using Graph API fallback")
-                user_info = self._fetch_user_info_from_graph(access_token)
+                user_info = await self._fetch_user_info_from_graph(access_token)
 
             # Get user groups separately using access_token (required for Graph API)
-            groups = self.get_user_groups(access_token)
+            groups = await self.get_user_groups(access_token)
             user_info["groups"] = groups
 
             logger.info(f"User info retrieved: {user_info.get('username')} with {len(groups)} groups")
@@ -452,7 +455,7 @@ class EntraIdProvider(AuthProvider):
 
         return logout_url
 
-    def refresh_token(self, refresh_token: str) -> dict[str, Any]:
+    async def refresh_token(self, refresh_token: str) -> dict[str, Any]:
         """Refresh an access token using a refresh token.
 
         Args:
@@ -477,19 +480,19 @@ class EntraIdProvider(AuthProvider):
 
             headers = {"Content-Type": "application/x-www-form-urlencoded"}
 
-            response = requests.post(self.token_url, data=data, headers=headers, timeout=10)
-            response.raise_for_status()
+            async with httpx.AsyncClient() as client:
+                response = await client.post(self.token_url, data=data, headers=headers, timeout=10)
+                response.raise_for_status()
+                token_data = response.json()
 
-            token_data = response.json()
             logger.debug("Token refresh successful")
-
             return token_data
 
-        except requests.RequestException as e:
+        except httpx.HTTPError as e:
             logger.error(f"Failed to refresh token: {e}")
             raise ValueError(f"Token refresh failed: {e}")
 
-    def validate_m2m_token(self, token: str) -> dict[str, Any]:
+    async def validate_m2m_token(self, token: str) -> dict[str, Any]:
         """Validate a machine-to-machine token.
 
         Args:
@@ -501,9 +504,9 @@ class EntraIdProvider(AuthProvider):
         Raises:
             ValueError: If token validation fails
         """
-        return self.validate_token(token)
+        return await self.validate_token(token)
 
-    def get_m2m_token(
+    async def get_m2m_token(
         self, client_id: str | None = None, client_secret: str | None = None, scope: str | None = None
     ) -> dict[str, Any]:
         """Get machine-to-machine token using client credentials.
@@ -539,17 +542,18 @@ class EntraIdProvider(AuthProvider):
                 "scope": scope or self.m2m_scope,
             }
             headers = {"Content-Type": "application/x-www-form-urlencoded"}
-            response = requests.post(self.token_url, data=data, headers=headers, timeout=10)
-            response.raise_for_status()
-            token_data = response.json()
+            async with httpx.AsyncClient() as client:
+                response = await client.post(self.token_url, data=data, headers=headers, timeout=10)
+                response.raise_for_status()
+                token_data = response.json()
             logger.debug("M2M token generation successful")
             return token_data
 
-        except requests.RequestException as e:
+        except httpx.HTTPError as e:
             logger.error(f"Failed to get M2M token: {e}")
             raise ValueError(f"M2M token generation failed: {e}")
 
-    def get_provider_info(self) -> dict[str, Any]:
+    async def get_provider_info(self) -> dict[str, Any]:
         """Get provider-specific information.
 
         Returns:

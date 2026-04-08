@@ -88,6 +88,50 @@ class FederationSyncService:
         except RuntimeError:
             return None
 
+    @staticmethod
+    def _resolve_job_started_at(job: FederationSyncJob) -> datetime:
+        started_at = getattr(job, "startedAt", None)
+        if started_at is not None:
+            return started_at
+        created_at = getattr(job, "createdAt", None)
+        if created_at is not None:
+            return created_at
+        return datetime.now(UTC)
+
+    @classmethod
+    def _build_pending_last_sync(cls, job: FederationSyncJob) -> FederationLastSync:
+        return FederationLastSync(
+            jobId=job.id,
+            jobType=job.jobType,
+            status=FederationSyncStatus.PENDING,
+            startedAt=cls._resolve_job_started_at(job),
+            finishedAt=None,
+        )
+
+    @classmethod
+    def _build_syncing_last_sync(cls, job: FederationSyncJob) -> FederationLastSync:
+        return FederationLastSync(
+            jobId=job.id,
+            jobType=job.jobType,
+            status=FederationSyncStatus.SYNCING,
+            startedAt=cls._resolve_job_started_at(job),
+            finishedAt=None,
+        )
+
+    @classmethod
+    def _build_failed_last_sync(cls, job: FederationSyncJob, error_message: str) -> FederationLastSync:
+        return FederationLastSync(
+            jobId=job.id,
+            jobType=job.jobType,
+            status=FederationSyncStatus.FAILED,
+            startedAt=cls._resolve_job_started_at(job),
+            finishedAt=datetime.now(UTC),
+            summary=FederationLastSyncSummary(
+                errors=1,
+                errorMessages=[error_message],
+            ),
+        )
+
     async def run_sync(
         self,
         federation: Federation,
@@ -122,7 +166,11 @@ class FederationSyncService:
 
         except Exception as exc:
             logger.exception("Failed to run federation sync")
-            await self.federation_crud_service.mark_sync_failed(federation, str(exc))
+            await self.federation_crud_service.mark_sync_failed(
+                federation,
+                str(exc),
+                last_sync=self._build_failed_last_sync(job, str(exc)),
+            )
             await self.federation_job_service.mark_failed(job, FederationJobPhase.FAILED, str(exc))
             raise
 
@@ -197,7 +245,10 @@ class FederationSyncService:
         discovered_a2a = discovered.get("a2a_agents", [])
 
         await self.federation_job_service.mark_syncing(job, FederationJobPhase.DISCOVERING)
-        await self.federation_crud_service.mark_syncing(federation)
+        await self.federation_crud_service.mark_syncing(
+            federation,
+            last_sync=self._build_syncing_last_sync(job),
+        )
         await self.federation_job_service.update_discovery_summary(
             job,
             discovered_mcp_servers=len(discovered_mcp),
@@ -258,7 +309,10 @@ class FederationSyncService:
                 "providerConfig": federation.providerConfig,
             },
         )
-        await self.federation_crud_service.mark_sync_pending(federation)
+        await self.federation_crud_service.mark_sync_pending(
+            federation,
+            last_sync=self._build_pending_last_sync(job),
+        )
         return federation, job
 
     @use_transaction
@@ -279,7 +333,10 @@ class FederationSyncService:
             triggered_by=triggered_by,
             request_snapshot=request_snapshot,
         )
-        await self.federation_crud_service.mark_sync_pending(federation)
+        await self.federation_crud_service.mark_sync_pending(
+            federation,
+            last_sync=self._build_pending_last_sync(job),
+        )
         return job
 
     async def start_manual_sync(

@@ -568,6 +568,62 @@ async def test_list_federations_uses_server_style_query_and_pagination(
 
 
 @pytest.mark.asyncio
+async def test_list_federations_includes_last_sync(sample_federation, sample_user_context, acl_service):
+    now = datetime.now(UTC)
+    federation_with_last_sync = SimpleNamespace(
+        **{
+            **sample_federation.__dict__,
+            "lastSync": SimpleNamespace(
+                jobId=PydanticObjectId(),
+                jobType=FederationJobType.FULL_SYNC,
+                status=FederationSyncStatus.SUCCESS,
+                startedAt=now,
+                finishedAt=now,
+                summary=SimpleNamespace(
+                    discoveredMcpServers=2,
+                    discoveredAgents=1,
+                    createdMcpServers=1,
+                    updatedMcpServers=1,
+                    deletedMcpServers=0,
+                    unchangedMcpServers=0,
+                    createdAgents=1,
+                    updatedAgents=0,
+                    deletedAgents=0,
+                    unchangedAgents=0,
+                    errors=0,
+                    errorMessages=[],
+                ),
+            ),
+        }
+    )
+    federation_crud_service = MagicMock()
+    federation_crud_service.list_federations = AsyncMock(return_value=([federation_with_last_sync], 1))
+    acl_service.get_accessible_resource_ids = AsyncMock(return_value=[str(sample_federation.id)])
+    acl_service.get_user_permissions_for_resource = AsyncMock(return_value=ResourcePermissions(VIEW=True))
+
+    result = await list_federations(
+        providerType=None,
+        syncStatus=None,
+        tag=None,
+        tags=None,
+        query=None,
+        keyword=None,
+        page=1,
+        per_page=20,
+        pageSize=None,
+        user_context=sample_user_context,
+        federation_crud_service=federation_crud_service,
+        acl_service=acl_service,
+    )
+
+    assert result.federations[0].lastSync is not None
+    assert result.federations[0].lastSync.jobType == FederationJobType.FULL_SYNC
+    assert result.federations[0].lastSync.status == FederationSyncStatus.SUCCESS
+    assert result.federations[0].lastSync.summary is not None
+    assert result.federations[0].lastSync.summary.discoveredMcpServers == 2
+
+
+@pytest.mark.asyncio
 async def test_list_federations_returns_empty_when_user_has_no_access(sample_user_context, acl_service):
     federation_crud_service = MagicMock()
     federation_crud_service.list_federations = AsyncMock(return_value=([], 0))

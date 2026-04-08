@@ -114,7 +114,7 @@ class TestTokenServiceStoreTokens:
     async def test_store_oauth_client_token_new(self, token_service, mock_user, mock_oauth_tokens):
         """Test storing new access token"""
         mock_token = Mock(spec=Token)
-        mock_token.type = TokenType.MCP_OAUTH.value
+        mock_token.type = TokenType.MCP_OAUTH_ACCESS.value
         mock_token.identifier = "mcp:notion"
         mock_token.token = "test_access_token"
         mock_token.insert = AsyncMock()
@@ -178,7 +178,7 @@ class TestTokenServiceStoreTokens:
     @pytest.mark.asyncio
     async def test_store_oauth_tokens(self, token_service, mock_user, mock_oauth_tokens):
         """Test storing complete OAuth tokens (access + refresh)"""
-        with patch.object(token_service, "store_oauth_client_token", AsyncMock()) as mock_client:
+        with patch.object(token_service, "store_oauth_access_token", AsyncMock()) as mock_access:
             with patch.object(token_service, "store_oauth_refresh_token", AsyncMock()) as mock_refresh:
                 await token_service.store_oauth_tokens(
                     user_id="test_user",
@@ -186,7 +186,7 @@ class TestTokenServiceStoreTokens:
                     tokens=mock_oauth_tokens,
                 )
 
-                mock_client.assert_awaited_once()
+                mock_access.assert_awaited_once()
                 mock_refresh.assert_awaited_once()
 
 
@@ -204,7 +204,7 @@ class TestTokenServiceGetTokens:
         token = Mock(spec=Token)
         token.token = "test_access_token"
         token.expiresAt = datetime.now(UTC) + timedelta(hours=1)
-        token.type = TokenType.MCP_OAUTH.value
+        token.type = TokenType.MCP_OAUTH_ACCESS.value
         return token
 
     @pytest.fixture
@@ -237,7 +237,7 @@ class TestTokenServiceGetTokens:
     @pytest.mark.asyncio
     async def test_get_oauth_tokens(self, token_service, mock_access_token, mock_refresh_token):
         """Test retrieving complete OAuth tokens as OAuthTokens object"""
-        with patch.object(token_service, "get_oauth_client_token", AsyncMock(return_value=mock_access_token)):
+        with patch.object(token_service, "get_oauth_access_token", AsyncMock(return_value=mock_access_token)):
             with patch.object(token_service, "get_oauth_refresh_token", AsyncMock(return_value=mock_refresh_token)):
                 result = await token_service.get_oauth_tokens("test_user", "notion")
 
@@ -246,12 +246,26 @@ class TestTokenServiceGetTokens:
                 assert result.refresh_token == "test_refresh_token"
 
     @pytest.mark.asyncio
-    async def test_get_oauth_tokens_no_access_token(self, token_service):
-        """Test get_oauth_tokens returns None when no access token"""
-        with patch.object(token_service, "get_oauth_client_token", AsyncMock(return_value=None)):
-            result = await token_service.get_oauth_tokens("test_user", "notion")
+    async def test_get_oauth_tokens_no_tokens(self, token_service):
+        """Test get_oauth_tokens returns None when both access and refresh tokens are missing"""
+        with patch.object(token_service, "get_oauth_access_token", AsyncMock(return_value=None)):
+            with patch.object(token_service, "get_oauth_refresh_token", AsyncMock(return_value=None)):
+                result = await token_service.get_oauth_tokens("test_user", "notion")
 
-            assert result is None
+                assert result is None
+
+    @pytest.mark.asyncio
+    async def test_get_oauth_tokens_only_refresh_token(self, token_service, mock_refresh_token):
+        """Test get_oauth_tokens returns OAuthTokens with only refresh token when access token is missing"""
+        with patch.object(token_service, "get_oauth_access_token", AsyncMock(return_value=None)):
+            with patch.object(token_service, "get_oauth_refresh_token", AsyncMock(return_value=mock_refresh_token)):
+                result = await token_service.get_oauth_tokens("test_user", "notion")
+
+                assert isinstance(result, OAuthTokens)
+                assert result.access_token is None
+                assert result.refresh_token == "test_refresh_token"
+                assert result.expires_in is None
+                assert result.expires_at is None
 
 
 class TestTokenServiceDeleteTokens:
@@ -276,7 +290,7 @@ class TestTokenServiceDeleteTokens:
 
             async def mock_find_one(query):
                 token_type = query.get("type")
-                if token_type == TokenType.MCP_OAUTH.value:
+                if token_type == TokenType.MCP_OAUTH_ACCESS.value:
                     return access_token
                 elif token_type == TokenType.MCP_OAUTH_REFRESH.value:
                     return refresh_token
@@ -316,7 +330,7 @@ class TestTokenServiceTokenStatus:
         expired_token = Mock(spec=Token)
         expired_token.expiresAt = datetime.now(UTC) - timedelta(hours=1)
 
-        with patch.object(token_service, "get_oauth_client_token", AsyncMock(return_value=expired_token)):
+        with patch.object(token_service, "get_oauth_access_token", AsyncMock(return_value=expired_token)):
             result = await token_service.is_access_token_expired("test_user", "notion")
 
             assert result is True
@@ -327,7 +341,7 @@ class TestTokenServiceTokenStatus:
         valid_token = Mock(spec=Token)
         valid_token.expiresAt = datetime.now(UTC) + timedelta(hours=1)
 
-        with patch.object(token_service, "get_oauth_client_token", AsyncMock(return_value=valid_token)):
+        with patch.object(token_service, "get_oauth_access_token", AsyncMock(return_value=valid_token)):
             result = await token_service.is_access_token_expired("test_user", "notion")
 
             assert result is False
@@ -569,7 +583,7 @@ class TestTokenServiceClientCredentials:
         service_name = "test_service"
 
         # Mock stored token with encrypted data
-        client_info_json = json.dumps(mock_client_info.dict())
+        client_info_json = json.dumps(mock_client_info.model_dump())
 
         mock_token = Mock(spec=Token)
         mock_token.token = "encrypted_iv:encrypted_ciphertext"
@@ -580,15 +594,15 @@ class TestTokenServiceClientCredentials:
             # Mock Token.find_one
             with patch.object(Token, "find_one", AsyncMock(return_value=mock_token)):
                 # Mock decrypt_auth_fields to return decrypted JSON
-                with patch("registry.services.oauth.token_service.decrypt_auth_fields") as mock_decrypt:
-                    mock_decrypt.return_value = {"token": client_info_json}
+                with patch("registry.services.oauth.token_service.decrypt_value") as mock_decrypt:
+                    mock_decrypt.return_value = client_info_json
 
                     client_info, metadata = await token_service.get_oauth_client_credentials(
                         user_id=user_id, service_name=service_name
                     )
 
                     # Verify decryption was called
-                    mock_decrypt.assert_called_once_with({"token": "encrypted_iv:encrypted_ciphertext"})
+                    mock_decrypt.assert_called_once_with(mock_token.token)
 
                     # Verify result
                     assert isinstance(client_info, OAuthClientInformation)
@@ -642,7 +656,7 @@ class TestTokenServiceClientCredentials:
             # Mock Token.find_one to return all three token types
             async def mock_find_one(query):
                 token_type = query.get("type")
-                if token_type == TokenType.MCP_OAUTH.value:
+                if token_type == TokenType.MCP_OAUTH_ACCESS.value:
                     return access_token
                 elif token_type == TokenType.MCP_OAUTH_REFRESH.value:
                     return refresh_token

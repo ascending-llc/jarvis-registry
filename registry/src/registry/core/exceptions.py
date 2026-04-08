@@ -27,3 +27,19 @@ class DownstreamHttpFailureException(McpGatewayException):
 
 class MisimplementedSpecException(McpGatewayException):
     """Raised when a downstream server violates the MCP protocol contract."""
+
+
+class A2AAgentCardNotFoundException(McpGatewayException):
+    """Raised only when all known A2A well-known card endpoints return 404."""
+
+
+class A2AAgentCardTransportException(McpGatewayException):
+    """Raised when network or transport errors prevent fetching A2A agent card."""
+
+
+class A2AAgentCardUpstreamException(McpGatewayException):
+    """Raised when upstream returns a non-404 error for A2A agent card fetch."""
+
+
+class A2AAgentCardParseException(McpGatewayException):
+    """Raised when upstream response exists but cannot be parsed as a valid agent card."""

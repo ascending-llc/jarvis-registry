@@ -169,15 +169,34 @@ class AuthSettings(BaseSettings):
         This should be called once at application startup to initialize logging
         for all modules. Individual modules can then use logging.getLogger(__name__)
         without needing to call basicConfig again.
+
+        We set hanlders on two named loggers `auth_server` and `registry_pkgs` only.
+        This is to avoid the noises if we were to place the handler on the root logger.
         """
         # Convert string log level to numeric level
         numeric_level = getattr(logging, self.log_level.upper(), logging.INFO)
 
-        logging.basicConfig(
-            level=numeric_level,
-            format=self.log_format,
-            force=True,  # Override any existing configuration
-        )
+        auth_server_logger = logging.getLogger(__package__.split(".")[0])
+        auth_server_logger.propagate = False
+        auth_server_logger.setLevel(numeric_level)
+
+        if len(auth_server_logger.handlers) == 0:
+            handler = logging.StreamHandler()
+
+            handler.setFormatter(logging.Formatter(self.log_format))
+
+            auth_server_logger.addHandler(handler)
+
+        registry_pkgs_logger = logging.getLogger("registry_pkgs")
+        registry_pkgs_logger.propagate = False
+        registry_pkgs_logger.setLevel(numeric_level)
+
+        if len(registry_pkgs_logger.handlers) == 0:
+            handler = logging.StreamHandler()
+
+            handler.setFormatter(logging.Formatter(self.log_format))
+
+            registry_pkgs_logger.addHandler(handler)
 
 
 # Global settings instance

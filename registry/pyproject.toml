@@ -39,7 +39,6 @@ dependencies = [
     "email-validator>=2.2.0",
     "aiohttp>=3.8.0",
     "rich>=13.0.0",
-    "requests>=2.31.0",
     "cachetools>=6.2.4",
     "litellm>=1.50.0",
     "inflection>=0.5.1",
