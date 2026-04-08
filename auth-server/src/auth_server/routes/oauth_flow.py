@@ -600,7 +600,7 @@ async def oauth2_callback(
         try:
             temp_session_data = signer.loads(oauth2_temp_session, max_age=settings.oauth_session_ttl_seconds)
         except (SignatureExpired, BadSignature):
-            www_authenticate_parts = [f'Bearer realm="{settings.jwt_issuer}"']
+            www_authenticate_parts = [f'Bearer realm="{settings.jarvis_realm}"']
             if resource:
                 try:
                     from urllib.parse import urlparse

@@ -3,6 +3,7 @@ import secrets
 from functools import cached_property
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -181,9 +182,13 @@ class Settings(BaseSettings):
     # ==================== JWT ====================
     jwt_private_key: str = ""  # PEM-encoded RSA private key (JWT_PRIVATE_KEY env var)
     jwt_public_key: str = ""  # PEM-encoded RSA public key (JWT_PUBLIC_KEY env var)
-    jwt_issuer: str = "jarvis-auth-server"
     jwt_audience: str = "jarvis-services"
     jwt_self_signed_kid: str = "self-signed-key-v1"
+
+    # ==================== RFC 9110 realm ====================
+    # "realm" value in the WWW-Authenticate header. According to RFC 9110, it is suppose to describe the resource
+    # being protected. Since we use the same value for both `registry` and `auth-server`, we use a generic value like below.
+    jarvis_realm: str = "jarvis-resources"
 
     # ==================== Logging ====================
     log_level: str = "INFO"
@@ -380,6 +385,21 @@ class Settings(BaseSettings):
     @cached_property
     def scopes_config(self) -> dict[str, Any]:
         return load_scopes_config(self.scopes_file_config)
+
+    @cached_property
+    def jwt_issuer(self) -> str:
+        """
+        Per RFC 8414 requirement on issuer:
+        - Both the "issuer" field of the response document of the well-known route(s) and the `iss` claim of the JWT
+          tokens issued by our auth-server must be the URL that is the well-know URL with the well-known path portion stripped.
+        - For example, our well-known routes are `https://jarvis-demo.ascendingdc.com/.well-known/openid-configuration`,
+          and `https://jarvis-demo.ascendingdc.com/.well-known/oauth-authorization-server`. Therefore our "issuer"
+          must be `https://jarvis-demo.ascendingdc.com`.
+        """
+
+        result = urlparse(self.auth_server_external_url)
+
+        return f"{result.scheme}://{result.netloc}"
 
 
 settings = Settings()

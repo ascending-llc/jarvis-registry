@@ -130,10 +130,12 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
                     # For MCP proxy paths, RFC 9728 (OAuth 2.0 Protected Resource Metadata)
                     registry_url = settings.registry_client_url.rstrip("/")
                     oauth_discovery = f"{registry_url}/.well-known/oauth-protected-resource/proxy/{server_name}"
-                    headers["WWW-Authenticate"] = f'Bearer realm="mcp-registry", resource_metadata="{oauth_discovery}"'
+                    headers["WWW-Authenticate"] = (
+                        f'Bearer realm="{settings.jarvis_realm}", resource_metadata="{oauth_discovery}"'
+                    )
                 else:
                     # For other authenticated paths, use general OAuth discovery
-                    headers["WWW-Authenticate"] = 'Bearer realm="mcp-registry"'
+                    headers["WWW-Authenticate"] = f'Bearer realm="{settings.jarvis_realm}"'
 
                 return JSONResponse(status_code=401, content={"detail": str(e)}, headers=headers)
 
