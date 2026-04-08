@@ -179,6 +179,8 @@ class Settings(BaseSettings):
     llm_model: str = "gpt-4"
 
     # ==================== JWT ====================
+    jwt_private_key: str = ""  # PEM-encoded RSA private key (JWT_PRIVATE_KEY env var)
+    jwt_public_key: str = ""  # PEM-encoded RSA public key (JWT_PUBLIC_KEY env var)
     jwt_issuer: str = "jarvis-auth-server"
     jwt_audience: str = "jarvis-services"
     jwt_self_signed_kid: str = "self-signed-key-v1"

@@ -2,11 +2,10 @@ import logging
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
-from jwt import ExpiredSignatureError, InvalidTokenError
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.routing import compile_path
 
-from registry_pkgs.core.jwt_utils import decode_jwt, get_token_kid
+from registry_pkgs.core.jwt_utils import ExpiredSignatureError, InvalidTokenError, decode_jwt, get_token_kid
 from registry_pkgs.core.scopes import map_groups_to_scopes
 
 from ..auth.dependencies import UserContextDict
@@ -211,7 +210,7 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
 
                 claims = decode_jwt(
                     access_token,
-                    settings.secret_key,
+                    settings.jwt_public_key,
                     issuer=settings.jwt_issuer,
                     audience=None if is_self_signed_token else settings.jwt_audience,
                 )

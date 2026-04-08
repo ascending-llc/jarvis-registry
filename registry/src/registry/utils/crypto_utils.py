@@ -18,9 +18,10 @@ from typing import Any
 
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-from jwt import ExpiredSignatureError, InvalidTokenError
 
 from registry_pkgs.core.jwt_utils import (
+    ExpiredSignatureError,
+    InvalidTokenError,
     build_jwt_payload,
     decode_jwt,
     encode_jwt,
@@ -112,7 +113,7 @@ def generate_service_jwt(user_id: str, username: str | None = None, scopes: list
     )
 
     # Sign with registry secret
-    token = encode_jwt(payload, settings.secret_key)
+    token = encode_jwt(payload, settings.jwt_private_key)
 
     return token
 
@@ -451,7 +452,7 @@ def generate_access_token(
     )
 
     # Generate JWT
-    token = encode_jwt(payload, settings.secret_key, kid=settings.jwt_self_signed_kid)
+    token = encode_jwt(payload, settings.jwt_private_key, kid=settings.jwt_self_signed_kid)
 
     logger.debug(f"Generated access token for user {username}, expires in {expires_hours}h")
     return token
@@ -511,7 +512,7 @@ def generate_refresh_token(
         extra_claims=extra_claims,
     )
 
-    token = encode_jwt(payload, settings.secret_key, kid=settings.jwt_self_signed_kid)
+    token = encode_jwt(payload, settings.jwt_private_key, kid=settings.jwt_self_signed_kid)
 
     logger.debug(f"Generated refresh token for user {username}, expires in {expires_days} days")
     return token
@@ -538,7 +539,7 @@ def verify_access_token(token: str) -> dict[str, Any] | None:
         # Decode and verify token
         claims = decode_jwt(
             token,
-            settings.secret_key,
+            settings.jwt_public_key,
             issuer=settings.jwt_issuer,
             audience=settings.jwt_audience,
             leeway=30,
@@ -584,7 +585,7 @@ def verify_refresh_token(token: str) -> dict[str, Any] | None:
         # Decode and verify token
         claims = decode_jwt(
             token,
-            settings.secret_key,
+            settings.jwt_public_key,
             issuer=settings.jwt_issuer,
             audience=settings.jwt_audience,
             leeway=30,
