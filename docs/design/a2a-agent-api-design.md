@@ -9,6 +9,81 @@
 
 ---
 
+## A2A Transport Support
+
+The A2A Agent API fully supports the three standard A2A transport protocols as defined in the A2A specification:
+
+### Supported Transport Protocols
+
+| Transport Protocol | Value | Description |
+|-------------------|-------|-------------|
+| **HTTP+JSON** | `HTTP+JSON` | HTTP-based transport with JSON payloads (most common) |
+| **JSON-RPC** | `JSONRPC` | JSON-RPC 2.0 protocol over HTTP |
+| **gRPC** | `GRPC` | gRPC-based transport for high-performance scenarios |
+
+### Transport Field: `preferredTransport`
+
+- **Field Name**: `preferredTransport` (part of Agent Card, managed by SDK)
+- **Source**: Automatically fetched from agent's `.well-known/agent-card.json` endpoint
+- **Read-Only**: Cannot be directly modified via PATCH; updated only when URL changes and card is re-fetched
+- **Usage**: Frontend should use this field to determine which protocol client to use when communicating with the agent
+
+### Frontend Integration
+
+When consuming agents, the frontend should:
+
+1. **Read `preferredTransport`** from the agent detail/list response
+2. **Select appropriate client** based on the transport value:
+   ```typescript
+   if (agent.preferredTransport === 'JSONRPC') {
+     // Use JSON-RPC 2.0 client
+     client = new JsonRpcClient(agent.url);
+   } else if (agent.preferredTransport === 'GRPC') {
+     // Use gRPC client
+     client = new GrpcClient(agent.url);
+   } else {
+     // Default to HTTP+JSON
+     client = new HttpJsonClient(agent.url);
+   }
+   ```
+3. **Display transport type** in UI (optional badge/icon for user awareness)
+
+### Statistics
+
+The `GET /api/v1/agents/stats` endpoint provides agent counts grouped by transport:
+
+```json
+{
+  "byTransport": {
+    "HTTP+JSON": 100,
+    "JSONRPC": 30,
+    "GRPC": 20
+  }
+}
+```
+
+---
+
+## Enabled Status Management
+
+Agents can be enabled or disabled using two methods:
+
+### Method 1: Dedicated Toggle Endpoint (Recommended)
+```
+POST /api/v1/agents/{agent_id}/toggle
+Body: { "enabled": true }
+```
+
+### Method 2: PATCH Update Endpoint
+```
+PATCH /api/v1/agents/{agent_id}
+Body: { "enabled": true }
+```
+
+Both methods have the same effect. The dedicated toggle endpoint is recommended for clarity when performing enable/disable operations.
+
+---
+
 ## API Endpoints
 
 ### 1. List Agents
@@ -37,6 +112,7 @@
       "url": "https://example.com/agents/code-reviewer",
       "version": "1.0.0",
       "protocolVersion": "1.0",
+      "preferredTransport": "HTTP+JSON",
       "tags": ["code", "review"],
       "numSkills": 2,
       "skills": [
@@ -82,6 +158,7 @@
 **Note:**
 - Uses `AgentListItem` schema for list items
 - All field names use camelCase convention
+- Includes `preferredTransport` for frontend client selection
 
 ---
 
@@ -278,7 +355,7 @@
 
 **Endpoint**: `PATCH /api/v1/agents/{agent_id}`
 
-**Description**: Update an existing agent. Only 4 fields can be updated via this endpoint. When the `url` field is updated, all other agent information is automatically fetched from the new URL's `.well-known/agent-card.json` endpoint.
+**Description**: Update an existing agent. Supports updating path, name, description, url, and enabled status. When the `url` field is updated, all other agent information is automatically fetched from the new URL's `.well-known/agent-card.json` endpoint.
 
 **Request Body** (all fields optional):
 ```json
@@ -286,7 +363,8 @@
   "path": "/new-code-reviewer",
   "name": "Updated Agent Name",
   "description": "Updated description",
-  "url": "https://example.com/agents/new-code-reviewer"
+  "url": "https://example.com/agents/new-code-reviewer",
+  "enabled": true
 }
 ```
 
@@ -295,13 +373,14 @@
 - `name` (string): Update the display name
 - `description` (string): Update the description
 - `url` (string): Update the agent endpoint URL
+- `enabled` (boolean): Enable or disable the agent
 
 **Auto-Fetch Behavior**:
 1. **If `url` is updated**:
    - System fetches new agent card from `{new_url}/.well-known/agent-card.json`
-   - All card fields (version, capabilities, skills, etc.) are updated from fetched data
+   - All card fields (version, capabilities, skills, preferredTransport, etc.) are updated from fetched data
    - `name` and `description` from request override the fetched values if provided
-   - Tags are re-extracted from new skills
+   - Tags are not modified (they are registry-level metadata separate from agent card)
    - wellKnown sync is updated with new URL and sync status
 
 2. **If only `name` or `description` is updated** (no URL change):
@@ -312,6 +391,11 @@
 3. **If only `path` is updated**:
    - Registry path is updated (must be unique)
    - Agent card remains unchanged
+
+4. **If only `enabled` is updated**:
+   - Agent enabled/disabled status is toggled
+   - All other fields remain unchanged
+   - This is equivalent to using the `/toggle` endpoint
 
 **Response**: `200 OK`
 ```json
@@ -356,6 +440,8 @@
 - Uses `AgentDetailResponse` schema (not a separate update response)
 - Returns complete agent details after update
 - If URL is changed, automatically re-fetches all agent metadata from new URL
+- The `enabled` field can be updated through this endpoint or the dedicated `/toggle` endpoint
+- The `preferredTransport` field is managed by the agent card and cannot be directly updated (it's updated when URL changes and card is re-fetched)
 
 **Error**:
 - `400` Validation error or failed to fetch agent card from new URL
@@ -428,6 +514,8 @@
 **Note:**
 - Uses `AgentDetailResponse` schema (not a separate toggle response)
 - Returns complete agent details after toggle
+- This endpoint provides the same functionality as updating the `enabled` field via `PATCH /api/v1/agents/{agent_id}`
+- Recommended for dedicated enable/disable operations for clarity
 
 **Error**: `404` Agent not found, `403` Access denied
 

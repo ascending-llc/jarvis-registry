@@ -334,7 +334,7 @@ class A2AAgentService:
 
         Args:
             agent_id: Agent ID
-            data: Agent update data (path, name, description, url - all optional)
+            data: Agent update data (path, name, description, url, enabled - all optional)
 
         Returns:
             Updated agent document
@@ -409,6 +409,11 @@ class A2AAgentService:
                 if existing:
                     raise ValueError(f"Agent with path '{update_data['path']}' already exists")
                 agent.path = update_data["path"]
+
+            # Update enabled status if provided
+            if "enabled" in update_data:
+                agent.isEnabled = update_data["enabled"]
+                logger.info(f"Updated agent {agent.card.name} enabled status to {update_data['enabled']}")
 
             # Update timestamp
             agent.updatedAt = datetime.now(UTC)

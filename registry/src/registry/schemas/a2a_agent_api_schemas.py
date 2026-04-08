@@ -79,12 +79,13 @@ class AgentCreateRequest(APIBaseModel):
 
 
 class AgentUpdateRequest(APIBaseModel):
-    """Request schema for updating an agent - only 4 fields supported, other info auto-fetched from URL"""
+    """Request schema for updating an agent - supports path, name, description, url, and enabled fields"""
 
     path: str | None = Field(None, description="Registry path (e.g., /code-reviewer)")
     name: str | None = Field(None, description="Agent name")
     description: str | None = Field(None, description="Agent description")
     url: HttpUrl | str | None = Field(None, description="Agent endpoint URL - agent card will be fetched from this URL")
+    enabled: bool | None = Field(None, description="Enable or disable the agent")
 
 
 class AgentToggleRequest(APIBaseModel):
@@ -115,6 +116,7 @@ class AgentListItem(APIBaseModel):
     url: str
     version: str
     protocolVersion: str
+    preferredTransport: str
     tags: list[str]
     numSkills: int
     skills: list[AgentSkillOutput]
@@ -238,6 +240,7 @@ def convert_to_list_item(agent: Any, acl_permission: int | ResourcePermissions) 
         url=str(agent.card.url),
         version=agent.card.version,
         protocolVersion=agent.card.protocol_version,
+        preferredTransport=agent.card.preferred_transport,
         tags=agent.tags,
         numSkills=len(agent.card.skills or []),
         skills=skills_output,
