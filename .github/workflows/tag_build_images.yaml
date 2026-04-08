@@ -16,11 +16,6 @@ on:
         required: false
         default: false
         type: boolean
-      region:
-        description: 'AWS Region'
-        type: string
-        required: true
-        default: us-east-1
 permissions:
   id-token: write
   contents: write
@@ -64,12 +59,7 @@ jobs:
     uses: ./.github/workflows/build-images-reusable.yaml
     needs: bump-version-and-tag
     with:
-      region: ${{ inputs.region }}
       git_ref: ${{ needs.bump-version-and-tag.outputs.new_tag }}
       version_tag: ${{ needs.bump-version-and-tag.outputs.new_tag }}
     secrets:
-      AWS_DEPLOY_ROLE_ARN: ${{ secrets.SAAS_AWS_DEPLOY_ROLE_ARN }}
       JARVIS_RELEASE_ACCESS_TOKEN: ${{ secrets.JARVIS_RELEASE_ACCESS_TOKEN }}
-      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
