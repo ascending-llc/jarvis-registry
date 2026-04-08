@@ -19,6 +19,7 @@ on:
 permissions:
   id-token: write
   contents: write
+  packages: write
 jobs:
   bump-version-and-tag:
     runs-on: ubuntu-22.04
