@@ -187,6 +187,7 @@ class AgentCoreRuntimeInvoker:
         card_payload = self._extract_a2a_card_payload(card_data)
         fallback_card = agent.card.model_dump(mode="json")
         merged = {**fallback_card, **card_payload, "url": fallback_card.get("url")}
+        merged = self._normalize_agentcore_a2a_card(merged)
 
         refreshed = A2AAgent.from_a2a_agent_card(
             card_data=merged,
@@ -212,6 +213,60 @@ class AgentCoreRuntimeInvoker:
         metadata = dict(agent.federationMetadata or {})
         self._set_enrichment_error(metadata, None)
         agent.federationMetadata = metadata
+
+    @staticmethod
+    def _normalize_agentcore_a2a_card(card_data: dict[str, Any]) -> dict[str, Any]:
+        """
+        Normalize known AgentCore card payload quirks before A2A SDK validation.
+
+        AgentCore currently returns non-standard structured objects in
+        ``skills[].examples[]`` for some runtimes, while the A2A SDK expects
+        plain strings there. Keep this compatibility local to the AgentCore
+        federation path so the shared model layer remains protocol-strict.
+        """
+        normalized = dict(card_data)
+        raw_skills = normalized.get("skills")
+        if not isinstance(raw_skills, list):
+            return normalized
+
+        normalized_skills: list[Any] = []
+        for skill in raw_skills:
+            if not isinstance(skill, dict):
+                normalized_skills.append(skill)
+                continue
+
+            normalized_skill = dict(skill)
+            examples = normalized_skill.get("examples")
+            if isinstance(examples, list):
+                normalized_skill["examples"] = [
+                    AgentCoreRuntimeInvoker._stringify_skill_example(example) for example in examples
+                ]
+            normalized_skills.append(normalized_skill)
+
+        normalized["skills"] = normalized_skills
+        return normalized
+
+    @staticmethod
+    def _stringify_skill_example(example: Any) -> str:
+        """
+        Convert a non-standard skill example payload into the string shape
+        expected by the A2A AgentSkill schema.
+        """
+        if isinstance(example, str):
+            return example
+        if isinstance(example, dict):
+            input_text = example.get("input")
+            output_text = example.get("output")
+            if isinstance(input_text, str) and isinstance(output_text, str):
+                return f"Input: {input_text}\nOutput: {output_text}"
+            if isinstance(input_text, str):
+                return input_text
+            if isinstance(output_text, str):
+                return output_text
+            return json.dumps(example, ensure_ascii=False, sort_keys=True)
+        if example is None:
+            return ""
+        return str(example)
 
     @staticmethod
     def detect_agentcore_data_plane_auth_mode(

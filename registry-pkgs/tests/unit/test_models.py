@@ -349,3 +349,24 @@ class TestExtendedMCPServerStructure:
         assert agent.federationRefId is None
         assert agent.federationMetadata["providerType"] == "azure_ai_foundry"
         assert agent.federationMetadata["agentVersionId"] == "asst_abc123"
+
+    def test_a2a_agent_coerces_well_known_dict_to_model(self):
+        agent = A2AAgent.from_a2a_agent_card(
+            card_data={
+                "name": "Agent With Well Known",
+                "description": "A federated agent",
+                "url": "https://example.com/agent",
+                "version": "1",
+                "capabilities": {"streaming": True},
+                "defaultInputModes": ["text/plain"],
+                "defaultOutputModes": ["application/json"],
+                "skills": [],
+            },
+            path="/agentcore/a2a/with-well-known",
+            author=PydanticObjectId(),
+            wellKnown={"enabled": True, "url": "https://example.com/.well-known/agent-card.json"},
+        )
+
+        assert agent.wellKnown is not None
+        assert agent.wellKnown.enabled is True
+        assert str(agent.wellKnown.url) == "https://example.com/.well-known/agent-card.json"

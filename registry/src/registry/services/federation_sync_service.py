@@ -41,6 +41,8 @@ class FederationSyncMutationResult:
     """Capture Mongo apply results that drive post-commit vector repair."""
 
     summary: FederationApplySummary
+    stats: FederationStats | None = None
+    last_sync: FederationLastSync | None = None
     changed_mcp_runtime_arns: set[str] = field(default_factory=set)
     changed_a2a_runtime_arns: set[str] = field(default_factory=set)
 
@@ -172,10 +174,11 @@ class FederationSyncService:
             3. persist stats and lastSync in the same transaction
             4. rebuild vector indexes outside the Mongo transaction
 
-        Vector sync is intentionally best-effort. Mongo is the source of truth,
-        so vector failures are logged for repair instead of rolling back the
-        successfully committed federation sync.
-            Any exception moves both the federation and the job into failed state.
+        Mongo remains the source of truth, so vector rebuild still happens after
+        the transaction commits. However, vector sync is part of the externally
+        observed federation sync contract: if it fails, we surface the failure
+        to callers and move both the federation and the job into failed state
+        even though the Mongo transaction has already committed.
         """
         try:
             discovered = await self._discover_entities(federation)
@@ -184,11 +187,21 @@ class FederationSyncService:
                 job=job,
                 discovered=discovered,
             )
+            if mutation_result.summary.errorMessages:
+                return job
             await self._sync_vector_index_after_commit(
                 federation=federation,
                 job=job,
                 mutation_result=mutation_result,
             )
+            if mutation_result.last_sync is None or mutation_result.stats is None:
+                raise RuntimeError("Federation sync completed without final stats or lastSync payload")
+            await self.federation_crud_service.mark_sync_success(
+                federation,
+                mutation_result.last_sync,
+                mutation_result.stats,
+            )
+            await self.federation_job_service.mark_success(job)
             return job
 
         except Exception as exc:
@@ -318,6 +331,8 @@ class FederationSyncService:
         await self.federation_job_service.update_apply_summary(job, mutation_result.summary)
         stats = await self._build_federation_stats(federation.id)
         last_sync = self._build_last_sync(job, mutation_result.summary)
+        mutation_result.stats = stats
+        mutation_result.last_sync = last_sync
         if mutation_result.summary.errorMessages:
             failure_message = self._summarize_sync_errors(mutation_result.summary.errorMessages)
             await self.federation_crud_service.mark_sync_failed(
@@ -327,9 +342,6 @@ class FederationSyncService:
                 stats=stats,
             )
             await self.federation_job_service.mark_failed(job, FederationJobPhase.FAILED, failure_message)
-        else:
-            await self.federation_crud_service.mark_sync_success(federation, last_sync, stats)
-            await self.federation_job_service.mark_success(job)
         return mutation_result
 
     @use_transaction
@@ -742,6 +754,7 @@ class FederationSyncService:
                 len(errors),
                 errors[0],
             )
+            raise RuntimeError("; ".join(errors))
 
     async def run_delete(
         self,

@@ -244,6 +244,50 @@ class TestAgentCoreRuntimeInvoker:
         assert agent.wellKnown.lastSyncStatus == "success"
 
     @pytest.mark.asyncio
+    async def test_enrich_a2a_agent_normalizes_structured_skill_examples(self, monkeypatch):
+        invoker = _build_invoker()
+        agent = _build_fake_a2a_agent(runtime_arn="arn:aws:bedrock-agentcore:us-east-1:account-id:runtime/runtime-demo")
+        monkeypatch.setattr(
+            invoker,
+            "fetch_a2a_agent_card",
+            AsyncMock(
+                return_value={
+                    "name": "demo-a2a",
+                    "version": "2",
+                    "skills": [
+                        {
+                            "id": "fraud-detection",
+                            "name": "Fraud Detection",
+                            "description": "Scores suspicious traffic",
+                            "examples": [
+                                {
+                                    "input": "Run fraud detection on these URLs",
+                                    "output": "Flagged URLs and risk scores",
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ),
+        )
+
+        captured: dict[str, object] = {}
+
+        def _fake_from_a2a_agent_card(**kwargs):
+            captured["card_data"] = kwargs["card_data"]
+            return SimpleNamespace(card=SimpleNamespace(name="demo-a2a", version="2"))
+
+        monkeypatch.setattr(A2AAgent, "from_a2a_agent_card", _fake_from_a2a_agent_card)
+
+        await invoker.enrich_a2a_agent(
+            agent=agent, runtime_detail=dict(agent.federationMetadata or {}), region="us-east-1"
+        )
+
+        assert captured["card_data"]["skills"][0]["examples"] == [
+            "Input: Run fraud detection on these URLs\nOutput: Flagged URLs and risk scores"
+        ]
+
+    @pytest.mark.asyncio
     async def test_enrich_a2a_agent_skips_when_runtime_arn_missing(self):
         invoker = _build_invoker()
         agent = _build_fake_a2a_agent(runtime_arn=None)

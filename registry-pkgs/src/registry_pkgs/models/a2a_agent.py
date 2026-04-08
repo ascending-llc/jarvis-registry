@@ -343,6 +343,10 @@ class A2AAgent(Document):
         except Exception as e:
             raise ValueError(f"Invalid A2A agent card: {str(e)}")
 
+        well_known = registry_fields.get("wellKnown")
+        if isinstance(well_known, dict):
+            well_known = WellKnownConfig.model_validate(well_known)
+
         # Create MongoDB document
         return cls.model_construct(
             path=path,
@@ -353,7 +357,7 @@ class A2AAgent(Document):
             status=registry_fields.get("status", STATUS_ACTIVE),
             registeredBy=registry_fields.get("registeredBy"),
             registeredAt=registry_fields.get("registeredAt"),
-            wellKnown=registry_fields.get("wellKnown"),
+            wellKnown=well_known,
             federationRefId=registry_fields.get("federationRefId"),
             federationMetadata=registry_fields.get("federationMetadata"),
         )
