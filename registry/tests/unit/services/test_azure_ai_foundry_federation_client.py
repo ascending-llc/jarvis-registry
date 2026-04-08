@@ -1,10 +1,8 @@
-import os
 from types import SimpleNamespace
 
 import pytest
 from beanie import PydanticObjectId
 
-from registry.core.config import settings
 from registry.services.federation.azure_ai_foundry_client import AzureAIFoundryFederationClient
 from registry.services.federation.azure_ai_foundry_client_provider import AzureAIFoundryClientProvider
 
@@ -27,38 +25,6 @@ class TestAzureAIFoundryClientProvider:
 
         assert first is second
         assert created == ["https://example.projects.ai.azure.com"]
-
-    async def test_hydrate_credential_environment_from_settings_uses_settings_values(self, monkeypatch):
-        provider = AzureAIFoundryClientProvider()
-
-        monkeypatch.delenv("AZURE_CLIENT_ID", raising=False)
-        monkeypatch.delenv("AZURE_CLIENT_SECRET", raising=False)
-        monkeypatch.delenv("AZURE_TENANT_ID", raising=False)
-        monkeypatch.setattr(settings, "azure_client_id", "settings-client-id")
-        monkeypatch.setattr(settings, "azure_client_secret", "settings-client-secret")
-        monkeypatch.setattr(settings, "azure_tenant_id", "settings-tenant-id")
-
-        provider._hydrate_credential_environment_from_settings()
-
-        assert os.environ["AZURE_CLIENT_ID"] == "settings-client-id"
-        assert os.environ["AZURE_CLIENT_SECRET"] == "settings-client-secret"
-        assert os.environ["AZURE_TENANT_ID"] == "settings-tenant-id"
-
-    async def test_hydrate_credential_environment_from_settings_does_not_override_process_env(self, monkeypatch):
-        provider = AzureAIFoundryClientProvider()
-
-        monkeypatch.setenv("AZURE_CLIENT_ID", "process-client-id")
-        monkeypatch.setenv("AZURE_CLIENT_SECRET", "process-client-secret")
-        monkeypatch.setenv("AZURE_TENANT_ID", "process-tenant-id")
-        monkeypatch.setattr(settings, "azure_client_id", "settings-client-id")
-        monkeypatch.setattr(settings, "azure_client_secret", "settings-client-secret")
-        monkeypatch.setattr(settings, "azure_tenant_id", "settings-tenant-id")
-
-        provider._hydrate_credential_environment_from_settings()
-
-        assert os.environ["AZURE_CLIENT_ID"] == "process-client-id"
-        assert os.environ["AZURE_CLIENT_SECRET"] == "process-client-secret"
-        assert os.environ["AZURE_TENANT_ID"] == "process-tenant-id"
 
 
 @pytest.mark.unit
@@ -86,6 +52,23 @@ class TestAzureAIFoundryFederationClient:
                                 {
                                     "type": "code_interpreter",
                                     "name": "python",
+                                    "container": {"file_ids": ["file_123"]},
+                                },
+                                {
+                                    "type": "azure_ai_search",
+                                    "azure_ai_search": {
+                                        "indexes": [
+                                            {
+                                                "project_connection_id": "conn_123",
+                                                "index_name": "support-index",
+                                            }
+                                        ]
+                                    },
+                                },
+                                {
+                                    "type": "mcp",
+                                    "server_label": "drive",
+                                    "connector_id": "connector_googledrive",
                                 },
                             ],
                         ),
@@ -121,6 +104,26 @@ class TestAzureAIFoundryFederationClient:
         assert mapped.federationMetadata["agentVersionId"] == "asst_abc123"
         assert mapped.federationMetadata["runtimeArn"] == "Customer Support"
         assert mapped.federationMetadata["runtimeVersion"] == "7"
+        assert len(mapped.federationMetadata["tools"]) == 4
+        assert mapped.federationMetadata["toolResources"] == [
+            {"type": "code_interpreter", "container": {"file_ids": ["file_123"]}},
+            {
+                "type": "azure_ai_search",
+                "azure_ai_search": {
+                    "indexes": [
+                        {
+                            "project_connection_id": "conn_123",
+                            "index_name": "support-index",
+                        }
+                    ]
+                },
+            },
+            {
+                "type": "mcp",
+                "server_label": "drive",
+                "connector_id": "connector_googledrive",
+            },
+        ]
         assert len(mapped.card.skills) == 1
         assert mapped.card.skills[0].name == "lookup_ticket"
 

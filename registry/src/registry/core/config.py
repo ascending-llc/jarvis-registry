@@ -180,9 +180,6 @@ class Settings(BaseSettings):
 
     # ==================== Azure AI Foundry Federation ====================
     azure_ai_project_endpoint: str = ""
-    azure_client_id: str | None = None
-    azure_client_secret: str | None = None
-    azure_tenant_id: str | None = None
 
     # ==================== JWT ====================
     jwt_issuer: str = "jarvis-auth-server"

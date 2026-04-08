@@ -97,6 +97,7 @@ class AzureAIFoundryFederationClient:
         created_at = self._read_attr(latest_version, "created_at")
         model = self._read_attr(definition, "model")
         raw_tools = self._normalize_tools(self._read_attr(definition, "tools"))
+        tool_resources = self._extract_tool_resources(raw_tools)
         skills = self._build_skills(raw_tools)
 
         card_data = {
@@ -123,6 +124,7 @@ class AzureAIFoundryFederationClient:
             "runtimeVersion": str(agent_version) if agent_version is not None else None,
             "model": model,
             "tools": raw_tools,
+            "toolResources": tool_resources,
             "created_at": created_at,
         }
 
@@ -160,18 +162,48 @@ class AzureAIFoundryFederationClient:
 
         normalized: list[dict[str, Any]] = []
         for tool in list(raw_tools):
-            if isinstance(tool, dict):
-                normalized.append(tool)
-                continue
-            normalized.append(
-                {
-                    "type": getattr(tool, "type", None),
-                    "name": getattr(tool, "name", None),
-                    "description": getattr(tool, "description", None),
-                    "function": getattr(tool, "function", None),
-                }
-            )
+            normalized.append(AzureAIFoundryFederationClient._serialize_value(tool))
         return normalized
+
+    @staticmethod
+    def _extract_tool_resources(raw_tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        common_fields = {"type", "name", "description", "function"}
+
+        resources: list[dict[str, Any]] = []
+        for tool in raw_tools:
+            tool_type = str(tool.get("type") or "").lower()
+            resource_payload = {
+                key: value for key, value in tool.items() if key not in common_fields and value is not None
+            }
+            if not resource_payload:
+                continue
+            resources.append({"type": tool_type, **resource_payload})
+        return resources
+
+    @staticmethod
+    def _serialize_value(value: Any) -> Any:
+        if value is None or isinstance(value, str | int | float | bool):
+            return value
+        if isinstance(value, datetime):
+            return value.isoformat()
+        if isinstance(value, dict):
+            return {str(k): AzureAIFoundryFederationClient._serialize_value(v) for k, v in value.items()}
+        if isinstance(value, list | tuple | set):
+            return [AzureAIFoundryFederationClient._serialize_value(item) for item in value]
+        if hasattr(value, "model_dump"):
+            return AzureAIFoundryFederationClient._serialize_value(value.model_dump(mode="json"))
+        if hasattr(value, "as_dict"):
+            return AzureAIFoundryFederationClient._serialize_value(value.as_dict())
+
+        public_attrs = {
+            key: attr for key, attr in vars(value).items() if not key.startswith("_") and not callable(attr)
+        }
+        if public_attrs:
+            return {
+                str(key): AzureAIFoundryFederationClient._serialize_value(attr) for key, attr in public_attrs.items()
+            }
+
+        return str(value)
 
     @staticmethod
     def _read_attr(obj: Any, name: str) -> Any:
