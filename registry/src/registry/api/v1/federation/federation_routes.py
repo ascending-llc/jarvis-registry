@@ -1,6 +1,5 @@
 import logging
 import math
-from types import SimpleNamespace
 
 from beanie import PydanticObjectId
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -456,14 +455,6 @@ async def update_federation(
     return await _to_detail_response(federation, federation_crud_service, permissions)
 
 
-def _with_effective_provider_config(federation, provider_config: dict):
-    if dict(getattr(federation, "providerConfig", {}) or {}) == dict(provider_config or {}):
-        return federation
-    if hasattr(federation, "model_copy"):
-        return federation.model_copy(update={"providerConfig": provider_config})
-    return SimpleNamespace(**{**federation.__dict__, "providerConfig": provider_config})
-
-
 def _require_syncable_federation(federation, *, dry_run: bool) -> None:
     if federation.status != FederationStatus.ACTIVE:
         _raise_conflict(f"Federation in status '{federation.status}' cannot be synced")
@@ -471,20 +462,6 @@ def _require_syncable_federation(federation, *, dry_run: bool) -> None:
         return
     if not FederationStateMachine.can_start_sync(federation.syncStatus):
         _raise_conflict(f"Federation in sync status '{federation.syncStatus}' cannot start a new sync")
-
-
-def _resolve_sync_provider_config(data: FederationSyncRequest, federation):
-    if not data.dryRun and data.providerConfig is not None:
-        raise HTTPException(
-            status_code=http_status.HTTP_400_BAD_REQUEST,
-            detail=create_error_detail(
-                ErrorCode.INVALID_REQUEST,
-                "providerConfig override is only supported when dryRun=true",
-            ),
-        )
-    if data.dryRun and data.providerConfig is not None:
-        return data.providerConfig
-    return federation.providerConfig
 
 
 def _validate_sync_provider_config(federation_crud_service, provider_type, provider_config: dict) -> dict:
@@ -558,26 +535,26 @@ async def sync_federation(
         required_permission="EDIT",
     )
     _require_syncable_federation(federation, dry_run=data.dryRun)
-    requested_provider_config = _resolve_sync_provider_config(data, federation)
     normalized_provider_config = _validate_sync_provider_config(
         federation_crud_service,
         federation.providerType,
-        requested_provider_config,
+        federation.providerConfig,
     )
-    effective_federation = _with_effective_provider_config(federation, normalized_provider_config)
+    if dict(getattr(federation, "providerConfig", {}) or {}) != dict(normalized_provider_config or {}):
+        federation.providerConfig = normalized_provider_config
     triggered_by = user_context.get("user_id")
 
     try:
         logger.info(f"sync federation {federation.id}, {federation.providerType}")
         if data.dryRun:
             result = await federation_sync_service.preview_manual_sync(
-                federation=effective_federation,
+                federation=federation,
                 reason=data.reason,
                 triggered_by=triggered_by,
             )
             return _to_dry_run_response(result)
         job = await federation_sync_service.start_manual_sync(
-            federation=effective_federation,
+            federation=federation,
             reason=data.reason,
             triggered_by=triggered_by,
         )

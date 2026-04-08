@@ -417,8 +417,7 @@ Response shape is the same as `POST /federations`.
 ```json
 {
   "dryRun": false,
-  "reason": "manual refresh",
-  "providerConfig": null
+  "reason": "manual refresh"
 }
 ```
 
@@ -428,12 +427,9 @@ Response shape is the same as `POST /federations`.
 |---|---|---:|---|
 | `dryRun` | `boolean` | No | When `true`, perform discovery and diff only. No job is created and no data is written. Default `false`. |
 | `reason` | `string \| null` | No | Manual trigger reason |
-| `providerConfig` | `object \| null` | No | Only supported when `dryRun=true`. Uses request-scoped provider config for this test only and does not persist it. |
 
-For `aws_agentcore`, sync validates the effective provider config before discovery starts.
-When `dryRun=false`, the effective config is the stored federation config.
-When `dryRun=true`, the request may temporarily override it with `providerConfig`.
-The effective config must include both `providerConfig.region` and `providerConfig.assumeRoleArn`.
+For `aws_agentcore`, sync always validates the stored federation config before discovery starts.
+The stored config must include both `providerConfig.region` and `providerConfig.assumeRoleArn`.
 
 ### Success Response
 
@@ -483,7 +479,6 @@ Status: `200 OK`
 ```
 
 When `dryRun=true`:
-- the request may provide a temporary `providerConfig`
 - no `FederationSyncJob` is created
 - federation `syncStatus`, `lastSync`, `stats`, and child resources are unchanged
 - vector sync is not executed

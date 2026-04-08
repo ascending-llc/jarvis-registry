@@ -39,7 +39,6 @@ class FederationUpdateRequest(BaseModel):
 class FederationSyncRequest(BaseModel):
     dryRun: bool = False
     reason: str | None = None
-    providerConfig: dict[str, Any] | None = None
 
     model_config = ConfigDict(populate_by_name=True, use_enum_values=True)
 
