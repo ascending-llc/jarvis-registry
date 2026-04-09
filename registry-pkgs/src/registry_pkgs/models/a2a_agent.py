@@ -386,12 +386,6 @@ class A2AAgent(Document):
         if not isinstance(config, AgentConfig):
             raise ValueError("'config' must be an AgentConfig instance")
 
-        # Validate transport type
-        if config.type not in VALID_TRANSPORT_TYPES:
-            raise ValueError(
-                f"Invalid transport type '{config.type}'. Must be one of: {', '.join(sorted(VALID_TRANSPORT_TYPES))}"
-            )
-
         # Create MongoDB document
         return cls(
             path=path,
