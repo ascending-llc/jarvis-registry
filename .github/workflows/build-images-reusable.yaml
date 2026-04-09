@@ -3,11 +3,6 @@ name: Build and Push Docker Images (Reusable)
 on:
   workflow_call:
     inputs:
-      region:
-        description: 'AWS Region'
-        type: string
-        required: true
-        default: us-east-1
       git_ref:
         description: 'Git ref to checkout (commit SHA, tag, or branch)'
         type: string
@@ -18,21 +13,19 @@ on:
         type: string
         required: false
         default: ''
+      tag_as_latest:
+        description: 'Also push the :latest tag (used for main branch deploys)'
+        type: boolean
+        required: false
+        default: false
     secrets:
-      AWS_DEPLOY_ROLE_ARN:
-        required: true
       JARVIS_RELEASE_ACCESS_TOKEN:
         required: true
-      AZURE_CLIENT_ID:
-        required: false
-      AZURE_TENANT_ID:
-        required: false
-      AZURE_SUBSCRIPTION_ID:
-        required: false
 
 permissions:
   id-token: write
   contents: read
+  packages: write
 
 jobs:
   prepare-artifacts:
@@ -85,26 +78,12 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
-      - name: Assume IAM role
-        uses: aws-actions/configure-aws-credentials@v6
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
         with:
-          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
-          role-session-name: deployment-role-session
-          aws-region: ${{ inputs.region }}
-
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Azure login (OIDC)
-        uses: azure/login@v3
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
-      - name: Login to Azure Container Registry
-        run: az acr login --name "${{ vars.AZURE_ACR_NAME }}"
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Determine BUILD_VERSION
         id: version
@@ -118,17 +97,17 @@ jobs:
       - name: Determine image tags
         id: tags
         run: |
-          ECR_COMMIT_TAG="${{ steps.login-ecr.outputs.registry }}/jarvis/registry:${{ github.sha }}"
-          ECR_LATEST_TAG="${{ steps.login-ecr.outputs.registry }}/jarvis/registry:latest"
-          ACR_COMMIT_TAG="${{ vars.AZURE_ACR_NAME }}.azurecr.io/jarvis/registry:${{ github.sha }}"
-          ACR_LATEST_TAG="${{ vars.AZURE_ACR_NAME }}.azurecr.io/jarvis/registry:latest"
+          GHCR_BASE="ghcr.io/${{ github.repository_owner }}/jarvis/registry"
+          GHCR_COMMIT_TAG="${GHCR_BASE}:${{ github.sha }}"
+          GHCR_LATEST_TAG="${GHCR_BASE}:latest"
 
           if [ -n "${{ inputs.version_tag }}" ]; then
-            ECR_VERSION_TAG="${{ steps.login-ecr.outputs.registry }}/jarvis/registry:${{ inputs.version_tag }}"
-            ACR_VERSION_TAG="${{ vars.AZURE_ACR_NAME }}.azurecr.io/jarvis/registry:${{ inputs.version_tag }}"
-            echo "tags=${ECR_VERSION_TAG},${ECR_COMMIT_TAG},${ACR_VERSION_TAG},${ACR_COMMIT_TAG}" >> $GITHUB_OUTPUT
+            GHCR_VERSION_TAG="${GHCR_BASE}:${{ inputs.version_tag }}"
+            echo "tags=${GHCR_VERSION_TAG},${GHCR_LATEST_TAG},${GHCR_COMMIT_TAG}" >> $GITHUB_OUTPUT
+          elif [ "${{ inputs.tag_as_latest }}" = "true" ]; then
+            echo "tags=${GHCR_LATEST_TAG},${GHCR_COMMIT_TAG}" >> $GITHUB_OUTPUT
           else
-            echo "tags=${ECR_LATEST_TAG},${ECR_COMMIT_TAG},${ACR_LATEST_TAG},${ACR_COMMIT_TAG}" >> $GITHUB_OUTPUT
+            echo "tags=${GHCR_COMMIT_TAG}" >> $GITHUB_OUTPUT
           fi
 
       - name: Download build artifact - wheels and locks
@@ -157,7 +136,7 @@ jobs:
         run: >
           docker run --rm --entrypoint='' -e BUILD_VERSION=dummy
           -e SECRET_KEY=dummy -e ADMIN_PASSWORD=dummy -e ADMIN_USER=dummy
-          "${{ steps.login-ecr.outputs.registry }}/jarvis/registry:${{ github.sha }}"
+          "ghcr.io/${{ github.repository_owner }}/jarvis/registry:${{ github.sha }}"
           python -c "from registry.main import app; print(type(app))"
 
   build-and-push-registry-frontend:
@@ -172,41 +151,27 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
-      - name: Assume IAM role
-        uses: aws-actions/configure-aws-credentials@v6
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
         with:
-          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
-          role-session-name: deployment-role-session
-          aws-region: ${{ inputs.region }}
-
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Azure login (OIDC)
-        uses: azure/login@v3
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
-      - name: Login to Azure Container Registry
-        run: az acr login --name "${{ vars.AZURE_ACR_NAME }}"
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Determine image tags
         id: tags
         run: |
-          ECR_COMMIT_TAG="${{ steps.login-ecr.outputs.registry }}/jarvis/registry-frontend:${{ github.sha }}"
-          ECR_LATEST_TAG="${{ steps.login-ecr.outputs.registry }}/jarvis/registry-frontend:latest"
-          ACR_COMMIT_TAG="${{ vars.AZURE_ACR_NAME }}.azurecr.io/jarvis/registry-frontend:${{ github.sha }}"
-          ACR_LATEST_TAG="${{ vars.AZURE_ACR_NAME }}.azurecr.io/jarvis/registry-frontend:latest"
+          GHCR_BASE="ghcr.io/${{ github.repository_owner }}/jarvis/registry-frontend"
+          GHCR_COMMIT_TAG="${GHCR_BASE}:${{ github.sha }}"
+          GHCR_LATEST_TAG="${GHCR_BASE}:latest"
 
           if [ -n "${{ inputs.version_tag }}" ]; then
-            ECR_VERSION_TAG="${{ steps.login-ecr.outputs.registry }}/jarvis/registry-frontend:${{ inputs.version_tag }}"
-            ACR_VERSION_TAG="${{ vars.AZURE_ACR_NAME }}.azurecr.io/jarvis/registry-frontend:${{ inputs.version_tag }}"
-            echo "tags=${ECR_VERSION_TAG},${ECR_COMMIT_TAG},${ACR_VERSION_TAG},${ACR_COMMIT_TAG}" >> $GITHUB_OUTPUT
+            GHCR_VERSION_TAG="${GHCR_BASE}:${{ inputs.version_tag }}"
+            echo "tags=${GHCR_VERSION_TAG},${GHCR_LATEST_TAG},${GHCR_COMMIT_TAG}" >> $GITHUB_OUTPUT
+          elif [ "${{ inputs.tag_as_latest }}" = "true" ]; then
+            echo "tags=${GHCR_LATEST_TAG},${GHCR_COMMIT_TAG}" >> $GITHUB_OUTPUT
           else
-            echo "tags=${ECR_LATEST_TAG},${ECR_COMMIT_TAG},${ACR_LATEST_TAG},${ACR_COMMIT_TAG}" >> $GITHUB_OUTPUT
+            echo "tags=${GHCR_COMMIT_TAG}" >> $GITHUB_OUTPUT
           fi
 
       - name: Build and push mcp-gateway registry frontend image
@@ -232,41 +197,27 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
-      - name: Assume IAM role
-        uses: aws-actions/configure-aws-credentials@v6
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
         with:
-          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
-          role-session-name: deployment-role-session
-          aws-region: ${{ inputs.region }}
-
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Azure login (OIDC)
-        uses: azure/login@v3
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
-      - name: Login to Azure Container Registry
-        run: az acr login --name "${{ vars.AZURE_ACR_NAME }}"
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Determine image tags
         id: tags
         run: |
-          ECR_COMMIT_TAG="${{ steps.login-ecr.outputs.registry }}/jarvis/auth-server:${{ github.sha }}"
-          ECR_LATEST_TAG="${{ steps.login-ecr.outputs.registry }}/jarvis/auth-server:latest"
-          ACR_COMMIT_TAG="${{ vars.AZURE_ACR_NAME }}.azurecr.io/jarvis/auth-server:${{ github.sha }}"
-          ACR_LATEST_TAG="${{ vars.AZURE_ACR_NAME }}.azurecr.io/jarvis/auth-server:latest"
+          GHCR_BASE="ghcr.io/${{ github.repository_owner }}/jarvis/auth-server"
+          GHCR_COMMIT_TAG="${GHCR_BASE}:${{ github.sha }}"
+          GHCR_LATEST_TAG="${GHCR_BASE}:latest"
 
           if [ -n "${{ inputs.version_tag }}" ]; then
-            ECR_VERSION_TAG="${{ steps.login-ecr.outputs.registry }}/jarvis/auth-server:${{ inputs.version_tag }}"
-            ACR_VERSION_TAG="${{ vars.AZURE_ACR_NAME }}.azurecr.io/jarvis/auth-server:${{ inputs.version_tag }}"
-            echo "tags=${ECR_VERSION_TAG},${ECR_COMMIT_TAG},${ACR_VERSION_TAG},${ACR_COMMIT_TAG}" >> $GITHUB_OUTPUT
+            GHCR_VERSION_TAG="${GHCR_BASE}:${{ inputs.version_tag }}"
+            echo "tags=${GHCR_VERSION_TAG},${GHCR_LATEST_TAG},${GHCR_COMMIT_TAG}" >> $GITHUB_OUTPUT
+          elif [ "${{ inputs.tag_as_latest }}" = "true" ]; then
+            echo "tags=${GHCR_LATEST_TAG},${GHCR_COMMIT_TAG}" >> $GITHUB_OUTPUT
           else
-            echo "tags=${ECR_LATEST_TAG},${ECR_COMMIT_TAG},${ACR_LATEST_TAG},${ACR_COMMIT_TAG}" >> $GITHUB_OUTPUT
+            echo "tags=${GHCR_COMMIT_TAG}" >> $GITHUB_OUTPUT
           fi
 
       - name: Download build artifact - wheels and locks
@@ -291,5 +242,5 @@ jobs:
       - name: Guard the Docker image against import exceptions
         run: >
           docker run --rm --entrypoint=''
-          "${{ steps.login-ecr.outputs.registry }}/jarvis/auth-server:${{ github.sha }}"
+          "ghcr.io/${{ github.repository_owner }}/jarvis/auth-server:${{ github.sha }}"
           python -c "from auth_server.server import app; print(type(app))"
