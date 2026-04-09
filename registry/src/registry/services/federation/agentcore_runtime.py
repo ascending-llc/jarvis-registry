@@ -655,6 +655,8 @@ class AgentCoreRuntimeInvoker:
         try:
             response = await asyncio.to_thread(client.invoke_agent_runtime, **kwargs)
         except Exception as exc:
+            if self.client_provider.is_expired_token_error(exc):
+                raise
             raise ValueError(
                 "invoke_agent_runtime failed "
                 f"(method={method}, runtime_arn={runtime_arn}, qualifier=DEFAULT, accept={kwargs['accept']}, "
@@ -718,6 +720,8 @@ class AgentCoreRuntimeInvoker:
         try:
             response = await asyncio.to_thread(client.invoke_agent_runtime, **kwargs)
         except Exception as exc:
+            if self.client_provider.is_expired_token_error(exc):
+                raise
             raise ValueError(
                 "invoke_agent_runtime notification failed "
                 f"(method={method}, runtime_arn={runtime_arn}, qualifier=DEFAULT): {exc}"

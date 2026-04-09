@@ -1,4 +1,3 @@
-import asyncio
 import logging
 from datetime import UTC, datetime
 from typing import Any
@@ -81,7 +80,14 @@ class AgentCoreFederationClient:
                 continue
             selected_summaries.append(summary)
 
-        runtime_details = await asyncio.to_thread(self._get_runtime_details, control_client, selected_summaries)
+        control_client, runtime_details = await self.client_provider.execute_with_control_client(
+            region,
+            lambda control_client: (
+                control_client,
+                self._get_runtime_details(control_client, selected_summaries),
+            ),
+            assume_role_arn,
+        )
         runtime_details = [self._normalize_runtime_detail(detail) for detail in runtime_details]
         total_candidates = len(runtime_details)
         filtered_out_count = 0
@@ -93,12 +99,19 @@ class AgentCoreFederationClient:
                 normalized_tag_filter,
                 total_candidates,
             )
-            runtime_details, filtered_runtimes = await asyncio.to_thread(
-                self._filter_runtime_details_by_tags,
-                control_client,
-                runtime_details,
-                normalized_tag_filter,
+            control_client, filtered = await self.client_provider.execute_with_control_client(
+                region,
+                lambda control_client: (
+                    control_client,
+                    self._filter_runtime_details_by_tags(
+                        control_client,
+                        runtime_details,
+                        normalized_tag_filter,
+                    ),
+                ),
+                assume_role_arn,
             )
+            runtime_details, filtered_runtimes = filtered
             filtered_out_count = len(filtered_runtimes)
         else:
             filtered_runtimes = []
