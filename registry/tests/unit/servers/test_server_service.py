@@ -414,6 +414,12 @@ class TestServerService:
 class TestBuildCompleteHeaders:
     """Test suite for build_complete_headers_for_server function."""
 
+    @pytest.fixture(autouse=True)
+    def mock_generate_service_jwt(self):
+        """Patch generate_service_jwt so tests don't need a real RSA private key."""
+        with patch("registry.services.server_service.generate_service_jwt", return_value="mock-service-jwt"):
+            yield
+
     @pytest.fixture
     def mock_oauth_server(self):
         """Create mock OAuth server."""

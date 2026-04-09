@@ -30,7 +30,7 @@ from .routes.oauth_flow import router as oauth_flow_router
 from .routes.well_known import router as well_known_router
 
 # Configure logging
-settings.configure_logging()
+settings.configure_logging("auth_server")
 
 logger = logging.getLogger(__name__)
 

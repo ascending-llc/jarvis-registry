@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 
     from .mcpgw.core.types import McpAppContext
 
-settings.configure_logging()
+settings.configure_logging("registry")
 
 logger = logging.getLogger(__name__)
 

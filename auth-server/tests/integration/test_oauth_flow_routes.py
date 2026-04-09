@@ -608,7 +608,7 @@ class TestDeviceFlowRoutes:
 class TestDeviceFlowWithMocking:
     """Integration tests for device flow with JWT mocking."""
 
-    @patch("auth_server.routes.oauth_flow.jwt.encode")
+    @patch("auth_server.routes.oauth_flow.encode_jwt")
     def test_approve_device_success_with_token(self, mock_jwt_encode, test_client: TestClient, clear_device_storage):
         """Test device approval generates access token."""
         mock_jwt_encode.return_value = "mock-access-token"
@@ -631,7 +631,7 @@ class TestDeviceFlowWithMocking:
         # Verify JWT token generated
         mock_jwt_encode.assert_called_once()
 
-    @patch("auth_server.routes.oauth_flow.jwt.encode")
+    @patch("auth_server.routes.oauth_flow.encode_jwt")
     def test_approve_device_already_approved(self, mock_jwt_encode, test_client: TestClient, clear_device_storage):
         """Test approving already-approved device returns success."""
         mock_jwt_encode.return_value = "mock-access-token"
@@ -649,7 +649,7 @@ class TestDeviceFlowWithMocking:
         assert response.status_code == 200
         assert "already" in response.json()["message"].lower()
 
-    @patch("auth_server.routes.oauth_flow.jwt.encode")
+    @patch("auth_server.routes.oauth_flow.encode_jwt")
     def test_device_token_success_with_mocked_jwt(self, mock_jwt_encode, test_client: TestClient, clear_device_storage):
         """Test token endpoint returns mocked access token after approval."""
         mock_jwt_encode.return_value = "mock-access-token"
@@ -685,7 +685,7 @@ class TestDeviceFlowWithMocking:
         assert token_data["scope"] == "test-scope"
         assert token_data["access_token"] == "mock-access-token"
 
-    @patch("auth_server.routes.oauth_flow.jwt.encode")
+    @patch("auth_server.routes.oauth_flow.encode_jwt")
     def test_device_token_expired_code(self, mock_jwt_encode, test_client: TestClient, clear_device_storage):
         """Test token endpoint rejects expired device codes."""
         # Create device code
@@ -715,7 +715,7 @@ class TestDeviceFlowWithMocking:
 class TestEndToEndIntegration:
     """End-to-end integration tests combining client registration and device flow."""
 
-    @patch("auth_server.routes.oauth_flow.jwt.encode")
+    @patch("auth_server.routes.oauth_flow.encode_jwt")
     def test_full_device_flow_with_registered_client(
         self, mock_jwt_encode, test_client: TestClient, clear_device_storage
     ):

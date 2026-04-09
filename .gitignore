@@ -351,3 +351,7 @@ image-manifest.json
 
 # Misc. files
 /docker-compose.*.yml
+
+# Folders for Claude specs and plans
+/.spec
+/.plan
