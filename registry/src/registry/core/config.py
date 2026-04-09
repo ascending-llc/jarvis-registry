@@ -166,6 +166,9 @@ class Settings(JarvisBaseSettings):
 
     @model_validator(mode="after")
     def _validate_tool_discovery_mode(self) -> Self:
+        if self.x_jarvis_registry_import_checks:
+            return self
+
         if self.tool_discovery_mode not in ("embedded", "external"):
             raise ValueError(
                 f"Invalid tool_discovery_mode: '{self.tool_discovery_mode}'. Must be 'embedded' or 'external'."
@@ -175,6 +178,9 @@ class Settings(JarvisBaseSettings):
 
     @model_validator(mode="after")
     def _validate_creds_key(self) -> Self:
+        if self.x_jarvis_registry_import_checks:
+            return self
+
         if self.creds_key == "":
             raise ValueError("CREDS_KEY must be set for encryption/decryption.")
 

@@ -118,9 +118,13 @@ class JarvisBaseSettings(BaseSettings):
     scopes_config_path: str = ""
 
     # ==================== Model Validation ====================
+    x_jarvis_registry_import_checks: bool = False  # Skip validations if True. Intended only for import checks in CI.
 
     @model_validator(mode="after")
     def _validate_jwt_key_pair(self) -> Self:
+        if self.x_jarvis_registry_import_checks:
+            return self
+
         private_raw = self.jwt_private_key.strip()
         public_raw = self.jwt_public_key.strip()
 
