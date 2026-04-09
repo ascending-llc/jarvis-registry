@@ -469,6 +469,7 @@ class FederationSyncService:
         discovered_a2a: list[Any],
     ) -> FederationSyncPlan:
         """Compare discovered resources against Mongo state without mutating it."""
+        # Step 1: initialize the plan and summary.
         apply_summary = FederationApplySummary()
         sync_plan = FederationSyncPlan(
             summary=apply_summary,
@@ -479,6 +480,7 @@ class FederationSyncService:
         )
         session = self._get_current_session_or_none()
 
+        # Step 2: load current MCP state.
         existing_mcp = await ExtendedMCPServerDocument.find(
             {"federationRefId": federation.id}, session=session
         ).to_list()
@@ -490,6 +492,7 @@ class FederationSyncService:
 
         discovered_mcp_ids: set[str] = set()
 
+        # Step 3: classify discovered MCP items.
         for item in discovered_mcp:
             remote_id = self._extract_runtime_arn(item.federationMetadata)
             if not remote_id:
@@ -515,6 +518,7 @@ class FederationSyncService:
                     f"MCP server {getattr(item, 'serverName', remote_id)}: {error_message}",
                 )
 
+        # Step 4: mark stale MCP items.
         stale_mcp = [
             item
             for item in existing_mcp
@@ -525,6 +529,7 @@ class FederationSyncService:
             apply_summary.deletedMcpServers += 1
             sync_plan.mcp_deletes.append((stale, self._extract_runtime_arn(stale.federationMetadata)))
 
+        # Step 5: load current A2A state and path owners.
         existing_a2a = await A2AAgent.find({"federationRefId": federation.id}, session=session).to_list()
         existing_a2a_by_remote = {
             self._extract_runtime_arn(item.federationMetadata): item
@@ -540,14 +545,16 @@ class FederationSyncService:
             }
 
         discovered_a2a_ids: set[str] = set()
+        planned_a2a_by_remote: dict[str, A2AAgent] = {}
 
+        # Step 6: classify discovered A2A items and check path conflicts.
         for item in discovered_a2a:
             remote_id = self._extract_runtime_arn(item.federationMetadata)
             if not remote_id:
                 continue
 
             discovered_a2a_ids.add(remote_id)
-            existing = existing_a2a_by_remote.get(remote_id)
+            existing = existing_a2a_by_remote.get(remote_id) or planned_a2a_by_remote.get(remote_id)
             path_conflict = existing_a2a_by_path.get(item.path) if getattr(item, "path", None) else None
 
             if existing is None and path_conflict is not None:
@@ -570,11 +577,15 @@ class FederationSyncService:
             if existing is None:
                 apply_summary.createdAgents += 1
                 sync_plan.a2a_creates.append((item, remote_id))
-                existing_a2a_by_remote[remote_id] = item
-                if getattr(item, "path", None):
-                    existing_a2a_by_path[item.path] = item
+                planned_a2a_by_remote[remote_id] = item
             else:
-                if existing.path != item.path and path_conflict is not None and path_conflict.id != existing.id:
+                existing_id = getattr(existing, "id", None)
+                path_conflict_id = getattr(path_conflict, "id", None)
+                if (
+                    existing.path != item.path
+                    and path_conflict is not None
+                    and (existing_id is None or path_conflict_id is None or path_conflict_id != existing_id)
+                ):
                     logger.warning(
                         "Skipping federated A2A update because target path is already owned by another agent: "
                         "federation_id=%s runtime_arn=%s existing_agent_id=%s existing_path=%s target_path=%s "
@@ -605,6 +616,7 @@ class FederationSyncService:
                     f"A2A agent {agent_name}: {error_message}",
                 )
 
+        # Step 7: mark stale A2A items.
         stale_a2a = [
             item
             for item in existing_a2a
