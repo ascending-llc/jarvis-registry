@@ -79,7 +79,7 @@ def generate_service_jwt(user_id: str, username: str | None = None, scopes: list
         extra_claims=extra_claims,
     )
 
-    # Sign with registry secret
+    # Sign with the registry JWT private key
     token = encode_jwt(payload, settings.jwt_private_key)
 
     return token

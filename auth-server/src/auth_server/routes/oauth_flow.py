@@ -11,6 +11,7 @@ import time
 import urllib.parse
 from typing import Any
 
+import httpx
 from authlib.oauth2.rfc7636 import create_s256_code_challenge
 from fastapi import APIRouter, Cookie, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -516,9 +517,7 @@ async def oauth2_login(
 
         client_state = state
         internal_state_data = {"nonce": secrets.token_urlsafe(24), "resource": resource, "client_state": client_state}
-        internal_state = (
-            base64.urlsafe_b64encode(__import__("json").dumps(internal_state_data).encode("utf-8")).decode().rstrip("=")
-        )
+        internal_state = base64.urlsafe_b64encode(json.dumps(internal_state_data).encode("utf-8")).decode().rstrip("=")
 
         session_data = {
             "state": internal_state,
@@ -739,7 +738,7 @@ async def exchange_code_for_token(provider: str, code: str, provider_config: dic
     if auth_server_url is None:
         auth_server_url = settings.auth_server_url
     redirect_uri = f"{auth_server_url}/oauth2/callback/{provider}"
-    async with __import__("httpx").AsyncClient() as client:
+    async with httpx.AsyncClient() as client:
         token_data = {
             "grant_type": provider_config["grant_type"],
             "client_id": provider_config["client_id"],
@@ -754,7 +753,7 @@ async def exchange_code_for_token(provider: str, code: str, provider_config: dic
 
 
 async def get_user_info(access_token: str, provider_config: dict) -> dict:
-    async with __import__("httpx").AsyncClient() as client:
+    async with httpx.AsyncClient() as client:
         headers = {"Authorization": f"Bearer {access_token}"}
         response = await client.get(provider_config["user_info_url"], headers=headers)
         response.raise_for_status()

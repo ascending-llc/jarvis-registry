@@ -500,5 +500,5 @@ class TestBuildJwks:
 
     def test_invalid_pem_raises(self):
         """Raises ValueError for an invalid PEM string."""
-        with pytest.raises((ValueError, Exception)):
+        with pytest.raises(ValueError):
             build_jwks("not-a-pem", _KID)
