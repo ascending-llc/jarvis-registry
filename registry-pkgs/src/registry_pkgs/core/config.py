@@ -118,9 +118,18 @@ class JarvisBaseSettings(BaseSettings):
     scopes_config_path: str = ""
 
     # ==================== Model Validation ====================
+    # Skip model validation if set to "disabled". Disabling should only happen for import checks in CI.
+    x_jarvis_registry_import_checks: str = "enabled"
 
     @model_validator(mode="after")
     def _validate_jwt_key_pair(self) -> Self:
+        if self.x_jarvis_registry_import_checks == "disabled":
+            logging.warning(
+                "JWT_PRIVATE_KEY and JWT_PUBLIC_KEY validation is disabled. This should only happen in CI import checks."
+            )
+
+            return self
+
         private_raw = self.jwt_private_key.strip()
         public_raw = self.jwt_public_key.strip()
 

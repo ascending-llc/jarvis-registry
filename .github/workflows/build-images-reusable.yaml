@@ -134,8 +134,7 @@ jobs:
 
       - name: Guard the Docker image against import exceptions
         run: >
-          docker run --rm --entrypoint='' -e BUILD_VERSION=dummy
-          -e SECRET_KEY=dummy -e ADMIN_PASSWORD=dummy -e ADMIN_USER=dummy
+          docker run --rm --entrypoint='' -e BUILD_VERSION=dummy -e X_JARVIS_REGISTRY_IMPORT_CHECKS="disabled"
           "ghcr.io/${{ github.repository_owner }}/jarvis/registry:${{ github.sha }}"
           python -c "from registry.main import app; print(type(app))"
 
@@ -241,6 +240,6 @@ jobs:
 
       - name: Guard the Docker image against import exceptions
         run: >
-          docker run --rm --entrypoint=''
+          docker run --rm --entrypoint='' -e X_JARVIS_REGISTRY_IMPORT_CHECKS="disabled"
           "ghcr.io/${{ github.repository_owner }}/jarvis/auth-server:${{ github.sha }}"
           python -c "from auth_server.server import app; print(type(app))"

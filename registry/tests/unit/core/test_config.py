@@ -2,6 +2,7 @@
 Unit tests for the configuration module.
 """
 
+import logging
 import os
 from pathlib import Path
 from unittest.mock import patch
@@ -144,3 +145,13 @@ class TestSettings:
 
         assert settings.container_registry_dir == custom_registry_dir
         assert settings.servers_dir == custom_registry_dir / "servers"
+
+    @pytest.mark.unit
+    @patch.dict(os.environ, {**_SETTINGS_ENV, "X_JARVIS_REGISTRY_IMPORT_CHECKS": "disabled"})
+    def test_validation_disablement(self, caplog) -> None:
+        caplog.set_level(logging.WARNING)
+
+        Settings()
+
+        for key in ("JWT_PRIVATE_KEY and JWT_PUBLIC_KEY", "CREDS_KEY", "TOOL_DISCOVERY_MODE"):
+            assert f"{key} validation is disabled." in caplog.text

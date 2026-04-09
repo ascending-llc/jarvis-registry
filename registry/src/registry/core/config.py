@@ -1,3 +1,4 @@
+import logging
 from functools import cached_property
 from pathlib import Path
 from typing import Self
@@ -166,6 +167,11 @@ class Settings(JarvisBaseSettings):
 
     @model_validator(mode="after")
     def _validate_tool_discovery_mode(self) -> Self:
+        if self.x_jarvis_registry_import_checks == "disabled":
+            logging.warning("TOOL_DISCOVERY_MODE validation is disabled. This should only happen in CI import checks.")
+
+            return self
+
         if self.tool_discovery_mode not in ("embedded", "external"):
             raise ValueError(
                 f"Invalid tool_discovery_mode: '{self.tool_discovery_mode}'. Must be 'embedded' or 'external'."
@@ -175,6 +181,11 @@ class Settings(JarvisBaseSettings):
 
     @model_validator(mode="after")
     def _validate_creds_key(self) -> Self:
+        if self.x_jarvis_registry_import_checks == "disabled":
+            logging.warning("CREDS_KEY validation is disabled. This should only happen in CI import checks.")
+
+            return self
+
         if self.creds_key == "":
             raise ValueError("CREDS_KEY must be set for encryption/decryption.")
 
