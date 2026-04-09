@@ -5,7 +5,7 @@ from typing import Any
 
 from beanie import PydanticObjectId
 
-from registry_pkgs.models import IUser, Token
+from registry_pkgs.models import User, Token
 
 from ...schemas.enums import TokenType
 from ...schemas.oauth_schema import OAuthClientInformation, OAuthTokens
@@ -19,7 +19,7 @@ class TokenService:
     def __init__(self, user_service: UserService):
         self.user_service = user_service
 
-    async def get_user(self, user_id: str) -> IUser | None:
+    async def get_user(self, user_id: str) -> User | None:
         user = await self.user_service.get_user_by_user_id(user_id)
         if not user:
             raise Exception(f"OAuth operation failed: User {user_id} not found")

@@ -25,7 +25,7 @@ load_dotenv()
 
 from registry.utils.crypto_utils import encrypt_auth_fields
 from registry_pkgs.database.mongodb import MongoDB
-from registry_pkgs.models import ExtendedAclEntry, ExtendedMCPServerDocument, IGroup, IUser, Key, Token
+from registry_pkgs.models import ExtendedAclEntry, ExtendedMCPServer, Group, User, Key, Token
 
 
 async def seed_groups():
@@ -67,12 +67,12 @@ async def seed_groups():
     created_groups = []
     for group_data in groups_data:
         # Check if group already exists
-        existing_group = await IGroup.find_one(IGroup.name == group_data["name"])
+        existing_group = await Group.find_one(Group.name == group_data["name"])
         if existing_group:
             print(f"  Group {group_data['name']} already exists, skipping...")
             created_groups.append(existing_group)
         else:
-            group = IGroup(**group_data)
+            group = Group(**group_data)
             await group.insert()
             created_groups.append(group)
             print(f"  Created group: {group_data['name']}")
@@ -138,12 +138,12 @@ async def seed_users():
     created_users = []
     for user_data in users_data:
         # Check if user already exists
-        existing_user = await IUser.find_one(IUser.email == user_data["email"])
+        existing_user = await User.find_one(User.email == user_data["email"])
         if existing_user:
             print(f"  User {user_data['email']} already exists, skipping...")
             created_users.append(existing_user)
         else:
-            user = IUser(**user_data)
+            user = User(**user_data)
             await user.insert()
             created_users.append(user)
             print(f"  Created user: {user_data['email']}")
@@ -610,8 +610,8 @@ async def seed_mcp_servers(users):
     created_servers = []
     for server_data in servers_data:
         # Check if server already exists
-        existing_server = await ExtendedMCPServerDocument.find_one(
-            ExtendedMCPServerDocument.serverName == server_data["serverName"]
+        existing_server = await ExtendedMCPServer.find_one(
+            ExtendedMCPServer.serverName == server_data["serverName"]
         )
         if existing_server:
             print(f"  Server {server_data['serverName']} already exists, skipping...")
@@ -620,7 +620,7 @@ async def seed_mcp_servers(users):
             # Encrypt sensitive authentication fields before storing
             server_data["config"] = encrypt_auth_fields(server_data["config"])
 
-            server = ExtendedMCPServerDocument(**server_data)
+            server = ExtendedMCPServer(**server_data)
             await server.insert()
             created_servers.append(server)
 
@@ -718,7 +718,7 @@ async def clean_database():
 
     try:
         # Delete all documents from each collection
-        user_count = await IUser.delete_all()
+        user_count = await User.delete_all()
         print(f"  Deleted {user_count.deleted_count} users")
 
         key_count = await Key.delete_all()
@@ -727,13 +727,13 @@ async def clean_database():
         token_count = await Token.delete_all()
         print(f"  Deleted {token_count.deleted_count} tokens")
 
-        server_count = await ExtendedMCPServerDocument.delete_all()
+        server_count = await ExtendedMCPServer.delete_all()
         print(f"  Deleted {server_count.deleted_count} MCP servers")
 
         acl_count = await ExtendedAclEntry.delete_all()
         print(f"  Deleted {acl_count.deleted_count} ACL Entries")
 
-        group_count = await IGroup.delete_all()
+        group_count = await Group.delete_all()
         print(f"  Deleted {group_count.deleted_count} groups")
 
         print("\n" + "=" * 60)

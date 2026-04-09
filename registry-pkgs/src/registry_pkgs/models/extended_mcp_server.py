@@ -1,8 +1,8 @@
 """
 Extended MCP Server Model for Registry-Specific Fields
 
-This module extends the auto-generated MCPServerDocument with registry-specific fields.
-The base model (_generated/mcpServer.py) should NOT be modified as it's auto-generated.
+This module extends the auto-generated MCPServer with registry-specific fields.
+The base model (_generated/mcp_server.py) should NOT be modified as it's auto-generated.
 
 Storage Structure (following API documentation specifications):
 
@@ -57,16 +57,16 @@ from pymongo import IndexModel
 
 from ..core.config import ChunkingConfig
 from ..models.enums import ServerEntityType
-from ._generated import MCPServerDocument
+from ._generated import MCPServer
 
 logger = logging.getLogger(__name__)
 
 
-class ExtendedMCPServerDocument(MCPServerDocument):
+class ExtendedMCPServer(MCPServer):
     """
     Extended MCP Server Document with Registry-Specific Fields
 
-    This model extends the base MCPServerDocument with registry-specific fields
+    This model extends the base MCPServer with registry-specific fields
     that are stored at root level in MongoDB, not in the config object.
 
     Storage Structure (MongoDB):
@@ -126,8 +126,8 @@ class ExtendedMCPServerDocument(MCPServerDocument):
     }
     """
 
-    # ========== Base Fields from MCPServerDocument ==========
-    # We use the following fields inherited from the generated class MCPServerDocument:
+    # ========== Base Fields from MCPServer ==========
+    # We use the following fields inherited from the generated class MCPServer:
     # - serverName: str - Server name for display
     # - config: dict[str, Any] - MCP server configuration (oauth, apiKey, capabilities, tools, etc).
     # - author: PydanticObjectId - User who created this server
@@ -483,9 +483,9 @@ class ExtendedMCPServerDocument(MCPServerDocument):
         return result
 
     @classmethod
-    def from_server_info(cls, server_info: dict[str, Any], is_enabled: bool = False) -> "ExtendedMCPServerDocument":
+    def from_server_info(cls, server_info: dict[str, Any], is_enabled: bool = False) -> "ExtendedMCPServer":
         """
-        Create ExtendedMCPServerDocument instance from server info dictionary.
+        Create ExtendedMCPServer instance from server info dictionary.
 
         Args:
             server_info: Server information dictionary (must contain 'path' and 'server_name')

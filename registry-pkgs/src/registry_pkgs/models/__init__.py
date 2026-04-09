@@ -8,9 +8,9 @@ Also exports two enum types `PrincipalType` and `ResourceType`, so that other mo
 """
 
 from ._generated import (
-    IAccessRole,
-    IGroup,
-    IUser,
+    AccessRole,
+    Group,
+    User,
     Key,
     PrincipalType,
     ResourceType,
@@ -18,19 +18,19 @@ from ._generated import (
 )
 from .a2a_agent import A2AAgent
 from .extended_acl_entry import ExtendedAclEntry
-from .extended_mcp_server import ExtendedMCPServerDocument
+from .extended_mcp_server import ExtendedMCPServer
 from .federation import Federation
 from .federation_sync_job import FederationSyncJob
 
 __all__ = [
     "A2AAgent",
     "ExtendedAclEntry",
-    "ExtendedMCPServerDocument",
+    "ExtendedMCPServer",
     "Federation",
     "FederationSyncJob",
-    "IAccessRole",
-    "IGroup",
-    "IUser",
+    "AccessRole",
+    "Group",
+    "User",
     "Key",
     "Token",
     "PrincipalType",

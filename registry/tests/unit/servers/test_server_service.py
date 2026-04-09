@@ -417,9 +417,9 @@ class TestBuildCompleteHeaders:
     @pytest.fixture
     def mock_oauth_server(self):
         """Create mock OAuth server."""
-        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServerDocument
+        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 
-        server = Mock(spec=ExtendedMCPServerDocument)
+        server = Mock(spec=ExtendedMCPServer)
         server.serverName = "oauth-server"
         server.config = {
             "requiresOAuth": True,
@@ -433,9 +433,9 @@ class TestBuildCompleteHeaders:
     @pytest.fixture
     def mock_apikey_server(self):
         """Create mock API key server."""
-        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServerDocument
+        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 
-        server = Mock(spec=ExtendedMCPServerDocument)
+        server = Mock(spec=ExtendedMCPServer)
         server.serverName = "apikey-server"
         server.config = {"apiKey": {"key": "test-api-key-123", "authorization_type": "bearer"}}
         return server
@@ -443,9 +443,9 @@ class TestBuildCompleteHeaders:
     @pytest.fixture
     def mock_basic_auth_server(self):
         """Create mock Basic auth server."""
-        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServerDocument
+        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 
-        server = Mock(spec=ExtendedMCPServerDocument)
+        server = Mock(spec=ExtendedMCPServer)
         server.serverName = "basic-auth-server"
         server.config = {"apiKey": {"key": "username:password", "authorization_type": "basic"}}
         return server
@@ -453,9 +453,9 @@ class TestBuildCompleteHeaders:
     @pytest.fixture
     def mock_custom_auth_server(self):
         """Create mock custom auth server."""
-        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServerDocument
+        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 
-        server = Mock(spec=ExtendedMCPServerDocument)
+        server = Mock(spec=ExtendedMCPServer)
         server.serverName = "custom-auth-server"
         server.config = {
             "apiKey": {"key": "custom-token-xyz", "authorization_type": "custom", "custom_header": "X-API-Key"}
@@ -465,9 +465,9 @@ class TestBuildCompleteHeaders:
     @pytest.fixture
     def mock_custom_headers_server(self):
         """Create mock server with custom headers."""
-        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServerDocument
+        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 
-        server = Mock(spec=ExtendedMCPServerDocument)
+        server = Mock(spec=ExtendedMCPServer)
         server.serverName = "custom-headers-server"
         server.config = {"headers": [{"X-Custom-Header": "value1"}, {"X-Another-Header": "value2"}]}
         return server
@@ -689,9 +689,9 @@ class TestBuildCompleteHeaders:
     async def test_no_auth_returns_base_headers(self):
         """Test server with no authentication returns base MCP headers."""
         from registry.services.server_service import build_complete_headers_for_server
-        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServerDocument
+        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 
-        server = Mock(spec=ExtendedMCPServerDocument)
+        server = Mock(spec=ExtendedMCPServer)
         server.serverName = "no-auth-server"
         server.config = {}
 
@@ -712,9 +712,9 @@ class TestBuildCompleteHeaders:
         from unittest.mock import AsyncMock
 
         from registry.services.server_service import build_complete_headers_for_server
-        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServerDocument
+        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 
-        server = Mock(spec=ExtendedMCPServerDocument)
+        server = Mock(spec=ExtendedMCPServer)
         server.serverName = "oauth-priority-server"
         server.config = {
             "requiresOAuth": True,
@@ -740,9 +740,9 @@ class TestBuildCompleteHeaders:
     async def test_apikey_overrides_custom_authorization_header(self):
         """Test API key overrides custom Authorization header."""
         from registry.services.server_service import build_complete_headers_for_server
-        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServerDocument
+        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 
-        server = Mock(spec=ExtendedMCPServerDocument)
+        server = Mock(spec=ExtendedMCPServer)
         server.serverName = "apikey-priority-server"
         server.config = {
             "apiKey": {"key": "apikey-token-wins", "authorization_type": "bearer"},
@@ -763,9 +763,9 @@ class TestBuildCompleteHeaders:
         from unittest.mock import AsyncMock
 
         from registry.services.server_service import build_complete_headers_for_server
-        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServerDocument
+        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 
-        server = Mock(spec=ExtendedMCPServerDocument)
+        server = Mock(spec=ExtendedMCPServer)
         server.serverName = "oauth-custom-order"
         server.config = {
             "requiresOAuth": True,
@@ -799,9 +799,9 @@ class TestBuildCompleteHeaders:
     async def test_custom_headers_added_first_for_apikey(self):
         """Test custom headers are added before API key processing (lowest priority)."""
         from registry.services.server_service import build_complete_headers_for_server
-        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServerDocument
+        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 
-        server = Mock(spec=ExtendedMCPServerDocument)
+        server = Mock(spec=ExtendedMCPServer)
         server.serverName = "apikey-custom-order"
         server.config = {
             "apiKey": {"key": "test-key", "authorization_type": "bearer"},
@@ -823,9 +823,9 @@ class TestBuildCompleteHeaders:
     async def test_custom_headers_dict_format(self):
         """Test custom headers provided as dict are supported."""
         from registry.services.server_service import build_complete_headers_for_server
-        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServerDocument
+        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 
-        server = Mock(spec=ExtendedMCPServerDocument)
+        server = Mock(spec=ExtendedMCPServer)
         server.serverName = "dict-headers-server"
         server.config = {
             "headers": {
@@ -846,9 +846,9 @@ class TestBuildCompleteHeaders:
     async def test_custom_header_with_list_values(self):
         """Test custom headers with list values are joined correctly."""
         from registry.services.server_service import build_complete_headers_for_server
-        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServerDocument
+        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 
-        server = Mock(spec=ExtendedMCPServerDocument)
+        server = Mock(spec=ExtendedMCPServer)
         server.serverName = "list-header-server"
         server.config = {
             "headers": [
@@ -870,9 +870,9 @@ class TestBuildCompleteHeaders:
     async def test_no_auth_with_custom_headers(self):
         """Test server with no auth but custom headers."""
         from registry.services.server_service import build_complete_headers_for_server
-        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServerDocument
+        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 
-        server = Mock(spec=ExtendedMCPServerDocument)
+        server = Mock(spec=ExtendedMCPServer)
         server.serverName = "no-auth-custom-headers"
         server.config = {"headers": [{"X-API-Version": "v2"}, {"X-Request-ID": "req-123"}]}
 
@@ -898,12 +898,12 @@ class TestBuildCompleteHeaders:
         import base64
 
         from registry.services.server_service import build_complete_headers_for_server
-        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServerDocument
+        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 
         # Pre-encoded credentials
         encoded_creds = base64.b64encode(b"user:pass").decode()
 
-        server = Mock(spec=ExtendedMCPServerDocument)
+        server = Mock(spec=ExtendedMCPServer)
         server.serverName = "basic-auth-encoded"
         server.config = {"apiKey": {"key": encoded_creds, "authorization_type": "basic"}}
 
@@ -921,9 +921,9 @@ class TestBuildCompleteHeaders:
         import base64
 
         from registry.services.server_service import build_complete_headers_for_server
-        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServerDocument
+        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 
-        server = Mock(spec=ExtendedMCPServerDocument)
+        server = Mock(spec=ExtendedMCPServer)
         server.serverName = "basic-auth-plain"
         server.config = {"apiKey": {"key": "username:password", "authorization_type": "basic"}}
 
@@ -940,9 +940,9 @@ class TestBuildCompleteHeaders:
     async def test_apikey_custom_header_missing_custom_header_name(self):
         """Test API key custom auth without custom_header field logs warning."""
         from registry.services.server_service import build_complete_headers_for_server
-        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServerDocument
+        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 
-        server = Mock(spec=ExtendedMCPServerDocument)
+        server = Mock(spec=ExtendedMCPServer)
         server.serverName = "custom-auth-missing-header"
         server.config = {
             "apiKey": {
@@ -966,9 +966,9 @@ class TestBuildCompleteHeaders:
     async def test_apikey_unknown_authorization_type_defaults_to_bearer(self):
         """Test API key with unknown authorization_type defaults to Bearer."""
         from registry.services.server_service import build_complete_headers_for_server
-        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServerDocument
+        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 
-        server = Mock(spec=ExtendedMCPServerDocument)
+        server = Mock(spec=ExtendedMCPServer)
         server.serverName = "unknown-auth-type"
         server.config = {"apiKey": {"key": "test-key", "authorization_type": "unknown_type"}}
 
@@ -1249,9 +1249,9 @@ class TestHealthCheckEndpointUrlConstruction:
     @pytest.fixture
     def mock_mcp_server(self):
         """Create a mock MCP server document."""
-        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServerDocument
+        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 
-        server = Mock(spec=ExtendedMCPServerDocument)
+        server = Mock(spec=ExtendedMCPServer)
         server.serverName = "test-server"
         return server
 

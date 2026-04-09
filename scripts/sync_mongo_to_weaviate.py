@@ -27,7 +27,7 @@ from registry.container import RegistryContainer
 from registry.core.config import Settings
 from registry_pkgs.database import close_mongodb, init_mongodb
 from registry_pkgs.database.redis_client import close_redis_client, create_redis_client
-from registry_pkgs.models.extended_mcp_server import ExtendedMCPServerDocument
+from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 from registry_pkgs.vector.client import create_database_client
 
 
@@ -217,7 +217,7 @@ async def clean_weaviate(mcp_server_repo):
     print("Deleting all existing servers...")
     try:
         deleted = await mcp_server_repo.adelete_by_filter(
-            filters={"collection": ExtendedMCPServerDocument.COLLECTION_NAME}
+            filters={"collection": ExtendedMCPServer.COLLECTION_NAME}
         )
         print(f"✓ Deleted {deleted} servers from Weaviate")
         print("=" * 80 + "\n")
