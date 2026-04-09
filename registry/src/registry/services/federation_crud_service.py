@@ -190,6 +190,29 @@ class FederationCrudService:
         await federation.save(session=self._get_current_session_or_none())
         return federation
 
+    async def update_runtime_jwt_credentials(
+        self,
+        *,
+        federation: Federation,
+        client_id: str,
+        client_secret_ref: str,
+        updated_by: str | None,
+    ) -> Federation:
+        normalized_config = self.normalize_provider_config(
+            federation.providerType, dict(federation.providerConfig or {})
+        )
+        runtime_access = dict(normalized_config.get("runtimeAccess") or {})
+        jwt_config = dict(runtime_access.get("jwt") or {})
+        jwt_config["clientId"] = client_id
+        jwt_config["clientSecretRef"] = client_secret_ref
+        runtime_access["jwt"] = jwt_config
+        normalized_config["runtimeAccess"] = runtime_access
+        federation.providerConfig = normalized_config
+        federation.updatedBy = updated_by
+        federation.version += 1
+        await federation.save(session=self._get_current_session_or_none())
+        return federation
+
     async def mark_sync_pending(
         self,
         federation: Federation,

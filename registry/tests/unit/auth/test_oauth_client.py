@@ -53,6 +53,27 @@ class TestOAuthClientBasicMethods:
         # S256 challenge should be base64url encoded SHA256 hash (43 chars)
         assert len(challenge) == 43
 
+    @pytest.mark.asyncio
+    async def test_fetch_client_credentials_token_success(self, oauth_client):
+        mock_authlib_client = AsyncMock()
+        mock_authlib_client.fetch_token = AsyncMock(
+            return_value={"access_token": "tok", "token_type": "Bearer", "expires_in": 3600, "scope": "a b"}
+        )
+        mock_authlib_client.aclose = AsyncMock()
+
+        with patch("registry.auth.oauth.oauth_client.AsyncOAuth2Client", return_value=mock_authlib_client):
+            tokens = await oauth_client.fetch_client_credentials_token(
+                token_endpoint="https://example.com/oauth/token",
+                client_id="client-1",
+                client_secret="secret-1",
+                scope="a b",
+                audience="jarvis-services",
+            )
+
+        assert tokens is not None
+        assert tokens.access_token == "tok"
+        mock_authlib_client.fetch_token.assert_awaited_once()
+
 
 class TestOAuthClientRegisterClient:
     """Tests for OAuthClient.register_client method (RFC 7591 DCR)"""

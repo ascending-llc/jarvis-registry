@@ -5,7 +5,9 @@ from typing import Any
 
 from registry.services.federation.agentcore_discovery import AgentCoreFederationClient
 from registry.services.federation.agentcore_runtime import AgentCoreRuntimeInvoker
+from registry.services.federation.agentcore_runtime_auth import AgentCoreRuntimeAuthService
 from registry.services.federation.azure_ai_foundry_client import AzureAIFoundryFederationClient
+from registry.services.oauth.token_service import TokenService
 from registry_pkgs.models.enums import FederationProviderType
 from registry_pkgs.models.federation import AwsAgentCoreProviderConfig, Federation
 
@@ -27,11 +29,17 @@ class AwsAgentCoreSyncHandler(BaseFederationSyncHandler):
         self,
         discovery_client: AgentCoreFederationClient | None = None,
         runtime_invoker: AgentCoreRuntimeInvoker | None = None,
+        token_service: TokenService | None = None,
     ):
         self.discovery_client = discovery_client or AgentCoreFederationClient()
         self.runtime_invoker = runtime_invoker or AgentCoreRuntimeInvoker(
             client_provider=self.discovery_client.client_provider,
             extract_region_from_arn=self.discovery_client.extract_region_from_arn,
+            auth_service=AgentCoreRuntimeAuthService(
+                client_provider=self.discovery_client.client_provider,
+                extract_region_from_arn=self.discovery_client.extract_region_from_arn,
+                token_service=token_service,
+            ),
         )
 
     async def discover_entities(self, federation: Federation) -> dict[str, list[Any]]:
@@ -46,7 +54,8 @@ class AwsAgentCoreSyncHandler(BaseFederationSyncHandler):
             resource_tags_filter=resource_tags_filter,
         )
         await self._enrich_discovered_entities(
-            discovered,
+            federation=federation,
+            discovered=discovered,
             region=region,
             assume_role_arn=assume_role_arn,
         )
@@ -54,6 +63,7 @@ class AwsAgentCoreSyncHandler(BaseFederationSyncHandler):
 
     async def _enrich_discovered_entities(
         self,
+        federation: Federation,
         discovered: dict[str, list[Any]],
         *,
         region: str,
@@ -62,6 +72,7 @@ class AwsAgentCoreSyncHandler(BaseFederationSyncHandler):
         for server in discovered.get("mcp_servers", []):
             await self.runtime_invoker.enrich_mcp_server(
                 server=server,
+                federation=federation,
                 region=region,
                 assume_role_arn=assume_role_arn,
             )
@@ -69,6 +80,7 @@ class AwsAgentCoreSyncHandler(BaseFederationSyncHandler):
         for agent in discovered.get("a2a_agents", []):
             await self.runtime_invoker.enrich_a2a_agent(
                 agent=agent,
+                federation=federation,
                 runtime_detail=dict(agent.federationMetadata or {}),
                 region=region,
                 assume_role_arn=assume_role_arn,

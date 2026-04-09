@@ -142,7 +142,7 @@ def test_normalize_provider_config_allows_empty_aws_config_for_create():
 
     result = service.normalize_provider_config(FederationProviderType.AWS_AGENTCORE, {})
 
-    assert result == {"resourceTagsFilter": {}}
+    assert result == {"resourceTagsFilter": {}, "runtimeAccess": {"mode": "iam", "iam": {}}}
 
 
 def test_validate_provider_config_requires_region_and_assume_role_for_aws():
@@ -163,7 +163,26 @@ def test_validate_provider_config_requires_region_and_assume_role_for_aws():
         "region": "us-east-1",
         "assumeRoleArn": "arn:aws:iam::123456789012:role/test-role",
         "resourceTagsFilter": {},
+        "runtimeAccess": {"mode": "iam", "iam": {}},
     }
+
+
+def test_validate_provider_config_allows_incomplete_jwt_fields_before_secret_is_set():
+    service = FederationCrudService()
+
+    result = service.validate_provider_config(
+        FederationProviderType.AWS_AGENTCORE,
+        {
+            "region": "us-east-1",
+            "assumeRoleArn": "arn:aws:iam::123456789012:role/test-role",
+            "runtimeAccess": {
+                "mode": "jwt",
+                "jwt": {"discoveryUrl": "https://issuer/.well-known/openid-configuration"},
+            },
+        },
+    )
+
+    assert result["runtimeAccess"]["mode"] == "jwt"
 
 
 def test_normalize_provider_config_allows_empty_azure_config_for_create():

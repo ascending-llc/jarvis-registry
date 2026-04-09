@@ -8,47 +8,16 @@ from typing import Any
 from urllib.parse import quote
 
 import httpx
-from botocore.auth import SigV4Auth
-from botocore.awsrequest import AWSRequest
 
 from registry.core.config import settings
 from registry.core.mcp_client import MCPServerData, get_tools_and_capabilities_from_server
 from registry_pkgs.models import A2AAgent, ExtendedMCPServerDocument
+from registry_pkgs.models.federation import Federation
 
 from .agentcore_clients import AgentCoreClientProvider
+from .agentcore_runtime_auth import AgentCoreRuntimeAuthService
 
 logger = logging.getLogger(__name__)
-
-
-class _SigV4HttpxAuth(httpx.Auth):
-    """HTTPX auth provider that signs each request using AWS SigV4."""
-
-    requires_request_body = True
-
-    def __init__(self, service: str, region: str, credentials_provider: Callable[[], Any]):
-        self.service = service
-        self.region = region
-        self.credentials_provider = credentials_provider
-
-    def auth_flow(self, request: httpx.Request):
-        """
-        Sign each outgoing HTTPX request with a frozen snapshot of the current
-        AWS credentials and write the SigV4 headers back onto the request.
-        """
-        credentials = self.credentials_provider()
-        credentials = credentials.get_frozen_credentials()
-
-        aws_request = AWSRequest(
-            method=request.method,
-            url=str(request.url),
-            data=request.content,
-            headers=dict(request.headers),
-        )
-        SigV4Auth(credentials, self.service, self.region).add_auth(aws_request)
-
-        for key, value in aws_request.headers.items():
-            request.headers[key] = value
-        yield request
 
 
 class AgentCoreRuntimeInvoker:
@@ -69,9 +38,14 @@ class AgentCoreRuntimeInvoker:
         *,
         client_provider: AgentCoreClientProvider,
         extract_region_from_arn: Callable[[str, str], str],
+        auth_service: AgentCoreRuntimeAuthService | None = None,
     ):
         self.client_provider = client_provider
         self.extract_region_from_arn = extract_region_from_arn
+        self.auth_service = auth_service or AgentCoreRuntimeAuthService(
+            client_provider=client_provider,
+            extract_region_from_arn=extract_region_from_arn,
+        )
         self._invoke_runtime_retry_attempts = max(1, int(settings.agentcore_invoke_runtime_retry_attempts or 4))
         self._invoke_runtime_retry_delay_seconds = float(settings.agentcore_invoke_runtime_retry_delay_seconds or 5.0)
         self._get_agent_card_retry_attempts = max(1, int(settings.agentcore_get_agent_card_retry_attempts or 1))
@@ -81,6 +55,7 @@ class AgentCoreRuntimeInvoker:
         self,
         *,
         server: ExtendedMCPServerDocument,
+        federation: Federation | None = None,
         region: str,
         assume_role_arn: str | None = None,
     ) -> None:
@@ -93,6 +68,7 @@ class AgentCoreRuntimeInvoker:
             result = await self.fetch_mcp_runtime_capabilities(
                 runtime_url=runtime_url,
                 transport_type=config.get("type"),
+                federation=federation,
                 metadata=server.federationMetadata or {},
                 runtime_detail=server.federationMetadata or {},
                 region=region,
@@ -132,6 +108,7 @@ class AgentCoreRuntimeInvoker:
         self,
         *,
         agent: A2AAgent,
+        federation: Federation | None = None,
         runtime_detail: dict[str, Any],
         region: str,
         assume_role_arn: str | None = None,
@@ -168,6 +145,7 @@ class AgentCoreRuntimeInvoker:
         try:
             card_data = await self.fetch_a2a_agent_card(
                 card_url=card_url,
+                federation=federation,
                 metadata=agent.federationMetadata or {},
                 runtime_detail=runtime_detail,
                 region=region,
@@ -288,6 +266,7 @@ class AgentCoreRuntimeInvoker:
         *,
         runtime_url: str,
         transport_type: str | None,
+        federation: Federation | None = None,
         metadata: dict[str, Any],
         region: str,
         runtime_detail: dict[str, Any] | None = None,
@@ -315,6 +294,7 @@ class AgentCoreRuntimeInvoker:
             http_fallback = await self._fetch_mcp_runtime_capabilities_via_http_with_retry(
                 runtime_url=runtime_url,
                 transport_type=transport_type,
+                federation=federation,
                 metadata=metadata,
                 runtime_detail=runtime_detail,
                 region=region,
@@ -327,6 +307,7 @@ class AgentCoreRuntimeInvoker:
         return await self._fetch_mcp_runtime_capabilities_via_http_with_retry(
             runtime_url=runtime_url,
             transport_type=transport_type,
+            federation=federation,
             metadata=metadata,
             runtime_detail=runtime_detail,
             region=region,
@@ -379,6 +360,7 @@ class AgentCoreRuntimeInvoker:
         self,
         *,
         card_url: str,
+        federation: Federation | None = None,
         metadata: dict[str, Any],
         region: str,
         runtime_detail: dict[str, Any] | None = None,
@@ -401,6 +383,7 @@ class AgentCoreRuntimeInvoker:
             )
 
         headers, httpx_auth = await self._build_runtime_http_auth(
+            federation=federation,
             metadata=metadata,
             runtime_detail=runtime_detail,
             region=region,
@@ -420,12 +403,14 @@ class AgentCoreRuntimeInvoker:
         *,
         runtime_url: str,
         transport_type: str | None,
+        federation: Federation | None = None,
         metadata: dict[str, Any],
         region: str,
         runtime_detail: dict[str, Any] | None = None,
         assume_role_arn: str | None = None,
     ) -> MCPServerData:
         headers, httpx_auth = await self._build_runtime_http_auth(
+            federation=federation,
             metadata=metadata,
             runtime_detail=runtime_detail,
             region=region,
@@ -445,6 +430,7 @@ class AgentCoreRuntimeInvoker:
         *,
         runtime_url: str,
         transport_type: str | None,
+        federation: Federation | None = None,
         metadata: dict[str, Any],
         region: str,
         runtime_detail: dict[str, Any] | None = None,
@@ -455,6 +441,7 @@ class AgentCoreRuntimeInvoker:
             result = await self._fetch_mcp_runtime_capabilities_via_http(
                 runtime_url=runtime_url,
                 transport_type=transport_type,
+                federation=federation,
                 metadata=metadata,
                 runtime_detail=runtime_detail,
                 region=region,
@@ -976,30 +963,16 @@ class AgentCoreRuntimeInvoker:
     async def _build_runtime_http_auth(
         self,
         *,
+        federation: Federation | None,
         metadata: dict[str, Any],
         region: str,
         runtime_detail: dict[str, Any] | None = None,
         assume_role_arn: str | None = None,
     ) -> tuple[dict[str, str], httpx.Auth | None]:
-        """
-        Build authentication material for runtime data-plane requests.
-
-        Modes:
-        - IAM: SigV4 request signing
-        - JWT: Bearer token header
-        """
-        mode = self.detect_agentcore_data_plane_auth_mode(metadata=metadata, runtime_detail=runtime_detail)
-        if mode == "JWT":
-            token = settings.agentcore_runtime_jwt
-            if not token:
-                raise ValueError("Runtime auth mode JWT detected but no AGENTCORE_RUNTIME_JWT token was configured")
-            return {"Authorization": f"Bearer {token}"}, None
-
-        resolved_region = self.extract_region_from_arn(metadata.get("runtimeArn", ""), region)
-        credentials_provider = await self.client_provider.get_runtime_credentials_provider(
-            resolved_region,
-            assume_role_arn,
+        return await self.auth_service.build_runtime_http_auth(
+            federation=federation,
+            metadata=metadata,
+            runtime_detail=runtime_detail,
+            region=region,
+            assume_role_arn=assume_role_arn,
         )
-        if not credentials_provider:
-            raise ValueError(f"Failed to initialize runtime credentials provider for region {resolved_region}")
-        return {}, _SigV4HttpxAuth("bedrock-agentcore", resolved_region, credentials_provider)

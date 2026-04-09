@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 import httpx
 from redis import Redis
 
+from registry_pkgs.models.enums import FederationProviderType
 from registry_pkgs.vector.client import DatabaseClient
 from registry_pkgs.vector.repositories.a2a_agent_repository import A2AAgentRepository
 from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRepository
@@ -20,6 +21,7 @@ from .services.a2a_agent_service import A2AAgentService
 from .services.access_control_service import ACLService
 from .services.agent_scanner import AgentScannerService
 from .services.agentcore_import_service import AgentCoreImportService
+from .services.federation.federation_handlers import AwsAgentCoreSyncHandler, AzureAiFoundrySyncHandler
 from .services.federation_crud_service import FederationCrudService
 from .services.federation_job_service import FederationJobService
 from .services.federation_service import FederationService
@@ -202,6 +204,10 @@ class RegistryContainer:
             a2a_agent_repo=self.a2a_agent_repo,
             acl_service=self.acl_service,
             user_service=self.user_service,
+            sync_handlers={
+                FederationProviderType.AWS_AGENTCORE: AwsAgentCoreSyncHandler(token_service=self.token_service),
+                FederationProviderType.AZURE_AI_FOUNDRY: AzureAiFoundrySyncHandler(),
+            },
         )
 
     async def startup(self) -> None:

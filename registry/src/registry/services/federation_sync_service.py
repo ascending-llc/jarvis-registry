@@ -83,6 +83,7 @@ class FederationSyncService:
         a2a_agent_repo,
         acl_service,
         user_service,
+        sync_handlers: dict[FederationProviderType, BaseFederationSyncHandler] | None = None,
     ):
         self.federation_crud_service = federation_crud_service
         self.federation_job_service = federation_job_service
@@ -91,7 +92,7 @@ class FederationSyncService:
         self.acl_service = acl_service
         self.user_service = user_service
 
-        self.sync_handlers: dict[FederationProviderType, BaseFederationSyncHandler] = {
+        self.sync_handlers: dict[FederationProviderType, BaseFederationSyncHandler] = sync_handlers or {
             FederationProviderType.AWS_AGENTCORE: AwsAgentCoreSyncHandler(),
             FederationProviderType.AZURE_AI_FOUNDRY: AzureAiFoundrySyncHandler(),
         }

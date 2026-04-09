@@ -43,6 +43,21 @@ class FederationSyncRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True, use_enum_values=True)
 
 
+class FederationRuntimeJwtSecretUpdateRequest(BaseModel):
+    clientId: str = Field(..., min_length=1)
+    clientSecret: str = Field(..., min_length=1)
+
+    model_config = ConfigDict(populate_by_name=True, use_enum_values=True)
+
+
+class FederationRuntimeJwtSecretUpdateResponse(BaseModel):
+    federationId: str
+    clientSecretRef: str
+    updatedAt: datetime
+
+    model_config = ConfigDict(populate_by_name=True, use_enum_values=True)
+
+
 class FederationStatsResponse(BaseModel):
     mcpServerCount: int = 0
     agentCount: int = 0

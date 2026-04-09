@@ -48,6 +48,10 @@ class TokenService:
         """Build client credentials identifier"""
         return f"mcp:{service_name}:client"
 
+    def _get_federation_secret_identifier(self, federation_id: str, secret_name: str) -> str:
+        """Build encrypted secret identifier for federation-scoped credentials."""
+        return f"federation:{federation_id}:{secret_name}"
+
     async def store_oauth_access_token(
         self, user_id: str, service_name: str, tokens: OAuthTokens, metadata: dict[str, Any] | None = None
     ) -> Token:
@@ -657,3 +661,58 @@ class TokenService:
 
         logger.debug(f"Retrieved client credentials for user={user_id}, service={service_name}")
         return client_info, token_doc.metadata
+
+    async def store_federation_secret(
+        self,
+        federation_id: str,
+        secret_name: str,
+        secret_value: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> Token:
+        """
+        Store an encrypted secret for a federation-scoped workflow.
+
+        The token collection requires a userId field. Federation secrets use the
+        federation ObjectId as a stable namespace key because no end-user owns
+        the runtime sync job execution path.
+        """
+        identifier = self._get_federation_secret_identifier(federation_id, secret_name)
+        encrypted = encrypt_value(secret_value)
+        expires_at = datetime.now(UTC) + timedelta(days=365)
+        token_query = {
+            "userId": PydanticObjectId(federation_id),
+            "type": TokenType.MCP_OAUTH_CLIENT.value,
+            "identifier": identifier,
+        }
+        existing = await Token.find_one(token_query)
+        if existing:
+            existing.token = encrypted
+            existing.expiresAt = expires_at
+            existing.metadata = metadata or {}
+            await existing.save()
+            return existing
+
+        token_doc = Token(
+            userId=PydanticObjectId(federation_id),
+            type=TokenType.MCP_OAUTH_CLIENT.value,
+            identifier=identifier,
+            token=encrypted,
+            expiresAt=expires_at,
+            metadata=metadata or {},
+        )
+        await token_doc.insert()
+        return token_doc
+
+    async def get_federation_secret(self, federation_id: str, secret_name: str) -> str | None:
+        """Retrieve and decrypt a federation-scoped secret value."""
+        identifier = self._get_federation_secret_identifier(federation_id, secret_name)
+        token_doc = await Token.find_one(
+            {
+                "userId": PydanticObjectId(federation_id),
+                "type": TokenType.MCP_OAUTH_CLIENT.value,
+                "identifier": identifier,
+            }
+        )
+        if token_doc is None:
+            return None
+        return decrypt_value(token_doc.token)

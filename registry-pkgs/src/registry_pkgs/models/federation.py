@@ -6,11 +6,48 @@ from pydantic import BaseModel, ConfigDict, Field
 from pymongo import IndexModel
 
 from registry_pkgs.models.enums import (
+    AgentCoreJwtTokenSource,
+    AgentCoreRuntimeAccessMode,
     FederationJobType,
     FederationProviderType,
     FederationStatus,
     FederationSyncStatus,
 )
+
+
+class AgentCoreRuntimeIamConfig(BaseModel):
+    """Reserved container for future IAM runtime access settings."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class AgentCoreRuntimeJwtConfig(BaseModel):
+    """Federation-local configuration used to acquire JWTs for AgentCore runtime access."""
+
+    tokenSource: AgentCoreJwtTokenSource = Field(
+        default=AgentCoreJwtTokenSource.CLIENT_CREDENTIALS,
+        description="JWT acquisition strategy for AgentCore runtime access",
+    )
+    discoveryUrl: str | None = Field(default=None, description="OIDC discovery URL override")
+    audience: str | None = Field(default=None, description="Requested OAuth audience override")
+    clientId: str | None = Field(default=None, description="OAuth client identifier")
+    scope: str | None = Field(default=None, description="Optional OAuth scope string")
+    clientSecretRef: str | None = Field(default=None, description="Reference to encrypted client secret storage")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class AgentCoreRuntimeAccessConfig(BaseModel):
+    """Federation-local runtime access mode for AgentCore data-plane enrichment."""
+
+    mode: AgentCoreRuntimeAccessMode = Field(
+        default=AgentCoreRuntimeAccessMode.IAM,
+        description="Explicit data-plane auth mode used for runtime enrichment",
+    )
+    iam: AgentCoreRuntimeIamConfig = Field(default_factory=AgentCoreRuntimeIamConfig)
+    jwt: AgentCoreRuntimeJwtConfig | None = Field(default=None)
+
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class AwsAgentCoreProviderConfig(BaseModel):
@@ -33,6 +70,10 @@ class AwsAgentCoreProviderConfig(BaseModel):
     resourceTagsFilter: dict[str, str] = Field(
         default_factory=dict,
         description="Tag filters used during discovery",
+    )
+    runtimeAccess: AgentCoreRuntimeAccessConfig = Field(
+        default_factory=AgentCoreRuntimeAccessConfig,
+        description="Federation-local runtime auth mode and JWT acquisition settings",
     )
 
     model_config = ConfigDict(populate_by_name=True)

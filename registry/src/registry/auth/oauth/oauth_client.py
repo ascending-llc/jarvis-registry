@@ -260,6 +260,53 @@ class OAuthClient:
             if "client" in locals():
                 await client.aclose()
 
+    async def fetch_client_credentials_token(
+        self,
+        *,
+        token_endpoint: str,
+        client_id: str,
+        client_secret: str | None,
+        scope: str | None = None,
+        audience: str | None = None,
+    ) -> OAuthTokens | None:
+        """
+        Acquire an OAuth access token using the client_credentials grant.
+        """
+        try:
+            client = AsyncOAuth2Client(
+                client_id=client_id,
+                client_secret=client_secret,
+                token_endpoint=token_endpoint,
+                token_endpoint_auth_method="client_secret_post" if client_secret else "none",
+                scope=scope,
+                timeout=30.0,
+            )
+            extra_params: dict[str, Any] = {}
+            if scope:
+                extra_params["scope"] = scope
+            if audience:
+                extra_params["audience"] = audience
+
+            token_response = await client.fetch_token(
+                token_endpoint,
+                grant_type="client_credentials",
+                **extra_params,
+            )
+            return OAuthTokens(
+                access_token=token_response.get("access_token"),
+                token_type=token_response.get("token_type", "Bearer"),
+                expires_in=token_response.get("expires_in"),
+                refresh_token=token_response.get("refresh_token"),
+                scope=token_response.get("scope"),
+                expires_at=token_response.get("expires_at"),
+            )
+        except Exception as e:
+            logger.error(f"Failed to fetch client_credentials token: {e}", exc_info=True)
+            return None
+        finally:
+            if "client" in locals():
+                await client.aclose()
+
     async def close(self):
         """Close all HTTP clients."""
         for client in self._clients.values():

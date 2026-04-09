@@ -13,6 +13,7 @@ from registry.api.v1.federation.federation_routes import (
     list_federations,
     sync_federation,
     update_federation,
+    update_federation_runtime_jwt_secret,
 )
 from registry.schemas.acl_schema import ResourcePermissions
 from registry.schemas.federation_api_schemas import (
@@ -71,7 +72,12 @@ def sample_federation():
         status=FederationStatus.ACTIVE,
         syncStatus=FederationSyncStatus.IDLE,
         syncMessage=None,
-        providerConfig={"region": "us-east-1", "assumeRoleArn": "arn:aws:iam::123456789012:role/TestRole"},
+        providerConfig={
+            "region": "us-east-1",
+            "assumeRoleArn": "arn:aws:iam::123456789012:role/TestRole",
+            "resourceTagsFilter": {},
+            "runtimeAccess": {"mode": "iam", "iam": {}},
+        },
         stats={"mcpServerCount": 0, "agentCount": 0, "toolCount": 0, "importedTotal": 0},
         lastSync=None,
         version=1,
@@ -128,7 +134,12 @@ async def test_create_federation_does_not_trigger_sync(sample_user_context, samp
 
 @pytest.mark.asyncio
 async def test_create_federation_allows_empty_aws_provider_config(sample_user_context, sample_federation, acl_service):
-    created_federation = SimpleNamespace(**{**sample_federation.__dict__, "providerConfig": {"resourceTagsFilter": {}}})
+    created_federation = SimpleNamespace(
+        **{
+            **sample_federation.__dict__,
+            "providerConfig": {"resourceTagsFilter": {}, "runtimeAccess": {"mode": "iam", "iam": {}}},
+        }
+    )
     federation_crud_service = MagicMock()
     federation_crud_service.create_federation = AsyncMock(return_value=created_federation)
     federation_crud_service.get_recent_jobs = AsyncMock(return_value=[])
@@ -146,7 +157,7 @@ async def test_create_federation_allows_empty_aws_provider_config(sample_user_co
         acl_service=acl_service,
     )
 
-    assert result.providerConfig == {"resourceTagsFilter": {}}
+    assert result.providerConfig == {"resourceTagsFilter": {}, "runtimeAccess": {"mode": "iam", "iam": {}}}
 
 
 @pytest.mark.asyncio
@@ -316,6 +327,78 @@ async def test_update_federation_skips_resync_when_provider_config_is_unchanged(
 
     federation_sync_service.update_federation_with_optional_resync.assert_awaited_once()
     assert result.version == 2
+
+
+@pytest.mark.asyncio
+async def test_update_federation_runtime_jwt_secret_stores_secret_and_sets_default_ref(
+    sample_user_context, sample_federation, acl_service
+):
+    jwt_ready_federation = SimpleNamespace(
+        **{
+            **sample_federation.__dict__,
+            "providerConfig": {
+                **sample_federation.providerConfig,
+                "runtimeAccess": {"mode": "jwt", "iam": {}, "jwt": {"clientId": "client-1"}},
+            },
+        }
+    )
+    updated_federation = SimpleNamespace(
+        **{
+            **jwt_ready_federation.__dict__,
+            "providerConfig": {
+                **sample_federation.providerConfig,
+                "runtimeAccess": {
+                    "mode": "jwt",
+                    "iam": {},
+                    "jwt": {
+                        "clientId": "client-1",
+                        "clientSecretRef": f"federation-agentcore-jwt::{jwt_ready_federation.id}::client_secret",
+                    },
+                },
+            },
+        }
+    )
+    federation_crud_service = MagicMock()
+    federation_crud_service.get_federation = AsyncMock(return_value=jwt_ready_federation)
+    federation_crud_service.update_runtime_jwt_credentials = AsyncMock(return_value=updated_federation)
+    token_service = MagicMock()
+    token_service.store_federation_secret = AsyncMock()
+
+    result = await update_federation_runtime_jwt_secret(
+        federation_id=str(jwt_ready_federation.id),
+        data=SimpleNamespace(clientId="client-1", clientSecret="secret-123"),
+        user_context=sample_user_context,
+        federation_crud_service=federation_crud_service,
+        token_service=token_service,
+        acl_service=acl_service,
+    )
+
+    federation_crud_service.update_runtime_jwt_credentials.assert_awaited_once()
+    token_service.store_federation_secret.assert_awaited_once()
+    assert result.clientSecretRef.endswith("client_secret")
+
+
+@pytest.mark.asyncio
+async def test_update_federation_runtime_jwt_secret_rejects_non_aws_federation(
+    sample_user_context, sample_federation, acl_service
+):
+    azure_federation = SimpleNamespace(
+        **{**sample_federation.__dict__, "providerType": FederationProviderType.AZURE_AI_FOUNDRY}
+    )
+    federation_crud_service = MagicMock()
+    federation_crud_service.get_federation = AsyncMock(return_value=azure_federation)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await update_federation_runtime_jwt_secret(
+            federation_id=str(azure_federation.id),
+            data=SimpleNamespace(clientId="client-1", clientSecret="secret-123"),
+            user_context=sample_user_context,
+            federation_crud_service=federation_crud_service,
+            token_service=MagicMock(),
+            acl_service=acl_service,
+        )
+
+    assert exc_info.value.status_code == 400
 
 
 @pytest.mark.asyncio

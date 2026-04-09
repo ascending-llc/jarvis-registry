@@ -15,6 +15,7 @@ from ....deps import (
     get_acl_service,
     get_federation_crud_service,
     get_federation_sync_service,
+    get_token_service,
 )
 from ....schemas.acl_schema import ResourcePermissions
 from ....schemas.errors import ErrorCode, create_error_detail
@@ -26,6 +27,8 @@ from ....schemas.federation_api_schemas import (
     FederationLastSyncSummaryResponse,
     FederationListItemResponse,
     FederationPagedResponse,
+    FederationRuntimeJwtSecretUpdateRequest,
+    FederationRuntimeJwtSecretUpdateResponse,
     FederationStatsResponse,
     FederationSyncDryRunResponse,
     FederationSyncDryRunSummaryResponse,
@@ -35,6 +38,7 @@ from ....schemas.federation_api_schemas import (
 )
 from ....schemas.server_api_schemas import PaginationMetadata
 from ....services.access_control_service import ACLService
+from ....services.oauth.token_service import TokenService
 
 logger = logging.getLogger(__name__)
 
@@ -262,6 +266,20 @@ def _raise_conflict(message: str) -> None:
     )
 
 
+def _build_default_client_secret_ref(federation_id: str) -> str:
+    return f"federation-agentcore-jwt::{federation_id}::client_secret"
+
+
+def _ensure_aws_agentcore_federation(federation) -> None:
+    if _enum_value(getattr(federation, "providerType", None)) != "aws_agentcore":
+        raise HTTPException(
+            status_code=http_status.HTTP_400_BAD_REQUEST,
+            detail=create_error_detail(
+                ErrorCode.INVALID_REQUEST, "JWT runtime secret is only supported for AWS AgentCore federations"
+            ),
+        )
+
+
 @router.post(
     "",
     response_model=FederationDetailResponse,
@@ -453,6 +471,50 @@ async def update_federation(
     except Exception as exc:
         _raise_sync_error(exc)
     return await _to_detail_response(federation, federation_crud_service, permissions)
+
+
+@router.put("/{federation_id}/runtime-jwt-secret", response_model=FederationRuntimeJwtSecretUpdateResponse)
+@track_registry_operation("update", resource_type="federation")
+async def update_federation_runtime_jwt_secret(
+    federation_id: str,
+    data: FederationRuntimeJwtSecretUpdateRequest,
+    user_context: CurrentUser,
+    federation_crud_service=Depends(get_federation_crud_service),
+    token_service: TokenService = Depends(get_token_service),
+    acl_service: ACLService = Depends(get_acl_service),
+):
+    federation = await _get_required_federation(federation_id, federation_crud_service)
+    _ensure_aws_agentcore_federation(federation)
+    await acl_service.check_user_permission(
+        user_id=PydanticObjectId(user_context.get("user_id")),
+        resource_type=FEDERATION_RESOURCE_TYPE,
+        resource_id=federation.id,
+        required_permission="EDIT",
+    )
+
+    provider_config = dict(getattr(federation, "providerConfig", {}) or {})
+    runtime_access = dict(provider_config.get("runtimeAccess") or {})
+    jwt_config = dict(runtime_access.get("jwt") or {})
+    client_secret_ref = jwt_config.get("clientSecretRef") or _build_default_client_secret_ref(str(federation.id))
+    if jwt_config.get("clientSecretRef") != client_secret_ref or jwt_config.get("clientId") != data.clientId:
+        federation = await federation_crud_service.update_runtime_jwt_credentials(
+            federation=federation,
+            client_id=data.clientId,
+            client_secret_ref=client_secret_ref,
+            updated_by=user_context.get("user_id"),
+        )
+
+    await token_service.store_federation_secret(
+        federation_id=str(federation.id),
+        secret_name=client_secret_ref,
+        secret_value=data.clientSecret,
+        metadata={"resourceType": FEDERATION_RESOURCE_TYPE, "secretName": "client_secret"},
+    )
+    return FederationRuntimeJwtSecretUpdateResponse(
+        federationId=str(federation.id),
+        clientSecretRef=client_secret_ref,
+        updatedAt=federation.updatedAt,
+    )
 
 
 def _require_syncable_federation(federation, *, dry_run: bool) -> None:
