@@ -287,7 +287,7 @@
 **Note:**
 - Uses `AgentDetailResponse` schema (not a separate create response)
 - Automatically grants OWNER permission to creator
-- ACL resource type is `ResourceType.AGENT`
+- ACL resource type is `ResourceType.REMOTE_AGENT`
 - Agent is created with `enabled: false` by default for safety
 - All agent metadata is auto-fetched from the provided URL and stored in `card` field without modification
 - User-provided configuration is stored separately in `config` field

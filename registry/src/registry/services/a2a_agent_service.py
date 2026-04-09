@@ -265,7 +265,7 @@ class A2AAgentService:
         Create a new agent. Automatically fetches agent card from provided URL.
 
         Args:
-            data: Agent creation data (path, name, description, url, type)
+            data: Agent creation data (path, title, description, url, type)
             user_id: User ID who creates the agent
 
         Returns:
@@ -280,7 +280,7 @@ class A2AAgentService:
 
             if data.type not in VALID_TRANSPORT_TYPES:
                 raise ValueError(
-                    f"Invalid transport type '{data.type}'. Must be one of: {', '.join(VALID_TRANSPORT_TYPES)}"
+                    f"Invalid transport type '{data.type}'. Must be one of: {', '.join(sorted(VALID_TRANSPORT_TYPES))}"
                 )
 
             # Check if path already exists
@@ -343,7 +343,7 @@ class A2AAgentService:
 
         Args:
             agent_id: Agent ID
-            data: Agent update data (path, name, description, url, type, enabled - all optional)
+            data: Agent update data (path, title, description, url, type, enabled - all optional)
 
         Returns:
             Updated agent document
@@ -365,7 +365,7 @@ class A2AAgentService:
 
                 if update_data["type"] not in VALID_TRANSPORT_TYPES:
                     raise ValueError(
-                        f"Invalid transport type '{update_data['type']}'. Must be one of: {', '.join(VALID_TRANSPORT_TYPES)}"
+                        f"Invalid transport type '{update_data['type']}'. Must be one of: {', '.join(sorted(VALID_TRANSPORT_TYPES))}"
                     )
 
             # If URL is being updated, fetch new agent card

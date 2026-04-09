@@ -84,6 +84,10 @@ async def test_list_agents_uses_injected_services(sample_user_context):
     a2a_agent_service.list_agents.assert_awaited_once()
     assert result.pagination.total == 1
     assert result.agents[0].name == "Test Agent"
+    # Assert config field is returned
+    assert result.agents[0].config is not None
+    assert result.agents[0].config.title == "Test Agent"
+    assert result.agents[0].config.type == "jsonrpc"
 
 
 @pytest.mark.asyncio
@@ -149,3 +153,8 @@ async def test_create_agent_uses_injected_services(sample_user_context):
     assert call_args.kwargs["resource_type"] == ResourceType.REMOTE_AGENT
     assert call_args.kwargs["perm_bits"] == RoleBits.OWNER
     assert result.name == "Test Agent"
+    # Assert config field is returned with correct values
+    assert result.config is not None
+    assert result.config.title == "Test Agent"
+    assert result.config.description == "Agent description"
+    assert result.config.type == "jsonrpc"

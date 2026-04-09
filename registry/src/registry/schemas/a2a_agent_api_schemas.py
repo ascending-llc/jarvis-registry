@@ -88,7 +88,7 @@ class AgentCreateRequest(APIBaseModel):
 
 
 class AgentUpdateRequest(APIBaseModel):
-    """Request schema for updating an agent - only 5 fields supported, other info auto-fetched from URL"""
+    """Request schema for updating an agent - supports 6 fields: path, title, description, url, type, enabled"""
 
     path: str | None = Field(None, description="Registry path (e.g., /code-reviewer)")
     title: str | None = Field(None, description="Agent title")
@@ -217,6 +217,22 @@ class WellKnownSyncResponse(APIBaseModel):
 # ==================== Converter Functions ====================
 
 
+def _convert_agent_config(agent: Any) -> AgentConfigOutput:
+    """Helper to convert agent config to output format"""
+    # Backward compatibility: if config is None, use card data
+    if agent.config is None:
+        return AgentConfigOutput(
+            title=agent.card.name,
+            description=agent.card.description,
+            type="unknown",
+        )
+    return AgentConfigOutput(
+        title=agent.config.title,
+        description=agent.config.description,
+        type=agent.config.type,
+    )
+
+
 def convert_to_list_item(agent: Any, acl_permission: int | ResourcePermissions) -> AgentListItem:
     """Convert A2AAgent document to list item"""
     from registry_pkgs.models.enums import PermissionBits
@@ -243,11 +259,7 @@ def convert_to_list_item(agent: Any, acl_permission: int | ResourcePermissions) 
         for skill in (agent.card.skills or [])
     ]
 
-    config_output = AgentConfigOutput(
-        title=agent.config.title,
-        description=agent.config.description,
-        type=agent.config.type,
-    )
+    config_output = _convert_agent_config(agent)
 
     return AgentListItem(
         id=str(agent.id),
@@ -330,11 +342,7 @@ def convert_to_detail(agent: Any, acl_permission: int | ResourcePermissions) -> 
         else:
             security_schemes_dict = dict(agent.card.security_schemes)
 
-    config_output = AgentConfigOutput(
-        title=agent.config.title,
-        description=agent.config.description,
-        type=agent.config.type,
-    )
+    config_output = _convert_agent_config(agent)
 
     return AgentDetailResponse(
         id=str(agent.id),
