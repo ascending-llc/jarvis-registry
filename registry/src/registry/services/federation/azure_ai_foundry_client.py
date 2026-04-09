@@ -195,9 +195,12 @@ class AzureAIFoundryFederationClient:
         if hasattr(value, "as_dict"):
             return AzureAIFoundryFederationClient._serialize_value(value.as_dict())
 
-        public_attrs = {
-            key: attr for key, attr in vars(value).items() if not key.startswith("_") and not callable(attr)
-        }
+        try:
+            value_vars = vars(value)
+        except TypeError:
+            value_vars = {}
+
+        public_attrs = {key: attr for key, attr in value_vars.items() if not key.startswith("_") and not callable(attr)}
         if public_attrs:
             return {
                 str(key): AzureAIFoundryFederationClient._serialize_value(attr) for key, attr in public_attrs.items()
