@@ -152,6 +152,7 @@ class A2AAgent(Document):
             [("registeredBy", 1)],
             IndexModel([("federationRefId", 1)]),
             IndexModel([("federationMetadata.runtimeArn", 1)], sparse=True),
+            IndexModel([("federationMetadata.agentName", 1)], sparse=True),
         ]
 
     # ========== Lifecycle Hooks ==========
@@ -222,10 +223,16 @@ class A2AAgent(Document):
         runtime_version = (self.federationMetadata or {}).get("runtimeVersion")
         if runtime_version is not None:
             base_metadata["runtimeVersion"] = str(runtime_version)
+        agent_version = (self.federationMetadata or {}).get("agentVersion")
+        if agent_version is not None:
+            base_metadata["agentVersion"] = str(agent_version)
         # Keep runtimeArn for debugging and future runtime-scoped repair.
         runtime_arn = (self.federationMetadata or {}).get("runtimeArn")
         if runtime_arn:
             base_metadata["runtimeArn"] = runtime_arn
+        agent_name = (self.federationMetadata or {}).get("agentName")
+        if agent_name:
+            base_metadata["agentName"] = str(agent_name)
 
         docs: list[LangChainDocument] = [
             LangChainDocument(
@@ -337,7 +344,7 @@ class A2AAgent(Document):
             raise ValueError(f"Invalid A2A agent card: {str(e)}")
 
         # Create MongoDB document
-        return cls(
+        return cls.model_construct(
             path=path,
             card=agent_card,
             author=registry_fields["author"],

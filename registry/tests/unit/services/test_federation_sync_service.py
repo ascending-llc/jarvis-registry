@@ -90,26 +90,26 @@ async def test_aws_handler_passes_resource_tags_filter_to_client():
 
 
 @pytest.mark.asyncio
-async def test_azure_handler_is_registered_and_returns_clear_not_implemented_error(
+async def test_azure_handler_is_registered_and_discovers_agents(
     federation_sync_service: FederationSyncService,
 ):
     federation = _make_federation(
         FederationProviderType.AZURE_AI_FOUNDRY,
         {
-            "region": "eastus",
-            "tenantId": "tenant-1",
-            "subscriptionId": "sub-1",
-            "resourceGroup": "rg-1",
-            "workspaceName": "ws-1",
+            "projectEndpoint": "https://example.projects.ai.azure.com",
         },
     )
 
     handler = federation_sync_service.get_sync_handler(FederationProviderType.AZURE_AI_FOUNDRY)
 
     assert isinstance(handler, AzureAiFoundrySyncHandler)
+    handler.discover_entities = AsyncMock(return_value={"mcp_servers": [], "a2a_agents": [], "skipped_agents": []})
+    federation_sync_service.sync_handlers[FederationProviderType.AZURE_AI_FOUNDRY] = handler
 
-    with pytest.raises(ValueError, match="azure_ai_foundry is not implemented yet"):
-        await federation_sync_service._discover_entities(federation)
+    result = await federation_sync_service._discover_entities(federation)
+
+    handler.discover_entities.assert_awaited_once_with(federation)
+    assert result == {"mcp_servers": [], "a2a_agents": [], "skipped_agents": []}
 
 
 @pytest.mark.asyncio

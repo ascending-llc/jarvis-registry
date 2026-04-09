@@ -38,6 +38,10 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/federations", tags=["federations"])
 FEDERATION_RESOURCE_TYPE = "federation"
+_BAD_GATEWAY_SYNC_ERROR_MESSAGES = (
+    "Failed to list AgentCore runtimes",
+    "Failed to list Azure AI Foundry agents",
+)
 
 
 def _enum_value(value):
@@ -52,7 +56,7 @@ def _raise_sync_error(exc: Exception) -> None:
             detail=create_error_detail(ErrorCode.NOT_IMPLEMENTED, message),
         ) from exc
 
-    if "Failed to list AgentCore runtimes" in message:
+    if any(text in message for text in _BAD_GATEWAY_SYNC_ERROR_MESSAGES):
         raise HTTPException(
             status_code=http_status.HTTP_502_BAD_GATEWAY,
             detail=create_error_detail(ErrorCode.EXTERNAL_SERVICE_ERROR, message),

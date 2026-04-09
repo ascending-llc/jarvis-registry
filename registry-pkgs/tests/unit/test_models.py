@@ -323,3 +323,29 @@ class TestExtendedMCPServerStructure:
         docs = agent.to_documents()
         assert docs
         assert docs[0].metadata.get("runtimeVersion") == "11"
+
+    def test_a2a_agent_uses_federation_metadata_for_remote_identity(self):
+        agent = A2AAgent.from_a2a_agent_card(
+            card_data={
+                "name": "Azure Agent",
+                "description": "A federated Azure agent",
+                "url": "https://example.projects.ai.azure.com",
+                "version": "3",
+                "capabilities": {"streaming": True},
+                "defaultInputModes": ["text/plain"],
+                "defaultOutputModes": ["application/json"],
+                "skills": [],
+            },
+            path="/azure-ai-foundry/a2a/azure-agent",
+            author=PydanticObjectId(),
+            federationMetadata={
+                "providerType": "azure_ai_foundry",
+                "agentName": "azure-agent",
+                "agentVersion": "3",
+                "agentVersionId": "asst_abc123",
+            },
+        )
+
+        assert agent.federationRefId is None
+        assert agent.federationMetadata["providerType"] == "azure_ai_foundry"
+        assert agent.federationMetadata["agentVersionId"] == "asst_abc123"

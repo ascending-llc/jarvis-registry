@@ -164,3 +164,28 @@ def test_validate_provider_config_requires_region_and_assume_role_for_aws():
         "assumeRoleArn": "arn:aws:iam::123456789012:role/test-role",
         "resourceTagsFilter": {},
     }
+
+
+def test_normalize_provider_config_allows_empty_azure_config_for_create():
+    service = FederationCrudService()
+
+    result = service.normalize_provider_config(FederationProviderType.AZURE_AI_FOUNDRY, {})
+
+    assert result == {"metadataFilter": {}}
+
+
+def test_validate_provider_config_requires_project_endpoint_for_azure():
+    service = FederationCrudService()
+
+    with pytest.raises(ValueError, match="providerConfig.projectEndpoint"):
+        service.validate_provider_config(FederationProviderType.AZURE_AI_FOUNDRY, {})
+
+    result = service.validate_provider_config(
+        FederationProviderType.AZURE_AI_FOUNDRY,
+        {"projectEndpoint": "https://example.projects.ai.azure.com"},
+    )
+
+    assert result == {
+        "projectEndpoint": "https://example.projects.ai.azure.com",
+        "metadataFilter": {},
+    }

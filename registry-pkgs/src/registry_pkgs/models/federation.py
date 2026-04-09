@@ -40,15 +40,17 @@ class AwsAgentCoreProviderConfig(BaseModel):
 
 class AzureAiFoundryProviderConfig(BaseModel):
     """
-    Azure AI Foundry provider configuration (reserved for future use)
+    Azure AI Foundry federation-level provider configuration.
     """
 
-    region: str | None = None
-    tenantId: str | None = None
-    subscriptionId: str | None = None
-    resourceGroup: str | None = None
-    workspaceName: str | None = None
-    resourceTagsFilter: dict[str, str] = Field(default_factory=dict)
+    projectEndpoint: str | None = Field(
+        default=None,
+        description="Azure AI Foundry project endpoint used to create AIProjectClient",
+    )
+    metadataFilter: dict[str, str] = Field(
+        default_factory=dict,
+        description="Agent metadata key/value filters applied during discovery",
+    )
 
     model_config = ConfigDict(populate_by_name=True)
 

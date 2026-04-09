@@ -261,9 +261,6 @@ system-ops:
   - action: get_admin_tokens
     method: GET
     endpoint: /admin/tokens
-  - action: sync_agentcore_runtime
-    method: POST
-    endpoint: /federation/agentcore/runtime/sync
 
 mcp-proxy-ops:
   - action: delete_session
