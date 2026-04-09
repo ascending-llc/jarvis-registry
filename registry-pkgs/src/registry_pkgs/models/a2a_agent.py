@@ -56,7 +56,7 @@ from typing import Any, ClassVar
 from a2a.types import AgentCard
 from beanie import Document, Insert, PydanticObjectId, Replace, Save, before_event
 from langchain_core.documents import Document as LangChainDocument
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, ValidationError
 from pymongo import IndexModel
 
 logger = logging.getLogger(__name__)
@@ -345,7 +345,10 @@ class A2AAgent(Document):
 
         well_known = registry_fields.get("wellKnown")
         if isinstance(well_known, dict):
-            well_known = WellKnownConfig.model_validate(well_known)
+            try:
+                well_known = WellKnownConfig.model_validate(well_known)
+            except ValidationError as exc:
+                raise ValueError(f"Invalid wellKnown config: {str(exc)}") from exc
 
         # Create MongoDB document
         return cls.model_construct(
