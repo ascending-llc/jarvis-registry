@@ -20,15 +20,11 @@ def main() -> None:
         .decode()
     )
 
-    priv = private_pem.replace("\\n", "\\\\n")
-
-    pub = public_pem.replace("\\n", "\\\\n")
-
     print("# Paste into .env (local dev) or store as secrets in AWS Secrets Manager/Azure Key Vault (prod).")
 
-    print(f'JWT_PRIVATE_KEY="{priv}"')
+    print(f'JWT_PRIVATE_KEY="{private_pem}"')
 
-    print(f'JWT_PUBLIC_KEY="{pub}"')
+    print(f'JWT_PUBLIC_KEY="{public_pem}"')
 
 
 if __name__ == "__main__":

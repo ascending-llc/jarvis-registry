@@ -16,12 +16,18 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-
-from .config import ScopesConfig
+from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
 _SCOPES_CONFIG_CACHE: dict[str, dict[str, Any]] = {}
+
+
+class ScopesConfig(BaseModel):
+    scopes_config_path: str = Field(
+        default="",
+        description="Path to scopes.yml; package-bundled file is used when empty",
+    )
 
 
 def get_scopes_file_path(config: ScopesConfig) -> Path:

@@ -6,7 +6,7 @@ encryption implementation used elsewhere in the system.
 
 TypeScript equivalent:
 - Algorithm: AES-CBC
-- Key derivation: CREDS_KEY from hex string
+- Key derivation: settings.encryption_key - guaranteed to be valid only app starts up successfully
 - IV: Random 16 bytes per encryption
 - Format: hex(iv):hex(ciphertext)
 """
@@ -40,39 +40,6 @@ REFRESH_TOKEN_EXPIRES_DAYS = 7  # 7 days
 # Algorithm constants
 ALGORITHM = "AES-CBC"
 IV_LENGTH = 16  # 128 bits
-
-# Get encryption key from environment
-_ENCRYPTION_KEY: bytes | None = None
-
-
-def _get_encryption_key() -> bytes:
-    """
-    Get the encryption key from settings configuration.
-
-    Returns:
-        bytes: encryption key from CREDS_KEY (hex decoded)
-
-    Raises:
-        ValueError: If CREDS_KEY is not set or invalid
-    """
-    global _ENCRYPTION_KEY
-
-    if _ENCRYPTION_KEY is None:
-        creds_key = settings.creds_key
-        if not creds_key:
-            raise ValueError(
-                "CREDS_KEY configuration must be set for encryption/decryption. Set the CREDS_KEY environment variable."
-            )
-
-        # Decode from hex (matching TypeScript: Buffer.from(process.env.CREDS_KEY, 'hex'))
-        try:
-            key_bytes = bytes.fromhex(creds_key)
-        except ValueError as e:
-            raise ValueError(f"CREDS_KEY must be a valid hex string: {e}")
-
-        _ENCRYPTION_KEY = key_bytes
-
-    return _ENCRYPTION_KEY
 
 
 def generate_service_jwt(user_id: str, username: str | None = None, scopes: list[str] | None = None) -> str:
@@ -142,9 +109,6 @@ def encrypt_value(plaintext: str) -> str:
         return plaintext
 
     try:
-        # Get encryption key
-        key = _get_encryption_key()
-
         # Generate random IV
         gen_iv = os.urandom(IV_LENGTH)
 
@@ -157,7 +121,7 @@ def encrypt_value(plaintext: str) -> str:
         padded_data = plaintext_bytes + bytes([padding_length] * padding_length)
 
         # Create cipher
-        cipher = Cipher(algorithms.AES(key), modes.CBC(gen_iv), backend=default_backend())
+        cipher = Cipher(algorithms.AES(settings.encryption_key), modes.CBC(gen_iv), backend=default_backend())
         encryptor = cipher.encryptor()
 
         # Encrypt
@@ -203,9 +167,6 @@ def decrypt_value(encrypted_value: str) -> str:
         return parts[0]
 
     try:
-        # Get encryption key
-        key = _get_encryption_key()
-
         # Split IV and ciphertext (matching TS logic)
         gen_iv = bytes.fromhex(parts[0])
         encrypted = ":".join(parts[1:])
@@ -218,7 +179,7 @@ def decrypt_value(encrypted_value: str) -> str:
             raise ValueError(f"Invalid IV length: expected {IV_LENGTH}, got {len(gen_iv)}")
 
         # Create cipher
-        cipher = Cipher(algorithms.AES(key), modes.CBC(gen_iv), backend=default_backend())
+        cipher = Cipher(algorithms.AES(settings.encryption_key), modes.CBC(gen_iv), backend=default_backend())
         decryptor = cipher.decryptor()
 
         # Decrypt
