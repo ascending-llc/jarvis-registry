@@ -59,6 +59,11 @@
       ],
       "enabled": true,
       "status": "active",
+      "config": {
+        "title": "Code Review Agent",
+        "description": "AI-powered code review assistant",
+        "type": "jsonrpc"
+      },
       "permissions": {
         "VIEW": true,
         "EDIT": true,
@@ -82,6 +87,7 @@
 **Note:**
 - Uses `AgentListItem` schema for list items
 - All field names use camelCase convention
+- Each agent includes `config` field with user-provided metadata
 
 ---
 
@@ -159,6 +165,11 @@
   "tags": ["code", "review"],
   "status": "active",
   "enabled": true,
+  "config": {
+    "title": "Code Review Agent",
+    "description": "AI-powered code review assistant",
+    "type": "jsonrpc"
+  },
   "permissions": {
     "VIEW": true,
     "EDIT": true,
@@ -181,6 +192,7 @@
 **Note:**
 - Uses `AgentDetailResponse` schema
 - All field names use camelCase convention
+- Includes `config` field with user-provided metadata
 
 **Error**: `404` Agent not found, `403` Access denied
 
@@ -190,29 +202,35 @@
 
 **Endpoint**: `POST /api/v1/agents`
 
-**Description**: Register a new A2A agent. Only 4 fields are required in the request body. All other agent information (version, capabilities, skills, etc.) is automatically fetched from the agent's `.well-known/agent-card.json` endpoint using the A2A SDK.
+**Description**: Register a new A2A agent. Only 5 fields are required in the request body. All other agent information (version, capabilities, skills, etc.) is automatically fetched from the agent's `.well-known/agent-card.json` endpoint using the A2A SDK. The fetched agent card is stored as-is without modification in the `card` field.
 
 **Request Body**:
 ```json
 {
   "path": "/code-reviewer",
-  "name": "Code Review Agent",
+  "title": "Code Review Agent",
   "description": "AI-powered code review assistant",
-  "url": "https://example.com/agents/code-reviewer"
+  "url": "https://example.com/agents/code-reviewer",
+  "type": "jsonrpc"
 }
 ```
 
 **Request Fields**:
 - `path` (required, string): Unique registry path identifier (e.g., `/code-reviewer`)
-- `name` (required, string): Display name for the agent in the registry
-- `description` (optional, string): Description of the agent for the registry
+- `title` (required, string): Display title for the agent in the registry (stored in `config.title`)
+- `description` (optional, string): Description of the agent for the registry (stored in `config.description`)
 - `url` (required, string): Agent endpoint URL - the agent card will be automatically fetched from `{url}/.well-known/agent-card.json`
+- `type` (required, string): Transport type - must be one of: `jsonrpc`, `grpc`, `http_json`
+
+**Data Storage Structure**:
+- `card`: Original agent card from third-party URL (unmodified)
+- `config`: Registry-specific configuration containing user-provided `title`, `description`, and `type`
 
 **Auto-Fetch Behavior**:
 1. System fetches agent card from `{url}/.well-known/agent-card.json` using A2A SDK
 2. Validates the fetched agent card structure
-3. Uses fetched data for: `version`, `protocolVersion`, `capabilities`, `skills`, `securitySchemes`, `preferredTransport`, `defaultInputModes`, `defaultOutputModes`, `provider`
-4. Overrides `name` and `description` with values from request if provided
+3. **Stores the original card data without any modifications in the `card` field**
+4. User-provided `title`, `description`, and `type` are stored separately in the `config` field
 5. Enables wellKnown sync automatically for future updates
 6. **Tags field**: Initialized as empty array `[]` - tags are registry-level metadata separate from skill tags, and can be managed manually if needed
 
@@ -242,6 +260,11 @@
   "tags": [],
   "status": "active",
   "enabled": false,
+  "config": {
+    "title": "Code Review Agent",
+    "description": "AI-powered code review assistant",
+    "type": "jsonrpc"
+  },
   "permissions": {
     "VIEW": true,
     "EDIT": true,
@@ -266,10 +289,11 @@
 - Automatically grants OWNER permission to creator
 - ACL resource type is `ResourceType.AGENT`
 - Agent is created with `enabled: false` by default for safety
-- All agent metadata is auto-fetched from the provided URL
+- All agent metadata is auto-fetched from the provided URL and stored in `card` field without modification
+- User-provided configuration is stored separately in `config` field
 
 **Error**:
-- `400` Validation error or failed to fetch agent card from URL
+- `400` Validation error, invalid transport type, or failed to fetch agent card from URL
 - `409` Path already exists
 
 ---
@@ -278,40 +302,47 @@
 
 **Endpoint**: `PATCH /api/v1/agents/{agent_id}`
 
-**Description**: Update an existing agent. Only 4 fields can be updated via this endpoint. When the `url` field is updated, all other agent information is automatically fetched from the new URL's `.well-known/agent-card.json` endpoint.
+**Description**: Update an existing agent. Multiple fields can be updated via this endpoint. When the `url` field is updated, all other agent information is automatically fetched from the new URL's `.well-known/agent-card.json` endpoint and stored as-is in the `card` field.
 
 **Request Body** (all fields optional):
 ```json
 {
   "path": "/new-code-reviewer",
-  "name": "Updated Agent Name",
+  "title": "Updated Agent Name",
   "description": "Updated description",
-  "url": "https://example.com/agents/new-code-reviewer"
+  "url": "https://example.com/agents/new-code-reviewer",
+  "type": "grpc",
+  "enabled": true
 }
 ```
 
 **Request Fields** (all optional):
 - `path` (string): Update the registry path
-- `name` (string): Update the display name
-- `description` (string): Update the description
+- `title` (string): Update the display title (stored in `config.title`)
+- `description` (string): Update the description (stored in `config.description`)
 - `url` (string): Update the agent endpoint URL
+- `type` (string): Update the transport type - must be one of: `jsonrpc`, `grpc`, `http_json`
+- `enabled` (boolean): Update the enabled state
 
 **Auto-Fetch Behavior**:
 1. **If `url` is updated**:
    - System fetches new agent card from `{new_url}/.well-known/agent-card.json`
-   - All card fields (version, capabilities, skills, etc.) are updated from fetched data
-   - `name` and `description` from request override the fetched values if provided
-   - Tags are re-extracted from new skills
+   - **Stores the original card data without any modifications in the `card` field**
+   - User-provided fields (`title`, `description`, `type`) are updated in the `config` field separately
    - wellKnown sync is updated with new URL and sync status
 
-2. **If only `name` or `description` is updated** (no URL change):
-   - Only these fields are updated in the existing agent card
+2. **If only `title`, `description`, or `type` is updated** (no URL change):
+   - Only these fields are updated in the `config` field
    - No agent card re-fetch occurs
-   - Other fields remain unchanged
+   - The `card` field remains unchanged
 
 3. **If only `path` is updated**:
    - Registry path is updated (must be unique)
-   - Agent card remains unchanged
+   - Agent card and config remain unchanged
+
+4. **If only `enabled` is updated**:
+   - Agent enabled state is toggled
+   - No other fields are changed
 
 **Response**: `200 OK`
 ```json
@@ -333,6 +364,11 @@
   "tags": ["new", "tags"],
   "status": "active",
   "enabled": true,
+  "config": {
+    "title": "Updated Agent Name",
+    "description": "Updated description",
+    "type": "grpc"
+  },
   "permissions": {
     "VIEW": true,
     "EDIT": true,
@@ -355,10 +391,11 @@
 **Note:**
 - Uses `AgentDetailResponse` schema (not a separate update response)
 - Returns complete agent details after update
-- If URL is changed, automatically re-fetches all agent metadata from new URL
+- If URL is changed, automatically re-fetches all agent metadata from new URL and stores in `card` field
+- User-provided configuration is stored separately in `config` field
 
 **Error**:
-- `400` Validation error or failed to fetch agent card from new URL
+- `400` Validation error, invalid transport type, or failed to fetch agent card from new URL
 - `404` Agent not found
 - `403` Access denied
 - `409` New path conflicts with existing agent
@@ -412,6 +449,11 @@
   "tags": ["code", "review"],
   "status": "active",
   "enabled": true,
+  "config": {
+    "title": "Code Review Agent",
+    "description": "AI-powered code review assistant",
+    "type": "jsonrpc"
+  },
   "permissions": {
     "VIEW": true,
     "EDIT": true,
@@ -428,6 +470,7 @@
 **Note:**
 - Uses `AgentDetailResponse` schema (not a separate toggle response)
 - Returns complete agent details after toggle
+- Includes `config` field with user-provided metadata
 
 **Error**: `404` Agent not found, `403` Access denied
 
