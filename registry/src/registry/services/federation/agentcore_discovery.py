@@ -55,11 +55,17 @@ class AgentCoreFederationClient:
         - If resource_tags_filter is provided, only runtimes whose AWS resource
           tags fully match the filter are imported.
         """
-        control_client = await self.client_provider.get_control_client(region, assume_role_arn)
         normalized_tag_filter = dict(resource_tags_filter or {})
 
         try:
-            runtime_summaries = await asyncio.to_thread(self._list_runtime_summaries, control_client)
+            control_client, runtime_summaries = await self.client_provider.execute_with_control_client(
+                region,
+                lambda control_client: (
+                    control_client,
+                    self._list_runtime_summaries(control_client),
+                ),
+                assume_role_arn,
+            )
         except Exception as exc:
             logger.error("Failed to list AgentCore runtimes in %s: %s", region, exc, exc_info=True)
             raise RuntimeError(f"Failed to list AgentCore runtimes in {region}: {exc}") from exc

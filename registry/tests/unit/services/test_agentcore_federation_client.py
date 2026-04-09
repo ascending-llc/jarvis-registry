@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import boto3
 import pytest
+from botocore.exceptions import ClientError
 from botocore.stub import Stubber
 
 from registry.services.federation.agentcore_discovery import AgentCoreFederationClient
@@ -347,17 +348,70 @@ class TestAgentCoreFederationClient:
     async def test_discover_runtime_entities_raises_when_runtime_listing_fails(self, monkeypatch):
         client = AgentCoreFederationClient()
 
-        async def _get_control_client(_region, _assume_role_arn=None):
-            return object()
+        async def _execute_with_control_client(_region, operation, _assume_role_arn=None):
+            return operation(object())
 
         def _list_runtime_summaries(_client):
             raise RuntimeError("Token has expired and refresh failed")
 
-        monkeypatch.setattr(client.client_provider, "get_control_client", _get_control_client)
+        monkeypatch.setattr(client.client_provider, "execute_with_control_client", _execute_with_control_client)
         monkeypatch.setattr(client, "_list_runtime_summaries", _list_runtime_summaries)
 
         with pytest.raises(RuntimeError, match="Failed to list AgentCore runtimes in us-east-1"):
             await client.discover_runtime_entities(region="us-east-1")
+
+    async def test_discover_runtime_entities_refreshes_cached_client_after_expired_token(self, monkeypatch):
+        client = AgentCoreFederationClient()
+        stale_client = object()
+        refreshed_client = object()
+        execute_calls: list[tuple[str, str | None]] = []
+
+        responses = [
+            ClientError(
+                error_response={
+                    "Error": {
+                        "Code": "ExpiredTokenException",
+                        "Message": "The security token included in the request is expired",
+                    }
+                },
+                operation_name="ListAgentRuntimes",
+            ),
+            [
+                {
+                    "agentRuntimeArn": "arn:aws:bedrock-agentcore:us-east-1:123:runtime/r1",
+                    "agentRuntimeId": "r1",
+                    "agentRuntimeVersion": "1",
+                    "agentRuntimeName": "runtime-mcp",
+                }
+            ],
+        ]
+
+        def _list_runtime_summaries(control_client):
+            result = responses.pop(0)
+            if isinstance(result, Exception):
+                raise result
+            assert control_client is refreshed_client
+            return result
+
+        async def _execute_with_control_client(region, operation, assume_role_arn=None):
+            execute_calls.append((region, assume_role_arn))
+            if len(execute_calls) == 1:
+                with pytest.raises(ClientError):
+                    operation(stale_client)
+                return operation(refreshed_client)
+            return operation(refreshed_client)
+
+        monkeypatch.setattr(client.client_provider, "execute_with_control_client", _execute_with_control_client)
+        monkeypatch.setattr(client, "_list_runtime_summaries", _list_runtime_summaries)
+        monkeypatch.setattr(client, "_get_runtime_details", lambda *_args, **_kwargs: [])
+
+        result = await client.discover_runtime_entities(
+            region="us-east-1",
+            assume_role_arn="arn:aws:iam::123456789012:role/TestRole",
+        )
+
+        assert result == {"a2a_agents": [], "mcp_servers": [], "skipped_runtimes": []}
+        assert execute_calls == [("us-east-1", "arn:aws:iam::123456789012:role/TestRole")]
 
 
 def _async_return(value):

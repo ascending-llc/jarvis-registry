@@ -330,15 +330,17 @@ class AgentCoreRuntimeInvoker:
             raise ValueError("runtime_arn is required")
 
         resolved_region = self.extract_region_from_arn(runtime_arn, region)
-        client = await self._get_runtime_client(resolved_region, assume_role_arn)
-
         payload = self._json_to_bytes({"prompt": prompt})
-        response = await self._call_with_runtime_init_retry(
-            lambda: client.invoke_agent_runtime(
-                agentRuntimeArn=runtime_arn,
-                qualifier=qualifier,
-                payload=payload,
-            )
+        response = await self.client_provider.execute_with_runtime_client(
+            resolved_region,
+            lambda client: self._call_with_runtime_init_retry(
+                lambda: client.invoke_agent_runtime(
+                    agentRuntimeArn=runtime_arn,
+                    qualifier=qualifier,
+                    payload=payload,
+                )
+            ),
+            assume_role_arn,
         )
 
         response_text = self._response_text_from_runtime_response(response)
@@ -467,9 +469,12 @@ class AgentCoreRuntimeInvoker:
             raise ValueError("Missing runtime ARN for GetAgentCard")
 
         resolved_region = self.extract_region_from_arn(runtime_arn, region)
-        client = await self._get_runtime_client(resolved_region, assume_role_arn)
-        response = await self._call_with_a2a_card_retry(
-            lambda: client.get_agent_card(agentRuntimeArn=runtime_arn, qualifier="DEFAULT")
+        response = await self.client_provider.execute_with_runtime_client(
+            resolved_region,
+            lambda client: self._call_with_a2a_card_retry(
+                lambda: client.get_agent_card(agentRuntimeArn=runtime_arn, qualifier="DEFAULT")
+            ),
+            assume_role_arn,
         )
         card = self._coerce_json_object(response.get("agentCard"))
         if card is None:
@@ -489,42 +494,18 @@ class AgentCoreRuntimeInvoker:
             return MCPServerData(None, None, None, None, "Missing runtime ARN for InvokeAgentRuntime")
 
         resolved_region = self.extract_region_from_arn(runtime_arn, region)
-        client = await self._get_runtime_client(resolved_region, assume_role_arn)
 
         try:
-            runtime_session_id, mcp_session_id, protocol_version = await self._initialize_mcp_session(
-                client=client,
-                runtime_arn=runtime_arn,
-            )
-            tools_result, _, _, _ = await self._invoke_mcp_jsonrpc(
-                client=client,
-                runtime_arn=runtime_arn,
-                method="tools/list",
-                params={},
-                request_id=self._next_request_id(),
-                runtime_session_id=runtime_session_id,
-                mcp_session_id=mcp_session_id,
-                protocol_version=protocol_version,
-            )
-            resources_result, _, _, _ = await self._invoke_mcp_jsonrpc(
-                client=client,
-                runtime_arn=runtime_arn,
-                method="resources/list",
-                params={},
-                request_id=self._next_request_id(),
-                runtime_session_id=runtime_session_id,
-                mcp_session_id=mcp_session_id,
-                protocol_version=protocol_version,
-            )
-            prompts_result, _, _, _ = await self._invoke_mcp_jsonrpc(
-                client=client,
-                runtime_arn=runtime_arn,
-                method="prompts/list",
-                params={},
-                request_id=self._next_request_id(),
-                runtime_session_id=runtime_session_id,
-                mcp_session_id=mcp_session_id,
-                protocol_version=protocol_version,
+            (
+                tools_result,
+                resources_result,
+                prompts_result,
+                runtime_session_id,
+                mcp_session_id,
+            ) = await self.client_provider.execute_with_runtime_client(
+                resolved_region,
+                lambda client: self._collect_mcp_runtime_capabilities(client, runtime_arn),
+                assume_role_arn,
             )
         except Exception as exc:
             return MCPServerData(None, None, None, None, f"SDK MCP invocation failed: {exc}")
@@ -547,6 +528,47 @@ class AgentCoreRuntimeInvoker:
         if not client:
             raise ValueError(f"Failed to initialize AgentCore runtime client for region {region}")
         return client
+
+    async def _collect_mcp_runtime_capabilities(
+        self,
+        client: Any,
+        runtime_arn: str,
+    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], str | None, str | None]:
+        runtime_session_id, mcp_session_id, protocol_version = await self._initialize_mcp_session(
+            client=client,
+            runtime_arn=runtime_arn,
+        )
+        tools_result, _, _, _ = await self._invoke_mcp_jsonrpc(
+            client=client,
+            runtime_arn=runtime_arn,
+            method="tools/list",
+            params={},
+            request_id=self._next_request_id(),
+            runtime_session_id=runtime_session_id,
+            mcp_session_id=mcp_session_id,
+            protocol_version=protocol_version,
+        )
+        resources_result, _, _, _ = await self._invoke_mcp_jsonrpc(
+            client=client,
+            runtime_arn=runtime_arn,
+            method="resources/list",
+            params={},
+            request_id=self._next_request_id(),
+            runtime_session_id=runtime_session_id,
+            mcp_session_id=mcp_session_id,
+            protocol_version=protocol_version,
+        )
+        prompts_result, _, _, _ = await self._invoke_mcp_jsonrpc(
+            client=client,
+            runtime_arn=runtime_arn,
+            method="prompts/list",
+            params={},
+            request_id=self._next_request_id(),
+            runtime_session_id=runtime_session_id,
+            mcp_session_id=mcp_session_id,
+            protocol_version=protocol_version,
+        )
+        return tools_result, resources_result, prompts_result, runtime_session_id, mcp_session_id
 
     async def _initialize_mcp_session(
         self,
