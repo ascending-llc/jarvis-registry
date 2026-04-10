@@ -70,7 +70,11 @@ def sample_federation():
         status=FederationStatus.ACTIVE,
         syncStatus=FederationSyncStatus.IDLE,
         syncMessage=None,
-        providerConfig={"region": "us-east-1", "assumeRoleArn": "arn:aws:iam::123456789012:role/TestRole"},
+        providerConfig={
+            "region": "us-east-1",
+            "assumeRoleArn": "arn:aws:iam::123456789012:role/TestRole",
+            "runtimeAccess": {"mode": "iam", "iam": {}},
+        },
         stats={"mcpServerCount": 0, "agentCount": 0, "toolCount": 0, "importedTotal": 0},
         lastSync=None,
         version=1,
@@ -127,7 +131,12 @@ async def test_create_federation_does_not_trigger_sync(sample_user_context, samp
 
 @pytest.mark.asyncio
 async def test_create_federation_allows_empty_aws_provider_config(sample_user_context, sample_federation, acl_service):
-    created_federation = SimpleNamespace(**{**sample_federation.__dict__, "providerConfig": {"resourceTagsFilter": {}}})
+    created_federation = SimpleNamespace(
+        **{
+            **sample_federation.__dict__,
+            "providerConfig": {"resourceTagsFilter": {}, "runtimeAccess": {"mode": "iam", "iam": {}}},
+        }
+    )
     federation_crud_service = MagicMock()
     federation_crud_service.create_federation = AsyncMock(return_value=created_federation)
     federation_crud_service.get_recent_jobs = AsyncMock(return_value=[])
@@ -145,7 +154,7 @@ async def test_create_federation_allows_empty_aws_provider_config(sample_user_co
         acl_service=acl_service,
     )
 
-    assert result.providerConfig == {"resourceTagsFilter": {}}
+    assert result.providerConfig == {"resourceTagsFilter": {}, "runtimeAccess": {"mode": "iam", "iam": {}}}
 
 
 @pytest.mark.asyncio
@@ -413,7 +422,10 @@ async def test_sync_federation_rejects_running_sync_status(sample_user_context, 
 @pytest.mark.asyncio
 async def test_sync_federation_requires_aws_region_and_assume_role(sample_user_context, sample_federation, acl_service):
     federation_missing_config = SimpleNamespace(
-        **{**sample_federation.__dict__, "providerConfig": {"resourceTagsFilter": {}}}
+        **{
+            **sample_federation.__dict__,
+            "providerConfig": {"resourceTagsFilter": {}, "runtimeAccess": {"mode": "iam", "iam": {}}},
+        }
     )
     federation_crud_service = MagicMock()
     federation_crud_service.get_federation = AsyncMock(return_value=federation_missing_config)

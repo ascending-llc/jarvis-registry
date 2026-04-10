@@ -36,6 +36,8 @@ class AwsAgentCoreConnectionConfig:
 
     @classmethod
     def from_provider_config(cls, provider_config: dict[str, Any] | None) -> AwsAgentCoreConnectionConfig:
+        # Normalize API/storage camelCase once at the handler boundary so the
+        # rest of the sync path can stay in snake_case.
         raw_config = dict(provider_config or {})
         return cls(
             region=raw_config.get("region") or settings.aws_region or "us-east-1",
@@ -67,7 +69,8 @@ class AwsAgentCoreSyncHandler(BaseFederationSyncHandler):
             resource_tags_filter=connection.resource_tags_filter,
         )
         await self._enrich_discovered_entities(
-            discovered,
+            federation=federation,
+            discovered=discovered,
             region=connection.region,
             assume_role_arn=connection.assume_role_arn,
         )
@@ -75,14 +78,18 @@ class AwsAgentCoreSyncHandler(BaseFederationSyncHandler):
 
     async def _enrich_discovered_entities(
         self,
+        federation: Federation,
         discovered: dict[str, list[Any]],
         *,
         region: str,
         assume_role_arn: str | None,
     ) -> None:
+        # Runtime enrichment needs the federation context because JWT mode is a
+        # federation-level decision, not something stored on each child entity.
         for server in discovered.get("mcp_servers", []):
             await self.runtime_invoker.enrich_mcp_server(
                 server=server,
+                federation=federation,
                 region=region,
                 assume_role_arn=assume_role_arn,
             )
@@ -90,6 +97,7 @@ class AwsAgentCoreSyncHandler(BaseFederationSyncHandler):
         for agent in discovered.get("a2a_agents", []):
             await self.runtime_invoker.enrich_a2a_agent(
                 agent=agent,
+                federation=federation,
                 runtime_detail=dict(agent.federationMetadata or {}),
                 region=region,
                 assume_role_arn=assume_role_arn,

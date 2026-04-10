@@ -51,6 +51,13 @@ class FederationProviderType(StrEnum):
     AZURE_AI_FOUNDRY = "azure_ai_foundry"
 
 
+class AgentCoreRuntimeAccessMode(StrEnum):
+    """Federation-configured auth mode for AgentCore runtime data-plane access."""
+
+    IAM = "iam"
+    JWT = "jwt"
+
+
 class FederationStatus(StrEnum):
     """Lifecycle status for a federation definition."""
 
