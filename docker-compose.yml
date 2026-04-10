@@ -15,12 +15,7 @@ services:
 
   # Registry service (includes nginx, SSL, FAISS, models)
   registry:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.registry
-      args:
-        TOOL_DISCOVERY_MODE: ${TOOL_DISCOVERY_MODE:-external}
-        BUILD_VERSION: ${BUILD_VERSION:-}
+    image: ghcr.io/ascending-llc/jarvis/registry:latest
     networks:
       default:
         aliases:
@@ -78,9 +73,7 @@ services:
 
   # Registry Frontend
   registry-frontend:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.registry-frontend
+    image: ghcr.io/ascending-llc/jarvis/registry-frontend:latest
     environment:
       - NGINX_BASE_PATH=${NGINX_BASE_PATH:-}
       - AUTH_SERVER_URL=http://auth-server:8888
@@ -145,9 +138,7 @@ services:
         - dev
   # Auth service (separate and scalable)
   auth-server:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.auth
+    image: ghcr.io/ascending-llc/jarvis/auth-server:latest
     environment:
       - AWS_REGION=${AWS_REGION:-us-east-1}
       # Keycloak configuration
@@ -277,7 +268,7 @@ services:
 
   # Keycloak Identity Provider
   keycloak:
-    image: quay.io/keycloak/keycloak:25.0
+    image: quay.io/keycloak/keycloak:latest
     command: start-dev  # Use 'start' for production with proper SSL
     environment:
       # Database configuration
