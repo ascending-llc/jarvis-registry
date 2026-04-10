@@ -54,6 +54,19 @@ const MainConfigForm: React.FC<MainConfigFormProps> = ({ formData, agentDetail, 
       if (result) {
         setDiscoveredData(result);
         if (!silent) showToast('Agent card discovered successfully', 'success');
+
+        let discoveredType = '';
+        if (result.preferredTransport) {
+          const transportStr = result.preferredTransport.toLowerCase();
+          if (transportStr.includes('grpc')) discoveredType = 'grpc';
+          else if (transportStr.includes('jsonrpc')) discoveredType = 'jsonrpc';
+          else if (transportStr.includes('http')) discoveredType = 'http_json';
+        }
+
+        if (!formData.title && result.name) updateField('title', result.name);
+        if (!formData.description && result.description) updateField('description', result.description);
+        if (!formData.type && discoveredType) updateField('type', discoveredType);
+
       } else {
         if (!silent) showToast('Failed to discover agent card', 'error');
       }
@@ -93,6 +106,23 @@ const MainConfigForm: React.FC<MainConfigFormProps> = ({ formData, agentDetail, 
       <section>
         <h3 className='text-lg font-semibold text-gray-900 dark:text-white mb-4'>Basic Information</h3>
         <div className='space-y-6'>
+          {/* Transport Type */}
+          <FormFields.RadioGroupField
+            label='Transport Type'
+            name='type'
+            id='type'
+            required
+            disabled={isReadOnly}
+            options={[
+              { label: 'JSONRPC', value: 'jsonrpc' },
+              { label: 'GRPC', value: 'grpc' },
+              { label: 'HTTP_JSON', value: 'http_json' },
+            ]}
+            value={formData.type}
+            onChange={val => updateField('type', val)}
+            error={errors?.type}
+          />
+
           {/* Title */}
           <FormFields.InputField
             label='Title'
