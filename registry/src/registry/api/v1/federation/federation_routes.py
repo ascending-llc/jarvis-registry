@@ -303,10 +303,7 @@ async def create_federation(
             perm_bits=RoleBits.OWNER,
         )
     except ValueError as exc:
-        raise HTTPException(
-            status_code=http_status.HTTP_400_BAD_REQUEST,
-            detail=create_error_detail(ErrorCode.INVALID_REQUEST, str(exc)),
-        ) from exc
+        _raise_federation_value_error(exc)
     logger.info(f"Created federation {federation.id}")
     return await _to_detail_response(
         federation,
@@ -468,10 +465,7 @@ def _validate_sync_provider_config(federation_crud_service, provider_type, provi
     try:
         return federation_crud_service.validate_provider_config(provider_type, provider_config)
     except ValueError as exc:
-        raise HTTPException(
-            status_code=http_status.HTTP_400_BAD_REQUEST,
-            detail=create_error_detail(ErrorCode.INVALID_REQUEST, str(exc)),
-        ) from exc
+        _raise_federation_value_error(exc)
 
 
 @router.post("/{federation_id}/sync", response_model=FederationSyncJobResponse | FederationSyncDryRunResponse)
@@ -500,7 +494,6 @@ async def sync_federation(
             Route based on:
             federation.providerType
                 AWS → AwsAgentCoreSyncHandler
-                Azure → AzureAiFoundrySyncHandler
         4. Discovery
             Call provider API
             Get:

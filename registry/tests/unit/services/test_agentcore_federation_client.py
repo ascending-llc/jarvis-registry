@@ -411,7 +411,10 @@ class TestAgentCoreFederationClient:
         )
 
         assert result == {"a2a_agents": [], "mcp_servers": [], "skipped_runtimes": []}
-        assert execute_calls == [("us-east-1", "arn:aws:iam::123456789012:role/TestRole")]
+        assert execute_calls == [
+            ("us-east-1", "arn:aws:iam::123456789012:role/TestRole"),
+            ("us-east-1", "arn:aws:iam::123456789012:role/TestRole"),
+        ]
 
 
 def _async_return(value):

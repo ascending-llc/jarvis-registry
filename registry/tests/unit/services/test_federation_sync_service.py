@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from beanie import PydanticObjectId
 
-from registry.services.federation.federation_handlers import AwsAgentCoreSyncHandler, AzureAiFoundrySyncHandler
+from registry.services.federation.federation_handlers import AwsAgentCoreSyncHandler
 from registry.services.federation_sync_service import FederationSyncMutationResult, FederationSyncService
 from registry_pkgs.models.enums import FederationProviderType, FederationStatus, FederationSyncStatus
 from registry_pkgs.models.federation_sync_job import FederationApplySummary
@@ -90,26 +90,14 @@ async def test_aws_handler_passes_resource_tags_filter_to_client():
 
 
 @pytest.mark.asyncio
-async def test_azure_handler_is_registered_and_discovers_agents(
-    federation_sync_service: FederationSyncService,
-):
+async def test_azure_sync_is_not_implemented(federation_sync_service: FederationSyncService):
     federation = _make_federation(
         FederationProviderType.AZURE_AI_FOUNDRY,
-        {
-            "projectEndpoint": "https://example.projects.ai.azure.com",
-        },
+        {"projectEndpoint": "https://example.projects.ai.azure.com"},
     )
 
-    handler = federation_sync_service.get_sync_handler(FederationProviderType.AZURE_AI_FOUNDRY)
-
-    assert isinstance(handler, AzureAiFoundrySyncHandler)
-    handler.discover_entities = AsyncMock(return_value={"mcp_servers": [], "a2a_agents": [], "skipped_agents": []})
-    federation_sync_service.sync_handlers[FederationProviderType.AZURE_AI_FOUNDRY] = handler
-
-    result = await federation_sync_service._discover_entities(federation)
-
-    handler.discover_entities.assert_awaited_once_with(federation)
-    assert result == {"mcp_servers": [], "a2a_agents": [], "skipped_agents": []}
+    with pytest.raises(ValueError, match="not implemented yet"):
+        await federation_sync_service._discover_entities(federation)
 
 
 @pytest.mark.asyncio

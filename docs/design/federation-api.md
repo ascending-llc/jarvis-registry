@@ -30,6 +30,10 @@ aws_agentcore
 azure_ai_foundry
 ```
 
+Current implementation note:
+- `aws_agentcore` is the only supported federation provider in this version
+- `azure_ai_foundry` is still reserved in the enum for compatibility, but create, update, and sync currently return `501 Not Implemented`
+
 ### federation status
 
 ```text
@@ -103,7 +107,7 @@ AWS `resourceTagsFilter` API shape example:
 
 | Field | Type | Required | Description |
 |---|---|---:|---|
-| `providerType` | `string` | Yes | `aws_agentcore` or `azure_ai_foundry` |
+| `providerType` | `string` | Yes | `aws_agentcore` is supported. `azure_ai_foundry` currently returns `501 Not Implemented`. |
 | `displayName` | `string` | Yes | 1-200 chars |
 | `description` | `string \| null` | No | Federation description |
 | `tags` | `string[]` | No | UI classification tags |
@@ -392,7 +396,7 @@ Response shape is the same as `POST /federations`.
 {
   "detail": {
     "error": "not_implemented",
-    "message": "Federation provider azure_ai_foundry is not implemented yet. The sync handler hook is ready; only the Azure discovery adapter is pending."
+    "message": "Azure AI Foundry federation sync is not implemented yet"
   }
 }
 ```
@@ -535,7 +539,7 @@ When `dryRun=true`:
 {
   "detail": {
     "error": "not_implemented",
-    "message": "Federation provider azure_ai_foundry is not implemented yet. The sync handler hook is ready; only the Azure discovery adapter is pending."
+    "message": "Azure AI Foundry federation sync is not implemented yet"
   }
 }
 ```
@@ -704,4 +708,4 @@ Status: `200 OK`
 - The UI-friendly string form such as `env:production, team:platform` must be converted by the frontend into the API object form `{ "env": "production", "team": "platform" }`.
 - `toolCount` is already returned in federation stats and can be displayed directly in the UI.
 - `POST /federations/{federation_id}/sync` returns a job summary, not the full federation detail.
-- Azure AI Foundry has a registered provider handler entrypoint, but sync may still return not implemented until the provider adapter is completed.
+- `azure_ai_foundry` remains in the provider enum for compatibility, but the current federation sync design does not implement that provider path.

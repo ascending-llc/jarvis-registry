@@ -5,7 +5,6 @@ from typing import Any
 
 from registry.services.federation.agentcore_discovery import AgentCoreFederationClient
 from registry.services.federation.agentcore_runtime import AgentCoreRuntimeInvoker
-from registry.services.federation.azure_ai_foundry_client import AzureAIFoundryFederationClient
 from registry_pkgs.models.enums import FederationProviderType
 from registry_pkgs.models.federation import AwsAgentCoreProviderConfig, Federation
 
@@ -73,31 +72,3 @@ class AwsAgentCoreSyncHandler(BaseFederationSyncHandler):
                 region=region,
                 assume_role_arn=assume_role_arn,
             )
-
-
-class AzureAiFoundrySyncHandler(BaseFederationSyncHandler):
-    provider_type = FederationProviderType.AZURE_AI_FOUNDRY
-
-    def __init__(
-        self,
-        discovery_client_factory: type[AzureAIFoundryFederationClient] = AzureAIFoundryFederationClient,
-    ):
-        self.discovery_client_factory = discovery_client_factory
-
-    async def discover_entities(self, federation: Federation) -> dict[str, list[Any]]:
-        raw_config = dict(federation.providerConfig or {})
-        project_endpoint = (raw_config.get("projectEndpoint") or settings.azure_ai_project_endpoint or "").strip()
-        if not project_endpoint:
-            raise ValueError("Azure AI Foundry federation requires providerConfig.projectEndpoint")
-        metadata_filter = dict(raw_config.get("metadataFilter") or {})
-
-        discovery_client = self.discovery_client_factory(
-            project_endpoint=project_endpoint,
-            metadata_filter=metadata_filter,
-        )
-        discovered = await discovery_client.discover_entities(author_id=None)
-        return {
-            "mcp_servers": [],
-            "a2a_agents": discovered.get("a2a_agents", []),
-            "skipped_agents": discovered.get("skipped_agents", []),
-        }

@@ -23,7 +23,6 @@ from registry_pkgs.models.federation_sync_job import FederationApplySummary, Fed
 from .agentcore_import_service import AgentCoreImportService
 from .federation.federation_handlers import (
     AwsAgentCoreSyncHandler,
-    AzureAiFoundrySyncHandler,
     BaseFederationSyncHandler,
 )
 from .federation_crud_service import FederationCrudService
@@ -93,10 +92,11 @@ class FederationSyncService:
 
         self.sync_handlers: dict[FederationProviderType, BaseFederationSyncHandler] = {
             FederationProviderType.AWS_AGENTCORE: AwsAgentCoreSyncHandler(),
-            FederationProviderType.AZURE_AI_FOUNDRY: AzureAiFoundrySyncHandler(),
         }
 
     def get_sync_handler(self, provider_type: FederationProviderType) -> BaseFederationSyncHandler:
+        if provider_type == FederationProviderType.AZURE_AI_FOUNDRY:
+            raise ValueError("Azure AI Foundry federation sync is not implemented yet")
         handler = self.sync_handlers.get(provider_type)
         if handler is None:
             raise ValueError(f"Unsupported federation provider type: {provider_type}")

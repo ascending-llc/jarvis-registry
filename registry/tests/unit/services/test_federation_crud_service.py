@@ -169,23 +169,12 @@ def test_validate_provider_config_requires_region_and_assume_role_for_aws():
 def test_normalize_provider_config_allows_empty_azure_config_for_create():
     service = FederationCrudService()
 
-    result = service.normalize_provider_config(FederationProviderType.AZURE_AI_FOUNDRY, {})
+    with pytest.raises(ValueError, match="not implemented yet"):
+        service.normalize_provider_config(FederationProviderType.AZURE_AI_FOUNDRY, {})
 
-    assert result == {"metadataFilter": {}}
 
-
-def test_validate_provider_config_requires_project_endpoint_for_azure():
+def test_validate_provider_config_rejects_azure_provider():
     service = FederationCrudService()
 
-    with pytest.raises(ValueError, match="providerConfig.projectEndpoint"):
+    with pytest.raises(ValueError, match="not implemented yet"):
         service.validate_provider_config(FederationProviderType.AZURE_AI_FOUNDRY, {})
-
-    result = service.validate_provider_config(
-        FederationProviderType.AZURE_AI_FOUNDRY,
-        {"projectEndpoint": "https://example.projects.ai.azure.com"},
-    )
-
-    assert result == {
-        "projectEndpoint": "https://example.projects.ai.azure.com",
-        "metadataFilter": {},
-    }
