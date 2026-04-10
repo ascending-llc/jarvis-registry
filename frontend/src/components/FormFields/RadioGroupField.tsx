@@ -1,13 +1,10 @@
 import type React from 'react';
-import type { RadioOption } from './types';
+import type { BaseFieldProps, RadioOption } from './types';
 
-interface RadioGroupFieldProps {
-  label?: string;
+export interface RadioGroupFieldProps extends BaseFieldProps {
   options: RadioOption[];
   value: string | number;
   onChange: (value: any) => void;
-  className?: string;
-  disabled?: boolean;
   name?: string;
 }
 
@@ -16,19 +13,38 @@ interface RadioGroupFieldProps {
  */
 export const RadioGroupField: React.FC<RadioGroupFieldProps> = ({
   label,
+  labelTag,
   options,
   value,
   onChange,
   className = '',
   disabled,
+  error,
+  helperText,
+  required,
+  id,
 }) => {
+  const borderClass = error ? 'border border-red-500' : '';
+
   return (
     <div className={className}>
-      {label && <label className='block text-sm font-medium text-gray-900 dark:text-gray-100 mb-2'>{label}</label>}
-      <div className='flex p-1 bg-gray-200 dark:bg-gray-700/50 rounded-lg'>
+      {label && (
+        <label className='flex items-center justify-between mb-1'>
+          <span className='text-sm font-medium text-gray-900 dark:text-gray-100'>
+            {label} {required && <span className='text-red-500'>*</span>}
+          </span>
+          {labelTag && (
+            <span className='text-xs font-semibold uppercase tracking-wide px-2 py-0.5 rounded bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-400'>
+              {labelTag}
+            </span>
+          )}
+        </label>
+      )}
+      <div className={`flex p-1 bg-gray-200 dark:bg-gray-700/50 rounded-lg ${borderClass}`}>
         {options.map(option => (
           <button
             key={option.value}
+            id={id ? `${id}-${option.value}` : undefined}
             type='button'
             disabled={disabled}
             onClick={() => onChange(option.value)}
@@ -42,6 +58,8 @@ export const RadioGroupField: React.FC<RadioGroupFieldProps> = ({
           </button>
         ))}
       </div>
+      {helperText && <div className='mt-1 text-xs text-gray-500 dark:text-gray-400'>{helperText}</div>}
+      {error && <p className='mt-1 text-xs text-red-500'>{error}</p>}
     </div>
   );
 };
