@@ -260,6 +260,22 @@ class A2AAgentService:
             logger.error(f"Error getting agent {agent_id}: {e}", exc_info=True)
             raise
 
+    async def get_agent_by_path(self, path: str) -> A2AAgent | None:
+        """
+        Get agent by registry path.
+
+        Args:
+            path: Registry path (e.g., /deep-intel)
+
+        Returns:
+            Agent document, or None if not found
+        """
+        try:
+            return await A2AAgent.find_one({"path": path})
+        except Exception as e:
+            logger.error(f"Error getting agent by path {path}: {e}", exc_info=True)
+            return None
+
     async def create_agent(self, data: AgentCreateRequest, user_id: str) -> A2AAgent:
         """
         Create a new agent. Automatically fetches agent card from provided URL.
