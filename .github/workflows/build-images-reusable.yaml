@@ -52,11 +52,6 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Download Beanie models from jarvis-api release
-        env:
-          JARVIS_RELEASE_ACCESS_TOKEN: ${{ secrets.JARVIS_RELEASE_ACCESS_TOKEN }}
-        run: uv run poe generate-schemas ${{ steps.schema.outputs.schema-version }}
-
       - name: Build artifacts
         run: uv run poe build-artifacts
 
