@@ -103,26 +103,7 @@ backend)
         echo "BUILD_VERSION not set, will use default version"
     fi
 
-    # Validate required environment variables
-    if [ -z "${SECRET_KEY:-}" ]; then
-        echo "ERROR: SECRET_KEY environment variable is not set."
-        echo "Please set SECRET_KEY to a secure value before running the container."
-        exit 1
-    fi
-
-    if [ -z "${ADMIN_PASSWORD:-}" ]; then
-        echo "ERROR: ADMIN_PASSWORD environment variable is not set."
-        echo "Please set ADMIN_PASSWORD to a secure value before running the container."
-        exit 1
-    fi
-
-    if [ -z "${ADMIN_USER:-}" ]; then
-        echo "ERROR: ADMIN_USER environment variable is not set."
-        echo "Please set ADMIN_USER before running the container."
-        exit 1
-    fi
-
-    echo "Running in external tool discovery mode"
+    echo "Running in ${TOOL_DISCOVERY_MODE:-unknown} tool discovery mode"
 
     # Start the registry
     echo "Starting MCP Registry on port 7860..."

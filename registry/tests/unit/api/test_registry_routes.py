@@ -79,7 +79,7 @@ def admin_session_cookie():
 
     return generate_access_token(
         user_id="test-admin-id",
-        username=settings.admin_user,
+        username="admin",
         email="admin@test.local",
         groups=groups,
         scopes=scopes,

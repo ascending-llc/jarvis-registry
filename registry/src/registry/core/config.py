@@ -1,18 +1,14 @@
 import logging
-import secrets
 from functools import cached_property
 from pathlib import Path
-from typing import Any
+from typing import Self
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import model_validator
 
-from registry_pkgs import load_scopes_config
 from registry_pkgs.core.config import (
     ChunkingConfig,
-    MongoConfig,
+    JarvisBaseSettings,
     RedisConfig,
-    ScopesConfig,
-    TelemetryConfig,
     VectorConfig,
 )
 from registry_pkgs.vector.config import BackendConfig
@@ -23,22 +19,11 @@ MCP_CLIENT_INFO = {
 }
 
 
-class Settings(BaseSettings):
+class Settings(JarvisBaseSettings):
     """Registry application settings loaded via pydantic-settings."""
-
-    model_config = SettingsConfigDict(
-        env_file=".env",
-        case_sensitive=False,
-        extra="ignore",
-    )
 
     # ==================== MCP Client Info ====================
     mcp_client_info: dict[str, str] = MCP_CLIENT_INFO
-
-    # ==================== Auth ====================
-    secret_key: str = ""
-    admin_user: str = "admin"
-    admin_password: str = "password"
 
     # ==================== Session ====================
     session_cookie_name: str = "jarvis_registry_session"
@@ -48,12 +33,7 @@ class Settings(BaseSettings):
     session_cookie_domain: str | None = None
 
     # ==================== Service URLs ====================
-    auth_server_url: str = "http://localhost:8888"
-    auth_server_external_url: str = "http://localhost:8888"
-    auth_server_api_prefix: str = ""
     registry_client_url: str = "http://localhost:5173"
-    registry_url: str = "http://localhost:7860"
-    registry_app_name: str = "jarvis-registry-client"
 
     # ==================== Headers ====================
     auth_egress_header: str = "Authorization"
@@ -121,20 +101,6 @@ class Settings(BaseSettings):
     redis_uri: str = "redis://registry-redis:6379/1"
     redis_key_prefix: str = "jarvis-registry"
 
-    # ==================== MongoDB ====================
-    mongo_uri: str = "mongodb://127.0.0.1:27017/jarvis"
-    mongodb_username: str = ""
-    mongodb_password: str = ""
-
-    # ==================== Telemetry ====================
-    otel_metrics_config_path: str = ""
-    otel_exporter_otlp_endpoint: str = "http://otel-collector:4318"
-    otel_prometheus_enabled: bool = False
-    otel_prometheus_port: int = 9464
-
-    # ==================== Scopes ====================
-    scopes_config_path: str = ""
-
     # ==================== Chunking ====================
     max_chunk_size: int = 2048
     chunk_overlap: int = 200
@@ -178,20 +144,8 @@ class Settings(BaseSettings):
     azure_openai_llm_deployment: str = ""
     llm_model: str = "gpt-4"
 
-    # ==================== Azure AI Foundry Federation ====================
-    azure_ai_project_endpoint: str = ""
-
-    # ==================== JWT ====================
-    jwt_issuer: str = "jarvis-auth-server"
-    jwt_audience: str = "jarvis-services"
-    jwt_self_signed_kid: str = "self-signed-key-v1"
-
-    # ==================== Logging ====================
-    log_level: str = "INFO"
-    log_format: str = "%(asctime)s,p%(process)s,{%(name)s:%(lineno)d},%(levelname)s,%(message)s"
-
     # ==================== Encryption ====================
-    creds_key: str | None = None
+    creds_key: str = ""
 
     # ==================== Keycloak Integration ====================
     keycloak_url: str = "http://keycloak:8080"
@@ -209,21 +163,42 @@ class Settings(BaseSettings):
     # ==================== Build Metadata ====================
     build_version: str = "1.0.0"
 
-    def model_post_init(self, __context: Any) -> None:
-        if not self.secret_key:
-            self.secret_key = secrets.token_hex(32)
+    # ==================== Model Validation ====================
 
-        if self.auth_server_api_prefix:
-            prefix = self.auth_server_api_prefix.rstrip("/")
-            if not self.auth_server_url.endswith(prefix):
-                self.auth_server_url = f"{self.auth_server_url.rstrip('/')}{prefix}"
-            if not self.auth_server_external_url.endswith(prefix):
-                self.auth_server_external_url = f"{self.auth_server_external_url.rstrip('/')}{prefix}"
+    @model_validator(mode="after")
+    def _validate_tool_discovery_mode(self) -> Self:
+        if self.x_jarvis_registry_import_checks == "disabled":
+            logging.warning("TOOL_DISCOVERY_MODE validation is disabled. This should only happen in CI import checks.")
 
-        if self.tool_discovery_mode not in {"embedded", "external"}:
+            return self
+
+        if self.tool_discovery_mode not in ("embedded", "external"):
             raise ValueError(
-                f"Invalid tool_discovery_mode: {self.tool_discovery_mode}. Must be 'embedded' or 'external'"
+                f"Invalid tool_discovery_mode: '{self.tool_discovery_mode}'. Must be 'embedded' or 'external'."
             )
+
+        return self
+
+    @model_validator(mode="after")
+    def _validate_creds_key(self) -> Self:
+        if self.x_jarvis_registry_import_checks == "disabled":
+            logging.warning("CREDS_KEY validation is disabled. This should only happen in CI import checks.")
+
+            return self
+
+        if self.creds_key == "":
+            raise ValueError("CREDS_KEY must be set for encryption/decryption.")
+
+        try:
+            bytes.fromhex(self.creds_key)
+        except ValueError as exc:
+            raise ValueError(f"CREDS_KEY must be a valid hex string, but it is {self.creds_key}") from exc
+
+        return self
+
+    @cached_property
+    def encryption_key(self) -> bytes:
+        return bytes.fromhex(self.creds_key)
 
     @cached_property
     def is_local_dev(self) -> bool:
@@ -292,29 +267,8 @@ class Settings(BaseSettings):
         return self.agents_dir / "agent_state.json"
 
     @cached_property
-    def mongo_config(self) -> MongoConfig:
-        return MongoConfig(
-            mongo_uri=self.mongo_uri,
-            mongodb_username=self.mongodb_username,
-            mongodb_password=self.mongodb_password,
-        )
-
-    @cached_property
     def redis_config(self) -> RedisConfig:
         return RedisConfig(redis_uri=self.redis_uri, redis_key_prefix=self.redis_key_prefix)
-
-    @cached_property
-    def telemetry_config(self) -> TelemetryConfig:
-        return TelemetryConfig(
-            otel_metrics_config_path=self.otel_metrics_config_path,
-            otel_exporter_otlp_endpoint=self.otel_exporter_otlp_endpoint,
-            otel_prometheus_enabled=self.otel_prometheus_enabled,
-            otel_prometheus_port=self.otel_prometheus_port,
-        )
-
-    @cached_property
-    def scopes_file_config(self) -> ScopesConfig:
-        return ScopesConfig(scopes_config_path=self.scopes_config_path)
 
     @cached_property
     def chunking_config(self) -> ChunkingConfig:
@@ -347,40 +301,6 @@ class Settings(BaseSettings):
     @cached_property
     def vector_backend_config(self) -> BackendConfig:
         return BackendConfig.from_vector_config(self.vector_config)
-
-    def configure_logging(self) -> None:
-        """
-        We set hanlders on two named loggers `registry` and `registry_pkgs` only.
-        This is to avoid the noises if we were to place the handler on the root logger.
-        """
-
-        numeric_level = getattr(logging, self.log_level.upper(), logging.INFO)
-
-        registry_logger = logging.getLogger(__package__.split(".")[0])
-        registry_logger.propagate = False
-        registry_logger.setLevel(numeric_level)
-
-        if len(registry_logger.handlers) == 0:
-            handler = logging.StreamHandler()
-
-            handler.setFormatter(logging.Formatter(self.log_format))
-
-            registry_logger.addHandler(handler)
-
-        registry_pkgs_logger = logging.getLogger("registry_pkgs")
-        registry_pkgs_logger.propagate = False
-        registry_pkgs_logger.setLevel(numeric_level)
-
-        if len(registry_pkgs_logger.handlers) == 0:
-            handler = logging.StreamHandler()
-
-            handler.setFormatter(logging.Formatter(self.log_format))
-
-            registry_pkgs_logger.addHandler(handler)
-
-    @cached_property
-    def scopes_config(self) -> dict[str, Any]:
-        return load_scopes_config(self.scopes_file_config)
 
 
 settings = Settings()

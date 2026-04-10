@@ -300,6 +300,8 @@ class TestExtendedMCPServerStructure:
         assert "original_mcp_name" not in result
 
     def test_a2a_to_documents_includes_runtime_version_metadata(self):
+        from registry_pkgs.models.a2a_agent import AgentConfig
+
         agent = A2AAgent.model_construct(
             id=PydanticObjectId(),
             path="/agentcore/a2a/versioned-agent",
@@ -312,6 +314,11 @@ class TestExtendedMCPServerStructure:
                 defaultInputModes=["text/plain"],
                 defaultOutputModes=["application/json"],
                 skills=[],
+            ),
+            config=AgentConfig(
+                title="Versioned Agent",
+                description="A test A2A agent",
+                type="jsonrpc",
             ),
             tags=["agentcore"],
             status="active",

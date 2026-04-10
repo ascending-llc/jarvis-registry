@@ -160,8 +160,10 @@ class A2AAgentService:
             if query:
                 # Escape regex special characters to prevent regex injection attacks
                 escaped_query = re.escape(query)
-                # Search across card fields: name, description, skills
+                # Search across config fields and card fields: title, description, skills
                 filters["$or"] = [
+                    {"config.title": {"$regex": escaped_query, "$options": "i"}},
+                    {"config.description": {"$regex": escaped_query, "$options": "i"}},
                     {"card.name": {"$regex": escaped_query, "$options": "i"}},
                     {"card.description": {"$regex": escaped_query, "$options": "i"}},
                     {"tags": {"$regex": escaped_query, "$options": "i"}},
@@ -263,7 +265,7 @@ class A2AAgentService:
         Create a new agent. Automatically fetches agent card from provided URL.
 
         Args:
-            data: Agent creation data (path, name, description, url)
+            data: Agent creation data (path, title, description, url, type)
             user_id: User ID who creates the agent
 
         Returns:
@@ -273,29 +275,38 @@ class A2AAgentService:
             ValueError: If path already exists or validation fails
         """
         try:
+            # Validate transport type
+            from registry_pkgs.models.a2a_agent import VALID_TRANSPORT_TYPES
+
+            if data.type not in VALID_TRANSPORT_TYPES:
+                raise ValueError(
+                    f"Invalid transport type '{data.type}'. Must be one of: {', '.join(sorted(VALID_TRANSPORT_TYPES))}"
+                )
+
             # Check if path already exists
             existing = await A2AAgent.find_one({"path": data.path})
             if existing:
                 raise ValueError(f"Agent with path '{data.path}' already exists")
 
-            # Fetch agent card from URL using SDK
+            # Fetch agent card from URL using SDK - KEEP ORIGINAL DATA
             logger.info(f"Fetching agent card from URL for new agent: {data.url}")
             agent_card = await self._fetch_agent_card_from_url(str(data.url))
 
-            # Override name and description from request if provided
-            # This allows user to customize these fields in registry
-            card_data = agent_card.model_dump(by_alias=False)
-            card_data["name"] = data.name
-            card_data["description"] = data.description or agent_card.description
-            card_data["url"] = str(data.url)  # Ensure URL matches the request
+            # DO NOT modify the agent_card - store it as-is
+            # Store user-provided information in config field instead
+            from registry_pkgs.models.a2a_agent import AgentConfig, WellKnownConfig
 
-            # Recreate agent card with overridden values
-            agent_card = AgentCard(**card_data)
+            agent_config = AgentConfig(
+                title=data.title,
+                description=data.description or "",
+                type=data.type,
+            )
 
             # Create agent document with wellKnown config
             agent = A2AAgent(
                 path=data.path,
-                card=agent_card,
+                card=agent_card,  # Original, unmodified card from third-party
+                config=agent_config,  # User-provided configuration
                 tags=[],  # Initialize as empty list - tags are registry metadata, not derived from skills
                 isEnabled=False,  # Default to disabled for safety
                 status=STATUS_ACTIVE,
@@ -305,8 +316,6 @@ class A2AAgentService:
             )
 
             # Configure wellKnown for future syncs
-            from registry_pkgs.models.a2a_agent import WellKnownConfig
-
             agent.wellKnown = WellKnownConfig(
                 enabled=True,
                 url=str(data.url),
@@ -318,7 +327,7 @@ class A2AAgentService:
             # Save to database
             await agent.insert()
             logger.info(
-                f"Created agent: {agent.card.name} (ID: {agent.id}, path: {agent.path}) with wellKnown sync enabled"
+                f"Created agent: {agent.config.title} (ID: {agent.id}, path: {agent.path}) with wellKnown sync enabled"
             )
             return agent
 
@@ -334,7 +343,7 @@ class A2AAgentService:
 
         Args:
             agent_id: Agent ID
-            data: Agent update data (path, name, description, url - all optional)
+            data: Agent update data (path, title, description, url, type, enabled - all optional)
 
         Returns:
             Updated agent document
@@ -350,28 +359,25 @@ class A2AAgentService:
             # Check what fields are being updated
             update_data = data.model_dump(exclude_unset=True, by_alias=False)
 
+            # Validate transport type if provided
+            if "type" in update_data:
+                from registry_pkgs.models.a2a_agent import VALID_TRANSPORT_TYPES
+
+                if update_data["type"] not in VALID_TRANSPORT_TYPES:
+                    raise ValueError(
+                        f"Invalid transport type '{update_data['type']}'. Must be one of: {', '.join(sorted(VALID_TRANSPORT_TYPES))}"
+                    )
+
             # If URL is being updated, fetch new agent card
             if "url" in update_data and update_data["url"]:
                 new_url = str(update_data["url"])
                 logger.info(f"URL changed, fetching new agent card from {new_url}")
 
-                # Fetch new agent card from URL
+                # Fetch new agent card from URL - KEEP ORIGINAL DATA
                 agent_card = await self._fetch_agent_card_from_url(new_url)
 
-                # Override with request fields if provided
-                card_data = agent_card.model_dump(by_alias=False)
-                card_data["url"] = new_url
-
-                if "name" in update_data:
-                    card_data["name"] = update_data["name"]
-                if "description" in update_data:
-                    card_data["description"] = update_data["description"]
-
-                # Recreate agent card
-                agent.card = AgentCard(**card_data)
-
-                # Note: tags are not updated from skills - they are separate registry metadata
-                # agent.tags remains unchanged during URL update
+                # DO NOT modify the agent_card - store it as-is
+                agent.card = agent_card
 
                 # Update wellKnown configuration
                 from registry_pkgs.models.a2a_agent import WellKnownConfig
@@ -389,18 +395,15 @@ class A2AAgentService:
                 agent.wellKnown.lastSyncStatus = "success"
                 agent.wellKnown.lastSyncVersion = agent.card.version
 
-            else:
-                # Only update name/description without fetching card
-                # This allows minor tweaks without re-fetching
-                card_data = agent.card.model_dump(by_alias=False)
-
-                if "name" in update_data:
-                    card_data["name"] = update_data["name"]
+            # Update config fields (title, description, type)
+            # These are stored separately in the config field
+            if "title" in update_data or "description" in update_data or "type" in update_data:
+                if "title" in update_data:
+                    agent.config.title = update_data["title"]
                 if "description" in update_data:
-                    card_data["description"] = update_data["description"]
-
-                # Recreate agent card with updated fields
-                agent.card = AgentCard(**card_data)
+                    agent.config.description = update_data["description"]
+                if "type" in update_data:
+                    agent.config.type = update_data["type"]
 
             # Update path if provided
             if "path" in update_data:
@@ -410,12 +413,16 @@ class A2AAgentService:
                     raise ValueError(f"Agent with path '{update_data['path']}' already exists")
                 agent.path = update_data["path"]
 
+            # Update enabled state if provided
+            if "enabled" in update_data:
+                agent.isEnabled = update_data["enabled"]
+
             # Update timestamp
             agent.updatedAt = datetime.now(UTC)
 
             # Save changes
             await agent.save()
-            logger.info(f"Updated agent: {agent.card.name} (ID: {agent_id})")
+            logger.info(f"Updated agent: {agent.config.title} (ID: {agent_id})")
             return agent
 
         except ValueError:
@@ -536,7 +543,7 @@ class A2AAgentService:
             if old_card.capabilities != updated_card.capabilities:
                 changes.append("Updated capabilities")
 
-            # Update agent card with SDK-validated card
+            # Update agent card with SDK-validated card (DO NOT modify - keep original)
             agent.card = updated_card
 
             # Update well-known sync metadata
