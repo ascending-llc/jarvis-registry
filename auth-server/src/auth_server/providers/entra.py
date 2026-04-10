@@ -4,8 +4,15 @@ from typing import Any
 from urllib.parse import urlencode
 
 import httpx
-import jwt
 from authlib.integrations.requests_client import OAuth2Session
+
+from registry_pkgs.core.jwt_utils import (
+    ExpiredSignatureError,
+    InvalidTokenError,
+    decode_jwt_unverified,
+    decode_jwt_with_jwk,
+    get_token_unverified_header,
+)
 
 from ..core.config import settings
 from .base import AuthProvider
@@ -127,26 +134,24 @@ class EntraIdProvider(AuthProvider):
             jwks = await self.get_jwks()
 
             # Decode token header to get key ID
-            unverified_header = jwt.get_unverified_header(token)
+            unverified_header = get_token_unverified_header(token)
             kid = unverified_header.get("kid")
 
             if not kid:
                 raise ValueError("Token missing 'kid' in header")
 
             # Find matching key
-            signing_key = None
+            matching_key = None
             for key in jwks.get("keys", []):
                 if key.get("kid") == kid:
-                    from jwt import PyJWK
-
-                    signing_key = PyJWK(key).key
+                    matching_key = key
                     break
 
-            if not signing_key:
+            if not matching_key:
                 raise ValueError(f"No matching key found for kid: {kid}")
 
             # First, decode without validation to check issuer
-            unverified_claims = jwt.decode(token, options={"verify_signature": False})
+            unverified_claims = decode_jwt_unverified(token)
             token_issuer = unverified_claims.get("iss")
 
             # Check if issuer is valid (v1.0 or v2.0)
@@ -154,13 +159,12 @@ class EntraIdProvider(AuthProvider):
                 raise ValueError(f"Invalid issuer: {token_issuer}. Expected one of: {self.valid_issuers}")
 
             # Validate and decode token with the correct issuer
-            claims = jwt.decode(
+            claims = decode_jwt_with_jwk(
                 token,
-                signing_key,
+                matching_key,
                 algorithms=["RS256"],
                 issuer=self.issuer,
                 audience=[self.client_id, f"api://{self.client_id}"],
-                options={"verify_exp": True, "verify_iat": True, "verify_aud": True},
             )
 
             # Extract user info from claims using configured claim mappings
@@ -184,10 +188,10 @@ class EntraIdProvider(AuthProvider):
                 "data": claims,
             }
 
-        except jwt.ExpiredSignatureError:
+        except ExpiredSignatureError:
             logger.warning("Token validation failed: Token has expired")
             raise ValueError("Token has expired")
-        except jwt.InvalidTokenError as e:
+        except InvalidTokenError as e:
             logger.warning(f"Token validation failed: Invalid token - {e}")
             raise ValueError(f"Invalid token: {e}")
         except Exception as e:
@@ -256,7 +260,7 @@ class EntraIdProvider(AuthProvider):
         """
         try:
             logger.debug(f"Extracting user info from {token_type} token")
-            token_claims = jwt.decode(token, options={"verify_signature": False})
+            token_claims = decode_jwt_unverified(token)
             logger.debug(f"Token claims extracted: {list(token_claims.keys())}")
 
             # Extract username with fallback chain

@@ -189,6 +189,10 @@ class TestAuthRoutes:
                     "provider": "keycloak",
                 },
             ),
+            patch(
+                "registry.api.redirect_routes.generate_token_pair",
+                return_value=("mock-access-token", "mock-refresh-token"),
+            ),
         ):
             mock_client_instance = mock_client.return_value.__aenter__.return_value
             mock_client_instance.post = AsyncMock(return_value=mock_response)

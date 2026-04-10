@@ -49,10 +49,6 @@ def check_rate_limit(username: str) -> bool:
     return True
 
 
-def _create_self_signed_jwt(access_payload: dict) -> str:
-    return encode_jwt(access_payload, settings.secret_key, kid=settings.jwt_self_signed_kid)
-
-
 @router.post("/internal/tokens", response_model=GenerateTokenResponse)
 async def generate_user_token(request: GenerateTokenRequest):
     try:
@@ -110,7 +106,7 @@ async def generate_user_token(request: GenerateTokenRequest):
             extra_claims=extra_claims,
         )
 
-        access_token = _create_self_signed_jwt(access_payload)
+        access_token = encode_jwt(access_payload, settings.jwt_private_key, kid=settings.jwt_self_signed_kid)
 
         return GenerateTokenResponse(
             access_token=access_token,

@@ -5,8 +5,20 @@ Tests RFC 8414 (OAuth 2.0 Authorization Server Metadata) and
 OIDC Discovery implementations.
 """
 
+import base64
+
 import pytest
+from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
+
+
+def int_to_base64url(value):
+    """Converts an integer to a Base64url-encoded string as per RFC 7518."""
+    # Calculate the number of bytes needed
+    byte_length = (value.bit_length() + 7) // 8
+    der_bytes = value.to_bytes(byte_length, byteorder="big")
+    # Encode to base64, swap characters for URL safety, and strip padding
+    return base64.urlsafe_b64encode(der_bytes).decode("utf-8").rstrip("=")
 
 
 @pytest.mark.integration
@@ -85,7 +97,7 @@ class TestWellKnownRoutes:
 
         # Verify signing algorithms
         assert "id_token_signing_alg_values_supported" in data
-        assert "HS256" in data["id_token_signing_alg_values_supported"]
+        assert "HS256" not in data["id_token_signing_alg_values_supported"]
         assert "RS256" in data["id_token_signing_alg_values_supported"]
 
         # Verify OIDC scopes
@@ -106,7 +118,7 @@ class TestWellKnownRoutes:
         assert "grant_types_supported" in data
         assert "urn:ietf:params:oauth:grant-type:device_code" in data["grant_types_supported"]
 
-    def test_jwks_endpoint(self, test_client: TestClient):
+    def test_jwks_endpoint(self, test_client: TestClient, jwt_rsa_key: rsa.RSAPrivateKey):
         """Test JWKS (JSON Web Key Set) endpoint."""
         response = test_client.get("/.well-known/jwks.json")
 
@@ -116,10 +128,21 @@ class TestWellKnownRoutes:
         # Verify JWKS structure
         assert "keys" in data
         assert isinstance(data["keys"], list)
+        assert len(data["keys"]) == 1
 
-        # Auth-server issues only HS256 self-signed tokens; symmetric keys are never
-        # publicly exposed, so this endpoint always returns an empty key set.
-        assert data["keys"] == []
+        key = data["keys"][0]
+
+        from auth_server.core.config import settings
+
+        assert key["alg"] == "RS256"
+        assert key["kid"] == settings.jwt_self_signed_kid
+        assert key["kty"] == "RSA"
+        assert key["use"] == "sig"
+
+        numbers = jwt_rsa_key.public_key().public_numbers()
+
+        assert key["e"] == int_to_base64url(numbers.e)
+        assert key["n"] == int_to_base64url(numbers.n)
 
     def test_discovery_endpoints_consistency(self, test_client: TestClient):
         """Test that both discovery endpoints return consistent issuer and endpoint URLs."""
@@ -208,8 +231,8 @@ class TestWellKnownRoutes:
         assert response1.json() == response2.json()
 
         # Should return empty keys (HS256 symmetric key is never publicly exposed)
-        assert response1.json()["keys"] == []
-        assert response2.json()["keys"] == []
+        assert len(response1.json()["keys"]) == 1
+        assert len(response2.json()["keys"]) == 1
 
     def test_discovery_endpoint_trailing_slash(self, test_client: TestClient):
         """Test that discovery endpoints work with and without trailing slash."""

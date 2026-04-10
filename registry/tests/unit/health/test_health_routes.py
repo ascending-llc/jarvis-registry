@@ -26,11 +26,10 @@ class TestHealthRoutes:
         WebSocket route currently uses itsdangerous signer, not JWT validation.
         """
         from registry.auth.dependencies import build_signer
-        from registry.core.config import settings
 
         # WebSocket authentication still uses itsdangerous signer
         session_data = {
-            "username": settings.admin_user,
+            "username": "admin",
             "auth_method": "traditional",
             "provider": "local",
             "groups": ["registry-admin"],

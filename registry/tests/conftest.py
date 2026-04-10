@@ -2,19 +2,47 @@
 Pytest configuration and shared fixtures.
 """
 
+from __future__ import annotations
+
 import asyncio
+import os
 import tempfile
 from collections.abc import AsyncGenerator, Generator
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
 from httpx import AsyncClient
 
-from registry.core.config import Settings
+# Set the validated environment variables so that `from registry.core.config import settings` does not throw exception.
+os.environ["TOOL_DISCOVERY_MODE"] = "external"
+os.environ["CREDS_KEY"] = os.urandom(32).hex()
+
+_RSA_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+_PRIVATE_KEY = _RSA_KEY.private_bytes(
+    encoding=serialization.Encoding.PEM,
+    format=serialization.PrivateFormat.TraditionalOpenSSL,
+    encryption_algorithm=serialization.NoEncryption(),
+).decode("utf-8")
+os.environ["JWT_PRIVATE_KEY"] = _PRIVATE_KEY
+
+_PUBLIC_KEY = (
+    _RSA_KEY.public_key()
+    .public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    .decode("utf-8")
+)
+os.environ["JWT_PUBLIC_KEY"] = _PUBLIC_KEY
+
+
 from registry.health.service import HealthMonitoringService
 
 # Import our application and services
@@ -28,6 +56,9 @@ from tests.fixtures.factories import (
     create_multiple_servers,
     create_server_with_tools,
 )
+
+if TYPE_CHECKING:
+    from registry.core.config import Settings
 
 
 @pytest.fixture(scope="session")
@@ -61,10 +92,10 @@ def temp_dir() -> Generator[Path, None, None]:
 @pytest.fixture
 def test_settings(temp_dir: Path) -> Settings:
     """Create test settings with temporary directories."""
+    from registry.core.config import Settings
+
     test_settings = Settings(
         secret_key="test-secret-key-for-testing-only",
-        admin_user="testadmin",
-        admin_password="testpassword",
         container_registry_dir=temp_dir / "app" / "registry",
         health_check_interval_seconds=60,  # Longer for tests
         local_embeddings_model_name="all-MiniLM-L6-v2",
@@ -166,6 +197,7 @@ def create_test_jwt_token(
     Returns:
         JWT access token string
     """
+    from registry.core.config import Settings
     from registry.utils.crypto_utils import generate_access_token
     from registry_pkgs.core.scopes import map_groups_to_scopes
 
@@ -203,10 +235,9 @@ def make_container_factory(**services):
 @pytest.fixture
 def admin_session_cookie():
     """Create a valid admin session cookie (JWT access token) for testing."""
-    from registry.core.config import settings
 
     return create_test_jwt_token(
-        username=settings.admin_user,
+        username="admin",
         groups=["registry-admin"],
         role="admin",
         auth_method="traditional",
