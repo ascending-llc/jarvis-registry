@@ -171,7 +171,7 @@ class TestSessionExpiration:
                 assert "www-authenticate" in response.headers
                 www_auth = response.headers["www-authenticate"]
 
-                assert 'Bearer realm="jarvis-auth-server"' in www_auth
+                assert 'Bearer realm="jarvis-resources"' in www_auth
                 assert (
                     'resource_metadata="https://jarvis-demo.ascendingdc.com/.well-known/oauth-protected-resource/gateway/proxy/mcpgw"'
                     in www_auth
@@ -206,7 +206,7 @@ class TestSessionExpiration:
                 assert "www-authenticate" in response.headers
                 www_auth = response.headers["www-authenticate"]
 
-                assert 'Bearer realm="jarvis-auth-server"' in www_auth
+                assert 'Bearer realm="jarvis-resources"' in www_auth
                 assert (
                     'resource_metadata="https://jarvis-demo.ascendingdc.com/.well-known/oauth-protected-resource/gateway/proxy/mcpgw"'
                     in www_auth
@@ -240,7 +240,7 @@ class TestSessionExpiration:
                 assert "www-authenticate" in response.headers
                 www_auth = response.headers["www-authenticate"]
 
-                assert 'Bearer realm="jarvis-auth-server"' in www_auth
+                assert 'Bearer realm="jarvis-resources"' in www_auth
                 assert "resource_metadata" not in www_auth
 
     def test_resource_metadata_url_construction(self, client, mock_oauth_config):

@@ -2,11 +2,10 @@ import logging
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
-from jwt import ExpiredSignatureError, InvalidTokenError
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.routing import compile_path
 
-from registry_pkgs.core.jwt_utils import decode_jwt, get_token_kid
+from registry_pkgs.core.jwt_utils import ExpiredSignatureError, InvalidTokenError, decode_jwt, get_token_kid
 from registry_pkgs.core.scopes import map_groups_to_scopes
 
 from ..auth.dependencies import UserContextDict
@@ -131,10 +130,12 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
                     # For MCP proxy paths, RFC 9728 (OAuth 2.0 Protected Resource Metadata)
                     registry_url = settings.registry_client_url.rstrip("/")
                     oauth_discovery = f"{registry_url}/.well-known/oauth-protected-resource/proxy/{server_name}"
-                    headers["WWW-Authenticate"] = f'Bearer realm="mcp-registry", resource_metadata="{oauth_discovery}"'
+                    headers["WWW-Authenticate"] = (
+                        f'Bearer realm="{settings.jarvis_realm}", resource_metadata="{oauth_discovery}"'
+                    )
                 else:
                     # For other authenticated paths, use general OAuth discovery
-                    headers["WWW-Authenticate"] = 'Bearer realm="mcp-registry"'
+                    headers["WWW-Authenticate"] = f'Bearer realm="{settings.jarvis_realm}"'
 
                 return JSONResponse(status_code=401, content={"detail": str(e)}, headers=headers)
 
@@ -211,7 +212,7 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
 
                 claims = decode_jwt(
                     access_token,
-                    settings.secret_key,
+                    settings.jwt_public_key,
                     issuer=settings.jwt_issuer,
                     audience=None if is_self_signed_token else settings.jwt_audience,
                 )

@@ -30,6 +30,11 @@ export type AgentItem = {
   author: string;
   createdAt: string;
   updatedAt: string;
+  config?: {
+    title?: string;
+    description?: string;
+    type?: string;
+  };
 };
 
 export type GetAgentsListResponse = {
@@ -98,6 +103,11 @@ export type Agent = {
   wellKnown: AgentWellKnown;
   createdAt: string;
   updatedAt: string;
+  config?: {
+    title?: string;
+    description?: string;
+    type?: string;
+  };
 };
 
 export type GetAgentDetailResponse = Agent;
@@ -121,29 +131,18 @@ export type GetAgentStateResponse = {
 };
 
 export type CreateAgentRequest = {
-  name: string;
-  description?: string;
   path: string;
-  url: string;
-  version?: string;
-  protocolVersion?: string;
-  capabilities?: AgentCapabilities;
-  skills?: AgentSkillItem[];
-  securitySchemes?: AgentSecuritySchemes;
-  preferredTransport?: string;
-  defaultInputModes?: string[];
-  defaultOutputModes?: string[];
-  provider?: AgentProvider;
-  tags?: string[];
-  enabled?: boolean;
-};
-
-export type UpdateAgentRequest = {
-  name?: string;
+  title: string;
   description?: string;
-  version?: string;
-  skills?: AgentSkillItem[];
-  tags?: string[];
+  url: string;
+  type: string;
+};
+export type UpdateAgentRequest = {
+  path?: string;
+  title?: string;
+  description?: string;
+  url?: string;
+  type?: string;
   enabled?: boolean;
 };
 

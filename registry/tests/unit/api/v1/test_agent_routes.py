@@ -6,7 +6,7 @@ import pytest
 from beanie import PydanticObjectId
 
 from registry.api.v1.a2a.agent_routes import create_agent, get_agent_stats, list_agents
-from registry.schemas.a2a_agent_api_schemas import AgentCreateRequest, AgentSkillInput
+from registry.schemas.a2a_agent_api_schemas import AgentCreateRequest
 from registry_pkgs.models import PrincipalType, ResourceType
 from registry_pkgs.models.enums import RoleBits
 
@@ -29,6 +29,11 @@ def _build_agent(agent_id: PydanticObjectId | None = None):
             default_input_modes=["text/plain"],
             default_output_modes=["application/json"],
             provider=None,
+        ),
+        config=SimpleNamespace(
+            title="Test Agent",
+            description="Agent description",
+            type="jsonrpc",
         ),
         tags=["test"],
         isEnabled=True,
@@ -79,6 +84,10 @@ async def test_list_agents_uses_injected_services(sample_user_context):
     a2a_agent_service.list_agents.assert_awaited_once()
     assert result.pagination.total == 1
     assert result.agents[0].name == "Test Agent"
+    # Assert config field is returned
+    assert result.agents[0].config is not None
+    assert result.agents[0].config.title == "Test Agent"
+    assert result.agents[0].config.type == "jsonrpc"
 
 
 @pytest.mark.asyncio
@@ -117,13 +126,10 @@ async def test_create_agent_uses_injected_services(sample_user_context):
 
     request = AgentCreateRequest(
         path="/test-agent",
-        name="Test Agent",
+        title="Test Agent",
         description="Agent description",
         url="https://agent.example.com",
-        version="1.0.0",
-        skills=[AgentSkillInput(id="skill-1", name="Skill 1", description="desc")],
-        tags=["test"],
-        enabled=True,
+        type="jsonrpc",
     )
 
     with patch("registry_pkgs.database.decorators.MongoDB.get_client") as mock_get_client:
@@ -147,3 +153,8 @@ async def test_create_agent_uses_injected_services(sample_user_context):
     assert call_args.kwargs["resource_type"] == ResourceType.REMOTE_AGENT
     assert call_args.kwargs["perm_bits"] == RoleBits.OWNER
     assert result.name == "Test Agent"
+    # Assert config field is returned with correct values
+    assert result.config is not None
+    assert result.config.title == "Test Agent"
+    assert result.config.description == "Agent description"
+    assert result.config.type == "jsonrpc"
