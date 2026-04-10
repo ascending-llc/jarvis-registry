@@ -71,7 +71,9 @@ class ReleaseAssetDownloader:
             if e.code == 404:
                 raise RuntimeError(f"Release tag '{tag}' not found in {self.github_repo}") from e
             if e.code in {401, 403}:
-                raise RuntimeError("GitHub token is missing, invalid, or does not have access to this repository.") from e
+                raise RuntimeError(
+                    "GitHub token is missing, invalid, or does not have access to this repository."
+                ) from e
             if e.code == 429:
                 raise RuntimeError("GitHub API rate limit exceeded. Try again later.") from e
             raise RuntimeError(f"Failed to fetch release metadata: HTTP {e.code}") from e
@@ -88,7 +90,9 @@ class ReleaseAssetDownloader:
                 return response.read()
         except urllib.error.HTTPError as e:
             if e.code in {401, 403}:
-                raise RuntimeError("GitHub token is missing, invalid, or does not have access to this repository.") from e
+                raise RuntimeError(
+                    "GitHub token is missing, invalid, or does not have access to this repository."
+                ) from e
             if e.code == 429:
                 raise RuntimeError("GitHub API rate limit exceeded. Try again later.") from e
             raise RuntimeError(f"Failed to download asset: HTTP {e.code}") from e

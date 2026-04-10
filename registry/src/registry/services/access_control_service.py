@@ -9,8 +9,8 @@ from fastapi import status as http_status
 from registry_pkgs.database.decorators import get_current_session
 from registry_pkgs.models import (
     AccessRole,
-    User,
     PrincipalType,
+    User,
 )
 from registry_pkgs.models.enums import PermissionBits
 from registry_pkgs.models.extended_acl_entry import ExtendedAclEntry

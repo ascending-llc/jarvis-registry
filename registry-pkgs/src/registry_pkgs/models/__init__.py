@@ -10,11 +10,11 @@ Also exports two enum types `PrincipalType` and `ResourceType`, so that other mo
 from ._generated import (
     AccessRole,
     Group,
-    User,
     Key,
     PrincipalType,
     ResourceType,
     Token,
+    User,
 )
 from .a2a_agent import A2AAgent
 from .extended_acl_entry import ExtendedAclEntry

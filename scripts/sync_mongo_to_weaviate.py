@@ -216,9 +216,7 @@ async def clean_weaviate(mcp_server_repo):
     """Delete all existing servers from Weaviate using DI-managed repository."""
     print("Deleting all existing servers...")
     try:
-        deleted = await mcp_server_repo.adelete_by_filter(
-            filters={"collection": ExtendedMCPServer.COLLECTION_NAME}
-        )
+        deleted = await mcp_server_repo.adelete_by_filter(filters={"collection": ExtendedMCPServer.COLLECTION_NAME})
         print(f"✓ Deleted {deleted} servers from Weaviate")
         print("=" * 80 + "\n")
         return deleted

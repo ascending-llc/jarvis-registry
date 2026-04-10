@@ -625,9 +625,7 @@ class MCPOAuthService:
             logger.error(f"Failed to refresh token: {e}", exc_info=True)
             return False, str(e)
 
-    async def validate_and_refresh_tokens(
-        self, user_id: str, mcp_server: ExtendedMCPServer
-    ) -> tuple[bool, str | None]:
+    async def validate_and_refresh_tokens(self, user_id: str, mcp_server: ExtendedMCPServer) -> tuple[bool, str | None]:
         """
         Validate and refresh OAuth tokens (with token retrieval and validation)
 
@@ -676,9 +674,7 @@ class MCPOAuthService:
         user_flows = self.flow_manager.get_user_flows(user_id, server_name)
         return any(flow.status == OAuthFlowStatus.FAILED for flow in user_flows)
 
-    async def handle_reinitialize_auth(
-        self, user_id: str, server: ExtendedMCPServer
-    ) -> tuple[bool, dict[str, Any]]:
+    async def handle_reinitialize_auth(self, user_id: str, server: ExtendedMCPServer) -> tuple[bool, dict[str, Any]]:
         """
         Handle OAuth authentication for server reinitialization
 
@@ -750,9 +746,7 @@ class MCPOAuthService:
         logger.info(f"[Reinitialize] No valid tokens for {server_name}, initiating OAuth")
         return await self._build_oauth_required_response(user_id, server)
 
-    async def _refresh_and_connect(
-        self, user_id: str, server: ExtendedMCPServer
-    ) -> tuple[bool, dict[str, Any]]:
+    async def _refresh_and_connect(self, user_id: str, server: ExtendedMCPServer) -> tuple[bool, dict[str, Any]]:
         """
         Helper method: Refresh tokens and return success response
 

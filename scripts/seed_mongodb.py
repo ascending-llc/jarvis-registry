@@ -25,7 +25,7 @@ load_dotenv()
 
 from registry.utils.crypto_utils import encrypt_auth_fields
 from registry_pkgs.database.mongodb import MongoDB
-from registry_pkgs.models import ExtendedAclEntry, ExtendedMCPServer, Group, User, Key, Token
+from registry_pkgs.models import ExtendedAclEntry, ExtendedMCPServer, Group, Key, Token, User
 
 
 async def seed_groups():
@@ -610,9 +610,7 @@ async def seed_mcp_servers(users):
     created_servers = []
     for server_data in servers_data:
         # Check if server already exists
-        existing_server = await ExtendedMCPServer.find_one(
-            ExtendedMCPServer.serverName == server_data["serverName"]
-        )
+        existing_server = await ExtendedMCPServer.find_one(ExtendedMCPServer.serverName == server_data["serverName"])
         if existing_server:
             print(f"  Server {server_data['serverName']} already exists, skipping...")
             created_servers.append(existing_server)

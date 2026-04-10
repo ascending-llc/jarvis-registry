@@ -603,11 +603,7 @@ class ServerServiceV1:
         # Execute query with pagination
         total = await ExtendedMCPServer.find(query_filter).count()
         servers = (
-            await ExtendedMCPServer.find(query_filter)
-            .sort([("createdAt", -1)])
-            .skip(skip)
-            .limit(per_page)
-            .to_list()
+            await ExtendedMCPServer.find(query_filter).sort([("createdAt", -1)]).skip(skip).limit(per_page).to_list()
         )
         return servers, total
 

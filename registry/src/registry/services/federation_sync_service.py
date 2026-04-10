@@ -411,9 +411,7 @@ class FederationSyncService:
         session = self._get_current_session_or_none()
 
         # -------- MCP --------
-        existing_mcp = await ExtendedMCPServer.find(
-            {"federationRefId": federation.id}, session=session
-        ).to_list()
+        existing_mcp = await ExtendedMCPServer.find({"federationRefId": federation.id}, session=session).to_list()
         existing_mcp_by_remote = {
             self._extract_runtime_arn(item.federationMetadata): item
             for item in existing_mcp
