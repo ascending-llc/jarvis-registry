@@ -2,13 +2,35 @@
 Unit tests for the configuration module.
 """
 
+import logging
 import os
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 
 from registry.core.config import Settings
+
+# Module-level RSA key pair so tests that clear os.environ still satisfy the JWT validator.
+_TEST_RSA_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+_SETTINGS_ENV = {
+    "JWT_PRIVATE_KEY": _TEST_RSA_KEY.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.TraditionalOpenSSL,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode(),
+    "JWT_PUBLIC_KEY": _TEST_RSA_KEY.public_key()
+    .public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    .decode(),
+    "TOOL_DISCOVERY_MODE": "external",
+    "CREDS_KEY": os.urandom(32).hex(),
+}
 
 
 @pytest.mark.unit
@@ -16,21 +38,19 @@ from registry.core.config import Settings
 class TestSettings:
     """Test suite for Settings configuration."""
 
-    @patch.dict(os.environ, {}, clear=True)
+    @patch.dict(os.environ, _SETTINGS_ENV, clear=True)
     def test_default_values(self):
         """Test default configuration values."""
         # Create settings without loading .env file
         settings = Settings(_env_file=None)
 
-        assert settings.admin_user == "admin"
-        assert settings.admin_password == "password"
         assert settings.session_cookie_name == "jarvis_registry_session"
         assert settings.session_max_age_seconds == 60 * 60 * 8  # 8 hours
         assert settings.local_embeddings_model_name == "all-MiniLM-L6-v2"
         assert settings.local_embeddings_model_dimensions == 384
         assert settings.health_check_interval_seconds == 300  # 5 minutes
 
-    @patch.dict(os.environ, {}, clear=True)
+    @patch.dict(os.environ, _SETTINGS_ENV, clear=True)
     def test_secret_key_generation(self):
         """Test that secret key is generated if not provided."""
         # Create settings without loading .env file
@@ -39,7 +59,7 @@ class TestSettings:
         assert settings.secret_key is not None
         assert len(settings.secret_key) == 64  # 32 bytes in hex = 64 characters
 
-    @patch.dict(os.environ, {}, clear=True)
+    @patch.dict(os.environ, _SETTINGS_ENV, clear=True)
     def test_custom_secret_key(self):
         """Test using custom secret key."""
         custom_key = "my-custom-secret-key"
@@ -48,7 +68,7 @@ class TestSettings:
         assert settings.secret_key == custom_key
 
     @pytest.mark.skip(reason="servers_dir removed in PR-113 (MongoDB migration)")
-    @patch.dict(os.environ, {}, clear=True)
+    @patch.dict(os.environ, _SETTINGS_ENV, clear=True)
     @patch("pathlib.Path.exists")
     def test_path_properties(self, mock_exists):
         """Test that path properties return correct paths."""
@@ -67,7 +87,7 @@ class TestSettings:
         )
 
     @pytest.mark.skip(reason="state_file_path, faiss paths removed in PR-113 (MongoDB migration)")
-    @patch.dict(os.environ, {}, clear=True)
+    @patch.dict(os.environ, _SETTINGS_ENV, clear=True)
     @patch("pathlib.Path.exists")
     def test_file_path_properties(self, mock_exists):
         """Test file path properties."""
@@ -82,7 +102,7 @@ class TestSettings:
         assert settings.dotenv_path == settings.container_registry_dir / ".env"
 
     @pytest.mark.skip(reason="nginx_config_path removed in PR-113")
-    @patch.dict(os.environ, {}, clear=True)
+    @patch.dict(os.environ, _SETTINGS_ENV, clear=True)
     def test_nginx_config_path(self):
         """Test nginx configuration path."""
         settings = Settings()
@@ -92,8 +112,7 @@ class TestSettings:
     @patch.dict(
         "os.environ",
         {
-            "ADMIN_USER": "testuser",
-            "ADMIN_PASSWORD": "testpass",
+            **_SETTINGS_ENV,
             "SECRET_KEY": "test-secret",
             "LOCAL_EMBEDDINGS_MODEL_NAME": "test-model",
             "HEALTH_CHECK_INTERVAL_SECONDS": "120",
@@ -103,20 +122,18 @@ class TestSettings:
         """Test that environment variables are loaded correctly."""
         settings = Settings()
 
-        assert settings.admin_user == "testuser"
-        assert settings.admin_password == "testpass"
         assert settings.secret_key == "test-secret"
         assert settings.local_embeddings_model_name == "test-model"
         assert settings.health_check_interval_seconds == 120
 
     def test_case_insensitive_env_vars(self):
         """Test that environment variables are case insensitive."""
-        with patch.dict(os.environ, {"admin_user": "lowercase_user"}, clear=True):
+        with patch.dict(os.environ, {**_SETTINGS_ENV, "secret_key": "lowercase_key"}, clear=True):
             settings = Settings()
-            assert settings.admin_user == "lowercase_user"
+            assert settings.secret_key == "lowercase_key"
 
     @pytest.mark.skip(reason="servers_dir removed in PR-113 (MongoDB migration)")
-    @patch.dict(os.environ, {}, clear=True)
+    @patch.dict(os.environ, _SETTINGS_ENV, clear=True)
     @patch("pathlib.Path.exists")
     def test_custom_container_paths(self, mock_exists):
         """Test custom container paths."""
@@ -128,3 +145,13 @@ class TestSettings:
 
         assert settings.container_registry_dir == custom_registry_dir
         assert settings.servers_dir == custom_registry_dir / "servers"
+
+    @pytest.mark.unit
+    @patch.dict(os.environ, {**_SETTINGS_ENV, "X_JARVIS_REGISTRY_IMPORT_CHECKS": "disabled"})
+    def test_validation_disablement(self, caplog) -> None:
+        caplog.set_level(logging.WARNING)
+
+        Settings()
+
+        for key in ("JWT_PRIVATE_KEY and JWT_PUBLIC_KEY", "CREDS_KEY", "TOOL_DISCOVERY_MODE"):
+            assert f"{key} validation is disabled." in caplog.text

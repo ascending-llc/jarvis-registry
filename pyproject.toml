@@ -13,6 +13,7 @@ dependencies = [
   # External direct dependencies
   "python-dotenv>=1.0.0",
   "inflection>=0.5.1",
+  "cryptography>=46.0.5",
 ]
 
 [tool.uv.workspace]
@@ -32,6 +33,8 @@ sync-mongo-weaviate = "scripts.sync_mongo_to_weaviate:cli"
 sync-version = "scripts.sync_version:main"
 federation-job-admin = "scripts.federation_job_admin:cli"
 download-beanie-models = "scripts.download_beanie_models:main"
+import-schemas = "scripts.import_schemas:main"
+generate-jwt-keys = "scripts.generate_jwt_keys:main"
 
 [build-system]
 requires = ["setuptools>=67", "wheel"]

@@ -14,7 +14,7 @@ import type { Agent } from '@/services/agent/type';
 import MainConfigForm from './MainConfigForm';
 import type { AgentConfig } from './types';
 
-const INIT_DATA: AgentConfig = { title: '', description: '', path: '', url: '', trustAgent: false };
+const INIT_DATA: AgentConfig = { title: '', description: '', path: '', url: '', type: '', trustAgent: false };
 
 const STATUS_STYLE: Record<string, { pill: string; dot: string; label: string }> = {
   active: { pill: 'bg-emerald-500/15 text-emerald-300', dot: 'bg-emerald-400', label: 'Active' },
@@ -71,8 +71,9 @@ const AgentRegistryOrEdit: React.FC = () => {
     try {
       const result = await SERVICES.AGENT.getAgentDetail(id);
       const data: AgentConfig = {
-        title: result.name,
-        description: result.description,
+        title: result.config?.title || result.name,
+        description: result.config?.description || result.description,
+        type: result.config?.type || '',
         path: result.path,
         url: result.url || '',
         trustAgent: true,
@@ -105,6 +106,10 @@ const AgentRegistryOrEdit: React.FC = () => {
 
     if (!formData.title.trim()) {
       newErrors.title = 'Title is required';
+    }
+
+    if (!formData.type) {
+      newErrors.type = 'Transport Type is required';
     }
 
     if (!formData.path.trim()) {
@@ -171,10 +176,11 @@ const AgentRegistryOrEdit: React.FC = () => {
     setLoading(true);
     try {
       const payload = {
-        name: formData.title,
+        title: formData.title,
         description: formData.description,
         path: formData.path,
         url: formData.url,
+        type: formData.type,
       };
 
       if (isEditMode) {

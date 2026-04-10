@@ -511,7 +511,7 @@ async def dynamic_mcp_get_proxy(
             status_code=401,
             headers={
                 "Content-Type": "application/problem+json",
-                "WWW-Authenticate": 'Bearer realm="mcp-registry", error="invalid_token"',
+                "WWW-Authenticate": f'Bearer realm="{settings.jarvis_realm}", error="invalid_token"',
             },
             content={
                 "type": f"{settings.registry_client_url.rstrip('/')}/errors/token-expired",

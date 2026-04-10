@@ -7,6 +7,8 @@ from collections.abc import Generator
 from unittest.mock import Mock, patch
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
 
 # Set environment variables BEFORE importing the app
@@ -15,6 +17,27 @@ os.environ["AUTH_SERVER_EXTERNAL_URL"] = "http://localhost:8888"
 os.environ["AUTH_SERVER_API_PREFIX"] = "/auth"
 os.environ["AUTH_PROVIDER"] = "keycloak"
 os.environ["SECRET_KEY"] = "test-secret-key-for-testing"
+
+# Generate a test RSA key pair so JWT signing/verification and the JWKS endpoint work in tests.
+_test_rsa_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+os.environ["JWT_PRIVATE_KEY"] = _test_rsa_key.private_bytes(
+    encoding=serialization.Encoding.PEM,
+    format=serialization.PrivateFormat.TraditionalOpenSSL,
+    encryption_algorithm=serialization.NoEncryption(),
+).decode("utf-8")
+os.environ["JWT_PUBLIC_KEY"] = (
+    _test_rsa_key.public_key()
+    .public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    .decode("utf-8")
+)
+
+
+@pytest.fixture
+def jwt_rsa_key() -> rsa.RSAPrivateKey:
+    return _test_rsa_key
 
 
 @pytest.fixture

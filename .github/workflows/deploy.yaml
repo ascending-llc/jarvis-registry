@@ -23,6 +23,7 @@ run-name: Deploy Registry for ${{ inputs.application }}
 permissions:
   id-token: write
   contents: read
+  packages: write
 jobs:
   refresh_secrets:
     runs-on: ubuntu-latest
@@ -82,13 +83,9 @@ jobs:
     uses: ./.github/workflows/build-images-reusable.yaml
     needs: refresh_secrets
     with:
-      region: ${{ inputs.region }}
+      tag_as_latest: ${{ github.ref == 'refs/heads/main' }}
     secrets:
-      AWS_DEPLOY_ROLE_ARN: ${{ secrets.SAAS_AWS_DEPLOY_ROLE_ARN }}
       JARVIS_RELEASE_ACCESS_TOKEN: ${{ secrets.JARVIS_RELEASE_ACCESS_TOKEN }}
-      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
   deploy-registry:
     runs-on: ubuntu-latest
@@ -125,16 +122,12 @@ jobs:
           role-session-name: deployment-role-session
           aws-region: ${{ inputs.region }}
 
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
-
       - name: Update kubeconfig
         run: aws eks update-kubeconfig --name ${{ steps.config.outputs.eks_cluster_name }} --region ${{ inputs.region }}
 
       - name: Update backend images on EKS
         env:
-          image: ${{ steps.login-ecr.outputs.registry }}/jarvis/registry:${{ github.sha }}
+          image: ghcr.io/${{ github.repository_owner }}/jarvis/registry:${{ github.sha }}
         run: |
           kubectl set image deploy/${{ env.DEPLOYMENT_NAME }} registry-backend=$image -n ${{ inputs.application  }}
 
@@ -177,16 +170,12 @@ jobs:
           role-session-name: deployment-role-session
           aws-region: ${{ inputs.region }}
 
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
-
       - name: Update kubeconfig
         run: aws eks update-kubeconfig --name ${{ steps.config.outputs.eks_cluster_name }} --region ${{ inputs.region }}
 
       - name: Update backend images on EKS
         env:
-          image: ${{ steps.login-ecr.outputs.registry }}/jarvis/registry-frontend:${{ github.sha }}
+          image: ghcr.io/${{ github.repository_owner }}/jarvis/registry-frontend:${{ github.sha }}
         run: |
           kubectl set image deploy/${{ env.DEPLOYMENT_NAME }} registry-frontend=$image -n ${{ inputs.application  }}
 
@@ -229,16 +218,12 @@ jobs:
           role-session-name: deployment-role-session
           aws-region: ${{ inputs.region }}
 
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
-
       - name: Update kubeconfig
         run: aws eks update-kubeconfig --name ${{ steps.config.outputs.eks_cluster_name }} --region ${{ inputs.region }}
 
       - name: Update backend images on EKS
         env:
-          image: ${{ steps.login-ecr.outputs.registry }}/jarvis/auth-server:${{ github.sha }}
+          image: ghcr.io/${{ github.repository_owner }}/jarvis/auth-server:${{ github.sha }}
         run: |
           kubectl set image deploy/${{ env.DEPLOYMENT_NAME }} auth-server=$image -n ${{ inputs.application  }}
 

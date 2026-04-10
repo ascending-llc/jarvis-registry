@@ -130,9 +130,9 @@ async def oauth2_callback(
                     )
 
                 # Decode JWT to extract user information (no signature verification for internal use)
-                import jwt as pyjwt
+                from registry_pkgs.core.jwt_utils import decode_jwt_unverified
 
-                user_claims = pyjwt.decode(access_token, options={"verify_signature": False})
+                user_claims = decode_jwt_unverified(access_token)
 
                 logger.info(f"OAuth2 callback exchanged code for JWT token: {user_claims.get('sub')}")
 
@@ -227,15 +227,10 @@ async def logout_handler(
         provider = None
         if session:
             try:
-                import jwt as pyjwt
+                from registry_pkgs.core.jwt_utils import decode_jwt_unverified
 
-                # Try to decode JWT to check auth method
-                claims = pyjwt.decode(
-                    session,
-                    settings.secret_key,
-                    algorithms=["HS256"],
-                    options={"verify_exp": False},  # Don't verify expiration for logout
-                )
+                # Peek at claims to check auth method — no verification needed for logout routing
+                claims = decode_jwt_unverified(session)
 
                 if claims.get("auth_method") == "oauth2":
                     provider = claims.get("provider")

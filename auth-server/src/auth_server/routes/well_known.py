@@ -11,6 +11,8 @@ import logging
 
 from fastapi import APIRouter, HTTPException
 
+from registry_pkgs.core.jwt_utils import build_jwks
+
 # Import settings
 from ..core.config import settings
 
@@ -119,7 +121,7 @@ async def openid_configuration():
         "jwks_uri": f"{base_url}/.well-known/jwks.json",
         "response_types_supported": ["code"],
         "subject_types_supported": ["public"],
-        "id_token_signing_alg_values_supported": ["HS256", "RS256"],
+        "id_token_signing_alg_values_supported": ["RS256"],
         "scopes_supported": ["openid", "profile", "email"],
         "token_endpoint_auth_methods_supported": ["client_secret_post", "client_secret_basic", "none"],
         "claims_supported": ["sub", "email", "name", "groups"],
@@ -134,9 +136,27 @@ async def openid_configuration():
 @router.get("/.well-known/jwks.json")
 async def jwks_endpoint():
     """
-    JSON Web Key Set (JWKS) endpoint.
+    JSON Web Key Set (JWKS) endpoint (RFC 7517).
 
-    This auth-server issues only HS256 self-signed tokens, which use a symmetric secret key.
-    Symmetric keys are not be publicly exposed, so it returns an empty key set.
+    Returns the RSA public key used to sign self-signed RS256 JWTs issued by this
+    auth server. Token consumers (e.g. the registry service) can fetch this endpoint
+    to obtain the public key and verify tokens without sharing a secret.
+
+    The response contains a single JWK entry with:
+    - ``kty``: "RSA"
+    - ``use``: "sig"
+    - ``alg``: "RS256"
+    - ``kid``: matches the ``kid`` embedded in issued token headers
+    - ``n`` / ``e``: base64url-encoded RSA modulus and public exponent
+
+    Raises:
+        HTTPException 500: If the public key is not configured or cannot be parsed.
     """
-    return {"keys": []}
+    if not settings.jwt_public_key:
+        logger.error("JWT_PUBLIC_KEY is not configured")
+        raise HTTPException(status_code=500, detail="Server configuration error: JWT_PUBLIC_KEY not configured")
+    try:
+        return build_jwks(settings.jwt_public_key, settings.jwt_self_signed_kid)
+    except Exception as e:
+        logger.error(f"Failed to build JWKS from public key: {e}")
+        raise HTTPException(status_code=500, detail="Server configuration error: invalid JWT public key")

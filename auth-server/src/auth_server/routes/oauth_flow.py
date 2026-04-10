@@ -11,14 +11,14 @@ import time
 import urllib.parse
 from typing import Any
 
-import jwt
+import httpx
 from authlib.oauth2.rfc7636 import create_s256_code_challenge
 from fastapi import APIRouter, Cookie, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from itsdangerous import BadSignature, SignatureExpired
 from pydantic import BaseModel, Field
 
-from registry_pkgs.core.jwt_utils import build_jwt_payload, encode_jwt, get_token_kid
+from registry_pkgs.core.jwt_utils import build_jwt_payload, decode_jwt_unverified, encode_jwt, get_token_kid
 from registry_pkgs.core.scopes import map_groups_to_scopes
 
 from ..container import AuthContainer
@@ -38,7 +38,7 @@ router = APIRouter()
 
 
 # JWT / signer configuration (use settings)
-SECRET_KEY = settings.secret_key
+PRIVATE_KEY = settings.jwt_private_key
 JWT_ISSUER = settings.jwt_issuer
 JWT_AUDIENCE = settings.jwt_audience
 JWT_SELF_SIGNED_KID = settings.jwt_self_signed_kid
@@ -301,7 +301,7 @@ async def approve_device(request: DeviceApprovalRequest):
             "token_use": "access",
         },
     )
-    access_token = encode_jwt(token_payload, SECRET_KEY, kid=JWT_SELF_SIGNED_KID)
+    access_token = encode_jwt(token_payload, PRIVATE_KEY, kid=JWT_SELF_SIGNED_KID)
     device_data["status"] = "approved"
     device_data["token"] = access_token
     device_data["approved_at"] = current_time
@@ -386,7 +386,7 @@ async def device_token(
                 "token_use": "access",
             },
         )
-        access_token = encode_jwt(token_payload, SECRET_KEY, kid=JWT_SELF_SIGNED_KID)
+        access_token = encode_jwt(token_payload, PRIVATE_KEY, kid=JWT_SELF_SIGNED_KID)
 
         rt = secrets.token_urlsafe(32)
         refresh_expires_at = current_time + 1209600
@@ -464,7 +464,7 @@ async def device_token(
                 },
             )
 
-            access_token = encode_jwt(token_payload, SECRET_KEY, kid=JWT_SELF_SIGNED_KID)
+            access_token = encode_jwt(token_payload, PRIVATE_KEY, kid=JWT_SELF_SIGNED_KID)
             return DeviceTokenResponse(
                 access_token=access_token,
                 token_type="Bearer",
@@ -517,13 +517,7 @@ async def oauth2_login(
 
         client_state = state
         internal_state_data = {"nonce": secrets.token_urlsafe(24), "resource": resource, "client_state": client_state}
-        internal_state = (
-            base64.urlsafe_b64encode(
-                _json := jwt.utils.force_bytes(_json := __import__("json").dumps(internal_state_data))
-            )
-            .decode()
-            .rstrip("=")
-        )
+        internal_state = base64.urlsafe_b64encode(json.dumps(internal_state_data).encode("utf-8")).decode().rstrip("=")
 
         session_data = {
             "state": internal_state,
@@ -605,7 +599,7 @@ async def oauth2_callback(
         try:
             temp_session_data = signer.loads(oauth2_temp_session, max_age=settings.oauth_session_ttl_seconds)
         except (SignatureExpired, BadSignature):
-            www_authenticate_parts = [f'Bearer realm="{settings.jwt_issuer}"']
+            www_authenticate_parts = [f'Bearer realm="{settings.jarvis_realm}"']
             if resource:
                 try:
                     from urllib.parse import urlparse
@@ -646,7 +640,7 @@ async def oauth2_callback(
         try:
             if provider in ["cognito", "keycloak"]:
                 if "id_token" in token_data:
-                    id_claims = jwt.decode(token_data["id_token"], options={"verify_signature": False})
+                    id_claims = decode_jwt_unverified(token_data["id_token"])
                     mapped_user = {
                         "username": id_claims.get("preferred_username") or id_claims.get("sub"),
                         "email": id_claims.get("email"),
@@ -657,7 +651,7 @@ async def oauth2_callback(
                 else:
                     # Try to decode access_token without verification to extract claims
                     try:
-                        access_claims = jwt.decode(token_data.get("access_token"), options={"verify_signature": False})
+                        access_claims = decode_jwt_unverified(token_data.get("access_token"))
                         mapped_user = {
                             "username": access_claims.get("username") or access_claims.get("sub"),
                             "email": access_claims.get("email"),
@@ -744,7 +738,7 @@ async def exchange_code_for_token(provider: str, code: str, provider_config: dic
     if auth_server_url is None:
         auth_server_url = settings.auth_server_url
     redirect_uri = f"{auth_server_url}/oauth2/callback/{provider}"
-    async with __import__("httpx").AsyncClient() as client:
+    async with httpx.AsyncClient() as client:
         token_data = {
             "grant_type": provider_config["grant_type"],
             "client_id": provider_config["client_id"],
@@ -759,7 +753,7 @@ async def exchange_code_for_token(provider: str, code: str, provider_config: dic
 
 
 async def get_user_info(access_token: str, provider_config: dict) -> dict:
-    async with __import__("httpx").AsyncClient() as client:
+    async with httpx.AsyncClient() as client:
         headers = {"Authorization": f"Bearer {access_token}"}
         response = await client.get(provider_config["user_info_url"], headers=headers)
         response.raise_for_status()
@@ -972,7 +966,7 @@ async def validate_request(request: Request):
             # If kid check didn't work, try checking issuer in payload
             if not validation_result:
                 try:
-                    unverified_claims = jwt.decode(access_token, options={"verify_signature": False})
+                    unverified_claims = decode_jwt_unverified(access_token)
                     if unverified_claims.get("iss") == JWT_ISSUER:
                         logger.info("Detected self-signed token by issuer, validating...")
                         validation_result = _get_validator(request).validate_self_signed_token(access_token)

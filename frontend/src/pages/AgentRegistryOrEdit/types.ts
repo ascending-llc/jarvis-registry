@@ -3,5 +3,6 @@ export interface AgentConfig {
   description?: string;
   path: string;
   url: string;
+  type: string;
   trustAgent: boolean;
 }

@@ -6,7 +6,7 @@ and registry redirect endpoint that calls /oauth2/token to decode JWT.
 """
 
 import secrets
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -20,11 +20,10 @@ API_PREFIX = "/auth"
 @pytest.fixture
 def test_client_oauth_callback():
     """Create test client for OAuth callback tests."""
-    app.state.container = Mock()
-    app.state.container.build_signer.return_value = Mock()
-    app.state.container.user_service = Mock()
-    app.state.container.validator = Mock()
-    app.state.container.get_auth_provider.return_value = Mock()
+    app.state.container = AsyncMock()
+    app.state.container.build_signer.return_value = AsyncMock()
+    app.state.container.validator = AsyncMock()
+    app.state.container.get_auth_provider.return_value = AsyncMock()
     return TestClient(app)
 
 
@@ -231,7 +230,7 @@ class TestOAuth2CallbackStandardFlow:
             assert code_data["code_challenge_method"] == "S256"
 
     @patch("auth_server.routes.oauth_flow.exchange_code_for_token")
-    @patch("auth_server.routes.oauth_flow.jwt.decode")
+    @patch("auth_server.routes.oauth_flow.decode_jwt_unverified")
     def test_oauth_callback_keycloak_id_token_parsing(
         self, mock_jwt_decode, mock_exchange_token, test_client_oauth_callback, clear_device_storage, mock_user_service
     ):
@@ -387,9 +386,7 @@ class TestOAuth2CallbackStandardFlow:
 class TestOAuth2TokenEndpoint:
     """Test /oauth2/token endpoint with authorization code grant."""
 
-    def test_token_endpoint_with_authorization_code(
-        self, test_client_oauth_callback, clear_device_storage, mock_user_service
-    ):
+    def test_token_endpoint_with_authorization_code(self, test_client_oauth_callback, mock_user_service):
         """Test token endpoint exchanges authorization code for JWT with user_id."""
         # Create authorization code directly
         auth_code = secrets.token_urlsafe(32)
@@ -413,7 +410,7 @@ class TestOAuth2TokenEndpoint:
         }
 
         # Exchange code for token
-        with patch("auth_server.routes.oauth_flow.jwt.encode") as mock_jwt_encode:
+        with patch("auth_server.routes.oauth_flow.encode_jwt") as mock_jwt_encode:
             mock_jwt_encode.return_value = "mock-jwt-token-with-user-id"
 
             response = test_client_oauth_callback.post(

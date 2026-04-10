@@ -18,6 +18,14 @@ from .case_conversion import APIBaseModel
 # ==================== Nested Models ====================
 
 
+class AgentConfigOutput(APIBaseModel):
+    """Output schema for agent configuration"""
+
+    title: str
+    description: str
+    type: str
+
+
 class AgentSkillInput(APIBaseModel):
     """Input schema for agent skill"""
 
@@ -70,21 +78,24 @@ class WellKnownInfo(APIBaseModel):
 
 
 class AgentCreateRequest(APIBaseModel):
-    """Request schema for creating a new agent - only 4 required fields, other info auto-fetched from URL"""
+    """Request schema for creating a new agent - only 5 required fields, other info auto-fetched from URL"""
 
     path: str = Field(description="Registry path (e.g., /code-reviewer)")
-    name: str = Field(description="Agent name")
-    description: str = Field(default="", description="Agent description")
+    title: str = Field(description="Agent title")
+    description: str | None = Field(None, description="Agent description")
     url: HttpUrl | str = Field(description="Agent endpoint URL - agent card will be fetched from this URL")
+    type: str = Field(description="Transport type: jsonrpc, grpc, http_json")
 
 
 class AgentUpdateRequest(APIBaseModel):
-    """Request schema for updating an agent - only 4 fields supported, other info auto-fetched from URL"""
+    """Request schema for updating an agent - supports 6 fields: path, title, description, url, type, enabled"""
 
     path: str | None = Field(None, description="Registry path (e.g., /code-reviewer)")
-    name: str | None = Field(None, description="Agent name")
+    title: str | None = Field(None, description="Agent title")
     description: str | None = Field(None, description="Agent description")
     url: HttpUrl | str | None = Field(None, description="Agent endpoint URL - agent card will be fetched from this URL")
+    type: str | None = Field(None, description="Transport type: jsonrpc, grpc, http_json")
+    enabled: bool | None = Field(None, description="Whether agent is enabled")
 
 
 class AgentToggleRequest(APIBaseModel):
@@ -120,6 +131,7 @@ class AgentListItem(APIBaseModel):
     skills: list[AgentSkillOutput]
     enabled: bool
     status: str
+    config: AgentConfigOutput
     permissions: ResourcePermissions
     author: str
     createdAt: datetime
@@ -175,6 +187,7 @@ class AgentDetailResponse(APIBaseModel):
     tags: list[str]
     status: str
     enabled: bool
+    config: AgentConfigOutput
     permissions: ResourcePermissions
     author: str
     wellKnown: WellKnownInfo | None = None
@@ -204,6 +217,22 @@ class WellKnownSyncResponse(APIBaseModel):
 # ==================== Converter Functions ====================
 
 
+def _convert_agent_config(agent: Any) -> AgentConfigOutput:
+    """Helper to convert agent config to output format"""
+    # Backward compatibility: if config is None, use card data
+    if agent.config is None:
+        return AgentConfigOutput(
+            title=agent.card.name,
+            description=agent.card.description,
+            type="unknown",
+        )
+    return AgentConfigOutput(
+        title=agent.config.title,
+        description=agent.config.description,
+        type=agent.config.type,
+    )
+
+
 def convert_to_list_item(agent: Any, acl_permission: int | ResourcePermissions) -> AgentListItem:
     """Convert A2AAgent document to list item"""
     from registry_pkgs.models.enums import PermissionBits
@@ -230,6 +259,8 @@ def convert_to_list_item(agent: Any, acl_permission: int | ResourcePermissions) 
         for skill in (agent.card.skills or [])
     ]
 
+    config_output = _convert_agent_config(agent)
+
     return AgentListItem(
         id=str(agent.id),
         path=agent.path,
@@ -243,6 +274,7 @@ def convert_to_list_item(agent: Any, acl_permission: int | ResourcePermissions) 
         skills=skills_output,
         enabled=agent.isEnabled,
         status=agent.status,
+        config=config_output,
         permissions=permissions,
         author=str(agent.author),
         createdAt=agent.createdAt,
@@ -310,6 +342,8 @@ def convert_to_detail(agent: Any, acl_permission: int | ResourcePermissions) -> 
         else:
             security_schemes_dict = dict(agent.card.security_schemes)
 
+    config_output = _convert_agent_config(agent)
+
     return AgentDetailResponse(
         id=str(agent.id),
         path=agent.path,
@@ -329,6 +363,7 @@ def convert_to_detail(agent: Any, acl_permission: int | ResourcePermissions) -> 
         tags=agent.tags,
         status=agent.status,
         enabled=agent.isEnabled,
+        config=config_output,
         permissions=permissions,
         author=str(agent.author),
         wellKnown=well_known_info,

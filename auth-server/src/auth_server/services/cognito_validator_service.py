@@ -2,14 +2,20 @@
 Service module for Cognito token validation.
 """
 
-import json
 import logging
 
 import boto3
 import httpx
-import jwt
 from botocore.exceptions import ClientError
-from jwt.api_jwk import PyJWK
+
+from registry_pkgs.core.jwt_utils import (
+    ExpiredSignatureError,
+    InvalidTokenError,
+    decode_jwt,
+    decode_jwt_unverified,
+    decode_jwt_with_jwk,
+    get_token_unverified_header,
+)
 
 from ..core.config import settings
 from ..utils.security_mask import hash_username
@@ -55,43 +61,28 @@ class SimplifiedCognitoValidator:
         if not region:
             region = self.default_region
         try:
-            unverified_header = jwt.get_unverified_header(access_token)
+            unverified_header = get_token_unverified_header(access_token)
             kid = unverified_header.get("kid")
             if not kid:
                 raise ValueError("Token missing 'kid' in header")
 
             jwks = await self._get_jwks(user_pool_id, region)
-            signing_key = None
+            matching_key = None
             for key in jwks.get("keys", []):
                 if key.get("kid") == kid:
-                    try:
-                        from jwt.algorithms import RSAAlgorithm
-
-                        signing_key = RSAAlgorithm.from_jwk(key)
-                    except (ImportError, AttributeError):
-                        try:
-                            from jwt.algorithms import get_default_algorithms
-
-                            algorithms = get_default_algorithms()
-                            signing_key = algorithms["RS256"].from_jwk(key)
-                        except (ImportError, AttributeError):
-                            signing_key = PyJWK.from_jwk(json.dumps(key)).key
+                    matching_key = key
                     break
 
-            if not signing_key:
+            if not matching_key:
                 raise ValueError(f"No matching key found for kid: {kid}")
 
             issuer = f"https://cognito-idp.{region}.amazonaws.com/{user_pool_id}"
-            claims = jwt.decode(
+            claims = decode_jwt_with_jwk(
                 access_token,
-                signing_key,
+                matching_key,
                 algorithms=["RS256"],
                 issuer=issuer,
-                options={
-                    "verify_aud": False,
-                    "verify_exp": True,
-                    "verify_iat": True,
-                },
+                audience=None,  # Cognito access tokens don't carry a standard aud
             )
 
             token_use = claims.get("token_use")
@@ -104,11 +95,11 @@ class SimplifiedCognitoValidator:
 
             logger.info("Successfully validated JWT token for client/user")
             return claims
-        except jwt.ExpiredSignatureError:
+        except ExpiredSignatureError:
             error_msg = "Token has expired"
             logger.warning(error_msg)
             raise ValueError(error_msg)
-        except jwt.InvalidTokenError as e:
+        except InvalidTokenError as e:
             error_msg = f"Invalid token: {e}"
             logger.warning(error_msg)
             raise ValueError(error_msg)
@@ -156,14 +147,11 @@ class SimplifiedCognitoValidator:
 
     def validate_self_signed_token(self, access_token: str) -> dict:
         try:
-            claims = jwt.decode(
+            claims = decode_jwt(
                 access_token,
-                settings.secret_key,
-                algorithms=["HS256"],
+                settings.jwt_public_key,
                 issuer=settings.jwt_issuer,
                 audience=settings.jwt_audience,
-                options={"verify_exp": True, "verify_iat": True, "verify_iss": True, "verify_aud": True},
-                leeway=30,
             )
 
             token_use = claims.get("token_use")
@@ -186,11 +174,11 @@ class SimplifiedCognitoValidator:
                 "groups": [],
                 "token_type": "user_generated",
             }
-        except jwt.ExpiredSignatureError:
+        except ExpiredSignatureError:
             error_msg = "Self-signed token has expired"
             logger.warning(error_msg)
             raise ValueError(error_msg)
-        except jwt.InvalidTokenError as e:
+        except InvalidTokenError as e:
             error_msg = f"Invalid self-signed token: {e}"
             logger.warning(error_msg)
             raise ValueError(error_msg)
@@ -203,11 +191,13 @@ class SimplifiedCognitoValidator:
         if not region:
             region = self.default_region
         try:
-            unverified_claims = jwt.decode(access_token, options={"verify_signature": False})
+            unverified_claims = decode_jwt_unverified(access_token)
             if unverified_claims.get("iss") == settings.jwt_issuer:
                 logger.debug("Token appears to be self-signed, validating...")
                 return self.validate_self_signed_token(access_token)
         except Exception:
+            logger.exception("failed to decode jwt token")
+
             pass
 
         try:
