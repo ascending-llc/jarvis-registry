@@ -82,7 +82,7 @@ class AgentCreateRequest(APIBaseModel):
 
     path: str = Field(description="Registry path (e.g., /code-reviewer)")
     title: str = Field(description="Agent title")
-    description: str = Field(default="", description="Agent description")
+    description: str | None = Field(None, description="Agent description")
     url: HttpUrl | str = Field(description="Agent endpoint URL - agent card will be fetched from this URL")
     type: str = Field(description="Transport type: jsonrpc, grpc, http_json")
 
