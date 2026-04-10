@@ -24,8 +24,8 @@ class TestUserService:
         mock_user = MagicMock()
         mock_user.id = ObjectId("507f1f77bcf86cd799439011")
 
-        # Patch IUser.find_one to return mock user
-        with patch("auth_server.services.user_service.IUser.find_one", new_callable=AsyncMock) as mock_find:
+        # Patch User.find_one to return mock user
+        with patch("auth_server.services.user_service.User.find_one", new_callable=AsyncMock) as mock_find:
             mock_find.return_value = mock_user
 
             user_info = {"username": "testuser", "email": "test@example.com"}
@@ -45,7 +45,7 @@ class TestUserService:
         mock_user = MagicMock()
         mock_user.id = ObjectId("507f1f77bcf86cd799439012")
 
-        with patch("auth_server.services.user_service.IUser.find_one", new_callable=AsyncMock) as mock_find:
+        with patch("auth_server.services.user_service.User.find_one", new_callable=AsyncMock) as mock_find:
             # First call (username) returns None, second call (email) returns user
             mock_find.side_effect = [None, mock_user]
 
@@ -65,7 +65,7 @@ class TestUserService:
     @pytest.mark.asyncio
     async def test_resolve_user_id_user_not_found(self):
         """Test resolving user_id when user doesn't exist."""
-        with patch("auth_server.services.user_service.IUser.find_one", new_callable=AsyncMock) as mock_find:
+        with patch("auth_server.services.user_service.User.find_one", new_callable=AsyncMock) as mock_find:
             # Both username and email lookups return None
             mock_find.return_value = None
 
@@ -86,7 +86,7 @@ class TestUserService:
         mock_user = MagicMock()
         mock_user.id = ObjectId("507f1f77bcf86cd799439013")
 
-        with patch("auth_server.services.user_service.IUser.find_one", new_callable=AsyncMock) as mock_find:
+        with patch("auth_server.services.user_service.User.find_one", new_callable=AsyncMock) as mock_find:
             mock_find.return_value = mock_user
 
             user_info = {"email": "test@example.com"}
@@ -125,7 +125,7 @@ class TestUserService:
     @pytest.mark.asyncio
     async def test_resolve_user_id_database_error(self):
         """Test resolving user_id when database raises an error."""
-        with patch("auth_server.services.user_service.IUser.find_one", new_callable=AsyncMock) as mock_find:
+        with patch("auth_server.services.user_service.User.find_one", new_callable=AsyncMock) as mock_find:
             # Simulate database error
             mock_find.side_effect = Exception("Database connection error")
 
@@ -143,7 +143,7 @@ class TestUserService:
         mock_user = MagicMock()
         mock_user.id = ObjectId("507f1f77bcf86cd799439014")
 
-        with patch("auth_server.services.user_service.IUser.find_one", new_callable=AsyncMock) as mock_find:
+        with patch("auth_server.services.user_service.User.find_one", new_callable=AsyncMock) as mock_find:
             mock_find.return_value = mock_user
 
             user_info = {"username": "globaltest"}
@@ -160,7 +160,7 @@ class TestUserService:
         mock_user_by_email = MagicMock()
         mock_user_by_email.id = ObjectId("507f1f77bcf86cd799439016")
 
-        with patch("auth_server.services.user_service.IUser.find_one", new_callable=AsyncMock) as mock_find:
+        with patch("auth_server.services.user_service.User.find_one", new_callable=AsyncMock) as mock_find:
             # Username lookup succeeds, email lookup should not be called
             mock_find.return_value = mock_user_by_username
 
