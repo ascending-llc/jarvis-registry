@@ -136,10 +136,7 @@ class AgentCoreRuntimeAuthService:
         if jwt_config is None:
             raise ValueError("JWT runtime requires providerConfig.runtimeAccess.jwt configuration")
 
-        audiences = list(jwt_config.audiences or [])
-        audience_claim: str | list[str] = settings.jwt_audience
-        if audiences:
-            audience_claim = audiences[0] if len(audiences) == 1 else audiences
+        audience_claim = settings.jwt_audience
 
         # The runtime authorizer may validate client_id / scope claims even
         # though we are not using OAuth. We synthesize those claims directly
@@ -155,7 +152,7 @@ class AgentCoreRuntimeAuthService:
         payload = build_jwt_payload(
             subject=settings.registry_app_name,
             issuer=settings.jwt_issuer,
-            audience=audience_claim,  # type: ignore[arg-type]
+            audience=audience_claim,
             expires_in_seconds=_JWT_EXPIRES_IN_SECONDS,
             extra_claims=extra_claims or None,
         )

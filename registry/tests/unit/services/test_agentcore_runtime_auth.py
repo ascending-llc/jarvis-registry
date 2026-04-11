@@ -97,14 +97,14 @@ async def test_build_runtime_http_auth_jwt_signs_bearer_token_with_expected_clai
     claims = decode_jwt_unverified(token)
     assert claims["iss"] == settings.jwt_issuer
     assert claims["sub"] == settings.registry_app_name
-    assert claims["aud"] == ["jarvis-services", "agentcore-runtime"]
+    assert claims["aud"] == settings.jwt_audience
     assert claims["client_id"] == "jarvis-registry"
     assert claims["scope"] == "sync:read tools:read"
     assert claims["tenant"] == "prod"
 
 
 @pytest.mark.asyncio
-async def test_build_runtime_http_auth_jwt_uses_global_audience_fallback():
+async def test_build_runtime_http_auth_jwt_uses_global_audience():
     service = AgentCoreRuntimeAuthService(
         client_provider=_FakeProvider(),
         extract_region_from_arn=lambda _arn, default: default,
