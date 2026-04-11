@@ -11,7 +11,7 @@ import httpx
 
 from registry.core.config import settings
 from registry.core.mcp_client import MCPServerData, get_tools_and_capabilities_from_server
-from registry_pkgs.models import A2AAgent, ExtendedMCPServerDocument
+from registry_pkgs.models import A2AAgent, ExtendedMCPServer
 from registry_pkgs.models.federation import Federation
 
 from .agentcore_clients import AgentCoreClientProvider
@@ -37,7 +37,7 @@ class AgentCoreRuntimeInvoker:
         self,
         *,
         client_provider: AgentCoreClientProvider,
-        extract_region_from_arn: Callable[[str, str], str],
+        extract_region_from_arn: Callable[..., str],
         auth_service: AgentCoreRuntimeAuthService | None = None,
     ):
         self.client_provider = client_provider
@@ -54,7 +54,7 @@ class AgentCoreRuntimeInvoker:
     async def enrich_mcp_server(
         self,
         *,
-        server: ExtendedMCPServerDocument,
+        server: ExtendedMCPServer,
         federation: Federation | None = None,
         region: str,
         assume_role_arn: str | None = None,
@@ -195,10 +195,12 @@ class AgentCoreRuntimeInvoker:
     @staticmethod
     def _normalize_agentcore_a2a_card(card_data: dict[str, Any]) -> dict[str, Any]:
         """
-        Normalize AgentCore-specific card payload quirks before A2A model validation.
+        Normalize known AgentCore card payload quirks before A2A SDK validation.
 
-        AgentCore may return structured objects inside `skills[].examples[]`,
-        while the A2A schema expects plain strings there.
+        AgentCore currently returns non-standard structured objects in
+        ``skills[].examples[]`` for some runtimes, while the A2A SDK expects
+        plain strings there. Keep this compatibility local to the AgentCore
+        federation path so the shared model layer remains protocol-strict.
         """
         normalized = dict(card_data)
         raw_skills = normalized.get("skills")
@@ -224,7 +226,10 @@ class AgentCoreRuntimeInvoker:
 
     @staticmethod
     def _stringify_skill_example(example: Any) -> str:
-        """Convert non-standard example payloads into the string shape A2A expects."""
+        """
+        Convert a non-standard skill example payload into the string shape
+        expected by the A2A AgentSkill schema.
+        """
         if isinstance(example, str):
             return example
         if isinstance(example, dict):
@@ -324,16 +329,18 @@ class AgentCoreRuntimeInvoker:
         if not runtime_arn:
             raise ValueError("runtime_arn is required")
 
-        resolved_region = self.extract_region_from_arn(runtime_arn, region)
-        client = await self._get_runtime_client(resolved_region, assume_role_arn)
-
+        resolved_region = self.extract_region_from_arn(runtime_arn)
         payload = self._json_to_bytes({"prompt": prompt})
-        response = await self._call_with_runtime_init_retry(
-            lambda: client.invoke_agent_runtime(
-                agentRuntimeArn=runtime_arn,
-                qualifier=qualifier,
-                payload=payload,
-            )
+        response = await self.client_provider.execute_with_runtime_client(
+            resolved_region,
+            lambda client: self._call_with_runtime_init_retry(
+                lambda: client.invoke_agent_runtime(
+                    agentRuntimeArn=runtime_arn,
+                    qualifier=qualifier,
+                    payload=payload,
+                )
+            ),
+            assume_role_arn,
         )
 
         response_text = self._response_text_from_runtime_response(response)
@@ -461,10 +468,13 @@ class AgentCoreRuntimeInvoker:
         if not runtime_arn:
             raise ValueError("Missing runtime ARN for GetAgentCard")
 
-        resolved_region = self.extract_region_from_arn(runtime_arn, region)
-        client = await self._get_runtime_client(resolved_region, assume_role_arn)
-        response = await self._call_with_a2a_card_retry(
-            lambda: client.get_agent_card(agentRuntimeArn=runtime_arn, qualifier="DEFAULT")
+        resolved_region = self.extract_region_from_arn(runtime_arn)
+        response = await self.client_provider.execute_with_runtime_client(
+            resolved_region,
+            lambda client: self._call_with_a2a_card_retry(
+                lambda: client.get_agent_card(agentRuntimeArn=runtime_arn, qualifier="DEFAULT")
+            ),
+            assume_role_arn,
         )
         card = self._coerce_json_object(response.get("agentCard"))
         if card is None:
@@ -483,43 +493,19 @@ class AgentCoreRuntimeInvoker:
         if not runtime_arn:
             return MCPServerData(None, None, None, None, "Missing runtime ARN for InvokeAgentRuntime")
 
-        resolved_region = self.extract_region_from_arn(runtime_arn, region)
-        client = await self._get_runtime_client(resolved_region, assume_role_arn)
+        resolved_region = self.extract_region_from_arn(runtime_arn)
 
         try:
-            runtime_session_id, mcp_session_id, protocol_version = await self._initialize_mcp_session(
-                client=client,
-                runtime_arn=runtime_arn,
-            )
-            tools_result, _, _, _ = await self._invoke_mcp_jsonrpc(
-                client=client,
-                runtime_arn=runtime_arn,
-                method="tools/list",
-                params={},
-                request_id=self._next_request_id(),
-                runtime_session_id=runtime_session_id,
-                mcp_session_id=mcp_session_id,
-                protocol_version=protocol_version,
-            )
-            resources_result, _, _, _ = await self._invoke_mcp_jsonrpc(
-                client=client,
-                runtime_arn=runtime_arn,
-                method="resources/list",
-                params={},
-                request_id=self._next_request_id(),
-                runtime_session_id=runtime_session_id,
-                mcp_session_id=mcp_session_id,
-                protocol_version=protocol_version,
-            )
-            prompts_result, _, _, _ = await self._invoke_mcp_jsonrpc(
-                client=client,
-                runtime_arn=runtime_arn,
-                method="prompts/list",
-                params={},
-                request_id=self._next_request_id(),
-                runtime_session_id=runtime_session_id,
-                mcp_session_id=mcp_session_id,
-                protocol_version=protocol_version,
+            (
+                tools_result,
+                resources_result,
+                prompts_result,
+                runtime_session_id,
+                mcp_session_id,
+            ) = await self.client_provider.execute_with_runtime_client(
+                resolved_region,
+                lambda client: self._collect_mcp_runtime_capabilities(client, runtime_arn),
+                assume_role_arn,
             )
         except Exception as exc:
             return MCPServerData(None, None, None, None, f"SDK MCP invocation failed: {exc}")
@@ -542,6 +528,47 @@ class AgentCoreRuntimeInvoker:
         if not client:
             raise ValueError(f"Failed to initialize AgentCore runtime client for region {region}")
         return client
+
+    async def _collect_mcp_runtime_capabilities(
+        self,
+        client: Any,
+        runtime_arn: str,
+    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], str | None, str | None]:
+        runtime_session_id, mcp_session_id, protocol_version = await self._initialize_mcp_session(
+            client=client,
+            runtime_arn=runtime_arn,
+        )
+        tools_result, _, _, _ = await self._invoke_mcp_jsonrpc(
+            client=client,
+            runtime_arn=runtime_arn,
+            method="tools/list",
+            params={},
+            request_id=self._next_request_id(),
+            runtime_session_id=runtime_session_id,
+            mcp_session_id=mcp_session_id,
+            protocol_version=protocol_version,
+        )
+        resources_result, _, _, _ = await self._invoke_mcp_jsonrpc(
+            client=client,
+            runtime_arn=runtime_arn,
+            method="resources/list",
+            params={},
+            request_id=self._next_request_id(),
+            runtime_session_id=runtime_session_id,
+            mcp_session_id=mcp_session_id,
+            protocol_version=protocol_version,
+        )
+        prompts_result, _, _, _ = await self._invoke_mcp_jsonrpc(
+            client=client,
+            runtime_arn=runtime_arn,
+            method="prompts/list",
+            params={},
+            request_id=self._next_request_id(),
+            runtime_session_id=runtime_session_id,
+            mcp_session_id=mcp_session_id,
+            protocol_version=protocol_version,
+        )
+        return tools_result, resources_result, prompts_result, runtime_session_id, mcp_session_id
 
     async def _initialize_mcp_session(
         self,
@@ -615,6 +642,8 @@ class AgentCoreRuntimeInvoker:
         try:
             response = await asyncio.to_thread(client.invoke_agent_runtime, **kwargs)
         except Exception as exc:
+            if self.client_provider.is_expired_token_error(exc):
+                raise
             raise ValueError(
                 "invoke_agent_runtime failed "
                 f"(method={method}, runtime_arn={runtime_arn}, qualifier=DEFAULT, accept={kwargs['accept']}, "
@@ -678,6 +707,8 @@ class AgentCoreRuntimeInvoker:
         try:
             response = await asyncio.to_thread(client.invoke_agent_runtime, **kwargs)
         except Exception as exc:
+            if self.client_provider.is_expired_token_error(exc):
+                raise
             raise ValueError(
                 "invoke_agent_runtime notification failed "
                 f"(method={method}, runtime_arn={runtime_arn}, qualifier=DEFAULT): {exc}"

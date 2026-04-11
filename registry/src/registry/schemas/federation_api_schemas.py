@@ -37,7 +37,7 @@ class FederationUpdateRequest(BaseModel):
 
 
 class FederationSyncRequest(BaseModel):
-    force: bool = False
+    dryRun: bool = False
     reason: str | None = None
 
     model_config = ConfigDict(populate_by_name=True, use_enum_values=True)
@@ -112,6 +112,37 @@ class FederationSyncJobResponse(BaseModel):
     phase: str
     startedAt: datetime | None = None
     finishedAt: datetime | None = None
+
+    model_config = ConfigDict(populate_by_name=True, use_enum_values=True, from_attributes=True)
+
+
+class FederationSyncDryRunSummaryResponse(BaseModel):
+    discoveredMcpServers: int = 0
+    discoveredAgents: int = 0
+
+    createdMcpServers: int = 0
+    updatedMcpServers: int = 0
+    deletedMcpServers: int = 0
+    unchangedMcpServers: int = 0
+
+    createdAgents: int = 0
+    updatedAgents: int = 0
+    deletedAgents: int = 0
+    unchangedAgents: int = 0
+    skippedAgents: int = 0
+
+    errors: int = 0
+    errorMessages: list[str] = Field(default_factory=list)
+
+    model_config = ConfigDict(populate_by_name=True, use_enum_values=True, from_attributes=True)
+
+
+class FederationSyncDryRunResponse(BaseModel):
+    dryRun: bool = True
+    providerType: FederationProviderType
+    providerConfig: dict[str, Any] = Field(default_factory=dict)
+    summary: FederationSyncDryRunSummaryResponse
+    message: str | None = None
 
     model_config = ConfigDict(populate_by_name=True, use_enum_values=True, from_attributes=True)
 

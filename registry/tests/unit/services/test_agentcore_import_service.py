@@ -6,7 +6,7 @@ import pytest
 from beanie import PydanticObjectId
 
 from registry.services.agentcore_import_service import AgentCoreImportService
-from registry_pkgs.models import ExtendedMCPServerDocument, ResourceType
+from registry_pkgs.models import ExtendedMCPServer, ResourceType
 
 
 class _FakeRepo:
@@ -110,9 +110,48 @@ class TestAgentCoreImportService:
             a2a_agent_repo=a2a_repo,
         )
 
+    async def test_init_builds_default_federation_client_without_extra_kwargs(self, repo, acl, a2a_repo, monkeypatch):
+        server_service = SimpleNamespace(create_server=AsyncMock())
+        user_service = SimpleNamespace(get_user_by_user_id=AsyncMock())
+        observed: dict[str, object] = {}
+
+        class _FakeInvoker:
+            def __init__(self, *, client_provider, extract_region_from_arn):
+                observed["invoker_client_provider"] = client_provider
+                observed["extract_region_from_arn"] = extract_region_from_arn
+
+        class _FakeFederationClient:
+            @staticmethod
+            def extract_region_from_arn(arn: str) -> str:
+                return arn.split(":")[3]
+
+            def __init__(self, client_provider=None):
+                observed["federation_client_provider"] = client_provider
+
+        monkeypatch.setattr("registry.services.agentcore_import_service.AgentCoreRuntimeInvoker", _FakeInvoker)
+        monkeypatch.setattr(
+            "registry.services.agentcore_import_service.AgentCoreFederationClient", _FakeFederationClient
+        )
+
+        service = AgentCoreImportService(
+            acl_service_instance=acl,
+            server_service=server_service,
+            user_service_instance=user_service,
+            mcp_server_repo=repo,
+            a2a_agent_repo=a2a_repo,
+        )
+
+        assert isinstance(service.federation_client, _FakeFederationClient)
+        assert isinstance(service.runtime_invoker, _FakeInvoker)
+        assert observed["invoker_client_provider"] is observed["federation_client_provider"]
+        assert (
+            observed["extract_region_from_arn"]("arn:aws:bedrock-agentcore:us-west-2:123456789012:runtime/test")
+            == "us-west-2"
+        )
+
     async def test_import_single_server_dry_run_created(self, service, monkeypatch):
         discovered = _FakeServer(name="srv-new", federation_id="fed-new")
-        monkeypatch.setattr(ExtendedMCPServerDocument, "find_one", AsyncMock(return_value=None))
+        monkeypatch.setattr(ExtendedMCPServer, "find_one", AsyncMock(return_value=None))
 
         result = await service._import_single_server(
             discovered_server=discovered,
@@ -130,7 +169,7 @@ class TestAgentCoreImportService:
         discovered = _FakeServer(name="srv-upd", federation_id="fed-upd", title="new-title")
         discovered.federationMetadata["runtimeVersion"] = "2"
 
-        monkeypatch.setattr(ExtendedMCPServerDocument, "find_one", AsyncMock(return_value=existing))
+        monkeypatch.setattr(ExtendedMCPServer, "find_one", AsyncMock(return_value=existing))
 
         result = await service._import_single_server(
             discovered_server=discovered,
@@ -317,7 +356,7 @@ class TestAgentCoreImportService:
 
         find_mock_mcp = SimpleNamespace(to_list=self._async_return([stale_server]))
         find_mock_a2a = SimpleNamespace(to_list=self._async_return([stale_agent]))
-        monkeypatch.setattr(ExtendedMCPServerDocument, "find", lambda *_args, **_kwargs: find_mock_mcp)
+        monkeypatch.setattr(ExtendedMCPServer, "find", lambda *_args, **_kwargs: find_mock_mcp)
         monkeypatch.setattr("registry.services.agentcore_import_service.A2AAgent.find", lambda *_a, **_k: find_mock_a2a)
 
         stale_mcp, stale_a2a = await service._collect_stale_entities(

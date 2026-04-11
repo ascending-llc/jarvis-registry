@@ -51,7 +51,7 @@ class AgentCoreRuntimeAuthService:
         self,
         *,
         client_provider: AgentCoreClientProvider,
-        extract_region_from_arn: Callable[[str, str], str],
+        extract_region_from_arn: Callable[..., str],
     ):
         self.client_provider = client_provider
         self.extract_region_from_arn = extract_region_from_arn
@@ -118,7 +118,7 @@ class AgentCoreRuntimeAuthService:
         assume_role_arn: str | None,
     ) -> tuple[dict[str, str], httpx.Auth | None]:
         runtime_arn = self._resolve_runtime_arn(metadata=metadata, runtime_detail=runtime_detail)
-        resolved_region = self.extract_region_from_arn(runtime_arn or "", region)
+        resolved_region = self._resolve_region(runtime_arn=runtime_arn, fallback_region=region)
         credentials_provider = await self.client_provider.get_runtime_credentials_provider(
             resolved_region,
             assume_role_arn,
@@ -126,6 +126,14 @@ class AgentCoreRuntimeAuthService:
         if not credentials_provider:
             raise ValueError(f"Failed to initialize runtime credentials provider for region {resolved_region}")
         return {}, _SigV4HttpxAuth("bedrock-agentcore", resolved_region, credentials_provider)
+
+    def _resolve_region(self, *, runtime_arn: str | None, fallback_region: str) -> str:
+        if not runtime_arn:
+            return fallback_region
+        try:
+            return self.extract_region_from_arn(runtime_arn, fallback_region)
+        except TypeError:
+            return self.extract_region_from_arn(runtime_arn)
 
     def _build_jwt_auth(self, *, federation: Federation | None) -> tuple[dict[str, str], httpx.Auth | None]:
         if federation is None:

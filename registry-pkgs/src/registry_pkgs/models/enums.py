@@ -30,12 +30,6 @@ class RoleBits:
     OWNER = PermissionBits.VIEW | PermissionBits.EDIT | PermissionBits.DELETE | PermissionBits.SHARE  # 15
 
 
-class FederationSource(StrEnum):
-    AGENTCORE = "agentcore"
-    ANTHROPIC = "anthropic"
-    ASOR = "asor"
-
-
 class OAuthProviderType(StrEnum):
     COGNITO = "cognito"
     AUTH0 = "auth0"
@@ -109,7 +103,6 @@ class FederationJobType(StrEnum):
 
     FULL_SYNC = "full_sync"  # Regular full sync
     CONFIG_RESYNC = "config_resync"  # Triggered by config change
-    FORCE_SYNC = "force_sync"  # Forced manual sync
     DELETE_SYNC = "delete_sync"  # Cleanup during delete
 
 

@@ -54,6 +54,18 @@ const MainConfigForm: React.FC<MainConfigFormProps> = ({ formData, agentDetail, 
       if (result) {
         setDiscoveredData(result);
         if (!silent) showToast('Agent card discovered successfully', 'success');
+
+        let discoveredType = '';
+        if (result.preferredTransport) {
+          const transportStr = result.preferredTransport.toLowerCase();
+          if (transportStr.includes('grpc')) discoveredType = 'grpc';
+          else if (transportStr.includes('jsonrpc')) discoveredType = 'jsonrpc';
+          else if (transportStr.includes('http')) discoveredType = 'http_json';
+        }
+
+        if (!formData.title && result.name) updateField('title', result.name);
+        if (!formData.description && result.description) updateField('description', result.description);
+        if (!formData.type && discoveredType) updateField('type', discoveredType);
       } else {
         if (!silent) showToast('Failed to discover agent card', 'error');
       }
@@ -90,6 +102,64 @@ const MainConfigForm: React.FC<MainConfigFormProps> = ({ formData, agentDetail, 
 
   return (
     <div className='space-y-8'>
+      {/* Section Network Configuration */}
+      <section>
+        <h3 className='text-lg font-semibold text-gray-900 dark:text-white mb-4'>Network Configuration</h3>
+        <div className='space-y-6'>
+          {/* Agent URL */}
+          <FormFields.InputField
+            label='Agent URL'
+            type='url'
+            name='url'
+            id='url'
+            required
+            disabled={isReadOnly}
+            placeholder='https://agent.example.com'
+            value={formData.url || ''}
+            onChange={e => {
+              setDiscoveredData(null);
+              updateField('url', e.target.value);
+            }}
+            helperText='The base URL where your agent is running.'
+            suffix={
+              <button
+                type='button'
+                onClick={() => handleTestUrl()}
+                disabled={isReadOnly || !formData.url}
+                className='btn-input-suffix'
+                title={isManualLoading ? 'Cancel test' : isReadOnly ? 'Discover Disabled' : 'Test URL'}
+              >
+                {isManualLoading ? (
+                  <div className='animate-spin rounded-full h-4 w-4 border-b-2 border-gray-600 dark:border-white' />
+                ) : displayDiscoveredData ? (
+                  <HiCheckCircle className='h-5 w-5 text-green-500' aria-hidden='true' />
+                ) : (
+                  <HiBolt className='h-5 w-5' aria-hidden='true' />
+                )}
+              </button>
+            }
+            error={errors?.url}
+          />
+
+          {/* Transport Type */}
+          <FormFields.RadioGroupField
+            label='Transport Type'
+            name='type'
+            id='type'
+            required
+            disabled={isReadOnly}
+            options={[
+              { label: 'JSONRPC', value: 'jsonrpc' },
+              { label: 'GRPC', value: 'grpc' },
+              { label: 'HTTP_JSON', value: 'http_json' },
+            ]}
+            value={formData.type}
+            onChange={val => updateField('type', val)}
+            error={errors?.type}
+          />
+        </div>
+      </section>
+
       <section>
         <h3 className='text-lg font-semibold text-gray-900 dark:text-white mb-4'>Basic Information</h3>
         <div className='space-y-6'>
@@ -135,103 +205,62 @@ const MainConfigForm: React.FC<MainConfigFormProps> = ({ formData, agentDetail, 
         </div>
       </section>
 
-      {/* Section Network Configuration */}
+      {/* Agent Card (Discovered payload) */}
       <section>
-        <h3 className='text-lg font-semibold text-gray-900 dark:text-white mb-4'>Network Configuration</h3>
-        <div className='space-y-6'>
-          {/* Agent URL */}
-          <FormFields.InputField
-            label='Agent URL'
-            type='url'
-            name='url'
-            id='url'
-            required
-            disabled={isReadOnly}
-            placeholder='https://agent.example.com'
-            value={formData.url || ''}
-            onChange={e => {
-              setDiscoveredData(null);
-              updateField('url', e.target.value);
-            }}
-            helperText='The base URL where your agent is running.'
-            suffix={
-              <button
-                type='button'
-                onClick={() => handleTestUrl()}
-                disabled={isReadOnly || !formData.url}
-                className='btn-input-suffix'
-                title={isManualLoading ? 'Cancel test' : isReadOnly ? 'Discover Disabled' : 'Test URL'}
-              >
-                {isManualLoading ? (
-                  <div className='animate-spin rounded-full h-4 w-4 border-b-2 border-gray-600 dark:border-white' />
-                ) : displayDiscoveredData ? (
-                  <HiCheckCircle className='h-5 w-5 text-green-500' aria-hidden='true' />
-                ) : (
-                  <HiBolt className='h-5 w-5' aria-hidden='true' />
-                )}
-              </button>
-            }
-            error={errors?.url}
-          />
-        </div>
-
-        {/* Agent Card (Discovered payload) */}
-        <div className='mt-8'>
-          <div className='flex items-center gap-3 mb-1'>
-            <h3 className='text-lg font-semibold text-gray-900 dark:text-white m-0'>Agent Card</h3>
-            {displayDiscoveredData && !isSilentLoading && (
-              <span className='inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300'>
-                Discovered
-              </span>
-            )}
-            {isSilentLoading && (
-              <span className='inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-700 dark:bg-blue-500/15 dark:text-blue-300'>
-                Discovering...
-              </span>
-            )}
-            {displayDiscoveredData && !isSilentLoading && (
-              <button
-                type='button'
-                onClick={() => handleTestUrl(true)}
-                disabled={isManualLoading}
-                className='ml-auto text-xs text-purple-600 hover:text-purple-700 dark:text-purple-400 dark:hover:text-purple-300 cursor-pointer disabled:opacity-50 flex items-center gap-1'
-              >
-                {isManualLoading ? 'Discovering...' : 'Re-discover'}
-              </button>
-            )}
-          </div>
-          {formData.url ? (
-            <div className='text-xs text-gray-500 dark:text-gray-400 mb-4'>
-              Auto-discovered from{' '}
-              <code className='px-1.5 py-0.5 bg-gray-100 dark:bg-gray-700/50 rounded text-purple-600 dark:text-purple-300'>
-                {formData.url ? `${formData.url.replace(/\/$/, '')}/.well-known/agent.json` : ''}
-              </code>
-            </div>
-          ) : (
-            <div className='text-xs text-gray-500 dark:text-gray-400 mb-4'>No data discovered</div>
+        <div className='flex items-center gap-3 mb-1'>
+          <h3 className='text-lg font-semibold text-gray-900 dark:text-white m-0'>Agent Card</h3>
+          {displayDiscoveredData && !isSilentLoading && (
+            <span className='inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300'>
+              Discovered
+            </span>
           )}
-
-          <div className='border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden mb-8'>
-            {displayDiscoveredData && (
-              <div className='flex items-center justify-between px-3 py-2 bg-gray-50 dark:bg-gray-800/60 border-b border-gray-200 dark:border-gray-700'>
-                <span className='text-xs font-mono text-gray-500 dark:text-gray-400'>.well-known/agent.json</span>
-                <span className='text-xs font-mono text-gray-500 dark:text-gray-400'>
-                  {getLineCount(JSON.stringify(displayDiscoveredData, null, 2))} lines
-                </span>
-              </div>
-            )}
-            {isSilentLoading || isManualLoading ? (
-              <div className='bg-white dark:bg-gray-900/50 p-8 flex items-center justify-center'>
-                <div className='animate-spin rounded-full h-8 w-8 border-b-2 border-purple-600' />
-              </div>
-            ) : displayDiscoveredData ? (
-              <pre className='bg-white dark:bg-gray-900/50 text-green-600 dark:text-green-300 font-mono text-xs leading-relaxed whitespace-pre overflow-x-auto p-4 m-0'>
-                {JSON.stringify(displayDiscoveredData, null, 2)}
-              </pre>
-            ) : (
-              <div className='bg-white dark:bg-gray-900/50 p-4' />
-            )}
+          {isSilentLoading && (
+            <span className='inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-700 dark:bg-blue-500/15 dark:text-blue-300'>
+              Discovering...
+            </span>
+          )}
+          {displayDiscoveredData && !isSilentLoading && (
+            <button
+              type='button'
+              onClick={() => handleTestUrl(true)}
+              disabled={isManualLoading}
+              className='ml-auto text-xs text-purple-600 hover:text-purple-700 dark:text-purple-400 dark:hover:text-purple-300 cursor-pointer disabled:opacity-50 flex items-center gap-1'
+            >
+              {isManualLoading ? 'Discovering...' : 'Re-discover'}
+            </button>
+          )}
+        </div>
+        {formData.url ? (
+          <div className='text-xs text-gray-500 dark:text-gray-400 mb-4'>
+            Auto-discovered from{' '}
+            <code className='px-1.5 py-0.5 bg-gray-100 dark:bg-gray-700/50 rounded text-purple-600 dark:text-purple-300'>
+              {formData.url ? `${formData.url.replace(/\/$/, '')}/.well-known/agent.json` : ''}
+            </code>
           </div>
+        ) : (
+          <div className='text-xs text-gray-500 dark:text-gray-400 mb-4'>No data discovered</div>
+        )}
+
+        <div className='border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden'>
+          {displayDiscoveredData && (
+            <div className='flex items-center justify-between px-3 py-2 bg-gray-50 dark:bg-gray-800/60 border-b border-gray-200 dark:border-gray-700'>
+              <span className='text-xs font-mono text-gray-500 dark:text-gray-400'>.well-known/agent.json</span>
+              <span className='text-xs font-mono text-gray-500 dark:text-gray-400'>
+                {getLineCount(JSON.stringify(displayDiscoveredData, null, 2))} lines
+              </span>
+            </div>
+          )}
+          {isSilentLoading || isManualLoading ? (
+            <div className='bg-white dark:bg-gray-900/50 p-8 flex items-center justify-center'>
+              <div className='animate-spin rounded-full h-8 w-8 border-b-2 border-purple-600' />
+            </div>
+          ) : displayDiscoveredData ? (
+            <pre className='bg-white dark:bg-gray-900/50 text-green-600 dark:text-green-300 font-mono text-xs leading-relaxed whitespace-pre overflow-x-auto p-4 m-0'>
+              {JSON.stringify(displayDiscoveredData, null, 2)}
+            </pre>
+          ) : (
+            <div className='bg-white dark:bg-gray-900/50 p-4' />
+          )}
         </div>
       </section>
 

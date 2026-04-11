@@ -192,3 +192,17 @@ def test_validate_provider_config_allows_optional_jwt_runtime_settings():
     assert result["runtimeAccess"]["jwt"]["audiences"] == ["jarvis-services", "agentcore-runtime"]
     assert result["runtimeAccess"]["jwt"]["allowedClients"] == ["jarvis-registry"]
     assert result["runtimeAccess"]["jwt"]["allowedScopes"] == ["sync:read", "tools:read"]
+
+
+def test_normalize_provider_config_allows_empty_azure_config_for_create():
+    service = FederationCrudService()
+
+    with pytest.raises(ValueError, match="not implemented yet"):
+        service.normalize_provider_config(FederationProviderType.AZURE_AI_FOUNDRY, {})
+
+
+def test_validate_provider_config_rejects_azure_provider():
+    service = FederationCrudService()
+
+    with pytest.raises(ValueError, match="not implemented yet"):
+        service.validate_provider_config(FederationProviderType.AZURE_AI_FOUNDRY, {})

@@ -24,6 +24,8 @@ class A2AAgentRepository(Repository[A2AAgent]):
     def _extract_runtime_version(agent: A2AAgent) -> str | None:
         runtime_version = (agent.federationMetadata or {}).get("runtimeVersion")
         if runtime_version is None:
+            runtime_version = (agent.federationMetadata or {}).get("agentVersion")
+        if runtime_version is None:
             return None
         return str(runtime_version)
 
@@ -43,17 +45,20 @@ class A2AAgentRepository(Repository[A2AAgent]):
             )
         return docs
 
-    def _runtime_version_property_name(self) -> str | None:
+    def _runtime_version_property_names(self) -> list[str]:
+        property_names: list[str] = []
+        if self._collection_has_property("agentVersion"):
+            property_names.append("agentVersion")
         if self._collection_has_property("runtimeVersion"):
-            return "runtimeVersion"
-        return None
+            property_names.append("runtimeVersion")
+        return property_names
 
     def _should_skip_reindex(self, agent: A2AAgent, agent_id: str) -> tuple[bool, str | None]:
         current_version = self._extract_runtime_version(agent)
         if not current_version:
             return False, None
-        version_property = self._runtime_version_property_name()
-        if not version_property:
+        version_properties = self._runtime_version_property_names()
+        if not version_properties:
             return False, current_version
 
         existing_docs = self._load_existing_docs(agent_id)
@@ -64,6 +69,7 @@ class A2AAgentRepository(Repository[A2AAgent]):
         existing_versions = {
             str(doc.metadata.get(version_property))
             for doc in existing_docs
+            for version_property in version_properties
             if doc.metadata.get(version_property) is not None
         }
 

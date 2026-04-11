@@ -14,7 +14,6 @@ from registry_pkgs.models.enums import (
 )
 from registry_pkgs.models.federation import (
     AwsAgentCoreProviderConfig,
-    AzureAiFoundryProviderConfig,
     Federation,
     FederationLastSync,
     FederationStats,
@@ -22,6 +21,8 @@ from registry_pkgs.models.federation import (
 from registry_pkgs.models.federation_sync_job import FederationSyncJob
 
 logger = logging.getLogger(__name__)
+
+AZURE_AI_FOUNDRY_NOT_IMPLEMENTED = "Azure AI Foundry federation sync is not implemented yet"
 
 
 class FederationCrudService:
@@ -45,7 +46,7 @@ class FederationCrudService:
             return AwsAgentCoreProviderConfig(**provider_config).model_dump(mode="json", exclude_none=True)
 
         if provider_type == FederationProviderType.AZURE_AI_FOUNDRY:
-            return AzureAiFoundryProviderConfig(**provider_config).model_dump(mode="json", exclude_none=True)
+            raise ValueError(AZURE_AI_FOUNDRY_NOT_IMPLEMENTED)
 
         raise ValueError(f"Unsupported federation provider type: {provider_type}")
 

@@ -19,7 +19,7 @@ def _build_invoker() -> AgentCoreRuntimeInvoker:
 
     return AgentCoreRuntimeInvoker(
         client_provider=_FakeProvider(),
-        extract_region_from_arn=lambda _arn, default: default,
+        extract_region_from_arn=lambda arn: arn.split(":")[3],
     )
 
 
@@ -157,7 +157,12 @@ class TestAgentCoreRuntimeInvoker:
                 return {"prompts": []}, "runtime-session-1", "mcp-session-1", "2025-11-05"
             raise AssertionError(f"unexpected method {method}")
 
-        monkeypatch.setattr(invoker, "_get_runtime_client", AsyncMock(return_value=runtime_client))
+        async def _execute_with_runtime_client(region, operation, assume_role_arn=None):
+            assert region == "us-east-1"
+            assert assume_role_arn is None
+            return await operation(runtime_client)
+
+        monkeypatch.setattr(invoker.client_provider, "execute_with_runtime_client", _execute_with_runtime_client)
         monkeypatch.setattr(invoker, "_initialize_mcp_session", initialize_mock)
         monkeypatch.setattr(invoker, "_invoke_mcp_jsonrpc", _fake_invoke_mcp_jsonrpc)
 
