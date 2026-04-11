@@ -5,7 +5,7 @@ from urllib.parse import quote
 
 from beanie import PydanticObjectId
 
-from registry_pkgs.models import A2AAgent, ExtendedMCPServerDocument
+from registry_pkgs.models import A2AAgent, ExtendedMCPServer
 
 from .agentcore_clients import AgentCoreClientProvider
 
@@ -125,7 +125,7 @@ class AgentCoreFederationClient:
         )
 
         a2a_agents: list[A2AAgent] = []
-        mcp_servers: list[ExtendedMCPServerDocument] = []
+        mcp_servers: list[ExtendedMCPServer] = []
         skipped_runtimes: list[dict[str, Any]] = list(filtered_runtimes)
         logger.debug(f"runtime_details: {runtime_details}")
         for runtime_detail in runtime_details:
@@ -319,7 +319,7 @@ class AgentCoreFederationClient:
         runtime_detail: dict[str, Any],
         region: str,
         author_id: PydanticObjectId | None = None,
-    ) -> ExtendedMCPServerDocument:
+    ) -> ExtendedMCPServer:
         runtime_arn = runtime_detail["runtimeArn"]
         runtime_id = runtime_detail["agentRuntimeId"]
         runtime_name = runtime_detail["agentRuntimeName"]
@@ -357,7 +357,7 @@ class AgentCoreFederationClient:
                 "runtimeTags": runtime_detail.get("tags", {}),
             },
         }
-        return ExtendedMCPServerDocument.from_server_info(server_info=server_info, is_enabled=status == "READY")
+        return ExtendedMCPServer.from_server_info(server_info=server_info, is_enabled=status == "READY")
 
     @staticmethod
     def _map_agentcore_status_to_registry_status(agentcore_status: str | None) -> str:
@@ -374,7 +374,7 @@ class AgentCoreFederationClient:
 
     async def _reconcile_runtime_type(self, runtime_arn: str, target_type: str) -> None:
         if target_type == "a2a":
-            existing_mcp = await ExtendedMCPServerDocument.find_one({"federationMetadata.runtimeArn": runtime_arn})
+            existing_mcp = await ExtendedMCPServer.find_one({"federationMetadata.runtimeArn": runtime_arn})
             if existing_mcp:
                 logger.info(
                     "Runtime type changed to A2A, deleting previous MCP server model for runtimeArn=%s",

@@ -6,7 +6,7 @@ import pytest
 from beanie import PydanticObjectId
 
 from registry.services.agentcore_import_service import AgentCoreImportService
-from registry_pkgs.models import ExtendedMCPServerDocument, ResourceType
+from registry_pkgs.models import ExtendedMCPServer, ResourceType
 
 
 class _FakeRepo:
@@ -151,7 +151,7 @@ class TestAgentCoreImportService:
 
     async def test_import_single_server_dry_run_created(self, service, monkeypatch):
         discovered = _FakeServer(name="srv-new", federation_id="fed-new")
-        monkeypatch.setattr(ExtendedMCPServerDocument, "find_one", AsyncMock(return_value=None))
+        monkeypatch.setattr(ExtendedMCPServer, "find_one", AsyncMock(return_value=None))
 
         result = await service._import_single_server(
             discovered_server=discovered,
@@ -169,7 +169,7 @@ class TestAgentCoreImportService:
         discovered = _FakeServer(name="srv-upd", federation_id="fed-upd", title="new-title")
         discovered.federationMetadata["runtimeVersion"] = "2"
 
-        monkeypatch.setattr(ExtendedMCPServerDocument, "find_one", AsyncMock(return_value=existing))
+        monkeypatch.setattr(ExtendedMCPServer, "find_one", AsyncMock(return_value=existing))
 
         result = await service._import_single_server(
             discovered_server=discovered,
@@ -356,7 +356,7 @@ class TestAgentCoreImportService:
 
         find_mock_mcp = SimpleNamespace(to_list=self._async_return([stale_server]))
         find_mock_a2a = SimpleNamespace(to_list=self._async_return([stale_agent]))
-        monkeypatch.setattr(ExtendedMCPServerDocument, "find", lambda *_args, **_kwargs: find_mock_mcp)
+        monkeypatch.setattr(ExtendedMCPServer, "find", lambda *_args, **_kwargs: find_mock_mcp)
         monkeypatch.setattr("registry.services.agentcore_import_service.A2AAgent.find", lambda *_a, **_k: find_mock_a2a)
 
         stale_mcp, stale_a2a = await service._collect_stale_entities(

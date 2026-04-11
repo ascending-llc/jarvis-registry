@@ -465,7 +465,7 @@ async def test_build_sync_plan_skips_a2a_insert_when_path_belongs_to_another_res
             return _FakeQuery([conflicting_agent])
         raise AssertionError(f"unexpected query: {query}")
 
-    monkeypatch.setattr("registry.services.federation_sync_service.ExtendedMCPServerDocument.find", _fake_mcp_find)
+    monkeypatch.setattr("registry.services.federation_sync_service.ExtendedMCPServer.find", _fake_mcp_find)
     monkeypatch.setattr("registry.services.federation_sync_service.A2AAgent.find", _fake_a2a_find)
 
     result = await federation_sync_service._build_sync_plan(

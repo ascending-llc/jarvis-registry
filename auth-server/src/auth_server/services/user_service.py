@@ -4,7 +4,7 @@ User service for auth server - handles user lookups from MongoDB.
 
 import logging
 
-from registry_pkgs.models import IUser
+from registry_pkgs.models import User
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +32,7 @@ class UserService:
 
             # Try username first
             if username:
-                user = await IUser.find_one({"username": username})
+                user = await User.find_one({"username": username})
                 if user:
                     logger.debug(f"✓ Resolved user_id from MongoDB by username: {user.id} for username: {username}")
                     return str(user.id)
@@ -40,7 +40,7 @@ class UserService:
 
             # Then try email
             if email:
-                user = await IUser.find_one({"email": email})
+                user = await User.find_one({"email": email})
                 if user:
                     logger.debug(f"✓ Resolved user_id from MongoDB by email: {user.id} for email: {email}")
                     return str(user.id)
