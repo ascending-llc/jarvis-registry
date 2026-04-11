@@ -68,7 +68,7 @@ class AgentCoreRuntimeInvoker:
         self,
         *,
         client_provider: AgentCoreClientProvider,
-        extract_region_from_arn: Callable[[str, str], str],
+        extract_region_from_arn: Callable[[str], str],
     ):
         self.client_provider = client_provider
         self.extract_region_from_arn = extract_region_from_arn
@@ -348,7 +348,7 @@ class AgentCoreRuntimeInvoker:
         if not runtime_arn:
             raise ValueError("runtime_arn is required")
 
-        resolved_region = self.extract_region_from_arn(runtime_arn, region)
+        resolved_region = self.extract_region_from_arn(runtime_arn)
         payload = self._json_to_bytes({"prompt": prompt})
         response = await self.client_provider.execute_with_runtime_client(
             resolved_region,
@@ -481,7 +481,7 @@ class AgentCoreRuntimeInvoker:
         if not runtime_arn:
             raise ValueError("Missing runtime ARN for GetAgentCard")
 
-        resolved_region = self.extract_region_from_arn(runtime_arn, region)
+        resolved_region = self.extract_region_from_arn(runtime_arn)
         response = await self.client_provider.execute_with_runtime_client(
             resolved_region,
             lambda client: self._call_with_a2a_card_retry(
@@ -506,7 +506,7 @@ class AgentCoreRuntimeInvoker:
         if not runtime_arn:
             return MCPServerData(None, None, None, None, "Missing runtime ARN for InvokeAgentRuntime")
 
-        resolved_region = self.extract_region_from_arn(runtime_arn, region)
+        resolved_region = self.extract_region_from_arn(runtime_arn)
 
         try:
             (
@@ -1021,7 +1021,7 @@ class AgentCoreRuntimeInvoker:
                 raise ValueError("Runtime auth mode JWT detected but no AGENTCORE_RUNTIME_JWT token was configured")
             return {"Authorization": f"Bearer {token}"}, None
 
-        resolved_region = self.extract_region_from_arn(metadata.get("runtimeArn", ""), region)
+        resolved_region = self.extract_region_from_arn(metadata.get("runtimeArn", ""))
         credentials_provider = await self.client_provider.get_runtime_credentials_provider(
             resolved_region,
             assume_role_arn,

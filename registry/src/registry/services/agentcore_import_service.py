@@ -51,14 +51,11 @@ class AgentCoreImportService:
         self.a2a_agent_repo = a2a_agent_repo
 
         client_provider = agentcore_client_provider or AgentCoreClientProvider()
-        invoker = runtime_invoker or AgentCoreRuntimeInvoker(
+        self.runtime_invoker = runtime_invoker or AgentCoreRuntimeInvoker(
             client_provider=client_provider,
             extract_region_from_arn=AgentCoreFederationClient.extract_region_from_arn,
         )
-        self.federation_client = federation_client or AgentCoreFederationClient(
-            client_provider=client_provider,
-            runtime_invoker=invoker,
-        )
+        self.federation_client = federation_client or AgentCoreFederationClient(client_provider=client_provider)
 
     async def import_from_runtime(
         self,

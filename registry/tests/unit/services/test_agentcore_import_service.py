@@ -110,6 +110,45 @@ class TestAgentCoreImportService:
             a2a_agent_repo=a2a_repo,
         )
 
+    async def test_init_builds_default_federation_client_without_extra_kwargs(self, repo, acl, a2a_repo, monkeypatch):
+        server_service = SimpleNamespace(create_server=AsyncMock())
+        user_service = SimpleNamespace(get_user_by_user_id=AsyncMock())
+        observed: dict[str, object] = {}
+
+        class _FakeInvoker:
+            def __init__(self, *, client_provider, extract_region_from_arn):
+                observed["invoker_client_provider"] = client_provider
+                observed["extract_region_from_arn"] = extract_region_from_arn
+
+        class _FakeFederationClient:
+            @staticmethod
+            def extract_region_from_arn(arn: str) -> str:
+                return arn.split(":")[3]
+
+            def __init__(self, client_provider=None):
+                observed["federation_client_provider"] = client_provider
+
+        monkeypatch.setattr("registry.services.agentcore_import_service.AgentCoreRuntimeInvoker", _FakeInvoker)
+        monkeypatch.setattr(
+            "registry.services.agentcore_import_service.AgentCoreFederationClient", _FakeFederationClient
+        )
+
+        service = AgentCoreImportService(
+            acl_service_instance=acl,
+            server_service=server_service,
+            user_service_instance=user_service,
+            mcp_server_repo=repo,
+            a2a_agent_repo=a2a_repo,
+        )
+
+        assert isinstance(service.federation_client, _FakeFederationClient)
+        assert isinstance(service.runtime_invoker, _FakeInvoker)
+        assert observed["invoker_client_provider"] is observed["federation_client_provider"]
+        assert (
+            observed["extract_region_from_arn"]("arn:aws:bedrock-agentcore:us-west-2:123456789012:runtime/test")
+            == "us-west-2"
+        )
+
     async def test_import_single_server_dry_run_created(self, service, monkeypatch):
         discovered = _FakeServer(name="srv-new", federation_id="fed-new")
         monkeypatch.setattr(ExtendedMCPServerDocument, "find_one", AsyncMock(return_value=None))

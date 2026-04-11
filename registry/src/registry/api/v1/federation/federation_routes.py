@@ -1,5 +1,6 @@
 import logging
 import math
+from typing import NoReturn
 
 from beanie import PydanticObjectId
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -46,7 +47,7 @@ def _enum_value(value):
     return value.value if hasattr(value, "value") else value
 
 
-def _raise_sync_error(exc: Exception) -> None:
+def _raise_sync_error(exc: Exception) -> NoReturn:
     message = str(exc)
     if "not implemented yet" in message:
         raise HTTPException(
@@ -71,7 +72,7 @@ def _raise_sync_error(exc: Exception) -> None:
     ) from exc
 
 
-def _raise_federation_value_error(exc: ValueError) -> None:
+def _raise_federation_value_error(exc: ValueError) -> NoReturn:
     message = str(exc)
     if "not implemented yet" in message:
         raise HTTPException(

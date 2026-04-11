@@ -392,9 +392,12 @@ class AgentCoreFederationClient:
                 )
                 await existing_a2a.delete()
 
-    def extract_region_from_arn(self, arn: str, fallback: str = "us-east-1") -> str:
+    @staticmethod
+    def extract_region_from_arn(arn: str) -> str:
         parts = arn.split(":")
-        return parts[3] if len(parts) > 3 and parts[3] else fallback
+        if len(parts) < 6 or parts[0] != "arn" or not parts[2] or not parts[3]:
+            raise ValueError(f"Invalid AgentCore runtime ARN: {arn!r}")
+        return parts[3]
 
     def _slug(self, value: str) -> str:
         cleaned = value.strip().lower().replace(" ", "-").replace("_", "-")

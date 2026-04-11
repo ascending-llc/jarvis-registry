@@ -20,7 +20,7 @@ def _build_invoker() -> AgentCoreRuntimeInvoker:
 
     return AgentCoreRuntimeInvoker(
         client_provider=_FakeProvider(),
-        extract_region_from_arn=lambda _arn, default: default,
+        extract_region_from_arn=lambda arn: arn.split(":")[3],
     )
 
 

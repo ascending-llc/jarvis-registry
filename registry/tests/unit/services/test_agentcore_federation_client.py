@@ -12,6 +12,18 @@ from registry.services.federation.agentcore_discovery import AgentCoreFederation
 @pytest.mark.unit
 @pytest.mark.asyncio
 class TestAgentCoreFederationClient:
+    async def test_extract_region_from_arn_returns_region_for_valid_arn(self):
+        assert (
+            AgentCoreFederationClient.extract_region_from_arn(
+                "arn:aws:bedrock-agentcore:us-west-2:123456789012:runtime/test"
+            )
+            == "us-west-2"
+        )
+
+    async def test_extract_region_from_arn_raises_for_invalid_arn(self):
+        with pytest.raises(ValueError, match="Invalid AgentCore runtime ARN"):
+            AgentCoreFederationClient.extract_region_from_arn("not-an-arn")
+
     async def test_discover_runtime_entities_classifies_mcp_and_a2a_with_stubber(self, monkeypatch):
         client = AgentCoreFederationClient()
 
