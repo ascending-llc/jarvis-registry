@@ -531,7 +531,7 @@ async def test_build_sync_plan_does_not_treat_planned_a2a_create_as_persisted_pa
             return _FakeQuery([])
         raise AssertionError(f"unexpected query: {query}")
 
-    monkeypatch.setattr("registry.services.federation_sync_service.ExtendedMCPServerDocument.find", _fake_mcp_find)
+    monkeypatch.setattr("registry.services.federation_sync_service.ExtendedMCPServer.find", _fake_mcp_find)
     monkeypatch.setattr("registry.services.federation_sync_service.A2AAgent.find", _fake_a2a_find)
 
     result = await federation_sync_service._build_sync_plan(
