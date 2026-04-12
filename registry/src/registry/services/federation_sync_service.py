@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from registry_pkgs.database.decorators import get_current_session, use_transaction
-from registry_pkgs.models import A2AAgent, ExtendedMCPServerDocument
+from registry_pkgs.models import A2AAgent, ExtendedMCPServer
 from registry_pkgs.models.enums import (
     FederationJobPhase,
     FederationJobType,
@@ -411,9 +411,7 @@ class FederationSyncService:
         session = self._get_current_session_or_none()
 
         # -------- MCP --------
-        existing_mcp = await ExtendedMCPServerDocument.find(
-            {"federationRefId": federation.id}, session=session
-        ).to_list()
+        existing_mcp = await ExtendedMCPServer.find({"federationRefId": federation.id}, session=session).to_list()
         existing_mcp_by_remote = {
             self._extract_runtime_arn(item.federationMetadata): item
             for item in existing_mcp
@@ -700,7 +698,7 @@ class FederationSyncService:
 
     async def _build_federation_stats(self, federation_id) -> FederationStats:
         session = self._get_current_session_or_none()
-        mcp_count = await ExtendedMCPServerDocument.find(
+        mcp_count = await ExtendedMCPServer.find(
             {"federationRefId": federation_id, "status": {"$ne": "deleted"}},
             session=session,
         ).count()
@@ -708,7 +706,7 @@ class FederationSyncService:
             {"federationRefId": federation_id, "status": {"$ne": "deleted"}},
             session=session,
         ).count()
-        mcp_servers = await ExtendedMCPServerDocument.find(
+        mcp_servers = await ExtendedMCPServer.find(
             {"federationRefId": federation_id, "status": {"$ne": "deleted"}},
             session=session,
         ).to_list()
@@ -726,7 +724,7 @@ class FederationSyncService:
         # Delete and rebuild one MCP runtime at a time. runtimeArn identifies the
         # concrete remote resource; federation_id prevents cross-federation deletes.
         await self.mcp_server_repo.delete_by_runtime_identity(federation_id_str, runtime_arn)
-        current_server = await ExtendedMCPServerDocument.find_one(
+        current_server = await ExtendedMCPServer.find_one(
             {
                 "federationRefId": federation_id,
                 "federationMetadata.runtimeArn": runtime_arn,
@@ -761,7 +759,7 @@ class FederationSyncService:
             raise RuntimeError(f"a2a sync failed for {current_agent.card.name}{suffix}")
 
     async def _current_mcp_runtime_arns(self, federation_id) -> list[str]:
-        current_servers = await ExtendedMCPServerDocument.find({"federationRefId": federation_id}).to_list()
+        current_servers = await ExtendedMCPServer.find({"federationRefId": federation_id}).to_list()
         return [
             runtime_arn
             for runtime_arn in (self._extract_runtime_arn(server.federationMetadata) for server in current_servers)
@@ -837,7 +835,7 @@ class FederationSyncService:
     @use_transaction
     async def _delete_transaction(self, federation: Federation) -> None:
         session = self._get_current_session_or_none()
-        mcp_list = await ExtendedMCPServerDocument.find({"federationRefId": federation.id}, session=session).to_list()
+        mcp_list = await ExtendedMCPServer.find({"federationRefId": federation.id}, session=session).to_list()
         for item in mcp_list:
             await item.delete(session=session)
 

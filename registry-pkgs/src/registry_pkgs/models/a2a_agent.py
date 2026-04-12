@@ -11,7 +11,7 @@ Storage Structure:
   # Registry-specific Fields
   "path": "/deep-intel",  # Registry path (not part of SDK AgentCard)
 
-  # A2A Protocol Card (validated by SDK)
+  # A2A Protocol Card (validated by SDK - ORIGINAL DATA, DO NOT MODIFY)
   "card": {
     "name": "Deep Intel Agent",
     "description": "Orchestrates AWS research and BI into full report",
@@ -25,6 +25,13 @@ Storage Structure:
     "defaultInputModes": ["text/plain"],
     "defaultOutputModes": ["application/json"],
     "provider": {"organization": "Strands AI", "url": "https://..."}
+  },
+
+  # Registry-specific Configuration (user-provided metadata)
+  "config": {
+    "title": "My Custom Agent Name",  # User-provided display title
+    "description": "My custom description",  # User-provided description
+    "type": "jsonrpc"  # Transport type: jsonrpc, grpc, http_json
   },
 
   # Registry Metadata
@@ -69,8 +76,24 @@ STATUS_INACTIVE = "inactive"
 STATUS_ERROR = "error"
 VALID_STATUSES: set[str] = {STATUS_ACTIVE, STATUS_INACTIVE, STATUS_ERROR}
 
+# Transport Type Values
+TRANSPORT_JSONRPC = "jsonrpc"
+TRANSPORT_GRPC = "grpc"
+TRANSPORT_HTTP_JSON = "http_json"
+VALID_TRANSPORT_TYPES: set[str] = {TRANSPORT_JSONRPC, TRANSPORT_GRPC, TRANSPORT_HTTP_JSON}
+
 
 # ========== Registry-Specific Models ==========
+
+
+class AgentConfig(BaseModel):
+    """Registry-specific agent configuration (user-provided metadata)."""
+
+    title: str = Field(description="User-provided display title for the agent")
+    description: str = Field(default="", description="User-provided description of the agent")
+    type: str = Field(description="Transport type: jsonrpc, grpc, http_json")
+
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class WellKnownConfig(BaseModel):
@@ -114,8 +137,13 @@ class A2AAgent(Document):
     # ========== Registry-specific Fields ==========
     path: str = Field(..., description="Registry path (e.g., /deep-intel)")
 
-    # ========== A2A Protocol Card (SDK) ==========
-    card: AgentCard = Field(description="A2A protocol-compliant agent card (validated by SDK)")
+    # ========== A2A Protocol Card (SDK - ORIGINAL DATA) ==========
+    card: AgentCard = Field(description="A2A protocol-compliant agent card (validated by SDK, unmodified)")
+
+    # ========== Registry-specific Configuration ==========
+    config: AgentConfig | None = Field(
+        default=None, description="User-provided agent configuration (title, description, transport type)"
+    )
 
     # ========== Registry Metadata ==========
     tags: list[str] = Field(default_factory=list, description="Registry categorization tags")
@@ -172,10 +200,18 @@ class A2AAgent(Document):
         Returns:
             Combined text representation of agent for embedding
         """
+        # Backward compatibility: if config is None, use card data
+        title = self.config.title if self.config else self.card.name
+        description = self.config.description if self.config else self.card.description
+        transport = self.config.type if self.config else "unknown"
+
         parts = [
-            f"Name: {self.card.name}",
-            f"Description: {self.card.description}",
+            f"Title: {title}",
+            f"Card Name: {self.card.name}",
+            f"Description: {description}",
+            f"Card Description: {self.card.description}",
             f"Path: {self.path}",
+            f"Transport: {transport}",
         ]
 
         # Add skill information
@@ -207,10 +243,13 @@ class A2AAgent(Document):
         - N skill documents (one per skill)
         """
         agent_id = str(self.id) if self.id else None
+        # Backward compatibility: if config is None, use card data
+        agent_name = self.config.title if self.config else self.card.name
+
         base_metadata = {
             "collection": self.COLLECTION_NAME,
             "agent_id": agent_id,
-            "agent_name": self.card.name,
+            "agent_name": agent_name,  # Keep key stable for backward compatibility
             "path": self.path,
             "status": self.status,
             "is_enabled": self.isEnabled,
@@ -241,8 +280,10 @@ class A2AAgent(Document):
             skill_name = getattr(skill, "name", "") or ""
             skill_desc = getattr(skill, "description", "") or ""
             skill_tags = getattr(skill, "tags", None) or []
+            # Backward compatibility: if config is None, use card data
+            agent_display_name = self.config.title if self.config else self.card.name
             content = (
-                f"Agent: {self.card.name}\n"
+                f"Agent: {agent_display_name}\n"
                 f"Skill: {skill_name}\n"
                 f"Description: {skill_desc}\n"
                 f"Tags: {', '.join(skill_tags)}"
@@ -310,6 +351,7 @@ class A2AAgent(Document):
             path: Registry path (required, e.g., /deep-intel)
             **registry_fields: Additional registry metadata such as:
                 - author: User ID who created this agent (required for ACL)
+                - config: AgentConfig with title, description, type (required; registry display metadata, distinct from the protocol card `name`)
                 - isEnabled: Enabled state (default: False)
                 - registeredBy: Username or service account
                 - tags: List of tags
@@ -318,7 +360,7 @@ class A2AAgent(Document):
             A2AAgent instance
 
         Raises:
-            ValueError: If validation fails or author/path field is missing
+            ValueError: If validation fails or author/path/config field is missing
         """
         # Validate required registry fields
         if "author" not in registry_fields:
@@ -326,6 +368,9 @@ class A2AAgent(Document):
 
         if not path:
             raise ValueError("'path' is required for registry agent")
+
+        if "config" not in registry_fields:
+            raise ValueError("'config' field is required in registry_fields")
 
         # Remove path from card_data if it exists (SDK doesn't support it)
         card_data_clean = {k: v for k, v in card_data.items() if k != "path"}
@@ -336,10 +381,16 @@ class A2AAgent(Document):
         except Exception as e:
             raise ValueError(f"Invalid A2A agent card: {str(e)}")
 
+        # Validate config
+        config = registry_fields["config"]
+        if not isinstance(config, AgentConfig):
+            raise ValueError("'config' must be an AgentConfig instance")
+
         # Create MongoDB document
         return cls(
             path=path,
             card=agent_card,
+            config=config,
             author=registry_fields["author"],
             isEnabled=registry_fields.get("isEnabled", False),
             tags=registry_fields.get("tags", []),
@@ -384,9 +435,14 @@ __all__ = [
     "AgentCard",
     "AgentSkill",
     "AgentProvider",
+    "AgentConfig",
     "WellKnownConfig",
     "STATUS_ACTIVE",
     "STATUS_INACTIVE",
     "STATUS_ERROR",
     "VALID_STATUSES",
+    "TRANSPORT_JSONRPC",
+    "TRANSPORT_GRPC",
+    "TRANSPORT_HTTP_JSON",
+    "VALID_TRANSPORT_TYPES",
 ]

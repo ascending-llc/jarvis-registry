@@ -113,11 +113,11 @@ class TestMongoDBConnection:
             document_models = call_kwargs["document_models"]
             model_names = [model.__name__ for model in document_models]
 
-            assert "IUser" in model_names
-            assert "IAccessRole" in model_names
-            assert "IGroup" in model_names
+            assert "User" in model_names
+            assert "AccessRole" in model_names
+            assert "Group" in model_names
             assert "ExtendedAclEntry" in model_names
-            assert "ExtendedMCPServerDocument" in model_names
+            assert "ExtendedMCPServer" in model_names
             assert "Token" in model_names
             assert "Key" in model_names
             assert "A2AAgent" in model_names

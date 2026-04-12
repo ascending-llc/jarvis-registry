@@ -11,8 +11,8 @@ import httpx
 
 from registry.core.config import settings
 from registry.core.mcp_client import MCPServerData, get_tools_and_capabilities_from_server
-from registry_pkgs.models import A2AAgent, ExtendedMCPServerDocument
 from registry_pkgs.models.federation import Federation
+from registry_pkgs.models import A2AAgent, ExtendedMCPServer
 
 from .agentcore_clients import AgentCoreClientProvider
 from .agentcore_runtime_auth import AgentCoreRuntimeAuthService
@@ -54,8 +54,8 @@ class AgentCoreRuntimeInvoker:
     async def enrich_mcp_server(
         self,
         *,
-        server: ExtendedMCPServerDocument,
         federation: Federation | None = None,
+        server: ExtendedMCPServer,
         region: str,
         assume_role_arn: str | None = None,
     ) -> None:
