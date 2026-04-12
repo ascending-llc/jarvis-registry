@@ -11,8 +11,8 @@ import httpx
 
 from registry.core.config import settings
 from registry.core.mcp_client import MCPServerData, get_tools_and_capabilities_from_server
-from registry_pkgs.models.federation import Federation
 from registry_pkgs.models import A2AAgent, ExtendedMCPServer
+from registry_pkgs.models.federation import Federation
 
 from .agentcore_clients import AgentCoreClientProvider
 from .agentcore_runtime_auth import AgentCoreRuntimeAuthService
