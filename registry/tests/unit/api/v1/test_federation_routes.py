@@ -74,7 +74,6 @@ def sample_federation():
         providerConfig={
             "region": "us-east-1",
             "assumeRoleArn": "arn:aws:iam::123456789012:role/TestRole",
-            "runtimeAccess": {"mode": "iam", "iam": {}},
         },
         stats={"mcpServerCount": 0, "agentCount": 0, "toolCount": 0, "importedTotal": 0},
         lastSync=None,
@@ -135,7 +134,7 @@ async def test_create_federation_allows_empty_aws_provider_config(sample_user_co
     created_federation = SimpleNamespace(
         **{
             **sample_federation.__dict__,
-            "providerConfig": {"resourceTagsFilter": {}, "runtimeAccess": {"mode": "iam", "iam": {}}},
+            "providerConfig": {"resourceTagsFilter": {}},
         }
     )
     federation_crud_service = MagicMock()
@@ -155,7 +154,7 @@ async def test_create_federation_allows_empty_aws_provider_config(sample_user_co
         acl_service=acl_service,
     )
 
-    assert result.providerConfig == {"resourceTagsFilter": {}, "runtimeAccess": {"mode": "iam", "iam": {}}}
+    assert result.providerConfig == {"resourceTagsFilter": {}}
 
 
 @pytest.mark.asyncio
@@ -421,7 +420,7 @@ async def test_sync_federation_requires_aws_region_and_assume_role(sample_user_c
     federation_missing_config = SimpleNamespace(
         **{
             **sample_federation.__dict__,
-            "providerConfig": {"resourceTagsFilter": {}, "runtimeAccess": {"mode": "iam", "iam": {}}},
+            "providerConfig": {"resourceTagsFilter": {}},
         }
     )
     federation_crud_service = MagicMock()

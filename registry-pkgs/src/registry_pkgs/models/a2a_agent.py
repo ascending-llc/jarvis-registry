@@ -66,6 +66,8 @@ from langchain_core.documents import Document as LangChainDocument
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 from pymongo import IndexModel
 
+from .federation import AgentCoreRuntimeAccessConfig
+
 logger = logging.getLogger(__name__)
 
 # ========== Constants ==========
@@ -92,6 +94,10 @@ class AgentConfig(BaseModel):
     title: str = Field(description="User-provided display title for the agent")
     description: str = Field(default="", description="User-provided description of the agent")
     type: str = Field(description="Transport type: jsonrpc, grpc, http_json")
+    runtimeAccess: AgentCoreRuntimeAccessConfig | None = Field(
+        default=None,
+        description="Per-agent runtime auth mode used for federated AgentCore data-plane calls",
+    )
 
     model_config = ConfigDict(populate_by_name=True)
 

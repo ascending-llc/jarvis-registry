@@ -1,3 +1,4 @@
+import json
 import logging
 from datetime import UTC, datetime
 from typing import Any
@@ -6,8 +7,10 @@ from urllib.parse import quote
 from beanie import PydanticObjectId
 
 from registry_pkgs.models import A2AAgent, ExtendedMCPServer
+from registry_pkgs.models.a2a_agent import AgentConfig
 
 from .agentcore_clients import AgentCoreClientProvider
+from .agentcore_runtime_auth import AgentCoreRuntimeAuthService
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +56,12 @@ class AgentCoreFederationClient:
         - This is a single-region scan, not a multi-region crawl.
         - If resource_tags_filter is provided, only runtimes whose AWS resource
           tags fully match the filter are imported.
+
+        Important boundary:
+        - Discovery is read-only. It must never mutate Mongo state, because the
+          same code path is reused by dry-run preview flows.
+        - Persisted type reconciliation (for example a runtime switching between
+          MCP and A2A) is handled later by the sync apply phase.
         """
         normalized_tag_filter = dict(resource_tags_filter or {})
 
@@ -135,13 +144,11 @@ class AgentCoreFederationClient:
             protocol = self._extract_runtime_protocol(runtime_detail)
 
             if protocol == "A2A":
-                await self._reconcile_runtime_type(runtime_arn=runtime_arn, target_type="a2a")
                 a2a_agent = self._transform_runtime_to_a2a_agent(runtime_detail, region, author_id)
                 a2a_agents.append(a2a_agent)
                 continue
 
             if protocol == "MCP":
-                await self._reconcile_runtime_type(runtime_arn=runtime_arn, target_type="mcp")
                 mcp_server = self._transform_runtime_to_mcp_server(runtime_detail, region, author_id)
                 mcp_servers.append(mcp_server)
                 continue
@@ -281,10 +288,28 @@ class AgentCoreFederationClient:
         }
 
         status = runtime_detail.get("status", "READY")
+        runtime_access = AgentCoreRuntimeAuthService.infer_runtime_access(
+            metadata={"authorizerConfiguration": runtime_detail.get("authorizerConfiguration")},
+            runtime_detail=runtime_detail,
+        )
+        logger.info(
+            "AgentCore discovered A2A runtime auth: runtime_arn=%s runtime_name=%s inferred_mode=%s authorizer_configuration=%s protocol_configuration=%s",
+            runtime_arn,
+            runtime_name,
+            runtime_access.mode.value if hasattr(runtime_access.mode, "value") else str(runtime_access.mode),
+            json.dumps(runtime_detail.get("authorizerConfiguration"), ensure_ascii=False, sort_keys=True, default=str),
+            json.dumps(runtime_detail.get("protocolConfiguration"), ensure_ascii=False, sort_keys=True, default=str),
+        )
         return A2AAgent.from_a2a_agent_card(
             card_data=card_data,
             path=f"/agentcore/a2a/{self._slug(runtime_name)}",
             author=author_id or PydanticObjectId(),
+            config=AgentConfig(
+                title=runtime_name,
+                description=runtime_detail.get("description", f"AgentCore runtime {runtime_name}"),
+                type="http_json",
+                runtimeAccess=runtime_access,
+            ),
             isEnabled=status == "READY",
             status="active" if status == "READY" else "inactive",
             tags=["agentcore", "a2a", "aws", "federated"],
@@ -328,6 +353,18 @@ class AgentCoreFederationClient:
             f"{self._build_runtime_invocation_url(runtime_arn=runtime_arn, region=region)}?qualifier=DEFAULT"
         )
         status = runtime_detail.get("status", "READY")
+        runtime_access = AgentCoreRuntimeAuthService.infer_runtime_access(
+            metadata={"authorizerConfiguration": runtime_detail.get("authorizerConfiguration")},
+            runtime_detail=runtime_detail,
+        )
+        logger.info(
+            "AgentCore discovered MCP runtime auth: runtime_arn=%s runtime_name=%s inferred_mode=%s authorizer_configuration=%s protocol_configuration=%s",
+            runtime_arn,
+            runtime_name,
+            runtime_access.mode.value if hasattr(runtime_access.mode, "value") else str(runtime_access.mode),
+            json.dumps(runtime_detail.get("authorizerConfiguration"), ensure_ascii=False, sort_keys=True, default=str),
+            json.dumps(runtime_detail.get("protocolConfiguration"), ensure_ascii=False, sort_keys=True, default=str),
+        )
 
         server_info = {
             "server_name": runtime_name,
@@ -340,6 +377,7 @@ class AgentCoreFederationClient:
                 "url": runtime_mcp_url,
                 "requiresOAuth": False,
                 "authProvider": "bedrock-agentcore",
+                "runtimeAccess": runtime_access.model_dump(mode="json", exclude_none=True),
             },
             "author": author_id or PydanticObjectId(),
             "federationMetadata": {
@@ -371,26 +409,6 @@ class AgentCoreFederationClient:
     def _extract_runtime_protocol(self, runtime_detail: dict[str, Any]) -> str:
         config = runtime_detail.get("protocolConfiguration") or {}
         return str(config.get("serverProtocol", "")).upper()
-
-    async def _reconcile_runtime_type(self, runtime_arn: str, target_type: str) -> None:
-        if target_type == "a2a":
-            existing_mcp = await ExtendedMCPServer.find_one({"federationMetadata.runtimeArn": runtime_arn})
-            if existing_mcp:
-                logger.info(
-                    "Runtime type changed to A2A, deleting previous MCP server model for runtimeArn=%s",
-                    runtime_arn,
-                )
-                await existing_mcp.delete()
-            return
-
-        if target_type == "mcp":
-            existing_a2a = await A2AAgent.find_one({"federationMetadata.runtimeArn": runtime_arn})
-            if existing_a2a:
-                logger.info(
-                    "Runtime type changed to MCP, deleting previous A2A agent model for runtimeArn=%s",
-                    runtime_arn,
-                )
-                await existing_a2a.delete()
 
     @staticmethod
     def extract_region_from_arn(arn: str) -> str:

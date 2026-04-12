@@ -40,10 +40,15 @@ class FederationCrudService:
         # Federation creation accepts a minimal payload. Provider-specific defaults
         # are normalized here so the federation can be created before all runtime
         # sync credentials are filled in.
-        provider_config = dict(provider_config or {})
+        raw_provider_config = dict(provider_config or {})
 
         if provider_type == FederationProviderType.AWS_AGENTCORE:
-            return AwsAgentCoreProviderConfig(**provider_config).model_dump(mode="json", exclude_none=True)
+            if "runtimeAccess" in raw_provider_config:
+                raise ValueError(
+                    "providerConfig.runtimeAccess is no longer supported on federations; "
+                    "runtime auth must be stored on discovered MCP server/A2A agent resources"
+                )
+            return AwsAgentCoreProviderConfig(**raw_provider_config).model_dump(mode="json", exclude_none=True)
 
         if provider_type == FederationProviderType.AZURE_AI_FOUNDRY:
             raise ValueError(AZURE_AI_FOUNDRY_NOT_IMPLEMENTED)

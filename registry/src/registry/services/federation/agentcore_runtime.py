@@ -12,7 +12,8 @@ import httpx
 from registry.core.config import settings
 from registry.core.mcp_client import MCPServerData, get_tools_and_capabilities_from_server
 from registry_pkgs.models import A2AAgent, ExtendedMCPServer
-from registry_pkgs.models.federation import Federation
+from registry_pkgs.models.a2a_agent import AgentConfig
+from registry_pkgs.models.federation import AgentCoreRuntimeAccessConfig, Federation
 
 from .agentcore_clients import AgentCoreClientProvider
 from .agentcore_runtime_auth import AgentCoreRuntimeAuthService
@@ -37,7 +38,7 @@ class AgentCoreRuntimeInvoker:
         self,
         *,
         client_provider: AgentCoreClientProvider,
-        extract_region_from_arn: Callable[..., str],
+        extract_region_from_arn: Callable[[str], str],
         auth_service: AgentCoreRuntimeAuthService | None = None,
     ):
         self.client_provider = client_provider
@@ -65,10 +66,11 @@ class AgentCoreRuntimeInvoker:
             return
 
         try:
+            runtime_access = self._extract_server_runtime_access(server)
             result = await self.fetch_mcp_runtime_capabilities(
                 runtime_url=runtime_url,
                 transport_type=config.get("type"),
-                federation=federation,
+                runtime_access=runtime_access,
                 metadata=server.federationMetadata or {},
                 runtime_detail=server.federationMetadata or {},
                 region=region,
@@ -76,6 +78,14 @@ class AgentCoreRuntimeInvoker:
             )
         except Exception as exc:
             logger.warning("MCP runtime enrichment failed for %s: %s", server.serverName, exc)
+            self._log_runtime_enrichment_context(
+                resource_name=server.serverName,
+                runtime_arn=self._resolve_runtime_arn(
+                    metadata=server.federationMetadata or {},
+                    runtime_detail=server.federationMetadata or {},
+                ),
+                metadata=server.federationMetadata or {},
+            )
             metadata = dict(server.federationMetadata or {})
             self._set_enrichment_error(metadata, f"mcp enrichment failed: {exc}")
             server.federationMetadata = metadata
@@ -83,6 +93,14 @@ class AgentCoreRuntimeInvoker:
 
         if result.error_message:
             logger.warning("MCP runtime enrichment returned error for %s: %s", server.serverName, result.error_message)
+            self._log_runtime_enrichment_context(
+                resource_name=server.serverName,
+                runtime_arn=self._resolve_runtime_arn(
+                    metadata=server.federationMetadata or {},
+                    runtime_detail=server.federationMetadata or {},
+                ),
+                metadata=server.federationMetadata or {},
+            )
             metadata = dict(server.federationMetadata or {})
             self._set_enrichment_error(metadata, result.error_message)
             server.federationMetadata = metadata
@@ -143,9 +161,10 @@ class AgentCoreRuntimeInvoker:
         )
 
         try:
+            runtime_access = self._extract_agent_runtime_access(agent)
             card_data = await self.fetch_a2a_agent_card(
                 card_url=card_url,
-                federation=federation,
+                runtime_access=runtime_access,
                 metadata=agent.federationMetadata or {},
                 runtime_detail=runtime_detail,
                 region=region,
@@ -153,6 +172,11 @@ class AgentCoreRuntimeInvoker:
             )
         except Exception as exc:
             logger.warning("A2A runtime enrichment failed for %s: %s", agent.card.name, exc)
+            self._log_runtime_enrichment_context(
+                resource_name=agent.card.name,
+                runtime_arn=runtime_arn,
+                metadata=agent.federationMetadata or {},
+            )
             if agent.wellKnown:
                 agent.wellKnown.lastSyncStatus = "failed"
                 agent.wellKnown.syncError = str(exc)
@@ -171,6 +195,12 @@ class AgentCoreRuntimeInvoker:
             card_data=merged,
             path=agent.path,
             author=agent.author,
+            config=agent.config
+            or AgentConfig(
+                title=fallback_card.get("name", agent.card.name),
+                description=fallback_card.get("description", "") or "",
+                type="http_json",
+            ),
             isEnabled=agent.isEnabled,
             status=agent.status,
             tags=agent.tags,
@@ -195,12 +225,10 @@ class AgentCoreRuntimeInvoker:
     @staticmethod
     def _normalize_agentcore_a2a_card(card_data: dict[str, Any]) -> dict[str, Any]:
         """
-        Normalize known AgentCore card payload quirks before A2A SDK validation.
+        Normalize AgentCore-specific card payload quirks before A2A model validation.
 
-        AgentCore currently returns non-standard structured objects in
-        ``skills[].examples[]`` for some runtimes, while the A2A SDK expects
-        plain strings there. Keep this compatibility local to the AgentCore
-        federation path so the shared model layer remains protocol-strict.
+        AgentCore may return structured objects inside `skills[].examples[]`,
+        while the A2A schema expects plain strings there.
         """
         normalized = dict(card_data)
         raw_skills = normalized.get("skills")
@@ -226,10 +254,7 @@ class AgentCoreRuntimeInvoker:
 
     @staticmethod
     def _stringify_skill_example(example: Any) -> str:
-        """
-        Convert a non-standard skill example payload into the string shape
-        expected by the A2A AgentSkill schema.
-        """
+        """Convert non-standard example payloads into the string shape A2A expects."""
         if isinstance(example, str):
             return example
         if isinstance(example, dict):
@@ -255,18 +280,17 @@ class AgentCoreRuntimeInvoker:
         Detect runtime data-plane auth mode from authorizer configuration.
         Defaults to IAM when not explicitly JWT.
         """
-        config = (runtime_detail or {}).get("authorizerConfiguration") or metadata.get("authorizerConfiguration") or {}
-        text = json.dumps(config, default=str).upper()
-        if "JWT" in text:
-            return "JWT"
-        return "IAM"
+        return AgentCoreRuntimeAuthService.detect_agentcore_data_plane_auth_mode(
+            metadata=metadata,
+            runtime_detail=runtime_detail,
+        )
 
     async def fetch_mcp_runtime_capabilities(
         self,
         *,
         runtime_url: str,
         transport_type: str | None,
-        federation: Federation | None = None,
+        runtime_access: AgentCoreRuntimeAccessConfig | dict[str, Any] | None = None,
         metadata: dict[str, Any],
         region: str,
         runtime_detail: dict[str, Any] | None = None,
@@ -279,7 +303,11 @@ class AgentCoreRuntimeInvoker:
         - IAM path: `InvokeAgentRuntime` with MCP JSON-RPC methods
         - JWT path: HTTP call to the runtime invocation endpoint
         """
-        mode = self.detect_agentcore_data_plane_auth_mode(metadata=metadata, runtime_detail=runtime_detail)
+        mode = self._resolve_runtime_access_mode(
+            runtime_access=runtime_access,
+            metadata=metadata,
+            runtime_detail=runtime_detail,
+        )
         if mode == "IAM":
             sdk_result = await self._invoke_mcp_runtime_via_sdk(
                 metadata=metadata,
@@ -294,7 +322,7 @@ class AgentCoreRuntimeInvoker:
             http_fallback = await self._fetch_mcp_runtime_capabilities_via_http_with_retry(
                 runtime_url=runtime_url,
                 transport_type=transport_type,
-                federation=federation,
+                runtime_access=runtime_access,
                 metadata=metadata,
                 runtime_detail=runtime_detail,
                 region=region,
@@ -307,7 +335,7 @@ class AgentCoreRuntimeInvoker:
         return await self._fetch_mcp_runtime_capabilities_via_http_with_retry(
             runtime_url=runtime_url,
             transport_type=transport_type,
-            federation=federation,
+            runtime_access=runtime_access,
             metadata=metadata,
             runtime_detail=runtime_detail,
             region=region,
@@ -330,17 +358,15 @@ class AgentCoreRuntimeInvoker:
             raise ValueError("runtime_arn is required")
 
         resolved_region = self.extract_region_from_arn(runtime_arn)
+        client = await self._get_runtime_client(resolved_region, assume_role_arn)
+
         payload = self._json_to_bytes({"prompt": prompt})
-        response = await self.client_provider.execute_with_runtime_client(
-            resolved_region,
-            lambda client: self._call_with_runtime_init_retry(
-                lambda: client.invoke_agent_runtime(
-                    agentRuntimeArn=runtime_arn,
-                    qualifier=qualifier,
-                    payload=payload,
-                )
-            ),
-            assume_role_arn,
+        response = await self._call_with_runtime_init_retry(
+            lambda: client.invoke_agent_runtime(
+                agentRuntimeArn=runtime_arn,
+                qualifier=qualifier,
+                payload=payload,
+            )
         )
 
         response_text = self._response_text_from_runtime_response(response)
@@ -362,7 +388,7 @@ class AgentCoreRuntimeInvoker:
         self,
         *,
         card_url: str,
-        federation: Federation | None = None,
+        runtime_access: AgentCoreRuntimeAccessConfig | dict[str, Any] | None = None,
         metadata: dict[str, Any],
         region: str,
         runtime_detail: dict[str, Any] | None = None,
@@ -375,7 +401,11 @@ class AgentCoreRuntimeInvoker:
         - IAM path: `GetAgentCard`
         - JWT path: HTTP GET on `/.well-known/agent-card.json`
         """
-        mode = self.detect_agentcore_data_plane_auth_mode(metadata=metadata, runtime_detail=runtime_detail)
+        mode = self._resolve_runtime_access_mode(
+            runtime_access=runtime_access,
+            metadata=metadata,
+            runtime_detail=runtime_detail,
+        )
         if mode == "IAM":
             return await self._get_a2a_agent_card_via_sdk(
                 metadata=metadata,
@@ -385,7 +415,7 @@ class AgentCoreRuntimeInvoker:
             )
 
         headers, httpx_auth = await self._build_runtime_http_auth(
-            federation=federation,
+            runtime_access=runtime_access,
             metadata=metadata,
             runtime_detail=runtime_detail,
             region=region,
@@ -405,14 +435,14 @@ class AgentCoreRuntimeInvoker:
         *,
         runtime_url: str,
         transport_type: str | None,
-        federation: Federation | None = None,
+        runtime_access: AgentCoreRuntimeAccessConfig | dict[str, Any] | None = None,
         metadata: dict[str, Any],
         region: str,
         runtime_detail: dict[str, Any] | None = None,
         assume_role_arn: str | None = None,
     ) -> MCPServerData:
         headers, httpx_auth = await self._build_runtime_http_auth(
-            federation=federation,
+            runtime_access=runtime_access,
             metadata=metadata,
             runtime_detail=runtime_detail,
             region=region,
@@ -432,7 +462,7 @@ class AgentCoreRuntimeInvoker:
         *,
         runtime_url: str,
         transport_type: str | None,
-        federation: Federation | None = None,
+        runtime_access: AgentCoreRuntimeAccessConfig | dict[str, Any] | None = None,
         metadata: dict[str, Any],
         region: str,
         runtime_detail: dict[str, Any] | None = None,
@@ -443,7 +473,7 @@ class AgentCoreRuntimeInvoker:
             result = await self._fetch_mcp_runtime_capabilities_via_http(
                 runtime_url=runtime_url,
                 transport_type=transport_type,
-                federation=federation,
+                runtime_access=runtime_access,
                 metadata=metadata,
                 runtime_detail=runtime_detail,
                 region=region,
@@ -469,12 +499,9 @@ class AgentCoreRuntimeInvoker:
             raise ValueError("Missing runtime ARN for GetAgentCard")
 
         resolved_region = self.extract_region_from_arn(runtime_arn)
-        response = await self.client_provider.execute_with_runtime_client(
-            resolved_region,
-            lambda client: self._call_with_a2a_card_retry(
-                lambda: client.get_agent_card(agentRuntimeArn=runtime_arn, qualifier="DEFAULT")
-            ),
-            assume_role_arn,
+        client = await self._get_runtime_client(resolved_region, assume_role_arn)
+        response = await self._call_with_a2a_card_retry(
+            lambda: client.get_agent_card(agentRuntimeArn=runtime_arn, qualifier="DEFAULT")
         )
         card = self._coerce_json_object(response.get("agentCard"))
         if card is None:
@@ -494,18 +521,42 @@ class AgentCoreRuntimeInvoker:
             return MCPServerData(None, None, None, None, "Missing runtime ARN for InvokeAgentRuntime")
 
         resolved_region = self.extract_region_from_arn(runtime_arn)
+        client = await self._get_runtime_client(resolved_region, assume_role_arn)
 
         try:
-            (
-                tools_result,
-                resources_result,
-                prompts_result,
-                runtime_session_id,
-                mcp_session_id,
-            ) = await self.client_provider.execute_with_runtime_client(
-                resolved_region,
-                lambda client: self._collect_mcp_runtime_capabilities(client, runtime_arn),
-                assume_role_arn,
+            runtime_session_id, mcp_session_id, protocol_version = await self._initialize_mcp_session(
+                client=client,
+                runtime_arn=runtime_arn,
+            )
+            tools_result, _, _, _ = await self._invoke_mcp_jsonrpc(
+                client=client,
+                runtime_arn=runtime_arn,
+                method="tools/list",
+                params={},
+                request_id=self._next_request_id(),
+                runtime_session_id=runtime_session_id,
+                mcp_session_id=mcp_session_id,
+                protocol_version=protocol_version,
+            )
+            resources_result, _, _, _ = await self._invoke_mcp_jsonrpc(
+                client=client,
+                runtime_arn=runtime_arn,
+                method="resources/list",
+                params={},
+                request_id=self._next_request_id(),
+                runtime_session_id=runtime_session_id,
+                mcp_session_id=mcp_session_id,
+                protocol_version=protocol_version,
+            )
+            prompts_result, _, _, _ = await self._invoke_mcp_jsonrpc(
+                client=client,
+                runtime_arn=runtime_arn,
+                method="prompts/list",
+                params={},
+                request_id=self._next_request_id(),
+                runtime_session_id=runtime_session_id,
+                mcp_session_id=mcp_session_id,
+                protocol_version=protocol_version,
             )
         except Exception as exc:
             return MCPServerData(None, None, None, None, f"SDK MCP invocation failed: {exc}")
@@ -528,47 +579,6 @@ class AgentCoreRuntimeInvoker:
         if not client:
             raise ValueError(f"Failed to initialize AgentCore runtime client for region {region}")
         return client
-
-    async def _collect_mcp_runtime_capabilities(
-        self,
-        client: Any,
-        runtime_arn: str,
-    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], str | None, str | None]:
-        runtime_session_id, mcp_session_id, protocol_version = await self._initialize_mcp_session(
-            client=client,
-            runtime_arn=runtime_arn,
-        )
-        tools_result, _, _, _ = await self._invoke_mcp_jsonrpc(
-            client=client,
-            runtime_arn=runtime_arn,
-            method="tools/list",
-            params={},
-            request_id=self._next_request_id(),
-            runtime_session_id=runtime_session_id,
-            mcp_session_id=mcp_session_id,
-            protocol_version=protocol_version,
-        )
-        resources_result, _, _, _ = await self._invoke_mcp_jsonrpc(
-            client=client,
-            runtime_arn=runtime_arn,
-            method="resources/list",
-            params={},
-            request_id=self._next_request_id(),
-            runtime_session_id=runtime_session_id,
-            mcp_session_id=mcp_session_id,
-            protocol_version=protocol_version,
-        )
-        prompts_result, _, _, _ = await self._invoke_mcp_jsonrpc(
-            client=client,
-            runtime_arn=runtime_arn,
-            method="prompts/list",
-            params={},
-            request_id=self._next_request_id(),
-            runtime_session_id=runtime_session_id,
-            mcp_session_id=mcp_session_id,
-            protocol_version=protocol_version,
-        )
-        return tools_result, resources_result, prompts_result, runtime_session_id, mcp_session_id
 
     async def _initialize_mcp_session(
         self,
@@ -642,8 +652,6 @@ class AgentCoreRuntimeInvoker:
         try:
             response = await asyncio.to_thread(client.invoke_agent_runtime, **kwargs)
         except Exception as exc:
-            if self.client_provider.is_expired_token_error(exc):
-                raise
             raise ValueError(
                 "invoke_agent_runtime failed "
                 f"(method={method}, runtime_arn={runtime_arn}, qualifier=DEFAULT, accept={kwargs['accept']}, "
@@ -707,8 +715,6 @@ class AgentCoreRuntimeInvoker:
         try:
             response = await asyncio.to_thread(client.invoke_agent_runtime, **kwargs)
         except Exception as exc:
-            if self.client_provider.is_expired_token_error(exc):
-                raise
             raise ValueError(
                 "invoke_agent_runtime notification failed "
                 f"(method={method}, runtime_arn={runtime_arn}, qualifier=DEFAULT): {exc}"
@@ -989,7 +995,7 @@ class AgentCoreRuntimeInvoker:
     async def _build_runtime_http_auth(
         self,
         *,
-        federation: Federation | None = None,
+        runtime_access: AgentCoreRuntimeAccessConfig | dict[str, Any] | None = None,
         metadata: dict[str, Any],
         region: str,
         runtime_detail: dict[str, Any] | None = None,
@@ -1002,9 +1008,156 @@ class AgentCoreRuntimeInvoker:
         runtime callers share the same IAM-vs-JWT validation rules.
         """
         return await self.auth_service.build_runtime_http_auth(
-            federation=federation,
+            runtime_access=runtime_access,
             metadata=metadata,
             runtime_detail=runtime_detail,
             region=region,
             assume_role_arn=assume_role_arn,
+        )
+
+    @staticmethod
+    def _extract_server_runtime_access(
+        server: ExtendedMCPServer,
+    ) -> AgentCoreRuntimeAccessConfig | dict[str, Any] | None:
+        config = getattr(server, "config", None) or {}
+        return config.get("runtimeAccess")
+
+    @staticmethod
+    def _extract_agent_runtime_access(
+        agent: A2AAgent,
+    ) -> AgentCoreRuntimeAccessConfig | dict[str, Any] | None:
+        config = getattr(agent, "config", None)
+        return getattr(config, "runtimeAccess", None)
+
+    def _resolve_runtime_access_mode(
+        self,
+        *,
+        runtime_access: AgentCoreRuntimeAccessConfig | dict[str, Any] | None,
+        metadata: dict[str, Any],
+        runtime_detail: dict[str, Any] | None,
+    ) -> str:
+        if isinstance(runtime_access, AgentCoreRuntimeAccessConfig):
+            raw = runtime_access.mode.value if hasattr(runtime_access.mode, "value") else str(runtime_access.mode)
+            return raw.upper()
+        if isinstance(runtime_access, dict) and runtime_access.get("mode"):
+            return str(runtime_access["mode"]).upper()
+        return self.detect_agentcore_data_plane_auth_mode(metadata=metadata, runtime_detail=runtime_detail)
+
+    @staticmethod
+    def _is_auth_method_mismatch_error(message: str | None) -> bool:
+        if not message:
+            return False
+        return "authorization method mismatch" in message.lower()
+
+    @staticmethod
+    def _is_http_forbidden_error(message: str | None) -> bool:
+        if not message:
+            return False
+        lower = message.lower()
+        return "403 forbidden" in lower or "status code 403" in lower
+
+    def _promote_runtime_access_to_jwt(
+        self,
+        *,
+        runtime_access: AgentCoreRuntimeAccessConfig | dict[str, Any] | None,
+        metadata: dict[str, Any],
+        runtime_detail: dict[str, Any] | None,
+    ) -> AgentCoreRuntimeAccessConfig:
+        if isinstance(runtime_access, AgentCoreRuntimeAccessConfig):
+            payload = runtime_access.model_dump(mode="json", exclude_none=True)
+        elif isinstance(runtime_access, dict):
+            payload = dict(runtime_access)
+        else:
+            payload = {}
+
+        payload["mode"] = "jwt"
+        payload.setdefault("iam", {})
+        jwt_payload = dict(payload.get("jwt") or {})
+        inferred = AgentCoreRuntimeAuthService.infer_runtime_access(metadata=metadata, runtime_detail=runtime_detail)
+        inferred_jwt = inferred.jwt.model_dump(mode="json", exclude_none=True) if inferred.jwt is not None else {}
+        jwt_payload.update({k: v for k, v in inferred_jwt.items() if v not in (None, "", [], {}, ())})
+        payload["jwt"] = jwt_payload
+        return AgentCoreRuntimeAccessConfig(**payload)
+
+    def _demote_runtime_access_to_iam(
+        self,
+        *,
+        runtime_access: AgentCoreRuntimeAccessConfig | dict[str, Any] | None,
+    ) -> AgentCoreRuntimeAccessConfig:
+        if isinstance(runtime_access, AgentCoreRuntimeAccessConfig):
+            payload = runtime_access.model_dump(mode="json", exclude_none=True)
+        elif isinstance(runtime_access, dict):
+            payload = dict(runtime_access)
+        else:
+            payload = {}
+        payload["mode"] = "iam"
+        payload.setdefault("iam", {})
+        payload.pop("jwt", None)
+        return AgentCoreRuntimeAccessConfig(**payload)
+
+    def _promote_server_runtime_access_to_jwt(self, server: ExtendedMCPServer) -> AgentCoreRuntimeAccessConfig:
+        promoted = self._promote_runtime_access_to_jwt(
+            runtime_access=self._extract_server_runtime_access(server),
+            metadata=server.federationMetadata or {},
+            runtime_detail=server.federationMetadata or {},
+        )
+        config = dict(server.config or {})
+        config["runtimeAccess"] = promoted.model_dump(mode="json", exclude_none=True)
+        server.config = config
+        return promoted
+
+    def _demote_server_runtime_access_to_iam(self, server: ExtendedMCPServer) -> AgentCoreRuntimeAccessConfig:
+        downgraded = self._demote_runtime_access_to_iam(
+            runtime_access=self._extract_server_runtime_access(server),
+        )
+        config = dict(server.config or {})
+        config["runtimeAccess"] = downgraded.model_dump(mode="json", exclude_none=True)
+        server.config = config
+        return downgraded
+
+    def _promote_agent_runtime_access_to_jwt(self, agent: A2AAgent) -> AgentCoreRuntimeAccessConfig:
+        promoted = self._promote_runtime_access_to_jwt(
+            runtime_access=self._extract_agent_runtime_access(agent),
+            metadata=agent.federationMetadata or {},
+            runtime_detail=agent.federationMetadata or {},
+        )
+        if agent.config is None:
+            agent.config = AgentConfig(
+                title=agent.card.name,
+                description=getattr(agent.card, "description", "") or "",
+                type="http_json",
+                runtimeAccess=promoted,
+            )
+        else:
+            agent.config.runtimeAccess = promoted
+        return promoted
+
+    def _demote_agent_runtime_access_to_iam(self, agent: A2AAgent) -> AgentCoreRuntimeAccessConfig:
+        downgraded = self._demote_runtime_access_to_iam(
+            runtime_access=self._extract_agent_runtime_access(agent),
+        )
+        if agent.config is None:
+            agent.config = AgentConfig(
+                title=agent.card.name,
+                description=getattr(agent.card, "description", "") or "",
+                type="http_json",
+                runtimeAccess=downgraded,
+            )
+        else:
+            agent.config.runtimeAccess = downgraded
+        return downgraded
+
+    @staticmethod
+    def _log_runtime_enrichment_context(
+        *,
+        resource_name: str,
+        runtime_arn: str | None,
+        metadata: dict[str, Any],
+    ) -> None:
+        logger.warning(
+            "AgentCore runtime enrichment raw context: resource=%s runtime_arn=%s authorizer_configuration=%s protocol_configuration=%s",
+            resource_name,
+            runtime_arn,
+            json.dumps(metadata.get("authorizerConfiguration"), ensure_ascii=False, sort_keys=True, default=str),
+            json.dumps(metadata.get("protocolConfiguration"), ensure_ascii=False, sort_keys=True, default=str),
         )

@@ -8,6 +8,7 @@ from beanie import PydanticObjectId
 
 from registry.services.federation.federation_handlers import AwsAgentCoreSyncHandler
 from registry.services.federation_sync_service import FederationSyncMutationResult, FederationSyncService
+from registry_pkgs.models import A2AAgent, ExtendedMCPServer
 from registry_pkgs.models.enums import FederationProviderType, FederationStatus, FederationSyncStatus
 from registry_pkgs.models.federation_sync_job import FederationApplySummary
 
@@ -36,6 +37,14 @@ def _make_federation(provider_type: FederationProviderType, provider_config: dic
         createdAt=now,
         updatedAt=now,
     )
+
+
+class _FakeQuery:
+    def __init__(self, items):
+        self._items = items
+
+    async def to_list(self):
+        return list(self._items)
 
 
 @pytest.mark.asyncio
@@ -255,6 +264,60 @@ async def test_preview_manual_sync_does_not_mutate_or_create_jobs(federation_syn
     federation_sync_service.federation_crud_service.mark_sync_pending.assert_not_awaited()
     federation_sync_service.federation_crud_service.mark_syncing.assert_not_awaited()
     federation_sync_service._sync_vector_index_after_commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_build_sync_plan_handles_runtime_type_switch_without_discovery_mutation(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    runtime_arn = "arn:aws:bedrock-agentcore:us-east-1:123:runtime/r1"
+
+    existing_mcp = SimpleNamespace(
+        federationMetadata={"runtimeArn": runtime_arn, "runtimeVersion": "1"},
+        serverName="runtime-r1",
+        path="/agentcore/mcp/runtime-r1",
+        config={"runtimeAccess": {"mode": "iam"}},
+        status="active",
+        numTools=1,
+        tags=[],
+    )
+    discovered_a2a = SimpleNamespace(
+        federationMetadata={"runtimeArn": runtime_arn, "runtimeVersion": "2"},
+        path="/agentcore/a2a/runtime-r1",
+        config=SimpleNamespace(runtimeAccess=SimpleNamespace(mode="jwt")),
+        card=SimpleNamespace(name="runtime-r1"),
+    )
+
+    def _fake_mcp_find(query, session=None):
+        assert query == {"federationRefId": federation.id}
+        assert session is None
+        return _FakeQuery([existing_mcp])
+
+    def _fake_a2a_find(query, session=None):
+        assert session is None
+        if query == {"federationRefId": federation.id}:
+            return _FakeQuery([])
+        if query == {"path": {"$in": ["/agentcore/a2a/runtime-r1"]}}:
+            return _FakeQuery([])
+        raise AssertionError(f"Unexpected A2A query: {query}")
+
+    monkeypatch.setattr(ExtendedMCPServer, "find", _fake_mcp_find)
+    monkeypatch.setattr(A2AAgent, "find", _fake_a2a_find)
+
+    sync_plan = await federation_sync_service._build_sync_plan(
+        federation=federation,
+        discovered_mcp=[],
+        discovered_a2a=[discovered_a2a],
+    )
+
+    assert sync_plan.summary.createdAgents == 1
+    assert sync_plan.summary.deletedMcpServers == 1
+    assert sync_plan.summary.deletedAgents == 0
+    assert len(sync_plan.a2a_creates) == 1
+    assert len(sync_plan.mcp_deletes) == 1
+    assert sync_plan.mcp_deletes[0][1] == runtime_arn
 
 
 @pytest.mark.asyncio

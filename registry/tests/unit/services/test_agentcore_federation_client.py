@@ -7,6 +7,7 @@ from botocore.exceptions import ClientError
 from botocore.stub import Stubber
 
 from registry.services.federation.agentcore_discovery import AgentCoreFederationClient
+from registry_pkgs.models import A2AAgent, ExtendedMCPServer
 
 
 @pytest.mark.unit
@@ -23,6 +24,41 @@ class TestAgentCoreFederationClient:
     async def test_extract_region_from_arn_raises_for_invalid_arn(self):
         with pytest.raises(ValueError, match="Invalid AgentCore runtime ARN"):
             AgentCoreFederationClient.extract_region_from_arn("not-an-arn")
+
+    async def test_transform_runtime_to_a2a_agent_populates_registry_config(self):
+        client = AgentCoreFederationClient()
+        captured: dict[str, object] = {}
+
+        def _fake_from_a2a_agent_card(**kwargs):
+            captured["config"] = kwargs["config"]
+            return SimpleNamespace(config=kwargs["config"])
+
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setattr(A2AAgent, "from_a2a_agent_card", _fake_from_a2a_agent_card)
+
+        try:
+            client._transform_runtime_to_a2a_agent(
+                {
+                    "runtimeArn": "arn:aws:bedrock-agentcore:us-east-1:123:runtime/r2",
+                    "agentRuntimeId": "r2",
+                    "agentRuntimeVersion": "2",
+                    "agentRuntimeName": "runtime-a2a",
+                    "description": "a2a runtime",
+                    "status": "READY",
+                    "lastUpdatedAt": datetime.now(UTC),
+                    "createdAt": datetime.now(UTC),
+                    "protocolConfiguration": {"serverProtocol": "A2A"},
+                },
+                region="us-east-1",
+            )
+        finally:
+            monkeypatch.undo()
+
+        config = captured["config"]
+        assert config is not None
+        assert config.title == "runtime-a2a"
+        assert config.description == "a2a runtime"
+        assert config.type == "http_json"
 
     async def test_discover_runtime_entities_classifies_mcp_and_a2a_with_stubber(self, monkeypatch):
         client = AgentCoreFederationClient()
@@ -122,7 +158,6 @@ class TestAgentCoreFederationClient:
         )
 
         monkeypatch.setattr(client.client_provider, "get_control_client", _async_return(boto_client))
-        monkeypatch.setattr(client, "_reconcile_runtime_type", _async_return(None))
         monkeypatch.setattr(
             client,
             "_transform_runtime_to_mcp_server",
@@ -203,7 +238,6 @@ class TestAgentCoreFederationClient:
         )
 
         monkeypatch.setattr(client.client_provider, "get_control_client", _async_return(boto_client))
-        monkeypatch.setattr(client, "_reconcile_runtime_type", _async_return(None))
         monkeypatch.setattr(
             client,
             "_transform_runtime_to_a2a_agent",
@@ -306,7 +340,6 @@ class TestAgentCoreFederationClient:
         )
 
         monkeypatch.setattr(client.client_provider, "get_control_client", _async_return(boto_client))
-        monkeypatch.setattr(client, "_reconcile_runtime_type", _async_return(None))
         monkeypatch.setattr(
             client,
             "_transform_runtime_to_mcp_server",
@@ -349,6 +382,26 @@ class TestAgentCoreFederationClient:
             "env": "development",
             "team": "platform",
         }
+
+    async def test_discovery_does_not_touch_persisted_runtime_type_state(self, monkeypatch):
+        client = AgentCoreFederationClient()
+
+        async def _execute_with_control_client(_region, operation, _assume_role_arn=None):
+            return operation(object())
+
+        monkeypatch.setattr(client.client_provider, "execute_with_control_client", _execute_with_control_client)
+        monkeypatch.setattr(client, "_list_runtime_summaries", lambda *_args, **_kwargs: [])
+        monkeypatch.setattr(client, "_get_runtime_details", lambda *_args, **_kwargs: [])
+
+        async def _fail_if_called(*_args, **_kwargs):
+            raise AssertionError("discovery must not query persisted runtime type state")
+
+        monkeypatch.setattr(ExtendedMCPServer, "find_one", _fail_if_called)
+        monkeypatch.setattr(A2AAgent, "find_one", _fail_if_called)
+
+        result = await client.discover_runtime_entities(region="us-east-1")
+
+        assert result == {"a2a_agents": [], "mcp_servers": [], "skipped_runtimes": []}
 
     async def test_build_runtime_mcp_url_uses_invocations_with_qualifier(self):
         client = AgentCoreFederationClient()

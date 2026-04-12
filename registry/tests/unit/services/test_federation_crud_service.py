@@ -142,7 +142,7 @@ def test_normalize_provider_config_allows_empty_aws_config_for_create():
 
     result = service.normalize_provider_config(FederationProviderType.AWS_AGENTCORE, {})
 
-    assert result == {"resourceTagsFilter": {}, "runtimeAccess": {"mode": "iam", "iam": {}}}
+    assert result == {"resourceTagsFilter": {}}
 
 
 def test_validate_provider_config_requires_region_and_assume_role_for_aws():
@@ -163,35 +163,26 @@ def test_validate_provider_config_requires_region_and_assume_role_for_aws():
         "region": "us-east-1",
         "assumeRoleArn": "arn:aws:iam::123456789012:role/test-role",
         "resourceTagsFilter": {},
-        "runtimeAccess": {"mode": "iam", "iam": {}},
     }
 
 
-def test_validate_provider_config_allows_optional_jwt_runtime_settings():
+def test_validate_provider_config_rejects_deprecated_federation_runtime_access():
     service = FederationCrudService()
 
-    result = service.validate_provider_config(
-        FederationProviderType.AWS_AGENTCORE,
-        {
-            "region": "us-east-1",
-            "assumeRoleArn": "arn:aws:iam::123456789012:role/test-role",
-            "runtimeAccess": {
-                "mode": "jwt",
-                "jwt": {
-                    "discoveryUrl": "https://issuer.example/.well-known/openid-configuration",
-                    "audiences": ["jarvis-services", "agentcore-runtime"],
-                    "allowedClients": ["jarvis-registry"],
-                    "allowedScopes": ["sync:read", "tools:read"],
-                    "customClaims": {"tenant": "prod"},
+    with pytest.raises(ValueError, match="providerConfig.runtimeAccess is no longer supported"):
+        service.validate_provider_config(
+            FederationProviderType.AWS_AGENTCORE,
+            {
+                "region": "us-east-1",
+                "assumeRoleArn": "arn:aws:iam::123456789012:role/test-role",
+                "runtimeAccess": {
+                    "mode": "jwt",
+                    "jwt": {
+                        "discoveryUrl": "https://issuer.example/.well-known/openid-configuration",
+                    },
                 },
             },
-        },
-    )
-
-    assert result["runtimeAccess"]["mode"] == "jwt"
-    assert result["runtimeAccess"]["jwt"]["audiences"] == ["jarvis-services", "agentcore-runtime"]
-    assert result["runtimeAccess"]["jwt"]["allowedClients"] == ["jarvis-registry"]
-    assert result["runtimeAccess"]["jwt"]["allowedScopes"] == ["sync:read", "tools:read"]
+        )
 
 
 def test_normalize_provider_config_allows_empty_azure_config_for_create():

@@ -75,11 +75,6 @@ class AwsAgentCoreProviderConfig(BaseModel):
         default_factory=dict,
         description="Tag filters used during discovery",
     )
-    runtimeAccess: AgentCoreRuntimeAccessConfig = Field(
-        default_factory=AgentCoreRuntimeAccessConfig,
-        description="Federation-local runtime auth mode and JWT signing settings",
-    )
-
     model_config = ConfigDict(populate_by_name=True)
 
 
