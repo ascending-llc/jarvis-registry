@@ -202,7 +202,17 @@ class AgentCoreRuntimeAuthService:
         assume_role_arn: str | None,
     ) -> tuple[dict[str, str], httpx.Auth | None]:
         runtime_arn = self._resolve_runtime_arn(metadata=metadata, runtime_detail=runtime_detail)
-        resolved_region = self.extract_region_from_arn(runtime_arn or "")
+        resolved_region = region.strip()
+        if runtime_arn:
+            try:
+                resolved_region = self.extract_region_from_arn(runtime_arn)
+            except ValueError:
+                logger.debug(
+                    "Falling back to provided region because runtime ARN is missing or malformed",
+                    extra={"runtime_arn": runtime_arn},
+                )
+        if not resolved_region:
+            raise ValueError("Unable to determine runtime region from runtime ARN or provided region")
         credentials_provider = await self.client_provider.get_runtime_credentials_provider(
             resolved_region,
             assume_role_arn,

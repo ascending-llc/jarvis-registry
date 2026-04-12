@@ -1,5 +1,4 @@
 import asyncio
-import inspect
 import logging
 import threading
 from collections.abc import Callable
@@ -171,7 +170,27 @@ class AgentCoreClientProvider:
         operation: Callable[[Any], Any],
         assume_role_arn: str | None = None,
     ) -> Any:
-        return await self._execute_with_client("control", region, operation, assume_role_arn)
+        """
+        Run a synchronous boto3 control-plane operation off the event loop.
+
+        All callers pass sync boto3 lambdas (list_agent_runtimes, get_agent_runtime,
+        etc.), so the operation is always dispatched via asyncio.to_thread to avoid
+        blocking the event loop.  On a token-expiry error the cached session is
+        invalidated and the call is retried once with fresh credentials.
+        """
+        client = await self.get_control_client(region, assume_role_arn)
+        try:
+            return await asyncio.to_thread(operation, client)
+        except Exception as exc:
+            if not self.is_expired_token_error(exc):
+                raise
+            logger.warning(
+                "AgentCore control client credentials expired for region %s; refreshing and retrying once",
+                region,
+            )
+            await self.invalidate_context(region, assume_role_arn)
+            refreshed_client = await self.get_control_client(region, assume_role_arn)
+            return await asyncio.to_thread(operation, refreshed_client)
 
     async def execute_with_runtime_client(
         self,
@@ -179,33 +198,23 @@ class AgentCoreClientProvider:
         operation: Callable[[Any], Any],
         assume_role_arn: str | None = None,
     ) -> Any:
-        return await self._execute_with_client("runtime", region, operation, assume_role_arn)
+        """
+        Run an async runtime data-plane operation with token-expiry retry.
 
-    async def _execute_with_client(
-        self,
-        client_kind: str,
-        region: str,
-        operation: Callable[[Any], Any],
-        assume_role_arn: str | None = None,
-    ) -> Any:
-        client_getter = self.get_control_client if client_kind == "control" else self.get_runtime_client
-        client = await client_getter(region, assume_role_arn)
+        Callers pass async lambdas (coroutine-returning), so the operation is
+        awaited directly — no to_thread needed.  On a token-expiry error the
+        cached session is invalidated and the operation is retried once.
+        """
+        client = await self.get_runtime_client(region, assume_role_arn)
         try:
-            result = operation(client)
-            if inspect.isawaitable(result):
-                return await result
-            return result
+            return await operation(client)
         except Exception as exc:
             if not self.is_expired_token_error(exc):
                 raise
             logger.warning(
-                "AgentCore %s client credentials expired for region %s; refreshing cached client and retrying once",
-                client_kind,
+                "AgentCore runtime client credentials expired for region %s; refreshing and retrying once",
                 region,
             )
             await self.invalidate_context(region, assume_role_arn)
-            refreshed_client = await client_getter(region, assume_role_arn)
-            result = operation(refreshed_client)
-            if inspect.isawaitable(result):
-                return await result
-            return result
+            refreshed_client = await self.get_runtime_client(region, assume_role_arn)
+            return await operation(refreshed_client)
