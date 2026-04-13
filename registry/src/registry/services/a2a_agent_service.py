@@ -270,11 +270,7 @@ class A2AAgentService:
         Returns:
             Agent document, or None if not found
         """
-        try:
-            return await A2AAgent.find_one({"path": path})
-        except Exception as e:
-            logger.error(f"Error getting agent by path {path}: {e}", exc_info=True)
-            return None
+        return await A2AAgent.find_one({"path": path})
 
     async def create_agent(self, data: AgentCreateRequest, user_id: str) -> A2AAgent:
         """

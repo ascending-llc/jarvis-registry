@@ -4,6 +4,7 @@ Dynamic MCP server proxy routes.
 
 import json
 import logging
+from collections.abc import AsyncGenerator
 from typing import Any
 from urllib.parse import urlparse
 from uuid import uuid4
@@ -13,7 +14,7 @@ from a2a.client.transports.jsonrpc import JsonRpcTransport
 from a2a.client.transports.rest import RestTransport
 from a2a.types import MessageSendParams
 from beanie import PydanticObjectId
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from registry_pkgs.models import ResourceType
@@ -347,6 +348,7 @@ async def a2a_agent_proxy(
     user_context: CurrentUser,
     a2a_agent_service: A2AAgentService = Depends(get_a2a_agent_service),
     acl_service: ACLService = Depends(get_acl_service),
+    proxy_client: httpx.AsyncClient = Depends(get_mcp_proxy_client),
 ):
     """
     Proxy POST requests to A2A agents via the registry.
@@ -375,15 +377,12 @@ async def a2a_agent_proxy(
         )
 
     # ACL: require VIEW permission
-    try:
-        await acl_service.check_user_permission(
-            user_id=PydanticObjectId(user_id),
-            resource_type=ResourceType.REMOTE_AGENT.value,
-            resource_id=agent.id,
-            required_permission="VIEW",
-        )
-    except HTTPException as exc:
-        return JSONResponse(status_code=exc.status_code, content={"error": "Access denied"})
+    await acl_service.check_user_permission(
+        user_id=PydanticObjectId(user_id),
+        resource_type=ResourceType.REMOTE_AGENT.value,
+        resource_id=agent.id,
+        required_permission="VIEW",
+    )
 
     # Agent must be enabled
     if not agent.isEnabled:
@@ -413,30 +412,51 @@ async def a2a_agent_proxy(
 
     try:
         if transport_type == TRANSPORT_JSONRPC:
-            async with httpx.AsyncClient() as client:
-                transport = JsonRpcTransport(httpx_client=client, agent_card=agent_card)
-                if is_streaming:
-                    return await _stream_a2a_response(transport.send_message_streaming(params))
-                result = await transport.send_message(params)
-                return JSONResponse(content=result.model_dump(mode="json", exclude_none=True))
+            transport = JsonRpcTransport(httpx_client=proxy_client, agent_card=agent_card)
+            if is_streaming:
+                return await _stream_a2a_response(transport.send_message_streaming(params))
+            result = await transport.send_message(params)
+            return JSONResponse(content=result.model_dump(mode="json", exclude_none=True))
 
         elif transport_type == TRANSPORT_HTTP_JSON:
-            async with httpx.AsyncClient() as client:
-                transport = RestTransport(httpx_client=client, agent_card=agent_card)
-                if is_streaming:
-                    return await _stream_a2a_response(transport.send_message_streaming(params))
-                result = await transport.send_message(params)
-                return JSONResponse(content=result.model_dump(mode="json", exclude_none=True))
+            transport = RestTransport(httpx_client=proxy_client, agent_card=agent_card)
+            if is_streaming:
+                return await _stream_a2a_response(transport.send_message_streaming(params))
+            result = await transport.send_message(params)
+            return JSONResponse(content=result.model_dump(mode="json", exclude_none=True))
 
         elif transport_type == TRANSPORT_GRPC:
             if not _grpc_available:
                 return JSONResponse(
                     status_code=501,
-                    content={"error": "gRPC transport is not available. Install grpcio: pip install a2a-sdk[grpc]"},
+                    content={
+                        "error": "gRPC transport is not available. Please ensure grpcio is installed (requires a2a-sdk[grpc] extra)"
+                    },
                 )
             parsed = urlparse(agent_url)
-            grpc_target = f"{parsed.hostname}:{parsed.port or 50051}"
-            channel = grpc.aio.insecure_channel(grpc_target)
+            if not parsed.hostname:
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": f"Invalid gRPC agent URL: '{agent_url}'"},
+                )
+
+            scheme = parsed.scheme.lower()
+            if parsed.port is not None:
+                grpc_port = parsed.port
+            elif scheme in {"https", "grpcs"}:
+                grpc_port = 443
+            elif scheme == "http":
+                grpc_port = 80
+            else:
+                grpc_port = 50051
+
+            grpc_target = f"{parsed.hostname}:{grpc_port}"
+
+            if scheme in {"https", "grpcs"}:
+                channel = grpc.aio.secure_channel(grpc_target, grpc.ssl_channel_credentials())
+            else:
+                channel = grpc.aio.insecure_channel(grpc_target)
+
             try:
                 transport = GrpcTransport(channel=channel, agent_card=agent_card)
                 if is_streaming:
@@ -462,11 +482,18 @@ async def a2a_agent_proxy(
         return JSONResponse(status_code=502, content={"error": f"Agent returned HTTP error: {e.response.status_code}"})
     except Exception as e:
         logger.error(f"A2A proxy error for agent {path}: {e}", exc_info=True)
-        return JSONResponse(status_code=502, content={"error": f"Failed to communicate with agent: {e}"})
+        return JSONResponse(status_code=502, content={"error": "Failed to communicate with agent"})
 
 
-async def _stream_a2a_response(event_generator) -> StreamingResponse:
-    """Wrap an A2A async generator into an SSE StreamingResponse."""
+async def _stream_a2a_response(event_generator: AsyncGenerator[Any, None]) -> StreamingResponse:
+    """Wrap an A2A async generator into an SSE StreamingResponse.
+
+    Args:
+        event_generator: Async generator yielding A2A SDK event objects with model_dump() method
+
+    Returns:
+        StreamingResponse configured for Server-Sent Events
+    """
 
     async def _sse_body():
         try:
