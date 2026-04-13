@@ -19,7 +19,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from registry_pkgs.models import ResourceType
 from registry_pkgs.models.a2a_agent import TRANSPORT_GRPC, TRANSPORT_HTTP_JSON, TRANSPORT_JSONRPC
-from registry_pkgs.models.extended_mcp_server import ExtendedMCPServerDocument, ExtendedMCPServer
+from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 
 from ..auth.dependencies import CurrentUser, UserContextDict
 from ..core.config import settings
