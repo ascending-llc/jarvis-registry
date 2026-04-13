@@ -19,7 +19,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from registry_pkgs.models import ResourceType
 from registry_pkgs.models.a2a_agent import TRANSPORT_GRPC, TRANSPORT_HTTP_JSON, TRANSPORT_JSONRPC
-from registry_pkgs.models.extended_mcp_server import ExtendedMCPServerDocument
+from registry_pkgs.models.extended_mcp_server import ExtendedMCPServerDocument, ExtendedMCPServer
 
 from ..auth.dependencies import CurrentUser, UserContextDict
 from ..core.config import settings
@@ -90,7 +90,7 @@ def _get_elicitation_id(auth_url: str) -> str:
     return id_
 
 
-def _build_target_url(server: ExtendedMCPServerDocument, remaining_path: str = "") -> str:
+def _build_target_url(server: ExtendedMCPServer, remaining_path: str = "") -> str:
     """
     Build complete target URL for proxying to MCP server.
     Consolidates URL building logic used across all proxy endpoints.
@@ -127,7 +127,7 @@ async def proxy_to_mcp_server(
     request: Request,
     target_url: str,
     auth_context: UserContextDict,
-    server: ExtendedMCPServerDocument,
+    server: ExtendedMCPServer,
     oauth_service: MCPOAuthService,
     proxy_client: httpx.AsyncClient,
 ) -> Response:
@@ -139,7 +139,7 @@ async def proxy_to_mcp_server(
         request: Incoming FastAPI request
         target_url: Backend MCP server URL
         auth_context: UserContextDict
-        server: ExtendedMCPServerDocument
+        server: ExtendedMCPServer
         oauth_service: OAuth service for building auth headers
         proxy_client: Shared httpx client for connection pooling
     """

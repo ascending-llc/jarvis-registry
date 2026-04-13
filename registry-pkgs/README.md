@@ -20,7 +20,7 @@ LangChain VectorStore (Native DB)
 
 ## Generating Models
 
-Generate Beanie ODM models from JSON schemas stored in GitHub releases.
+Download pre-generated Beanie ODM models from jarvis-api GitHub releases.
 
 ### Prerequisites
 
@@ -45,7 +45,6 @@ registry-pkgs/src/registry_pkgs
 ├── models/                # Data models and schemas
 │   ├── __init__.py        # Exports all models
 │   ├── enums.py           # Enums (ToolDiscoveryMode, etc.)
-│   ├── import_schemas.py  # Schema import tool
 │   └── _generated/        # Auto-generated models (gitignored)
 │       ├── README.md      # Generation instructions
 │       ├── .schema-version # Version tracking
@@ -63,6 +62,8 @@ registry-pkgs/src/registry_pkgs
 │   ├── config/            # Configuration classes
 │   └── enum/              # Enums and exceptions
 ```
+
+Model download implementation lives at `scripts/download_beanie_models.py` in the repository root.
 
 ## Configuration
 
