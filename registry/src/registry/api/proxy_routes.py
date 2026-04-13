@@ -515,7 +515,7 @@ async def _stream_a2a_response(event_generator: AsyncGenerator[Any, None]) -> St
     )
 
 
-@router.post("/{full_path:path}")
+@router.post("/server/{full_path:path}")
 async def dynamic_mcp_post_proxy(
     request: Request,
     full_path: str,
@@ -612,7 +612,7 @@ async def dynamic_mcp_post_proxy(
     )
 
 
-@router.get("/{full_path:path}")
+@router.get("/server/{full_path:path}")
 async def dynamic_mcp_get_proxy(
     request: Request,
     full_path: str,
