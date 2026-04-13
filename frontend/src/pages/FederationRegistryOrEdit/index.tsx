@@ -1,4 +1,4 @@
-import { ArrowPathIcon, TrashIcon } from '@heroicons/react/24/outline';
+import { ArrowPathIcon, CalendarIcon, ClockIcon, TrashIcon } from '@heroicons/react/24/outline';
 import type React from 'react';
 import { useEffect, useState } from 'react';
 import { FiServer } from 'react-icons/fi';
@@ -11,6 +11,18 @@ import type { Federation } from '@/services/federation/type';
 
 import MainConfigForm from './MainConfigForm';
 import type { FederationFormConfig } from './types';
+
+const formatDistanceToNow = (dateStr: string): string => {
+  if (!dateStr) return '';
+  const diff = Date.now() - new Date(dateStr).getTime();
+  const minutes = Math.floor(diff / 60000);
+  const hours = Math.floor(minutes / 60);
+  const days = Math.floor(hours / 24);
+  if (days > 0) return `${days} day${days !== 1 ? 's' : ''} ago`;
+  if (hours > 0) return `${hours} hour${hours !== 1 ? 's' : ''} ago`;
+  if (minutes > 0) return `${minutes} min ago`;
+  return 'just now';
+};
 
 const INIT_DATA: FederationFormConfig = {
   providerType: 'aws_agentcore',
@@ -38,6 +50,12 @@ const FederationRegistryOrEdit: React.FC = () => {
 
   const [formData, setFormData] = useState<FederationFormConfig>(INIT_DATA);
   const [errors, setErrors] = useState<Record<string, string | undefined>>({});
+
+  const [testConnectionLoading, setTestConnectionLoading] = useState(false);
+  const [testConnectionResult, setTestConnectionResult] = useState<{
+    success: boolean;
+    message: string;
+  } | null>(null);
 
   const isEditMode = !!id;
   const isReadOnly = searchParams.get('isReadOnly') === 'true';
@@ -134,6 +152,54 @@ const FederationRegistryOrEdit: React.FC = () => {
     }
   };
 
+  const handleTestConnection = async () => {
+    if (!id) return;
+
+    if (!validate()) {
+      showToast('Please fix form errors before testing', 'error');
+      return;
+    }
+
+    setTestConnectionLoading(true);
+    setTestConnectionResult(null);
+    try {
+      const isAws = formData.providerType === 'aws_agentcore';
+      const providerConfig = isAws
+        ? {
+            region: formData.region,
+            assumeRoleArn: formData.assumeRoleArn,
+            resourceTagsFilter: parseTagsFilter(formData.resourceTagsFilter),
+          }
+        : {
+            region: formData.region,
+            tenantId: formData.azureTenantId,
+            subscriptionId: formData.azureSubscriptionId,
+            resourceGroup: formData.azureResourceGroup,
+            resourceTagsFilter: parseTagsFilter(formData.resourceTagsFilter),
+          };
+
+      const result = await SERVICES.FEDERATION.syncFederation(id, {
+        dryRun: true,
+        providerConfig,
+      });
+
+      const discoveredMcp = result?.summary?.discoveredMcpServers ?? 0;
+      const discoveredAgents = result?.summary?.discoveredAgents ?? 0;
+
+      setTestConnectionResult({
+        success: true,
+        message: `Connected — discovered ${discoveredMcp} MCP server${discoveredMcp !== 1 ? 's' : ''}, ${discoveredAgents} agent${discoveredAgents !== 1 ? 's' : ''}`,
+      });
+    } catch (error: any) {
+      setTestConnectionResult({
+        success: false,
+        message: error?.detail?.message || 'Connection failed — check your settings and try again',
+      });
+    } finally {
+      setTestConnectionLoading(false);
+    }
+  };
+
   const handleSync = async () => {
     if (!id) return;
     setIsSyncing(true);
@@ -221,13 +287,36 @@ const FederationRegistryOrEdit: React.FC = () => {
               <div className='animate-spin rounded-full h-8 w-8 border-b-2 border-purple-600'></div>
             </div>
           ) : (
-            <MainConfigForm
-              formData={formData}
-              updateField={updateField}
-              errors={errors}
-              isEditMode={isEditMode}
-              isReadOnly={isReadOnly}
-            />
+            <>
+              {isEditMode && federation && (
+                <div className='mb-4 flex flex-wrap gap-4 text-sm text-gray-500 dark:text-gray-400'>
+                  <span className='flex items-center gap-1.5'>
+                    <CalendarIcon className='h-3.5 w-3.5' />
+                    Created:{' '}
+                    {new Date(federation.createdAt).toLocaleDateString(undefined, {
+                      month: 'short',
+                      day: 'numeric',
+                      year: 'numeric',
+                    })}
+                  </span>
+                  <span className='flex items-center gap-1.5'>
+                    <ClockIcon className='h-3.5 w-3.5' />
+                    Last synced:{' '}
+                    {federation.lastSync?.finishedAt ? formatDistanceToNow(federation.lastSync.finishedAt) : 'Never'}
+                  </span>
+                </div>
+              )}
+              <MainConfigForm
+                formData={formData}
+                updateField={updateField}
+                errors={errors}
+                isEditMode={isEditMode}
+                isReadOnly={isReadOnly}
+                onTestConnection={handleTestConnection}
+                testConnectionLoading={testConnectionLoading}
+                testConnectionResult={testConnectionResult}
+              />
+            </>
           )}
 
           {isReadOnly && federation && (

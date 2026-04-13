@@ -72,21 +72,19 @@ const FederationCard: React.FC<FederationCardProps> = ({ federation }) => {
     if (diffInSeconds < 86400) return `${Math.floor(diffInSeconds / 3600)} hours ago`;
     return `${Math.floor(diffInSeconds / 86400)} days ago`;
   };
-
+  
   return (
-    <div
-      className='bg-gray-800 border-gray-700 border rounded-xl p-5 mb-3 transition-colors hover:border-gray-600 group'
-    >
+    <div className='bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-5 mb-3 transition-colors hover:border-gray-300 dark:hover:border-gray-600 group'>
       {/* Header */}
       <div className='flex items-start justify-between mb-3'>
         <div className='flex items-center gap-3'>
           <div
             className={`w-10 h-10 rounded-lg flex items-center justify-center shrink-0 ${
               isAws
-                ? 'bg-amber-500/15 text-amber-500'
+                ? 'bg-amber-100 dark:bg-amber-500/15 text-amber-500'
                 : isAzure
-                  ? 'bg-blue-500/15 text-blue-500'
-                  : 'bg-gray-500/15 text-gray-400'
+                  ? 'bg-blue-100 dark:bg-blue-500/15 text-blue-500'
+                  : 'bg-gray-100 dark:bg-gray-500/15 text-gray-400'
             }`}
           >
             {isAws ? (
@@ -99,13 +97,13 @@ const FederationCard: React.FC<FederationCardProps> = ({ federation }) => {
           </div>
           <div className='flex-1 min-w-0'>
             <div
-              className='text-base font-semibold text-white cursor-pointer hover:text-purple-400 transition-colors truncate'
+              className='text-base font-semibold text-gray-900 dark:text-white cursor-pointer hover:text-purple-600 dark:hover:text-purple-400 transition-colors truncate'
               onClick={handleViewClick}
               title={federation.displayName}
             >
               {federation.displayName}
             </div>
-            <div className='text-sm text-gray-400 mt-0.5'>
+            <div className='text-sm text-gray-500 dark:text-gray-400 mt-0.5'>
               {isAws ? 'Amazon Web Services' : isAzure ? 'Microsoft Azure' : 'Unknown Provider'}
               {federation.providerConfig?.region && ` · ${federation.providerConfig.region}`}
             </div>
@@ -116,19 +114,19 @@ const FederationCard: React.FC<FederationCardProps> = ({ federation }) => {
           <div
             className={`flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-md ${
               isSyncing || federation.syncStatus === 'syncing' || federation.syncStatus === 'pending'
-                ? 'bg-blue-500/15 text-blue-400'
+                ? 'bg-blue-100 dark:bg-blue-500/15 text-blue-600 dark:text-blue-400'
                 : federation.syncStatus === 'success' || federation.syncStatus === 'idle'
-                  ? 'bg-emerald-500/15 text-emerald-400'
-                  : 'bg-red-500/15 text-red-400'
+                  ? 'bg-emerald-100 dark:bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
+                  : 'bg-red-100 dark:bg-red-500/15 text-red-600 dark:text-red-400'
             }`}
           >
             <span
               className={`w-1.5 h-1.5 rounded-full ${
                 isSyncing || federation.syncStatus === 'syncing' || federation.syncStatus === 'pending'
-                  ? 'bg-blue-400 animate-pulse'
+                  ? 'bg-blue-500 animate-pulse'
                   : federation.syncStatus === 'success' || federation.syncStatus === 'idle'
-                    ? 'bg-emerald-400'
-                    : 'bg-red-400'
+                    ? 'bg-emerald-500'
+                    : 'bg-red-500'
               }`}
             ></span>
             {isSyncing || federation.syncStatus === 'syncing' || federation.syncStatus === 'pending'
@@ -141,7 +139,7 @@ const FederationCard: React.FC<FederationCardProps> = ({ federation }) => {
           <button
             onClick={handleEditClick}
             title='Edit'
-            className='w-8 h-8 flex items-center justify-center bg-gray-700 border border-gray-600 rounded-lg text-gray-300 transition-colors hover:bg-gray-600 hover:text-white'
+            className='w-8 h-8 flex items-center justify-center bg-gray-100 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-gray-500 dark:text-gray-300 transition-colors hover:bg-gray-200 dark:hover:bg-gray-600 hover:text-gray-700 dark:hover:text-white'
           >
             <FiEdit2 className='w-3.5 h-3.5' />
           </button>
@@ -149,8 +147,10 @@ const FederationCard: React.FC<FederationCardProps> = ({ federation }) => {
             onClick={handleSyncClick}
             disabled={isSyncing}
             title='Sync Now'
-            className={`w-8 h-8 flex items-center justify-center bg-gray-700 border border-gray-600 rounded-lg text-gray-300 transition-colors ${
-              isSyncing ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-600 hover:text-white'
+            className={`w-8 h-8 flex items-center justify-center bg-gray-100 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-gray-500 dark:text-gray-300 transition-colors ${
+              isSyncing
+                ? 'opacity-50 cursor-not-allowed'
+                : 'hover:bg-gray-200 dark:hover:bg-gray-600 hover:text-gray-700 dark:hover:text-white'
             }`}
           >
             <FiRefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
@@ -159,7 +159,7 @@ const FederationCard: React.FC<FederationCardProps> = ({ federation }) => {
       </div>
 
       {/* Meta Bar */}
-      <div className='flex flex-wrap gap-4 text-xs text-gray-400 mb-3'>
+      <div className='flex flex-wrap gap-4 text-xs text-gray-500 dark:text-gray-400 mb-3'>
         {federation.providerConfig?.assumeRoleArn && (
           <span className='flex items-center gap-1.5'>
             <FiTag className='w-3.5 h-3.5' />
@@ -175,21 +175,21 @@ const FederationCard: React.FC<FederationCardProps> = ({ federation }) => {
       </div>
 
       {/* Stats */}
-      <div className='grid grid-cols-3 gap-3 border-t border-gray-700 pt-3 mt-3'>
-        <div className='bg-gray-900 rounded-lg p-3 text-center'>
-          <div className='text-xl font-bold text-purple-400'>
+      <div className='grid grid-cols-3 gap-3 border-t border-gray-200 dark:border-gray-700 pt-3 mt-3'>
+        <div className='bg-gray-50 dark:bg-gray-900/50 rounded-lg p-3 text-center'>
+          <div className='text-xl font-bold text-purple-600 dark:text-purple-400'>
             {federation.status === 'active' && federation.stats ? federation.stats.mcpServerCount : '—'}
           </div>
           <div className='text-[11px] text-gray-500 mt-0.5'>MCP Servers</div>
         </div>
-        <div className='bg-gray-900 rounded-lg p-3 text-center'>
-          <div className='text-xl font-bold text-emerald-400'>
+        <div className='bg-gray-50 dark:bg-gray-900/50 rounded-lg p-3 text-center'>
+          <div className='text-xl font-bold text-emerald-600 dark:text-emerald-400'>
             {federation.status === 'active' && federation.stats ? federation.stats.agentCount : '—'}
           </div>
           <div className='text-[11px] text-gray-500 mt-0.5'>AI Agents</div>
         </div>
-        <div className='bg-gray-900 rounded-lg p-3 text-center'>
-          <div className='text-xl font-bold text-blue-400'>
+        <div className='bg-gray-50 dark:bg-gray-900/50 rounded-lg p-3 text-center'>
+          <div className='text-xl font-bold text-blue-600 dark:text-blue-400'>
             {federation.status === 'active' && federation.stats ? federation.stats.importedTotal : '—'}
           </div>
           <div className='text-[11px] text-gray-500 mt-0.5'>Total Imported</div>

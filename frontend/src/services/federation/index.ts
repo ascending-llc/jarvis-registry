@@ -45,10 +45,10 @@ const deleteFederation: (federationId: string) => Promise<void> = async federati
  * @param federationId The UUID or ID of the federation provider
  * @param data Optional params like forcing a full resync and audit strings
  */
-const syncFederation: (federationId: string, data?: { force?: boolean; reason?: string }) => Promise<any> = async (
-  federationId,
-  data,
-) => await Request.post(API.syncFederation(federationId), data);
+const syncFederation: (
+  federationId: string,
+  data?: { force?: boolean; reason?: string; dryRun?: boolean; providerConfig?: Record<string, unknown> },
+) => Promise<any> = async (federationId, data) => await Request.post(API.syncFederation(federationId), data);
 
 const FEDERATION = {
   getFederations,
