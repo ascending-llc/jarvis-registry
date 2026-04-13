@@ -6,11 +6,52 @@ from pydantic import BaseModel, ConfigDict, Field
 from pymongo import IndexModel
 
 from registry_pkgs.models.enums import (
+    AgentCoreRuntimeAccessMode,
     FederationJobType,
     FederationProviderType,
     FederationStatus,
     FederationSyncStatus,
 )
+
+
+class AgentCoreRuntimeIamConfig(BaseModel):
+    """Reserved container for future IAM runtime access settings."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class AgentCoreRuntimeJwtConfig(BaseModel):
+    """Federation-local configuration used to self-sign JWTs for AgentCore runtime access."""
+
+    discoveryUrl: str | None = Field(default=None, description="OIDC discovery URL reference provided by the runtime")
+    audiences: list[str] = Field(default_factory=list, description="JWT audiences to include in the signed token")
+    allowedClients: list[str] = Field(
+        default_factory=list,
+        description="Allowed client identifiers; the first entry is emitted as client_id when present",
+    )
+    allowedScopes: list[str] = Field(
+        default_factory=list,
+        description="Allowed scopes; emitted as a space-delimited scope claim when present",
+    )
+    customClaims: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Additional JWT claims merged into the self-signed payload",
+    )
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class AgentCoreRuntimeAccessConfig(BaseModel):
+    """Federation-local runtime auth mode for AgentCore data-plane enrichment."""
+
+    mode: AgentCoreRuntimeAccessMode = Field(
+        default=AgentCoreRuntimeAccessMode.IAM,
+        description="Explicit data-plane auth mode used for runtime enrichment",
+    )
+    iam: AgentCoreRuntimeIamConfig = Field(default_factory=AgentCoreRuntimeIamConfig)
+    jwt: AgentCoreRuntimeJwtConfig | None = Field(default=None)
+
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class AwsAgentCoreProviderConfig(BaseModel):
@@ -34,21 +75,22 @@ class AwsAgentCoreProviderConfig(BaseModel):
         default_factory=dict,
         description="Tag filters used during discovery",
     )
-
     model_config = ConfigDict(populate_by_name=True)
 
 
 class AzureAiFoundryProviderConfig(BaseModel):
     """
-    Azure AI Foundry provider configuration (reserved for future use)
+    Azure AI Foundry federation-level provider configuration.
     """
 
-    region: str | None = None
-    tenantId: str | None = None
-    subscriptionId: str | None = None
-    resourceGroup: str | None = None
-    workspaceName: str | None = None
-    resourceTagsFilter: dict[str, str] = Field(default_factory=dict)
+    projectEndpoint: str | None = Field(
+        default=None,
+        description="Azure AI Foundry project endpoint used to create AIProjectClient",
+    )
+    metadataFilter: dict[str, str] = Field(
+        default_factory=dict,
+        description="Agent metadata key/value filters applied during discovery",
+    )
 
     model_config = ConfigDict(populate_by_name=True)
 

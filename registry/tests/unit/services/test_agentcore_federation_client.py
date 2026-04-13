@@ -3,14 +3,63 @@ from types import SimpleNamespace
 
 import boto3
 import pytest
+from botocore.exceptions import ClientError
 from botocore.stub import Stubber
 
 from registry.services.federation.agentcore_discovery import AgentCoreFederationClient
+from registry_pkgs.models import A2AAgent, ExtendedMCPServer
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
 class TestAgentCoreFederationClient:
+    async def test_extract_region_from_arn_returns_region_for_valid_arn(self):
+        assert (
+            AgentCoreFederationClient.extract_region_from_arn(
+                "arn:aws:bedrock-agentcore:us-west-2:123456789012:runtime/test"
+            )
+            == "us-west-2"
+        )
+
+    async def test_extract_region_from_arn_raises_for_invalid_arn(self):
+        with pytest.raises(ValueError, match="Invalid AgentCore runtime ARN"):
+            AgentCoreFederationClient.extract_region_from_arn("not-an-arn")
+
+    async def test_transform_runtime_to_a2a_agent_populates_registry_config(self):
+        client = AgentCoreFederationClient()
+        captured: dict[str, object] = {}
+
+        def _fake_from_a2a_agent_card(**kwargs):
+            captured["config"] = kwargs["config"]
+            return SimpleNamespace(config=kwargs["config"])
+
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setattr(A2AAgent, "from_a2a_agent_card", _fake_from_a2a_agent_card)
+
+        try:
+            client._transform_runtime_to_a2a_agent(
+                {
+                    "runtimeArn": "arn:aws:bedrock-agentcore:us-east-1:123:runtime/r2",
+                    "agentRuntimeId": "r2",
+                    "agentRuntimeVersion": "2",
+                    "agentRuntimeName": "runtime-a2a",
+                    "description": "a2a runtime",
+                    "status": "READY",
+                    "lastUpdatedAt": datetime.now(UTC),
+                    "createdAt": datetime.now(UTC),
+                    "protocolConfiguration": {"serverProtocol": "A2A"},
+                },
+                region="us-east-1",
+            )
+        finally:
+            monkeypatch.undo()
+
+        config = captured["config"]
+        assert config is not None
+        assert config.title == "runtime-a2a"
+        assert config.description == "a2a runtime"
+        assert config.type == "http_json"
+
     async def test_discover_runtime_entities_classifies_mcp_and_a2a_with_stubber(self, monkeypatch):
         client = AgentCoreFederationClient()
 
@@ -109,7 +158,6 @@ class TestAgentCoreFederationClient:
         )
 
         monkeypatch.setattr(client.client_provider, "get_control_client", _async_return(boto_client))
-        monkeypatch.setattr(client, "_reconcile_runtime_type", _async_return(None))
         monkeypatch.setattr(
             client,
             "_transform_runtime_to_mcp_server",
@@ -190,7 +238,6 @@ class TestAgentCoreFederationClient:
         )
 
         monkeypatch.setattr(client.client_provider, "get_control_client", _async_return(boto_client))
-        monkeypatch.setattr(client, "_reconcile_runtime_type", _async_return(None))
         monkeypatch.setattr(
             client,
             "_transform_runtime_to_a2a_agent",
@@ -293,7 +340,6 @@ class TestAgentCoreFederationClient:
         )
 
         monkeypatch.setattr(client.client_provider, "get_control_client", _async_return(boto_client))
-        monkeypatch.setattr(client, "_reconcile_runtime_type", _async_return(None))
         monkeypatch.setattr(
             client,
             "_transform_runtime_to_mcp_server",
@@ -337,6 +383,26 @@ class TestAgentCoreFederationClient:
             "team": "platform",
         }
 
+    async def test_discovery_does_not_touch_persisted_runtime_type_state(self, monkeypatch):
+        client = AgentCoreFederationClient()
+
+        async def _execute_with_control_client(_region, operation, _assume_role_arn=None):
+            return operation(object())
+
+        monkeypatch.setattr(client.client_provider, "execute_with_control_client", _execute_with_control_client)
+        monkeypatch.setattr(client, "_list_runtime_summaries", lambda *_args, **_kwargs: [])
+        monkeypatch.setattr(client, "_get_runtime_details", lambda *_args, **_kwargs: [])
+
+        async def _fail_if_called(*_args, **_kwargs):
+            raise AssertionError("discovery must not query persisted runtime type state")
+
+        monkeypatch.setattr(ExtendedMCPServer, "find_one", _fail_if_called)
+        monkeypatch.setattr(A2AAgent, "find_one", _fail_if_called)
+
+        result = await client.discover_runtime_entities(region="us-east-1")
+
+        assert result == {"a2a_agents": [], "mcp_servers": [], "skipped_runtimes": []}
+
     async def test_build_runtime_mcp_url_uses_invocations_with_qualifier(self):
         client = AgentCoreFederationClient()
         runtime_arn = "arn:aws:bedrock-agentcore:us-east-1:123:runtime/r1"
@@ -347,17 +413,73 @@ class TestAgentCoreFederationClient:
     async def test_discover_runtime_entities_raises_when_runtime_listing_fails(self, monkeypatch):
         client = AgentCoreFederationClient()
 
-        async def _get_control_client(_region, _assume_role_arn=None):
-            return object()
+        async def _execute_with_control_client(_region, operation, _assume_role_arn=None):
+            return operation(object())
 
         def _list_runtime_summaries(_client):
             raise RuntimeError("Token has expired and refresh failed")
 
-        monkeypatch.setattr(client.client_provider, "get_control_client", _get_control_client)
+        monkeypatch.setattr(client.client_provider, "execute_with_control_client", _execute_with_control_client)
         monkeypatch.setattr(client, "_list_runtime_summaries", _list_runtime_summaries)
 
         with pytest.raises(RuntimeError, match="Failed to list AgentCore runtimes in us-east-1"):
             await client.discover_runtime_entities(region="us-east-1")
+
+    async def test_discover_runtime_entities_refreshes_cached_client_after_expired_token(self, monkeypatch):
+        client = AgentCoreFederationClient()
+        stale_client = object()
+        refreshed_client = object()
+        execute_calls: list[tuple[str, str | None]] = []
+
+        responses = [
+            ClientError(
+                error_response={
+                    "Error": {
+                        "Code": "ExpiredTokenException",
+                        "Message": "The security token included in the request is expired",
+                    }
+                },
+                operation_name="ListAgentRuntimes",
+            ),
+            [
+                {
+                    "agentRuntimeArn": "arn:aws:bedrock-agentcore:us-east-1:123:runtime/r1",
+                    "agentRuntimeId": "r1",
+                    "agentRuntimeVersion": "1",
+                    "agentRuntimeName": "runtime-mcp",
+                }
+            ],
+        ]
+
+        def _list_runtime_summaries(control_client):
+            result = responses.pop(0)
+            if isinstance(result, Exception):
+                raise result
+            assert control_client is refreshed_client
+            return result
+
+        async def _execute_with_control_client(region, operation, assume_role_arn=None):
+            execute_calls.append((region, assume_role_arn))
+            if len(execute_calls) == 1:
+                with pytest.raises(ClientError):
+                    operation(stale_client)
+                return operation(refreshed_client)
+            return operation(refreshed_client)
+
+        monkeypatch.setattr(client.client_provider, "execute_with_control_client", _execute_with_control_client)
+        monkeypatch.setattr(client, "_list_runtime_summaries", _list_runtime_summaries)
+        monkeypatch.setattr(client, "_get_runtime_details", lambda *_args, **_kwargs: [])
+
+        result = await client.discover_runtime_entities(
+            region="us-east-1",
+            assume_role_arn="arn:aws:iam::123456789012:role/TestRole",
+        )
+
+        assert result == {"a2a_agents": [], "mcp_servers": [], "skipped_runtimes": []}
+        assert execute_calls == [
+            ("us-east-1", "arn:aws:iam::123456789012:role/TestRole"),
+            ("us-east-1", "arn:aws:iam::123456789012:role/TestRole"),
+        ]
 
 
 def _async_return(value):

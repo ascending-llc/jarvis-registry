@@ -44,7 +44,6 @@ class FederationSyncJob(Document):
     - initial_sync
     - full_sync
     - config_resync
-    - force_sync
     - delete_sync
     """
 

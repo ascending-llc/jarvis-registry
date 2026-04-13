@@ -51,14 +51,11 @@ class AgentCoreImportService:
         self.a2a_agent_repo = a2a_agent_repo
 
         client_provider = agentcore_client_provider or AgentCoreClientProvider()
-        invoker = runtime_invoker or AgentCoreRuntimeInvoker(
+        self.runtime_invoker = runtime_invoker or AgentCoreRuntimeInvoker(
             client_provider=client_provider,
             extract_region_from_arn=AgentCoreFederationClient.extract_region_from_arn,
         )
-        self.federation_client = federation_client or AgentCoreFederationClient(
-            client_provider=client_provider,
-            runtime_invoker=invoker,
-        )
+        self.federation_client = federation_client or AgentCoreFederationClient(client_provider=client_provider)
 
     async def import_from_runtime(
         self,
@@ -601,6 +598,8 @@ class AgentCoreImportService:
             return None
         version = metadata.get("runtimeVersion")
         if version is None:
+            version = metadata.get("agentVersion")
+        if version is None:
             return None
         return str(version)
 
@@ -614,7 +613,15 @@ class AgentCoreImportService:
         new_version = cls.extract_runtime_version(new_metadata)
         if old_version == new_version:
             return []
-        return [f"runtimeVersion: {old_version} -> {new_version}"]
+        version_label = "runtimeVersion"
+        if (
+            new_metadata
+            and new_metadata.get("agentVersion") is not None
+            or existing_metadata
+            and existing_metadata.get("agentVersion") is not None
+        ):
+            version_label = "agentVersion"
+        return [f"{version_label}: {old_version} -> {new_version}"]
 
     async def _collect_stale_entities(
         self,
@@ -722,6 +729,8 @@ class AgentCoreImportService:
         if not metadata:
             return None
         runtime_arn = metadata.get("runtimeArn")
+        if not runtime_arn:
+            runtime_arn = metadata.get("agentName")
         return str(runtime_arn) if runtime_arn else None
 
     async def _resolve_identities(

@@ -330,3 +330,68 @@ class TestExtendedMCPServerStructure:
         docs = agent.to_documents()
         assert docs
         assert docs[0].metadata.get("runtimeVersion") == "11"
+
+    def test_a2a_agent_uses_federation_metadata_for_remote_identity(self, monkeypatch):
+        from registry_pkgs.models.a2a_agent import AgentConfig
+
+        monkeypatch.setattr(A2AAgent, "get_pymongo_collection", classmethod(lambda cls: None))
+
+        agent = A2AAgent.from_a2a_agent_card(
+            card_data={
+                "name": "Azure Agent",
+                "description": "A federated Azure agent",
+                "url": "https://example.projects.ai.azure.com",
+                "version": "3",
+                "capabilities": {"streaming": True},
+                "defaultInputModes": ["text/plain"],
+                "defaultOutputModes": ["application/json"],
+                "skills": [],
+            },
+            path="/azure-ai-foundry/a2a/azure-agent",
+            author=PydanticObjectId(),
+            config=AgentConfig(
+                title="Azure Agent",
+                description="A federated Azure agent",
+                type="http_json",
+            ),
+            federationMetadata={
+                "providerType": "azure_ai_foundry",
+                "agentName": "azure-agent",
+                "agentVersion": "3",
+                "agentVersionId": "asst_abc123",
+            },
+        )
+
+        assert agent.federationRefId is None
+        assert agent.federationMetadata["providerType"] == "azure_ai_foundry"
+        assert agent.federationMetadata["agentVersionId"] == "asst_abc123"
+
+    def test_a2a_agent_coerces_well_known_dict_to_model(self, monkeypatch):
+        from registry_pkgs.models.a2a_agent import AgentConfig
+
+        monkeypatch.setattr(A2AAgent, "get_pymongo_collection", classmethod(lambda cls: None))
+
+        agent = A2AAgent.from_a2a_agent_card(
+            card_data={
+                "name": "Agent With Well Known",
+                "description": "A federated agent",
+                "url": "https://example.com/agent",
+                "version": "1",
+                "capabilities": {"streaming": True},
+                "defaultInputModes": ["text/plain"],
+                "defaultOutputModes": ["application/json"],
+                "skills": [],
+            },
+            path="/agentcore/a2a/with-well-known",
+            author=PydanticObjectId(),
+            config=AgentConfig(
+                title="Agent With Well Known",
+                description="A federated agent",
+                type="http_json",
+            ),
+            wellKnown={"enabled": True, "url": "https://example.com/.well-known/agent-card.json"},
+        )
+
+        assert agent.wellKnown is not None
+        assert agent.wellKnown.enabled is True
+        assert str(agent.wellKnown.url) == "https://example.com/.well-known/agent-card.json"
