@@ -11,7 +11,6 @@ class ToolDiscoveryMode(StrEnum):
 class ServerEntityType(StrEnum):
     """Entity type enumeration for vector documents"""
 
-    SERVER = "server"
     TOOL = "tool"
     RESOURCE = "resource"
     PROMPT = "prompt"

@@ -22,31 +22,29 @@ async def discover_servers_impl(
     type_list: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """
-    🔍 Discover available MCP servers, tools, resources, or prompts.
+    🔍 Discover available MCP tools, resources, or prompts via vector search.
 
-    This flexible search tool can find specific entity types (tools, resources, prompts)
-    or full servers with all their capabilities. Use type_list to control what's returned.
+    All entity types go through the same vector path. Every result contains
+    tool_name and server_id directly, ready for execute_tool.
 
     Args:
         query: Natural language description or keywords to search
                (e.g., "github", "search engines", "database tools")
-        top_n: Maximum number of results to return.
-              If None, auto-sets to 3 for tools/resources/prompts, 1 for servers
+        top_n: Maximum number of results to return. Defaults to 3 if not specified.
         search_type: Search strategy:
                     - "hybrid" (default): Combines semantic + keyword for best accuracy
                     - "near_text": Pure semantic/vector search (best for concept matching)
                     - "bm25": Pure keyword search (best for exact term matching)
                     - "similarity_store": Alternative similarity algorithm
         type_list: Entity types to search for (default: ["tool"]):
-                  - ["tool"]: Returns only tools (most token-efficient)
-                  - ["resource"]: Returns only resources
-                  - ["prompt"]: Returns only prompts
-                  - ["server"]: Returns full servers with all capabilities (most tokens)
+                  - ["tool"]: Returns individual tools (each doc embeds full server context)
+                  - ["resource"]: Returns resources (each doc embeds full server context)
+                  - ["prompt"]: Returns prompts (each doc embeds full server context)
                   - Mix types: ["tool", "resource"] for multiple entity types
         ctx: FastMCP context with user auth
 
     Returns:
-        List of matching entities based on type_list parameter
+        List of matching entities, each with tool_name and server_id ready for execute_tool.
 
     Raises:
         InternalServerException: On any runtime exception
@@ -54,14 +52,8 @@ async def discover_servers_impl(
     if type_list is None:
         type_list = ["tool"]
 
-    # Smart defaults for top_n based on entity type
     if top_n is None:
-        # For specific entity types (tool/resource/prompt), return more results (3)
-        # For full servers, return fewer (1) due to token cost
-        if "server" in type_list and len(type_list) == 1:
-            top_n = 1  # Servers are token-heavy, return only 1
-        else:
-            top_n = 3  # Tools/resources/prompts are lightweight, return 3
+        top_n = 3
 
     logger.info(f"🔍 Discovering {type_list} for query: '{query}' (search_type={search_type})")
 
@@ -79,7 +71,6 @@ async def discover_servers_impl(
         result = await search_servers_impl(
             search_request,
             user_context,
-            server_service=lifespan_context.server_service,
             mcp_server_repo=lifespan_context.mcp_server_repo,
         )
 
@@ -116,13 +107,13 @@ def get_tools() -> list[tuple[str, Callable]]:
             Field(
                 min_length=0,
                 max_length=512,
-                description="Natural language query or keywords (e.g., 'web search', 'github', 'email automation'). May be omitted or empty. For `type_list=[\"server\"]`, an empty query means list available servers.",
+                description="Natural language query or keywords (e.g., 'web search', 'github', 'email automation'). May be omitted or empty for listing.",
             ),
         ] = "",
         top_n: Annotated[
             int | None,
             Field(
-                description="Max results to return. Auto-sets to 3 for tools/resources/prompts, 1 for servers if not specified",
+                description="Max results to return. Defaults to 3 if not specified.",
             ),
         ] = None,
         search_type: Annotated[
@@ -134,25 +125,26 @@ def get_tools() -> list[tuple[str, Callable]]:
         type_list: Annotated[
             list[str],
             Field(
-                description="Entity types to search: ['tool'] (most efficient, default), ['resource'], ['prompt'], ['server'] (full details, most tokens), or mix multiple types",
+                description="Entity types to search: ['tool'] (default), ['resource'], ['prompt'], or mix multiple types e.g. ['tool', 'resource']",
             ),
         ] = Field(
             default_factory=lambda: ["tool"],
         ),
     ) -> list[dict[str, Any]]:
         """
-        🔍 AUTO-USE: Discover tools, resources, prompts, or full server documents.
+        🔍 AUTO-USE: Discover tools, resources, or prompts from MCP servers.
 
         **Use this search order by default:**
-        1. `type_list=["tool"]` first for executable tools
+        1. `type_list=["tool"]` for action-oriented tasks (default, most efficient)
         2. `type_list=["resource"]` or `type_list=["prompt"]` when the user needs those specifically
-        3. `type_list=["server"]` only when you need a full Mongo-style server document
 
         **What each type means:**
-        - `["tool"]`: best default for action-oriented tasks such as search, API calls, automation, or data operations
+        - `["tool"]`: best default for search, API calls, automation, or data operations
         - `["resource"]`: for reading URIs, cached data, or file-like resources
         - `["prompt"]`: for reusable prompt workflows
-        - `["server"]`: for full server configs, including `config.toolFunctions`, resources, and prompts
+
+        Each result doc embeds full server context (server name, path, title, description)
+        in its content — no separate server lookup is needed.
 
         **Search strategies:**
         - `hybrid`: best default, combines semantic and keyword search
@@ -160,37 +152,18 @@ def get_tools() -> list[tuple[str, Callable]]:
         - `bm25`: exact keyword matching
         - `similarity_store`: alternative retrieval path
 
-        **How to interpret the returned `servers` array:**
-        - Treat results as full server documents only when `type_list` is exactly `["server"]`.
-        - In every other case, including `type_list=["tool"]`, treat each result as a directly usable discovery result for execution.
-
-        **If `type_list` is exactly `["server"]`:**
-        - Each item in `servers` is a full server document in MongoDB format.
-        - To execute a tool from that server:
-          1. Inspect the `$.config.toolFunctions` field of the server document.
-          2. Choose one tool entry whose description and parameters match the user's task
-          3. Set the `server_id` parameter of the `execute_tool` call to that server document's `id`
-          4. Set the `tool_name` parameter of the `execute_tool` call to that chosen tool entry's `mcpToolName`
-          5. Only if `mcpToolName` is missing, fall back to that chosen tool entry's key/name
-
-        **In every other case, including `type_list=["tool"]`:**
-        - Each result is already an executable match.
-        - Use the returned `tool_name` unchanged as `execute_tool.tool_name`.
-        - Use the returned `server_id` unchanged as `execute_tool.server_id`.
+        **How to use results:**
+        Every result in the returned array contains `tool_name` and `server_id` directly.
+        Pass them unchanged to `execute_tool` — no further lookup or name translation needed.
 
         **Examples:**
         - News or web search: `discover_servers(query="web search news", type_list=["tool"])`
         - GitHub operations: `discover_servers(query="github repositories", type_list=["tool"])`
         - Cached data: `discover_servers(query="cached data", type_list=["resource"])`
-        - Full capability inspection: `discover_servers(query="github", type_list=["server"])`
 
-        **Execution examples:**
-        - Tool result:
-          - If discovery returns `{"tool_name": "tavily_search", "server_id": "abc123", ...}`,
-            call `execute_tool(tool_name="tavily_search", server_id="abc123", arguments={...})`.
-        - Server result:
-          - If `$.config.toolFunctions["add_numbers_mcp_minimal_mcp_iam"].mcpToolName = "add_numbers"`,
-            call `execute_tool(tool_name="add_numbers", server_id="<server id>", arguments={...})`.
+        **Execution:**
+        If discovery returns `{"tool_name": "tavily_search", "server_id": "abc123", ...}`,
+        call `execute_tool(tool_name="tavily_search", server_id="abc123", arguments={...})`.
 
         Use `read_resource(server_id, resource_uri)` for resources.
         Use `execute_prompt(server_id, prompt_name, arguments)` for prompts.

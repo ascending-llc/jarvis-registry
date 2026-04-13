@@ -632,71 +632,92 @@ def get_tools() -> list[tuple[str, Callable]]:
         tool_name: Annotated[
             str,
             Field(
-                description="Final downstream MCP tool name to execute. If the previous discovery call used `type_list=[\"server\"]` and only `server`, first choose one tool entry from `$.config.toolFunctions`, then pass that chosen entry's `mcpToolName` as `tool_name` (or fall back to that chosen entry's key/name only if `mcpToolName` is missing). In every other discovery case, pass the returned `tool_name` unchanged. This exact string is forwarded as the value of the `$.params.name` field in the JSON-RPC payload of the `tools/call` request to downstream MCP."
+                description=(
+                    "The `tool_name` field from the discover_servers result — use verbatim, no transformation. "
+                    "This exact string is forwarded as `$.params.name` in the JSON-RPC `tools/call` request to the downstream MCP server."
+                )
             ),
         ],
-        arguments: Annotated[dict[str, Any], Field(description="Tool parameters from input_schema")],
-        server_id: Annotated[str, Field(description="Server ID from discovery")],
+        arguments: Annotated[
+            dict[str, Any],
+            Field(
+                description=(
+                    "Tool input parameters as a key-value dict. "
+                    "Read the `content` field of the discovery result for parameter names, types, "
+                    "and required/optional status (format: 'Parameters: name (type, required/optional, description), ...'). "
+                    "Pass all required parameters; include optional ones when they improve the result."
+                )
+            ),
+        ],
+        server_id: Annotated[
+            str,
+            Field(
+                description=(
+                    "The `server_id` field from the same discover_servers result as `tool_name`. "
+                    "Always pair tool_name and server_id from the same result — never mix across results."
+                )
+            ),
+        ],
     ) -> CallToolResult:
         """
-        🚀 AUTO-USE: Execute any discovered tool to get real-time data.
+        🚀 AUTO-USE: Execute one downstream MCP tool discovered via discover_servers.
 
-        **Common Examples:**
-        ```
-        # Web search
-        execute_tool(
-            tool_name="tavily_search",
-            arguments={"query": "latest AI news", "max_results": 5},
-            server_id="6972e222755441652c23090f"
-        )
+        **When to call:**
+        Call immediately after discover_servers returns a result with entity_type == "tool".
+        Never guess or invent a tool_name — always use the exact value returned by discover_servers.
 
-        # GitHub operations
-        execute_tool(
-            tool_name="search_pull_requests",
-            arguments={"owner": "org", "repo": "project", "state": "open"},
-            server_id="abc123..."
-        )
-        ```
+        **Parameter mapping — from discovery result to execute_tool:**
 
-        **Parameters:**
-        - tool_name: Final downstream MCP tool name. This is the exact value that becomes the `$.params.name` field in the JSON-RPC payload of the `tools/call` request to downstream MCP.
-        - arguments: Tool-specific parameters from input_schema
-        - server_id: Server ID from discovery
+          Discovery result:
+            {
+              "tool_name":  "tavily_search",       ← tool_name parameter
+              "server_id":  "abc123",              ← server_id parameter
+              "server_name": "tavily",
+              "content":    "... Parameters: query (string, required, search query), max_results (integer, optional) ..."
+            }                                         ↑ read this to build arguments
 
-        **How to set `tool_name`:**
-        - Case 1: the previous discovery call used `type_list=["server"]` and only `server`.
-          - The discovery response contains full server documents in `servers`.
-          - Pick one server document.
-          - Inspect the `$.config.toolFunctions` field of that server document.
-          - Choose the single tool entry that best matches the user's task.
-          - Set `server_id` to that server document's `id`.
-          - Set `tool_name` to that chosen tool entry's `mcpToolName`.
-          - Only if `mcpToolName` is missing, fall back to that chosen tool entry's key/name.
-        - Case 2: every other discovery case, including `type_list=["tool"]`.
-          - The discovery response already contains executable tool results.
-          - Set `server_id` to the returned `server_id`.
-          - Set `tool_name` to the returned `tool_name` unchanged.
+          Execute call:
+            execute_tool(
+                tool_name="tavily_search",           ← verbatim from result["tool_name"]
+                server_id="abc123",                  ← verbatim from result["server_id"]
+                arguments={"query": "AI news"},      ← constructed from content
+            )
 
-        **Important constraints:**
-        - `execute_tool` always runs exactly one tool.
-        - `tool_name` must always be the final downstream MCP tool name.
-        - Do not invent, rename, scope, or rewrite the tool name.
-        - Do not pass a display label or registry-only alias.
-        - Do not pass the full server document into `execute_tool`.
-        - Pair the final `tool_name` with the matching `server_id` from the same discovery result.
+        **How to construct arguments:**
+        The `content` field of the discovery result contains parameter info in text form:
+          "Parameters: query (string, required, the search query), max_results (integer, optional, number of results)"
+        Parse it to identify parameter names and pass at minimum all required ones.
 
-        **Example:**
-        - If discover_servers returns `{"tool_name": "tavily_search", "server_id": "abc123"}`,
-          then call `execute_tool(tool_name="tavily_search", server_id="abc123", arguments={...})`.
-        - If a server result contains:
-          - `$.config.toolFunctions["add_numbers_mcp_minimal_mcp_iam"].mcpToolName = "add_numbers"`
-          - `$.config.toolFunctions["greet_mcp_minimal_mcp_iam"].mcpToolName = "greet"`
-          then first choose the correct tool entry for the task.
-          - To execute the add tool, call `execute_tool(tool_name="add_numbers", server_id="<server id>", arguments={...})`.
-          - To execute the greet tool, call `execute_tool(tool_name="greet", server_id="<server id>", arguments={...})`.
+        **Examples:**
 
-        ⚠️ Use after discover_servers to execute tools.
-        Returns: Tool-specific results (format varies by tool)
+        Example 1 — web search:
+          # discover_servers(query="web search", type_list=["tool"])
+          # → {"tool_name": "tavily_search", "server_id": "abc123",
+          #    "content": "...Parameters: query (string, required), max_results (integer, optional)..."}
+          execute_tool(
+              tool_name="tavily_search",
+              server_id="abc123",
+              arguments={"query": "latest AI news", "max_results": 5},
+          )
+
+        Example 2 — GitHub:
+          # discover_servers(query="github pull requests", type_list=["tool"])
+          # → {"tool_name": "search_pull_requests", "server_id": "def456",
+          #    "content": "...Parameters: owner (string, required), repo (string, required), state (string, optional)..."}
+          execute_tool(
+              tool_name="search_pull_requests",
+              server_id="def456",
+              arguments={"owner": "myorg", "repo": "myproject", "state": "open"},
+          )
+
+        **Hard constraints:**
+        - tool_name must be the exact `tool_name` field from the discovery result.
+          Do not invent, rename, scope, or rewrite it. Do not pass a display label or alias.
+        - server_id must come from the SAME discovery result as tool_name — never mix across results.
+        - Runs exactly one downstream MCP tool per call.
+
+        **Return value:**
+        Tool-specific result (JSON, text, or binary — format varies by tool).
         """
         return await execute_tool_impl(
             ctx,
@@ -708,45 +729,75 @@ def get_tools() -> list[tuple[str, Callable]]:
     async def read_resource(
         ctx: Context[ServerSession, McpAppContext],
         server_id: Annotated[
-            str, Field(description="Server ID from discover_servers (e.g., '6972e222755441652c23090f')")
+            str,
+            Field(
+                description=(
+                    "The `server_id` field from the discover_servers result (e.g., '6972e222755441652c23090f'). "
+                    "Must be from the same result as resource_uri."
+                )
+            ),
         ],
         resource_uri: Annotated[
-            str, Field(description="Resource URI to read (e.g., 'tavily://search-results/AI', 'file:///path/to/data')")
+            str,
+            Field(
+                description=(
+                    "The `resource_uri` field from the discover_servers result. "
+                    "If the URI is a template (e.g., 'github://repo/{owner}/{repo}'), fill in the variables before calling."
+                )
+            ),
         ],
     ) -> CallToolResult:
         """
-        📄 Read/access resources from any MCP server.
+        📄 Read URI-addressable data or cached content from a registered MCP server.
 
         **What are resources?**
-        Resources are data sources, caches, URIs, or file-like objects exposed by MCP servers.
-        Examples: cached search results, configuration files, data streams, API responses.
+        Resources are URI-addressable data sources exposed by MCP servers:
+        cached results, file-like content, API snapshots, configuration data, etc.
+        Use resources when you need to READ data rather than EXECUTE an action.
 
-        **Common use cases:**
-        - Access cached data: read_resource(server_id="...", resource_uri="tavily://search-results/AI")
-        - Read configuration: read_resource(server_id="...", resource_uri="config://settings")
-        - Access files: read_resource(server_id="...", resource_uri="file:///data/export.json")
+        **When to call:**
+        Call after discover_servers returns a result with entity_type == "resource".
+        Use result["resource_uri"] and result["server_id"] directly — no transformation needed.
 
-        **Workflow:**
-        1. Use discover_servers to find servers with resources
-        2. Review the resources array in server config
-        3. Use read_resource with the resource URI
+        **Parameter mapping — from discovery result to read_resource:**
 
-        **Example:**
-        ```
-        # Discover servers with resources
-        servers = discover_servers(query="search")
+          Discovery result:
+            {
+              "resource_uri": "tavily://search-results/{query}",  ← resource_uri parameter (fill template vars)
+              "server_id":    "abc123",                           ← server_id parameter
+              "resource_name": "search-results",
+            }
 
-        # Find a resource URI from server config
-        resource = servers[0]["config"]["resources"][0]["uri"]
+          Read call (after filling template variables):
+            read_resource(
+                server_id="abc123",
+                resource_uri="tavily://search-results/AI+news",
+            )
 
-        # Read the resource
-        data = read_resource(
-            server_id=servers[0]["_id"],
-            resource_uri=resource
-        )
-        ```
+        **Examples:**
 
-        Returns: Resource contents (format varies: text, JSON, binary, etc.)
+        Example 1 — cached search results:
+          # discover_servers(query="cached web results", type_list=["resource"])
+          # → {"resource_uri": "tavily://search-results/{query}", "server_id": "abc123", ...}
+          read_resource(
+              server_id="abc123",
+              resource_uri="tavily://search-results/AI+trends",
+          )
+
+        Example 2 — GitHub repository data:
+          # discover_servers(query="github repository", type_list=["resource"])
+          # → {"resource_uri": "github://repo/{owner}/{repo}", "server_id": "def456", ...}
+          read_resource(
+              server_id="def456",
+              resource_uri="github://repo/myorg/myproject",
+          )
+
+        **Hard constraints:**
+        - server_id must come from the SAME discovery result as resource_uri.
+        - If resource_uri is a URI template, substitute all `{variable}` placeholders before calling.
+
+        **Return value:**
+        Resource contents — text, JSON, binary, or structured data depending on the resource type.
         """
         return await read_resource_impl(
             ctx.request_context.request.state.user,  # type: ignore[union-attr]
@@ -757,49 +808,98 @@ def get_tools() -> list[tuple[str, Callable]]:
 
     async def execute_prompt(
         ctx: Context[ServerSession, McpAppContext],
-        server_id: Annotated[str, Field(description="Server ID from discover_servers")],
-        prompt_name: Annotated[
-            str, Field(description="Name of the prompt to execute (e.g., 'research_assistant', 'fact_checker')")
+        server_id: Annotated[
+            str,
+            Field(
+                description=(
+                    "The `server_id` field from the discover_servers result. "
+                    "Must be from the same result as prompt_name."
+                )
+            ),
         ],
-        arguments: Annotated[dict[str, Any] | None, Field(description="Prompt arguments as key-value pairs")] = None,
+        prompt_name: Annotated[
+            str,
+            Field(
+                description=(
+                    "The `prompt_name` field from the discover_servers result — use verbatim. "
+                    "Examples: 'research_assistant', 'code_reviewer', 'fact_checker'."
+                )
+            ),
+        ],
+        arguments: Annotated[
+            dict[str, Any] | None,
+            Field(
+                description=(
+                    "Prompt arguments as key-value pairs. "
+                    "Read the `content` field of the discovery result for argument names and required/optional status "
+                    "(format: 'Required: arg1 (description), ... | Optional: arg2 (description), ...'). "
+                    "Pass None or omit if the prompt takes no arguments."
+                )
+            ),
+        ] = None,
     ) -> CallToolResult:
         """
-        💬 Execute prompts from any MCP server.
+        💬 Execute a reusable prompt template from a registered MCP server.
 
         **What are prompts?**
-        Prompts are pre-configured, reusable prompt templates provided by MCP servers.
-        They help standardize complex workflows and provide expert guidance.
+        Prompts are pre-configured, parameterized templates that standardize complex workflows.
+        They return structured messages (role + content pairs) ready to be forwarded to an LLM.
+        Use prompts when you need expert guidance, a standardized workflow, or a multi-turn template.
 
-        **Common use cases:**
-        - Research workflows: execute_prompt(server_id="...", prompt_name="research_assistant", arguments={"topic": "AI"})
-        - Fact checking: execute_prompt(server_id="...", prompt_name="fact_checker", arguments={"claim": "..."})
-        - Code review: execute_prompt(server_id="...", prompt_name="code_reviewer", arguments={"language": "python"})
+        **When to call:**
+        Call after discover_servers returns a result with entity_type == "prompt".
+        Use result["prompt_name"] and result["server_id"] directly — no transformation needed.
 
-        **Workflow:**
-        1. Use discover_servers to find servers with prompts
-        2. Review the prompts array in server config
-        3. Use execute_prompt with required arguments
+        **Parameter mapping — from discovery result to execute_prompt:**
 
-        **Example:**
-        ```
-        # Discover servers with prompts
-        servers = discover_servers(query="research")
+          Discovery result:
+            {
+              "prompt_name": "code_reviewer",      ← prompt_name parameter
+              "server_id":   "abc123",             ← server_id parameter
+              "content":     "... Required: language (programming language) | Optional: focus (review focus area) ..."
+            }                                         ↑ read this to build arguments
 
-        # Find available prompts
-        prompts = servers[0]["config"]["prompts"]
+          Execute call:
+            execute_prompt(
+                server_id="abc123",
+                prompt_name="code_reviewer",         ← verbatim from result["prompt_name"]
+                arguments={"language": "python"},    ← constructed from content
+            )
 
-        # Execute a prompt
-        result = execute_prompt(
-            server_id=servers[0]["_id"],
-            prompt_name="research_assistant",
-            arguments={"topic": "Quantum Computing", "depth": "advanced"}
-        )
+        **How to construct arguments:**
+        The `content` field of the discovery result lists required and optional arguments:
+          "Required: topic (research topic) | Optional: depth (detail level, default: overview)"
+        Pass all required arguments; include optional ones when the user specifies them.
 
-        # Result contains messages ready for LLM
-        messages = result["messages"]
-        ```
+        **Examples:**
 
-        Returns: Prompt messages ready for LLM consumption (role, content pairs)
+        Example 1 — code review:
+          # discover_servers(query="code review template", type_list=["prompt"])
+          # → {"prompt_name": "code_reviewer", "server_id": "abc123",
+          #    "content": "... Required: language (programming language) | Optional: focus (review area) ..."}
+          execute_prompt(
+              server_id="abc123",
+              prompt_name="code_reviewer",
+              arguments={"language": "python", "focus": "security"},
+          )
+
+        Example 2 — research assistant:
+          # discover_servers(query="research assistant", type_list=["prompt"])
+          # → {"prompt_name": "research_assistant", "server_id": "def456",
+          #    "content": "... Required: topic (research topic) | Optional: depth (detail level) ..."}
+          execute_prompt(
+              server_id="def456",
+              prompt_name="research_assistant",
+              arguments={"topic": "Quantum Computing", "depth": "advanced"},
+          )
+
+        **Hard constraints:**
+        - prompt_name must be the exact `prompt_name` field from the discovery result — do not invent or rename it.
+        - server_id must come from the SAME discovery result as prompt_name.
+
+        **Return value:**
+        A list of messages (role + content pairs) ready for LLM consumption.
+        Forward the messages into your context or present them to the user.
         """
         return await execute_prompt_impl(
             ctx.request_context.request.state.user,  # type: ignore[union-attr]

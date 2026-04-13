@@ -172,36 +172,33 @@ class ExtendedMCPServer(MCPServer):
 
     def to_documents(self, chunking_config: ChunkingConfig | None = None) -> list[LangChainDocument]:
         """
-        Convert ExtendedMCPServer to multiple searchable documents.
+        Convert ExtendedMCPServer to searchable vector documents.
 
-        Strategy:
-        1. Split by semantic units (server, tools, resources, prompts)
-        2. Apply RecursiveCharacterTextSplitter to oversized content
-        3. Maintain parent-child relationship via server_id
+        Each tool/resource/prompt document embeds the server context (name, path, title,
+        description) as a prefix in its content, making every document self-contained for
+        vector search. This eliminates the need for a separate server-level document and
+        allows all discovery paths — including server-level queries — to be served directly
+        from tool/resource/prompt docs without a MongoDB lookup.
 
         Returns:
-            List of LangChain Documents with entity_type metadata
+            List of LangChain Documents with entity_type metadata (tool, resource, prompt)
         """
         docs = []
         chunking_config = chunking_config or ChunkingConfig()
 
-        # 1. Server Overview
-        server_docs = self._create_server_docs(chunking_config)
-        docs.extend(server_docs)
-
-        # 2. Tools
+        # Tools
         tool_functions = self.config.get("toolFunctions", {})
         for tool_name, tool_data in tool_functions.items():
             tool_docs = self._create_tool_docs(tool_name, tool_data, chunking_config)
             docs.extend(tool_docs)
 
-        # 3. Resources
+        # Resources
         resources = self.config.get("resources", [])
         for resource in resources:
             resource_docs = self._create_resource_docs(resource, chunking_config)
             docs.extend(resource_docs)
 
-        # 4. Prompts
+        # Prompts
         prompts = self.config.get("prompts", [])
         for prompt in prompts:
             prompt_docs = self._create_prompt_docs(prompt, chunking_config)
@@ -209,18 +206,10 @@ class ExtendedMCPServer(MCPServer):
 
         logger.info(
             f"Generated {len(docs)} documents for server {self.serverName} "
-            f"(server:{len(server_docs)}, tools:{len(tool_functions)}, "
-            f"resources:{len(resources)}, prompts:{len(prompts)})"
+            f"(tools:{len(tool_functions)}, resources:{len(resources)}, prompts:{len(prompts)})"
         )
 
         return docs
-
-    def _create_server_docs(self, chunking_config: ChunkingConfig) -> list[LangChainDocument]:
-        """Create Server Overview document(s) with text splitting if needed."""
-        content = self.generate_server_content()
-
-        base_metadata = self._get_base_metadata(ServerEntityType.SERVER)
-        return self._split_if_needed(content, base_metadata, chunking_config)
 
     def _create_tool_docs(
         self, tool_name: str, tool_data: dict, chunking_config: ChunkingConfig
@@ -322,34 +311,38 @@ class ExtendedMCPServer(MCPServer):
         logger.info(f"Split into {len(chunks)} chunks")
         return docs
 
-    def generate_server_content(self) -> str:
+    def _server_prefix(self) -> str:
         """
-        Generate content for Server Overview document.
+        Build the shared server context prefix embedded in every tool/resource/prompt document.
 
-        Format: serverName | path | title | description |
-                Contains X tools, Y resources, Z prompts | Tags: tags
+        Embedding this prefix makes each document self-contained so that vector search
+        on tool/resource/prompt docs can match server-level terms (e.g. "github") without
+        requiring a separate MongoDB lookup.
+
+        Format: serverName | path | title | description
         """
-        parts = [self.serverName, self.path, self.config.get("title", ""), self.config.get("description", "")]
-
-        # Statistics
-        num_tools = len(self.config.get("toolFunctions", {}))
-        num_resources = len(self.config.get("resources", []))
-        num_prompts = len(self.config.get("prompts", []))
-
-        parts.append(f"Contains {num_tools} tools, {num_resources} resources, {num_prompts} prompts")
-
-        # Tags
-        if self.tags:
-            parts.append(f"Tags: {', '.join(self.tags)}")
-
-        return " | ".join(filter(None, parts))
+        return " | ".join(
+            filter(
+                None,
+                [
+                    self.serverName,
+                    self.path,
+                    self.config.get("title", ""),
+                    self.config.get("description", ""),
+                ],
+            )
+        )
 
     def generate_tool_content(self, tool_name: str, tool_data: dict) -> str:
         """
         Generate content for Tool document.
 
-        Format: tool_name | description |
+        Format: serverName | path | title | description |
+                tool_name | description |
                 Parameters: param1 (type, required/optional, description), ...
+
+        The server prefix makes tool docs self-contained for vector search,
+        eliminating the need for a MongoDB lookup during server discovery.
         """
         parts = [tool_name]
 
@@ -386,14 +379,17 @@ class ExtendedMCPServer(MCPServer):
                 if param_strs:
                     parts.append(f"Parameters: {', '.join(param_strs)}")
 
-        return " | ".join(filter(None, parts))
+        tool_body = " | ".join(filter(None, parts))
+        return f"{self._server_prefix()} | {tool_body}"
 
     def generate_resource_content(self, resource: dict) -> str:
         """
         Generate content for Resource document.
 
-        Format: name | description | URI: uri_template |
-                Example: example_uri | Use case: inferred_use_case
+        Format: serverName | path | title | description |
+                name | description | URI: uri_template | MIME type: mime_type
+
+        The server prefix makes resource docs self-contained for vector search.
         """
         name = resource.get("name", "")
         description = resource.get("description", "")
@@ -408,14 +404,17 @@ class ExtendedMCPServer(MCPServer):
         if mime_type:
             parts.append(f"MIME type: {mime_type}")
 
-        return " | ".join(filter(None, parts))
+        resource_body = " | ".join(filter(None, parts))
+        return f"{self._server_prefix()} | {resource_body}"
 
     def generate_prompt_content(self, prompt: dict) -> str:
         """
         Generate content for Prompt document.
 
-        Format: name | description |
-                Required: required_args | Optional: optional_args
+        Format: serverName | path | title | description |
+                name | description | Required: required_args | Optional: optional_args
+
+        The server prefix makes prompt docs self-contained for vector search.
         """
         name = prompt.get("name", "")
         description = prompt.get("description", "")
@@ -442,7 +441,8 @@ class ExtendedMCPServer(MCPServer):
         if optional_args:
             parts.append(f"Optional: {', '.join(optional_args)}")
 
-        return " | ".join(filter(None, parts))
+        prompt_body = " | ".join(filter(None, parts))
+        return f"{self._server_prefix()} | {prompt_body}"
 
     @classmethod
     def from_document(cls, document: LangChainDocument) -> dict:

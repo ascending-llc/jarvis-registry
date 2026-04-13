@@ -369,7 +369,7 @@ class TestServerSearchRoutes:
         mock_filter.assert_awaited_once()
         assert response.json() == {
             "query": "",
-            "type_list": ["server", "tool", "resource", "prompt"],
+            "type_list": ["tool", "resource", "prompt"],
             "total": 0,
             "servers": [],
         }
