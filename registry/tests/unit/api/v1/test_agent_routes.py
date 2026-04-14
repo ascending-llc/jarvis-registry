@@ -33,6 +33,7 @@ def _build_agent(agent_id: PydanticObjectId | None = None):
         config=SimpleNamespace(
             title="Test Agent",
             description="Agent description",
+            url="https://agent.example.com",
             type="jsonrpc",
         ),
         tags=["test"],
@@ -43,7 +44,6 @@ def _build_agent(agent_id: PydanticObjectId | None = None):
         updatedAt=now,
         wellKnown=SimpleNamespace(
             enabled=False,
-            url=None,
             lastSyncAt=None,
             lastSyncStatus=None,
             lastSyncVersion=None,

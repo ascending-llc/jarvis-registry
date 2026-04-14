@@ -402,7 +402,7 @@ async def a2a_agent_proxy(
         )
 
     transport_type = (agent.config.type if agent.config else TRANSPORT_JSONRPC).lower()
-    
+
     # Use user-provided URL from config for runtime operations
     if agent.config and agent.config.url:
         agent_url = str(agent.config.url)
@@ -414,7 +414,7 @@ async def a2a_agent_proxy(
             f"Agent {path} missing config.url, falling back to card.url: {agent_url}. "
             "This may fail if card.url is not accessible. Please update the agent to set config.url."
         )
-    
+
     # Create a modified agent_card with the runtime URL (config.url)
     # Transport classes use agent_card.url internally, so we need to override it
     agent_card = agent.card.model_copy(deep=True)
