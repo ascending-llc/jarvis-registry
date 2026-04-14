@@ -532,11 +532,8 @@ class FederationSyncService:
 
             if existing is None:
                 name_conflict = existing_mcp_by_server_name.get(item.serverName)
-                if name_conflict is not None and name_conflict.federationRefId == federation.id:
-                    # Same federation, different runtimeArn — treat as update (serverName-based fallback match).
-                    existing = name_conflict
-                    existing_mcp_by_remote[remote_id] = existing
-                elif name_conflict is not None:
+                if name_conflict is not None and name_conflict.federationRefId != federation.id:
+                    # Cross-federation conflict: another federation already owns this serverName — skip.
                     logger.warning(
                         "Skipping MCP server due to global serverName conflict: "
                         "serverName=%s already claimed by federation=%s",
@@ -550,6 +547,8 @@ class FederationSyncService:
                         f"(owned by federation {name_conflict.federationRefId or 'unknown'})",
                     )
                     continue
+                # Same-federation name match with a different runtimeArn: the old doc will be
+                # deleted first in _apply_sync_plan (deletes run before creates), so INSERT is safe.
 
             if existing is None:
                 apply_summary.createdMcpServers += 1
@@ -593,10 +592,8 @@ class FederationSyncService:
             path_conflict = existing_a2a_by_path.get(item.path) if getattr(item, "path", None) else None
 
             if existing is None and path_conflict is not None:
-                if path_conflict.federationRefId == federation.id:
-                    existing = path_conflict
-                    existing_a2a_by_remote[remote_id] = existing
-                else:
+                if path_conflict.federationRefId != federation.id:
+                    # Cross-federation conflict: another federation already owns this path — skip.
                     agent_name = getattr(getattr(item, "card", None), "name", None) or remote_id
                     logger.warning(
                         "Skipping federated A2A sync because path is already owned by another agent: "
@@ -614,6 +611,8 @@ class FederationSyncService:
                         f"(owned by federation {path_conflict.federationRefId or 'unknown'})",
                     )
                     continue
+                # Same-federation path match with a different runtimeArn: the old doc will be
+                # deleted first in _apply_sync_plan (deletes run before creates), so INSERT is safe.
 
             if existing is None:
                 apply_summary.createdAgents += 1
@@ -686,6 +685,18 @@ class FederationSyncService:
         session = self._get_current_session_or_none()
         mutation_result = FederationSyncMutationResult(summary=sync_plan.summary)
 
+        # Deletes run first so that unique-indexed fields (serverName, path) are freed
+        # before new docs with the same name/path are inserted.
+        for stale, stale_runtime_arn in sync_plan.mcp_deletes:
+            await stale.delete(session=session)
+            if stale_runtime_arn:
+                mutation_result.changed_mcp_runtime_arns.add(stale_runtime_arn)
+
+        for stale, stale_runtime_arn in sync_plan.a2a_deletes:
+            await stale.delete(session=session)
+            if stale_runtime_arn:
+                mutation_result.changed_a2a_runtime_arns.add(stale_runtime_arn)
+
         for server, remote_id in sync_plan.mcp_creates:
             server.federationRefId = sync_plan.federation_id
             server.federationMetadata = server.federationMetadata or {}
@@ -693,6 +704,14 @@ class FederationSyncService:
             await server.insert(session=session)
             mutation_result.changed_mcp_runtime_arns.add(remote_id)
             await self._grant_owner(user_id, ResourceType.MCPSERVER, server.id)
+
+        for agent, remote_id in sync_plan.a2a_creates:
+            agent.federationRefId = sync_plan.federation_id
+            agent.federationMetadata = agent.federationMetadata or {}
+            agent.federationMetadata["providerType"] = _enum_value(sync_plan.provider_type)
+            await agent.insert(session=session)
+            mutation_result.changed_a2a_runtime_arns.add(remote_id)
+            await self._grant_owner(user_id, ResourceType.REMOTE_AGENT, agent.id)
 
         for existing, item, remote_id in sync_plan.mcp_updates:
             existing.serverName = item.serverName
@@ -706,19 +725,6 @@ class FederationSyncService:
             mutation_result.changed_mcp_runtime_arns.add(remote_id)
             await self._grant_owner(user_id, ResourceType.MCPSERVER, existing.id)
 
-        for stale, stale_runtime_arn in sync_plan.mcp_deletes:
-            await stale.delete(session=session)
-            if stale_runtime_arn:
-                mutation_result.changed_mcp_runtime_arns.add(stale_runtime_arn)
-
-        for agent, remote_id in sync_plan.a2a_creates:
-            agent.federationRefId = sync_plan.federation_id
-            agent.federationMetadata = agent.federationMetadata or {}
-            agent.federationMetadata["providerType"] = _enum_value(sync_plan.provider_type)
-            await agent.insert(session=session)
-            mutation_result.changed_a2a_runtime_arns.add(remote_id)
-            await self._grant_owner(user_id, ResourceType.REMOTE_AGENT, agent.id)
-
         for existing, item, remote_id in sync_plan.a2a_updates:
             existing.path = item.path
             existing.card = item.card
@@ -730,11 +736,6 @@ class FederationSyncService:
             await existing.save(session=session)
             mutation_result.changed_a2a_runtime_arns.add(remote_id)
             await self._grant_owner(user_id, ResourceType.REMOTE_AGENT, existing.id)
-
-        for stale, stale_runtime_arn in sync_plan.a2a_deletes:
-            await stale.delete(session=session)
-            if stale_runtime_arn:
-                mutation_result.changed_a2a_runtime_arns.add(stale_runtime_arn)
 
         return mutation_result
 

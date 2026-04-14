@@ -33,7 +33,6 @@ def _make_federation(provider_type: FederationProviderType, provider_config: dic
         providerConfig=provider_config,
         status=FederationStatus.ACTIVE,
         syncStatus=FederationSyncStatus.IDLE,
-        version=1,
         createdAt=now,
         updatedAt=now,
     )
@@ -145,7 +144,6 @@ async def test_update_federation_and_create_resync_job_creates_pending_job(
         **{
             **federation.__dict__,
             "providerConfig": {"region": "us-west-2", "assumeRoleArn": "arn:aws:iam::123456789012:role/TestRole"},
-            "version": 2,
         }
     )
     job = SimpleNamespace(id=PydanticObjectId(), jobType="config_resync", createdAt=datetime.now(UTC))

@@ -171,8 +171,6 @@ class Federation(Document):
     stats: FederationStats = Field(default_factory=FederationStats)
     lastSync: FederationLastSync | None = Field(default=None)
 
-    version: int = Field(default=1, description="Optimistic lock version")
-
     createdBy: str | None = None
     updatedBy: str | None = None
     createdAt: datetime = Field(default_factory=lambda: datetime.now(UTC))

@@ -163,7 +163,6 @@ class FederationDetailResponse(BaseModel):
     recentJobs: list[FederationSyncJobResponse] = Field(default_factory=list)
     permissions: ResourcePermissions | None = None
 
-    version: int
     createdBy: str | None = None
     updatedBy: str | None = None
     createdAt: datetime

@@ -253,7 +253,6 @@ Create only stores the federation definition. It does not trigger a sync job.
   },
   "lastSync": null,
   "recentJobs": [],
-  "version": 1,
   "createdBy": "user_demo_id",
   "updatedBy": "user_demo_id",
   "createdAt": "2026-03-26T07:20:00Z",

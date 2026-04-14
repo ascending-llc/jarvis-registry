@@ -247,7 +247,6 @@ async def _to_detail_response(
         lastSync=_to_last_sync_response(getattr(federation, "lastSync", None)),
         recentJobs=[_to_job_response(j) for j in recent_jobs],
         permissions=permissions,
-        version=federation.version,
         createdBy=federation.createdBy,
         updatedBy=federation.updatedBy,
         createdAt=federation.createdAt,
