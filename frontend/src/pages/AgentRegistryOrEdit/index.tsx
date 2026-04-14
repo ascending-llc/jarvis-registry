@@ -75,7 +75,7 @@ const AgentRegistryOrEdit: React.FC = () => {
         description: result.config?.description || result.description,
         type: result.config?.type || '',
         path: result.path,
-        url: result.url || '',
+        url: result.config?.url || result.url || '',
         trustAgent: true,
       };
       setAgentDetail(result);
