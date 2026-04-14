@@ -1,217 +1,112 @@
 # Quick Start Guide
 
-Get the MCP Gateway & Registry running in 5 minutes with this streamlined setup guide.
+Get the Jarvis Registry running in 5 minutes with this streamlined setup guide.
 
 ## What You'll Accomplish
 
 By the end of this guide, you'll have:
-- ✅ MCP Gateway & Registry running locally
-- ✅ Authentication configured with Amazon Cognito
-- ✅ AI coding assistant (VS Code) connected to the gateway
+
+- ✅ Jarvis Registry running locally
+- ✅ Authentication configured with Entra ID
 - ✅ Access to curated enterprise MCP tools
 
 ## Prerequisites
 
-- **Identity Provider**: Amazon Cognito or Keycloak (see [minimal setup](#amazon-cognito-minimal-setup) or [Keycloak Integration](keycloak-integration.md))
-- **Container Runtime**: One of:
-  - **Docker**: Docker and Docker Compose installed
-  - **Podman**: Podman and Podman Compose (rootless alternative, recommended for macOS)
+- **Identity Provider**: Microsoft Entra ID  or Keycloak (see [Entra ID setup](entra-id-setup.md) or [Keycloak Integration](keycloak-integration.md))
+- **Container Runtime**: Docker and Docker Compose installed
 - **Basic Command Line**: Comfort with terminal/command prompt
 
 ## Step 1: Clone and Configure
 
 ```bash
 # Clone the repository
-git clone https://github.com/agentic-community/mcp-gateway-registry.git
-cd mcp-gateway-registry
+git clone https://github.com/ascending-llc/jarvis-registry.git
+cd jarvis-registry
+
+# Verify you're in the right directory
+ls -la
+# Should see: docker-compose.yml, .env.example, README.md, etc.
 
 # Copy and edit environment configuration
 cp .env.example .env
 ```
 
+## Step 2: Configure Authentication Provider
+
 **Edit `.env` with your values:**
 ```bash
-# Required - Replace with your actual values
-COGNITO_USER_POOL_ID=us-east-1_XXXXXXXXX
-COGNITO_CLIENT_ID=your_cognito_client_id
-COGNITO_CLIENT_SECRET=your_cognito_client_secret
-AWS_REGION=us-east-1
-ADMIN_PASSWORD=your-secure-password
+# Set authentication provider to Microsoft Entra ID
+AUTH_PROVIDER=entra
 
-# Optional - Will be auto-generated if not provided
-SECRET_KEY=optional-secret-key-for-sessions
+ENTRA_TENANT_ID=your_tenant_id_here
+
+# Azure AD Application (Client) ID
+# Get this from Azure Portal > App Registrations > Your App > Overview > Application (client) ID
+# Format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+ENTRA_CLIENT_ID=your_application_client_id_here
+
+# Azure AD Client Secret
+# Get this from Azure Portal > App Registrations > Your App > Certificates & secrets > Client secrets
+# IMPORTANT: Copy the SECRET VALUE, not the Secret ID
+# Format: xxx~xxxxxxxxxxxxxxxxxxxxxxxxxxxx
+ENTRA_CLIENT_SECRET=your_client_secret_value_here
+
+# Enable Entra ID in OAuth2 providers (set to true when using Entra ID)
+ENTRA_ENABLED=true
 ```
 
-## Step 2: Generate Authentication
+## Step 3: Generate Secret Keys
+
+Use the interactive **[Generate Secrets](generate-secrets.md)** page to create your `SECRET_KEY`, `CREDS_KEY`, `JWT_PRIVATE_KEY`, and `JWT_PUBLIC_KEY` directly in the browser — no CLI required. Copy the `.env` output block and paste it into your `.env` file.
 
 ```bash
-# Configure OAuth credentials for client access
-cp credentials-provider/oauth/.env.example credentials-provider/oauth/.env
-
-# Edit with minimal configuration
-nano credentials-provider/oauth/.env
-```
-
-**Add to `credentials-provider/oauth/.env`:**
-```bash
-# Ingress authentication (required for client access)
-AWS_REGION=us-east-1
-INGRESS_OAUTH_USER_POOL_ID=us-east-1_XXXXXXXXX
-INGRESS_OAUTH_CLIENT_ID=your_cognito_client_id
-INGRESS_OAUTH_CLIENT_SECRET=your_cognito_client_secret
-```
-
-```bash
-# Generate authentication tokens and client configurations
-./credentials-provider/generate_creds.sh
-```
-
-## Step 3: Install Container Runtime
-
-**Choose Docker or Podman:**
-
-### Option A: Docker (Default)
-
-```bash
-# Install Docker (Ubuntu/Debian)
-sudo apt-get update
-sudo apt-get install -y docker.io docker-compose
-sudo usermod -a -G docker $USER
-newgrp docker
-
-# Verify installation
-docker --version
-docker compose version
-```
-
-### Option B: Podman (Rootless, macOS-friendly)
-
-```bash
-# macOS installation
-brew install podman-desktop
-# OR: brew install podman
-
-# Initialize Podman machine (macOS only)
-podman machine init --cpus 4 --memory 8192
-podman machine start
-
-# Linux installation
-sudo apt-get install -y podman podman-compose  # Ubuntu/Debian
-# OR: sudo dnf install -y podman podman-compose  # Fedora/RHEL
-
-# Verify installation
-podman --version
-podman compose version
+# Open .env file for editing
+vim .env
 ```
 
 ## Step 4: Deploy Services
 
-**With Docker:**
 ```bash
-./build_and_run.sh --prebuilt
-```
+# Start all services
+docker compose --profile full up -d
 
-**With Podman:**
-```bash
-./build_and_run.sh --prebuilt --podman
+# Open the registry UI
+open http://localhost:80
 ```
 
 ⏱️ **This takes about 2-3 minutes** - Container images will be pulled and services started.
 
 ## Step 5: Verify Installation
 
-**With Docker:**
 ```bash
 # Check all services are running
 docker compose ps
 
 # You should see services like:
-# - registry (port 7860)
 # - auth-server (port 8888)
-# - nginx (ports 80/443)
-# - Various MCP servers (ports 8000-8003)
-```
-
-**With Podman:**
-```bash
-# Check all services are running
-podman compose ps
-
-# Same services, but nginx accessible on ports 8080/8443
+# - grafana (port 3000)
+# - otel-collector (ports 4317, 4318, 8889)
+# - prometheus (port 9090)
+# - registry (port 7860)
+# - registry-frontend (ports 80/443)
+# - weaviate (ports 8099, 50051)
+# - mongodb (port 27017)
+# - redis (port 6379)
 ```
 
 **Access the web interface:**
 
-**Docker:**
 ```bash
 # Open in browser
-open http://localhost:7860
-# Main interface: http://localhost
+open http://localhost:80
 ```
 
-**Podman:**
-```bash
-# Open in browser
-open http://localhost:7860
-# Main interface (note port 8080): http://localhost:8080
-```
+Use your Entra ID to login 
 
-**Port Reference:**
-
-| Service | Docker | Podman |
-|---------|--------|--------|
-| Main UI | `http://localhost` | `http://localhost:8080` |
-| Registry API | `http://localhost:7860` | `http://localhost:7860` |
-| All others | Same ports | Same ports |
-
-**Login options:**
-- **Username**: `admin` (or your `ADMIN_USER` value)
-- **Password**: Your `ADMIN_PASSWORD` value
-
-## Step 6: Connect AI Coding Assistant
-
-### VS Code Setup (Recommended for first test)
-
-```bash
-# Copy generated VS Code configuration
-cp .oauth-tokens/vscode-mcp.json ~/.vscode/settings.json
-
-# If you have existing settings, merge instead:
-cat .oauth-tokens/vscode-mcp.json >> ~/.vscode/settings.json
-```
-
-### Test the Connection
-
-1. **Open VS Code** with MCP extension installed
-2. **Open Command Palette** (`Ctrl+Shift+P` or `Cmd+Shift+P`)
-3. **Run MCP command** - you should see available MCP servers
-4. **Try a tool** - test with "current time" tool
-
-### Alternative: Roo Code Setup
-
-```bash
-# For Roo Code users
-cp .oauth-tokens/mcp.json ~/.vscode/mcp-settings.json
-```
-
-## Step 7: Test Everything Works
-
-```bash
-# Test gateway connectivity
-cd tests
-./mcp_cmds.sh ping
-
-# Should return successful ping response
-
-# Test specific tool
-./mcp_cmds.sh call currenttime current_time_by_timezone '{"tz_name": "America/New_York"}'
-```
-
-**Expected result:** Current time in New York timezone
 
 ## 🎉 Success! What's Next?
 
-You now have a fully functional MCP Gateway & Registry! Here are your next steps:
+You now have a fully functional Jarvis Registry! Here are your next steps:
 
 ### Immediate Next Steps
 - 🔍 **Explore the Web Interface** - Browse available MCP servers and tools
@@ -228,55 +123,6 @@ You now have a fully functional MCP Gateway & Registry! Here are your next steps
 - 📊 **[Monitoring & Analytics](monitoring.md)** - Usage tracking and health monitoring
 - 🏢 **[Production Deployment](production-deployment.md)** - High availability and scaling
 
-## Amazon Cognito Minimal Setup
-
-If you don't have Amazon Cognito configured yet, here's the minimal setup:
-
-### 1. Create User Pool
-
-```bash
-# Using AWS CLI
-aws cognito-idp create-user-pool \
-  --pool-name mcp-gateway-users \
-  --policies PasswordPolicy='{MinimumLength=8,RequireUppercase=false,RequireLowercase=false,RequireNumbers=false,RequireSymbols=false}' \
-  --region us-east-1
-```
-
-### 2. Create User Pool Client
-
-```bash
-# Create app client
-aws cognito-idp create-user-pool-client \
-  --user-pool-id us-east-1_XXXXXXXXX \
-  --client-name mcp-gateway-client \
-  --generate-secret \
-  --explicit-auth-flows ADMIN_NO_SRP_AUTH CLIENT_CREDENTIALS \
-  --supported-identity-providers COGNITO \
-  --region us-east-1
-```
-
-### 3. Create Test User
-
-```bash
-# Create admin user
-aws cognito-idp admin-create-user \
-  --user-pool-id us-east-1_XXXXXXXXX \
-  --username admin \
-  --temporary-password TempPass123! \
-  --message-action SUPPRESS \
-  --region us-east-1
-
-# Set permanent password
-aws cognito-idp admin-set-user-password \
-  --user-pool-id us-east-1_XXXXXXXXX \
-  --username admin \
-  --password YourSecurePassword123! \
-  --permanent \
-  --region us-east-1
-```
-
-**For complete Cognito setup:** See [Amazon Cognito Setup Guide](cognito.md)
-
 ## Troubleshooting Quick Fixes
 
 ### Services Won't Start
@@ -289,15 +135,6 @@ sudo systemctl start docker
 sudo netstat -tlnp | grep -E ':(80|443|7860|8080)'
 ```
 
-### Authentication Errors
-```bash
-# Verify Cognito configuration
-aws cognito-idp describe-user-pool --user-pool-id YOUR_POOL_ID
-
-# Regenerate credentials
-./credentials-provider/generate_creds.sh
-```
-
 ### Can't Access Web Interface
 ```bash
 # Check if registry is running
@@ -305,16 +142,6 @@ curl http://localhost:7860/health
 
 # Check logs
 docker-compose logs registry
-```
-
-### AI Assistant Not Connecting
-```bash
-# Verify configuration file exists
-ls -la ~/.vscode/settings.json
-
-# Test authentication manually
-curl -H "Authorization: Bearer $(cat .oauth-tokens/ingress.json | jq -r .access_token)" \
-  http://localhost/mcpgw/sse
 ```
 
 ## Getting Help

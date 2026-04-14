@@ -104,6 +104,7 @@ nav:
   - Why use Registry: FEATURES.md
   - Get Started:
     - Quick Start: quick-start.md
+    - Generate Secrets: generate-secrets.md
     - Installation: installation.md
     - Configuration: configuration.md
   - Authentication:

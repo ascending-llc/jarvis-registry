@@ -50,11 +50,15 @@ cd jarvis-registry
 cp .env.example .env
 # Edit .env with your identity provider credentials
 
+# Setup Python Virtual Environment
+uv sync --all-packages
+source .venv/bin/activate
+
 # Start all services
-docker-compose up -d
+docker compose --profile full up -d
 
 # Open the registry UI
-open http://localhost:7860
+open http://localhost:80
 ```
 
 See the full [Get Started guide](docs/quick-start.md) for detailed instructions.
