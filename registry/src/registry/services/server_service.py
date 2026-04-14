@@ -21,7 +21,7 @@ from beanie import PydanticObjectId
 
 from registry_pkgs.database.decorators import get_current_session
 from registry_pkgs.models import (
-    ExtendedMCPServerDocument,
+    ExtendedMCPServer,
     Token,
 )
 from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRepository
@@ -49,7 +49,7 @@ from .user_service import UserService
 logger = logging.getLogger(__name__)
 
 
-def _extract_config_field(server: ExtendedMCPServerDocument, field: str, default: Any = None) -> Any:
+def _extract_config_field(server: ExtendedMCPServer, field: str, default: Any = None) -> Any:
     """Extract a field from server.config with fallback to default"""
     if not server or not server.config:
         return default
@@ -84,7 +84,7 @@ def _build_server_info_for_mcp_client(config: dict[str, Any], tags: list[str]) -
 
 async def build_complete_headers_for_server(
     oauth_service: MCPOAuthService,
-    server: ExtendedMCPServerDocument,
+    server: ExtendedMCPServer,
     user_id: str | None = None,
     *,
     state_metadata: StateMetadata | None = None,
@@ -550,7 +550,7 @@ class ServerServiceV1:
         per_page: int = 20,
         user_id: str | None = None,
         accessible_server_ids: list[str] | None = None,
-    ) -> tuple[list[ExtendedMCPServerDocument], int]:
+    ) -> tuple[list[ExtendedMCPServer], int]:
         """
         List servers with filtering and pagination.
 
@@ -601,13 +601,9 @@ class ServerServiceV1:
             query_filter = {}
 
         # Execute query with pagination
-        total = await ExtendedMCPServerDocument.find(query_filter).count()
+        total = await ExtendedMCPServer.find(query_filter).count()
         servers = (
-            await ExtendedMCPServerDocument.find(query_filter)
-            .sort([("createdAt", -1)])
-            .skip(skip)
-            .limit(per_page)
-            .to_list()
+            await ExtendedMCPServer.find(query_filter).sort([("createdAt", -1)]).skip(skip).limit(per_page).to_list()
         )
         return servers, total
 
@@ -615,7 +611,7 @@ class ServerServiceV1:
         self,
         server_id: str,
         user_id: str | None = None,
-    ) -> ExtendedMCPServerDocument | None:
+    ) -> ExtendedMCPServer | None:
         """
         Get a server by its ID.
 
@@ -633,11 +629,11 @@ class ServerServiceV1:
             logger.warning(f"Invalid server ID format: {server_id}")
             return None
 
-        server = await ExtendedMCPServerDocument.get(obj_id)
+        server = await ExtendedMCPServer.get(obj_id)
 
         return server
 
-    async def get_server_by_path(self, path: str) -> ExtendedMCPServerDocument | None:
+    async def get_server_by_path(self, path: str) -> ExtendedMCPServer | None:
         """
         Get a server by its path.
 
@@ -647,14 +643,14 @@ class ServerServiceV1:
         Returns:
             Server document or None if not found
         """
-        return await ExtendedMCPServerDocument.find_one({"path": path})
+        return await ExtendedMCPServer.find_one({"path": path})
 
     async def create_server(
         self,
         data: ServerCreateRequest,
         user_id: str,
         skip_post_registration_checks: bool = False,
-    ) -> ExtendedMCPServerDocument:
+    ) -> ExtendedMCPServer:
         """
         Create a new server.
 
@@ -671,7 +667,7 @@ class ServerServiceV1:
         session = get_current_session()
         # Check if path+url combination already exists
         # Only reject if BOTH path AND url are the same (to allow same path for different services)
-        existing_servers = await ExtendedMCPServerDocument.find({"path": data.path}, session=session).to_list()
+        existing_servers = await ExtendedMCPServer.find({"path": data.path}, session=session).to_list()
         for existing in existing_servers:
             existing_url = existing.config.get("url") if existing.config else None
             if existing_url == data.url:
@@ -679,7 +675,7 @@ class ServerServiceV1:
 
         # Check if serverName already exists
         server_name = generate_server_name_from_title(data.title)
-        existing_name = await ExtendedMCPServerDocument.find_one({"serverName": server_name}, session=session)
+        existing_name = await ExtendedMCPServer.find_one({"serverName": server_name}, session=session)
         if existing_name:
             raise ValueError(f"Server with name '{server_name}' already exists")
 
@@ -706,7 +702,7 @@ class ServerServiceV1:
 
         # Create server document with registry fields at root level
         now = _get_current_utc_time()
-        server = ExtendedMCPServerDocument(
+        server = ExtendedMCPServer(
             serverName=server_name,
             config=config,
             author=author.id,  # Use PydanticObjectId instead of Link
@@ -852,7 +848,7 @@ class ServerServiceV1:
         server_id: str,
         data: ServerUpdateRequest,
         user_id: str | None = None,
-    ) -> ExtendedMCPServerDocument:
+    ) -> ExtendedMCPServer:
         """
         Update a server.
 
@@ -949,7 +945,7 @@ class ServerServiceV1:
             raise ValueError("Server not found")
 
         session = get_current_session()
-        server = await ExtendedMCPServerDocument.get(obj_id, session=session)
+        server = await ExtendedMCPServer.get(obj_id, session=session)
 
         if not server:
             raise ValueError("Server not found")
@@ -962,7 +958,7 @@ class ServerServiceV1:
 
     async def _fetch_and_update_tools(
         self,
-        server: ExtendedMCPServerDocument,
+        server: ExtendedMCPServer,
         user_id: str | None = None,
     ) -> bool:
         """
@@ -1022,7 +1018,7 @@ class ServerServiceV1:
         server_id: str,
         enabled: bool,
         user_id: str | None = None,
-    ) -> ExtendedMCPServerDocument:
+    ) -> ExtendedMCPServer:
         """
         Toggle server enabled/disabled status.
         When enabling, fetch tools and sync to vector DB (upsert).
@@ -1070,7 +1066,7 @@ class ServerServiceV1:
         self,
         server_id: str,
         user_id: str | None = None,
-    ) -> tuple[ExtendedMCPServerDocument, dict[str, Any]]:
+    ) -> tuple[ExtendedMCPServer, dict[str, Any]]:
         """
         Get server tools in toolFunctions format.
 
@@ -1095,7 +1091,7 @@ class ServerServiceV1:
     @track_tool_discovery
     async def retrieve_from_server(
         self,
-        server: ExtendedMCPServerDocument,
+        server: ExtendedMCPServer,
         include_capabilities: bool = True,
         include_resources: bool = True,
         include_prompts: bool = True,
@@ -1227,7 +1223,7 @@ class ServerServiceV1:
 
     async def retrieve_tools_with_oauth(
         self,
-        server: ExtendedMCPServerDocument,
+        server: ExtendedMCPServer,
         user_id: str,
     ) -> tuple[list[dict[str, Any]] | None, str | None]:
         """
@@ -1332,7 +1328,7 @@ class ServerServiceV1:
 
     async def retrieve_tools_and_capabilities_from_server(
         self,
-        server: ExtendedMCPServerDocument,
+        server: ExtendedMCPServer,
         user_id: str | None = None,
     ) -> tuple[
         list[dict[str, Any]] | None,
@@ -1519,7 +1515,7 @@ class ServerServiceV1:
             ]
 
             # Use Beanie's aggregate method directly
-            server_results = await ExtendedMCPServerDocument.aggregate(server_pipeline).to_list()
+            server_results = await ExtendedMCPServer.aggregate(server_pipeline).to_list()
 
             if server_results and len(server_results) > 0:
                 result = server_results[0]
@@ -1653,7 +1649,7 @@ class ServerServiceV1:
 
         return stats
 
-    async def get_server_config(self, server_id: str) -> ExtendedMCPServerDocument | None:
+    async def get_server_config(self, server_id: str) -> ExtendedMCPServer | None:
         """
         Get service config for a specific MCP server
         """

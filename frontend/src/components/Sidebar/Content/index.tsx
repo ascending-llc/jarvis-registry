@@ -16,13 +16,15 @@ import { useServer } from '@/contexts/ServerContext';
 const Content: React.FC<any> = ({ setSidebarOpen }) => {
   const location = useLocation();
   const { user } = useAuth();
-  const { stats, agentStats, viewMode, activeFilter, setActiveFilter } = useServer();
+  const { stats, agentStats, federationStats, viewMode, activeFilter, setActiveFilter } = useServer();
 
   const [showScopes, setShowScopes] = useState(false);
 
   const isTokenPage = location.pathname === '/generate-token';
   const isServerRegistryOrEditPage = location.pathname === '/server-registry' || location.pathname === '/server-edit';
   const isAgentRegistryOrEditPage = location.pathname === '/agent-registry' || location.pathname === '/agent-edit';
+  const isFederationRegistryOrEditPage =
+    location.pathname === '/federation-registry' || location.pathname === '/federation-edit';
 
   /** List of filters available for token generation */
   const filters = [
@@ -50,7 +52,7 @@ const Content: React.FC<any> = ({ setSidebarOpen }) => {
   return (
     <div className='flex h-full flex-col'>
       {/* Conditional Content */}
-      {isServerRegistryOrEditPage || isAgentRegistryOrEditPage ? (
+      {isServerRegistryOrEditPage || isAgentRegistryOrEditPage || isFederationRegistryOrEditPage ? (
         <div className='flex-1 p-4 md:p-6'>
           {/* Navigation Links */}
           <div className='space-y-2 mb-6'>
@@ -61,7 +63,7 @@ const Content: React.FC<any> = ({ setSidebarOpen }) => {
               tabIndex={0}
             >
               <ArrowLeftIcon className='h-4 w-4' />
-              <span>{isAgentRegistryOrEditPage ? 'Back to Dashboard' : 'Back to MCP'}</span>
+              <span>{isServerRegistryOrEditPage ? 'Back to MCP' : 'Back to Dashboard'}</span>
             </Link>
           </div>
         </div>
@@ -200,8 +202,10 @@ const Content: React.FC<any> = ({ setSidebarOpen }) => {
                 let count = 0;
                 if (viewMode === 'servers') {
                   count = stats[filter.count as keyof typeof stats];
-                } else {
+                } else if (viewMode === 'agents') {
                   count = agentStats[filter.count as keyof typeof agentStats];
+                } else if (viewMode === 'external' && federationStats) {
+                  count = federationStats[filter.count as keyof typeof federationStats] || 0;
                 }
 
                 return (

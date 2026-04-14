@@ -1,4 +1,4 @@
-import asyncio
+import json
 import logging
 from datetime import UTC, datetime
 from typing import Any
@@ -6,9 +6,11 @@ from urllib.parse import quote
 
 from beanie import PydanticObjectId
 
-from registry_pkgs.models import A2AAgent, ExtendedMCPServerDocument
+from registry_pkgs.models import A2AAgent, ExtendedMCPServer
+from registry_pkgs.models.a2a_agent import AgentConfig
 
 from .agentcore_clients import AgentCoreClientProvider
+from .agentcore_runtime_auth import AgentCoreRuntimeAuthService
 
 logger = logging.getLogger(__name__)
 
@@ -54,12 +56,24 @@ class AgentCoreFederationClient:
         - This is a single-region scan, not a multi-region crawl.
         - If resource_tags_filter is provided, only runtimes whose AWS resource
           tags fully match the filter are imported.
+
+        Important boundary:
+        - Discovery is read-only. It must never mutate Mongo state, because the
+          same code path is reused by dry-run preview flows.
+        - Persisted type reconciliation (for example a runtime switching between
+          MCP and A2A) is handled later by the sync apply phase.
         """
-        control_client = await self.client_provider.get_control_client(region, assume_role_arn)
         normalized_tag_filter = dict(resource_tags_filter or {})
 
         try:
-            runtime_summaries = await asyncio.to_thread(self._list_runtime_summaries, control_client)
+            control_client, runtime_summaries = await self.client_provider.execute_with_control_client(
+                region,
+                lambda control_client: (
+                    control_client,
+                    self._list_runtime_summaries(control_client),
+                ),
+                assume_role_arn,
+            )
         except Exception as exc:
             logger.error("Failed to list AgentCore runtimes in %s: %s", region, exc, exc_info=True)
             raise RuntimeError(f"Failed to list AgentCore runtimes in {region}: {exc}") from exc
@@ -75,7 +89,14 @@ class AgentCoreFederationClient:
                 continue
             selected_summaries.append(summary)
 
-        runtime_details = await asyncio.to_thread(self._get_runtime_details, control_client, selected_summaries)
+        control_client, runtime_details = await self.client_provider.execute_with_control_client(
+            region,
+            lambda control_client: (
+                control_client,
+                self._get_runtime_details(control_client, selected_summaries),
+            ),
+            assume_role_arn,
+        )
         runtime_details = [self._normalize_runtime_detail(detail) for detail in runtime_details]
         total_candidates = len(runtime_details)
         filtered_out_count = 0
@@ -87,12 +108,19 @@ class AgentCoreFederationClient:
                 normalized_tag_filter,
                 total_candidates,
             )
-            runtime_details, filtered_runtimes = await asyncio.to_thread(
-                self._filter_runtime_details_by_tags,
-                control_client,
-                runtime_details,
-                normalized_tag_filter,
+            control_client, filtered = await self.client_provider.execute_with_control_client(
+                region,
+                lambda control_client: (
+                    control_client,
+                    self._filter_runtime_details_by_tags(
+                        control_client,
+                        runtime_details,
+                        normalized_tag_filter,
+                    ),
+                ),
+                assume_role_arn,
             )
+            runtime_details, filtered_runtimes = filtered
             filtered_out_count = len(filtered_runtimes)
         else:
             filtered_runtimes = []
@@ -106,7 +134,7 @@ class AgentCoreFederationClient:
         )
 
         a2a_agents: list[A2AAgent] = []
-        mcp_servers: list[ExtendedMCPServerDocument] = []
+        mcp_servers: list[ExtendedMCPServer] = []
         skipped_runtimes: list[dict[str, Any]] = list(filtered_runtimes)
         logger.debug(f"runtime_details: {runtime_details}")
         for runtime_detail in runtime_details:
@@ -116,13 +144,11 @@ class AgentCoreFederationClient:
             protocol = self._extract_runtime_protocol(runtime_detail)
 
             if protocol == "A2A":
-                await self._reconcile_runtime_type(runtime_arn=runtime_arn, target_type="a2a")
                 a2a_agent = self._transform_runtime_to_a2a_agent(runtime_detail, region, author_id)
                 a2a_agents.append(a2a_agent)
                 continue
 
             if protocol == "MCP":
-                await self._reconcile_runtime_type(runtime_arn=runtime_arn, target_type="mcp")
                 mcp_server = self._transform_runtime_to_mcp_server(runtime_detail, region, author_id)
                 mcp_servers.append(mcp_server)
                 continue
@@ -262,10 +288,28 @@ class AgentCoreFederationClient:
         }
 
         status = runtime_detail.get("status", "READY")
+        runtime_access = AgentCoreRuntimeAuthService.infer_runtime_access(
+            metadata={"authorizerConfiguration": runtime_detail.get("authorizerConfiguration")},
+            runtime_detail=runtime_detail,
+        )
+        logger.info(
+            "AgentCore discovered A2A runtime auth: runtime_arn=%s runtime_name=%s inferred_mode=%s authorizer_configuration=%s protocol_configuration=%s",
+            runtime_arn,
+            runtime_name,
+            runtime_access.mode.value if hasattr(runtime_access.mode, "value") else str(runtime_access.mode),
+            json.dumps(runtime_detail.get("authorizerConfiguration"), ensure_ascii=False, sort_keys=True, default=str),
+            json.dumps(runtime_detail.get("protocolConfiguration"), ensure_ascii=False, sort_keys=True, default=str),
+        )
         return A2AAgent.from_a2a_agent_card(
             card_data=card_data,
             path=f"/agentcore/a2a/{self._slug(runtime_name)}",
             author=author_id or PydanticObjectId(),
+            config=AgentConfig(
+                title=runtime_name,
+                description=runtime_detail.get("description", f"AgentCore runtime {runtime_name}"),
+                type="http_json",
+                runtimeAccess=runtime_access,
+            ),
             isEnabled=status == "READY",
             status="active" if status == "READY" else "inactive",
             tags=["agentcore", "a2a", "aws", "federated"],
@@ -300,7 +344,7 @@ class AgentCoreFederationClient:
         runtime_detail: dict[str, Any],
         region: str,
         author_id: PydanticObjectId | None = None,
-    ) -> ExtendedMCPServerDocument:
+    ) -> ExtendedMCPServer:
         runtime_arn = runtime_detail["runtimeArn"]
         runtime_id = runtime_detail["agentRuntimeId"]
         runtime_name = runtime_detail["agentRuntimeName"]
@@ -309,6 +353,18 @@ class AgentCoreFederationClient:
             f"{self._build_runtime_invocation_url(runtime_arn=runtime_arn, region=region)}?qualifier=DEFAULT"
         )
         status = runtime_detail.get("status", "READY")
+        runtime_access = AgentCoreRuntimeAuthService.infer_runtime_access(
+            metadata={"authorizerConfiguration": runtime_detail.get("authorizerConfiguration")},
+            runtime_detail=runtime_detail,
+        )
+        logger.info(
+            "AgentCore discovered MCP runtime auth: runtime_arn=%s runtime_name=%s inferred_mode=%s authorizer_configuration=%s protocol_configuration=%s",
+            runtime_arn,
+            runtime_name,
+            runtime_access.mode.value if hasattr(runtime_access.mode, "value") else str(runtime_access.mode),
+            json.dumps(runtime_detail.get("authorizerConfiguration"), ensure_ascii=False, sort_keys=True, default=str),
+            json.dumps(runtime_detail.get("protocolConfiguration"), ensure_ascii=False, sort_keys=True, default=str),
+        )
 
         server_info = {
             "server_name": runtime_name,
@@ -321,6 +377,7 @@ class AgentCoreFederationClient:
                 "url": runtime_mcp_url,
                 "requiresOAuth": False,
                 "authProvider": "bedrock-agentcore",
+                "runtimeAccess": runtime_access.model_dump(mode="json", exclude_none=True),
             },
             "author": author_id or PydanticObjectId(),
             "federationMetadata": {
@@ -338,7 +395,7 @@ class AgentCoreFederationClient:
                 "runtimeTags": runtime_detail.get("tags", {}),
             },
         }
-        return ExtendedMCPServerDocument.from_server_info(server_info=server_info, is_enabled=status == "READY")
+        return ExtendedMCPServer.from_server_info(server_info=server_info, is_enabled=status == "READY")
 
     @staticmethod
     def _map_agentcore_status_to_registry_status(agentcore_status: str | None) -> str:
@@ -353,29 +410,12 @@ class AgentCoreFederationClient:
         config = runtime_detail.get("protocolConfiguration") or {}
         return str(config.get("serverProtocol", "")).upper()
 
-    async def _reconcile_runtime_type(self, runtime_arn: str, target_type: str) -> None:
-        if target_type == "a2a":
-            existing_mcp = await ExtendedMCPServerDocument.find_one({"federationMetadata.runtimeArn": runtime_arn})
-            if existing_mcp:
-                logger.info(
-                    "Runtime type changed to A2A, deleting previous MCP server model for runtimeArn=%s",
-                    runtime_arn,
-                )
-                await existing_mcp.delete()
-            return
-
-        if target_type == "mcp":
-            existing_a2a = await A2AAgent.find_one({"federationMetadata.runtimeArn": runtime_arn})
-            if existing_a2a:
-                logger.info(
-                    "Runtime type changed to MCP, deleting previous A2A agent model for runtimeArn=%s",
-                    runtime_arn,
-                )
-                await existing_a2a.delete()
-
-    def extract_region_from_arn(self, arn: str, fallback: str = "us-east-1") -> str:
+    @staticmethod
+    def extract_region_from_arn(arn: str) -> str:
         parts = arn.split(":")
-        return parts[3] if len(parts) > 3 and parts[3] else fallback
+        if len(parts) < 6 or parts[0] != "arn" or not parts[2] or not parts[3]:
+            raise ValueError(f"Invalid AgentCore runtime ARN: {arn!r}")
+        return parts[3]
 
     def _slug(self, value: str) -> str:
         cleaned = value.strip().lower().replace(" ", "-").replace("_", "-")

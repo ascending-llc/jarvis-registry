@@ -260,6 +260,18 @@ class A2AAgentService:
             logger.error(f"Error getting agent {agent_id}: {e}", exc_info=True)
             raise
 
+    async def get_agent_by_path(self, path: str) -> A2AAgent | None:
+        """
+        Get agent by registry path.
+
+        Args:
+            path: Registry path (e.g., /deep-intel)
+
+        Returns:
+            Agent document, or None if not found
+        """
+        return await A2AAgent.find_one({"path": path})
+
     async def create_agent(self, data: AgentCreateRequest, user_id: str) -> A2AAgent:
         """
         Create a new agent. Automatically fetches agent card from provided URL.
@@ -299,6 +311,7 @@ class A2AAgentService:
             agent_config = AgentConfig(
                 title=data.title,
                 description=data.description or "",
+                url=str(data.url),  # Store user-provided URL in config
                 type=data.type,
             )
 
@@ -306,7 +319,7 @@ class A2AAgentService:
             agent = A2AAgent(
                 path=data.path,
                 card=agent_card,  # Original, unmodified card from third-party
-                config=agent_config,  # User-provided configuration
+                config=agent_config,  # User-provided configuration including URL
                 tags=[],  # Initialize as empty list - tags are registry metadata, not derived from skills
                 isEnabled=False,  # Default to disabled for safety
                 status=STATUS_ACTIVE,
@@ -315,10 +328,9 @@ class A2AAgentService:
                 registeredAt=datetime.now(UTC),
             )
 
-            # Configure wellKnown for future syncs
+            # Configure wellKnown for future syncs (URL is now in config.url)
             agent.wellKnown = WellKnownConfig(
                 enabled=True,
-                url=str(data.url),
                 lastSyncAt=datetime.now(UTC),
                 lastSyncStatus="success",
                 lastSyncVersion=agent_card.version,
@@ -369,41 +381,76 @@ class A2AAgentService:
                     )
 
             # If URL is being updated, fetch new agent card
+            # Only fetch if URL actually changed (compare with config.url to avoid unnecessary fetches)
             if "url" in update_data and update_data["url"]:
                 new_url = str(update_data["url"])
-                logger.info(f"URL changed, fetching new agent card from {new_url}")
+                current_url = str(agent.config.url) if agent.config and agent.config.url else None
 
-                # Fetch new agent card from URL - KEEP ORIGINAL DATA
-                agent_card = await self._fetch_agent_card_from_url(new_url)
+                # Normalize URLs for comparison (remove trailing slashes)
+                new_url_normalized = new_url.rstrip("/")
+                current_url_normalized = current_url.rstrip("/") if current_url else None
 
-                # DO NOT modify the agent_card - store it as-is
-                agent.card = agent_card
+                if new_url_normalized != current_url_normalized:
+                    logger.info(f"URL changed from {current_url} to {new_url}, fetching new agent card")
 
-                # Update wellKnown configuration
-                from registry_pkgs.models.a2a_agent import WellKnownConfig
+                    # Fetch new agent card from URL - KEEP ORIGINAL DATA
+                    agent_card = await self._fetch_agent_card_from_url(new_url)
 
-                if not agent.wellKnown:
-                    agent.wellKnown = WellKnownConfig(
-                        enabled=True,
-                        url=new_url,
-                    )
+                    # DO NOT modify the agent_card - store it as-is
+                    agent.card = agent_card
+
+                    # Update config.url with user-provided URL
+                    # Ensure config exists for backward compatibility with old data
+                    if not agent.config:
+                        from registry_pkgs.models.a2a_agent import AgentConfig
+
+                        agent.config = AgentConfig(
+                            title=agent.card.name,
+                            description=agent.card.description,
+                            url=new_url,
+                            type="jsonrpc",  # Default type
+                        )
+                    else:
+                        agent.config.url = new_url
+
+                    # Update wellKnown sync status (URL is in config.url now)
+                    from registry_pkgs.models.a2a_agent import WellKnownConfig
+
+                    if not agent.wellKnown:
+                        agent.wellKnown = WellKnownConfig(
+                            enabled=True,
+                            lastSyncAt=datetime.now(UTC),
+                            lastSyncStatus="success",
+                            lastSyncVersion=agent_card.version,
+                        )
+                    else:
+                        agent.wellKnown.enabled = True
+                        agent.wellKnown.lastSyncAt = datetime.now(UTC)
+                        agent.wellKnown.lastSyncStatus = "success"
+                        agent.wellKnown.lastSyncVersion = agent_card.version
                 else:
-                    agent.wellKnown.url = new_url
-                    agent.wellKnown.enabled = True
-
-                agent.wellKnown.lastSyncAt = datetime.now(UTC)
-                agent.wellKnown.lastSyncStatus = "success"
-                agent.wellKnown.lastSyncVersion = agent.card.version
+                    logger.debug(f"URL unchanged ({new_url}), skipping agent card fetch")
 
             # Update config fields (title, description, type)
             # These are stored separately in the config field
             if "title" in update_data or "description" in update_data or "type" in update_data:
-                if "title" in update_data:
-                    agent.config.title = update_data["title"]
-                if "description" in update_data:
-                    agent.config.description = update_data["description"]
-                if "type" in update_data:
-                    agent.config.type = update_data["type"]
+                # Ensure config exists for backward compatibility with old data
+                if not agent.config:
+                    from registry_pkgs.models.a2a_agent import AgentConfig
+
+                    agent.config = AgentConfig(
+                        title=update_data.get("title", agent.card.name),
+                        description=update_data.get("description", agent.card.description),
+                        url=str(agent.card.url) if agent.card.url else None,
+                        type=update_data.get("type", "jsonrpc"),
+                    )
+                else:
+                    if "title" in update_data:
+                        agent.config.title = update_data["title"]
+                    if "description" in update_data:
+                        agent.config.description = update_data["description"]
+                    if "type" in update_data:
+                        agent.config.type = update_data["type"]
 
             # Update path if provided
             if "path" in update_data:
@@ -515,12 +562,20 @@ class A2AAgentService:
             if not agent.wellKnown or not agent.wellKnown.enabled:
                 raise ValueError("Well-known sync is not enabled for this agent")
 
-            if not agent.wellKnown.url:
-                raise ValueError("Well-known URL is not configured")
+            # URL comes from config.url (user-provided), fallback to card.url for backward compatibility
+            if agent.config and agent.config.url:
+                agent_url = str(agent.config.url)
+            elif agent.card and agent.card.url:
+                agent_url = str(agent.card.url)
+                logger.warning(
+                    f"Agent {agent_id} missing config.url, falling back to card.url. Consider updating the agent."
+                )
+            else:
+                raise ValueError("Agent URL is not configured")
 
             # Use shared fallback helper for deterministic exception semantics.
-            logger.info(f"Fetching agent card from {agent.wellKnown.url} using SDK")
-            base_url = str(agent.wellKnown.url).rsplit("/.well-known", 1)[0]
+            logger.info(f"Fetching agent card from {agent_url} using SDK")
+            base_url = agent_url.rsplit("/.well-known", 1)[0]
             updated_card = await self._resolve_agent_card_with_fallback(base_url=base_url, timeout_seconds=10.0)
 
             # Track changes

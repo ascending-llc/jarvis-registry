@@ -355,3 +355,7 @@ image-manifest.json
 # Folders for Claude specs and plans
 /.spec
 /.plan
+
+# Artifacts produced by Playwright for frontend test
+/.playwright-cli
+/.playwright

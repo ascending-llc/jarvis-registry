@@ -23,6 +23,7 @@ class AgentConfigOutput(APIBaseModel):
 
     title: str
     description: str
+    url: str | None = None
     type: str
 
 
@@ -65,10 +66,9 @@ class AgentProviderOutput(APIBaseModel):
 
 
 class WellKnownInfo(APIBaseModel):
-    """Well-known configuration info"""
+    """Well-known configuration info - URL is in config field"""
 
     enabled: bool
-    url: str | None = None
     lastSyncAt: datetime | None = None
     lastSyncStatus: str | None = None
     lastSyncVersion: str | None = None
@@ -224,11 +224,13 @@ def _convert_agent_config(agent: Any) -> AgentConfigOutput:
         return AgentConfigOutput(
             title=agent.card.name,
             description=agent.card.description,
+            url=str(agent.card.url) if agent.card.url else None,
             type="unknown",
         )
     return AgentConfigOutput(
         title=agent.config.title,
         description=agent.config.description,
+        url=str(agent.config.url) if agent.config.url else (str(agent.card.url) if agent.card.url else None),
         type=agent.config.type,
     )
 
@@ -316,9 +318,9 @@ def convert_to_detail(agent: Any, acl_permission: int | ResourcePermissions) -> 
 
     well_known_info = None
     if agent.wellKnown:
+        # URL is now returned in config field, not wellKnown
         well_known_info = WellKnownInfo(
             enabled=agent.wellKnown.enabled,
-            url=str(agent.wellKnown.url) if agent.wellKnown.url else None,
             lastSyncAt=agent.wellKnown.lastSyncAt,
             lastSyncStatus=agent.wellKnown.lastSyncStatus,
             lastSyncVersion=agent.wellKnown.lastSyncVersion,

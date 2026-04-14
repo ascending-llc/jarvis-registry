@@ -13,15 +13,15 @@ from pymongo import AsyncMongoClient
 from ..core.config import MongoConfig
 from ..models import (
     A2AAgent,
+    AccessRole,
     ExtendedAclEntry,
-    ExtendedMCPServerDocument,
+    ExtendedMCPServer,
     Federation,
     FederationSyncJob,
-    IAccessRole,
-    IGroup,
-    IUser,
+    Group,
     Key,
     Token,
+    User,
 )
 
 
@@ -91,22 +91,22 @@ class MongoDB:
             db = cls.client[db_name]
             # Pass the namespace containing all model classes so forward references can be resolved
             rebuild_namespace = {
-                "IUser": IUser,
-                "IAccessRole": IAccessRole,
-                "IGroup": IGroup,
+                "User": User,
+                "AccessRole": AccessRole,
+                "Group": Group,
                 "ExtendedAclEntry": ExtendedAclEntry,
-                "ExtendedMCPServerDocument": ExtendedMCPServerDocument,
+                "ExtendedMCPServer": ExtendedMCPServer,
                 "Token": Token,
                 "Key": Key,
                 "A2AAgent": A2AAgent,
                 "Federation": Federation,
                 "FederationSyncJob": FederationSyncJob,
             }
-            IUser.model_rebuild(_types_namespace=rebuild_namespace)
-            IAccessRole.model_rebuild(_types_namespace=rebuild_namespace)
-            IGroup.model_rebuild(_types_namespace=rebuild_namespace)
+            User.model_rebuild(_types_namespace=rebuild_namespace)
+            AccessRole.model_rebuild(_types_namespace=rebuild_namespace)
+            Group.model_rebuild(_types_namespace=rebuild_namespace)
             ExtendedAclEntry.model_rebuild(_types_namespace=rebuild_namespace)
-            ExtendedMCPServerDocument.model_rebuild(_types_namespace=rebuild_namespace)
+            ExtendedMCPServer.model_rebuild(_types_namespace=rebuild_namespace)
             Token.model_rebuild(_types_namespace=rebuild_namespace)
             Key.model_rebuild(_types_namespace=rebuild_namespace)
             A2AAgent.model_rebuild(_types_namespace=rebuild_namespace)
@@ -117,11 +117,11 @@ class MongoDB:
             await init_beanie(
                 database=db,
                 document_models=[
-                    IUser,
-                    IAccessRole,
-                    IGroup,
+                    User,
+                    AccessRole,
+                    Group,
                     ExtendedAclEntry,
-                    ExtendedMCPServerDocument,
+                    ExtendedMCPServer,
                     Token,
                     Key,
                     A2AAgent,

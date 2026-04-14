@@ -164,3 +164,36 @@ def test_validate_provider_config_requires_region_and_assume_role_for_aws():
         "assumeRoleArn": "arn:aws:iam::123456789012:role/test-role",
         "resourceTagsFilter": {},
     }
+
+
+def test_validate_provider_config_rejects_deprecated_federation_runtime_access():
+    service = FederationCrudService()
+
+    with pytest.raises(ValueError, match="providerConfig.runtimeAccess is no longer supported"):
+        service.validate_provider_config(
+            FederationProviderType.AWS_AGENTCORE,
+            {
+                "region": "us-east-1",
+                "assumeRoleArn": "arn:aws:iam::123456789012:role/test-role",
+                "runtimeAccess": {
+                    "mode": "jwt",
+                    "jwt": {
+                        "discoveryUrl": "https://issuer.example/.well-known/openid-configuration",
+                    },
+                },
+            },
+        )
+
+
+def test_normalize_provider_config_allows_empty_azure_config_for_create():
+    service = FederationCrudService()
+
+    with pytest.raises(ValueError, match="not implemented yet"):
+        service.normalize_provider_config(FederationProviderType.AZURE_AI_FOUNDRY, {})
+
+
+def test_validate_provider_config_rejects_azure_provider():
+    service = FederationCrudService()
+
+    with pytest.raises(ValueError, match="not implemented yet"):
+        service.validate_provider_config(FederationProviderType.AZURE_AI_FOUNDRY, {})

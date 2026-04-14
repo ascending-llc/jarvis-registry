@@ -8,7 +8,7 @@ from registry.schemas.enums import OAuthFlowStatus
 from registry.schemas.oauth_schema import OAuthTokens
 from registry.services.oauth.oauth_service import MCPOAuthService
 from registry.services.oauth.token_service import TokenService
-from registry_pkgs.models.extended_mcp_server import ExtendedMCPServerDocument
+from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 
 
 class TestMCPOAuthService:
@@ -37,8 +37,8 @@ class TestMCPOAuthService:
 
     @pytest.fixture
     def mock_server(self):
-        """Mock ExtendedMCPServerDocument"""
-        server = Mock(spec=ExtendedMCPServerDocument)
+        """Mock ExtendedMCPServer"""
+        server = Mock(spec=ExtendedMCPServer)
         server.id = ObjectId("507f1f77bcf86cd799439011")
         server.serverName = "test_server"
         server.path = "/test_server"
@@ -96,7 +96,7 @@ class TestMCPOAuthService:
         service.oauth_client = mock_oauth_client
 
         user_id = "test_user"
-        mock_server = Mock(spec=ExtendedMCPServerDocument)
+        mock_server = Mock(spec=ExtendedMCPServer)
         mock_server.id = ObjectId("507f1f77bcf86cd799439011")
         mock_server.serverName = "test_server"
         mock_server.path = "/test_server"
@@ -254,7 +254,7 @@ class TestMCPOAuthService:
     async def test_handle_reinitialize_auth_oauth_config_missing(self, oauth_service):
         """Test handle_reinitialize_auth when OAuth configuration is missing"""
         user_id = "test_user"
-        mock_server = Mock(spec=ExtendedMCPServerDocument)
+        mock_server = Mock(spec=ExtendedMCPServer)
         mock_server.id = ObjectId("507f1f77bcf86cd799439011")
         mock_server.serverName = "test_server"
         mock_server.config = {}  # No OAuth config

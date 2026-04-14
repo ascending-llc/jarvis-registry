@@ -1,15 +1,15 @@
-# Auto-Generated Models
+# Auto-Generated Beanie Models
 
 ⚠️  **DO NOT EDIT FILES IN THIS DIRECTORY**
 
-This directory contains auto-generated Beanie ODM models from JSON schemas.
+This directory contains auto-generated Beanie ODM models from Mongoose schemas.
 
 ## Generation Info
 
 - **Repository**: ascending-llc/jarvis-api
 - **Version**: asc0.5.1
-- **Generated at**: 2026-04-03T01:55:56.015321+00:00
-- **Files**: 7
+- **Downloaded at**: `2026-04-10T21:01:54.889735+00:00`
+- **Files**: 8
 
 ## Regenerate Models
 
@@ -29,10 +29,11 @@ uv run poe generate-schemas asc0.5.1
 
 ## Files Generated
 
-- `accessRole.py`
+- `__init__.py`
+- `access_role.py`
+- `acl_entry.py`
 - `group.py`
-- `user.py`
 - `key.py`
-- `aclEntry.py`
+- `mcp_server.py`
 - `token.py`
-- `mcpServer.py`
+- `user.py`

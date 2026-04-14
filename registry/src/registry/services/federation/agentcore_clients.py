@@ -1,8 +1,11 @@
 import asyncio
 import logging
+import threading
+from collections.abc import Callable
 from typing import Any
 
 import boto3
+from botocore.exceptions import ClientError
 
 from registry.core.config import settings
 
@@ -23,51 +26,101 @@ class AgentCoreClientProvider:
         self._credential_providers: dict[tuple[str, str], Any] = {}
         self._sessions: dict[tuple[str, str], Any] = {}
         self._locks: dict[tuple[str, str], asyncio.Lock] = {}
+        self._sync_locks: dict[tuple[str, str], threading.Lock] = {}
 
     @staticmethod
     def _cache_key(region: str, assume_role_arn: str | None) -> tuple[str, str]:
         return region, assume_role_arn or ""
 
+    @staticmethod
+    def is_expired_token_error(exc: Exception) -> bool:
+        if not isinstance(exc, ClientError):
+            return False
+        error_code = exc.response.get("Error", {}).get("Code")
+        return error_code in {"ExpiredToken", "ExpiredTokenException", "RequestExpired"}
+
+    @staticmethod
+    def _should_cache(assume_role_arn: str | None) -> bool:
+        # Role sessions are both temporary and request-specific. Reusing them across
+        # calls risks mixing credentials from different assumeRoleArn values and
+        # resurrecting expired STS tokens in long-lived API workers.
+        return not assume_role_arn
+
     async def get_control_client(self, region: str, assume_role_arn: str | None = None) -> Any:
         cache_key = self._cache_key(region, assume_role_arn)
         cached = self._control_clients.get(cache_key)
-        if cached:
+        if cached and self._should_cache(assume_role_arn):
             return cached
 
-        await self._initialize_context(region, assume_role_arn)
-        return self._control_clients[cache_key]
+        if self._should_cache(assume_role_arn):
+            await self._initialize_context(region, assume_role_arn)
+            return self._control_clients[cache_key]
+        return await asyncio.to_thread(self._build_control_client, region, assume_role_arn)
 
     async def get_runtime_client(self, region: str, assume_role_arn: str | None = None) -> Any:
         cache_key = self._cache_key(region, assume_role_arn)
         cached = self._runtime_clients.get(cache_key)
-        if cached:
+        if cached and self._should_cache(assume_role_arn):
             return cached
 
-        await self._initialize_context(region, assume_role_arn)
-        return self._runtime_clients[cache_key]
+        if self._should_cache(assume_role_arn):
+            await self._initialize_context(region, assume_role_arn)
+            return self._runtime_clients[cache_key]
+        return await asyncio.to_thread(self._build_runtime_client, region, assume_role_arn)
 
     async def get_runtime_credentials_provider(self, region: str, assume_role_arn: str | None = None):
         cache_key = self._cache_key(region, assume_role_arn)
         provider = self._credential_providers.get(cache_key)
-        if provider:
+        if provider and self._should_cache(assume_role_arn):
             return provider
 
-        await self._initialize_context(region, assume_role_arn)
-        return self._credential_providers[cache_key]
+        if self._should_cache(assume_role_arn):
+            await self._initialize_context(region, assume_role_arn)
+            return self._credential_providers[cache_key]
+        return lambda: self._create_session(region, assume_role_arn).get_credentials()
 
-    async def _initialize_context(self, region: str, assume_role_arn: str | None = None) -> None:
+    async def _initialize_context(
+        self,
+        region: str,
+        assume_role_arn: str | None = None,
+    ) -> None:
+        if not self._should_cache(assume_role_arn):
+            return
         cache_key = self._cache_key(region, assume_role_arn)
         lock = self._locks.setdefault(cache_key, asyncio.Lock())
         async with lock:
             if cache_key in self._control_clients and cache_key in self._runtime_clients:
                 return
-            await asyncio.to_thread(self._create_clients_for_context, region, assume_role_arn)
+            await asyncio.to_thread(self._create_cached_context, region, assume_role_arn)
 
-    def _create_clients_for_context(self, region: str, assume_role_arn: str | None = None) -> None:
+    async def invalidate_context(self, region: str, assume_role_arn: str | None = None) -> None:
         cache_key = self._cache_key(region, assume_role_arn)
-        if cache_key in self._control_clients and cache_key in self._runtime_clients:
-            return
+        lock = self._locks.setdefault(cache_key, asyncio.Lock())
+        async with lock:
+            self._control_clients.pop(cache_key, None)
+            self._runtime_clients.pop(cache_key, None)
+            self._credential_providers.pop(cache_key, None)
+            self._sessions.pop(cache_key, None)
+        logger.info(
+            "Invalidated cached AgentCore AWS context for region=%s assume_role=%s", region, bool(assume_role_arn)
+        )
 
+    def _create_cached_context(self, region: str, assume_role_arn: str | None = None) -> None:
+        cache_key = self._cache_key(region, assume_role_arn)
+        sync_lock = self._sync_locks.setdefault(cache_key, threading.Lock())
+        with sync_lock:
+            if cache_key in self._control_clients and cache_key in self._runtime_clients:
+                return
+
+            session = self._create_session(region, assume_role_arn)
+            self._sessions[cache_key] = session
+            self._control_clients[cache_key] = session.client("bedrock-agentcore-control", region_name=region)
+            self._runtime_clients[cache_key] = session.client("bedrock-agentcore", region_name=region)
+            self._credential_providers[cache_key] = lambda cache_key=cache_key: self._sessions[
+                cache_key
+            ].get_credentials()
+
+    def _create_session(self, region: str, assume_role_arn: str | None) -> Any:
         access_key = settings.aws_access_key_id
         secret_key = settings.aws_secret_access_key
         session_token = settings.aws_session_token
@@ -84,23 +137,84 @@ class AgentCoreClientProvider:
             base_session = boto3.Session(region_name=region)
             logger.info("Initialized AgentCore AWS session with default credential chain")
 
-        session = base_session
-        if assume_role_arn:
-            sts_client = base_session.client("sts")
-            assumed_role = sts_client.assume_role(
-                RoleArn=assume_role_arn,
-                RoleSessionName=f"agentcore-federation-{region}",
-            )
-            credentials = assumed_role["Credentials"]
-            session = boto3.Session(
-                region_name=region,
-                aws_access_key_id=credentials["AccessKeyId"],
-                aws_secret_access_key=credentials["SecretAccessKey"],
-                aws_session_token=credentials["SessionToken"],
-            )
-            logger.info("Initialized AgentCore AWS session via assume role")
+        if not assume_role_arn:
+            return base_session
 
-        self._sessions[cache_key] = session
-        self._control_clients[cache_key] = session.client("bedrock-agentcore-control", region_name=region)
-        self._runtime_clients[cache_key] = session.client("bedrock-agentcore", region_name=region)
-        self._credential_providers[cache_key] = session.get_credentials
+        # Always build a fresh assume-role session so each request uses the
+        # specific role it asked for and never reuses stale STS credentials.
+        sts_client = base_session.client("sts")
+        assumed_role = sts_client.assume_role(
+            RoleArn=assume_role_arn,
+            RoleSessionName=f"agentcore-federation-{region}",
+        )
+        credentials = assumed_role["Credentials"]
+        logger.info("Initialized AgentCore AWS session via assume role")
+        return boto3.Session(
+            region_name=region,
+            aws_access_key_id=credentials["AccessKeyId"],
+            aws_secret_access_key=credentials["SecretAccessKey"],
+            aws_session_token=credentials["SessionToken"],
+        )
+
+    def _build_control_client(self, region: str, assume_role_arn: str | None = None) -> Any:
+        session = self._create_session(region, assume_role_arn)
+        return session.client("bedrock-agentcore-control", region_name=region)
+
+    def _build_runtime_client(self, region: str, assume_role_arn: str | None = None) -> Any:
+        session = self._create_session(region, assume_role_arn)
+        return session.client("bedrock-agentcore", region_name=region)
+
+    async def execute_with_control_client(
+        self,
+        region: str,
+        operation: Callable[[Any], Any],
+        assume_role_arn: str | None = None,
+    ) -> Any:
+        """
+        Run a synchronous boto3 control-plane operation off the event loop.
+
+        All callers pass sync boto3 lambdas (list_agent_runtimes, get_agent_runtime,
+        etc.), so the operation is always dispatched via asyncio.to_thread to avoid
+        blocking the event loop.  On a token-expiry error the cached session is
+        invalidated and the call is retried once with fresh credentials.
+        """
+        client = await self.get_control_client(region, assume_role_arn)
+        try:
+            return await asyncio.to_thread(operation, client)
+        except Exception as exc:
+            if not self.is_expired_token_error(exc):
+                raise
+            logger.warning(
+                "AgentCore control client credentials expired for region %s; refreshing and retrying once",
+                region,
+            )
+            await self.invalidate_context(region, assume_role_arn)
+            refreshed_client = await self.get_control_client(region, assume_role_arn)
+            return await asyncio.to_thread(operation, refreshed_client)
+
+    async def execute_with_runtime_client(
+        self,
+        region: str,
+        operation: Callable[[Any], Any],
+        assume_role_arn: str | None = None,
+    ) -> Any:
+        """
+        Run an async runtime data-plane operation with token-expiry retry.
+
+        Callers pass async lambdas (coroutine-returning), so the operation is
+        awaited directly — no to_thread needed.  On a token-expiry error the
+        cached session is invalidated and the operation is retried once.
+        """
+        client = await self.get_runtime_client(region, assume_role_arn)
+        try:
+            return await operation(client)
+        except Exception as exc:
+            if not self.is_expired_token_error(exc):
+                raise
+            logger.warning(
+                "AgentCore runtime client credentials expired for region %s; refreshing and retrying once",
+                region,
+            )
+            await self.invalidate_context(region, assume_role_arn)
+            refreshed_client = await self.get_runtime_client(region, assume_role_arn)
+            return await operation(refreshed_client)

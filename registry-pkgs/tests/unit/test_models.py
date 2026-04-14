@@ -8,7 +8,7 @@ from beanie import PydanticObjectId
 from pydantic import ValidationError
 
 from registry_pkgs.models.a2a_agent import A2AAgent
-from registry_pkgs.models.extended_mcp_server import ExtendedMCPServerDocument
+from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 
 
 class TestExtendedMCPServerStructure:
@@ -18,7 +18,7 @@ class TestExtendedMCPServerStructure:
         """Test that required fields are enforced."""
         # Use Pydantic's model_validate without triggering Beanie's Document.__init__
         with pytest.raises(ValidationError) as exc_info:
-            ExtendedMCPServerDocument.model_validate({}, strict=False)
+            ExtendedMCPServer.model_validate({}, strict=False)
 
         errors = exc_info.value.errors()
         required_fields = {error["loc"][0] for error in errors if error["type"] == "missing"}
@@ -50,7 +50,7 @@ class TestExtendedMCPServerStructure:
         }
 
         # Use model_construct to bypass Beanie's collection check
-        server = ExtendedMCPServerDocument.model_construct(**server_dict)
+        server = ExtendedMCPServer.model_construct(**server_dict)
 
         # Root-level fields should NOT be in config
         assert "status" not in server.config
@@ -104,7 +104,7 @@ class TestExtendedMCPServerStructure:
             "path": "/mcp/github",
         }
 
-        server = ExtendedMCPServerDocument.model_construct(**server_dict)
+        server = ExtendedMCPServer.model_construct(**server_dict)
 
         # Verify config fields are stored correctly
         assert server.config["title"] == "GitHub Server"
@@ -126,7 +126,7 @@ class TestExtendedMCPServerStructure:
             "path": "/mcp/test",
         }
 
-        server = ExtendedMCPServerDocument.model_construct(**server_dict)
+        server = ExtendedMCPServer.model_construct(**server_dict)
 
         # Verify defaults (model_construct doesn't apply defaults, so we need to check field definitions)
         # These would be set by Pydantic during normal instantiation
@@ -148,7 +148,7 @@ class TestExtendedMCPServerStructure:
             "errorMessage": "Connection timeout",
         }
 
-        server = ExtendedMCPServerDocument.model_construct(**server_dict)
+        server = ExtendedMCPServer.model_construct(**server_dict)
 
         assert server.lastConnected == now
         assert server.lastError == now
@@ -166,7 +166,7 @@ class TestExtendedMCPServerStructure:
                 "path": f"/mcp/{status}",
                 "status": status,
             }
-            server = ExtendedMCPServerDocument.model_construct(**server_dict)
+            server = ExtendedMCPServer.model_construct(**server_dict)
             assert server.status == status
 
     def test_tags_array(self):
@@ -179,7 +179,7 @@ class TestExtendedMCPServerStructure:
             "tags": ["github", "git", "vcs"],
         }
 
-        server = ExtendedMCPServerDocument.model_construct(**server_dict)
+        server = ExtendedMCPServer.model_construct(**server_dict)
 
         assert isinstance(server.tags, list)
         assert len(server.tags) == 3
@@ -187,9 +187,9 @@ class TestExtendedMCPServerStructure:
 
     def test_beanie_settings(self):
         """Test Beanie document settings are configured correctly."""
-        assert ExtendedMCPServerDocument.Settings.name == "mcpservers"
-        assert ExtendedMCPServerDocument.Settings.keep_nulls is False
-        assert ExtendedMCPServerDocument.Settings.use_state_management is True
+        assert ExtendedMCPServer.Settings.name == "mcpservers"
+        assert ExtendedMCPServer.Settings.keep_nulls is False
+        assert ExtendedMCPServer.Settings.use_state_management is True
 
     def test_oauth_config_structure(self):
         """Test server with OAuth configuration in config object."""
@@ -216,7 +216,7 @@ class TestExtendedMCPServerStructure:
             "path": "/mcp/oauth",
         }
 
-        server = ExtendedMCPServerDocument.model_construct(**server_dict)
+        server = ExtendedMCPServer.model_construct(**server_dict)
 
         assert server.config["requiresOAuth"] is True
         assert "oauth" in server.config
@@ -233,12 +233,12 @@ class TestExtendedMCPServerStructure:
             "numTools": 5,
         }
 
-        server = ExtendedMCPServerDocument.model_construct(**server_dict)
+        server = ExtendedMCPServer.model_construct(**server_dict)
 
         assert server.numTools == 5
 
     def test_to_documents_includes_runtime_version_metadata(self):
-        server = ExtendedMCPServerDocument.model_construct(
+        server = ExtendedMCPServer.model_construct(
             id=PydanticObjectId(),
             serverName="versioned-server",
             config={
@@ -262,7 +262,7 @@ class TestExtendedMCPServerStructure:
         assert docs[0].metadata.get("runtimeVersion") == "7"
 
     def test_tool_documents_use_downstream_mcp_tool_name_only(self):
-        server = ExtendedMCPServerDocument.model_construct(
+        server = ExtendedMCPServer.model_construct(
             id=PydanticObjectId(),
             serverName="tool-server",
             config={
@@ -295,7 +295,7 @@ class TestExtendedMCPServerStructure:
         assert tool_doc.metadata["tool_name"] == "downstream_tool"
         assert "original_mcp_name" not in tool_doc.metadata
 
-        result = ExtendedMCPServerDocument.from_document(tool_doc)
+        result = ExtendedMCPServer.from_document(tool_doc)
         assert result["tool_name"] == "downstream_tool"
         assert "original_mcp_name" not in result
 
@@ -330,3 +330,69 @@ class TestExtendedMCPServerStructure:
         docs = agent.to_documents()
         assert docs
         assert docs[0].metadata.get("runtimeVersion") == "11"
+
+    def test_a2a_agent_uses_federation_metadata_for_remote_identity(self, monkeypatch):
+        from registry_pkgs.models.a2a_agent import AgentConfig
+
+        monkeypatch.setattr(A2AAgent, "get_pymongo_collection", classmethod(lambda cls: None))
+
+        agent = A2AAgent.from_a2a_agent_card(
+            card_data={
+                "name": "Azure Agent",
+                "description": "A federated Azure agent",
+                "url": "https://example.projects.ai.azure.com",
+                "version": "3",
+                "capabilities": {"streaming": True},
+                "defaultInputModes": ["text/plain"],
+                "defaultOutputModes": ["application/json"],
+                "skills": [],
+            },
+            path="/azure-ai-foundry/a2a/azure-agent",
+            author=PydanticObjectId(),
+            config=AgentConfig(
+                title="Azure Agent",
+                description="A federated Azure agent",
+                type="http_json",
+            ),
+            federationMetadata={
+                "providerType": "azure_ai_foundry",
+                "agentName": "azure-agent",
+                "agentVersion": "3",
+                "agentVersionId": "asst_abc123",
+            },
+        )
+
+        assert agent.federationRefId is None
+        assert agent.federationMetadata["providerType"] == "azure_ai_foundry"
+        assert agent.federationMetadata["agentVersionId"] == "asst_abc123"
+
+    def test_a2a_agent_coerces_well_known_dict_to_model(self, monkeypatch):
+        from registry_pkgs.models.a2a_agent import AgentConfig
+
+        monkeypatch.setattr(A2AAgent, "get_pymongo_collection", classmethod(lambda cls: None))
+
+        agent = A2AAgent.from_a2a_agent_card(
+            card_data={
+                "name": "Agent With Well Known",
+                "description": "A federated agent",
+                "url": "https://example.com/agent",
+                "version": "1",
+                "capabilities": {"streaming": True},
+                "defaultInputModes": ["text/plain"],
+                "defaultOutputModes": ["application/json"],
+                "skills": [],
+            },
+            path="/agentcore/a2a/with-well-known",
+            author=PydanticObjectId(),
+            config=AgentConfig(
+                title="Agent With Well Known",
+                description="A federated agent",
+                url="https://example.com/.well-known/agent-card.json",
+                type="http_json",
+            ),
+            wellKnown={"enabled": True},
+        )
+
+        assert agent.wellKnown is not None
+        assert agent.wellKnown.enabled is True
+        assert str(agent.config.url) == "https://example.com/.well-known/agent-card.json"

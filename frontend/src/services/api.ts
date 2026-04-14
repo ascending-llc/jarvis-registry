@@ -3,6 +3,7 @@ const AUTH_BASE_URL = '/api/auth';
 const MCP_BASE_URL = `${BASE_URL}/mcp`;
 const SERVER_BASE_URL = `${BASE_URL}/servers`;
 const AGENT_BASE_URL = `${BASE_URL}/agents`;
+const FEDERATION_BASE_URL = `${BASE_URL}/federations`;
 
 const API = {
   // auth
@@ -44,10 +45,17 @@ const API = {
   getAgentSkills: (id: string) => `${AGENT_BASE_URL}/${id}/skills`,
   getWellKnownAgentCards: `${AGENT_BASE_URL}/.well-known/agent-cards`,
 
+  // federation
+  getFederations: `${FEDERATION_BASE_URL}`,
+  getFederationDetail: (id: string) => `${FEDERATION_BASE_URL}/${id}`,
+  createFederation: `${FEDERATION_BASE_URL}`,
+  updateFederation: (id: string) => `${FEDERATION_BASE_URL}/${id}`,
+  deleteFederation: (id: string) => `${FEDERATION_BASE_URL}/${id}`,
+  syncFederation: (id: string) => `${FEDERATION_BASE_URL}/${id}/sync`,
+
   // acl (permissions)
   searchPrincipals: `${BASE_URL}/permissions/search-principals`,
-  getResourceRoles: (resourceType: string) =>
-    `${BASE_URL}/permissions/${resourceType}/roles`,
+  getResourceRoles: (resourceType: string) => `${BASE_URL}/permissions/${resourceType}/roles`,
   getResourcePermissions: (resourceType: string, resourceId: string) =>
     `${BASE_URL}/permissions/${resourceType}/${resourceId}`,
   updateResourcePermissions: (resourceType: string, resourceId: string) =>

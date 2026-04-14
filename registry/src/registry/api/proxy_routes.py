@@ -4,22 +4,40 @@ Dynamic MCP server proxy routes.
 
 import json
 import logging
+from collections.abc import AsyncGenerator
 from typing import Any
+from urllib.parse import urlparse
 from uuid import uuid4
 
 import httpx
+from a2a.client.transports.jsonrpc import JsonRpcTransport
+from a2a.client.transports.rest import RestTransport
+from a2a.types import MessageSendParams
+from beanie import PydanticObjectId
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from registry_pkgs.models.extended_mcp_server import ExtendedMCPServerDocument
+from registry_pkgs.models import ResourceType
+from registry_pkgs.models.a2a_agent import TRANSPORT_GRPC, TRANSPORT_HTTP_JSON, TRANSPORT_JSONRPC
+from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 
 from ..auth.dependencies import CurrentUser, UserContextDict
 from ..core.config import settings
 from ..core.exceptions import InternalServerException, UrlElicitationRequiredException
-from ..deps import get_mcp_proxy_client, get_oauth_service, get_server_service
+from ..deps import get_a2a_agent_service, get_acl_service, get_mcp_proxy_client, get_oauth_service, get_server_service
 from ..mcpgw.tools.utils import build_authenticated_headers, parse_elicitation_id
+from ..services.a2a_agent_service import A2AAgentService
+from ..services.access_control_service import ACLService
 from ..services.oauth.oauth_service import MCPOAuthService
 from ..services.server_service import ServerServiceV1
+
+try:
+    import grpc
+    from a2a.client.transports.grpc import GrpcTransport
+
+    _grpc_available = True
+except ImportError:
+    _grpc_available = False
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +90,7 @@ def _get_elicitation_id(auth_url: str) -> str:
     return id_
 
 
-def _build_target_url(server: ExtendedMCPServerDocument, remaining_path: str = "") -> str:
+def _build_target_url(server: ExtendedMCPServer, remaining_path: str = "") -> str:
     """
     Build complete target URL for proxying to MCP server.
     Consolidates URL building logic used across all proxy endpoints.
@@ -109,7 +127,7 @@ async def proxy_to_mcp_server(
     request: Request,
     target_url: str,
     auth_context: UserContextDict,
-    server: ExtendedMCPServerDocument,
+    server: ExtendedMCPServer,
     oauth_service: MCPOAuthService,
     proxy_client: httpx.AsyncClient,
 ) -> Response:
@@ -121,7 +139,7 @@ async def proxy_to_mcp_server(
         request: Incoming FastAPI request
         target_url: Backend MCP server URL
         auth_context: UserContextDict
-        server: ExtendedMCPServerDocument
+        server: ExtendedMCPServer
         oauth_service: OAuth service for building auth headers
         proxy_client: Shared httpx client for connection pooling
     """
@@ -323,7 +341,196 @@ async def clear_session_endpoint(request: Request, server_id: str, user_context:
     )
 
 
-@router.post("/{full_path:path}")
+@router.post("/a2a/{agent_path:path}")
+async def a2a_agent_proxy(
+    request: Request,
+    agent_path: str,
+    user_context: CurrentUser,
+    a2a_agent_service: A2AAgentService = Depends(get_a2a_agent_service),
+    acl_service: ACLService = Depends(get_acl_service),
+    proxy_client: httpx.AsyncClient = Depends(get_mcp_proxy_client),
+):
+    """
+    Proxy POST requests to A2A agents via the registry.
+
+    Route: POST /proxy/a2a/{agent_path}
+
+    Dispatches to the correct A2A transport based on agent config.type:
+      - jsonrpc  → JsonRpcTransport  (A2A JSON-RPC over HTTP)
+      - grpc     → GrpcTransport     (A2A over gRPC)
+      - http_json → RestTransport    (A2A HTTP+JSON / REST)
+
+    Request body must be a valid MessageSendParams JSON object.
+    If the Accept header includes 'text/event-stream', the response will
+    be streamed as Server-Sent Events; otherwise a single JSON response
+    is returned.
+    """
+    path = f"/{agent_path}"
+    user_id = user_context.get("user_id")
+
+    # Resolve agent by path
+    agent = await a2a_agent_service.get_agent_by_path(path)
+    if agent is None:
+        return JSONResponse(
+            status_code=404,
+            content={"error": f"A2A agent with path '{path}' not found"},
+        )
+
+    # ACL: require VIEW permission
+    await acl_service.check_user_permission(
+        user_id=PydanticObjectId(user_id),
+        resource_type=ResourceType.REMOTE_AGENT.value,
+        resource_id=agent.id,
+        required_permission="VIEW",
+    )
+
+    # Agent must be enabled
+    if not agent.isEnabled:
+        return JSONResponse(
+            status_code=403,
+            content={"error": f"A2A agent '{path}' is disabled"},
+        )
+
+    # Parse MessageSendParams from request body
+    try:
+        body_bytes = await request.body()
+        params = MessageSendParams.model_validate_json(body_bytes)
+    except Exception as e:
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"Invalid request body: {e}"},
+        )
+
+    transport_type = (agent.config.type if agent.config else TRANSPORT_JSONRPC).lower()
+
+    # Use user-provided URL from config for runtime operations
+    if agent.config and agent.config.url:
+        agent_url = str(agent.config.url)
+        logger.debug(f"Using config.url for agent {path}: {agent_url}")
+    else:
+        # Fallback to card.url for backward compatibility with old data
+        agent_url = str(agent.card.url)
+        logger.warning(
+            f"Agent {path} missing config.url, falling back to card.url: {agent_url}. "
+            "This may fail if card.url is not accessible. Please update the agent to set config.url."
+        )
+
+    # Create a modified agent_card with the runtime URL (config.url)
+    # Transport classes use agent_card.url internally, so we need to override it
+    agent_card = agent.card.model_copy(deep=True)
+    agent_card.url = agent_url
+
+    accept_header = request.headers.get("accept", "")
+    is_streaming = "text/event-stream" in accept_header
+
+    logger.info(f"A2A proxy: {path} transport={transport_type} streaming={is_streaming} → {agent_url}")
+
+    try:
+        if transport_type == TRANSPORT_JSONRPC:
+            transport = JsonRpcTransport(httpx_client=proxy_client, agent_card=agent_card)
+            if is_streaming:
+                return await _stream_a2a_response(transport.send_message_streaming(params))
+            result = await transport.send_message(params)
+            return JSONResponse(content=result.model_dump(mode="json", exclude_none=True))
+
+        elif transport_type == TRANSPORT_HTTP_JSON:
+            transport = RestTransport(httpx_client=proxy_client, agent_card=agent_card)
+            if is_streaming:
+                return await _stream_a2a_response(transport.send_message_streaming(params))
+            result = await transport.send_message(params)
+            return JSONResponse(content=result.model_dump(mode="json", exclude_none=True))
+
+        elif transport_type == TRANSPORT_GRPC:
+            if not _grpc_available:
+                return JSONResponse(
+                    status_code=501,
+                    content={
+                        "error": "gRPC transport is not available. Please ensure grpcio is installed (requires a2a-sdk[grpc] extra)"
+                    },
+                )
+            parsed = urlparse(agent_url)
+            if not parsed.hostname:
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": f"Invalid gRPC agent URL: '{agent_url}'"},
+                )
+
+            scheme = parsed.scheme.lower()
+            if parsed.port is not None:
+                grpc_port = parsed.port
+            elif scheme in {"https", "grpcs"}:
+                grpc_port = 443
+            elif scheme == "http":
+                grpc_port = 80
+            else:
+                grpc_port = 50051
+
+            grpc_target = f"{parsed.hostname}:{grpc_port}"
+
+            if scheme in {"https", "grpcs"}:
+                channel = grpc.aio.secure_channel(grpc_target, grpc.ssl_channel_credentials())
+            else:
+                channel = grpc.aio.insecure_channel(grpc_target)
+
+            try:
+                transport = GrpcTransport(channel=channel, agent_card=agent_card)
+                if is_streaming:
+                    return await _stream_a2a_response(transport.send_message_streaming(params))
+                result = await transport.send_message(params)
+                return JSONResponse(content=result.model_dump(mode="json", exclude_none=True))
+            finally:
+                await channel.close()
+
+        else:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": f"Unsupported transport type: '{transport_type}'. Must be one of: jsonrpc, grpc, http_json"
+                },
+            )
+
+    except httpx.TimeoutException:
+        logger.error(f"A2A proxy timeout for agent {path}")
+        return JSONResponse(status_code=504, content={"error": "Gateway timeout communicating with agent"})
+    except httpx.HTTPStatusError as e:
+        logger.error(f"A2A proxy HTTP error for agent {path}: {e}")
+        return JSONResponse(status_code=502, content={"error": f"Agent returned HTTP error: {e.response.status_code}"})
+    except Exception as e:
+        logger.error(f"A2A proxy error for agent {path}: {e}", exc_info=True)
+        return JSONResponse(status_code=502, content={"error": "Failed to communicate with agent"})
+
+
+async def _stream_a2a_response(event_generator: AsyncGenerator[Any, None]) -> StreamingResponse:
+    """Wrap an A2A async generator into an SSE StreamingResponse.
+
+    Args:
+        event_generator: Async generator yielding A2A SDK event objects with model_dump() method
+
+    Returns:
+        StreamingResponse configured for Server-Sent Events
+    """
+
+    async def _sse_body():
+        try:
+            async for event in event_generator:
+                data = event.model_dump(mode="json", exclude_none=True)
+                yield f"data: {json.dumps(data)}\n\n"
+        except Exception:
+            logger.exception("A2A SSE streaming error")
+            raise
+
+    return StreamingResponse(
+        _sse_body(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+@router.post("/server/{full_path:path}")
 async def dynamic_mcp_post_proxy(
     request: Request,
     full_path: str,
@@ -420,7 +627,7 @@ async def dynamic_mcp_post_proxy(
     )
 
 
-@router.get("/{full_path:path}")
+@router.get("/server/{full_path:path}")
 async def dynamic_mcp_get_proxy(
     request: Request,
     full_path: str,
