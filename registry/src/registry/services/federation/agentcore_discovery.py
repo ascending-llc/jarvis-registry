@@ -271,7 +271,11 @@ class AgentCoreFederationClient:
         runtime_id = runtime_detail["agentRuntimeId"]
         runtime_version = runtime_detail["agentRuntimeVersion"]
         runtime_name = runtime_detail["agentRuntimeName"]
-        runtime_base_url = self._build_runtime_invocation_url(runtime_arn=runtime_arn, region=region)
+        runtime_base_url = self._build_runtime_invocation_url(
+            runtime_arn=runtime_arn,
+            region=region,
+            decode_for_storage=True,
+        )
 
         card_data = {
             "name": runtime_name,
@@ -350,7 +354,8 @@ class AgentCoreFederationClient:
         runtime_name = runtime_detail["agentRuntimeName"]
         runtime_version = runtime_detail["agentRuntimeVersion"]
         runtime_mcp_url = (
-            f"{self._build_runtime_invocation_url(runtime_arn=runtime_arn, region=region)}?qualifier=DEFAULT"
+            f"{self._build_runtime_invocation_url(runtime_arn=runtime_arn, region=region, decode_for_storage=True)}"
+            "?qualifier=DEFAULT"
         )
         status = runtime_detail.get("status", "READY")
         runtime_access = AgentCoreRuntimeAuthService.infer_runtime_access(
@@ -421,8 +426,21 @@ class AgentCoreFederationClient:
         cleaned = value.strip().lower().replace(" ", "-").replace("_", "-")
         return "".join(ch for ch in cleaned if ch.isalnum() or ch in "-/")
 
-    def _build_runtime_invocation_url(self, runtime_arn: str, region: str) -> str:
-        """Build a human-readable invocation URL with the ARN decoded."""
+    def _build_runtime_invocation_url(
+        self,
+        runtime_arn: str,
+        region: str,
+        *,
+        decode_for_storage: bool = False,
+    ) -> str:
+        """Build an AgentCore invocation URL.
+
+        AgentCore data-plane calls must keep the runtime ARN URL-encoded in the
+        request path. For persisted config URLs, we intentionally decode it back
+        into a human-readable form before saving to Mongo.
+        """
         escaped_runtime_arn = quote(runtime_arn, safe="")
         encoded_url = f"https://bedrock-agentcore.{region}.amazonaws.com/runtimes/{escaped_runtime_arn}/invocations"
-        return unquote(encoded_url)
+        if decode_for_storage:
+            return unquote(encoded_url)
+        return encoded_url
