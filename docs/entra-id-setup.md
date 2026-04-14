@@ -1,12 +1,12 @@
 # Microsoft Entra ID (Azure AD) Setup Guide
 
-This guide provides step-by-step instructions for setting up Microsoft Entra ID (formerly Azure AD) as an authentication provider in the MCP Gateway Registry.
+This guide provides step-by-step instructions for setting up Microsoft Entra ID (formerly Azure AD) as an authentication provider in Jarvis Registry.
 
 ## Prerequisites
 
 - An Azure subscription with Entra ID (Azure AD) tenant
 - Access to the Azure Portal with administrative privileges
-- MCP Gateway Registry deployed and accessible
+- Jarvis Registry deployed and accessible
 
 ## Step 1: Create App Registration in Azure Portal
 
@@ -16,7 +16,7 @@ This guide provides step-by-step instructions for setting up Microsoft Entra ID 
 
 2. **Create New Registration**
    - Click **New registration**
-   - **Name**: `MCP Gateway Registry` (or your preferred name)
+   - **Name**: `Jarvis Registry` (or your preferred name)
    - **Supported account types**:
      - For single tenant: *Accounts in this organizational directory only*
      - For multi-tenant: *Accounts in any organizational directory*
@@ -55,7 +55,7 @@ This guide provides step-by-step instructions for setting up Microsoft Entra ID 
 1. **Generate New Secret**
    - In your app registration, go to **Certificates & secrets**
    - Click **New client secret**
-   - **Description**: `MCP Gateway Registry Secret`
+   - **Description**: `Jarvis Registry Secret`
    - **Expires**: Choose appropriate expiration (recommended: 12-24 months)
    - Click **Add**
 
@@ -65,7 +65,7 @@ This guide provides step-by-step instructions for setting up Microsoft Entra ID 
 
 ## Step 4: Environment Configuration
 
-Add the following environment variables to your MCP Gateway Registry deployment:
+Add the following environment variables to your Jarvis Registry deployment:
 
 ### Required Variables
 
@@ -99,7 +99,7 @@ ENTRA_M2M_SCOPE=https://graph.microsoft.com/.default
 # Custom Claim Mappings (defaults are shown)
 ENTRA_USERNAME_CLAIM=preferred_username
 ENTRA_GROUPS_CLAIM=groups
-ENTRA_EMAIL_CLAIM=email
+ENTRA_EMAIL_CLAIM=upn
 ENTRA_NAME_CLAIM=name
 ```
 

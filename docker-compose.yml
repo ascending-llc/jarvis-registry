@@ -265,6 +265,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    profiles:
+      - disabled
 
   # Keycloak Identity Provider
   keycloak:
@@ -313,6 +315,8 @@ services:
       timeout: 10s
       retries: 3
       start_period: 60s
+    profiles:
+      - disabled
 
 volumes:
   ssl_data:
