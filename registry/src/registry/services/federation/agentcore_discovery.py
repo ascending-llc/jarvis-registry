@@ -2,7 +2,7 @@ import json
 import logging
 from datetime import UTC, datetime
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 from beanie import PydanticObjectId
 
@@ -422,5 +422,7 @@ class AgentCoreFederationClient:
         return "".join(ch for ch in cleaned if ch.isalnum() or ch in "-/")
 
     def _build_runtime_invocation_url(self, runtime_arn: str, region: str) -> str:
+        """Build a human-readable invocation URL with the ARN decoded."""
         escaped_runtime_arn = quote(runtime_arn, safe="")
-        return f"https://bedrock-agentcore.{region}.amazonaws.com/runtimes/{escaped_runtime_arn}/invocations"
+        encoded_url = f"https://bedrock-agentcore.{region}.amazonaws.com/runtimes/{escaped_runtime_arn}/invocations"
+        return unquote(encoded_url)
