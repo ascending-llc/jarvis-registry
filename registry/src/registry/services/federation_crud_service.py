@@ -177,12 +177,8 @@ class FederationCrudService:
         description: str | None,
         tags: list[str],
         provider_config: dict,
-        version: int,
         updated_by: str | None,
     ) -> Federation:
-        if federation.version != version:
-            raise ValueError("Federation version conflict")
-
         normalized_config = self.validate_provider_config(federation.providerType, provider_config)
 
         federation.displayName = display_name
@@ -190,7 +186,6 @@ class FederationCrudService:
         federation.tags = tags
         federation.providerConfig = normalized_config
         federation.updatedBy = updated_by
-        federation.version += 1
         await federation.save(session=self._get_current_session_or_none())
         return federation
 

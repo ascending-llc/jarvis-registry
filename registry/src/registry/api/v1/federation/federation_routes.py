@@ -81,7 +81,6 @@ def _raise_federation_value_error(exc: ValueError) -> NoReturn:
         ) from exc
 
     if message in {
-        "Federation version conflict",
         "Federation already has an active sync job",
         "Federation already has an active job",
     }:
@@ -439,7 +438,6 @@ async def update_federation(
             description=data.description,
             tags=data.tags,
             provider_config=data.providerConfig,
-            version=data.version,
             updated_by=user_context.get("user_id"),
             sync_after_update=data.syncAfterUpdate,
         )

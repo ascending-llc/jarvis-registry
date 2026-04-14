@@ -249,7 +249,6 @@ class FederationSyncService:
         description: str | None,
         tags: list[str],
         provider_config: dict[str, Any],
-        version: int,
         updated_by: str | None,
         sync_after_update: bool,
     ) -> tuple[Federation, FederationSyncJob | None]:
@@ -274,7 +273,6 @@ class FederationSyncService:
                 description=description,
                 tags=tags,
                 provider_config=provider_config,
-                version=version,
                 updated_by=updated_by,
             )
             return updated, None
@@ -289,7 +287,6 @@ class FederationSyncService:
             description=description,
             tags=tags,
             normalized_provider_config=normalized_provider_config,
-            version=version,
             updated_by=updated_by,
         )
         await self.run_sync(
@@ -353,7 +350,6 @@ class FederationSyncService:
         description: str | None,
         tags: list[str],
         normalized_provider_config: dict[str, Any],
-        version: int,
         updated_by: str | None,
     ) -> tuple[Federation, FederationSyncJob]:
         """Persist the new federation definition and its pending resync job together."""
@@ -363,7 +359,6 @@ class FederationSyncService:
             description=description,
             tags=tags,
             provider_config=normalized_provider_config,
-            version=version,
             updated_by=updated_by,
         )
         job = await self.federation_job_service.create_job(
