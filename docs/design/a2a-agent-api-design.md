@@ -9,6 +9,31 @@
 
 ---
 
+## Response Data Structure
+
+All agent responses follow this structure:
+
+### URL Fields
+- **Top-level `url`**: Agent's official URL from agent card metadata (`card.url`) - this is the agent's self-declared URL
+- **`config.url`**: User-provided agent endpoint URL - primary source for runtime operations (proxy, sync, etc.). This may differ from `card.url` when using port forwarding, load balancers, or internal network addresses
+- **`card.url`**: Third-party agent card metadata (read-only, same as top-level `url`)
+
+### Config Field
+The `config` object contains user-provided metadata:
+- `title`: Display title for the agent
+- `description`: Agent description
+- `url`: User-configured agent endpoint URL
+- `type`: Transport type (jsonrpc, grpc, http_json)
+
+### Well-Known Field
+The `wellKnown` object contains sync status only (no URL):
+- `enabled`: Whether well-known sync is enabled
+- `lastSyncAt`: Last successful sync timestamp
+- `lastSyncStatus`: Sync status (success, failed, unreachable)
+- `lastSyncVersion`: Agent version from last sync
+
+---
+
 ## API Endpoints
 
 ### 1. List Agents
@@ -62,6 +87,7 @@
       "config": {
         "title": "Code Review Agent",
         "description": "AI-powered code review assistant",
+        "url": "https://example.com/agents/code-reviewer",
         "type": "jsonrpc"
       },
       "permissions": {
@@ -168,6 +194,7 @@
   "config": {
     "title": "Code Review Agent",
     "description": "AI-powered code review assistant",
+    "url": "https://example.com/agents/code-reviewer",
     "type": "jsonrpc"
   },
   "permissions": {
@@ -179,7 +206,6 @@
   "author": "507f1f77bcf86cd799439012",
   "wellKnown": {
     "enabled": true,
-    "url": "https://example.com/.well-known/agent-card.json",
     "lastSyncAt": "2024-01-20T12:00:00Z",
     "lastSyncStatus": "success",
     "lastSyncVersion": "1.0.0"
@@ -192,7 +218,11 @@
 **Note:**
 - Uses `AgentDetailResponse` schema
 - All field names use camelCase convention
-- Includes `config` field with user-provided metadata
+- **Response structure**:
+  - Top-level `url`: Agent's official URL from agent card (`card.url`)
+  - `config.url`: User-provided agent endpoint URL (used for runtime operations like proxy, sync)
+  - `config.title`, `config.description`, `config.type`: User-provided metadata
+  - `wellKnown`: Sync status only (no URL field, URL is in `config.url`)
 
 **Error**: `404` Agent not found, `403` Access denied
 
@@ -223,15 +253,15 @@
 - `type` (required, string): Transport type - must be one of: `jsonrpc`, `grpc`, `http_json`
 
 **Data Storage Structure**:
-- `card`: Original agent card from third-party URL (unmodified)
-- `config`: Registry-specific configuration containing user-provided `title`, `description`, and `type`
+- `card`: Original agent card from third-party URL (unmodified, contains `card.url` from the agent's own metadata)
+- `config`: Registry-specific configuration containing user-provided `title`, `description`, `url` (for runtime access), and `type`
 
 **Auto-Fetch Behavior**:
 1. System fetches agent card from `{url}/.well-known/agent-card.json` using A2A SDK
 2. Validates the fetched agent card structure
 3. **Stores the original card data without any modifications in the `card` field**
-4. User-provided `title`, `description`, and `type` are stored separately in the `config` field
-5. Enables wellKnown sync automatically for future updates
+4. User-provided `title`, `description`, `url`, and `type` are stored separately in the `config` field
+5. Enables wellKnown sync automatically for future updates (URL stored in `config.url`, not `wellKnown.url`)
 6. **Tags field**: Initialized as empty array `[]` - tags are registry-level metadata separate from skill tags, and can be managed manually if needed
 
 **Response**: `201 Created`
@@ -263,6 +293,7 @@
   "config": {
     "title": "Code Review Agent",
     "description": "AI-powered code review assistant",
+    "url": "https://example.com/agents/code-reviewer",
     "type": "jsonrpc"
   },
   "permissions": {
@@ -274,7 +305,6 @@
   "author": "507f1f77bcf86cd799439012",
   "wellKnown": {
     "enabled": true,
-    "url": "https://example.com/agents/code-reviewer",
     "lastSyncAt": "2024-01-15T10:30:00Z",
     "lastSyncStatus": "success",
     "lastSyncVersion": "1.0.0"
@@ -326,10 +356,12 @@
 
 **Auto-Fetch Behavior**:
 1. **If `url` is updated**:
-   - System fetches new agent card from `{new_url}/.well-known/agent-card.json`
+   - System compares new URL with `config.url` to detect actual changes
+   - If URL changed: fetches new agent card from `{new_url}/.well-known/agent-card.json`
    - **Stores the original card data without any modifications in the `card` field**
-   - User-provided fields (`title`, `description`, `type`) are updated in the `config` field separately
-   - wellKnown sync is updated with new URL and sync status
+   - User-provided fields (`title`, `description`, `url`, `type`) are updated in the `config` field separately
+   - wellKnown sync status is updated (URL stored in `config.url`)
+   - If URL unchanged: skips agent card fetch for better performance
 
 2. **If only `title`, `description`, or `type` is updated** (no URL change):
    - Only these fields are updated in the `config` field
@@ -367,6 +399,7 @@
   "config": {
     "title": "Updated Agent Name",
     "description": "Updated description",
+    "url": "https://example.com/agents/new-code-reviewer",
     "type": "grpc"
   },
   "permissions": {
@@ -378,7 +411,6 @@
   "author": "507f1f77bcf86cd799439012",
   "wellKnown": {
     "enabled": true,
-    "url": "https://example.com/agents/new-code-reviewer",
     "lastSyncAt": "2024-01-20T15:45:00Z",
     "lastSyncStatus": "success",
     "lastSyncVersion": "1.1.0"
@@ -452,6 +484,7 @@
   "config": {
     "title": "Code Review Agent",
     "description": "AI-powered code review assistant",
+    "url": "https://example.com/agents/code-reviewer",
     "type": "jsonrpc"
   },
   "permissions": {
