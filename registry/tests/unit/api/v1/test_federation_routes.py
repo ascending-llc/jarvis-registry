@@ -17,6 +17,7 @@ from registry.api.v1.federation.federation_routes import (
 from registry.schemas.acl_schema import ResourcePermissions
 from registry.schemas.federation_api_schemas import (
     FederationCreateRequest,
+    FederationSyncDryRunResponse,
     FederationSyncRequest,
     FederationUpdateRequest,
 )
@@ -70,7 +71,10 @@ def sample_federation():
         status=FederationStatus.ACTIVE,
         syncStatus=FederationSyncStatus.IDLE,
         syncMessage=None,
-        providerConfig={"region": "us-east-1", "assumeRoleArn": "arn:aws:iam::123456789012:role/TestRole"},
+        providerConfig={
+            "region": "us-east-1",
+            "assumeRoleArn": "arn:aws:iam::123456789012:role/TestRole",
+        },
         stats={"mcpServerCount": 0, "agentCount": 0, "toolCount": 0, "importedTotal": 0},
         lastSync=None,
         version=1,
@@ -95,7 +99,7 @@ def sample_job(sample_federation):
 
 
 @pytest.mark.asyncio
-async def test_create_federation_does_not_trigger_sync(sample_user_context, sample_federation, sample_job, acl_service):
+async def test_create_federation_does_not_trigger_sync(sample_user_context, sample_federation, acl_service):
     federation_crud_service = MagicMock()
     federation_crud_service.create_federation = AsyncMock(return_value=sample_federation)
     federation_crud_service.get_recent_jobs = AsyncMock(return_value=[])
@@ -127,7 +131,12 @@ async def test_create_federation_does_not_trigger_sync(sample_user_context, samp
 
 @pytest.mark.asyncio
 async def test_create_federation_allows_empty_aws_provider_config(sample_user_context, sample_federation, acl_service):
-    created_federation = SimpleNamespace(**{**sample_federation.__dict__, "providerConfig": {"resourceTagsFilter": {}}})
+    created_federation = SimpleNamespace(
+        **{
+            **sample_federation.__dict__,
+            "providerConfig": {"resourceTagsFilter": {}},
+        }
+    )
     federation_crud_service = MagicMock()
     federation_crud_service.create_federation = AsyncMock(return_value=created_federation)
     federation_crud_service.get_recent_jobs = AsyncMock(return_value=[])
@@ -233,24 +242,21 @@ async def test_update_federation_requires_aws_region_and_assume_role(
 
 
 @pytest.mark.asyncio
-async def test_update_federation_returns_501_for_unimplemented_provider(
-    sample_user_context, sample_federation, sample_job, acl_service
-):
+async def test_update_federation_rejects_azure_provider(sample_user_context, sample_federation, acl_service):
     azure_federation = SimpleNamespace(
         **{
             **sample_federation.__dict__,
             "providerType": FederationProviderType.AZURE_AI_FOUNDRY,
-            "providerConfig": {"subscriptionId": "sub-a"},
+            "displayName": "Azure Federation",
+            "providerConfig": {"projectEndpoint": "https://old.projects.ai.azure.com"},
         }
     )
 
     federation_crud_service = MagicMock()
     federation_crud_service.get_federation = AsyncMock(return_value=azure_federation)
-    federation_crud_service.validate_provider_config = MagicMock(return_value={"subscriptionId": "sub-b"})
-
     federation_sync_service = MagicMock()
     federation_sync_service.update_federation_with_optional_resync = AsyncMock(
-        side_effect=ValueError("Federation provider azure_ai_foundry is not implemented yet.")
+        side_effect=ValueError("Azure AI Foundry federation sync is not implemented yet")
     )
 
     with pytest.raises(HTTPException) as exc_info:
@@ -260,7 +266,7 @@ async def test_update_federation_returns_501_for_unimplemented_provider(
                 displayName="Azure Federation",
                 description="Updated federation",
                 tags=["prod"],
-                providerConfig={"subscriptionId": "sub-b"},
+                providerConfig={"projectEndpoint": "https://new.projects.ai.azure.com"},
                 version=1,
                 syncAfterUpdate=True,
             ),
@@ -271,7 +277,6 @@ async def test_update_federation_returns_501_for_unimplemented_provider(
         )
 
     assert exc_info.value.status_code == 501
-    assert "not implemented yet" in exc_info.value.detail["message"]
 
 
 @pytest.mark.asyncio
@@ -341,7 +346,7 @@ async def test_delete_federation_returns_deleted_status(
 
 
 @pytest.mark.asyncio
-async def test_delete_federation_maps_provider_failure(sample_user_context, sample_federation, sample_job, acl_service):
+async def test_delete_federation_maps_provider_failure(sample_user_context, sample_federation, acl_service):
     federation_crud_service = MagicMock()
     federation_crud_service.get_federation = AsyncMock(return_value=sample_federation)
 
@@ -399,7 +404,7 @@ async def test_sync_federation_rejects_running_sync_status(sample_user_context, 
     with pytest.raises(HTTPException) as exc_info:
         await sync_federation(
             federation_id=str(syncing_federation.id),
-            data=FederationSyncRequest(force=False, reason="manual"),
+            data=FederationSyncRequest(),
             user_context=sample_user_context,
             federation_crud_service=federation_crud_service,
             federation_sync_service=MagicMock(),
@@ -413,7 +418,10 @@ async def test_sync_federation_rejects_running_sync_status(sample_user_context, 
 @pytest.mark.asyncio
 async def test_sync_federation_requires_aws_region_and_assume_role(sample_user_context, sample_federation, acl_service):
     federation_missing_config = SimpleNamespace(
-        **{**sample_federation.__dict__, "providerConfig": {"resourceTagsFilter": {}}}
+        **{
+            **sample_federation.__dict__,
+            "providerConfig": {"resourceTagsFilter": {}},
+        }
     )
     federation_crud_service = MagicMock()
     federation_crud_service.get_federation = AsyncMock(return_value=federation_missing_config)
@@ -424,7 +432,7 @@ async def test_sync_federation_requires_aws_region_and_assume_role(sample_user_c
     with pytest.raises(HTTPException) as exc_info:
         await sync_federation(
             federation_id=str(federation_missing_config.id),
-            data=FederationSyncRequest(force=False, reason="manual"),
+            data=FederationSyncRequest(),
             user_context=sample_user_context,
             federation_crud_service=federation_crud_service,
             federation_sync_service=MagicMock(),
@@ -436,29 +444,28 @@ async def test_sync_federation_requires_aws_region_and_assume_role(sample_user_c
 
 
 @pytest.mark.asyncio
-async def test_sync_federation_returns_501_for_unimplemented_provider(
-    sample_user_context, sample_federation, sample_job, acl_service
-):
+async def test_sync_federation_rejects_azure_provider(sample_user_context, sample_federation, acl_service):
     azure_federation = SimpleNamespace(
         **{
             **sample_federation.__dict__,
             "providerType": FederationProviderType.AZURE_AI_FOUNDRY,
+            "providerConfig": {"projectEndpoint": "https://example.projects.ai.azure.com"},
             "syncStatus": FederationSyncStatus.IDLE,
         }
     )
 
     federation_crud_service = MagicMock()
     federation_crud_service.get_federation = AsyncMock(return_value=azure_federation)
+    federation_crud_service.validate_provider_config = MagicMock(
+        side_effect=ValueError("Azure AI Foundry federation sync is not implemented yet")
+    )
 
     federation_sync_service = MagicMock()
-    federation_sync_service.start_manual_sync = AsyncMock(
-        side_effect=ValueError("Federation provider azure_ai_foundry is not implemented yet.")
-    )
 
     with pytest.raises(HTTPException) as exc_info:
         await sync_federation(
             federation_id=str(azure_federation.id),
-            data=FederationSyncRequest(force=False, reason="manual"),
+            data=FederationSyncRequest(),
             user_context=sample_user_context,
             federation_crud_service=federation_crud_service,
             federation_sync_service=federation_sync_service,
@@ -466,7 +473,102 @@ async def test_sync_federation_returns_501_for_unimplemented_provider(
         )
 
     assert exc_info.value.status_code == 501
-    assert "not implemented yet" in exc_info.value.detail["message"]
+
+
+@pytest.mark.asyncio
+async def test_sync_federation_dry_run_returns_preview_response(sample_user_context, sample_federation, acl_service):
+    federation_crud_service = MagicMock()
+    federation_crud_service.get_federation = AsyncMock(return_value=sample_federation)
+    federation_crud_service.validate_provider_config = MagicMock(return_value=sample_federation.providerConfig)
+
+    preview_result = SimpleNamespace(
+        provider_type=sample_federation.providerType,
+        provider_config=sample_federation.providerConfig,
+        discovered_mcp_count=2,
+        discovered_a2a_count=1,
+        summary=SimpleNamespace(
+            createdMcpServers=1,
+            updatedMcpServers=0,
+            deletedMcpServers=0,
+            unchangedMcpServers=1,
+            createdAgents=1,
+            updatedAgents=0,
+            deletedAgents=0,
+            unchangedAgents=0,
+            skippedAgents=0,
+            errors=0,
+            errorMessages=[],
+        ),
+        message=None,
+    )
+    federation_sync_service = MagicMock()
+    federation_sync_service.preview_manual_sync = AsyncMock(return_value=preview_result)
+    federation_sync_service.start_manual_sync = AsyncMock()
+
+    result = await sync_federation(
+        federation_id=str(sample_federation.id),
+        data=FederationSyncRequest(dryRun=True, reason="test connection"),
+        user_context=sample_user_context,
+        federation_crud_service=federation_crud_service,
+        federation_sync_service=federation_sync_service,
+        acl_service=acl_service,
+    )
+
+    assert isinstance(result, FederationSyncDryRunResponse)
+    assert result.dryRun is True
+    assert result.summary.discoveredMcpServers == 2
+    assert result.summary.createdAgents == 1
+    federation_sync_service.preview_manual_sync.assert_awaited_once_with(
+        federation=sample_federation,
+        reason="test connection",
+        triggered_by=sample_user_context["user_id"],
+    )
+    federation_sync_service.start_manual_sync.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sync_federation_dry_run_bypasses_running_sync_status(
+    sample_user_context, sample_federation, acl_service
+):
+    syncing_federation = SimpleNamespace(**{**sample_federation.__dict__, "syncStatus": FederationSyncStatus.SYNCING})
+    federation_crud_service = MagicMock()
+    federation_crud_service.get_federation = AsyncMock(return_value=syncing_federation)
+    federation_crud_service.validate_provider_config = MagicMock(return_value=syncing_federation.providerConfig)
+
+    preview_result = SimpleNamespace(
+        provider_type=syncing_federation.providerType,
+        provider_config=syncing_federation.providerConfig,
+        discovered_mcp_count=0,
+        discovered_a2a_count=0,
+        summary=SimpleNamespace(
+            createdMcpServers=0,
+            updatedMcpServers=0,
+            deletedMcpServers=0,
+            unchangedMcpServers=0,
+            createdAgents=0,
+            updatedAgents=0,
+            deletedAgents=0,
+            unchangedAgents=0,
+            skippedAgents=0,
+            errors=0,
+            errorMessages=[],
+        ),
+        message=None,
+    )
+    federation_sync_service = MagicMock()
+    federation_sync_service.preview_manual_sync = AsyncMock(return_value=preview_result)
+
+    result = await sync_federation(
+        federation_id=str(syncing_federation.id),
+        data=FederationSyncRequest(dryRun=True),
+        user_context=sample_user_context,
+        federation_crud_service=federation_crud_service,
+        federation_sync_service=federation_sync_service,
+        acl_service=acl_service,
+    )
+
+    assert result.dryRun is True
+    federation_sync_service.preview_manual_sync.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -484,7 +586,7 @@ async def test_sync_federation_returns_502_for_provider_discovery_failure(
     with pytest.raises(HTTPException) as exc_info:
         await sync_federation(
             federation_id=str(sample_federation.id),
-            data=FederationSyncRequest(force=False, reason="manual"),
+            data=FederationSyncRequest(),
             user_context=sample_user_context,
             federation_crud_service=federation_crud_service,
             federation_sync_service=federation_sync_service,
@@ -508,7 +610,7 @@ async def test_sync_federation_creates_pending_job_in_first_transaction(
 
     result = await sync_federation(
         federation_id=str(sample_federation.id),
-        data=FederationSyncRequest(force=False, reason="manual"),
+        data=FederationSyncRequest(reason="manual"),
         user_context=sample_user_context,
         federation_crud_service=federation_crud_service,
         federation_sync_service=federation_sync_service,
@@ -517,7 +619,6 @@ async def test_sync_federation_creates_pending_job_in_first_transaction(
 
     federation_sync_service.start_manual_sync.assert_awaited_once_with(
         federation=sample_federation,
-        force=False,
         reason="manual",
         triggered_by=sample_user_context["user_id"],
     )

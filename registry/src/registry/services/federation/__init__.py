@@ -4,6 +4,7 @@ Federation services for integrating with external registries.
 Supports federation with:
 - Anthropic MCP Registry
 - Workday ASOR (Agent Service Operating Registry)
+- AWS AgentCore
 """
 
 from .anthropic_client import AnthropicFederationClient
