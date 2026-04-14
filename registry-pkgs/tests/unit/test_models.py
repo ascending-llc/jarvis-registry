@@ -387,11 +387,12 @@ class TestExtendedMCPServerStructure:
             config=AgentConfig(
                 title="Agent With Well Known",
                 description="A federated agent",
+                url="https://example.com/.well-known/agent-card.json",
                 type="http_json",
             ),
-            wellKnown={"enabled": True, "url": "https://example.com/.well-known/agent-card.json"},
+            wellKnown={"enabled": True},
         )
 
         assert agent.wellKnown is not None
         assert agent.wellKnown.enabled is True
-        assert str(agent.wellKnown.url) == "https://example.com/.well-known/agent-card.json"
+        assert str(agent.config.url) == "https://example.com/.well-known/agent-card.json"

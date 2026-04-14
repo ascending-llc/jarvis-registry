@@ -31,6 +31,7 @@ Storage Structure:
   "config": {
     "title": "My Custom Agent Name",  # User-provided display title
     "description": "My custom description",  # User-provided description
+    "url": "https://strandsagents.com/agents/deep-intel",  # User-provided agent URL (where card was fetched)
     "type": "jsonrpc"  # Transport type: jsonrpc, grpc, http_json
   },
 
@@ -39,12 +40,12 @@ Storage Structure:
   "status": "active",
   "isEnabled": true,
 
-  # Well-known Configuration
+  # Well-known Configuration (sync state only, URL is in config.url)
   "wellKnown": {
     "enabled": true,
-    "url": "https://strandsagents.com/.well-known/agent-card.json",
     "lastSyncAt": ISODate("2024-01-20T12:00:00Z"),
-    "lastSyncStatus": "success"
+    "lastSyncStatus": "success",
+    "lastSyncVersion": "0.1.0"
   },
 
   # Access Control
@@ -93,6 +94,9 @@ class AgentConfig(BaseModel):
 
     title: str = Field(description="User-provided display title for the agent")
     description: str = Field(default="", description="User-provided description of the agent")
+    url: HttpUrl | str | None = Field(
+        default=None, description="User-provided agent endpoint URL (where agent card was fetched from)"
+    )
     type: str = Field(description="Transport type: jsonrpc, grpc, http_json")
     runtimeAccess: AgentCoreRuntimeAccessConfig | None = Field(
         default=None,
@@ -103,12 +107,11 @@ class AgentConfig(BaseModel):
 
 
 class WellKnownConfig(BaseModel):
-    """Manual .well-known sync configuration."""
+    """Manual .well-known sync configuration - stores sync state only, URL is in config.url"""
 
     enabled: bool = Field(default=False, description="Whether well-known sync is enabled")
-    url: HttpUrl | None = Field(None, description="URL to .well-known/agent-card.json")
 
-    # Sync metadata (manual refresh only)
+    # Sync metadata (manual refresh only) - URL comes from config.url
     lastSyncAt: datetime | None = Field(None, description="Last successful sync timestamp")
     lastSyncStatus: str | None = Field(None, description="success | failed | unreachable")
     lastSyncVersion: str | None = Field(None, description="Agent version from last sync")
@@ -148,7 +151,7 @@ class A2AAgent(Document):
 
     # ========== Registry-specific Configuration ==========
     config: AgentConfig | None = Field(
-        default=None, description="User-provided agent configuration (title, description, transport type)"
+        default=None, description="User-provided agent configuration (title, description, URL, transport type)"
     )
 
     # ========== Registry Metadata ==========

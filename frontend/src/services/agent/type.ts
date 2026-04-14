@@ -34,6 +34,7 @@ export type AgentItem = {
     title?: string;
     description?: string;
     type?: string;
+    url?: string;
   };
 };
 
@@ -107,6 +108,7 @@ export type Agent = {
     title?: string;
     description?: string;
     type?: string;
+    url?: string;
   };
 };
 
