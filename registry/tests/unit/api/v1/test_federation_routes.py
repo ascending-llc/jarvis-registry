@@ -326,10 +326,7 @@ async def test_delete_federation_returns_deleted_status(
         federation=sample_federation,
         triggered_by=sample_user_context["user_id"],
     )
-    acl_service.delete_acl_entries_for_resource.assert_awaited_once_with(
-        resource_type="federation",
-        resource_id=sample_federation.id,
-    )
+    acl_service.delete_acl_entries_for_resource.assert_not_awaited()
     assert result.federationId == str(sample_federation.id)
     assert result.status == "deleted"
 

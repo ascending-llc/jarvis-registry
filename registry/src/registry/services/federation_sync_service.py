@@ -865,24 +865,22 @@ class FederationSyncService:
         await self.federation_job_service.mark_syncing(job, FederationJobPhase.APPLYING)
 
         try:
-            await self._delete_transaction(federation)
+            federation_id_str = str(federation.id)
+            mcp_arns, a2a_arns = await self._delete_transaction(federation, current_job_id=job.id)
 
-            # If vector records still need explicit deletion, do it outside the transaction.
-            stats = FederationStats(mcpServerCount=0, agentCount=0, toolCount=0, importedTotal=0)
-            last_sync = FederationLastSync(
-                jobId=job.id,
-                jobType=job.jobType,
-                status=FederationSyncStatus.SUCCESS,
-                startedAt=job.startedAt,
-                finishedAt=datetime.now(UTC),
-            )
+            vector_errors = await self._delete_vectors_for_federation(federation_id_str, mcp_arns, a2a_arns)
+            if vector_errors:
+                job.applySummary.errorMessages.extend(vector_errors)
 
-            await self.federation_crud_service.mark_sync_success(federation, last_sync, stats)
-            await self.federation_crud_service.mark_deleted(federation)
             await self.federation_job_service.mark_success(job)
             return job
         except Exception as exc:
-            await self.federation_crud_service.mark_delete_failed(federation, str(exc))
+            # Federation doc may already be gone if the transaction committed but vector
+            # cleanup failed; attempt to record the failure and swallow any secondary error.
+            try:
+                await self.federation_crud_service.mark_delete_failed(federation, str(exc))
+            except Exception as e:
+                logger.exception("Could not record delete failure on federation %s e: %s", federation.id, str(e))
             await self.federation_job_service.mark_failed(job, FederationJobPhase.FAILED, str(exc))
             raise
 
@@ -964,6 +962,40 @@ class FederationSyncService:
             if runtime_arn
         ]
 
+    async def _delete_vectors_for_federation(
+        self,
+        federation_id_str: str,
+        mcp_runtime_arns: list[str],
+        a2a_runtime_arns: list[str],
+    ) -> list[str]:
+        """Remove Weaviate vector records for all MCP and A2A runtimes belonging to a deleted federation.
+
+        Returns a list of error messages for any ARNs that could not be cleaned up.
+        Failures are non-fatal — MongoDB is the source of truth and the resources are
+        already gone; orphaned vector records are a cosmetic issue that can be repaired
+        by a future rebuild.
+        """
+        errors: list[str] = []
+
+        if mcp_runtime_arns:
+            await self.mcp_server_repo.ensure_collection()
+            for arn in mcp_runtime_arns:
+                try:
+                    await self.mcp_server_repo.delete_by_runtime_identity(federation_id_str, arn)
+                except Exception as e:
+                    logger.exception("Failed to delete MCP vector records for runtime %s,e: %s", arn, str(e))
+                    errors.append(f"mcp vector cleanup failed for {arn}")
+
+        if a2a_runtime_arns:
+            await self.a2a_agent_repo.ensure_collection()
+            for arn in a2a_runtime_arns:
+                try:
+                    await self.a2a_agent_repo.delete_by_runtime_identity(federation_id_str, arn)
+                except Exception as e:
+                    logger.error("Failed to delete A2A vector records for runtime %s ,e: %s", arn, str(e))
+                    errors.append(f"a2a vector cleanup failed for {arn}")
+        return errors
+
     @staticmethod
     def _build_last_sync(job: FederationSyncJob, apply_summary: FederationApplySummary) -> FederationLastSync:
         sync_status = FederationSyncStatus.FAILED if apply_summary.errors else FederationSyncStatus.SUCCESS
@@ -1022,15 +1054,52 @@ class FederationSyncService:
         return f"{len(error_messages)} resource sync failures. First error: {error_messages[0]}"
 
     @use_transaction
-    async def _delete_transaction(self, federation: Federation) -> None:
+    async def _delete_transaction(
+        self,
+        federation: Federation,
+        *,
+        current_job_id,
+    ) -> tuple[list[str], list[str]]:
+        """
+        Atomically removes every MongoDB document owned by this federation.
+
+        Returns (mcp_runtime_arns, a2a_runtime_arns) so the caller can clean up
+        Weaviate vector records outside the transaction.
+        """
         session = self._get_current_session_or_none()
         mcp_list = await ExtendedMCPServer.find({"federationRefId": federation.id}, session=session).to_list()
+        mcp_runtime_arns = [arn for item in mcp_list if (arn := self._extract_runtime_arn(item.federationMetadata))]
         for item in mcp_list:
+            await self.acl_service.delete_acl_entries_for_resource(
+                resource_type=ResourceType.MCPSERVER,
+                resource_id=item.id,
+            )
             await item.delete(session=session)
 
         a2a_list = await A2AAgent.find({"federationRefId": federation.id}, session=session).to_list()
+        a2a_runtime_arns = [arn for item in a2a_list if (arn := self._extract_runtime_arn(item.federationMetadata))]
         for item in a2a_list:
+            await self.acl_service.delete_acl_entries_for_resource(
+                resource_type=ResourceType.REMOTE_AGENT,
+                resource_id=item.id,
+            )
             await item.delete(session=session)
+
+        # Delete all sync job history except the in-progress DELETE job.
+        old_jobs = await FederationSyncJob.find(
+            {"federationId": federation.id, "_id": {"$ne": current_job_id}},
+            session=session,
+        ).to_list()
+        for old_job in old_jobs:
+            await old_job.delete(session=session)
+
+        # Delete the federation's own ACL entries.
+        await self.acl_service.delete_acl_entries_for_resource(
+            resource_type="federation",
+            resource_id=federation.id,
+        )
+        await federation.delete(session=session)
+        return mcp_runtime_arns, a2a_runtime_arns
 
     @staticmethod
     def _extract_runtime_arn(metadata: dict[str, Any] | None) -> str | None:

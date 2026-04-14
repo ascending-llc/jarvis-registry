@@ -583,10 +583,6 @@ async def delete_federation(
             federation=federation,
             triggered_by=user_context.get("user_id"),
         )
-        await acl_service.delete_acl_entries_for_resource(
-            resource_type=FEDERATION_RESOURCE_TYPE,
-            resource_id=federation.id,
-        )
         return _to_delete_response(federation, job)
     except ValueError as exc:
         _raise_federation_value_error(exc)

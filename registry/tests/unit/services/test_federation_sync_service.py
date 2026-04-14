@@ -109,6 +109,62 @@ async def test_azure_sync_is_not_implemented(federation_sync_service: Federation
 
 
 @pytest.mark.asyncio
+async def test_run_delete_marks_job_success_and_cleans_up_vectors(federation_sync_service: FederationSyncService):
+    federation = _make_federation(
+        FederationProviderType.AWS_AGENTCORE,
+        {"region": "us-east-1", "assumeRoleArn": "arn:aws:iam::123456789012:role/TestRole"},
+    )
+    federation.status = FederationStatus.DELETING
+    job = SimpleNamespace(id=PydanticObjectId(), jobType="delete_sync", startedAt=datetime.now(UTC))
+
+    mcp_arns = ["arn:aws:bedrock-agentcore:us-east-1:123:runtime/mcp-1"]
+    a2a_arns = ["arn:aws:bedrock-agentcore:us-east-1:123:runtime/a2a-1"]
+
+    federation_sync_service.federation_job_service.mark_syncing = AsyncMock()
+    federation_sync_service.federation_job_service.mark_success = AsyncMock()
+    federation_sync_service._delete_transaction = AsyncMock(return_value=(mcp_arns, a2a_arns))
+    federation_sync_service._delete_vectors_for_federation = AsyncMock(return_value=[])
+
+    result = await federation_sync_service.run_delete(federation=federation, job=job)
+
+    federation_sync_service._delete_transaction.assert_awaited_once_with(federation, current_job_id=job.id)
+    federation_sync_service._delete_vectors_for_federation.assert_awaited_once_with(
+        str(federation.id), mcp_arns, a2a_arns
+    )
+    federation_sync_service.federation_job_service.mark_success.assert_awaited_once_with(job)
+    assert result is job
+
+
+@pytest.mark.asyncio
+async def test_run_delete_records_vector_errors_in_job_but_still_succeeds(
+    federation_sync_service: FederationSyncService,
+):
+    federation = _make_federation(
+        FederationProviderType.AWS_AGENTCORE,
+        {"region": "us-east-1", "assumeRoleArn": "arn:aws:iam::123456789012:role/TestRole"},
+    )
+    federation.status = FederationStatus.DELETING
+    job = SimpleNamespace(
+        id=PydanticObjectId(),
+        jobType="delete_sync",
+        startedAt=datetime.now(UTC),
+        applySummary=FederationApplySummary(),
+    )
+
+    vector_errors = ["mcp vector cleanup failed for arn:aws:bedrock-agentcore:us-east-1:123:runtime/mcp-1"]
+
+    federation_sync_service.federation_job_service.mark_syncing = AsyncMock()
+    federation_sync_service.federation_job_service.mark_success = AsyncMock()
+    federation_sync_service._delete_transaction = AsyncMock(return_value=(["arn:..."], []))
+    federation_sync_service._delete_vectors_for_federation = AsyncMock(return_value=vector_errors)
+
+    result = await federation_sync_service.run_delete(federation=federation, job=job)
+
+    assert result.applySummary.errorMessages == vector_errors
+    federation_sync_service.federation_job_service.mark_success.assert_awaited_once_with(job)
+
+
+@pytest.mark.asyncio
 async def test_run_delete_restores_active_status_when_delete_fails(federation_sync_service: FederationSyncService):
     federation = _make_federation(
         FederationProviderType.AWS_AGENTCORE,
