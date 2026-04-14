@@ -559,7 +559,6 @@ async def sync_federation(
 
 @router.delete("/{federation_id}", response_model=FederationDeleteResponse)
 @track_registry_operation("delete", resource_type="federation")
-@use_transaction
 async def delete_federation(
     federation_id: str,
     user_context: CurrentUser,

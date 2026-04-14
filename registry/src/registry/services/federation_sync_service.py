@@ -4,13 +4,14 @@ from datetime import UTC, datetime
 from typing import Any
 
 from registry_pkgs.database.decorators import get_current_session, use_transaction
-from registry_pkgs.models import A2AAgent, ExtendedMCPServer
+from registry_pkgs.models import A2AAgent, ExtendedMCPServer, PrincipalType, ResourceType
 from registry_pkgs.models.enums import (
     FederationJobPhase,
     FederationJobType,
     FederationProviderType,
     FederationSyncStatus,
     FederationTriggerType,
+    RoleBits,
 )
 from registry_pkgs.models.federation import (
     Federation,
@@ -186,6 +187,7 @@ class FederationSyncService:
                 federation=federation,
                 job=job,
                 discovered=discovered,
+                user_id=user_id,
             )
             if mutation_result.summary.errorMessages:
                 return job
@@ -303,6 +305,7 @@ class FederationSyncService:
         federation: Federation,
         job: FederationSyncJob,
         discovered: dict[str, list[Any]],
+        user_id: str | None,
     ) -> FederationSyncMutationResult:
         """Apply the discovered federation state in one Mongo transaction."""
         discovered_mcp = discovered.get("mcp_servers", [])
@@ -324,7 +327,7 @@ class FederationSyncService:
             discovered_mcp=discovered_mcp,
             discovered_a2a=discovered_a2a,
         )
-        mutation_result = await self._apply_sync_plan(sync_plan)
+        mutation_result = await self._apply_sync_plan(sync_plan, user_id=user_id)
         await self.federation_job_service.update_apply_summary(job, mutation_result.summary)
         stats = await self._build_federation_stats(federation.id)
         last_sync = self._build_last_sync(job, mutation_result.summary)
@@ -673,7 +676,12 @@ class FederationSyncService:
 
         return sync_plan
 
-    async def _apply_sync_plan(self, sync_plan: FederationSyncPlan) -> FederationSyncMutationResult:
+    async def _apply_sync_plan(
+        self,
+        sync_plan: FederationSyncPlan,
+        *,
+        user_id: str | None,
+    ) -> FederationSyncMutationResult:
         """Apply a previously computed sync plan inside the current transaction."""
         session = self._get_current_session_or_none()
         mutation_result = FederationSyncMutationResult(summary=sync_plan.summary)
@@ -684,6 +692,7 @@ class FederationSyncService:
             server.federationMetadata["providerType"] = _enum_value(sync_plan.provider_type)
             await server.insert(session=session)
             mutation_result.changed_mcp_runtime_arns.add(remote_id)
+            await self._grant_owner(user_id, ResourceType.MCPSERVER, server.id)
 
         for existing, item, remote_id in sync_plan.mcp_updates:
             existing.serverName = item.serverName
@@ -695,6 +704,7 @@ class FederationSyncService:
             existing.federationMetadata = item.federationMetadata
             await existing.save(session=session)
             mutation_result.changed_mcp_runtime_arns.add(remote_id)
+            await self._grant_owner(user_id, ResourceType.MCPSERVER, existing.id)
 
         for stale, stale_runtime_arn in sync_plan.mcp_deletes:
             await stale.delete(session=session)
@@ -707,6 +717,7 @@ class FederationSyncService:
             agent.federationMetadata["providerType"] = _enum_value(sync_plan.provider_type)
             await agent.insert(session=session)
             mutation_result.changed_a2a_runtime_arns.add(remote_id)
+            await self._grant_owner(user_id, ResourceType.REMOTE_AGENT, agent.id)
 
         for existing, item, remote_id in sync_plan.a2a_updates:
             existing.path = item.path
@@ -718,6 +729,7 @@ class FederationSyncService:
             existing.federationMetadata = item.federationMetadata
             await existing.save(session=session)
             mutation_result.changed_a2a_runtime_arns.add(remote_id)
+            await self._grant_owner(user_id, ResourceType.REMOTE_AGENT, existing.id)
 
         for stale, stale_runtime_arn in sync_plan.a2a_deletes:
             await stale.delete(session=session)
@@ -725,6 +737,38 @@ class FederationSyncService:
                 mutation_result.changed_a2a_runtime_arns.add(stale_runtime_arn)
 
         return mutation_result
+
+    async def _grant_owner(
+        self,
+        user_id: str | None,
+        resource_type: ResourceType,
+        resource_id: Any,
+    ) -> None:
+        """Grant OWNER ACL to the syncing user for a federation-imported resource.
+
+        No-op when user_id is absent (e.g. system/scheduled syncs).
+        Idempotent: acl_service.grant_permission uses upsert internally,
+        so calling this on an UPDATE safely adds the new syncer as a co-owner
+        without affecting existing owners.
+        """
+        if not user_id:
+            return
+        try:
+            await self.acl_service.grant_permission(
+                principal_type=PrincipalType.USER,
+                principal_id=user_id,
+                resource_type=resource_type,
+                resource_id=resource_id,
+                perm_bits=RoleBits.OWNER,
+            )
+        except Exception as e:
+            logger.exception(
+                "Failed to grant OWNER ACL for user=%s resource_type=%s resource_id=%s e=%s",
+                user_id,
+                resource_type,
+                resource_id,
+                str(e),
+            )
 
     async def _sync_vector_index_after_commit(
         self,
