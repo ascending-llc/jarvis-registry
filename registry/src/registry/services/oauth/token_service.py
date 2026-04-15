@@ -52,7 +52,7 @@ class TokenService:
         self, user_id: str, service_name: str, tokens: OAuthTokens, metadata: dict[str, Any] | None = None
     ) -> Token:
         """
-        Store OAuth access token
+        Store OAuth access token (encrypted)
 
         Args:
             user_id: User ID
@@ -75,6 +75,9 @@ class TokenService:
         user = await self.get_user(user_id)
         user_obj_id = str(user.id)
 
+        # Encrypt the access token
+        encrypted_token = encrypt_value(tokens.access_token)
+
         # Calculate expiration time
         expires_at = self._calculate_expiration(tokens.expires_in)
 
@@ -89,7 +92,7 @@ class TokenService:
 
         if existing_token:
             # Update existing token
-            existing_token.token = tokens.access_token
+            existing_token.token = encrypted_token
             existing_token.expiresAt = expires_at
             if metadata:
                 existing_token.metadata = metadata
@@ -103,7 +106,7 @@ class TokenService:
                 userId=PydanticObjectId(user_obj_id),
                 type=TokenType.MCP_OAUTH_ACCESS.value,
                 identifier=identifier,
-                token=tokens.access_token,
+                token=encrypted_token,
                 expiresAt=expires_at,
                 metadata=metadata or {},
                 email=user.email,
@@ -125,7 +128,7 @@ class TokenService:
         self, user_id: str, service_name: str, tokens: OAuthTokens, metadata: dict[str, Any] | None = None
     ) -> Token | None:
         """
-        Store OAuth refresh token
+        Store OAuth refresh token (encrypted)
 
         Args:
             user_id: User ID
@@ -140,6 +143,9 @@ class TokenService:
         identifier = self._get_refresh_identifier(service_name)
         user = await self.get_user(user_id)
         user_obj_id = str(user.id)
+
+        # Encrypt the refresh token
+        encrypted_token = encrypt_value(tokens.refresh_token)
 
         # Refresh tokens typically have a longer expiration time, set to 1 year here
         # Or set according to OAuth provider configuration
@@ -156,7 +162,7 @@ class TokenService:
 
         if existing_token:
             # Update existing token
-            existing_token.token = tokens.refresh_token
+            existing_token.token = encrypted_token
             existing_token.expiresAt = expires_at
             if metadata:
                 existing_token.metadata = metadata
@@ -170,7 +176,7 @@ class TokenService:
                 userId=PydanticObjectId(user_obj_id),
                 type=TokenType.MCP_OAUTH_REFRESH.value,
                 identifier=identifier,
-                token=tokens.refresh_token,
+                token=encrypted_token,
                 expiresAt=expires_at,
                 metadata=metadata or {},
             )
@@ -215,14 +221,14 @@ class TokenService:
 
     async def get_oauth_access_token(self, user_id: str, service_name: str) -> Token | None:
         """
-        Get OAuth access token
+        Get OAuth access token (decrypted)
 
         Args:
             user_id: User ID
             service_name: Service name
 
         Returns:
-            Token document or None
+            Token document with decrypted token value, or None
         """
         identifier = self._get_access_identifier(service_name)
         user_obj_id = await self.get_user_by_user_id(user_id)
@@ -241,6 +247,10 @@ class TokenService:
             logger.info(f"Token expired for user={user_id}, service={service_name}")
             return None
 
+        # Decrypt the token value before returning
+        if token and token.token:
+            token.token = decrypt_value(token.token)
+
         return token
 
     async def get_oauth_client_token(self, user_id: str, service_name: str) -> Token | None:
@@ -252,14 +262,14 @@ class TokenService:
 
     async def get_oauth_refresh_token(self, user_id: str, service_name: str) -> Token | None:
         """
-        Get OAuth refresh token
+        Get OAuth refresh token (decrypted)
 
         Args:
             user_id: User ID
             service_name: Service name
 
         Returns:
-            Token document or None
+            Token document with decrypted token value, or None
         """
         identifier = self._get_refresh_identifier(service_name)
         user_obj_id = await self.get_user_by_user_id(user_id)
@@ -276,6 +286,10 @@ class TokenService:
         if token and self._is_token_expired(token):
             logger.info(f"Refresh token expired for user={user_id}, service={service_name}")
             return None
+
+        # Decrypt the token value before returning
+        if token and token.token:
+            token.token = decrypt_value(token.token)
 
         return token
 
@@ -446,11 +460,11 @@ class TokenService:
 
     async def get_access_token_status(self, user_id: str, service_name: str) -> tuple[Token | None, bool]:
         """
-        Get access token and its validity status
+        Get access token and its validity status (decrypted)
 
         Returns:
             tuple: (token_doc, is_valid)
-                - token_doc: Token document or None if not exists
+                - token_doc: Token document with decrypted token value, or None if not exists
                 - is_valid: True if token exists and not expired, False otherwise
         """
         identifier = self._get_access_identifier(service_name)
@@ -467,16 +481,20 @@ class TokenService:
         if not token:
             return None, False
 
+        # Decrypt the token value before returning
+        if token.token:
+            token.token = decrypt_value(token.token)
+
         is_valid = not self._is_token_expired(token)
         return token, is_valid
 
     async def get_refresh_token_status(self, user_id: str, service_name: str) -> tuple[Token | None, bool]:
         """
-        Get refresh token and its validity status
+        Get refresh token and its validity status (decrypted)
 
         Returns:
             tuple: (token_doc, is_valid)
-                - token_doc: Token document or None if not exists
+                - token_doc: Token document with decrypted token value, or None if not exists
                 - is_valid: True if token exists and not expired, False otherwise
         """
         identifier = self._get_refresh_identifier(service_name)
@@ -492,6 +510,10 @@ class TokenService:
 
         if not token:
             return None, False
+
+        # Decrypt the token value before returning
+        if token.token:
+            token.token = decrypt_value(token.token)
 
         is_valid = not self._is_token_expired(token)
         return token, is_valid
