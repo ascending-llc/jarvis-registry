@@ -23,6 +23,7 @@ from registry_pkgs.models.a2a_agent import TRANSPORT_GRPC, TRANSPORT_HTTP_JSON, 
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 
 from ..auth.dependencies import CurrentUser, UserContextDict
+from ..auth.oauth.types import ClientBranding
 from ..core.config import settings
 from ..core.exceptions import InternalServerException, UrlElicitationRequiredException
 from ..deps import (
@@ -176,6 +177,7 @@ async def proxy_to_mcp_server(
             server=server,
             auth_context=auth_context,
             additional_headers=headers,
+            state_metadata={"client_branding": ClientBranding.UNRECOGNIZED, "notify_elicitation_complete": False},
             redis_client=redis_client,
         )
     except UrlElicitationRequiredException as exc:
@@ -747,6 +749,7 @@ async def dynamic_mcp_get_proxy(
             server=server,
             auth_context=auth_context,
             additional_headers=headers,
+            state_metadata={"client_branding": ClientBranding.UNRECOGNIZED, "notify_elicitation_complete": False},
             redis_client=redis_client,
         )
     except UrlElicitationRequiredException as exc:
