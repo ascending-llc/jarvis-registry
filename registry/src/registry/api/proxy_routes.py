@@ -15,7 +15,7 @@ from a2a.client.transports.rest import RestTransport
 from a2a.types import MessageSendParams
 from beanie import PydanticObjectId
 from fastapi import APIRouter, Depends, Request, Response
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from redis import Redis
 
 from registry_pkgs.models import ResourceType
@@ -612,6 +612,11 @@ async def dynamic_mcp_post_proxy(
 
     MCP protocol only uses GET and POST methods.
     """
+    # If client accidentally tries to connect to our MCP Gateway via the dynamic catch-all route,
+    # respond with a permanent redirect.
+    if request.url.path == "/proxy/server/mcpgw/mcp":
+        return RedirectResponse(f"{settings.registry_url.rstrip('/')}/proxy/mcpgw/mcp", status_code=308)
+
     msg_body = await _parse_json_rpc_body(request)
     if msg_body is None:
         # Bad request body. Just return 400.
@@ -720,6 +725,11 @@ async def dynamic_mcp_get_proxy(
 
     MCP protocol only uses GET and POST methods.
     """
+    # If client accidentally tries to connect to our MCP Gateway via the dynamic catch-all route,
+    # respond with a permanent redirect.
+    if request.url.path == "/proxy/server/mcpgw/mcp":
+        return RedirectResponse(f"{settings.registry_url.rstrip('/')}/proxy/mcpgw/mcp", status_code=308)
+
     # Extract registered server path from request URL
     path = f"/{full_path}"
     server_path = await extract_server_path_from_request(path, server_service)
