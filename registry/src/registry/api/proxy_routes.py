@@ -53,14 +53,45 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["MCP Proxy"])
 
 
-async def _extract_request_id(request: Request) -> str | int | None:
-    """Extract JSON-RPC request ID from request body."""
+async def _parse_json_rpc_body(request: Request) -> dict[str, Any] | None:
+    """
+    Parse the JSON RPC message body and returns a dictionary. If parsing fails, return None.
+
+    Raises: Nothing.
+    """
     try:
         body = await request.body()
 
         json_body = json.loads(body)
 
-        id_ = json_body["id"]
+        if not isinstance(json_body, dict):
+            logger.error("The JSON RPC message body is not a JSON object.")
+
+            return None
+
+        return json_body
+    except Exception:
+        logger.exception("failed to parse JSON RPC message body")
+
+        return None
+
+
+def _is_notification(msg_dict: dict[str, Any]) -> bool:
+    if "id" in msg_dict:
+        # Notifications are not allowed to have "id".
+        return False
+    elif "method" not in msg_dict or not isinstance(msg_dict["method"], str):
+        # Notifications must have the "method" field and it's a string.
+        return False
+    else:
+        # If the message is a notification, its "method" field must start with "notifications/"
+        return msg_dict["method"].startswith("notifications/")
+
+
+def _extract_request_id(request_dict: dict[str, Any]) -> str | int | None:
+    """Extract JSON-RPC request ID from request body."""
+    try:
+        id_ = request_dict["id"]
 
         if not isinstance(id_, str) and not isinstance(id_, int):
             return None
@@ -581,7 +612,16 @@ async def dynamic_mcp_post_proxy(
 
     MCP protocol only uses GET and POST methods.
     """
-    request_id = await _extract_request_id(request)
+    msg_body = await _parse_json_rpc_body(request)
+    if msg_body is None:
+        # Bad request body. Just return 400.
+        return Response(status_code=400)
+
+    if _is_notification(msg_body):
+        # On notification (e.g. `notifications/initialized`), MCP spec requires 202 with empty body.
+        return Response(status_code=202)
+
+    request_id = _extract_request_id(msg_body)
     if request_id is None:
         return JSONResponse(
             status_code=200,
