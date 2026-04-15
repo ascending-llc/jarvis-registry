@@ -36,8 +36,9 @@ class ACLService:
         resource_id: PydanticObjectId,
         role_id: PydanticObjectId | None,
         perm_bits: int | None,
-        session=None,
     ) -> ExtendedAclEntry:
+        session = get_current_session()
+
         acl_entry = await ExtendedAclEntry.find_one(
             {
                 "principalType": principal_type,
@@ -137,12 +138,6 @@ class ACLService:
 
         # Check if an ACL entry already exists for this principal/resource
         try:
-            session = None
-            try:
-                session = get_current_session()
-            except RuntimeError:
-                session = None
-
             return await self._upsert_acl_entry(
                 principal_type=principal_type,
                 principal_id=principal_id,
@@ -150,7 +145,6 @@ class ACLService:
                 resource_id=resource_id,
                 role_id=role_id,
                 perm_bits=perm_bits,
-                session=session,
             )
         except Exception as e:
             if "NoSuchTransaction" in str(e) or "txnNumber" in str(e):
@@ -163,7 +157,6 @@ class ACLService:
                         resource_id=resource_id,
                         role_id=role_id,
                         perm_bits=perm_bits,
-                        session=None,
                     )
                 except Exception as retry_error:
                     logger.error(f"Error upserting ACL entry on retry: {retry_error}")
@@ -188,6 +181,9 @@ class ACLService:
                 query["permBits"] = {"$lte": perm_bits_to_delete}
 
             result = await ExtendedAclEntry.find(query).delete(session=session)
+            if result is None:
+                return 0
+
             return result.deleted_count
         except Exception as e:
             logger.error(f"Error deleting ACL entries for {resource_type}/{resource_id}: {e}")
@@ -224,6 +220,9 @@ class ACLService:
                 "principalId": principal_id,
             }
             result = await ExtendedAclEntry.find(query).delete(session=session)
+            if result is None:
+                return 0
+
             return result.deleted_count
         except Exception as e:
             logger.error(f"Error revoking ACL entry for resource {resource_type} with ID {resource_id}: {e}")

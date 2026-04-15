@@ -415,7 +415,7 @@ class AgentCoreImportService:
         created_server.status = discovered_server.status or created_server.status
         created_server.federationMetadata = discovered_server.federationMetadata
         created_server.updatedAt = now
-        await created_server.save(session=self._get_current_session_or_none())
+        await created_server.save(session=get_current_session())
 
         await self._ensure_acl_permissions(
             resource_type=ResourceType.MCPSERVER,
@@ -513,7 +513,7 @@ class AgentCoreImportService:
         discovered_agent.author = owner_id
         discovered_agent.createdAt = discovered_agent.createdAt or now
         discovered_agent.updatedAt = now
-        await discovered_agent.insert(session=self._get_current_session_or_none())
+        await discovered_agent.insert(session=get_current_session())
 
         await self._ensure_acl_permissions(
             resource_type=ResourceType.REMOTE_AGENT,
@@ -543,7 +543,7 @@ class AgentCoreImportService:
         existing.wellKnown = new_data.wellKnown
         existing.federationMetadata = new_data.federationMetadata
         existing.updatedAt = datetime.now(UTC)
-        await existing.save(session=self._get_current_session_or_none())
+        await existing.save(session=get_current_session())
         if detected_changes:
             await self.a2a_agent_repo.sync_agent_to_vector_db(existing, is_delete=True)
         return detected_changes
@@ -575,7 +575,7 @@ class AgentCoreImportService:
         existing.federationMetadata = new_data.federationMetadata
         existing.updatedAt = datetime.now(UTC)
 
-        await existing.save(session=self._get_current_session_or_none())
+        await existing.save(session=get_current_session())
 
         if detected_changes:
             await self.mcp_server_repo.sync_server_to_vector_db(existing, is_delete=True)
@@ -685,7 +685,7 @@ class AgentCoreImportService:
 
         if server_id:
             await self.mcp_server_repo.delete_by_server_id(server_id, server_name)
-        await stale_server.delete(session=self._get_current_session_or_none())
+        await stale_server.delete(session=get_current_session())
         return {
             "action": "deleted",
             "server_name": server_name,
@@ -715,7 +715,7 @@ class AgentCoreImportService:
 
         if agent_id:
             await self.a2a_agent_repo.delete_by_agent_id(agent_id, agent_name)
-        await stale_agent.delete(session=self._get_current_session_or_none())
+        await stale_agent.delete(session=get_current_session())
         return {
             "action": "deleted",
             "agent_name": agent_name,
@@ -780,12 +780,6 @@ class AgentCoreImportService:
                 resource_id=resource_id,
                 perm_bits=PermissionBits.VIEW,
             )
-
-    def _get_current_session_or_none(self):
-        try:
-            return get_current_session()
-        except RuntimeError:
-            return None
 
     @use_transaction
     async def _import_single_server_in_transaction(

@@ -223,12 +223,8 @@ class TestGetCurrentSession:
     """Tests for the get_current_session() function."""
 
     def test_get_current_session_return_none_when__no_transaction(self):
-        """Test that get_current_session raises RuntimeError when no transaction is active."""
-        with pytest.raises(RuntimeError) as exc_info:
-            get_current_session()
-
-        assert "No active transaction" in str(exc_info.value)
-        assert "@use_transaction" in str(exc_info.value)
+        """Test that get_current_session returns None when no transaction is active."""
+        assert get_current_session() is None
 
     @pytest.mark.asyncio
     async def test_get_current_session_returns_session_in_transaction(self):

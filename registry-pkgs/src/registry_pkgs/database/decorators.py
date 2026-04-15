@@ -47,7 +47,7 @@ def use_transaction(func: Callable) -> Callable:
             raise RuntimeError(
                 f"Nested transaction detected in {func.__name__}. "
                 f"Remove @use_transaction decorator from this function or its callers. "
-                f"Only apply @use_transaction to route handlers, not service methods."
+                f"Only apply @use_transaction to exactly one function/method involved in a request lifecycle."
             )
 
         client: AsyncMongoClient = MongoDB.get_client()
@@ -97,23 +97,22 @@ def use_transaction(func: Callable) -> Callable:
     return wrapper
 
 
-def get_current_session() -> AsyncClientSession:
-    """Get the current MongoDB session from the active transaction context.
-    This function retrieves the session created by the @use_transaction decorator.
-    It should be called from service methods that need to participate in the
-    transaction by passing the session to database operations.
+def get_current_session() -> AsyncClientSession | None:
+    """Get the current MongoDB session from the active transaction context (if any).
+    This function retrieves the session created by the @use_transaction decorator, if the current async context
+    is in a MongoDB transaction. Otherwise it returns None.
+    It should be called from methods that need to participate in the
+    transaction by passing the session object to a CRUD method of a Beanie document class.
+    Note that all CRUD methods a Beanie document class expect the session parameter to be `AsyncClientSession | None`.
+    If None is passed, the operation is simply performed outside of a transaction.
+    This is why this method simply returns None when there is no transaction in the current async context.
     Usage:
         async def create_user(user_data: dict):
             session = get_current_session()
             user = User(**user_data)
-            await user.insert(session=session)
+            await user.insert(session=session)  # <- User is a Beanie document class; .insert is a CRUD method.
             return user
     Returns:
-        AsyncClientSession: The active MongoDB session
-    Raises:
-        RuntimeError: If called outside a @use_transaction decorated function
+        AsyncClientSession | None: The active MongoDB session if in transaction. Otherwise None.
     """
-    session = _tx_session.get()
-    if session is None:
-        raise RuntimeError("No active transaction. Use @use_transaction decorator.")
-    return session
+    return _tx_session.get()

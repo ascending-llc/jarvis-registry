@@ -61,7 +61,11 @@ class AgentCoreRuntimeInvoker:
         assume_role_arn: str | None = None,
     ) -> None:
         config = server.config or {}
-        runtime_url = config.get("url")
+        runtime_url = self._resolve_runtime_http_url(
+            runtime_url=config.get("url"),
+            metadata=server.federationMetadata or {},
+            region=region,
+        )
         if not runtime_url:
             return
 
@@ -805,6 +809,23 @@ class AgentCoreRuntimeInvoker:
         if protocol_version:
             kwargs["mcpProtocolVersion"] = protocol_version
         return kwargs
+
+    @staticmethod
+    def _build_encoded_runtime_invocation_url(runtime_arn: str, region: str) -> str:
+        escaped_runtime_arn = quote(runtime_arn, safe="")
+        return f"https://bedrock-agentcore.{region}.amazonaws.com/runtimes/{escaped_runtime_arn}/invocations"
+
+    def _resolve_runtime_http_url(
+        self,
+        *,
+        runtime_url: str | None,
+        metadata: dict[str, Any],
+        region: str,
+    ) -> str | None:
+        runtime_arn = self._resolve_runtime_arn(metadata=metadata, runtime_detail=metadata)
+        if runtime_arn:
+            return f"{self._build_encoded_runtime_invocation_url(runtime_arn, region)}?qualifier=DEFAULT"
+        return runtime_url
 
     async def _call_with_runtime_init_retry(self, operation: Callable[[], Any]) -> Any:
         """

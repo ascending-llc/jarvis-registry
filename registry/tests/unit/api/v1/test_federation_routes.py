@@ -77,7 +77,6 @@ def sample_federation():
         },
         stats={"mcpServerCount": 0, "agentCount": 0, "toolCount": 0, "importedTotal": 0},
         lastSync=None,
-        version=1,
         createdBy="test-user-id",
         updatedBy="test-user-id",
         createdAt=now,
@@ -172,7 +171,6 @@ async def test_update_federation_runs_resync_for_provider_changes(
         **{
             **sample_federation.__dict__,
             "providerConfig": {"region": "us-west-2", "assumeRoleArn": "arn:aws:iam::123456789012:role/TestRole"},
-            "version": 2,
         }
     )
     federation_sync_service = MagicMock()
@@ -180,14 +178,13 @@ async def test_update_federation_runs_resync_for_provider_changes(
         return_value=(updated_federation, sample_job)
     )
 
-    result = await update_federation(
+    await update_federation(
         federation_id=str(sample_federation.id),
         data=FederationUpdateRequest(
             displayName="AWS AgentCore Prod",
             description="Updated federation",
             tags=["prod"],
             providerConfig={"region": "us-west-2"},
-            version=1,
             syncAfterUpdate=True,
         ),
         user_context=sample_user_context,
@@ -202,11 +199,9 @@ async def test_update_federation_runs_resync_for_provider_changes(
         description="Updated federation",
         tags=["prod"],
         provider_config={"region": "us-west-2"},
-        version=1,
         updated_by=sample_user_context["user_id"],
         sync_after_update=True,
     )
-    assert result.version == 2
 
 
 @pytest.mark.asyncio
@@ -228,7 +223,6 @@ async def test_update_federation_requires_aws_region_and_assume_role(
                 description="Updated federation",
                 tags=["prod"],
                 providerConfig={},
-                version=1,
                 syncAfterUpdate=False,
             ),
             user_context=sample_user_context,
@@ -267,7 +261,6 @@ async def test_update_federation_rejects_azure_provider(sample_user_context, sam
                 description="Updated federation",
                 tags=["prod"],
                 providerConfig={"projectEndpoint": "https://new.projects.ai.azure.com"},
-                version=1,
                 syncAfterUpdate=True,
             ),
             user_context=sample_user_context,
@@ -287,22 +280,19 @@ async def test_update_federation_skips_resync_when_provider_config_is_unchanged(
     federation_crud_service.get_federation = AsyncMock(return_value=sample_federation)
     federation_crud_service.validate_provider_config = MagicMock(return_value=sample_federation.providerConfig)
     federation_crud_service.get_recent_jobs = AsyncMock(return_value=[])
-    updated_federation = SimpleNamespace(
-        **{**sample_federation.__dict__, "description": "Updated federation", "version": 2}
-    )
+    updated_federation = SimpleNamespace(**{**sample_federation.__dict__, "description": "Updated federation"})
     federation_crud_service.update_federation = AsyncMock(return_value=updated_federation)
 
     federation_sync_service = MagicMock()
     federation_sync_service.update_federation_with_optional_resync = AsyncMock(return_value=(updated_federation, None))
 
-    result = await update_federation(
+    await update_federation(
         federation_id=str(sample_federation.id),
         data=FederationUpdateRequest(
             displayName="AWS AgentCore Prod",
             description="Updated federation",
             tags=["prod"],
             providerConfig=sample_federation.providerConfig,
-            version=1,
             syncAfterUpdate=True,
         ),
         user_context=sample_user_context,
@@ -312,7 +302,6 @@ async def test_update_federation_skips_resync_when_provider_config_is_unchanged(
     )
 
     federation_sync_service.update_federation_with_optional_resync.assert_awaited_once()
-    assert result.version == 2
 
 
 @pytest.mark.asyncio
@@ -337,10 +326,7 @@ async def test_delete_federation_returns_deleted_status(
         federation=sample_federation,
         triggered_by=sample_user_context["user_id"],
     )
-    acl_service.delete_acl_entries_for_resource.assert_awaited_once_with(
-        resource_type="federation",
-        resource_id=sample_federation.id,
-    )
+    acl_service.delete_acl_entries_for_resource.assert_not_awaited()
     assert result.federationId == str(sample_federation.id)
     assert result.status == "deleted"
 
@@ -382,7 +368,6 @@ async def test_update_federation_rejects_deleting_status(sample_user_context, sa
                 description="Updated federation",
                 tags=["prod"],
                 providerConfig={"region": "us-west-2"},
-                version=1,
                 syncAfterUpdate=True,
             ),
             user_context=sample_user_context,

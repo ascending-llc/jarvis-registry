@@ -8,8 +8,8 @@ from beanie import PydanticObjectId
 
 from registry.services.federation.federation_handlers import AwsAgentCoreSyncHandler
 from registry.services.federation_sync_service import FederationSyncMutationResult, FederationSyncService
-from registry_pkgs.models import A2AAgent, ExtendedMCPServer
-from registry_pkgs.models.enums import FederationProviderType, FederationStatus, FederationSyncStatus
+from registry_pkgs.models import A2AAgent, ExtendedMCPServer, ResourceType
+from registry_pkgs.models.enums import FederationProviderType, FederationStatus, FederationSyncStatus, RoleBits
 from registry_pkgs.models.federation_sync_job import FederationApplySummary
 
 
@@ -33,7 +33,6 @@ def _make_federation(provider_type: FederationProviderType, provider_config: dic
         providerConfig=provider_config,
         status=FederationStatus.ACTIVE,
         syncStatus=FederationSyncStatus.IDLE,
-        version=1,
         createdAt=now,
         updatedAt=now,
     )
@@ -110,6 +109,62 @@ async def test_azure_sync_is_not_implemented(federation_sync_service: Federation
 
 
 @pytest.mark.asyncio
+async def test_run_delete_marks_job_success_and_cleans_up_vectors(federation_sync_service: FederationSyncService):
+    federation = _make_federation(
+        FederationProviderType.AWS_AGENTCORE,
+        {"region": "us-east-1", "assumeRoleArn": "arn:aws:iam::123456789012:role/TestRole"},
+    )
+    federation.status = FederationStatus.DELETING
+    job = SimpleNamespace(id=PydanticObjectId(), jobType="delete_sync", startedAt=datetime.now(UTC))
+
+    mcp_arns = ["arn:aws:bedrock-agentcore:us-east-1:123:runtime/mcp-1"]
+    a2a_arns = ["arn:aws:bedrock-agentcore:us-east-1:123:runtime/a2a-1"]
+
+    federation_sync_service.federation_job_service.mark_syncing = AsyncMock()
+    federation_sync_service.federation_job_service.mark_success = AsyncMock()
+    federation_sync_service._delete_transaction = AsyncMock(return_value=(mcp_arns, a2a_arns))
+    federation_sync_service._delete_vectors_for_federation = AsyncMock(return_value=[])
+
+    result = await federation_sync_service.run_delete(federation=federation, job=job)
+
+    federation_sync_service._delete_transaction.assert_awaited_once_with(federation, current_job_id=job.id)
+    federation_sync_service._delete_vectors_for_federation.assert_awaited_once_with(
+        str(federation.id), mcp_arns, a2a_arns
+    )
+    federation_sync_service.federation_job_service.mark_success.assert_awaited_once_with(job)
+    assert result is job
+
+
+@pytest.mark.asyncio
+async def test_run_delete_records_vector_errors_in_job_but_still_succeeds(
+    federation_sync_service: FederationSyncService,
+):
+    federation = _make_federation(
+        FederationProviderType.AWS_AGENTCORE,
+        {"region": "us-east-1", "assumeRoleArn": "arn:aws:iam::123456789012:role/TestRole"},
+    )
+    federation.status = FederationStatus.DELETING
+    job = SimpleNamespace(
+        id=PydanticObjectId(),
+        jobType="delete_sync",
+        startedAt=datetime.now(UTC),
+        applySummary=FederationApplySummary(),
+    )
+
+    vector_errors = ["mcp vector cleanup failed for arn:aws:bedrock-agentcore:us-east-1:123:runtime/mcp-1"]
+
+    federation_sync_service.federation_job_service.mark_syncing = AsyncMock()
+    federation_sync_service.federation_job_service.mark_success = AsyncMock()
+    federation_sync_service._delete_transaction = AsyncMock(return_value=(["arn:..."], []))
+    federation_sync_service._delete_vectors_for_federation = AsyncMock(return_value=vector_errors)
+
+    result = await federation_sync_service.run_delete(federation=federation, job=job)
+
+    assert result.applySummary.errorMessages == vector_errors
+    federation_sync_service.federation_job_service.mark_success.assert_awaited_once_with(job)
+
+
+@pytest.mark.asyncio
 async def test_run_delete_restores_active_status_when_delete_fails(federation_sync_service: FederationSyncService):
     federation = _make_federation(
         FederationProviderType.AWS_AGENTCORE,
@@ -145,7 +200,6 @@ async def test_update_federation_and_create_resync_job_creates_pending_job(
         **{
             **federation.__dict__,
             "providerConfig": {"region": "us-west-2", "assumeRoleArn": "arn:aws:iam::123456789012:role/TestRole"},
-            "version": 2,
         }
     )
     job = SimpleNamespace(id=PydanticObjectId(), jobType="config_resync", createdAt=datetime.now(UTC))
@@ -161,7 +215,6 @@ async def test_update_federation_and_create_resync_job_creates_pending_job(
         description="Updated",
         tags=["prod"],
         normalized_provider_config={"region": "us-west-2", "assumeRoleArn": "arn:aws:iam::123456789012:role/TestRole"},
-        version=federation.version,
         updated_by="user-1",
     )
 
@@ -539,7 +592,58 @@ async def test_build_sync_plan_skips_a2a_insert_when_path_belongs_to_another_res
 
     assert result.summary.skippedAgents == 1
     assert result.summary.createdAgents == 0
+    assert result.summary.errors == 0
+    assert result.summary.errorMessages == []
     discovered_agent.insert.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_build_sync_plan_skips_mcp_insert_without_marking_error(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    conflicting_server = SimpleNamespace(
+        id=PydanticObjectId(),
+        serverName="shared-server",
+        federationRefId=PydanticObjectId(),
+        federationMetadata={"runtimeArn": "arn:existing"},
+    )
+    discovered_server = SimpleNamespace(
+        id=PydanticObjectId(),
+        serverName="shared-server",
+        tags=[],
+        status="active",
+        isEnabled=True,
+        federationRefId=None,
+        federationMetadata={"runtimeArn": "arn:new", "runtimeVersion": "1"},
+        insert=AsyncMock(),
+    )
+
+    def _fake_mcp_find(query, session=None):
+        if "federationRefId" in query:
+            return _FakeQuery([])
+        if "serverName" in query:
+            return _FakeQuery([conflicting_server])
+        raise AssertionError(f"unexpected query: {query}")
+
+    def _fake_a2a_find(*_args, **_kwargs):
+        return _FakeQuery([])
+
+    monkeypatch.setattr("registry.services.federation_sync_service.ExtendedMCPServer.find", _fake_mcp_find)
+    monkeypatch.setattr("registry.services.federation_sync_service.A2AAgent.find", _fake_a2a_find)
+
+    result = await federation_sync_service._build_sync_plan(
+        federation=federation,
+        discovered_mcp=[discovered_server],
+        discovered_a2a=[],
+    )
+
+    assert result.summary.skippedMcpServers == 1
+    assert result.summary.createdMcpServers == 0
+    assert result.summary.errors == 0
+    assert result.summary.errorMessages == []
+    discovered_server.insert.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -647,6 +751,7 @@ async def test_commit_sync_transaction_marks_federation_failed_when_resource_enr
         federation=federation,
         job=job,
         discovered={"mcp_servers": [SimpleNamespace()], "a2a_agents": [SimpleNamespace()]},
+        user_id="user-1",
     )
 
     assert result == mutation_result
@@ -710,3 +815,217 @@ def test_build_last_sync_carries_error_count_and_failed_status():
     assert last_sync.status == FederationSyncStatus.FAILED
     assert last_sync.summary.errors == 1
     assert last_sync.summary.errorMessages == ["A2A agent pharmacy_fraud_a2a: boom"]
+
+
+def test_build_last_sync_treats_skip_only_summary_as_success():
+    job = SimpleNamespace(
+        id=PydanticObjectId(),
+        jobType="full_sync",
+        startedAt=datetime.now(UTC),
+        discoverySummary=SimpleNamespace(discoveredMcpServers=2, discoveredAgents=1),
+    )
+    summary = FederationApplySummary(
+        skippedMcpServers=2,
+        skippedAgents=1,
+        errors=0,
+        errorMessages=[],
+    )
+
+    last_sync = FederationSyncService._build_last_sync(job, summary)
+
+    assert last_sync.status == FederationSyncStatus.SUCCESS
+    assert last_sync.summary.skippedMcpServers == 2
+    assert last_sync.summary.skippedAgents == 1
+    assert last_sync.summary.errors == 0
+
+
+# ---------------------------------------------------------------------------
+# ACL ownership grant tests
+# ---------------------------------------------------------------------------
+
+
+def _make_sync_plan(
+    federation_id, provider_type, mcp_creates=None, mcp_updates=None, a2a_creates=None, a2a_updates=None
+):
+    from registry.services.federation_sync_service import FederationSyncPlan
+
+    mcp_creates = mcp_creates or []
+    mcp_updates = mcp_updates or []
+    a2a_creates = a2a_creates or []
+    a2a_updates = a2a_updates or []
+
+    return FederationSyncPlan(
+        federation_id=federation_id,
+        provider_type=provider_type,
+        summary=FederationApplySummary(),
+        discovered_mcp_count=len(mcp_creates) + len(mcp_updates),
+        discovered_a2a_count=len(a2a_creates) + len(a2a_updates),
+        mcp_creates=mcp_creates,
+        mcp_updates=mcp_updates,
+        mcp_deletes=[],
+        a2a_creates=a2a_creates,
+        a2a_updates=a2a_updates,
+        a2a_deletes=[],
+    )
+
+
+@pytest.mark.asyncio
+async def test_apply_sync_plan_grants_owner_acl_on_mcp_create(
+    federation_sync_service: FederationSyncService, monkeypatch
+):
+    """Creating an MCP server via sync grants the syncing user OWNER ACL."""
+    federation_id = PydanticObjectId()
+    server_id = PydanticObjectId()
+
+    server = MagicMock()
+    server.id = server_id
+    server.federationMetadata = {}
+    server.insert = AsyncMock()
+
+    plan = _make_sync_plan(
+        federation_id,
+        FederationProviderType.AWS_AGENTCORE,
+        mcp_creates=[(server, "arn:mcp:1")],
+    )
+
+    monkeypatch.setattr("registry.services.federation_sync_service.get_current_session", lambda: None)
+    federation_sync_service.acl_service.grant_permission = AsyncMock()
+
+    await federation_sync_service._apply_sync_plan(plan, user_id="user-yulin")
+
+    federation_sync_service.acl_service.grant_permission.assert_awaited_once_with(
+        principal_type="user",
+        principal_id="user-yulin",
+        resource_type=ResourceType.MCPSERVER,
+        resource_id=server_id,
+        perm_bits=RoleBits.OWNER,
+    )
+
+
+@pytest.mark.asyncio
+async def test_apply_sync_plan_grants_owner_acl_on_a2a_create(
+    federation_sync_service: FederationSyncService, monkeypatch
+):
+    """Creating an A2A agent via sync grants the syncing user OWNER ACL."""
+    federation_id = PydanticObjectId()
+    agent_id = PydanticObjectId()
+
+    agent = MagicMock()
+    agent.id = agent_id
+    agent.federationMetadata = {}
+    agent.insert = AsyncMock()
+
+    plan = _make_sync_plan(
+        federation_id,
+        FederationProviderType.AWS_AGENTCORE,
+        a2a_creates=[(agent, "arn:a2a:1")],
+    )
+
+    monkeypatch.setattr("registry.services.federation_sync_service.get_current_session", lambda: None)
+    federation_sync_service.acl_service.grant_permission = AsyncMock()
+
+    await federation_sync_service._apply_sync_plan(plan, user_id="user-yulin")
+
+    federation_sync_service.acl_service.grant_permission.assert_awaited_once_with(
+        principal_type="user",
+        principal_id="user-yulin",
+        resource_type=ResourceType.REMOTE_AGENT,
+        resource_id=agent_id,
+        perm_bits=RoleBits.OWNER,
+    )
+
+
+@pytest.mark.asyncio
+async def test_apply_sync_plan_adds_second_owner_on_mcp_update(
+    federation_sync_service: FederationSyncService, monkeypatch
+):
+    """Updating an existing MCP server adds the new syncer as co-owner (upsert is idempotent)."""
+    federation_id = PydanticObjectId()
+    existing_id = PydanticObjectId()
+
+    existing = MagicMock()
+    existing.id = existing_id
+    existing.federationMetadata = {}
+    existing.save = AsyncMock()
+
+    item = MagicMock()
+    item.serverName = "mcp-1"
+    item.path = "/mcp-1"
+    item.tags = []
+    item.config = {}
+    item.status = "active"
+    item.numTools = 3
+    item.federationMetadata = {}
+
+    plan = _make_sync_plan(
+        federation_id,
+        FederationProviderType.AWS_AGENTCORE,
+        mcp_updates=[(existing, item, "arn:mcp:1")],
+    )
+
+    monkeypatch.setattr("registry.services.federation_sync_service.get_current_session", lambda: None)
+    federation_sync_service.acl_service.grant_permission = AsyncMock()
+
+    await federation_sync_service._apply_sync_plan(plan, user_id="user-kent")
+
+    federation_sync_service.acl_service.grant_permission.assert_awaited_once_with(
+        principal_type="user",
+        principal_id="user-kent",
+        resource_type=ResourceType.MCPSERVER,
+        resource_id=existing_id,
+        perm_bits=RoleBits.OWNER,
+    )
+
+
+@pytest.mark.asyncio
+async def test_apply_sync_plan_skips_acl_grant_when_no_user_id(
+    federation_sync_service: FederationSyncService, monkeypatch
+):
+    """No ACL grant is made when the sync has no user context (e.g. scheduled system sync)."""
+    federation_id = PydanticObjectId()
+
+    server = MagicMock()
+    server.id = PydanticObjectId()
+    server.federationMetadata = {}
+    server.insert = AsyncMock()
+
+    plan = _make_sync_plan(
+        federation_id,
+        FederationProviderType.AWS_AGENTCORE,
+        mcp_creates=[(server, "arn:mcp:1")],
+    )
+
+    monkeypatch.setattr("registry.services.federation_sync_service.get_current_session", lambda: None)
+    federation_sync_service.acl_service.grant_permission = AsyncMock()
+
+    await federation_sync_service._apply_sync_plan(plan, user_id=None)
+
+    federation_sync_service.acl_service.grant_permission.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_apply_sync_plan_continues_after_acl_grant_failure(
+    federation_sync_service: FederationSyncService, monkeypatch
+):
+    """ACL grant failures are logged but do not abort the sync."""
+    federation_id = PydanticObjectId()
+
+    server = MagicMock()
+    server.id = PydanticObjectId()
+    server.federationMetadata = {}
+    server.insert = AsyncMock()
+
+    plan = _make_sync_plan(
+        federation_id,
+        FederationProviderType.AWS_AGENTCORE,
+        mcp_creates=[(server, "arn:mcp:1")],
+    )
+
+    monkeypatch.setattr("registry.services.federation_sync_service.get_current_session", lambda: None)
+    federation_sync_service.acl_service.grant_permission = AsyncMock(side_effect=Exception("ACL store down"))
+
+    # Should not raise
+    result = await federation_sync_service._apply_sync_plan(plan, user_id="user-yulin")
+
+    assert result.summary.createdMcpServers == 0  # summary unchanged (tracked by _build_sync_plan)
+    server.insert.assert_awaited_once()

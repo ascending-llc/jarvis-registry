@@ -159,6 +159,7 @@ The `summary` object returned in `lastSync` and dry-run responses:
 | `updatedMcpServers` | Updated in MongoDB due to version change |
 | `deletedMcpServers` | Removed from MongoDB (no longer discovered) |
 | `unchangedMcpServers` | MongoDB skipped; version unchanged |
+| `skippedMcpServers` | MCP servers skipped due to `serverName` conflict with another federation |
 | `createdAgents` | Newly inserted into MongoDB |
 | `updatedAgents` | Updated in MongoDB due to version change |
 | `deletedAgents` | Removed from MongoDB (no longer discovered) |
@@ -252,7 +253,6 @@ Create only stores the federation definition. It does not trigger a sync job.
   },
   "lastSync": null,
   "recentJobs": [],
-  "version": 1,
   "createdBy": "user_demo_id",
   "updatedBy": "user_demo_id",
   "createdAt": "2026-03-26T07:20:00Z",
@@ -415,7 +415,6 @@ Response shape is the same as `POST /federations`.
     "region": "us-east-1",
     "assumeRoleArn": "arn:aws:iam::123456789012:role/demo"
   },
-  "version": 1,
   "syncAfterUpdate": true
 }
 ```
@@ -443,8 +442,7 @@ AWS `resourceTagsFilter` API shape example:
 | `description` | `string \| null` | No | Description |
 | `tags` | `string[]` | No | UI tags |
 | `providerConfig` | `object` | No | Provider-level control-plane config. For `aws_agentcore`, both `region` and `assumeRoleArn` are required. `providerConfig.runtimeAccess` is not supported and will be rejected. |
-| `version` | `number` | Yes | Optimistic lock version |
-| `syncAfterUpdate` | `boolean` | No | Default `true`. When `true` and `providerConfig` changed, a full sync is triggered after the update. |
+| `syncAfterUpdate` | `boolean` | No | Default `false`. When `true` and `providerConfig` changed, a full sync is triggered after the update. |
 
 ### Success Response
 
@@ -472,17 +470,6 @@ Response shape is the same as `POST /federations`.
   "detail": {
     "error": "not_found",
     "message": "Federation not found"
-  }
-}
-```
-
-`409 Conflict`
-
-```json
-{
-  "detail": {
-    "error": "conflict",
-    "message": "Federation version conflict"
   }
 }
 ```

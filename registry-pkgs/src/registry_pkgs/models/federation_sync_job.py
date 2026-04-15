@@ -25,6 +25,7 @@ class FederationApplySummary(BaseModel):
     updatedMcpServers: int = 0
     deletedMcpServers: int = 0
     unchangedMcpServers: int = 0
+    skippedMcpServers: int = 0
 
     createdAgents: int = 0
     updatedAgents: int = 0
