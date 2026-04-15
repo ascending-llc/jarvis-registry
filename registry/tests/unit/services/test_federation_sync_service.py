@@ -592,7 +592,58 @@ async def test_build_sync_plan_skips_a2a_insert_when_path_belongs_to_another_res
 
     assert result.summary.skippedAgents == 1
     assert result.summary.createdAgents == 0
+    assert result.summary.errors == 0
+    assert result.summary.errorMessages == []
     discovered_agent.insert.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_build_sync_plan_skips_mcp_insert_without_marking_error(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    conflicting_server = SimpleNamespace(
+        id=PydanticObjectId(),
+        serverName="shared-server",
+        federationRefId=PydanticObjectId(),
+        federationMetadata={"runtimeArn": "arn:existing"},
+    )
+    discovered_server = SimpleNamespace(
+        id=PydanticObjectId(),
+        serverName="shared-server",
+        tags=[],
+        status="active",
+        isEnabled=True,
+        federationRefId=None,
+        federationMetadata={"runtimeArn": "arn:new", "runtimeVersion": "1"},
+        insert=AsyncMock(),
+    )
+
+    def _fake_mcp_find(query, session=None):
+        if "federationRefId" in query:
+            return _FakeQuery([])
+        if "serverName" in query:
+            return _FakeQuery([conflicting_server])
+        raise AssertionError(f"unexpected query: {query}")
+
+    def _fake_a2a_find(*_args, **_kwargs):
+        return _FakeQuery([])
+
+    monkeypatch.setattr("registry.services.federation_sync_service.ExtendedMCPServer.find", _fake_mcp_find)
+    monkeypatch.setattr("registry.services.federation_sync_service.A2AAgent.find", _fake_a2a_find)
+
+    result = await federation_sync_service._build_sync_plan(
+        federation=federation,
+        discovered_mcp=[discovered_server],
+        discovered_a2a=[],
+    )
+
+    assert result.summary.skippedMcpServers == 1
+    assert result.summary.createdMcpServers == 0
+    assert result.summary.errors == 0
+    assert result.summary.errorMessages == []
+    discovered_server.insert.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -764,6 +815,28 @@ def test_build_last_sync_carries_error_count_and_failed_status():
     assert last_sync.status == FederationSyncStatus.FAILED
     assert last_sync.summary.errors == 1
     assert last_sync.summary.errorMessages == ["A2A agent pharmacy_fraud_a2a: boom"]
+
+
+def test_build_last_sync_treats_skip_only_summary_as_success():
+    job = SimpleNamespace(
+        id=PydanticObjectId(),
+        jobType="full_sync",
+        startedAt=datetime.now(UTC),
+        discoverySummary=SimpleNamespace(discoveredMcpServers=2, discoveredAgents=1),
+    )
+    summary = FederationApplySummary(
+        skippedMcpServers=2,
+        skippedAgents=1,
+        errors=0,
+        errorMessages=[],
+    )
+
+    last_sync = FederationSyncService._build_last_sync(job, summary)
+
+    assert last_sync.status == FederationSyncStatus.SUCCESS
+    assert last_sync.summary.skippedMcpServers == 2
+    assert last_sync.summary.skippedAgents == 1
+    assert last_sync.summary.errors == 0
 
 
 # ---------------------------------------------------------------------------

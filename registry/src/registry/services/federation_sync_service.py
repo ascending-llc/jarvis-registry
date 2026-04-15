@@ -13,6 +13,7 @@ from registry_pkgs.models.enums import (
     FederationTriggerType,
     RoleBits,
 )
+from registry_pkgs.models.extended_acl_entry import ExtendedResourceType
 from registry_pkgs.models.federation import (
     Federation,
     FederationLastSync,
@@ -541,10 +542,10 @@ class FederationSyncService:
                         name_conflict.federationRefId,
                     )
                     apply_summary.skippedMcpServers += 1
-                    self._record_apply_error(
-                        apply_summary,
+                    #  The `name_conflict` field is not considered an error record and is skipped; it is only logged.
+                    logger.warning(
                         f"MCP server '{item.serverName}' skipped: serverName already exists "
-                        f"(owned by federation {name_conflict.federationRefId or 'unknown'})",
+                        f"(owned by federation {name_conflict.federationRefId or 'unknown'})"
                     )
                     continue
                 # Same-federation name match with a different runtimeArn: the old doc will be
@@ -605,10 +606,9 @@ class FederationSyncService:
                         path_conflict.federationRefId,
                     )
                     apply_summary.skippedAgents += 1
-                    self._record_apply_error(
-                        apply_summary,
+                    logger.warning(
                         f"A2A agent '{agent_name}' skipped: path '{item.path}' already exists "
-                        f"(owned by federation {path_conflict.federationRefId or 'unknown'})",
+                        f"(owned by federation {path_conflict.federationRefId or 'unknown'})"
                     )
                     continue
                 # Same-federation path match with a different runtimeArn: the old doc will be
@@ -640,10 +640,9 @@ class FederationSyncService:
                         path_conflict.federationRefId,
                     )
                     apply_summary.skippedAgents += 1
-                    self._record_apply_error(
-                        apply_summary,
+                    logger.warning(
                         f"A2A agent '{agent_name}' skipped: path '{item.path}' already exists "
-                        f"(owned by federation {path_conflict.federationRefId or 'unknown'})",
+                        f"(owned by federation {path_conflict.federationRefId or 'unknown'})"
                     )
                     continue
                 if not self._runtime_metadata_changed(existing.federationMetadata, item.federationMetadata):
@@ -739,12 +738,7 @@ class FederationSyncService:
 
         return mutation_result
 
-    async def _grant_owner(
-        self,
-        user_id: str | None,
-        resource_type: ResourceType,
-        resource_id: Any,
-    ) -> None:
+    async def _grant_owner(self, user_id: str | None, resource_type: ResourceType, resource_id: Any) -> None:
         """Grant OWNER ACL to the syncing user for a federation-imported resource.
 
         No-op when user_id is absent (e.g. system/scheduled syncs).
@@ -1012,10 +1006,12 @@ class FederationSyncService:
                 updatedMcpServers=apply_summary.updatedMcpServers,
                 deletedMcpServers=apply_summary.deletedMcpServers,
                 unchangedMcpServers=apply_summary.unchangedMcpServers,
+                skippedMcpServers=apply_summary.skippedMcpServers,
                 createdAgents=apply_summary.createdAgents,
                 updatedAgents=apply_summary.updatedAgents,
                 deletedAgents=apply_summary.deletedAgents,
                 unchangedAgents=apply_summary.unchangedAgents,
+                skippedAgents=apply_summary.skippedAgents,
                 errors=apply_summary.errors,
                 errorMessages=list(apply_summary.errorMessages or []),
             ),
@@ -1095,7 +1091,7 @@ class FederationSyncService:
 
         # Delete the federation's own ACL entries.
         await self.acl_service.delete_acl_entries_for_resource(
-            resource_type="federation",
+            resource_type=ExtendedResourceType.FEDERATION,
             resource_id=federation.id,
         )
         await federation.delete(session=session)

@@ -118,11 +118,13 @@ class FederationLastSyncSummary(BaseModel):
     updatedMcpServers: int = 0
     deletedMcpServers: int = 0
     unchangedMcpServers: int = 0
+    skippedMcpServers: int = 0
 
     createdAgents: int = 0
     updatedAgents: int = 0
     deletedAgents: int = 0
     unchangedAgents: int = 0
+    skippedAgents: int = 0
 
     errors: int = 0
     errorMessages: list[str] = Field(default_factory=list)
