@@ -113,10 +113,6 @@ class FederationSyncService:
         return await handler.discover_entities(federation)
 
     @staticmethod
-    def _get_current_session_or_none():
-        return get_current_session()
-
-    @staticmethod
     def _resolve_job_started_at(job: FederationSyncJob) -> datetime:
         started_at = getattr(job, "startedAt", None)
         if started_at is not None:
@@ -474,7 +470,7 @@ class FederationSyncService:
             discovered_mcp_count=len(discovered_mcp),
             discovered_a2a_count=len(discovered_a2a),
         )
-        session = self._get_current_session_or_none()
+        session = get_current_session()
 
         # Step 2: load current MCP and A2A state for this federation.
         existing_mcp = await ExtendedMCPServer.find({"federationRefId": federation.id}, session=session).to_list()
@@ -678,7 +674,7 @@ class FederationSyncService:
         user_id: str | None,
     ) -> FederationSyncMutationResult:
         """Apply a previously computed sync plan inside the current transaction."""
-        session = self._get_current_session_or_none()
+        session = get_current_session()
         mutation_result = FederationSyncMutationResult(summary=sync_plan.summary)
 
         # Deletes run first so that unique-indexed fields (serverName, path) are freed
@@ -876,7 +872,7 @@ class FederationSyncService:
             raise
 
     async def _build_federation_stats(self, federation_id) -> FederationStats:
-        session = self._get_current_session_or_none()
+        session = get_current_session()
         mcp_count = await ExtendedMCPServer.find(
             {"federationRefId": federation_id, "status": {"$ne": "deleted"}},
             session=session,
@@ -1059,7 +1055,7 @@ class FederationSyncService:
         Returns (mcp_runtime_arns, a2a_runtime_arns) so the caller can clean up
         Weaviate vector records outside the transaction.
         """
-        session = self._get_current_session_or_none()
+        session = get_current_session()
         mcp_list = await ExtendedMCPServer.find({"federationRefId": federation.id}, session=session).to_list()
         mcp_runtime_arns = [arn for item in mcp_list if (arn := self._extract_runtime_arn(item.federationMetadata))]
         for item in mcp_list:

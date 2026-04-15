@@ -27,10 +27,6 @@ AZURE_AI_FOUNDRY_NOT_IMPLEMENTED = "Azure AI Foundry federation sync is not impl
 
 class FederationCrudService:
     @staticmethod
-    def _get_current_session_or_none():
-        return get_current_session()
-
-    @staticmethod
     def normalize_provider_config(
         provider_type: FederationProviderType, provider_config: dict[str, Any]
     ) -> dict[str, Any]:
@@ -94,7 +90,7 @@ class FederationCrudService:
             updatedBy=created_by,
             stats=FederationStats(),
         )
-        await federation.insert(session=self._get_current_session_or_none())
+        await federation.insert(session=get_current_session())
         return federation
 
     async def get_federation(self, federation_id: str) -> Federation | None:
@@ -183,7 +179,7 @@ class FederationCrudService:
         federation.tags = tags
         federation.providerConfig = normalized_config
         federation.updatedBy = updated_by
-        await federation.save(session=self._get_current_session_or_none())
+        await federation.save(session=get_current_session())
         return federation
 
     async def mark_sync_pending(
@@ -199,7 +195,7 @@ class FederationCrudService:
         federation.syncMessage = None
         if last_sync is not None:
             federation.lastSync = last_sync
-        await federation.save(session=self._get_current_session_or_none())
+        await federation.save(session=get_current_session())
         return federation
 
     async def mark_syncing(
@@ -215,7 +211,7 @@ class FederationCrudService:
         federation.syncMessage = None
         if last_sync is not None:
             federation.lastSync = last_sync
-        await federation.save(session=self._get_current_session_or_none())
+        await federation.save(session=get_current_session())
         return federation
 
     async def mark_sync_success(self, federation: Federation, last_sync, stats: FederationStats) -> Federation:
@@ -223,7 +219,7 @@ class FederationCrudService:
         federation.syncMessage = None
         federation.lastSync = last_sync
         federation.stats = stats
-        await federation.save(session=self._get_current_session_or_none())
+        await federation.save(session=get_current_session())
         return federation
 
     async def mark_sync_failed(
@@ -239,14 +235,14 @@ class FederationCrudService:
             federation.lastSync = last_sync
         if stats is not None:
             federation.stats = stats
-        await federation.save(session=self._get_current_session_or_none())
+        await federation.save(session=get_current_session())
         return federation
 
     async def mark_delete_failed(self, federation: Federation, message: str) -> Federation:
         federation.status = FederationStateMachine.transition_to_delete_failed(federation.status)
         federation.syncStatus = FederationStateMachine.transition_to_sync_failed(federation.syncStatus)
         federation.syncMessage = message
-        await federation.save(session=self._get_current_session_or_none())
+        await federation.save(session=get_current_session())
         return federation
 
     async def mark_deleting(self, federation: Federation) -> Federation:
@@ -256,12 +252,12 @@ class FederationCrudService:
         )
         federation.status = FederationStateMachine.transition_to_deleting(federation.status)
         federation.syncStatus = next_sync_status
-        await federation.save(session=self._get_current_session_or_none())
+        await federation.save(session=get_current_session())
         return federation
 
     async def mark_deleted(self, federation: Federation) -> Federation:
         federation.status = FederationStateMachine.transition_to_deleted(federation.status)
         federation.deletedAt = datetime.now(UTC)
         federation.syncStatus = FederationStateMachine.transition_to_sync_success(federation.syncStatus)
-        await federation.save(session=self._get_current_session_or_none())
+        await federation.save(session=get_current_session())
         return federation
