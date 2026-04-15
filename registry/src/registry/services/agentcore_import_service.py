@@ -782,10 +782,7 @@ class AgentCoreImportService:
             )
 
     def _get_current_session_or_none(self):
-        try:
-            return get_current_session()
-        except RuntimeError:
-            return None
+        return get_current_session()
 
     @use_transaction
     async def _import_single_server_in_transaction(

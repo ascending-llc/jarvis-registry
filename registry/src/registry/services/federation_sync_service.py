@@ -114,10 +114,7 @@ class FederationSyncService:
 
     @staticmethod
     def _get_current_session_or_none():
-        try:
-            return get_current_session()
-        except RuntimeError:
-            return None
+        return get_current_session()
 
     @staticmethod
     def _resolve_job_started_at(job: FederationSyncJob) -> datetime:

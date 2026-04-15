@@ -24,10 +24,7 @@ logger = logging.getLogger(__name__)
 class FederationJobService:
     @staticmethod
     def _get_current_session_or_none():
-        try:
-            return get_current_session()
-        except RuntimeError:
-            return None
+        return get_current_session()
 
     async def get_active_job(self, federation_id: PydanticObjectId) -> FederationSyncJob | None:
         return await FederationSyncJob.find_one(

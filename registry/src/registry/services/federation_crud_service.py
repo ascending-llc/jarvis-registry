@@ -28,10 +28,7 @@ AZURE_AI_FOUNDRY_NOT_IMPLEMENTED = "Azure AI Foundry federation sync is not impl
 class FederationCrudService:
     @staticmethod
     def _get_current_session_or_none():
-        try:
-            return get_current_session()
-        except RuntimeError:
-            return None
+        return get_current_session()
 
     @staticmethod
     def normalize_provider_config(
