@@ -112,7 +112,7 @@ def _get_auth_provider(request: Request, provider_type: str | None = None):
     return _get_container(request).get_auth_provider(provider_type)
 
 
-@router.post("/oauth2/register", response_model=ClientRegistrationResponse)
+@router.post("/oauth2/register", response_model=ClientRegistrationResponse, response_model_exclude_none=True)
 async def register_client(registration: ClientRegistrationRequest, request: Request) -> ClientRegistrationResponse:
     try:
         client_id = f"mcp-client-{secrets.token_urlsafe(16)}"
@@ -214,7 +214,7 @@ def cleanup_expired_authorization_codes():
         logger.info(f"Cleaned up {len(expired_codes)} expired authorization codes")
 
 
-@router.post("/oauth2/device/code", response_model=DeviceCodeResponse)
+@router.post("/oauth2/device/code", response_model=DeviceCodeResponse, response_model_exclude_none=True)
 async def device_authorization(
     req: Request, client_id: str = Form(...), scope: str | None = Form(None), resource: str | None = Form(None)
 ):
@@ -342,7 +342,7 @@ async def _parse_device_token_params(request: Request) -> dict:
         )
 
 
-@router.post("/oauth2/token", response_model=DeviceTokenResponse)
+@router.post("/oauth2/token", response_model=DeviceTokenResponse, response_model_exclude_none=True)
 async def device_token(request: Request):
     params = await _parse_device_token_params(request)
     grant_type: str | None = params["grant_type"]
