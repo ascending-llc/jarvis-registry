@@ -633,8 +633,9 @@ def get_tools() -> list[tuple[str, Callable]]:
             str,
             Field(
                 description=(
-                    "The `tool_name` field from the discover_servers result — use verbatim, no transformation. "
-                    "This exact string is forwarded as `$.params.name` in the JSON-RPC `tools/call` request to the downstream MCP server."
+                    "The canonical downstream MCP tool name from a discover_entities result. "
+                    "Use the exact `tool_name` value returned by discovery. "
+                    "Do not transform casing, do not derive from wrapper names, and do not use aliases."
                 )
             ),
         ],
@@ -653,71 +654,37 @@ def get_tools() -> list[tuple[str, Callable]]:
             str,
             Field(
                 description=(
-                    "The `server_id` field from the same discover_servers result as `tool_name`. "
-                    "Always pair tool_name and server_id from the same result — never mix across results."
+                    "The `server_id` from the SAME discover_entities result as `tool_name`. "
+                    "Always pair the exact `tool_name` and `server_id` from the same entity result."
                 )
             ),
         ],
     ) -> CallToolResult:
         """
-        🚀 AUTO-USE: Execute one downstream MCP tool discovered via discover_servers.
+        🚀 AUTO-USE: Execute one downstream MCP tool returned by discover_entities.
+        Use this only with a discovery result whose `entity_type` is `tool`.
 
-        **When to call:**
-        Call immediately after discover_servers returns a result with entity_type == "tool".
-        Never guess or invent a tool_name — always use the exact value returned by discover_servers.
+        IMPORTANT:
+        - Discovery already resolved the canonical downstream tool name.
+        - `tool_name` is the exact value to send in downstream MCP `tools/call.params.name`.
+        - Do not translate from wrapper names, display names, `mcpToolName`, `mcp_tool_name`,
+          or any camelCase/snake_case variant.
+        - Do not perform a second lookup to resolve the tool name.
 
-        **Parameter mapping — from discovery result to execute_tool:**
-
-          Discovery result:
+        Mapping:
+          discovery result:
             {
-              "tool_name":  "tavily_search",       ← tool_name parameter
-              "server_id":  "abc123",              ← server_id parameter
-              "server_name": "tavily",
-              "content":    "... Parameters: query (string, required, search query), max_results (integer, optional) ..."
-            }                                         ↑ read this to build arguments
+              "entity_type": "tool",
+              "tool_name": "tavily_search",
+              "server_id": "abc123"
+            }
 
-          Execute call:
+          execution:
             execute_tool(
-                tool_name="tavily_search",           ← verbatim from result["tool_name"]
-                server_id="abc123",                  ← verbatim from result["server_id"]
-                arguments={"query": "AI news"},      ← constructed from content
+                tool_name="tavily_search",
+                server_id="abc123",
+                arguments={...},
             )
-
-        **How to construct arguments:**
-        The `content` field of the discovery result contains parameter info in text form:
-          "Parameters: query (string, required, the search query), max_results (integer, optional, number of results)"
-        Parse it to identify parameter names and pass at minimum all required ones.
-
-        **Examples:**
-
-        Example 1 — web search:
-          # discover_servers(query="web search", type_list=["tool"])
-          # → {"tool_name": "tavily_search", "server_id": "abc123",
-          #    "content": "...Parameters: query (string, required), max_results (integer, optional)..."}
-          execute_tool(
-              tool_name="tavily_search",
-              server_id="abc123",
-              arguments={"query": "latest AI news", "max_results": 5},
-          )
-
-        Example 2 — GitHub:
-          # discover_servers(query="github pull requests", type_list=["tool"])
-          # → {"tool_name": "search_pull_requests", "server_id": "def456",
-          #    "content": "...Parameters: owner (string, required), repo (string, required), state (string, optional)..."}
-          execute_tool(
-              tool_name="search_pull_requests",
-              server_id="def456",
-              arguments={"owner": "myorg", "repo": "myproject", "state": "open"},
-          )
-
-        **Hard constraints:**
-        - tool_name must be the exact `tool_name` field from the discovery result.
-          Do not invent, rename, scope, or rewrite it. Do not pass a display label or alias.
-        - server_id must come from the SAME discovery result as tool_name — never mix across results.
-        - Runs exactly one downstream MCP tool per call.
-
-        **Return value:**
-        Tool-specific result (JSON, text, or binary — format varies by tool).
         """
         return await execute_tool_impl(
             ctx,

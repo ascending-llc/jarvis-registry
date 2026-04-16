@@ -277,7 +277,7 @@ async def _search_documents(
     )
 
 
-async def search_servers_impl(
+async def search_entities_impl(
     search: SearchRequest,
     user_context: CurrentUser,
     *,
@@ -309,7 +309,7 @@ async def search_servers_impl(
         success = True
         results_count = len(search_results)
 
-        return {"query": query, "type_list": search.type_list, "total": len(search_results), "servers": search_results}
+        return {"query": query, "type_list": search.type_list, "total": len(search_results), "results": search_results}
     finally:
         duration = time.perf_counter() - start_time
         try:
@@ -374,7 +374,7 @@ async def search_servers(
         "include_disabled": false
     }
     """
-    return await search_servers_impl(
+    return await search_entities_impl(
         search,
         user_context,
         mcp_server_repo=mcp_server_repo,

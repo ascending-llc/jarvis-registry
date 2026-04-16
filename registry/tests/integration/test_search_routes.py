@@ -196,7 +196,7 @@ class TestServerSearchRoutes:
         # Verify response structure
         assert "query" in data
         assert "total" in data
-        assert "servers" in data
+        assert "results" in data
         assert data["query"] == "test query"
 
         # Verify search was called with correct parameters
@@ -371,7 +371,7 @@ class TestServerSearchRoutes:
             "query": "",
             "type_list": ["tool", "resource", "prompt"],
             "total": 0,
-            "servers": [],
+            "results": [],
         }
 
     def test_search_servers_returns_results(self, test_client: TestClient):
@@ -394,5 +394,5 @@ class TestServerSearchRoutes:
         data = response.json()
         assert "query" in data
         assert "total" in data
-        assert "servers" in data
+        assert "results" in data
         assert data["query"] == "test"

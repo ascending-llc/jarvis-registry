@@ -74,7 +74,7 @@ async def test_search_servers_uses_vector_directly():
 
     mcp_server_repo.asearch_with_rerank.assert_awaited_once()
     assert response["total"] == 2
-    assert response["servers"] == tool_results
+    assert response["results"] == tool_results
 
 
 @pytest.mark.asyncio
@@ -101,4 +101,4 @@ async def test_search_servers_filters_metadata_when_tool_query_is_empty():
     mcp_server_repo.afilter.assert_awaited_once_with(filters={"enabled": True, "entity_type": ["tool"]}, limit=5)
     assert response["query"] == ""
     assert response["total"] == 1
-    assert response["servers"] == filter_results
+    assert response["results"] == filter_results

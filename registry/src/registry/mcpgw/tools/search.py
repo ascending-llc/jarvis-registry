@@ -6,7 +6,7 @@ from mcp.server.fastmcp import Context
 from mcp.server.session import ServerSession
 from pydantic import Field
 
-from ...api.v1.search_routes import SearchRequest, search_servers_impl
+from ...api.v1.search_routes import SearchRequest, search_entities_impl
 from ...auth.dependencies import UserContextDict
 from ...core.exceptions import InternalServerException
 from ..core.types import McpAppContext
@@ -14,7 +14,7 @@ from ..core.types import McpAppContext
 logger = logging.getLogger(__name__)
 
 
-async def discover_servers_impl(
+async def discover_entities_impl(
     ctx: Context[ServerSession, McpAppContext],
     query: str,
     top_n: int | None = None,
@@ -68,7 +68,7 @@ async def discover_servers_impl(
         user_context: UserContextDict = ctx.request_context.request.state.user  # type: ignore[union-attr]
 
         lifespan_context = ctx.request_context.lifespan_context
-        result = await search_servers_impl(
+        result = await search_entities_impl(
             search_request,
             user_context,
             mcp_server_repo=lifespan_context.mcp_server_repo,
@@ -100,7 +100,7 @@ def get_tools() -> list[tuple[str, Callable]]:
         List of (tool_name, tool_function) tuples ready for registration
     """
 
-    async def discover_servers(
+    async def discover_entities(
         ctx: Context[ServerSession, McpAppContext],
         query: Annotated[
             str,
@@ -157,9 +157,9 @@ def get_tools() -> list[tuple[str, Callable]]:
         Pass them unchanged to `execute_tool` — no further lookup or name translation needed.
 
         **Examples:**
-        - News or web search: `discover_servers(query="web search news", type_list=["tool"])`
-        - GitHub operations: `discover_servers(query="github repositories", type_list=["tool"])`
-        - Cached data: `discover_servers(query="cached data", type_list=["resource"])`
+        - News or web search: `discover_entities(query="web search news", type_list=["tool"])`
+        - GitHub operations: `discover_entities(query="github repositories", type_list=["tool"])`
+        - Cached data: `discover_entities(query="cached data", type_list=["resource"])`
 
         **Execution:**
         If discovery returns `{"tool_name": "tavily_search", "server_id": "abc123", ...}`,
@@ -168,8 +168,8 @@ def get_tools() -> list[tuple[str, Callable]]:
         Use `read_resource(server_id, resource_uri)` for resources.
         Use `execute_prompt(server_id, prompt_name, arguments)` for prompts.
         """
-        return await discover_servers_impl(ctx, query, top_n, search_type, type_list)
+        return await discover_entities_impl(ctx, query, top_n, search_type, type_list)
 
     return [
-        ("discover_servers", discover_servers),
+        ("discover_entities", discover_entities),
     ]

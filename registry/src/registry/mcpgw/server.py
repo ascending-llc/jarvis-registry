@@ -16,61 +16,57 @@ from .tools import proxied, search
 if TYPE_CHECKING:
     from ..container import RegistryContainer
 
-_SYSTEM_INSTRUCTIONS = """This MCP Gateway provides unified access to registered MCP servers through centralized discovery and execution.
+_SYSTEM_INSTRUCTIONS = """This MCP Gateway provides unified discovery and execution for registered MCP entities.
 
 KEY CAPABILITIES:
-- Discover tools, resources, and prompts across registered MCP servers
+- Discover tools, resources, and prompts through a unified vector index
 - Execute downstream MCP tools through a unified proxy
-- Access downstream resources and prompts through the same registry
-- Route requests with the server's configured authentication and connection settings
+- Read downstream MCP resources
+- Execute downstream MCP prompts
+
+IMPORTANT MENTAL MODEL:
+- Discovery is ENTITY-based, not SERVER-based.
+- The discovery tool returns matched entity documents from the vector index.
+- Results are already execution-ready.
+- Do not perform secondary lookups or name translation after discovery.
 
 GLOBAL WORKFLOW RULES:
-1. If you do not already have a suitable tool for the user's request, call `discover_servers` first.
-2. Do not respond that you lack capability until you have attempted discovery.
-3. If a native fetch or direct access attempt fails with authentication, permission, or access errors, fall back to `discover_servers`.
-4. Prefer `type_list=["tool"]` first.
+1. If you do not already have a suitable tool, call `discover_entities` first.
+2. Prefer `type_list=["tool"]` first for action-oriented tasks.
+3. Do not claim lack of capability until discovery has been attempted.
+4. If a direct/native attempt fails with authentication or permission errors, fall back to discovery.
 
-WHEN TO FALL BACK TO DISCOVERY:
-- Private repository or API access fails
-- Authentication or authorization fails (401, 403, permission denied)
-- A specialized external service is likely needed
-- The user asks what capabilities exist for a domain or service
+DISCOVERY RESULT TYPES:
+- `type_list=["tool"]`
+  returns tool entity documents with `tool_name` + `server_id`
+- `type_list=["resource"]`
+  returns resource entity documents with `resource_uri` + `server_id`
+- `type_list=["prompt"]`
+  returns prompt entity documents with `prompt_name` + `server_id`
 
-DISCOVERY TYPES:
-- `type_list=["tool"]`: default and preferred — returns executable tools
-- `type_list=["resource"]`: for data sources, cached results, or URI-addressable content
-- `type_list=["prompt"]`: for reusable prompt workflows
+CORE RULE — RESULTS ARE EXECUTION-READY:
+Every discovery result already contains the field needed for execution.
+Do not inspect nested config.
+Do not perform a second lookup.
+Do not transform returned names.
 
-CORE RULE — NO SECONDARY LOOKUP NEEDED:
-Every discovery result already contains all fields required for execution.
-Do not inspect nested config, do not look up additional documents, do not transform any field.
+EXECUTION PATTERN:
+- Tool     -> `execute_tool(tool_name=<result.tool_name>, server_id=<result.server_id>, arguments={...})`
+- Resource -> `read_resource(server_id=<result.server_id>, resource_uri=<result.resource_uri>)`
+- Prompt   -> `execute_prompt(server_id=<result.server_id>, prompt_name=<result.prompt_name>, arguments={...})`
 
-EXECUTION PATTERN (by type):
-- Tool    → `execute_tool(tool_name=<result.tool_name>, server_id=<result.server_id>, arguments={...})`
-- Resource → `read_resource(server_id=<result.server_id>, resource_uri=<result.resource_uri>)`
-- Prompt  → `execute_prompt(server_id=<result.server_id>, prompt_name=<result.prompt_name>, arguments={...})`
+NAME HANDLING RULES:
+- `tool_name` is the canonical downstream MCP tool name from the vector database.
+- Never derive it from wrapper names, display labels, `mcpToolName`, `mcp_tool_name`, or casing variants.
+- Use the returned `tool_name` verbatim.
 
-EXECUTION CONSTRAINTS:
-- `execute_tool` runs exactly one downstream MCP tool per call.
-- Pass `tool_name` exactly as returned — do not invent, rename, or rewrite it.
-- Always pair `tool_name` with the `server_id` from the same discovery result.
+EXAMPLE:
+Step 1 — Discover:
+  discover_entities(query="web search news", type_list=["tool"])
+  -> [{"entity_type": "tool", "tool_name": "tavily_search", "server_id": "abc123", ...}]
 
-COMPLETE WORKFLOW EXAMPLE:
-  Step 1 — Discover:
-    discover_servers(query="web search news", type_list=["tool"])
-    → [{"tool_name": "tavily_search", "server_id": "abc123", "server_name": "tavily", ...}]
-
-  Step 2 — Execute immediately using the returned fields:
-    execute_tool(tool_name="tavily_search", server_id="abc123", arguments={"query": "AI news"})
-
-DISCOVERY EXAMPLES:
-- Weather or current events → `discover_servers(query="weather forecast", type_list=["tool"])`
-- Web search              → `discover_servers(query="web search news", type_list=["tool"])`
-- Stock prices            → `discover_servers(query="financial data stock market", type_list=["tool"])`
-- GitHub operations       → `discover_servers(query="github repositories", type_list=["tool"])`
-- Cached / URI data       → `discover_servers(query="cached results", type_list=["resource"])`
-- Prompt templates        → `discover_servers(query="code review template", type_list=["prompt"])`
-- Auth failure fallback   → `discover_servers(query="<service> authenticated", type_list=["tool"])`
+Step 2 — Execute:
+  execute_tool(tool_name="tavily_search", server_id="abc123", arguments={"query": "AI news"})
 """
 
 
@@ -165,7 +161,7 @@ def register_tools(mcp: FastMCP) -> None:
     Args:
         mcp: FastMCP application instance
     """
-    # Register search tools (discover_tools, discover_servers)
+    # Register entity discovery tools
     for tool_name, tool_func in search.get_tools():
         mcp.tool(name=tool_name)(tool_func)
 
