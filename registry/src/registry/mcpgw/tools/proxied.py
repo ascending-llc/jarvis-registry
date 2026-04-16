@@ -41,8 +41,8 @@ from ..core.types import McpAppContext
 from .types import get_meta_field
 from .utils import (
     build_authenticated_headers,
-    build_target_url,
     forward_notification,
+    get_target_url,
     parse_data_field,
     parse_elicitation_id,
 )
@@ -285,7 +285,7 @@ async def execute_tool_impl(
         record_server_request(server.serverName)
 
         # Build target URL using shared helper
-        target_url = build_target_url(server)
+        target_url = get_target_url(server)
 
         # Prepare base headers for downstream MCP server
         additional_headers = {
