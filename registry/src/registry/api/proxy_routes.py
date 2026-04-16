@@ -371,19 +371,19 @@ async def a2a_agent_proxy(
       - remaining_path: /v1/message:send (forwarded to agent's base URL)
     """
     # Split agent_path into identifier and remaining path
-    # Example: "aws-research/v1/message:send" -> agent_id="/aws-research", remaining="/v1/message:send"
+    # Example: "aws-research/v1/message:send" -> agent_registry_path="/aws-research", remaining="/v1/message:send"
     path_parts = agent_path.split("/", 1)
-    agent_id = f"/{path_parts[0]}"
+    agent_registry_path = f"/{path_parts[0]}"
     remaining_path = f"/{path_parts[1]}" if len(path_parts) > 1 else ""
 
     user_id = user_context.get("user_id")
 
-    # Resolve agent by identifier path
-    agent = await a2a_agent_service.get_agent_by_path(agent_id)
+    # Resolve agent by registry path
+    agent = await a2a_agent_service.get_agent_by_path(agent_registry_path)
     if agent is None:
         return JSONResponse(
             status_code=404,
-            content={"error": f"A2A agent with path '{agent_id}' not found"},
+            content={"error": f"A2A agent with path '{agent_registry_path}' not found"},
         )
 
     # ACL: require VIEW permission
@@ -398,7 +398,7 @@ async def a2a_agent_proxy(
     if not agent.isEnabled:
         return JSONResponse(
             status_code=403,
-            content={"error": f"A2A agent '{agent_id}' is disabled"},
+            content={"error": f"A2A agent '{agent_registry_path}' is disabled"},
         )
 
     # Parse MessageSendParams from request body
@@ -416,12 +416,12 @@ async def a2a_agent_proxy(
     # Use user-provided URL from config for runtime operations
     if agent.config and agent.config.url:
         base_url = str(agent.config.url)
-        logger.debug(f"Using config.url for agent {agent_id}: {base_url}")
+        logger.debug(f"Using config.url for agent {agent_registry_path}: {base_url}")
     else:
         # Fallback to card.url for backward compatibility with old data
         base_url = str(agent.card.url)
         logger.warning(
-            f"Agent {agent_id} missing config.url, falling back to card.url: {base_url}. "
+            f"Agent {agent_registry_path} missing config.url, falling back to card.url: {base_url}. "
             "This may fail if card.url is not accessible. Please update the agent to set config.url."
         )
 
@@ -438,7 +438,7 @@ async def a2a_agent_proxy(
     is_streaming = "text/event-stream" in accept_header
 
     logger.info(
-        f"A2A proxy: {agent_id}{remaining_path} transport={transport_type} streaming={is_streaming} → {agent_url}"
+        f"A2A proxy: {agent_registry_path}{remaining_path} transport={transport_type} streaming={is_streaming} → {agent_url}"
     )
 
     try:
@@ -506,13 +506,13 @@ async def a2a_agent_proxy(
             )
 
     except httpx.TimeoutException:
-        logger.error(f"A2A proxy timeout for agent {agent_id}{remaining_path}")
+        logger.error(f"A2A proxy timeout for agent {agent_registry_path}{remaining_path}")
         return JSONResponse(status_code=504, content={"error": "Gateway timeout communicating with agent"})
     except httpx.HTTPStatusError as e:
-        logger.error(f"A2A proxy HTTP error for agent {agent_id}{remaining_path}: {e}")
+        logger.error(f"A2A proxy HTTP error for agent {agent_registry_path}{remaining_path}: {e}")
         return JSONResponse(status_code=502, content={"error": f"Agent returned HTTP error: {e.response.status_code}"})
     except Exception as e:
-        logger.error(f"A2A proxy error for agent {agent_id}{remaining_path}: {e}", exc_info=True)
+        logger.error(f"A2A proxy error for agent {agent_registry_path}{remaining_path}: {e}", exc_info=True)
         return JSONResponse(status_code=502, content={"error": "Failed to communicate with agent"})
 
 
