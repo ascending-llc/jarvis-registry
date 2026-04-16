@@ -24,8 +24,14 @@ async def discover_entities_impl(
     """
     🔍 Discover available MCP tools, resources, or prompts via vector search.
 
-    All entity types go through the same vector path. Every result contains
-    tool_name and server_id directly, ready for execute_tool.
+    All entity types go through the same vector path.
+
+    Results include entity-specific identifiers directly from the vector store:
+    - tools use `tool_name`
+    - resources use `resource_uri`
+    - prompts use `prompt_name`
+
+    Each result also includes `server_id`, so no MongoDB lookup is required during discovery.
 
     Args:
         query: Natural language description or keywords to search
@@ -44,7 +50,8 @@ async def discover_entities_impl(
         ctx: FastMCP context with user auth
 
     Returns:
-        List of matching entities, each with tool_name and server_id ready for execute_tool.
+        List of matching entity results, each containing the execution-ready identifier
+        for its entity type plus server_id.
 
     Raises:
         InternalServerException: On any runtime exception
@@ -74,7 +81,7 @@ async def discover_entities_impl(
             mcp_server_repo=lifespan_context.mcp_server_repo,
         )
 
-        servers = result.get("servers", [])
+        servers = result.get("results", [])
         total = result.get("total", 0)
 
         logger.info(f"✅ Discovered {total} result(s) for query: '{query}'")
@@ -82,9 +89,9 @@ async def discover_entities_impl(
         return servers
 
     except Exception:
-        logger.exception("Server discovery failed")
+        logger.exception("Entity discovery failed")
 
-        raise InternalServerException("server discovery failed")
+        raise InternalServerException("entity discovery failed")
 
 
 # ============================================================================
@@ -153,8 +160,9 @@ def get_tools() -> list[tuple[str, Callable]]:
         - `similarity_store`: alternative retrieval path
 
         **How to use results:**
-        Every result in the returned array contains `tool_name` and `server_id` directly.
-        Pass them unchanged to `execute_tool` — no further lookup or name translation needed.
+        - tool result     -> execute_tool(tool_name=<result.tool_name>, server_id=<result.server_id>, arguments={...})
+        - resource result -> read_resource(server_id=<result.server_id>, resource_uri=<result.resource_uri>)
+        - prompt result   -> execute_prompt(server_id=<result.server_id>, prompt_name=<result.prompt_name>, arguments={...})
 
         **Examples:**
         - News or web search: `discover_entities(query="web search news", type_list=["tool"])`

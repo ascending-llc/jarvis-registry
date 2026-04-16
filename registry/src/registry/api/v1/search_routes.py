@@ -248,7 +248,7 @@ class SearchRequest(BaseModel):
 def _build_search_filters(search: SearchRequest) -> dict[str, object]:
     """Build vector-store filters from the request."""
     return {
-        "enabled": not search.include_disabled,
+        "enabled": not search.idnclude_disabled,
         "entity_type": list(search.type_list or list(ServerEntityType)),
     }
 
@@ -262,7 +262,10 @@ async def _search_documents(
     Run vector discovery for all entity types (tool, resource, prompt).
 
     Empty query uses metadata filtering; non-empty query uses semantic search with reranking.
-    All results carry tool_name directly from the vector store — no MongoDB lookup required.
+
+    Results include entity-specific identifiers directly from the vector store
+    (for example: tools use `tool_name`, resources use `resource_uri`, and prompts use `prompt_name`)
+    with no MongoDB lookup required.
     """
     filters = _build_search_filters(search)
     if not query:
@@ -363,7 +366,12 @@ async def search_servers(
     Search for MCP tools, resources, and prompts via vector search.
 
     All entity types go through the unified vector path.
-    Results always contain tool_name and server_id directly, ready for execute_tool.
+    Results always contain the execution-ready identifier for their entity type:
+    - tool -> tool_name
+    - resource -> resource_uri
+    - prompt -> prompt_name
+
+    Each result also includes server_id.
 
     Request body:
     {
