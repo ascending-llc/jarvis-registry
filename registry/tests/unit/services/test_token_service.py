@@ -369,27 +369,37 @@ class TestTokenServiceTokenStatus:
     async def test_get_access_token_status(self, token_service):
         """Test getting access token and validity status"""
         valid_token = Mock(spec=Token)
+        valid_token.token = "encrypted_iv:encrypted_token"
         valid_token.expiresAt = datetime.now(UTC) + timedelta(hours=1)
 
         with patch.object(token_service, "get_user_by_user_id", AsyncMock(return_value="507f1f77bcf86cd799439011")):
             with patch.object(Token, "find_one", AsyncMock(return_value=valid_token)):
-                token, is_valid = await token_service.get_access_token_status("test_user", "notion")
+                with patch("registry.services.oauth.token_service.decrypt_value") as mock_decrypt:
+                    mock_decrypt.return_value = "decrypted_token"
 
-                assert token == valid_token
-                assert is_valid is True
+                    token, is_valid = await token_service.get_access_token_status("test_user", "notion")
+
+                    assert token == valid_token
+                    assert is_valid is True
+                    mock_decrypt.assert_called_once_with("encrypted_iv:encrypted_token")
 
     @pytest.mark.asyncio
     async def test_get_refresh_token_status(self, token_service):
         """Test getting refresh token and validity status"""
         valid_token = Mock(spec=Token)
+        valid_token.token = "encrypted_iv:encrypted_refresh_token"
         valid_token.expiresAt = datetime.now(UTC) + timedelta(days=30)
 
         with patch.object(token_service, "get_user_by_user_id", AsyncMock(return_value="507f1f77bcf86cd799439011")):
             with patch.object(Token, "find_one", AsyncMock(return_value=valid_token)):
-                token, is_valid = await token_service.get_refresh_token_status("test_user", "notion")
+                with patch("registry.services.oauth.token_service.decrypt_value") as mock_decrypt:
+                    mock_decrypt.return_value = "decrypted_refresh_token"
 
-                assert token == valid_token
-                assert is_valid is True
+                    token, is_valid = await token_service.get_refresh_token_status("test_user", "notion")
+
+                    assert token == valid_token
+                    assert is_valid is True
+                    mock_decrypt.assert_called_once_with("encrypted_iv:encrypted_refresh_token")
 
 
 class TestTokenServiceHelperMethods:
@@ -722,13 +732,27 @@ class TestTokenServiceEncryption:
         """Create TokenService instance"""
         return TokenService(user_service=Mock())
 
-    @pytest.mark.asyncio
-    async def test_encrypt_uses_encrypt_value_not_encrypt_auth_fields(self, token_service):
-        """Test that store_oauth_client_credentials uses encrypt_value for encryption"""
-        mock_user = Mock()
-        mock_user.id = PydanticObjectId("507f1f77bcf86cd799439011")
-        mock_user.email = "test@example.com"
+    @pytest.fixture
+    def mock_user(self):
+        """Mock user object"""
+        user = Mock()
+        user.id = PydanticObjectId("507f1f77bcf86cd799439011")
+        user.email = "test@example.com"
+        return user
 
+    @pytest.fixture
+    def mock_oauth_tokens(self):
+        """Mock OAuth tokens"""
+        return OAuthTokens(
+            access_token="test_access_token_plain",
+            refresh_token="test_refresh_token_plain",
+            token_type="Bearer",
+            expires_in=3600,
+        )
+
+    @pytest.mark.asyncio
+    async def test_encrypt_uses_encrypt_value_not_encrypt_auth_fields(self, token_service, mock_user):
+        """Test that store_oauth_client_credentials uses encrypt_value for encryption"""
         client_info = OAuthClientInformation(
             client_id="test_client",
             client_secret="test_secret",
@@ -762,6 +786,171 @@ class TestTokenServiceEncryption:
                     assert isinstance(call_args, str)
                     assert "client_id" in call_args
                     assert client_info.client_id in call_args
+
+    @pytest.mark.asyncio
+    async def test_store_oauth_access_token_encrypts_token(self, token_service, mock_user, mock_oauth_tokens):
+        """Test that store_oauth_access_token encrypts the access token"""
+        with patch.object(token_service, "get_user", AsyncMock(return_value=mock_user)):
+            with patch("registry.services.oauth.token_service.encrypt_value") as mock_encrypt:
+                mock_encrypt.return_value = "encrypted_iv:encrypted_access_token"
+
+                # Capture Token constructor call
+                with patch("registry.services.oauth.token_service.Token") as MockToken:
+                    mock_token_instance = Mock(spec=Token)
+                    mock_token_instance.insert = AsyncMock()
+                    MockToken.return_value = mock_token_instance
+                    MockToken.find_one = AsyncMock(return_value=None)
+
+                    await token_service.store_oauth_access_token(
+                        user_id="test_user",
+                        service_name="test_service",
+                        tokens=mock_oauth_tokens,
+                    )
+
+                    # Verify encrypt_value was called with the access token
+                    mock_encrypt.assert_called_once_with("test_access_token_plain")
+
+                    # Verify Token was constructed with encrypted token
+                    MockToken.assert_called_once()
+                    call_kwargs = MockToken.call_args[1]
+                    assert call_kwargs["token"] == "encrypted_iv:encrypted_access_token"
+
+    @pytest.mark.asyncio
+    async def test_store_oauth_refresh_token_encrypts_token(self, token_service, mock_user, mock_oauth_tokens):
+        """Test that store_oauth_refresh_token encrypts the refresh token"""
+        with patch.object(token_service, "get_user", AsyncMock(return_value=mock_user)):
+            with patch("registry.services.oauth.token_service.encrypt_value") as mock_encrypt:
+                mock_encrypt.return_value = "encrypted_iv:encrypted_refresh_token"
+
+                # Capture Token constructor call
+                with patch("registry.services.oauth.token_service.Token") as MockToken:
+                    mock_token_instance = Mock(spec=Token)
+                    mock_token_instance.email = None
+                    mock_token_instance.insert = AsyncMock()
+                    MockToken.return_value = mock_token_instance
+                    MockToken.find_one = AsyncMock(return_value=None)
+
+                    await token_service.store_oauth_refresh_token(
+                        user_id="test_user",
+                        service_name="test_service",
+                        tokens=mock_oauth_tokens,
+                    )
+
+                    # Verify encrypt_value was called with the refresh token
+                    mock_encrypt.assert_called_once_with("test_refresh_token_plain")
+
+                    # Verify Token was constructed with encrypted token
+                    MockToken.assert_called_once()
+                    call_kwargs = MockToken.call_args[1]
+                    assert call_kwargs["token"] == "encrypted_iv:encrypted_refresh_token"
+
+    @pytest.mark.asyncio
+    async def test_get_oauth_access_token_decrypts_token(self, token_service):
+        """Test that get_oauth_access_token decrypts the token"""
+        # Mock encrypted token from DB
+        mock_token = Mock(spec=Token)
+        mock_token.token = "encrypted_iv:encrypted_access_token"
+        mock_token.expiresAt = datetime.now(UTC) + timedelta(hours=1)
+
+        with patch.object(token_service, "get_user_by_user_id", AsyncMock(return_value="507f1f77bcf86cd799439011")):
+            with patch.object(Token, "find_one", AsyncMock(return_value=mock_token)):
+                with patch("registry.services.oauth.token_service.decrypt_value") as mock_decrypt:
+                    mock_decrypt.return_value = "decrypted_access_token"
+
+                    result = await token_service.get_oauth_access_token("test_user", "test_service")
+
+                    # Verify decrypt_value was called
+                    mock_decrypt.assert_called_once_with("encrypted_iv:encrypted_access_token")
+
+                    # Verify the token was decrypted
+                    assert result.token == "decrypted_access_token"
+
+    @pytest.mark.asyncio
+    async def test_get_oauth_refresh_token_decrypts_token(self, token_service):
+        """Test that get_oauth_refresh_token decrypts the token"""
+        # Mock encrypted token from DB
+        mock_token = Mock(spec=Token)
+        mock_token.token = "encrypted_iv:encrypted_refresh_token"
+        mock_token.expiresAt = datetime.now(UTC) + timedelta(days=30)
+
+        with patch.object(token_service, "get_user_by_user_id", AsyncMock(return_value="507f1f77bcf86cd799439011")):
+            with patch.object(Token, "find_one", AsyncMock(return_value=mock_token)):
+                with patch("registry.services.oauth.token_service.decrypt_value") as mock_decrypt:
+                    mock_decrypt.return_value = "decrypted_refresh_token"
+
+                    result = await token_service.get_oauth_refresh_token("test_user", "test_service")
+
+                    # Verify decrypt_value was called
+                    mock_decrypt.assert_called_once_with("encrypted_iv:encrypted_refresh_token")
+
+                    # Verify the token was decrypted
+                    assert result.token == "decrypted_refresh_token"
+
+    @pytest.mark.asyncio
+    async def test_get_access_token_status_decrypts_token(self, token_service):
+        """Test that get_access_token_status decrypts the token"""
+        mock_token = Mock(spec=Token)
+        mock_token.token = "encrypted_iv:encrypted_access_token"
+        mock_token.expiresAt = datetime.now(UTC) + timedelta(hours=1)
+
+        with patch.object(token_service, "get_user_by_user_id", AsyncMock(return_value="507f1f77bcf86cd799439011")):
+            with patch.object(Token, "find_one", AsyncMock(return_value=mock_token)):
+                with patch("registry.services.oauth.token_service.decrypt_value") as mock_decrypt:
+                    mock_decrypt.return_value = "decrypted_access_token"
+
+                    token, is_valid = await token_service.get_access_token_status("test_user", "test_service")
+
+                    # Verify decrypt_value was called
+                    mock_decrypt.assert_called_once_with("encrypted_iv:encrypted_access_token")
+
+                    # Verify the token was decrypted
+                    assert token.token == "decrypted_access_token"
+                    assert is_valid is True
+
+    @pytest.mark.asyncio
+    async def test_get_refresh_token_status_decrypts_token(self, token_service):
+        """Test that get_refresh_token_status decrypts the token"""
+        mock_token = Mock(spec=Token)
+        mock_token.token = "encrypted_iv:encrypted_refresh_token"
+        mock_token.expiresAt = datetime.now(UTC) + timedelta(days=30)
+
+        with patch.object(token_service, "get_user_by_user_id", AsyncMock(return_value="507f1f77bcf86cd799439011")):
+            with patch.object(Token, "find_one", AsyncMock(return_value=mock_token)):
+                with patch("registry.services.oauth.token_service.decrypt_value") as mock_decrypt:
+                    mock_decrypt.return_value = "decrypted_refresh_token"
+
+                    token, is_valid = await token_service.get_refresh_token_status("test_user", "test_service")
+
+                    # Verify decrypt_value was called
+                    mock_decrypt.assert_called_once_with("encrypted_iv:encrypted_refresh_token")
+
+                    # Verify the token was decrypted
+                    assert token.token == "decrypted_refresh_token"
+                    assert is_valid is True
+
+    @pytest.mark.asyncio
+    async def test_encrypted_token_format_has_colon_separator(self, token_service, mock_user, mock_oauth_tokens):
+        """Test that encrypted tokens have the expected format with colon separator"""
+        with patch.object(token_service, "get_user", AsyncMock(return_value=mock_user)):
+            # Use real encrypt_value function
+            with patch("registry.services.oauth.token_service.Token") as MockToken:
+                mock_token_instance = Mock(spec=Token)
+                mock_token_instance.insert = AsyncMock()
+                MockToken.return_value = mock_token_instance
+                MockToken.find_one = AsyncMock(return_value=None)
+
+                # Let encrypt_value run normally
+                await token_service.store_oauth_access_token(
+                    user_id="test_user",
+                    service_name="test_service",
+                    tokens=mock_oauth_tokens,
+                )
+
+                # Verify the token has the encrypted format (contains colon)
+                MockToken.assert_called_once()
+                call_kwargs = MockToken.call_args[1]
+                stored_token = call_kwargs["token"]
+                assert ":" in stored_token, "Encrypted token should contain colon separator"
 
 
 if __name__ == "__main__":
