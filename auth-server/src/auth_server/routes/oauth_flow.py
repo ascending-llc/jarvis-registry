@@ -3,6 +3,8 @@ Combined OAuth routes: device flow, dynamic client registration,
 and Authorization Code (PKCE) login/callback endpoints.
 """
 
+from __future__ import annotations
+
 import base64
 import json
 import logging
@@ -44,7 +46,7 @@ JWT_AUDIENCE = settings.jwt_audience
 JWT_SELF_SIGNED_KID = settings.jwt_self_signed_kid
 
 
-def oauth_error_response(error: str, error_description: str = None, status_code: int = 400) -> JSONResponse:
+def oauth_error_response(error: str, error_description: str | None = None, status_code: int = 400) -> JSONResponse:
     content = {"error": error}
     if error_description:
         content["error_description"] = error_description
@@ -119,7 +121,7 @@ async def register_client(registration: ClientRegistrationRequest, request: Requ
         client_secret = secrets.token_urlsafe(32)
         issued_at = int(time.time())
 
-        client_metadata = {
+        client_metadata: dict[str, Any] = {
             "client_id": client_id,
             "client_secret": client_secret,
             "client_id_issued_at": issued_at,
@@ -535,13 +537,13 @@ async def get_oauth2_providers(request: Request):
 async def oauth2_login(
     provider: str,
     request: Request,
-    redirect_uri: str = None,
-    client_id: str = None,
-    code_challenge: str = None,
-    code_challenge_method: str = None,
-    response_type: str = None,
-    resource: str = None,
-    state: str = None,
+    redirect_uri: str | None = None,
+    client_id: str | None = None,
+    code_challenge: str | None = None,
+    code_challenge_method: str | None = None,
+    response_type: str | None = None,
+    resource: str | None = None,
+    state: str | None = None,
 ):
     oauth2_config = {}
     try:
@@ -607,9 +609,9 @@ async def oauth2_login(
 async def oauth2_callback(
     provider: str,
     request: Request,
-    code: str = None,
-    state: str = None,
-    error: str = None,
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
     oauth2_temp_session: str = Cookie(None),
 ):
     oauth2_config = {}
@@ -772,9 +774,9 @@ async def oauth2_callback(
         return RedirectResponse(url=f"{error_url}?error=oauth2_callback_failed", status_code=302)
 
 
-async def exchange_code_for_token(provider: str, code: str, provider_config: dict, auth_server_url: str = None) -> dict:
-    if auth_server_url is None:
-        auth_server_url = settings.auth_server_url
+async def exchange_code_for_token(
+    provider: str, code: str, provider_config: dict, auth_server_url: str
+) -> dict[str, Any]:
     redirect_uri = f"{auth_server_url}/oauth2/callback/{provider}"
     async with httpx.AsyncClient() as client:
         token_data = {
@@ -808,7 +810,7 @@ def map_user_info(user_info: dict, provider_config: dict) -> dict:
     Returns:
         Standardized user info dict with username, email, name, user_id, and groups
     """
-    mapped = {
+    mapped: dict[str, Any] = {
         "username": user_info.get(provider_config["username_claim"]),
         "email": user_info.get(provider_config["email_claim"]),
         "name": user_info.get(provider_config["name_claim"]),
@@ -835,7 +837,7 @@ def map_user_info(user_info: dict, provider_config: dict) -> dict:
 
 
 @router.get("/oauth2/logout/{provider}")
-async def oauth2_logout(provider: str, request: Request, redirect_uri: str = None):
+async def oauth2_logout(provider: str, request: Request, redirect_uri: str | None = None):
     oauth2_config = {}
     try:
         oauth2_config = _get_oauth2_config(request)
@@ -1329,7 +1331,7 @@ def _normalize_server_name(name: str) -> str:
     return name.rstrip("/") if name else name
 
 
-def validate_session_cookie(cookie_value: str, *, signer) -> dict[str, any]:
+def validate_session_cookie(cookie_value: str, *, signer) -> dict[str, Any]:
     """
     Validate session cookie using itsdangerous serializer.
 
