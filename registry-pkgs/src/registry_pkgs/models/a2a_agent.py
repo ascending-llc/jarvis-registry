@@ -246,10 +246,13 @@ class A2AAgent(Document):
         # Backward compatibility: if config is None, use card data
         agent_name = self.config.title if self.config else self.card.name
 
+        agent_url = str(self.card.url) if self.card.url else ""
+
         base_metadata = {
             "collection": self.COLLECTION_NAME,
             "agent_id": agent_id,
             "agent_name": agent_name,  # Keep key stable for backward compatibility
+            "agent_url": agent_url,
             "path": self.path,
             "status": self.status,
             "is_enabled": self.isEnabled,
@@ -310,6 +313,7 @@ class A2AAgent(Document):
         return {
             "agent_id": metadata.get("agent_id"),
             "agent_name": metadata.get("agent_name"),
+            "agent_url": metadata.get("agent_url", ""),
             "path": metadata.get("path"),
             "entity_type": metadata.get("entity_type"),
             "skill_name": metadata.get("skill_name"),

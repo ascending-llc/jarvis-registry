@@ -240,7 +240,8 @@ class SearchRequest(BaseModel):
     top_n: int = Field(1, description="Number of results to return")
     search_type: SearchType = Field(default=SearchType.HYBRID, description="Type of search to perform")
     type_list: list[ServerEntityType] | None = Field(
-        default_factory=lambda: list(ServerEntityType), description="Type of document to return (default: all types)"
+        default_factory=lambda: [ServerEntityType.TOOL, ServerEntityType.RESOURCE, ServerEntityType.PROMPT],
+        description="Type of document to return. Defaults to user-facing types (tool, resource, prompt). server_summary is internal.",
     )
     include_disabled: bool = Field(default=False, description="Include disabled results")
 
@@ -249,7 +250,9 @@ def _build_search_filters(search: SearchRequest) -> dict[str, object]:
     """Build vector-store filters from the request."""
     return {
         "enabled": not search.include_disabled,
-        "entity_type": list(search.type_list or list(ServerEntityType)),
+        "entity_type": list(
+            search.type_list or [ServerEntityType.TOOL, ServerEntityType.RESOURCE, ServerEntityType.PROMPT]
+        ),
     }
 
 

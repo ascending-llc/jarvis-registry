@@ -14,6 +14,7 @@ class ServerEntityType(StrEnum):
     TOOL = "tool"
     RESOURCE = "resource"
     PROMPT = "prompt"
+    SERVER_SUMMARY = "server_summary"
 
 
 class PermissionBits:

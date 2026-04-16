@@ -18,59 +18,139 @@ if TYPE_CHECKING:
 
 _SYSTEM_INSTRUCTIONS = """This MCP Gateway provides unified access to registered MCP servers through centralized discovery and execution.
 
-KEY CAPABILITIES:
-- Discover tools, resources, and prompts across registered MCP servers
-- Execute downstream MCP tools through a unified proxy
-- Access downstream resources and prompts through the same registry
-- Route requests with the server's configured authentication and connection settings
+═══════════════════════════════════════════════════════════════════
+TOOL OVERVIEW
+═══════════════════════════════════════════════════════════════════
 
-GLOBAL WORKFLOW RULES:
-1. If you do not already have a suitable tool for the user's request, call `discover_servers` first.
-2. Do not respond that you lack capability until you have attempted discovery.
-3. If a native fetch or direct access attempt fails with authentication, permission, or access errors, fall back to `discover_servers`.
-4. Prefer `type_list=["tool"]` first.
+MCP Tools (action-oriented, immediate results):
+  discover_servers          Semantic search across all registered MCP tools/resources/prompts.
+                            Each result contains: server_id, server_name, tool_name, content.
+                            Use this FIRST for any MCP request — unless the user names a server.
+  get_server_capabilities   Given a server_name, returns its complete tool list
+                            (names + descriptions, no parameter schemas).
+                            Use when: (a) user explicitly names a server, or
+                                      (b) discover_servers returns tools that don't match intent.
+  execute_tool              Execute a tool. Requires: server_id, tool_name, arguments.
+  read_resource             Read a resource. Requires: server_id, resource_uri.
+  execute_prompt            Run a prompt. Requires: server_id, prompt_name.
 
-WHEN TO FALL BACK TO DISCOVERY:
-- Private repository or API access fails
-- Authentication or authorization fails (401, 403, permission denied)
-- A specialized external service is likely needed
-- The user asks what capabilities exist for a domain or service
+═══════════════════════════════════════════════════════════
+RESULT SHAPES
+═══════════════════════════════════════════════════════════════════
 
-DISCOVERY TYPES:
-- `type_list=["tool"]`: default and preferred — returns executable tools
-- `type_list=["resource"]`: for data sources, cached results, or URI-addressable content
-- `type_list=["prompt"]`: for reusable prompt workflows
+discover_servers result item:
+  {
+    "server_id":   "6978e12b529328946c13297c",   ← use in execute_tool
+    "server_name": "tavily-search",               ← use in get_server_capabilities
+    "tool_name":   "tavily_search",               ← use in execute_tool
+    "content":     "tavily-search | /internet | Tavily Search | Web search ... |
+                    tavily_search | Search the web for current information ...",
+    "entity_type": "tool",
+    "enabled":     true
+  }
 
-CORE RULE — NO SECONDARY LOOKUP NEEDED:
-Every discovery result already contains all fields required for execution.
-Do not inspect nested config, do not look up additional documents, do not transform any field.
+get_server_capabilities result:
+  {
+    "server_name": "tavily-search",
+    "server_id":   "6978e12b529328946c13297c",
+    "path":        "/internet",
+    "tools": [
+      {"name": "tavily_search",   "description": "Search the web for current information..."},
+      {"name": "tavily_extract",  "description": "Extract content from URLs..."},
+      {"name": "tavily_crawl",    "description": "Crawl a website starting from a URL..."},
+      {"name": "tavily_map",      "description": "Map a website structure..."},
+      {"name": "tavily_research", "description": "Perform comprehensive research on a topic..."},
+      {"name": "tavily_skill",    "description": "Search documentation for any library or API..."}
+    ]
+  }
 
-EXECUTION PATTERN (by type):
-- Tool    → `execute_tool(tool_name=<result.tool_name>, server_id=<result.server_id>, arguments={...})`
-- Resource → `read_resource(server_id=<result.server_id>, resource_uri=<result.resource_uri>)`
-- Prompt  → `execute_prompt(server_id=<result.server_id>, prompt_name=<result.prompt_name>, arguments={...})`
 
-EXECUTION CONSTRAINTS:
-- `execute_tool` runs exactly one downstream MCP tool per call.
-- Pass `tool_name` exactly as returned — do not invent, rename, or rewrite it.
-- Always pair `tool_name` with the `server_id` from the same discovery result.
+═══════════════════════════════════════════════════════════════════
+DECISION ALGORITHM
+═══════════════════════════════════════════════════════════════════
 
-COMPLETE WORKFLOW EXAMPLE:
-  Step 1 — Discover:
-    discover_servers(query="web search news", type_list=["tool"])
-    → [{"tool_name": "tavily_search", "server_id": "abc123", "server_name": "tavily", ...}]
+Step 0 — Classify the request:
+  • Single action, immediate result (search, create, update, delete, read)  → MCP path
+  • Complex research, multi-step workflow, long-running analysis            → A2A path
 
-  Step 2 — Execute immediately using the returned fields:
-    execute_tool(tool_name="tavily_search", server_id="abc123", arguments={"query": "AI news"})
+─── MCP path ────────────────────────────────────────────────────
 
-DISCOVERY EXAMPLES:
-- Weather or current events → `discover_servers(query="weather forecast", type_list=["tool"])`
-- Web search              → `discover_servers(query="web search news", type_list=["tool"])`
-- Stock prices            → `discover_servers(query="financial data stock market", type_list=["tool"])`
-- GitHub operations       → `discover_servers(query="github repositories", type_list=["tool"])`
-- Cached / URI data       → `discover_servers(query="cached results", type_list=["resource"])`
-- Prompt templates        → `discover_servers(query="code review template", type_list=["prompt"])`
-- Auth failure fallback   → `discover_servers(query="<service> authenticated", type_list=["tool"])`
+Step 1 — discover_servers first (default):
+  discover_servers(query=<user_intent>, type_list=["tool"], top_n=3)
+
+  For each result, read tool_name and content.
+  If tool_name and its description in content directly match the user's intent:
+    execute_tool(server_id=<result.server_id>, tool_name=<result.tool_name>, arguments={...})
+    STOP.
+
+  IF results are ambiguous or none match well → go to Step 2.
+  IF user explicitly names a server (e.g. "use tavily", "用 tavily") → skip to Step 2.
+
+Step 2 — get_server_capabilities (when target server is known):
+  get_server_capabilities(server_name=<server_name>)
+  Choose the best-matching tool from tools[].
+  execute_tool(server_id=<caps.server_id>, tool_name=<chosen_tool.name>, arguments={...})
+  STOP.
+
+Step 3 — discover_domains (last resort):
+  discover_domains(query=<user_intent>)
+  Pick a relevant domain, then call get_server_capabilities on its server_names[0].
+  If nothing matches → tell the user no capability is registered for this request.
+
+
+═══════════════════════════════════════════════════════════════════
+WORKED EXAMPLES
+═══════════════════════════════════════════════════════════════════
+
+─── Example 1: Web search ───────────────────────────────────────
+User: "Search for the latest AI news"
+
+→ discover_servers(query="search latest AI news", type_list=["tool"], top_n=3)
+← [{"server_id": "6978e12b529328946c13297c", "server_name": "tavily-search",
+    "tool_name": "tavily_search",
+    "content": "tavily-search | /internet | ... | tavily_search | Search the web ..."}]
+
+tool_name="tavily_search" matches "search" intent → execute directly:
+→ execute_tool(server_id="6978e12b529328946c13297c",
+               tool_name="tavily_search",
+               arguments={"query": "latest AI news"})
+
+─── Example 2: User names a server ──────────────────────────────
+User: "用 tavily 帮我抓取这个页面的内容"
+
+→ get_server_capabilities(server_name="tavily-search")
+← tools: [tavily_search, tavily_extract, tavily_crawl, ...]
+
+"抓取页面内容" matches tavily_extract:
+→ execute_tool(server_id="6978e12b529328946c13297c",
+               tool_name="tavily_extract",
+               arguments={"urls": ["https://..."]})
+
+─── Example 3: A2A agent ────────────────────────────────────────
+User: "Find AWS case studies for fintech companies"
+
+→ discover_agents(query="AWS case studies fintech", top_n=3)
+← [{"agent_id": "69d9012356e96a32e89d474a", "agent_name": "AWS Research Agent",
+    "content": "... Skill: AWS Research | Tags: aws, research, case-study"}]
+
+→ invoke_agent(agent_id="69d9012356e96a32e89d474a",
+               agent_url="https://agents.example.com/aws-research",
+               message="Find AWS case studies for fintech companies",
+               skill_id="aws_research")
+
+─── Example 4: "What can you do?" ──────────────────────────────
+→ discover_domains(query="")
+
+═══════════════════════════════════════════════════════════════════
+HARD RULES
+═══════════════════════════════════════════════════════════════════
+
+- NEVER invent tool_name, server_id, or agent_id — use values from discovery results only.
+- NEVER call discover_servers and discover_agents for the same request — classify first.
+- NEVER call discover_servers more than once per user request.
+- server_id + tool_name MUST come from the same result object.
+- agent_id MUST come from discover_agents or discover_domains.
+- NEVER list all servers or agents unprompted.
 """
 
 
@@ -99,6 +179,7 @@ def create_mcp_app(*, container_provider: Callable[[], RegistryContainer | None]
                 proxy_client=proxy_client,
                 server_service=container.server_service,
                 mcp_server_repo=container.mcp_server_repo,
+                a2a_agent_repo=container.a2a_agent_repo,
                 mcp_client_service=container.mcp_client_service,
                 oauth_service=container.oauth_service,
                 session_store=container.session_store,

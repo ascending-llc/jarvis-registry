@@ -254,11 +254,26 @@ class MCPServerRepository(Repository[ExtendedMCPServer]):
             Each value is a list of LangChain Documents from weaviate
         """
         try:
-            result: dict[str, list[Any]] = {"tools": [], "resources": [], "prompts": []}
+            # P2-2: include server_summary bucket
+            result: dict[str, list[Any]] = {
+                "tools": [],
+                "resources": [],
+                "prompts": [],
+                "server_summaries": [],
+            }
+
+            # Map entity_type value → result key
+            _key_map = {
+                "tool": "tools",
+                "resource": "resources",
+                "prompt": "prompts",
+                "server_summary": "server_summaries",
+            }
 
             # Query each entity type separately for better logging and debugging
             for entity_type in ServerEntityType:
                 entity_type_value = entity_type.value
+                result_key = _key_map.get(entity_type_value, f"{entity_type_value}s")
 
                 logger.debug(f"Querying {entity_type_value} docs for server_id {server_id}")
 
@@ -268,14 +283,14 @@ class MCPServerRepository(Repository[ExtendedMCPServer]):
                     collection_name=self.collection,
                 )
 
-                result[f"{entity_type_value}s"] = docs
+                result[result_key] = docs
 
                 logger.debug(f"Found {len(docs)} {entity_type_value} docs for server_id {server_id}")
 
             logger.info(
                 f"Retrieved docs for server_id {server_id}: "
-                f"tools={len(result['tools'])}, "
-                f"resources={len(result['resources'])}, prompts={len(result['prompts'])}"
+                f"tools={len(result['tools'])}, resources={len(result['resources'])}, "
+                f"prompts={len(result['prompts'])}, server_summaries={len(result['server_summaries'])}"
             )
             return result
 
@@ -318,7 +333,7 @@ class MCPServerRepository(Repository[ExtendedMCPServer]):
             total_deleted = 0
             total_updated = 0
 
-            # Process each entity type separately
+            # Process each entity type separately (includes SERVER_SUMMARY after P2-1/P2-2)
             for entity_type in ServerEntityType:
                 entity_type_value = entity_type.value
                 logger.debug(f"Processing entity type: {entity_type_value} for server {server_name}")
@@ -383,7 +398,12 @@ class MCPServerRepository(Repository[ExtendedMCPServer]):
         Returns:
             Dict mapping entity_type to list of documents
         """
-        grouped: dict[str, list[Any]] = {"tool": [], "resource": [], "prompt": []}
+        grouped: dict[str, list[Any]] = {
+            "tool": [],
+            "resource": [],
+            "prompt": [],
+            "server_summary": [],  # P2-2
+        }
 
         for doc in docs:
             entity_type = doc.metadata.get("entity_type")
@@ -497,6 +517,9 @@ class MCPServerRepository(Repository[ExtendedMCPServer]):
                 key = ("resource", doc.metadata.get("resource_name"))
             elif entity_type == "prompt":
                 key = ("prompt", doc.metadata.get("prompt_name"))
+            elif entity_type == "server_summary":
+                # P2-2: one summary doc per server; keyed by server_name
+                key = ("server_summary", doc.metadata.get("server_name"))
             else:
                 logger.warning(f"Unknown entity_type: {entity_type}")
                 continue

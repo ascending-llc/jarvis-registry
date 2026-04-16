@@ -204,9 +204,15 @@ class ExtendedMCPServer(MCPServer):
             prompt_docs = self._create_prompt_docs(prompt, chunking_config)
             docs.extend(prompt_docs)
 
+        # P2-2: One server-summary document per server for domain-level discovery.
+        # This doc captures the server's identity and tool inventory at a glance,
+        # enabling discover_domains to aggregate servers without scanning tool docs.
+        summary_doc = self._create_server_summary_doc(tool_functions, resources, prompts)
+        docs.append(summary_doc)
+
         logger.info(
             f"Generated {len(docs)} documents for server {self.serverName} "
-            f"(tools:{len(tool_functions)}, resources:{len(resources)}, prompts:{len(prompts)})"
+            f"(tools:{len(tool_functions)}, resources:{len(resources)}, prompts:{len(prompts)}, summary:1)"
         )
 
         return docs
@@ -214,7 +220,13 @@ class ExtendedMCPServer(MCPServer):
     def _create_tool_docs(
         self, tool_name: str, tool_data: dict, chunking_config: ChunkingConfig
     ) -> list[LangChainDocument]:
-        """Create Tool document(s) with text splitting if needed."""
+        """Create Tool document(s) with text splitting if needed.
+
+        page_content contains only tool name + description (no parameter schema),
+        keeping the vector embedding focused on semantic meaning.
+        The full parameter schema lives in MongoDB (toolFunctions[x].function.parameters)
+        and is fetched at execution time — no duplication in Weaviate.
+        """
         downstream_tool_name = tool_data.get("mcpToolName", tool_name)
         content = self.generate_tool_content(downstream_tool_name, tool_data)
 
@@ -240,6 +252,65 @@ class ExtendedMCPServer(MCPServer):
         metadata.update({"prompt_name": prompt.get("name", "")})
 
         return self._split_if_needed(content, metadata, chunking_config)
+
+    def _create_server_summary_doc(
+        self,
+        tool_functions: dict,
+        resources: list,
+        prompts: list,
+    ) -> LangChainDocument:
+        """
+        P2-2: Create one server-summary document for domain-level discovery.
+
+        Content: serverName | path | title | description | tags | tool_name list
+
+        This document serves discover_domains — it represents the server as a whole
+        rather than any individual tool/resource/prompt.  Storing tool names here
+        (not schemas) keeps the document compact (~200 tokens) while letting an LLM
+        match a server to an intent without inspecting each tool individually.
+
+        Metadata extras:
+          - num_tools / num_resources / num_prompts: counts for display
+          - tool_names: comma-separated list of tool names (for get_server_capabilities)
+        """
+        tool_names = [td.get("mcpToolName", tn) for tn, td in tool_functions.items() if isinstance(td, dict)]
+        resource_names = [r.get("name", "") for r in resources]
+        prompt_names = [p.get("name", "") for p in prompts]
+
+        # Build the vectorized content
+        parts: list[str] = list(
+            filter(
+                None,
+                [
+                    self.serverName,
+                    self.path,
+                    self.config.get("title", ""),
+                    self.config.get("description", ""),
+                    " ".join(self.tags) if self.tags else "",
+                ],
+            )
+        )
+        if tool_names:
+            parts.append("Tools: " + ", ".join(tool_names))
+        if resource_names:
+            parts.append("Resources: " + ", ".join(resource_names))
+        if prompt_names:
+            parts.append("Prompts: " + ", ".join(prompt_names))
+
+        content = " | ".join(filter(None, parts))
+
+        metadata = self._get_base_metadata(ServerEntityType.SERVER_SUMMARY)
+        metadata.update(
+            {
+                "num_tools": len(tool_functions),
+                "num_resources": len(resources),
+                "num_prompts": len(prompts),
+                # Stored as a list; down-stream callers use this for get_server_capabilities.
+                "tool_names": tool_names,
+            }
+        )
+
+        return LangChainDocument(page_content=content, metadata=metadata)
 
     def _get_base_metadata(self, entity_type: ServerEntityType) -> dict[str, Any]:
         """Get base metadata shared by all document types."""
@@ -335,11 +406,14 @@ class ExtendedMCPServer(MCPServer):
 
     def generate_tool_content(self, tool_name: str, tool_data: dict) -> str:
         """
-        Generate content for Tool document.
+        Generate content for Tool document (vectorized text only).
 
-        Format: serverName | path | title | description |
-                tool_name | description |
-                Parameters: param1 (type, required/optional, description), ...
+        Format: serverName | path | title | description | tool_name | tool_description
+
+        P2-4: Parameter schemas are no longer embedded here — they are stored in
+        Weaviate metadata as ``input_schema``.  Keeping page_content to name +
+        description improves semantic search precision by removing parameter-name
+        noise from the embedding.
 
         The server prefix makes tool docs self-contained for vector search,
         eliminating the need for a MongoDB lookup during server discovery.
@@ -347,37 +421,9 @@ class ExtendedMCPServer(MCPServer):
         parts = [tool_name]
 
         if isinstance(tool_data, dict) and "function" in tool_data:
-            func = tool_data["function"]
-
-            # Description
-            description = func.get("description", "")
+            description = tool_data["function"].get("description", "")
             if description:
                 parts.append(description)
-
-            # Parameters
-            params = func.get("parameters", {})
-            if params and "properties" in params:
-                param_strs = []
-                required_params = params.get("required", [])
-
-                for param_name, param_schema in params["properties"].items():
-                    param_type = param_schema.get("type", "unknown")
-                    param_desc = param_schema.get("description", "")
-                    required = "required" if param_name in required_params else "optional"
-
-                    # Truncate long descriptions
-                    if len(param_desc) > 200:
-                        param_desc = param_desc[:197] + "..."
-
-                    param_str = f"{param_name} ({param_type}, {required}"
-                    if param_desc:
-                        param_str += f", {param_desc}"
-                    param_str += ")"
-
-                    param_strs.append(param_str)
-
-                if param_strs:
-                    parts.append(f"Parameters: {', '.join(param_strs)}")
 
         tool_body = " | ".join(filter(None, parts))
         return f"{self._server_prefix()} | {tool_body}"
@@ -461,7 +507,6 @@ class ExtendedMCPServer(MCPServer):
             "server_id": metadata.get("server_id"),
             "server_name": metadata.get("server_name"),
             "entity_type": metadata.get("entity_type"),
-            "scope": metadata.get("scope"),
             "enabled": metadata.get("enabled"),
             "content": document.page_content,
         }
@@ -474,6 +519,9 @@ class ExtendedMCPServer(MCPServer):
             result["resource_uri"] = metadata.get("resource_uri")
         elif entity_type == ServerEntityType.PROMPT:
             result["prompt_name"] = metadata.get("prompt_name")
+        elif entity_type == ServerEntityType.SERVER_SUMMARY:
+            result["num_tools"] = metadata.get("num_tools", 0)
+            result["tool_names"] = metadata.get("tool_names", [])
 
         # Handle chunked documents
         if metadata.get("is_chunked"):
