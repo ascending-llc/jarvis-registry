@@ -23,34 +23,58 @@ DISCOVERY CHAIN:
    filler words, pronouns, and tense. Do NOT pass the user's raw sentence.
 2. Call discover_entities(query). Default type_list=["tool","resource","prompt"] covers all intent
    shapes in a single round trip. Only narrow type_list when you are certain of the entity type.
-3. Inspect results[].relevance_score and results[].description:
+3. Inspect results[].relevance_score, results[].description, and results[].server_name:
    - Relevance is RELATIVE, not absolute. Compare scores across the returned set — a clear leader
      is trustworthy; clustered scores mean the match is uncertain.
    - Always verify the top result's `description` actually matches the user's intent.
+   - When scores cluster, check server_name across results: same server → ambiguity is about which
+     operation; different servers → ambiguity is about which provider.
 4. Execute the chosen entity immediately using identifiers from the result, verbatim.
 
-EXAMPLES (query formulation + score interpretation):
+EXAMPLES (query formulation + score interpretation + server-aware fallback):
 
 Example 1 — clear leader, execute directly:
   User: "Can you help me find bugs in my GitHub repo?"
   Call: discover_entities(query="github issues")
-  Returns: [{relevance_score:0.82, tool_name:"github_list_issues", description:"List issues in a repo"},
-           {relevance_score:0.31, tool_name:"jira_search",        description:"Search JIRA tickets"}]
-  -> Clear leader (0.82 vs 0.31). Call execute_tool(tool_name="github_list_issues", server_id=..., arguments={...}).
+  Returns: [{relevance_score:0.82, server_name:"github-mcp", tool_name:"github_list_issues", description:"List issues in a repo"},
+           {relevance_score:0.31, server_name:"jira-mcp",   tool_name:"jira_search",        description:"Search JIRA tickets"}]
+  -> Clear leader. Call execute_tool(tool_name="github_list_issues", server_id=..., arguments={...}).
 
-Example 2 — clustered scores, ask user to disambiguate:
+Example 2 — clustered within ONE server, ask which operation:
+  User: "do something with my slack"
+  Call: discover_entities(query="slack")
+  Returns: [{relevance_score:0.51, server_name:"slack-mcp", tool_name:"slack_post"},
+           {relevance_score:0.48, server_name:"slack-mcp", tool_name:"slack_list_channels"},
+           {relevance_score:0.46, server_name:"slack-mcp", tool_name:"slack_read_messages"}]
+  -> All from slack-mcp; ambiguity is about the action. Ask the user which operation.
+
+Example 3 — clustered across DIFFERENT servers, retry with server name in query:
   User: "send a notification about the incident"
-  Call: discover_entities(query="send notification")
-  Returns: [{relevance_score:0.44, tool_name:"slack_post"},
-           {relevance_score:0.41, tool_name:"email_send"},
-           {relevance_score:0.38, tool_name:"sms_send"}]
-  -> Scores clustered. Ask the user which channel before executing.
+  Call 1: discover_entities(query="send notification")
+  Returns: [{relevance_score:0.44, server_name:"slack-mcp",  tool_name:"slack_post"},
+           {relevance_score:0.41, server_name:"email-mcp",  tool_name:"email_send"},
+           {relevance_score:0.38, server_name:"twilio-mcp", tool_name:"sms_send"}]
+  -> Different servers, no clear winner. Ask the user which channel. If the user answers "slack":
+  Call 2: discover_entities(query="slack post message")
+  -> Clear leader from slack-mcp; execute.
 
-Example 3 — non-tool intent, mixed type_list finds it in one call:
+Example 4 — non-tool intent, mixed type_list finds it in one call:
   User: "please summarize yesterday's meeting notes"
   Call: discover_entities(query="summarize meeting notes")
   Returns top result with entity_type="prompt", relevance_score 0.71, clearly leading.
   -> Call execute_prompt(prompt_name=..., server_id=..., arguments={...}).
+
+Example 5 — survey fallback when keywords fail:
+  User: "make a quick memo about this"
+  Call 1: discover_entities(query="create memo") -> empty or all < 0.2.
+  Call 2: discover_entities(query="note")        -> empty.
+  Call 3 (SURVEY): discover_entities(query="", top_n=20)
+  -> Returns a capability catalog. Group mentally by server_name:
+       • notes-mcp: create_note, list_notes, delete_note
+       • github-mcp: github_list_issues, github_create_issue, ...
+       • slack-mcp: slack_post, slack_list_channels, ...
+  -> Spot notes-mcp. Call 4: discover_entities(query="notes-mcp create note") or execute directly
+     using the identifiers already returned by the survey.
 
 EXECUTION (use identifiers verbatim; never transform, shorten, or invent them):
 - Tool     -> execute_tool(tool_name=<result.tool_name>, server_id=<result.server_id>, arguments={...})
@@ -58,18 +82,23 @@ EXECUTION (use identifiers verbatim; never transform, shorten, or invent them):
 - Prompt   -> execute_prompt(server_id=<result.server_id>, prompt_name=<result.prompt_name>, arguments={...})
 
 WHEN NO SUITABLE ENTITY IS FOUND (empty results, low scores, or no description matches intent):
-1. Retry with REFINED keywords — synonyms or the domain term the user actually used
+1. Refine keywords — synonyms, the domain term the user actually used
    (e.g. "github issues" instead of "bug tracker").
-2. Retry with BROADER keywords — drop qualifiers, use the core noun/verb alone.
-3. SURVEY fallback: call discover_entities(query="", top_n=20) to list registered capabilities when
-   user phrasing may not match any registered name.
-4. If nothing matches after the survey, tell the user plainly: the gateway has no registered
+2. Broaden keywords — drop qualifiers, use the core noun/verb alone.
+3. SURVEY: call discover_entities(query="", top_n=20). The results are a capability catalog — group
+   them mentally by server_name to see which servers exist and what each provides.
+4. If a relevant server appears in the survey, retry with its name in the query
+   (e.g. discover_entities(query="<server_name> <capability>")). The server_name is embedded in
+   document content, so hybrid search will narrow effectively.
+5. If nothing matches after the survey, tell the user plainly: the gateway has no registered
    capability for this request. Do NOT fabricate tool_name / resource_uri / prompt_name / server_id.
 
 RULES:
 - Never claim lack of capability before running discover_entities at least once.
 - Never call execute_tool / read_resource / execute_prompt with identifiers not returned by discover_entities.
 - Prefer one discovery call with good keywords over many narrow calls.
+- When clustered, distinguish same-server ambiguity (ask which operation) from cross-server ambiguity
+  (ask which provider, then retry with the provider name in the query).
 """
 
 

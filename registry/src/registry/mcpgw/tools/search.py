@@ -132,9 +132,10 @@ def get_tools() -> list[tuple[str, Callable]]:
     ) -> list[dict[str, Any]]:
         """Find tools, resources, or prompts matching the query.
         Pass CONCISE keywords (nouns/verbs/domain terms), not the user's raw sentence.
-        Returns {query, type_list, total, results[]}. Each result has relevance_score (compare RELATIVELY across results, not against a fixed threshold), description, server_id, and one of tool_name/resource_uri/prompt_name.
+        Returns {query, type_list, total, results[]}. Each result has relevance_score (compare RELATIVELY, not against a fixed threshold), description, server_id, server_name, and one of tool_name/resource_uri/prompt_name.
         Execute: tool→execute_tool(tool_name, server_id, arguments), resource→read_resource(server_id, resource_uri), prompt→execute_prompt(server_id, prompt_name, arguments).
-        If no suitable match: retry with refined keywords → broader keywords → query='' with top_n=20 to survey all registered capabilities before giving up."""
+        On clustered scores: same server_name → ask user which operation; different server_names → ask user which provider, then retry with that provider's name in the query.
+        If nothing matches: refined keywords → broader keywords → query='' with top_n=20 to survey all capabilities (group mentally by server_name) → retry with a spotted server_name in the query."""
         return await discover_entities_impl(ctx, query, top_n, "hybrid", type_list)
 
     return [
