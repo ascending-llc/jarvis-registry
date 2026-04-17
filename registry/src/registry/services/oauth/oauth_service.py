@@ -247,7 +247,7 @@ class MCPOAuthService:
                     return None, None, f"Dynamic client registration failed: {str(dcr_error)}"
             else:
                 logger.debug(f"[OAuth] Using static credentials for {server.serverName}")
-                # Note that decrypt_auth_fields excepts the `.config` field of an ExtendedMCPServer document object.
+                # Note that decrypt_auth_fields expects the `.config` field of an ExtendedMCPServer document object.
                 oauth_config = decrypt_auth_fields({"oauth": oauth_config})["oauth"]
 
             oauth_config = self._merge_oauth_config(oauth_config, oauth_metadata)
@@ -648,7 +648,7 @@ class MCPOAuthService:
             if not oauth_config:
                 return False, f"Server '{server_id}' OAuth configuration not found"
 
-            # Note that decrypt_auth_fields excepts the `.config` field of an ExtendedMCPServer document object.
+            # Note that decrypt_auth_fields expects the `.config` field of an ExtendedMCPServer document object.
             oauth_config = decrypt_auth_fields({"oauth": oauth_config})["oauth"]
             oauth_metadata = mcp_server.config.get("oauthMetadata")
             oauth_config = self._merge_oauth_config(oauth_config, oauth_metadata)
@@ -780,7 +780,7 @@ class MCPOAuthService:
                     "server_name": server_name,
                 }
 
-            # Note that decrypt_auth_fields excepts the `.config` field of an ExtendedMCPServer document object.
+            # Note that decrypt_auth_fields expects the `.config` field of an ExtendedMCPServer document object.
             oauth_config = decrypt_auth_fields({"oauth": oauth_config})["oauth"]
             oauth_metadata = server.config.get("oauthMetadata")
             oauth_config = self._merge_oauth_config(oauth_config, oauth_metadata)
