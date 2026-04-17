@@ -8,7 +8,7 @@ from fastapi import status as http_status
 
 from registry_pkgs.database.decorators import get_current_session
 from registry_pkgs.models import (
-    AccessRole,
+    ExtendedAccessRole,
     PrincipalType,
     User,
 )
@@ -85,13 +85,13 @@ class ACLService:
             else "",
         )
 
-    async def get_role_by_resource_and_permbits(self, resource_type: str, perm_bits: int) -> AccessRole | None:
+    async def get_role_by_resource_and_permbits(self, resource_type: str, perm_bits: int) -> ExtendedAccessRole | None:
         """
-        Find the AccessRole for a given resource_type and perm_bits.
+        Find the ExtendedAccessRole for a given resource_type and perm_bits.
         Used to automatically associate a roleId when only perm_bits is provided.
         """
         try:
-            role = await AccessRole.find_one({"resourceType": resource_type, "permBits": perm_bits})
+            role = await ExtendedAccessRole.find_one({"resourceType": resource_type, "permBits": perm_bits})
             return role
         except Exception as e:
             logger.error(f"Error finding role for {resource_type} with permBits {perm_bits}: {e}")
@@ -127,7 +127,7 @@ class ACLService:
             raise ValueError("principal_id must be set for user/group principal_type")
 
         if role_id:
-            access_role = await AccessRole.find_one({"_id": role_id})
+            access_role = await ExtendedAccessRole.find_one({"_id": role_id})
             if not access_role:
                 raise ValueError("Role not found")
             perm_bits = access_role.permBits
@@ -289,7 +289,7 @@ class ACLService:
                     if user:
                         access_role_id = None
                         if entry.roleId:
-                            role = await AccessRole.get(entry.roleId)
+                            role = await ExtendedAccessRole.get(entry.roleId)
                             if role:
                                 access_role_id = role.accessRoleId
 
@@ -451,7 +451,7 @@ class ACLService:
             List of roles with their accessRoleId, name, description, and permBits
         """
         try:
-            roles = await AccessRole.find({"resourceType": resource_type}).to_list()
+            roles = await ExtendedAccessRole.find({"resourceType": resource_type}).to_list()
             return [
                 RoleOut(
                     accessRoleId=role.accessRoleId,
@@ -504,7 +504,7 @@ class ACLService:
             if updated_principal:
                 new_perm_bits = updated_principal.permBits
                 if updated_principal.accessRoleId:
-                    role = await AccessRole.find_one({"accessRoleId": updated_principal.accessRoleId})
+                    role = await ExtendedAccessRole.find_one({"accessRoleId": updated_principal.accessRoleId})
                     if role:
                         new_perm_bits = role.permBits
 
@@ -523,7 +523,7 @@ class ACLService:
         for new_principal in new_owners:
             perm_bits = new_principal.permBits
             if new_principal.accessRoleId:
-                role = await AccessRole.find_one({"accessRoleId": new_principal.accessRoleId})
+                role = await ExtendedAccessRole.find_one({"accessRoleId": new_principal.accessRoleId})
                 if role:
                     perm_bits = role.permBits
 
