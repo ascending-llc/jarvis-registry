@@ -301,7 +301,6 @@ class Repository[T: VectorStorable]:
         Build lookup map for documents by unique key.
 
         Key format:
-        - server: "server:{server_name}"
         - tool: "tool:{server_name}:{tool_name}"
         - resource: "resource:{server_name}:{resource_name}"
         - prompt: "prompt:{server_name}:{prompt_name}"
@@ -322,9 +321,7 @@ class Repository[T: VectorStorable]:
             entity_type = metadata.get("entity_type")
             server_name = metadata.get("server_name")
 
-            if entity_type == "server":
-                key = f"server:{server_name}"
-            elif entity_type == "tool":
+            if entity_type == "tool":
                 tool_name = metadata.get("tool_name")
                 key = f"tool:{server_name}:{tool_name}"
             elif entity_type == "resource":

@@ -246,7 +246,17 @@ class TestExtendedMCPServerStructure:
                 "description": "desc",
                 "type": "streamable-http",
                 "url": "https://example.com/mcp",
-                "toolFunctions": {},
+                "toolFunctions": {
+                    "ping_mcp_versioned_server": {
+                        "type": "function",
+                        "mcpToolName": "ping",
+                        "function": {
+                            "name": "ping_mcp_versioned_server",
+                            "description": "Ping the server",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                },
                 "resources": [],
                 "prompts": [],
             },
@@ -292,12 +302,118 @@ class TestExtendedMCPServerStructure:
         docs = server.to_documents()
         tool_doc = next(doc for doc in docs if doc.metadata.get("entity_type") == "tool")
 
+        # metadata: tool_name is the downstream MCP name
         assert tool_doc.metadata["tool_name"] == "downstream_tool"
         assert "original_mcp_name" not in tool_doc.metadata
+
+        # content: server prefix is embedded so tool docs are self-contained for vector search
+        assert tool_doc.page_content.startswith("tool-server | /mcp/tool-server |")
 
         result = ExtendedMCPServer.from_document(tool_doc)
         assert result["tool_name"] == "downstream_tool"
         assert "original_mcp_name" not in result
+
+    def test_tool_doc_content_includes_server_prefix(self):
+        """Tool doc content must start with server context so vector search is self-contained."""
+        server = ExtendedMCPServer.model_construct(
+            id=PydanticObjectId(),
+            serverName="github",
+            config={
+                "title": "GitHub MCP Server",
+                "description": "GitHub integration",
+                "type": "streamable-http",
+                "url": "https://example.com/mcp",
+                "toolFunctions": {
+                    "search_code_mcp_github": {
+                        "type": "function",
+                        "mcpToolName": "search_code",
+                        "function": {
+                            "name": "search_code_mcp_github",
+                            "description": "Search code in repositories",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                },
+                "resources": [],
+                "prompts": [],
+            },
+            author=PydanticObjectId(),
+            path="/mcp/github",
+            status="active",
+        )
+
+        docs = server.to_documents()
+        tool_doc = next(doc for doc in docs if doc.metadata.get("entity_type") == "tool")
+
+        assert "github" in tool_doc.page_content
+        assert "/mcp/github" in tool_doc.page_content
+        assert "GitHub MCP Server" in tool_doc.page_content
+        assert "search_code" in tool_doc.page_content
+
+    def test_resource_doc_content_includes_server_prefix(self):
+        """Resource doc content must include server context prefix."""
+        server = ExtendedMCPServer.model_construct(
+            id=PydanticObjectId(),
+            serverName="github",
+            config={
+                "title": "GitHub MCP Server",
+                "description": "GitHub integration",
+                "type": "streamable-http",
+                "url": "https://example.com/mcp",
+                "toolFunctions": {},
+                "resources": [
+                    {
+                        "uri": "github://repo/{owner}/{repo}",
+                        "name": "repository",
+                        "description": "GitHub repository",
+                        "mimeType": "application/json",
+                    }
+                ],
+                "prompts": [],
+            },
+            author=PydanticObjectId(),
+            path="/mcp/github",
+            status="active",
+        )
+
+        docs = server.to_documents()
+        resource_doc = next(doc for doc in docs if doc.metadata.get("entity_type") == "resource")
+
+        assert "github" in resource_doc.page_content
+        assert "/mcp/github" in resource_doc.page_content
+        assert "repository" in resource_doc.page_content
+
+    def test_prompt_doc_content_includes_server_prefix(self):
+        """Prompt doc content must include server context prefix."""
+        server = ExtendedMCPServer.model_construct(
+            id=PydanticObjectId(),
+            serverName="github",
+            config={
+                "title": "GitHub MCP Server",
+                "description": "GitHub integration",
+                "type": "streamable-http",
+                "url": "https://example.com/mcp",
+                "toolFunctions": {},
+                "resources": [],
+                "prompts": [
+                    {
+                        "name": "code_review",
+                        "description": "Review code changes",
+                        "arguments": [],
+                    }
+                ],
+            },
+            author=PydanticObjectId(),
+            path="/mcp/github",
+            status="active",
+        )
+
+        docs = server.to_documents()
+        prompt_doc = next(doc for doc in docs if doc.metadata.get("entity_type") == "prompt")
+
+        assert "github" in prompt_doc.page_content
+        assert "/mcp/github" in prompt_doc.page_content
+        assert "code_review" in prompt_doc.page_content
 
     def test_a2a_to_documents_includes_runtime_version_metadata(self):
         from registry_pkgs.models.a2a_agent import AgentConfig

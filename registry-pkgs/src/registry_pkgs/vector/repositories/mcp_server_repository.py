@@ -245,16 +245,16 @@ class MCPServerRepository(Repository[ExtendedMCPServer]):
 
     async def get_all_docs_by_server_id(self, server_id: str) -> dict[str, list[Any]]:
         """
-        Get all vector documents (server, tools, resources, prompts) by server_id.
+        Get all vector documents (tools, resources, prompts) by server_id.
 
         Query by entity type separately for better traceability.
 
         Returns:
-            Dict with keys: 'server', 'tools', 'resources', 'prompts'
+            Dict with keys: 'tools', 'resources', 'prompts'
             Each value is a list of LangChain Documents from weaviate
         """
         try:
-            result = {"server": [], "tools": [], "resources": [], "prompts": []}
+            result: dict[str, list[Any]] = {"tools": [], "resources": [], "prompts": []}
 
             # Query each entity type separately for better logging and debugging
             for entity_type in ServerEntityType:
@@ -268,22 +268,20 @@ class MCPServerRepository(Repository[ExtendedMCPServer]):
                     collection_name=self.collection,
                 )
 
-                # Map entity_type to result key (handle plural forms)
-                result_key = entity_type_value if entity_type_value == "server" else f"{entity_type_value}s"
-                result[result_key] = docs
+                result[f"{entity_type_value}s"] = docs
 
                 logger.debug(f"Found {len(docs)} {entity_type_value} docs for server_id {server_id}")
 
             logger.info(
                 f"Retrieved docs for server_id {server_id}: "
-                f"server={len(result['server'])}, tools={len(result['tools'])}, "
+                f"tools={len(result['tools'])}, "
                 f"resources={len(result['resources'])}, prompts={len(result['prompts'])}"
             )
             return result
 
         except Exception as e:
             logger.error(f"Get all docs by server_id failed: {e}", exc_info=True)
-            return {"server": [], "tools": [], "resources": [], "prompts": []}
+            return {"tools": [], "resources": [], "prompts": []}
 
     async def smart_sync(
         self,
@@ -294,7 +292,7 @@ class MCPServerRepository(Repository[ExtendedMCPServer]):
 
         Strategy:
         1. Generate new documents from server (grouped by entity type)
-        2. For each entity type (SERVER, TOOL, RESOURCE, PROMPT):
+        2. For each entity type (TOOL, RESOURCE, PROMPT):
            - Query existing docs in Weaviate
            - Compare with new docs
            - Determine if content changed or only metadata changed
@@ -385,7 +383,7 @@ class MCPServerRepository(Repository[ExtendedMCPServer]):
         Returns:
             Dict mapping entity_type to list of documents
         """
-        grouped = {"server": [], "tool": [], "resource": [], "prompt": []}
+        grouped: dict[str, list[Any]] = {"tool": [], "resource": [], "prompt": []}
 
         for doc in docs:
             entity_type = doc.metadata.get("entity_type")
@@ -406,7 +404,7 @@ class MCPServerRepository(Repository[ExtendedMCPServer]):
         Sync a specific entity type by comparing existing and new docs.
 
         Args:
-            entity_type: Entity type (server, tool, resource, prompt)
+            entity_type: Entity type (tool, resource, prompt)
             existing_docs: Existing documents from Weaviate
             new_docs: New documents to sync
 
@@ -493,9 +491,7 @@ class MCPServerRepository(Repository[ExtendedMCPServer]):
             entity_type = doc.metadata.get("entity_type")
 
             # Determine unique key based on entity type
-            if entity_type == "server":
-                key = ("server", doc.metadata.get("server_name"))
-            elif entity_type == "tool":
+            if entity_type == "tool":
                 key = ("tool", doc.metadata.get("tool_name"))
             elif entity_type == "resource":
                 key = ("resource", doc.metadata.get("resource_name"))
