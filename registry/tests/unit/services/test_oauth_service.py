@@ -316,9 +316,7 @@ class TestMCPOAuthService:
         )
 
         # Mock crypto utils
-        with patch(
-            "registry.services.oauth.oauth_service.decrypt_auth_fields", return_value=mock_server.config["oauth"]
-        ):
+        with patch("registry.services.oauth.oauth_service.decrypt_auth_fields", return_value=mock_server.config):
             flow_id, auth_url, error = await oauth_service.initiate_oauth_flow(user_id, mock_server)
 
             assert flow_id == "test_flow_id"
