@@ -247,10 +247,12 @@ class SearchRequest(BaseModel):
 
 def _build_search_filters(search: SearchRequest) -> dict[str, object]:
     """Build vector-store filters from the request."""
-    return {
-        "enabled": not search.include_disabled,
+    filters: dict[str, object] = {
         "entity_type": list(search.type_list or list(ServerEntityType)),
     }
+    if not search.include_disabled:
+        filters["enabled"] = True
+    return filters
 
 
 def _compute_confidence(results: list) -> str:

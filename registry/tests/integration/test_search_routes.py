@@ -371,6 +371,7 @@ class TestServerSearchRoutes:
             "query": "",
             "type_list": ["tool", "resource", "prompt"],
             "total": 0,
+            "confidence": "none",
             "results": [],
         }
 

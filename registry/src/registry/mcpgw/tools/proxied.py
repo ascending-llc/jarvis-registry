@@ -798,7 +798,7 @@ def get_tools() -> list[tuple[str, Callable]]:
             Field(
                 description=(
                     "Prompt arguments as key-value pairs. "
-                    "Read the `content` field of the discovery result for argument names and required/optional status "
+                    "Read the `description` field of the discovery result for argument names and required/optional status "
                     "(format: 'Required: arg1 (description), ... | Optional: arg2 (description), ...'). "
                     "Pass None or omit if the prompt takes no arguments."
                 )
@@ -834,16 +834,16 @@ def get_tools() -> list[tuple[str, Callable]]:
             )
 
         **How to construct arguments:**
-        The `content` field of the discovery result lists required and optional arguments:
+        The `description` field of the discovery result lists required and optional arguments:
           "Required: topic (research topic) | Optional: depth (detail level, default: overview)"
         Pass all required arguments; include optional ones when the user specifies them.
 
         **Examples:**
 
         Example 1 — code review:
-          # discover_servers(query="code review template", type_list=["prompt"])
+          # discover_entities(query="code review template", type_list=["prompt"])
           # → {"prompt_name": "code_reviewer", "server_id": "abc123",
-          #    "content": "... Required: language (programming language) | Optional: focus (review area) ..."}
+          #    "description": "... Required: language (programming language) | Optional: focus (review area) ..."}
           execute_prompt(
               server_id="abc123",
               prompt_name="code_reviewer",
@@ -851,9 +851,9 @@ def get_tools() -> list[tuple[str, Callable]]:
           )
 
         Example 2 — research assistant:
-          # discover_servers(query="research assistant", type_list=["prompt"])
+          # discover_entities(query="research assistant", type_list=["prompt"])
           # → {"prompt_name": "research_assistant", "server_id": "def456",
-          #    "content": "... Required: topic (research topic) | Optional: depth (detail level) ..."}
+          #    "description": "... Required: topic (research topic) | Optional: depth (detail level) ..."}
           execute_prompt(
               server_id="def456",
               prompt_name="research_assistant",
