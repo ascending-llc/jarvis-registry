@@ -425,20 +425,19 @@ async def a2a_agent_proxy(
             "This may fail if card.url is not accessible. Please update the agent to set config.url."
         )
 
-    # Construct full agent URL by appending remaining path to base URL
-    # Example: base_url="https://agent.com" + remaining_path="/v1/message:send" -> "https://agent.com/v1/message:send"
-    agent_url = f"{base_url.rstrip('/')}{remaining_path}"
-
-    # Create a modified agent_card with the full runtime URL
-    # Transport classes use agent_card.url internally, so we need to override it
+    # For A2A SDK transports, use base_url directly without appending remaining_path
+    # because the transport classes (RestTransport, JsonRpcTransport, etc.) will
+    # automatically append the standard A2A endpoint paths (e.g., /v1/message:send)
+    # when calling their internal methods.
+    # If we pre-append remaining_path here, it will be duplicated.
     agent_card = agent.card.model_copy(deep=True)
-    agent_card.url = agent_url
+    agent_card.url = base_url.rstrip("/")
 
     accept_header = request.headers.get("accept", "")
     is_streaming = "text/event-stream" in accept_header
 
     logger.info(
-        f"A2A proxy: {agent_registry_path}{remaining_path} transport={transport_type} streaming={is_streaming} → {agent_url}"
+        f"A2A proxy: {agent_registry_path}{remaining_path} transport={transport_type} streaming={is_streaming} → {base_url}"
     )
 
     try:
@@ -464,11 +463,11 @@ async def a2a_agent_proxy(
                         "error": "gRPC transport is not available. Please ensure grpcio is installed (requires a2a-sdk[grpc] extra)"
                     },
                 )
-            parsed = urlparse(agent_url)
+            parsed = urlparse(base_url)
             if not parsed.hostname:
                 return JSONResponse(
                     status_code=400,
-                    content={"error": f"Invalid gRPC agent URL: '{agent_url}'"},
+                    content={"error": f"Invalid gRPC agent URL: '{base_url}'"},
                 )
 
             scheme = parsed.scheme.lower()
