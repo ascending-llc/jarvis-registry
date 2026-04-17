@@ -46,6 +46,7 @@ const McpPlaygroundModal = ({ serverName, onClose }: Props) => {
           model: 'anthropic-claude-sonnet-4-6',
           apiUrl: JARVIS_URL,
           container,
+          artifactsButton: true,
           width: '100%',
           height: '100%',
           onError: () => setError('Failed to connect to Jarvis'),
