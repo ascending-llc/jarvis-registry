@@ -1,8 +1,8 @@
 import { PencilIcon, WrenchScrewdriverIcon, XMarkIcon } from '@heroicons/react/24/outline';
 import type React from 'react';
 import { useEffect, useState } from 'react';
-import { FaAws } from 'react-icons/fa';
 import { useNavigate } from 'react-router-dom';
+import agentcoreIcon from '@/assets/agentcore.svg';
 import { useGlobal } from '@/contexts/GlobalContext';
 import { useServer } from '@/contexts/ServerContext';
 import SERVICES from '@/services';
@@ -210,16 +210,6 @@ const AgentCard: React.FC<AgentCardProps> = ({ agent }) => {
                 </div>
               )}
             </div>
-            {hasAgentCoreTags && (
-              <div className='flex justify-end items-center'>
-                <div
-                  className='p-1 bg-gray-50 dark:bg-gray-800 rounded border border-gray-200 dark:border-gray-700 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300 transition-colors'
-                  title='AWS AgentCore'
-                >
-                  <FaAws className='h-3.5 w-3.5' />
-                </div>
-              </div>
-            )}
           </div>
         </div>
 
@@ -299,6 +289,16 @@ const AgentCard: React.FC<AgentCardProps> = ({ agent }) => {
             </div>
           </div>
         </div>
+
+        {/* AgentCore Icon - Fixed position */}
+        {hasAgentCoreTags && (
+          <img
+            src={agentcoreIcon}
+            alt='AWS AgentCore'
+            className='absolute bottom-12 right-3 h-5 w-5'
+            title='AWS AgentCore'
+          />
+        )}
       </div>
 
       {/* Skills Modal */}
