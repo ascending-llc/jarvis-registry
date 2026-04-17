@@ -1,64 +1,115 @@
 ---
 alwaysApply: true
 ---
-This MCP Gateway provides unified access to registered MCP servers through centralized discovery and execution.
 
-KEY CAPABILITIES:
-- Discover tools, resources, prompts, or full server documents across registered MCP servers
-- Execute downstream MCP tools through a unified proxy
-- Access downstream resources and prompts through the same registry
-- Route requests with the server's configured authentication and connection settings
+# MCP Gateway
 
-GLOBAL WORKFLOW RULES:
-1. If you do not already have a suitable tool for the user's request, call `discover_servers` first.
-2. Do not respond that you lack capability until you have attempted discovery.
-3. If a native fetch or direct access attempt fails with authentication, permission, or access errors, fall back to `discover_servers`.
-4. Prefer `type_list=["tool"]` first. Use `type_list=["server"]` only when you need a full server document to inspect all capabilities on that server.
+Discover and execute tools, resources, and prompts from registered MCP servers.
 
-AUTHENTICATION ELICITATION RULES:
-- If `execute_tool` returns an authentication challenge, OAuth URL, or elicitation request, do NOT fall back to `discover_servers`. The server and tool are already known.
-- Inform the user that authentication is required and present the auth URL or prompt if provided by the tool response.
-- Wait for the user to confirm they have completed authentication (e.g., "done", "authenticated", "completed").
-- After confirmation, immediately retry `execute_tool` with the exact same `tool_name`, `server_id`, and `arguments` as before — do not re-discover.
-- Only fall back to `discover_servers` on auth failure if you do not already have a valid `server_id` and `tool_name`.
+---
 
-WHEN TO FALL BACK TO DISCOVERY:
-- Private repository or API access fails
-- Authentication or authorization fails (401, 403, permission denied) AND you do not already have a `server_id` and `tool_name` — if you do, retry `execute_tool` directly after auth completes (see AUTHENTICATION ELICITATION RULES)
-- A specialized external service is likely needed
-- The user asks what capabilities exist for a domain or service
+## Discovery Chain
 
-TOKEN-EFFICIENT DISCOVERY:
-- `type_list=["tool"]`: default and preferred for executable tools
-- `type_list=["resource"]`: for data sources or URIs
-- `type_list=["prompt"]`: for reusable prompt workflows
-- `type_list=["server"]`: only when you need the full Mongo-style server document
+1. Formulate a **concise keyword query** from the user's intent — core nouns/verbs + domain terms. Drop filler words, pronouns, and tense. Do NOT pass the user's raw sentence.
+2. Call `discover_entities(query)`. Default `type_list=["tool","resource","prompt"]` covers all intent shapes in a single round trip. Only narrow `type_list` when you are certain of the entity type.
+3. Inspect `results[].relevance_score`, `results[].description`, and `results[].server_name`:
+   - Relevance is **relative**, not absolute. Compare scores across the returned set — a clear leader is trustworthy; clustered scores mean the match is uncertain.
+   - Always verify the top result's `description` actually matches the user's intent.
+   - When scores cluster, check `server_name` across results: same server → ambiguity is about which operation; different servers → ambiguity is about which provider.
+4. Execute the chosen entity immediately using identifiers from the result, verbatim.
 
-CRITICAL RESULT INTERPRETATION RULE:
-- Treat discovery results as full server documents only when `type_list` is exactly `["server"]`.
-- In every other case, including `type_list=["tool"]`, treat each returned item as a directly usable result for execution purposes.
+---
 
-EXECUTION RULES:
-- `execute_tool` always runs exactly one downstream MCP tool.
-- The `tool_name` parameter of the `execute_tool` call must always be the final downstream MCP tool name.
-- If the previous discovery call used exactly `type_list=["server"]`, first inspect the `$.config.toolFunctions` field of the server document, choose one tool entry, and pass that chosen entry's `mcpToolName` as `tool_name`. Only if `mcpToolName` is missing may you fall back to that tool entry's key or name.
-- In every other discovery case, pass the returned `tool_name` unchanged into the `tool_name` parameter of the `execute_tool` call.
-- Pair the chosen `tool_name` with the matching `server_id` from the same discovery result or chosen server document.
+## Examples
 
-EXAMPLES:
-- Weather or current events → `discover_servers(query="weather forecast", type_list=["tool"])`
-- Web search → `discover_servers(query="web search news", type_list=["tool"])`
-- Stock prices → `discover_servers(query="financial data stock market", type_list=["tool"])`
-- Explore full capabilities of a server domain → `discover_servers(query="github", type_list=["server"])`
-- Access failure on a protected service → `discover_servers(query="<service> authenticated", type_list=["tool"])`
+### Example 1 — Clear leader, execute directly
 
-SERVER-DOCUMENT EXAMPLE:
-- If `discover_servers(..., type_list=["server"])` returns a server whose `$.config.toolFunctions` contains:
-  - `add_numbers_mcp_minimal_mcp_iam -> mcpToolName="add_numbers"`
-  - `greet_mcp_minimal_mcp_iam -> mcpToolName="greet"`
-- Then first choose the single tool entry that matches the task.
-- To execute the add tool, call `execute_tool(tool_name="add_numbers", server_id="<server id>", arguments={...})`.
-- To execute the greet tool, call `execute_tool(tool_name="greet", server_id="<server id>", arguments={...})`.
+```
+User: "Can you help me find bugs in my GitHub repo?"
+Call: discover_entities(query="github issues")
+Returns:
+  [{relevance_score:0.82, server_name:"github-mcp", tool_name:"github_list_issues", description:"List issues in a repo"},
+   {relevance_score:0.31, server_name:"jira-mcp",   tool_name:"jira_search",        description:"Search JIRA tickets"}]
+→ Clear leader. Call execute_tool(tool_name="github_list_issues", server_id=..., arguments={...}).
+```
 
-TOOL-RESULT EXAMPLE:
-- If discovery returns `{"tool_name": "tavily_search", "server_id": "abc123", ...}`, call `execute_tool(tool_name="tavily_search", server_id="abc123", arguments={...})`.
+### Example 2 — Clustered within ONE server, ask which operation
+
+```
+User: "do something with my slack"
+Call: discover_entities(query="slack")
+Returns:
+  [{relevance_score:0.51, server_name:"slack-mcp", tool_name:"slack_post"},
+   {relevance_score:0.48, server_name:"slack-mcp", tool_name:"slack_list_channels"},
+   {relevance_score:0.46, server_name:"slack-mcp", tool_name:"slack_read_messages"}]
+→ All from slack-mcp; ambiguity is about the action. Ask the user which operation.
+```
+
+### Example 3 — Clustered across DIFFERENT servers, retry with server name in query
+
+```
+User: "send a notification about the incident"
+Call 1: discover_entities(query="send notification")
+Returns:
+  [{relevance_score:0.44, server_name:"slack-mcp",  tool_name:"slack_post"},
+   {relevance_score:0.41, server_name:"email-mcp",  tool_name:"email_send"},
+   {relevance_score:0.38, server_name:"twilio-mcp", tool_name:"sms_send"}]
+→ Different servers, no clear winner. Ask the user which channel. If the user answers "slack":
+Call 2: discover_entities(query="slack post message")
+→ Clear leader from slack-mcp; execute.
+```
+
+### Example 4 — Non-tool intent, mixed type_list finds it in one call
+
+```
+User: "please summarize yesterday's meeting notes"
+Call: discover_entities(query="summarize meeting notes")
+→ Top result has entity_type="prompt", relevance_score 0.71, clearly leading.
+→ Call execute_prompt(prompt_name=..., server_id=..., arguments={...}).
+```
+
+### Example 5 — Survey fallback when keywords fail
+
+```
+User: "make a quick memo about this"
+Call 1: discover_entities(query="create memo") → empty or all < 0.2.
+Call 2: discover_entities(query="note")        → empty.
+Call 3 (SURVEY): discover_entities(query="", top_n=20)
+→ Returns a capability catalog. Group mentally by server_name:
+    • notes-mcp: create_note, list_notes, delete_note
+    • github-mcp: github_list_issues, github_create_issue, ...
+    • slack-mcp: slack_post, slack_list_channels, ...
+→ Spot notes-mcp. Call 4: discover_entities(query="notes-mcp create note") or execute directly
+  using the identifiers already returned by the survey.
+```
+
+---
+
+## Execution
+
+Use identifiers verbatim — never transform, shorten, or invent them.
+
+| Entity type | Call |
+|-------------|------|
+| Tool | `execute_tool(tool_name=<result.tool_name>, server_id=<result.server_id>, arguments={...})` |
+| Resource | `read_resource(server_id=<result.server_id>, resource_uri=<result.resource_uri>)` |
+| Prompt | `execute_prompt(server_id=<result.server_id>, prompt_name=<result.prompt_name>, arguments={...})` |
+
+---
+
+## When No Suitable Entity Is Found
+
+1. **Refine keywords** — synonyms, the domain term the user actually used (e.g. `"github issues"` instead of `"bug tracker"`).
+2. **Broaden keywords** — drop qualifiers, use the core noun/verb alone.
+3. **Survey** — call `discover_entities(query="", top_n=20)`. The results are a capability catalog — group them mentally by `server_name` to see which servers exist and what each provides.
+4. If a relevant server appears in the survey, retry with its name in the query (e.g. `discover_entities(query="<server_name> <capability>")`). The `server_name` is embedded in document content, so hybrid search will narrow effectively.
+5. If nothing matches after the survey, tell the user plainly: the gateway has no registered capability for this request. Do **NOT** fabricate `tool_name` / `resource_uri` / `prompt_name` / `server_id`.
+
+---
+
+## Rules
+
+- Never claim lack of capability before running `discover_entities` at least once.
+- Never call `execute_tool` / `read_resource` / `execute_prompt` with identifiers not returned by `discover_entities`.
+- Prefer one discovery call with good keywords over many narrow calls.
+- When clustered, distinguish same-server ambiguity (ask which operation) from cross-server ambiguity (ask which provider, then retry with the provider name in the query).
