@@ -26,7 +26,7 @@ class TestACLService:
         with (
             patch("registry.services.access_control_service.ExtendedAclEntry", mock_acl_entry),
             patch(
-                "registry.services.access_control_service.AccessRole.find_one",
+                "registry.services.access_control_service.ExtendedAccessRole.find_one",
                 AsyncMock(return_value=MagicMock(permBits=PermissionBits.EDIT)),
             ),
         ):

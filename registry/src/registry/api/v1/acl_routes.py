@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi import status as http_status
 
 from registry_pkgs.database.decorators import use_transaction
-from registry_pkgs.models import AccessRole, PrincipalType
+from registry_pkgs.models import ExtendedAccessRole, PrincipalType
 from registry_pkgs.models.enums import PermissionBits
 
 from ...auth.dependencies import CurrentUser
@@ -147,7 +147,7 @@ async def update_resource_permissions(
                 perm_bits = principal.permBits
 
                 if principal.accessRoleId:
-                    role = await AccessRole.find_one({"accessRoleId": principal.accessRoleId})
+                    role = await ExtendedAccessRole.find_one({"accessRoleId": principal.accessRoleId})
                     if role:
                         role_id = role.id
                         perm_bits = role.permBits

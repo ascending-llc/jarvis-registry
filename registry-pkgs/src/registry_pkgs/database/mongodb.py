@@ -13,7 +13,7 @@ from pymongo import AsyncMongoClient
 from ..core.config import MongoConfig
 from ..models import (
     A2AAgent,
-    AccessRole,
+    ExtendedAccessRole,
     ExtendedAclEntry,
     ExtendedMCPServer,
     Federation,
@@ -92,7 +92,7 @@ class MongoDB:
             # Pass the namespace containing all model classes so forward references can be resolved
             rebuild_namespace = {
                 "User": User,
-                "AccessRole": AccessRole,
+                "ExtendedAccessRole": ExtendedAccessRole,
                 "Group": Group,
                 "ExtendedAclEntry": ExtendedAclEntry,
                 "ExtendedMCPServer": ExtendedMCPServer,
@@ -103,7 +103,7 @@ class MongoDB:
                 "FederationSyncJob": FederationSyncJob,
             }
             User.model_rebuild(_types_namespace=rebuild_namespace)
-            AccessRole.model_rebuild(_types_namespace=rebuild_namespace)
+            ExtendedAccessRole.model_rebuild(_types_namespace=rebuild_namespace)
             Group.model_rebuild(_types_namespace=rebuild_namespace)
             ExtendedAclEntry.model_rebuild(_types_namespace=rebuild_namespace)
             ExtendedMCPServer.model_rebuild(_types_namespace=rebuild_namespace)
@@ -118,7 +118,7 @@ class MongoDB:
                 database=db,
                 document_models=[
                     User,
-                    AccessRole,
+                    ExtendedAccessRole,
                     Group,
                     ExtendedAclEntry,
                     ExtendedMCPServer,
