@@ -6,7 +6,7 @@ from typing import Any
 from fastapi import HTTPException
 from fastapi import status as http_status
 
-from registry_pkgs.models import ResourceType
+from registry_pkgs.models.extended_acl_entry import ExtendedResourceType
 
 logger = logging.getLogger(__name__)
 
@@ -58,9 +58,12 @@ def normalize_headers(config_headers: Any) -> dict[str, str]:
     return normalized
 
 
+_resource_types = tuple(rt.value for rt in ExtendedResourceType)
+
+
 # ACL utility function
 def validate_resource_type(resource_type: str) -> None:
-    if resource_type not in [rt.value for rt in ResourceType]:
+    if resource_type not in _resource_types:
         raise HTTPException(
             status_code=http_status.HTTP_400_BAD_REQUEST,
             detail={"error": "invalid_resource_type", "message": f"Resource type '{resource_type}' is not valid."},

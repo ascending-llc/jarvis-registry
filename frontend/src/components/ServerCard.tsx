@@ -11,6 +11,7 @@ import {
 import type React from 'react';
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import agentcoreIcon from '@/assets/agentcore.svg';
 import { useGlobal } from '@/contexts/GlobalContext';
 import type { ServerInfo } from '@/contexts/ServerContext';
 import { useServer } from '@/contexts/ServerContext';
@@ -176,6 +177,9 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
 
   // Check if this server has security pending
   const isSecurityPending = server.tags?.includes('security-pending');
+
+  const hasAgentCoreTags =
+    server.tags?.includes('federated') && server.tags?.includes('aws') && server.tags?.includes('agentcore');
 
   return (
     <>
@@ -420,6 +424,16 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
             </div>
           </div>
         </div>
+
+        {/* AgentCore Icon - Fixed position */}
+        {hasAgentCoreTags && (
+          <img
+            src={agentcoreIcon}
+            alt='AWS AgentCore'
+            className='absolute bottom-14 right-3 h-5 w-5'
+            title='AWS AgentCore'
+          />
+        )}
       </div>
 
       {/* Tools Modal */}

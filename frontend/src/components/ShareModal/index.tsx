@@ -6,10 +6,16 @@ import { HiOutlineUsers } from 'react-icons/hi2';
 import { PermissionList, PrincipalSearch, PublicShare } from './components';
 import { type ShareModalProps, useShareModal } from './useShareModal';
 
+const RESOURCE_LABELS: Record<string, string> = {
+  remoteAgent: 'Agent',
+  federation: 'External Registry',
+  mcpServer: 'MCP Server',
+};
+
 export const ShareModal: React.FC<ShareModalProps> = props => {
   const { isOpen, onClose, itemName, resourceType } = props;
   const { search, permissions, publicShare, roles, saving, handleSave } = useShareModal(props);
-  const resourceLabel = resourceType === 'remoteAgent' ? 'Agent' : 'MCP Server';
+  const resourceLabel = RESOURCE_LABELS[resourceType ?? 'mcpServer'] || 'MCP Server';
 
   return (
     <Transition.Root show={isOpen} as={Fragment}>
