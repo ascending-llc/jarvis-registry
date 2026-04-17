@@ -42,11 +42,11 @@ async def discover_entities_impl(
                     - "near_text": Pure semantic/vector search (best for concept matching)
                     - "bm25": Pure keyword search (best for exact term matching)
                     - "similarity_store": Alternative similarity algorithm
-        type_list: Entity types to search for (default: ["tool"]):
+        type_list: Entity types to search for (default: ["tool", "resource", "prompt"]):
                   - ["tool"]: Returns individual tools (each doc embeds full server context)
                   - ["resource"]: Returns resources (each doc embeds full server context)
                   - ["prompt"]: Returns prompts (each doc embeds full server context)
-                  - Mix types: ["tool", "resource"] for multiple entity types
+                  - Default covers all types in one call — narrow only when entity type is certain
         ctx: FastMCP context with user auth
 
     Returns:
@@ -57,7 +57,7 @@ async def discover_entities_impl(
         InternalServerException: On any runtime exception
     """
     if type_list is None:
-        type_list = ["tool"]
+        type_list = ["tool", "resource", "prompt"]
 
     if top_n is None:
         top_n = 3
@@ -123,14 +123,18 @@ def get_tools() -> list[tuple[str, Callable]]:
         ] = None,
         type_list: Annotated[
             list[str],
-            Field(description="Entity types: 'tool' (default), 'resource', or 'prompt'."),
+            Field(
+                description="Entity types. Default ['tool','resource','prompt'] covers all in one call. Narrow only when entity type is certain."
+            ),
         ] = Field(
-            default_factory=lambda: ["tool"],
+            default_factory=lambda: ["tool", "resource", "prompt"],
         ),
     ) -> list[dict[str, Any]]:
         """Find tools, resources, or prompts matching the query.
-        Returns {confidence, results[]} where confidence is high/low/ambiguous/none.
-        Execute: tool→execute_tool(tool_name, server_id, arguments), resource→read_resource(server_id, resource_uri), prompt→execute_prompt(server_id, prompt_name, arguments)."""
+        Pass CONCISE keywords (nouns/verbs/domain terms), not the user's raw sentence.
+        Returns {query, type_list, total, results[]}. Each result has relevance_score (compare RELATIVELY across results, not against a fixed threshold), description, server_id, and one of tool_name/resource_uri/prompt_name.
+        Execute: tool→execute_tool(tool_name, server_id, arguments), resource→read_resource(server_id, resource_uri), prompt→execute_prompt(server_id, prompt_name, arguments).
+        If no suitable match: retry with refined keywords → broader keywords → query='' with top_n=20 to survey all registered capabilities before giving up."""
         return await discover_entities_impl(ctx, query, top_n, "hybrid", type_list)
 
     return [

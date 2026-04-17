@@ -18,22 +18,58 @@ if TYPE_CHECKING:
 
 _SYSTEM_INSTRUCTIONS = """MCP Gateway: discover and execute tools, resources, and prompts from registered MCP servers.
 
-WORKFLOW:
-1. Call discover_entities(query) to find the right entity.
-2. Execute immediately using the returned tool_name/resource_uri/prompt_name + server_id.
-3. Do not claim lack of capability until discovery has been attempted.
+DISCOVERY CHAIN:
+1. Formulate a CONCISE keyword query from the user's intent — core nouns/verbs + domain terms, drop
+   filler words, pronouns, and tense. Do NOT pass the user's raw sentence.
+2. Call discover_entities(query). Default type_list=["tool","resource","prompt"] covers all intent
+   shapes in a single round trip. Only narrow type_list when you are certain of the entity type.
+3. Inspect results[].relevance_score and results[].description:
+   - Relevance is RELATIVE, not absolute. Compare scores across the returned set — a clear leader
+     is trustworthy; clustered scores mean the match is uncertain.
+   - Always verify the top result's `description` actually matches the user's intent.
+4. Execute the chosen entity immediately using identifiers from the result, verbatim.
 
-EXECUTION:
+EXAMPLES (query formulation + score interpretation):
+
+Example 1 — clear leader, execute directly:
+  User: "Can you help me find bugs in my GitHub repo?"
+  Call: discover_entities(query="github issues")
+  Returns: [{relevance_score:0.82, tool_name:"github_list_issues", description:"List issues in a repo"},
+           {relevance_score:0.31, tool_name:"jira_search",        description:"Search JIRA tickets"}]
+  -> Clear leader (0.82 vs 0.31). Call execute_tool(tool_name="github_list_issues", server_id=..., arguments={...}).
+
+Example 2 — clustered scores, ask user to disambiguate:
+  User: "send a notification about the incident"
+  Call: discover_entities(query="send notification")
+  Returns: [{relevance_score:0.44, tool_name:"slack_post"},
+           {relevance_score:0.41, tool_name:"email_send"},
+           {relevance_score:0.38, tool_name:"sms_send"}]
+  -> Scores clustered. Ask the user which channel before executing.
+
+Example 3 — non-tool intent, mixed type_list finds it in one call:
+  User: "please summarize yesterday's meeting notes"
+  Call: discover_entities(query="summarize meeting notes")
+  Returns top result with entity_type="prompt", relevance_score 0.71, clearly leading.
+  -> Call execute_prompt(prompt_name=..., server_id=..., arguments={...}).
+
+EXECUTION (use identifiers verbatim; never transform, shorten, or invent them):
 - Tool     -> execute_tool(tool_name=<result.tool_name>, server_id=<result.server_id>, arguments={...})
 - Resource -> read_resource(server_id=<result.server_id>, resource_uri=<result.resource_uri>)
 - Prompt   -> execute_prompt(server_id=<result.server_id>, prompt_name=<result.prompt_name>, arguments={...})
 
-CONFIDENCE (from discover_entities result):
-- confidence=high:      execute the first result directly.
-- confidence=low:       review description before executing; consider refining the query first.
-- confidence=ambiguous: retry discover_entities with a more specific query.
-- confidence=none:      no results found; try different or broader keywords.
-- Use tool_name verbatim — never transform or derive it from other fields.
+WHEN NO SUITABLE ENTITY IS FOUND (empty results, low scores, or no description matches intent):
+1. Retry with REFINED keywords — synonyms or the domain term the user actually used
+   (e.g. "github issues" instead of "bug tracker").
+2. Retry with BROADER keywords — drop qualifiers, use the core noun/verb alone.
+3. SURVEY fallback: call discover_entities(query="", top_n=20) to list registered capabilities when
+   user phrasing may not match any registered name.
+4. If nothing matches after the survey, tell the user plainly: the gateway has no registered
+   capability for this request. Do NOT fabricate tool_name / resource_uri / prompt_name / server_id.
+
+RULES:
+- Never claim lack of capability before running discover_entities at least once.
+- Never call execute_tool / read_resource / execute_prompt with identifiers not returned by discover_entities.
+- Prefer one discovery call with good keywords over many narrow calls.
 """
 
 
