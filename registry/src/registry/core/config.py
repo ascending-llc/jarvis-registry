@@ -2,6 +2,7 @@ import logging
 from functools import cached_property
 from pathlib import Path
 from typing import Self
+from urllib.parse import urlparse
 
 from pydantic import model_validator
 
@@ -32,7 +33,9 @@ class Settings(JarvisBaseSettings):
     session_cookie_secure: bool = True
     session_cookie_domain: str | None = None
 
-    # ==================== Service URLs ====================
+    # ==================== Frontend URL ====================
+    # registry_client_url is the URL of the frontend React app running in the Nginx container.
+    # It is used to redirect traffic bound for the frontend.
     registry_client_url: str = "http://localhost:5173"
 
     # ==================== Headers ====================
@@ -160,6 +163,18 @@ class Settings(JarvisBaseSettings):
     build_version: str = "1.0.0"
 
     # ==================== Model Validation ====================
+
+    @model_validator(mode="after")
+    def _validate_service_urls(self) -> Self:
+        result = urlparse(self.registry_client_url)
+
+        if result.path != self.service_base_path:
+            raise ValueError(
+                "When both REGISTRY_URL and REGISTRY_CLIENT_URL exist, their path portion must match, "
+                f"but they are '{self.registry_url}' and '{self.registry_client_url}' respectively."
+            )
+
+        return self
 
     @model_validator(mode="after")
     def _validate_tool_discovery_mode(self) -> Self:

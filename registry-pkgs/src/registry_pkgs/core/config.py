@@ -109,7 +109,13 @@ class JarvisBaseSettings(BaseSettings):
     auth_server_url: str = "http://localhost:8888"
     auth_server_external_url: str = "http://localhost:8888"
     auth_server_api_prefix: str = ""
+    # registry_url is the URL of the registry backend service. Both registry and auth-server need to know this.
+    # NOTE: auth-server doesn't need the frontend URL at all. It only needs this registry backend URL.
+    # The Settings class used by registry has a `registry_client_url` attribute, which is the frontend URL
+    # and must have the same _path portion_ as `registry_url`. registry will validate that they match.
     registry_url: str = "http://localhost:7860"
+
+    # ==================== Client ID and secret of registry as a client of auth-server ====================
     registry_app_name: str = "jarvis-registry-client"
 
     # ==================== Logging ====================
@@ -232,7 +238,19 @@ class JarvisBaseSettings(BaseSettings):
           "issuer" must be `https://jarvis-demo.ascendingdc.com`.
         """
         result = urlparse(self.auth_server_external_url)
+        # `result.netloc` is `host:port` if `:port` exists and `host` otherwise.
         return f"{result.scheme}://{result.netloc}"
+
+    @cached_property
+    def service_base_path(self) -> str:
+        """
+        The path portion of `REGISTRY_URL`. When both `REGISTRY_URL` and `REGISTRY_CLIENT_URL` exist,
+        their path portion must match.
+        NOTE: If the URL has no path portion, the value is empty string "" (no path), instead of "/" (root path).
+        """
+        result = urlparse(self.registry_url)
+
+        return result.path
 
     def configure_logging(self, package_name: str) -> None:
         """

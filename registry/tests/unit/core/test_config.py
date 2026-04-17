@@ -155,3 +155,9 @@ class TestSettings:
 
         for key in ("JWT_PRIVATE_KEY and JWT_PUBLIC_KEY", "CREDS_KEY", "TOOL_DISCOVERY_MODE"):
             assert f"{key} validation is disabled." in caplog.text
+
+    @pytest.mark.unit
+    @patch.dict(os.environ, {**_SETTINGS_ENV, "REGISTRY_CLIENT_URL": "http://localhost/gateway"})
+    def test_service_urls_validation(self) -> None:
+        with pytest.raises(ValueError, match="their path portion must match"):
+            Settings()
