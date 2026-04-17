@@ -35,26 +35,6 @@ const Dashboard: React.FC = () => {
   const [committedQuery, setCommittedQuery] = useState('');
   const [refreshing, setRefreshing] = useState(false);
 
-  // External registry tags - can be configured via environment or constants
-  // Default tags that identify servers from external registries
-  const EXTERNAL_REGISTRY_TAGS = ['anthropic-registry', 'workday-asor', 'asor', 'federated'];
-
-  // Separate internal and external registry servers
-  const internalServers = useMemo(() => {
-    return servers.filter(s => {
-      const serverTags = s.tags || [];
-      return !EXTERNAL_REGISTRY_TAGS.some(tag => serverTags.includes(tag));
-    });
-  }, [servers]);
-
-  // Separate internal and external registry agents
-  const internalAgents = useMemo(() => {
-    return agents.filter(a => {
-      const agentTags = a.tags || [];
-      return !EXTERNAL_REGISTRY_TAGS.some(tag => agentTags.includes(tag));
-    });
-  }, [agents]);
-
   // Semantic search
   const semanticEnabled = committedQuery.trim().length >= 2;
   const {
@@ -79,7 +59,7 @@ const Dashboard: React.FC = () => {
 
   // Filter servers based on activeFilter and searchTerm
   const filteredServers = useMemo(() => {
-    let filtered = internalServers;
+    let filtered = servers;
 
     // Apply filter first
     if (activeFilter === 'enabled') filtered = filtered.filter(s => s.enabled);
@@ -99,11 +79,11 @@ const Dashboard: React.FC = () => {
     }
 
     return filtered;
-  }, [internalServers, activeFilter, searchTerm]);
+  }, [servers, activeFilter, searchTerm]);
 
   // Filter agents based on activeFilter and searchTerm
   const filteredAgents = useMemo(() => {
-    let filtered = internalAgents;
+    let filtered = agents;
 
     // Apply filter first
     if (activeFilter === 'enabled') filtered = filtered.filter(a => a.enabled);
@@ -123,7 +103,7 @@ const Dashboard: React.FC = () => {
       );
     }
     return filtered;
-  }, [internalAgents, activeFilter, searchTerm]);
+  }, [agents, activeFilter, searchTerm]);
 
   // Filter federations based on searchTerm
   const filteredFederations = useMemo(() => {

@@ -1,8 +1,8 @@
 import { PencilIcon, WrenchScrewdriverIcon, XMarkIcon } from '@heroicons/react/24/outline';
 import type React from 'react';
 import { useEffect, useState } from 'react';
+import { FaAws } from 'react-icons/fa';
 import { useNavigate } from 'react-router-dom';
-
 import { useGlobal } from '@/contexts/GlobalContext';
 import { useServer } from '@/contexts/ServerContext';
 import SERVICES from '@/services';
@@ -64,6 +64,9 @@ const AgentCard: React.FC<AgentCardProps> = ({ agent }) => {
 
   const numSkills = 'numSkills' in agent ? agent.numSkills : agent.skills?.length || 0;
   const hasSkillsDetails = 'skills' in agent && Array.isArray(agent.skills) && agent.skills.length > 0;
+
+  const hasAgentCoreTags =
+    agent.tags?.includes('federated') && agent.tags?.includes('aws') && agent.tags?.includes('agentcore');
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -207,6 +210,16 @@ const AgentCard: React.FC<AgentCardProps> = ({ agent }) => {
                 </div>
               )}
             </div>
+            {hasAgentCoreTags && (
+              <div className='flex justify-end items-center'>
+                <div
+                  className='p-1 bg-gray-50 dark:bg-gray-800 rounded border border-gray-200 dark:border-gray-700 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300 transition-colors'
+                  title='AWS AgentCore'
+                >
+                  <FaAws className='h-3.5 w-3.5' />
+                </div>
+              </div>
+            )}
           </div>
         </div>
 

@@ -10,6 +10,7 @@ import {
 } from '@heroicons/react/24/outline';
 import type React from 'react';
 import { useCallback, useEffect, useState } from 'react';
+import { FaAws } from 'react-icons/fa';
 import { useNavigate } from 'react-router-dom';
 import { useGlobal } from '@/contexts/GlobalContext';
 import type { ServerInfo } from '@/contexts/ServerContext';
@@ -177,6 +178,9 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
   // Check if this server has security pending
   const isSecurityPending = server.tags?.includes('security-pending');
 
+  const hasAgentCoreTags =
+    server.tags?.includes('federated') && server.tags?.includes('aws') && server.tags?.includes('agentcore');
+
   return (
     <>
       <div
@@ -327,6 +331,16 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
                 </div>
               )}
             </div>
+            {hasAgentCoreTags && (
+              <div className='flex justify-end items-center'>
+                <div
+                  className='p-1 bg-gray-50 dark:bg-gray-800 rounded border border-gray-200 dark:border-gray-700 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300 transition-colors'
+                  title='AWS AgentCore'
+                >
+                  <FaAws className='h-3.5 w-3.5' />
+                </div>
+              </div>
+            )}
           </div>
         </div>
 

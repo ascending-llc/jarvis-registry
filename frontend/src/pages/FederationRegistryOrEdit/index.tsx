@@ -2,8 +2,10 @@ import { ArrowPathIcon, CalendarIcon, ClockIcon, TrashIcon } from '@heroicons/re
 import type React from 'react';
 import { useEffect, useState } from 'react';
 import { FiServer } from 'react-icons/fi';
+import { HiOutlineShare } from 'react-icons/hi2';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 
+import ShareModal from '@/components/ShareModal';
 import { useGlobal } from '@/contexts/GlobalContext';
 import { useServer } from '@/contexts/ServerContext';
 import SERVICES from '@/services';
@@ -41,12 +43,13 @@ const FederationRegistryOrEdit: React.FC = () => {
   const [searchParams] = useSearchParams();
   const id = searchParams.get('id');
   const { showToast } = useGlobal();
-  const { refreshFederationData } = useServer();
+  const { refreshFederationData, handleFederationUpdate } = useServer();
 
   const [loading, setLoading] = useState(false);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [federation, setFederation] = useState<Federation | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
 
   const [formData, setFormData] = useState<FederationFormConfig>(INIT_DATA);
   const [errors, setErrors] = useState<Record<string, string | undefined>>({});
@@ -236,7 +239,7 @@ const FederationRegistryOrEdit: React.FC = () => {
           };
 
       if (isEditMode && id && federation) {
-        await SERVICES.FEDERATION.updateFederation(id, {
+        const result = await SERVICES.FEDERATION.updateFederation(id, {
           displayName: formData.displayName,
           description: formData.description || undefined,
           providerConfig,
@@ -244,6 +247,10 @@ const FederationRegistryOrEdit: React.FC = () => {
           syncAfterUpdate: true,
         });
         showToast('External Registry updated successfully', 'success');
+        handleFederationUpdate(id, {
+          displayName: result.displayName,
+          description: result.description,
+        });
       } else {
         await SERVICES.FEDERATION.createFederation({
           providerType: formData.providerType,
@@ -252,8 +259,8 @@ const FederationRegistryOrEdit: React.FC = () => {
           providerConfig,
         });
         showToast('External Registry added successfully', 'success');
+        refreshFederationData(true);
       }
-      refreshFederationData(true);
       goBack();
     } catch (error: any) {
       showToast(error?.detail?.message || 'Failed to save external registry', 'error');
@@ -263,8 +270,18 @@ const FederationRegistryOrEdit: React.FC = () => {
   };
 
   return (
-    <div className='h-full overflow-y-auto custom-scrollbar -mr-4 sm:-mr-6 lg:-mr-8'>
-      <div className='mx-auto flex flex-col w-3/4 min-h-full bg-white dark:bg-gray-800 rounded-lg'>
+    <>
+      {shareOpen && id && (
+        <ShareModal
+          itemName={formData.displayName || federation?.displayName || 'External Registry'}
+          resourceId={id}
+          resourceType='federation'
+          isOpen={shareOpen}
+          onClose={() => setShareOpen(false)}
+        />
+      )}
+      <div className='h-full overflow-y-auto custom-scrollbar -mr-4 sm:-mr-6 lg:-mr-8'>
+        <div className='mx-auto flex flex-col w-3/4 min-h-full bg-white dark:bg-gray-800 rounded-lg'>
         {/* Header */}
         <div className='px-6 py-6 flex items-center gap-4 border-b border-gray-100 dark:border-gray-700'>
           <div className='flex items-center justify-center p-3 rounded-xl bg-[#F3E8FF] dark:bg-purple-900/30'>
@@ -349,13 +366,22 @@ const FederationRegistryOrEdit: React.FC = () => {
         {/* Footer */}
         <div className='px-6 py-4 border-t border-gray-100 dark:border-gray-700 flex flex-wrap items-center justify-between gap-4'>
           <div className='flex items-center gap-3'>
-            {isEditMode && !isReadOnly && (
+            {isEditMode && !isReadOnly && federation?.permissions?.DELETE && (
               <button
                 onClick={handleDelete}
                 disabled={loading}
                 className='inline-flex items-center px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm text-sm font-medium text-red-500 dark:text-red-400 bg-white dark:bg-gray-800 hover:bg-red-50 dark:hover:bg-red-900/20 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 disabled:opacity-50 disabled:cursor-not-allowed'
               >
                 <TrashIcon className='h-4 w-4' />
+              </button>
+            )}
+            {isEditMode && !!id && federation?.permissions?.SHARE && (
+              <button
+                onClick={() => setShareOpen(true)}
+                disabled={loading || loadingDetail}
+                className='inline-flex items-center px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm text-sm font-medium text-purple-600 dark:text-purple-400 bg-white dark:bg-gray-800 hover:bg-purple-50 dark:hover:bg-purple-900/20 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 disabled:opacity-50 disabled:cursor-not-allowed'
+              >
+                <HiOutlineShare className='h-4 w-4' />
               </button>
             )}
           </div>
@@ -397,6 +423,7 @@ const FederationRegistryOrEdit: React.FC = () => {
         </div>
       </div>
     </div>
+    </>
   );
 };
 

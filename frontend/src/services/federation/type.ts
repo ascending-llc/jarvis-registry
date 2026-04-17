@@ -47,6 +47,13 @@ export interface FederationJob {
   summary: SyncSummary;
 }
 
+export type FederationPermissionType = {
+  VIEW: boolean;
+  EDIT: boolean;
+  DELETE: boolean;
+  SHARE: boolean;
+};
+
 export interface Federation {
   id: string;
   providerType: ProviderType;
@@ -65,6 +72,7 @@ export interface Federation {
   updatedBy: string;
   createdAt: string;
   updatedAt: string;
+  permissions: FederationPermissionType;
 }
 
 export interface GetFederationsParams {
