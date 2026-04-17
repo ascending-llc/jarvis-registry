@@ -13,6 +13,7 @@ TypeScript equivalent:
 
 import logging
 import os
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -40,6 +41,29 @@ REFRESH_TOKEN_EXPIRES_DAYS = 7  # 7 days
 # Algorithm constants
 ALGORITHM = "AES-CBC"
 IV_LENGTH = 16  # 128 bits
+
+# Encryption format validation
+# Encrypted values have format: hex(iv):hex(ciphertext)
+# IV is always 16 bytes = 32 hex characters
+ENCRYPTED_VALUE_PATTERN = re.compile(r"^[0-9a-f]{32}:")
+
+
+def is_encrypted(value: str) -> bool:
+    """
+    Check if a value is already encrypted using strict pattern matching.
+
+    Encrypted values have the format: hex(iv):hex(ciphertext)
+    where IV is always 16 bytes (32 hex characters).
+
+    Args:
+        value: String value to check
+
+    Returns:
+        True if value matches encrypted format, False otherwise
+    """
+    if not value or not isinstance(value, str):
+        return False
+    return bool(ENCRYPTED_VALUE_PATTERN.match(value))
 
 
 def generate_service_jwt(user_id: str, username: str | None = None, scopes: list[str] | None = None) -> str:
@@ -202,8 +226,8 @@ def encrypt_auth_fields(config: dict) -> dict:
     Encrypt sensitive authentication fields in server config.
 
     Handles two authentication patterns:
-    1. authentication.client_secret (when type=oauth)
-    2. apiKey.key
+    1. oauth.client_secret - OAuth client secret
+    2. apiKey.key - API key value
 
     Args:
         config: Server configuration dictionary
@@ -230,22 +254,21 @@ def encrypt_auth_fields(config: dict) -> dict:
         return config
 
     try:
-        # Handle authentication field
-        if "authentication" in config and isinstance(config["authentication"], dict):
-            auth = config["authentication"].copy()
-            auth_type = auth.get("type", "").lower()
+        # Handle oauth field
+        if "oauth" in config and isinstance(config["oauth"], dict):
+            oauth = config["oauth"].copy()
 
-            if auth_type == "oauth" and "client_secret" in auth:
+            if "client_secret" in oauth:
                 # Encrypt OAuth client_secret
-                client_secret = auth["client_secret"]
-                if client_secret and ":" not in str(client_secret):
+                client_secret = oauth["client_secret"]
+                if client_secret and not is_encrypted(str(client_secret)):
                     # Only encrypt if not already encrypted
                     try:
-                        auth["client_secret"] = encrypt_value(str(client_secret))
-                        config["authentication"] = auth
-                        logger.debug("Encrypted authentication.client_secret")
+                        oauth["client_secret"] = encrypt_value(str(client_secret))
+                        config["oauth"] = oauth
+                        logger.debug("Encrypted oauth.client_secret")
                     except Exception as encrypt_error:
-                        logger.error(f"Failed to encrypt client_secret: {encrypt_error}")
+                        logger.error(f"Failed to encrypt oauth.client_secret: {encrypt_error}")
                         # Keep plaintext value
 
         # Handle apiKey field
@@ -277,8 +300,8 @@ def decrypt_auth_fields(config: dict) -> dict:
     Decrypt sensitive authentication fields in server config.
 
     Handles two authentication patterns:
-    1. authentication.client_secret (when type=oauth)
-    2. apiKey.key
+    1. oauth.client_secret - OAuth client secret
+    2. apiKey.key - API key value
 
     Args:
         config: Server configuration dictionary with encrypted fields
@@ -305,21 +328,20 @@ def decrypt_auth_fields(config: dict) -> dict:
         return config
 
     try:
-        # Handle authentication field
-        if "authentication" in config and isinstance(config["authentication"], dict):
-            auth = config["authentication"].copy()
-            auth_type = auth.get("type", "").lower()
+        # Handle oauth field
+        if "oauth" in config and isinstance(config["oauth"], dict):
+            oauth = config["oauth"].copy()
 
-            if auth_type == "oauth" and "client_secret" in auth:
+            if "client_secret" in oauth:
                 # Decrypt OAuth client_secret
-                client_secret = auth["client_secret"]
+                client_secret = oauth["client_secret"]
                 if client_secret:
                     try:
-                        auth["client_secret"] = decrypt_value(str(client_secret))
-                        config["authentication"] = auth
-                        logger.debug("Decrypted authentication.client_secret")
+                        oauth["client_secret"] = decrypt_value(str(client_secret))
+                        config["oauth"] = oauth
+                        logger.debug("Decrypted oauth.client_secret")
                     except Exception as decrypt_error:
-                        logger.warning(f"Failed to decrypt client_secret: {decrypt_error}")
+                        logger.warning(f"Failed to decrypt oauth.client_secret: {decrypt_error}")
                         # Keep encrypted value
 
         # Handle apiKey field
