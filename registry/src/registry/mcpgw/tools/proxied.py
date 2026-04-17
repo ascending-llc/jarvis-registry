@@ -644,7 +644,7 @@ def get_tools() -> list[tuple[str, Callable]]:
             Field(
                 description=(
                     "Tool input parameters as a key-value dict. "
-                    "Read the `content` field of the discovery result for parameter names, types, "
+                    "Read the `description` field of the discovery result for parameter names, types, "
                     "and required/optional status (format: 'Parameters: name (type, required/optional, description), ...'). "
                     "Pass all required parameters; include optional ones when they improve the result."
                 )
