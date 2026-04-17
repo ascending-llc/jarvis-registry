@@ -253,6 +253,45 @@ def _build_search_filters(search: SearchRequest) -> dict[str, object]:
     }
 
 
+def _compute_confidence(results: list) -> str:
+    """
+    Compute a relative confidence signal from the result set.
+
+    Uses the score gap between the top result and the second result rather than
+    an absolute threshold, so the signal stays valid regardless of embedding model,
+    reranker, or data distribution changes.
+
+    Returns:
+        "high"      — top result clearly dominates; safe to execute directly
+        "low"       — top result has a modest lead; LLM should review before executing
+        "ambiguous" — results cluster together; better to retry with a refined query
+        "none"      — no results returned
+    """
+    if not results:
+        return "none"
+
+    scores = [r.get("relevance_score") for r in results if isinstance(r, dict) and r.get("relevance_score") is not None]
+
+    # filter-only results (empty query path) carry no semantic score — treat as high
+    if not scores:
+        return "high" if results else "none"
+
+    top = scores[0]
+
+    if len(scores) == 1:
+        return "high" if top >= 0.5 else "low"
+
+    gap = top - scores[1]
+
+    # We need to adjust according to the actual situation.
+    if gap >= 0.2:
+        return "high"
+    elif gap >= 0.08:
+        return "low"
+    else:
+        return "ambiguous"
+
+
 async def _search_documents(
     search: SearchRequest,
     query: str,
@@ -312,7 +351,13 @@ async def search_entities_impl(
         success = True
         results_count = len(search_results)
 
-        return {"query": query, "type_list": search.type_list, "total": len(search_results), "results": search_results}
+        return {
+            "query": query,
+            "type_list": search.type_list,
+            "total": len(search_results),
+            "confidence": _compute_confidence(search_results),
+            "results": search_results,
+        }
     finally:
         duration = time.perf_counter() - start_time
         try:

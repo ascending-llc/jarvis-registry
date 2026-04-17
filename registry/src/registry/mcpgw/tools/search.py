@@ -128,7 +128,8 @@ def get_tools() -> list[tuple[str, Callable]]:
             default_factory=lambda: ["tool"],
         ),
     ) -> list[dict[str, Any]]:
-        """Find tools, resources, or prompts matching the query. Returns results with relevance_score.
+        """Find tools, resources, or prompts matching the query.
+        Returns {confidence, results[]} where confidence is high/low/ambiguous/none.
         Execute: tool→execute_tool(tool_name, server_id, arguments), resource→read_resource(server_id, resource_uri), prompt→execute_prompt(server_id, prompt_name, arguments)."""
         return await discover_entities_impl(ctx, query, top_n, "hybrid", type_list)
 

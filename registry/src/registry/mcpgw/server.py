@@ -28,9 +28,11 @@ EXECUTION:
 - Resource -> read_resource(server_id=<result.server_id>, resource_uri=<result.resource_uri>)
 - Prompt   -> execute_prompt(server_id=<result.server_id>, prompt_name=<result.prompt_name>, arguments={...})
 
-RELEVANCE SCORE:
-- score >= 0.6: execute directly.
-- score < 0.6 or empty results: retry with a more specific query before executing.
+CONFIDENCE (from discover_entities result):
+- confidence=high:      execute the first result directly.
+- confidence=low:       review description before executing; consider refining the query first.
+- confidence=ambiguous: retry discover_entities with a more specific query.
+- confidence=none:      no results found; try different or broader keywords.
 - Use tool_name verbatim — never transform or derive it from other fields.
 """
 
