@@ -114,69 +114,23 @@ def get_tools() -> list[tuple[str, Callable]]:
             Field(
                 min_length=0,
                 max_length=512,
-                description="Natural language query or keywords (e.g., 'web search', 'github', 'email automation'). May be omitted or empty for listing.",
+                description="Keywords or natural language describing what you need (e.g., 'web search', 'github', 'send email').",
             ),
         ] = "",
         top_n: Annotated[
             int | None,
-            Field(
-                description="Max results to return. Defaults to 3 if not specified.",
-            ),
+            Field(description="Max results to return. Defaults to 3."),
         ] = None,
-        search_type: Annotated[
-            str,
-            Field(
-                description="Search strategy: 'hybrid' (best), 'near_text' (semantic), 'bm25' (keyword), 'similarity_store' (alternative)",
-            ),
-        ] = "hybrid",
         type_list: Annotated[
             list[str],
-            Field(
-                description="Entity types to search: ['tool'] (default), ['resource'], ['prompt'], or mix multiple types e.g. ['tool', 'resource']",
-            ),
+            Field(description="Entity types: 'tool' (default), 'resource', or 'prompt'."),
         ] = Field(
             default_factory=lambda: ["tool"],
         ),
     ) -> list[dict[str, Any]]:
-        """
-        🔍 AUTO-USE: Discover tools, resources, or prompts from MCP servers.
-
-        **Use this search order by default:**
-        1. `type_list=["tool"]` for action-oriented tasks (default, most efficient)
-        2. `type_list=["resource"]` or `type_list=["prompt"]` when the user needs those specifically
-
-        **What each type means:**
-        - `["tool"]`: best default for search, API calls, automation, or data operations
-        - `["resource"]`: for reading URIs, cached data, or file-like resources
-        - `["prompt"]`: for reusable prompt workflows
-
-        Each result doc embeds full server context (server name, path, title, description)
-        in its content — no separate server lookup is needed.
-
-        **Search strategies:**
-        - `hybrid`: best default, combines semantic and keyword search
-        - `near_text`: semantic/concept matching
-        - `bm25`: exact keyword matching
-        - `similarity_store`: alternative retrieval path
-
-        **How to use results:**
-        - tool result     -> execute_tool(tool_name=<result.tool_name>, server_id=<result.server_id>, arguments={...})
-        - resource result -> read_resource(server_id=<result.server_id>, resource_uri=<result.resource_uri>)
-        - prompt result   -> execute_prompt(server_id=<result.server_id>, prompt_name=<result.prompt_name>, arguments={...})
-
-        **Examples:**
-        - News or web search: `discover_entities(query="web search news", type_list=["tool"])`
-        - GitHub operations: `discover_entities(query="github repositories", type_list=["tool"])`
-        - Cached data: `discover_entities(query="cached data", type_list=["resource"])`
-
-        **Execution:**
-        If discovery returns `{"tool_name": "tavily_search", "server_id": "abc123", ...}`,
-        call `execute_tool(tool_name="tavily_search", server_id="abc123", arguments={...})`.
-
-        Use `read_resource(server_id, resource_uri)` for resources.
-        Use `execute_prompt(server_id, prompt_name, arguments)` for prompts.
-        """
-        return await discover_entities_impl(ctx, query, top_n, search_type, type_list)
+        """Find tools, resources, or prompts matching the query. Returns results with relevance_score.
+        Execute: tool→execute_tool(tool_name, server_id, arguments), resource→read_resource(server_id, resource_uri), prompt→execute_prompt(server_id, prompt_name, arguments)."""
+        return await discover_entities_impl(ctx, query, top_n, "hybrid", type_list)
 
     return [
         ("discover_entities", discover_entities),

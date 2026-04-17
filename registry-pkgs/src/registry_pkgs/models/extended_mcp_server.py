@@ -449,21 +449,19 @@ class ExtendedMCPServer(MCPServer):
         """
         Extract metadata from any document type.
 
-        Note: This returns minimal metadata.
-        Full server data should be fetched from MongoDB using server_id.
-
-        Returns:
-            Dict with document metadata including entity_type
+        Returns execution-ready fields for LLM consumption.
+        relevance_score is populated by the reranker (FlashRank sets it in metadata);
+        None for filter-only results where no semantic score is available.
         """
         metadata = document.metadata
 
+        raw_score = metadata.get("relevance_score")
         result = {
             "server_id": metadata.get("server_id"),
             "server_name": metadata.get("server_name"),
             "entity_type": metadata.get("entity_type"),
-            "scope": metadata.get("scope"),
-            "enabled": metadata.get("enabled"),
-            "content": document.page_content,
+            "relevance_score": round(float(raw_score), 3) if raw_score is not None else None,
+            "description": document.page_content,
         }
 
         entity_type = metadata.get("entity_type")
@@ -474,11 +472,6 @@ class ExtendedMCPServer(MCPServer):
             result["resource_uri"] = metadata.get("resource_uri")
         elif entity_type == ServerEntityType.PROMPT:
             result["prompt_name"] = metadata.get("prompt_name")
-
-        # Handle chunked documents
-        if metadata.get("is_chunked"):
-            result["chunk_index"] = metadata.get("chunk_index")
-            result["total_chunks"] = metadata.get("total_chunks")
 
         return result
 

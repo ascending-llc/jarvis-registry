@@ -16,57 +16,22 @@ from .tools import proxied, search
 if TYPE_CHECKING:
     from ..container import RegistryContainer
 
-_SYSTEM_INSTRUCTIONS = """This MCP Gateway provides unified discovery and execution for registered MCP entities.
+_SYSTEM_INSTRUCTIONS = """MCP Gateway: discover and execute tools, resources, and prompts from registered MCP servers.
 
-KEY CAPABILITIES:
-- Discover tools, resources, and prompts through a unified vector index
-- Execute downstream MCP tools through a unified proxy
-- Read downstream MCP resources
-- Execute downstream MCP prompts
-
-IMPORTANT MENTAL MODEL:
-- Discovery is ENTITY-based, not SERVER-based.
-- The discovery tool returns matched entity documents from the vector index.
-- Results are already execution-ready.
-- Do not perform secondary lookups or name translation after discovery.
-
-GLOBAL WORKFLOW RULES:
-1. If you do not already have a suitable tool, call `discover_entities` first.
-2. Prefer `type_list=["tool"]` first for action-oriented tasks.
+WORKFLOW:
+1. Call discover_entities(query) to find the right entity.
+2. Execute immediately using the returned tool_name/resource_uri/prompt_name + server_id.
 3. Do not claim lack of capability until discovery has been attempted.
-4. If a direct/native attempt fails with authentication or permission errors, fall back to discovery.
 
-DISCOVERY RESULT TYPES:
-- `type_list=["tool"]`
-  returns tool entity documents with `tool_name` + `server_id`
-- `type_list=["resource"]`
-  returns resource entity documents with `resource_uri` + `server_id`
-- `type_list=["prompt"]`
-  returns prompt entity documents with `prompt_name` + `server_id`
+EXECUTION:
+- Tool     -> execute_tool(tool_name=<result.tool_name>, server_id=<result.server_id>, arguments={...})
+- Resource -> read_resource(server_id=<result.server_id>, resource_uri=<result.resource_uri>)
+- Prompt   -> execute_prompt(server_id=<result.server_id>, prompt_name=<result.prompt_name>, arguments={...})
 
-CORE RULE — RESULTS ARE EXECUTION-READY:
-Every discovery result already contains the field needed for execution.
-Do not inspect nested config.
-Do not perform a second lookup.
-Do not transform returned names.
-
-EXECUTION PATTERN:
-- Tool     -> `execute_tool(tool_name=<result.tool_name>, server_id=<result.server_id>, arguments={...})`
-- Resource -> `read_resource(server_id=<result.server_id>, resource_uri=<result.resource_uri>)`
-- Prompt   -> `execute_prompt(server_id=<result.server_id>, prompt_name=<result.prompt_name>, arguments={...})`
-
-NAME HANDLING RULES:
-- `tool_name` is the canonical downstream MCP tool name from the vector database.
-- Never derive it from wrapper names, display labels, `mcpToolName`, `mcp_tool_name`, or casing variants.
-- Use the returned `tool_name` verbatim.
-
-EXAMPLE:
-Step 1 — Discover:
-  discover_entities(query="web search news", type_list=["tool"])
-  -> [{"entity_type": "tool", "tool_name": "tavily_search", "server_id": "abc123", ...}]
-
-Step 2 — Execute:
-  execute_tool(tool_name="tavily_search", server_id="abc123", arguments={"query": "AI news"})
+RELEVANCE SCORE:
+- score >= 0.6: execute directly.
+- score < 0.6 or empty results: retry with a more specific query before executing.
+- Use tool_name verbatim — never transform or derive it from other fields.
 """
 
 
