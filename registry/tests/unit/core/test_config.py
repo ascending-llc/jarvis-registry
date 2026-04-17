@@ -161,3 +161,24 @@ class TestSettings:
     def test_service_urls_validation(self) -> None:
         with pytest.raises(ValueError, match="their path portion must match"):
             Settings()
+
+    @pytest.mark.unit
+    @patch.dict(
+        os.environ,
+        {
+            **_SETTINGS_ENV,
+            "REGISTRY_URL": "http://localhost/gateway",
+            "REGISTRY_CLIENT_URL": "http://localhost/gateway",
+        },
+    )
+    def test_service_base_path_non_empty(self) -> None:
+        settings = Settings()
+
+        assert settings.service_base_path == "/gateway"
+
+    @pytest.mark.unit
+    @patch.dict(os.environ, _SETTINGS_ENV)
+    def test_service_base_path_empty(self) -> None:
+        settings = Settings()
+
+        assert settings.service_base_path == ""
