@@ -54,6 +54,7 @@ def create_app(*, lifespan, gateway_mcp_app: FastMCP[McpAppContext]) -> FastAPI:
         title="MCP Gateway Registry",
         description="A registry and management system for Model Context Protocol (MCP) servers",
         version=app_version,
+        root_path=settings.service_base_path,
         lifespan=lifespan,
         swagger_ui_parameters={"persistAuthorization": True},
         generate_unique_id_function=lambda route: f"{route.tags[0]}-{route.name}" if route.tags else route.name,
@@ -106,6 +107,7 @@ def _build_openapi_factory(app: FastAPI):
             version=app.version,
             description=app.description,
             routes=app.routes,
+            tags=app.openapi_tags,
         )
 
         openapi_schema["components"]["securitySchemes"] = {

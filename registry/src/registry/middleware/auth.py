@@ -58,6 +58,7 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
                 "/login",
                 "/health",
                 "/docs",
+                "/redoc",
                 "/openapi.json",
                 "/static/{path:path}",
                 "/redirect",
