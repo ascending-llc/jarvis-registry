@@ -300,7 +300,7 @@ const AgentCard: React.FC<AgentCardProps> = ({ agent }) => {
           <img
             src={agentcoreIcon}
             alt='AWS AgentCore'
-            className='absolute bottom-12 right-3 h-5 w-5'
+            className='absolute bottom-14 right-3 h-6 w-6 rounded-md'
             title='AWS AgentCore'
           />
         )}

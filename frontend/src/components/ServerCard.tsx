@@ -241,9 +241,7 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
                 )}
               </div>
 
-              <div className='block max-w-full truncate text-[12px] text-[var(--jarvis-muted)]'>
-                {server.path}
-              </div>
+              <div className='block max-w-full truncate text-[12px] text-[var(--jarvis-muted)]'>{server.path}</div>
             </div>
 
             <div className='flex flex-shrink-0 gap-0.5'>
@@ -412,14 +410,14 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
 
               {/* Refresh Button */}
               <IconButton
-                ariaLabel="Refresh health status"
-                tooltip="Refresh"
+                ariaLabel='Refresh health status'
+                tooltip='Refresh'
                 onClick={handleRefreshHealth}
                 disabled={loadingRefresh}
-                size="card"
-                className="text-[var(--jarvis-icon)] transition-all duration-200 hover:bg-[var(--jarvis-primary-soft)] hover:text-[var(--jarvis-icon-hover)]"
+                size='card'
+                className='text-[var(--jarvis-icon)] transition-all duration-200 hover:bg-[var(--jarvis-primary-soft)] hover:text-[var(--jarvis-icon-hover)]'
               >
-                <ArrowPathIcon className={`h-3 w-3 ${loadingRefresh ? "animate-spin" : ""}`} />
+                <ArrowPathIcon className={`h-3 w-3 ${loadingRefresh ? 'animate-spin' : ''}`} />
               </IconButton>
 
               {/* Toggle Switch */}
@@ -455,7 +453,7 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
           <img
             src={agentcoreIcon}
             alt='AWS AgentCore'
-            className='absolute bottom-14 right-3 h-5 w-5'
+            className='absolute bottom-16 right-3 h-6 w-6 rounded-md'
             title='AWS AgentCore'
           />
         )}
@@ -468,11 +466,11 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
             <div className='sticky top-0 z-10 -mx-6 -mt-6 mb-4 flex items-center justify-between border-b border-[color:var(--jarvis-border)] bg-[var(--jarvis-card)] px-6 pb-2 pt-6'>
               <h3 className='text-lg font-semibold text-[var(--jarvis-text-strong)]'>Tools for {server.name}</h3>
               <IconButton
-                ariaLabel="Close"
-                tooltip="Close"
+                ariaLabel='Close'
+                tooltip='Close'
                 onClick={() => setShowTools(false)}
-                size="card"
-                className="text-[var(--jarvis-icon)] transition-colors hover:text-[var(--jarvis-icon-hover)] border-none bg-transparent hover:bg-transparent shadow-none"
+                size='card'
+                className='text-[var(--jarvis-icon)] transition-colors hover:text-[var(--jarvis-icon-hover)] border-none bg-transparent hover:bg-transparent shadow-none'
               >
                 <XMarkIcon className='h-6 w-6' />
               </IconButton>
@@ -481,7 +479,10 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
             <div className='space-y-4 mt-[2.8rem]'>
               {tools?.length > 0 ? (
                 tools.map((tool: Tool, index: number) => (
-                  <div key={index} className='rounded-lg border border-[color:var(--jarvis-border)] bg-[var(--jarvis-card-muted)] p-4'>
+                  <div
+                    key={index}
+                    className='rounded-lg border border-[color:var(--jarvis-border)] bg-[var(--jarvis-card-muted)] p-4'
+                  >
                     <h4 className='mb-2 font-medium text-[var(--jarvis-text-strong)]'>{tool?.function?.name}</h4>
                     {tool?.function?.description && (
                       <p className='mb-2 text-sm text-[var(--jarvis-muted)]'>{tool?.function?.description}</p>
