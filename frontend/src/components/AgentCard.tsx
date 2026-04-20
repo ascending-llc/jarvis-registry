@@ -1,8 +1,9 @@
-import { PencilIcon, WrenchScrewdriverIcon, XMarkIcon } from '@heroicons/react/24/outline';
+import { PencilSquareIcon, WrenchScrewdriverIcon, XMarkIcon } from '@heroicons/react/24/outline';
 import type React from 'react';
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import agentcoreIcon from '@/assets/agentcore.svg';
+import IconButton from '@/components/IconButton';
 import { useGlobal } from '@/contexts/GlobalContext';
 import { useServer } from '@/contexts/ServerContext';
 import SERVICES from '@/services';
@@ -100,10 +101,10 @@ const AgentCard: React.FC<AgentCardProps> = ({ agent }) => {
 
   return (
     <>
-      <div className='group rounded-2xl shadow-sm hover:shadow-xl transition-all duration-300 h-full flex flex-col relative bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 hover:border-gray-200 dark:hover:border-gray-600'>
+      <div className='group relative flex h-full flex-col rounded-2xl border border-[color:var(--jarvis-border)] bg-[var(--jarvis-card)] shadow-sm transition-all duration-300 hover:border-[color:var(--jarvis-border-strong)] hover:shadow-xl'>
         {loading && (
-          <div className='absolute inset-0 bg-white/20 dark:bg-black/20 backdrop-blur-sm rounded-2xl flex items-center justify-center z-10'>
-            <div className='animate-spin rounded-full h-8 w-8 border-b-2 border-cyan-600'></div>
+          <div className='absolute inset-0 z-10 flex items-center justify-center rounded-2xl bg-[var(--jarvis-overlay)] backdrop-blur-sm'>
+            <div className='h-8 w-8 animate-spin rounded-full border-b-2 border-[var(--jarvis-spinner)]'></div>
           </div>
         )}
 
@@ -114,13 +115,13 @@ const AgentCard: React.FC<AgentCardProps> = ({ agent }) => {
               <div className='flex flex-wrap items-center gap-1.5 mb-2'>
                 {agent.permissions?.VIEW ? (
                   <h3
-                    className='text-base font-bold text-gray-900 dark:text-white truncate max-w-[160px] cursor-pointer hover:text-purple-600 dark:hover:text-purple-400 transition-colors'
+                    className='max-w-[160px] cursor-pointer truncate text-base font-medium text-[var(--jarvis-text)] transition-colors hover:text-[var(--jarvis-text-strong)]'
                     onClick={() => navigate(`/agent-edit?id=${agent.id}&isReadOnly=true`)}
                   >
                     {agent.name}
                   </h3>
                 ) : (
-                  <h3 className='text-base font-bold text-gray-900 dark:text-white truncate max-w-[160px]'>
+                  <h3 className='max-w-[160px] truncate text-base font-medium text-[var(--jarvis-text)]'>
                     {agent.name}
                   </h3>
                 )}
@@ -129,19 +130,21 @@ const AgentCard: React.FC<AgentCardProps> = ({ agent }) => {
 
             <div className='flex gap-1'>
               {agent.permissions?.EDIT && (
-                <button
-                  className='p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50 rounded-lg transition-all duration-200 flex-shrink-0'
+                <IconButton
+                  ariaLabel='Edit agent'
+                  tooltip='Edit'
                   onClick={() => toEditPage?.(agent)}
-                  title='Edit agent'
+                  size='card'
+                  className='text-[var(--jarvis-icon)] hover:bg-[var(--jarvis-primary-soft)] hover:text-[var(--jarvis-icon-hover)]'
                 >
-                  <PencilIcon className='h-3.5 w-3.5' />
-                </button>
+                  <PencilSquareIcon className='h-3.5 w-3.5' />
+                </IconButton>
               )}
             </div>
           </div>
 
           {/* Description */}
-          <p className='text-gray-600 dark:text-gray-300 text-xs leading-relaxed line-clamp-2 mb-3'>
+          <p className='mb-3 line-clamp-2 text-xs leading-relaxed text-[var(--jarvis-subtle)]'>
             {agent.description || 'No description available'}
           </p>
 
@@ -151,13 +154,13 @@ const AgentCard: React.FC<AgentCardProps> = ({ agent }) => {
               {agent.tags.slice(0, 3).map(tag => (
                 <span
                   key={tag}
-                  className='px-1.5 py-0.5 text-xs font-medium bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 rounded truncate max-w-[100px]'
+                  className='max-w-[100px] truncate rounded bg-[var(--jarvis-info-soft)] px-1.5 py-0.5 text-xs font-medium text-[var(--jarvis-info-text)]'
                 >
                   #{tag}
                 </span>
               ))}
               {agent.tags.length > 3 && (
-                <span className='px-1.5 py-0.5 text-xs font-medium bg-gray-50 dark:bg-gray-800 text-gray-600 dark:text-gray-300 rounded'>
+                <span className='rounded bg-[var(--jarvis-card-muted)] px-1.5 py-0.5 text-xs font-medium text-[var(--jarvis-subtle)]'>
                   +{agent.tags.length - 3}
                 </span>
               )}
@@ -173,10 +176,10 @@ const AgentCard: React.FC<AgentCardProps> = ({ agent }) => {
                 hasSkillsDetails ? (
                   <button
                     onClick={() => setShowSkills(true)}
-                    className='flex items-center gap-1.5 text-blue-600 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300 hover:bg-blue-50 dark:hover:bg-blue-900/20 px-1.5 py-0.5 -mx-1.5 -my-0.5 rounded transition-all text-xs'
+                    className='-mx-1.5 -my-0.5 flex items-center gap-1.5 rounded px-1.5 py-0.5 text-xs text-[var(--jarvis-info-text)] transition-all hover:bg-[var(--jarvis-info-soft)] hover:text-[var(--jarvis-icon-hover)]'
                     title='View skills'
                   >
-                    <div className='p-1 bg-blue-50 dark:bg-blue-900/30 rounded'>
+                    <div className='rounded bg-[var(--jarvis-card-muted)] p-1'>
                       <WrenchScrewdriverIcon className='h-3.5 w-3.5' />
                     </div>
                     <div>
@@ -186,10 +189,10 @@ const AgentCard: React.FC<AgentCardProps> = ({ agent }) => {
                   </button>
                 ) : (
                   <div
-                    className='flex items-center gap-1.5 text-blue-600 dark:text-blue-400 px-1.5 py-0.5 -mx-1.5 -my-0.5 rounded text-xs'
+                    className='-mx-1.5 -my-0.5 flex items-center gap-1.5 rounded px-1.5 py-0.5 text-xs text-[var(--jarvis-info-text)]'
                     title='Skills count'
                   >
-                    <div className='p-1 bg-blue-50 dark:bg-blue-900/30 rounded'>
+                    <div className='rounded bg-[var(--jarvis-card-muted)] p-1'>
                       <WrenchScrewdriverIcon className='h-3.5 w-3.5' />
                     </div>
                     <div>
@@ -199,8 +202,8 @@ const AgentCard: React.FC<AgentCardProps> = ({ agent }) => {
                   </div>
                 )
               ) : (
-                <div className='flex items-center gap-1.5 text-gray-400 dark:text-gray-500'>
-                  <div className='p-1 bg-gray-50 dark:bg-gray-800 rounded'>
+                <div className='flex items-center gap-1.5 text-[var(--jarvis-faint)]'>
+                  <div className='rounded bg-[var(--jarvis-card-muted)] p-1'>
                     <WrenchScrewdriverIcon className='h-3.5 w-3.5' />
                   </div>
                   <div>
@@ -214,36 +217,38 @@ const AgentCard: React.FC<AgentCardProps> = ({ agent }) => {
         </div>
 
         {/* Footer */}
-        <div className='mt-auto px-3 py-3 border-t border-gray-100 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900/30 rounded-b-2xl'>
+        <div className='mt-auto rounded-b-2xl border-t border-[color:var(--jarvis-border)] bg-[var(--jarvis-bg)]/70 px-3 py-3'>
           <div className='flex flex-col sm:flex-row items-center justify-between gap-1'>
             <div className='flex items-center gap-2 flex-wrap justify-center'>
               {/* Status Indicators */}
               <div className='flex items-center gap-1'>
                 <div
-                  className={`w-2.5 h-2.5 rounded-full ${
-                    agent.enabled ? 'bg-green-400 shadow-lg shadow-green-400/30' : 'bg-gray-300 dark:bg-gray-600'
+                  className={`h-2.5 w-2.5 rounded-full ${
+                    agent.enabled
+                      ? 'bg-[var(--jarvis-success)] shadow-lg shadow-emerald-500/30'
+                      : 'bg-[var(--jarvis-faint)]'
                   }`}
                 />
-                <span className='text-xs font-medium text-gray-700 dark:text-gray-300'>
+                <span className='text-xs font-medium text-[var(--jarvis-muted)]'>
                   {agent.enabled ? 'Enabled' : 'Disabled'}
                 </span>
               </div>
 
-              <div className='w-px h-3 bg-gray-200 dark:bg-gray-600' />
+              <div className='h-3 w-px bg-[color:var(--jarvis-border)]' />
 
               <div className='flex items-center gap-1'>
                 <div
                   className={`w-2.5 h-2.5 rounded-full ${
                     agent.status === 'active'
-                      ? 'bg-emerald-400 shadow-lg shadow-emerald-400/30'
+                      ? 'bg-[var(--jarvis-success)] shadow-lg shadow-emerald-500/30'
                       : agent.status === 'inactive'
-                        ? 'bg-orange-400 shadow-lg shadow-orange-400/30'
+                        ? 'bg-[var(--jarvis-warning)] shadow-lg shadow-amber-500/30'
                         : agent.status === 'error'
-                          ? 'bg-red-400 shadow-lg shadow-red-400/30'
-                          : 'bg-amber-400 shadow-lg shadow-amber-400/30'
+                          ? 'bg-[var(--jarvis-danger)] shadow-lg shadow-red-500/30'
+                          : 'bg-[var(--jarvis-warning)] shadow-lg shadow-amber-500/30'
                   }`}
                 />
-                <span className='text-xs font-medium text-gray-700 dark:text-gray-300 max-w-[80px] truncate'>
+                <span className='max-w-[80px] truncate text-xs font-medium text-[var(--jarvis-muted)]'>
                   {agent.status === 'active'
                     ? 'Active'
                     : agent.status === 'inactive'
@@ -276,7 +281,7 @@ const AgentCard: React.FC<AgentCardProps> = ({ agent }) => {
                 />
                 <div
                   className={`relative w-7 h-4 rounded-full transition-colors duration-200 ease-in-out ${
-                    agent.enabled ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'
+                    agent.enabled ? 'bg-[var(--jarvis-primary)]' : 'bg-[var(--jarvis-faint)]'
                   }`}
                 >
                   <div
@@ -303,32 +308,38 @@ const AgentCard: React.FC<AgentCardProps> = ({ agent }) => {
 
       {/* Skills Modal */}
       {showSkills && (
-        <div className='fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50'>
-          <div className='bg-white dark:bg-gray-800 rounded-xl p-6 pt-0 max-w-2xl w-full mx-4 max-h-[80vh] overflow-auto'>
-            <div className='flex items-center justify-between mb-4 sticky top-0 bg-white dark:bg-gray-800 z-10 pb-2 border-b border-gray-100 dark:border-gray-700 -mx-6 px-6 -mt-6 pt-6'>
-              <h3 className='text-lg font-semibold text-gray-900 dark:text-white'>Skills for {agent.name}</h3>
-              <button
+        <div className='fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm'>
+          <div className='max-h-[80vh] w-full max-w-2xl overflow-auto rounded-xl bg-[var(--jarvis-card)] p-6 pt-0 text-[var(--jarvis-text)] shadow-xl'>
+            <div className='sticky top-0 z-10 -mx-6 -mt-6 mb-4 flex items-center justify-between border-b border-[color:var(--jarvis-border)] bg-[var(--jarvis-card)] px-6 pb-2 pt-6'>
+              <h3 className='text-lg font-semibold text-[var(--jarvis-text-strong)]'>Skills for {agent.name}</h3>
+              <IconButton
+                ariaLabel='Close'
+                tooltip='Close'
                 onClick={() => setShowSkills(false)}
-                className='text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'
+                size='card'
+                className='text-[var(--jarvis-icon)] transition-colors hover:text-[var(--jarvis-icon-hover)]'
               >
                 <XMarkIcon className='h-6 w-6' />
-              </button>
+              </IconButton>
             </div>
 
             <div className='space-y-4 mt-[2.8rem]'>
               {(agent as Agent).skills?.length > 0 ? (
                 (agent as Agent).skills.map((skill: any, index: number) => (
-                  <div key={skill.id || index} className='border border-gray-200 dark:border-gray-700 rounded-lg p-4'>
-                    <h4 className='font-medium text-gray-900 dark:text-white mb-2'>{skill.name}</h4>
+                  <div
+                    key={skill.id || index}
+                    className='rounded-lg border border-[color:var(--jarvis-border)] bg-[var(--jarvis-card-muted)] p-4'
+                  >
+                    <h4 className='mb-2 font-medium text-[var(--jarvis-text-strong)]'>{skill.name}</h4>
                     {skill.description && (
-                      <p className='text-sm text-gray-600 dark:text-gray-300 mb-2'>{skill.description}</p>
+                      <p className='mb-2 text-sm text-[var(--jarvis-muted)]'>{skill.description}</p>
                     )}
                     {skill.tags && skill.tags.length > 0 && (
                       <div className='flex flex-wrap gap-1 mb-2'>
                         {skill.tags.map((tag: any) => (
                           <span
                             key={tag}
-                            className='px-1.5 py-0.5 text-xs font-medium bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 rounded'
+                            className='rounded bg-[var(--jarvis-info-soft)] px-1.5 py-0.5 text-xs font-medium text-[var(--jarvis-info-text)]'
                           >
                             #{tag}
                           </span>
@@ -337,8 +348,8 @@ const AgentCard: React.FC<AgentCardProps> = ({ agent }) => {
                     )}
                     {(skill.inputModes?.length > 0 || skill.outputModes?.length > 0) && (
                       <details className='text-xs'>
-                        <summary className='cursor-pointer text-gray-500 dark:text-gray-300'>View Modes</summary>
-                        <div className='mt-2 p-3 bg-gray-50 dark:bg-gray-900 border dark:border-gray-700 rounded text-gray-900 dark:text-gray-100 space-y-1'>
+                        <summary className='cursor-pointer text-[var(--jarvis-muted)]'>View Modes</summary>
+                        <div className='mt-2 space-y-1 rounded border border-[color:var(--jarvis-border)] bg-[var(--jarvis-surface)] p-3 text-[var(--jarvis-text)]'>
                           {skill.inputModes?.length > 0 && (
                             <div>
                               <span className='font-medium'>Input:</span> {skill.inputModes.join(', ')}
@@ -352,8 +363,8 @@ const AgentCard: React.FC<AgentCardProps> = ({ agent }) => {
                         </div>
                         {skill.examples && skill.examples.length > 0 && (
                           <div className='mt-3 space-y-2'>
-                            <div className='text-xs font-semibold text-gray-700 dark:text-gray-300 flex items-center gap-1'>
-                              <span className='w-1 h-3 bg-blue-500 rounded-full'></span>
+                            <div className='flex items-center gap-1 text-xs font-semibold text-[var(--jarvis-muted)]'>
+                              <span className='h-3 w-1 rounded-full bg-[var(--jarvis-info-text)]'></span>
                               Examples
                             </div>
                             <div className='space-y-3'>
@@ -364,14 +375,14 @@ const AgentCard: React.FC<AgentCardProps> = ({ agent }) => {
                                   return (
                                     <div
                                       key={i}
-                                      className='rounded-lg border border-gray-100 dark:border-gray-800 overflow-hidden'
+                                      className='overflow-hidden rounded-lg border border-[color:var(--jarvis-border)]'
                                     >
                                       {parsedExample.label && (
-                                        <div className='px-2 py-1 bg-gray-50 dark:bg-gray-900/50 border-b border-gray-100 dark:border-gray-800 text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400'>
+                                        <div className='border-b border-[color:var(--jarvis-border)] bg-[var(--jarvis-surface)] px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-[var(--jarvis-muted)]'>
                                           {parsedExample.label}
                                         </div>
                                       )}
-                                      <pre className='p-2.5 bg-gray-50/50 dark:bg-gray-900/30 text-[11px] font-mono text-blue-600 dark:text-blue-400 overflow-x-auto'>
+                                      <pre className='overflow-x-auto bg-[var(--jarvis-card-muted)] p-2.5 text-[11px] font-mono text-[var(--jarvis-info-text)]'>
                                         {parsedExample.prettyJson}
                                       </pre>
                                     </div>
@@ -381,7 +392,7 @@ const AgentCard: React.FC<AgentCardProps> = ({ agent }) => {
                                 return (
                                   <div
                                     key={i}
-                                    className='p-2.5 bg-gray-50/50 dark:bg-gray-900/30 rounded-lg border border-gray-100 dark:border-gray-800 text-[11px] text-gray-600 dark:text-gray-400 italic break-all'
+                                    className='break-all rounded-lg border border-[color:var(--jarvis-border)] bg-[var(--jarvis-card-muted)] p-2.5 text-[11px] italic text-[var(--jarvis-muted)]'
                                   >
                                     {example}
                                   </div>
@@ -395,7 +406,7 @@ const AgentCard: React.FC<AgentCardProps> = ({ agent }) => {
                   </div>
                 ))
               ) : (
-                <p className='text-gray-500 dark:text-gray-300'>No skills available for this agent.</p>
+                <p className='text-[var(--jarvis-muted)]'>No skills available for this agent.</p>
               )}
             </div>
           </div>

@@ -1,10 +1,12 @@
+import { ArrowPathIcon, PencilSquareIcon } from '@heroicons/react/24/outline';
 import type React from 'react';
 import { useCallback, useState } from 'react';
 import { CgBrowser } from 'react-icons/cg';
 import { FaAws, FaMicrosoft } from 'react-icons/fa';
-import { FiClock, FiEdit2, FiRefreshCw, FiTag } from 'react-icons/fi';
+import { FiClock, FiTag } from 'react-icons/fi';
 
 import { useNavigate } from 'react-router-dom';
+import IconButton from '@/components/IconButton';
 import { useGlobal } from '@/contexts/GlobalContext';
 import { useServer } from '@/contexts/ServerContext';
 import SERVICES from '@/services';
@@ -72,19 +74,19 @@ const FederationCard: React.FC<FederationCardProps> = ({ federation }) => {
     if (diffInSeconds < 86400) return `${Math.floor(diffInSeconds / 3600)} hours ago`;
     return `${Math.floor(diffInSeconds / 86400)} days ago`;
   };
-  
+
   return (
-    <div className='bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-5 mb-3 transition-colors hover:border-gray-300 dark:hover:border-gray-600 group'>
+    <div className='group mb-3 rounded-xl border border-[color:var(--jarvis-border)] bg-[var(--jarvis-card)] p-5 transition-colors hover:border-[color:var(--jarvis-border-strong)]'>
       {/* Header */}
       <div className='flex items-start justify-between mb-3'>
         <div className='flex items-center gap-3'>
           <div
             className={`w-10 h-10 rounded-lg flex items-center justify-center shrink-0 ${
               isAws
-                ? 'bg-amber-100 dark:bg-amber-500/15 text-amber-500'
+                ? 'bg-[var(--jarvis-warning-soft)] text-[var(--jarvis-warning-text)]'
                 : isAzure
-                  ? 'bg-blue-100 dark:bg-blue-500/15 text-blue-500'
-                  : 'bg-gray-100 dark:bg-gray-500/15 text-gray-400'
+                  ? 'bg-[var(--jarvis-info-soft)] text-[var(--jarvis-info-text)]'
+                  : 'bg-[var(--jarvis-card-muted)] text-[var(--jarvis-muted)]'
             }`}
           >
             {isAws ? (
@@ -97,13 +99,13 @@ const FederationCard: React.FC<FederationCardProps> = ({ federation }) => {
           </div>
           <div className='flex-1 min-w-0'>
             <div
-              className='text-base font-semibold text-gray-900 dark:text-white cursor-pointer hover:text-purple-600 dark:hover:text-purple-400 transition-colors truncate'
+              className='truncate cursor-pointer text-base font-semibold text-[var(--jarvis-text)] transition-colors hover:text-[var(--jarvis-text-strong)]'
               onClick={handleViewClick}
               title={federation.displayName}
             >
               {federation.displayName}
             </div>
-            <div className='text-sm text-gray-500 dark:text-gray-400 mt-0.5'>
+            <div className='mt-0.5 text-sm text-[var(--jarvis-muted)]'>
               {isAws ? 'Amazon Web Services' : isAzure ? 'Microsoft Azure' : 'Unknown Provider'}
               {federation.providerConfig?.region && ` · ${federation.providerConfig.region}`}
             </div>
@@ -114,19 +116,19 @@ const FederationCard: React.FC<FederationCardProps> = ({ federation }) => {
           <div
             className={`flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-md ${
               isSyncing || federation.syncStatus === 'syncing' || federation.syncStatus === 'pending'
-                ? 'bg-blue-100 dark:bg-blue-500/15 text-blue-600 dark:text-blue-400'
+                ? 'bg-[var(--jarvis-info-soft)] text-[var(--jarvis-info-text)]'
                 : federation.syncStatus === 'success' || federation.syncStatus === 'idle'
-                  ? 'bg-emerald-100 dark:bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
-                  : 'bg-red-100 dark:bg-red-500/15 text-red-600 dark:text-red-400'
+                  ? 'bg-[var(--jarvis-success-soft)] text-[var(--jarvis-success-text)]'
+                  : 'bg-[var(--jarvis-danger-soft)] text-[var(--jarvis-danger-text)]'
             }`}
           >
             <span
               className={`w-1.5 h-1.5 rounded-full ${
                 isSyncing || federation.syncStatus === 'syncing' || federation.syncStatus === 'pending'
-                  ? 'bg-blue-500 animate-pulse'
+                  ? 'bg-[var(--jarvis-info-text)] animate-pulse'
                   : federation.syncStatus === 'success' || federation.syncStatus === 'idle'
-                    ? 'bg-emerald-500'
-                    : 'bg-red-500'
+                    ? 'bg-[var(--jarvis-success)]'
+                    : 'bg-[var(--jarvis-danger)]'
               }`}
             ></span>
             {isSyncing || federation.syncStatus === 'syncing' || federation.syncStatus === 'pending'
@@ -136,30 +138,30 @@ const FederationCard: React.FC<FederationCardProps> = ({ federation }) => {
                 : 'Error'}
           </div>
 
-          <button
+          <IconButton
+            ariaLabel="Edit federation"
+            tooltip="Edit"
             onClick={handleEditClick}
-            title='Edit'
-            className='w-8 h-8 flex items-center justify-center bg-gray-100 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-gray-500 dark:text-gray-300 transition-colors hover:bg-gray-200 dark:hover:bg-gray-600 hover:text-gray-700 dark:hover:text-white'
+            size="card"
+            className="text-[var(--jarvis-icon)] hover:bg-[var(--jarvis-primary-soft)] hover:text-[var(--jarvis-icon-hover)]"
           >
-            <FiEdit2 className='w-3.5 h-3.5' />
-          </button>
-          <button
+            <PencilSquareIcon className='w-3.5 h-3.5' />
+          </IconButton>
+          <IconButton
+            ariaLabel="Sync federation"
+            tooltip="Sync Now"
             onClick={handleSyncClick}
             disabled={isSyncing}
-            title='Sync Now'
-            className={`w-8 h-8 flex items-center justify-center bg-gray-100 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-gray-500 dark:text-gray-300 transition-colors ${
-              isSyncing
-                ? 'opacity-50 cursor-not-allowed'
-                : 'hover:bg-gray-200 dark:hover:bg-gray-600 hover:text-gray-700 dark:hover:text-white'
-            }`}
+            size="card"
+            className="text-[var(--jarvis-icon)] hover:bg-[var(--jarvis-primary-soft)] hover:text-[var(--jarvis-icon-hover)]"
           >
-            <FiRefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
-          </button>
+            <ArrowPathIcon className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
+          </IconButton>
         </div>
       </div>
 
       {/* Meta Bar */}
-      <div className='flex flex-wrap gap-4 text-xs text-gray-500 dark:text-gray-400 mb-3'>
+      <div className='mb-3 flex flex-wrap gap-4 text-xs text-[var(--jarvis-muted)]'>
         {federation.providerConfig?.assumeRoleArn && (
           <span className='flex items-center gap-1.5'>
             <FiTag className='w-3.5 h-3.5' />
@@ -175,24 +177,24 @@ const FederationCard: React.FC<FederationCardProps> = ({ federation }) => {
       </div>
 
       {/* Stats */}
-      <div className='grid grid-cols-3 gap-3 border-t border-gray-200 dark:border-gray-700 pt-3 mt-3'>
-        <div className='bg-gray-50 dark:bg-gray-900/50 rounded-lg p-3 text-center'>
-          <div className='text-xl font-bold text-purple-600 dark:text-purple-400'>
+      <div className='mt-3 grid grid-cols-3 gap-3 border-t border-[color:var(--jarvis-border)] pt-3'>
+        <div className='rounded-lg bg-[var(--jarvis-card-muted)] p-3 text-center'>
+          <div className='text-xl font-bold text-[var(--jarvis-primary-text)]'>
             {federation.status === 'active' && federation.stats ? federation.stats.mcpServerCount : '—'}
           </div>
-          <div className='text-[11px] text-gray-500 mt-0.5'>MCP Servers</div>
+          <div className='mt-0.5 text-[11px] text-[var(--jarvis-subtle)]'>MCP Servers</div>
         </div>
-        <div className='bg-gray-50 dark:bg-gray-900/50 rounded-lg p-3 text-center'>
-          <div className='text-xl font-bold text-emerald-600 dark:text-emerald-400'>
+        <div className='rounded-lg bg-[var(--jarvis-card-muted)] p-3 text-center'>
+          <div className='text-xl font-bold text-[var(--jarvis-success-text)]'>
             {federation.status === 'active' && federation.stats ? federation.stats.agentCount : '—'}
           </div>
-          <div className='text-[11px] text-gray-500 mt-0.5'>AI Agents</div>
+          <div className='mt-0.5 text-[11px] text-[var(--jarvis-subtle)]'>AI Agents</div>
         </div>
-        <div className='bg-gray-50 dark:bg-gray-900/50 rounded-lg p-3 text-center'>
-          <div className='text-xl font-bold text-blue-600 dark:text-blue-400'>
+        <div className='rounded-lg bg-[var(--jarvis-card-muted)] p-3 text-center'>
+          <div className='text-xl font-bold text-[var(--jarvis-info-text)]'>
             {federation.status === 'active' && federation.stats ? federation.stats.importedTotal : '—'}
           </div>
-          <div className='text-[11px] text-gray-500 mt-0.5'>Total Imported</div>
+          <div className='mt-0.5 text-[11px] text-[var(--jarvis-subtle)]'>Total Imported</div>
         </div>
       </div>
     </div>

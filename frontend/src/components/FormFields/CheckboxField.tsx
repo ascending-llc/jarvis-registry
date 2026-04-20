@@ -31,20 +31,20 @@ export const CheckboxField: React.FC<CheckboxFieldProps> = ({
           type='checkbox'
           disabled={disabled}
           required={required}
-          className={`h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-purple-600 focus:ring-purple-500 bg-white dark:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed ${
-            error ? 'ring-2 ring-red-500' : ''
+          className={`h-4 w-4 rounded border-[color:var(--jarvis-input-border)] bg-[var(--jarvis-input-bg)] text-[var(--jarvis-primary)] focus:ring-[var(--jarvis-primary)] disabled:cursor-not-allowed disabled:opacity-50 ${
+            error ? 'ring-2 ring-[var(--jarvis-danger)]' : ''
           }`}
           {...props}
         />
       </div>
       <div className='ml-3 text-sm'>
         {label && (
-          <label htmlFor={generatedId} className='font-medium text-gray-900 dark:text-gray-100'>
-            {label} {required && <span className='text-red-500'>*</span>}
+          <label htmlFor={generatedId} className='font-medium text-[var(--jarvis-text)]'>
+            {label} {required && <span className='text-[var(--jarvis-danger)]'>*</span>}
           </label>
         )}
-        {description && <div className='text-gray-500 dark:text-gray-400'>{description}</div>}
-        {error && <p className='mt-1 text-xs text-red-500'>{error}</p>}
+        {description && <div className='text-[var(--jarvis-muted)]'>{description}</div>}
+        {error && <p className='mt-1 text-xs text-[var(--jarvis-danger-text)]'>{error}</p>}
       </div>
     </div>
   );

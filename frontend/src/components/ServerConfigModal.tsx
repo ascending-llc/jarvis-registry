@@ -1,198 +1,225 @@
-import { ClipboardDocumentIcon } from '@heroicons/react/24/outline';
+import { ClipboardDocumentIcon, DocumentTextIcon, InformationCircleIcon, XMarkIcon } from '@heroicons/react/24/outline';
 import type React from 'react';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { getBasePath } from '@/config';
+import IconButton from '@/components/IconButton';
 import { useGlobal } from '@/contexts/GlobalContext';
 import type { ServerInfo } from '@/contexts/ServerContext';
 
 type IDE = 'vscode' | 'cursor' | 'cline' | 'claude-code';
 
 interface ServerConfigModalProps {
-  server: ServerInfo;
+  server?: ServerInfo;
   isOpen: boolean;
   onClose: () => void;
+  configScope?: 'registry' | 'server';
 }
 
-const ServerConfigModal: React.FC<ServerConfigModalProps> = ({ server, isOpen, onClose }) => {
+interface IDEOption {
+  id: IDE;
+  label: string;
+  hint: string;
+  filePath: string;
+  rootKey: 'servers' | 'mcpServers';
+}
+
+const IDE_OPTIONS: IDEOption[] = [
+  {
+    id: 'vscode',
+    label: 'VS Code',
+    hint: 'Configuration optimized for VS Code MCP extension',
+    filePath: '.vscode/mcp.json',
+    rootKey: 'servers',
+  },
+  {
+    id: 'cursor',
+    label: 'Cursor',
+    hint: 'Configuration optimized for Cursor MCP settings',
+    filePath: '.cursor/mcp.json',
+    rootKey: 'mcpServers',
+  },
+  {
+    id: 'cline',
+    label: 'Cline',
+    hint: 'Configuration optimized for Cline MCP settings',
+    filePath: '.cline/mcp_settings.json',
+    rootKey: 'mcpServers',
+  },
+  {
+    id: 'claude-code',
+    label: 'Claude Code',
+    hint: 'Configuration optimized for Claude Code MCP settings',
+    filePath: '.claude.json',
+    rootKey: 'mcpServers',
+  },
+];
+
+const REGISTRY_SERVER_NAME = 'jarvis-registry';
+const REGISTRY_SERVER_URL = 'https://jarvis.ascendingdc.com/gateway/proxy/mcpgw/mcp';
+const joinUrlPath = (...segments: string[]) =>
+  segments
+    .map(segment => segment.replace(/^\/+|\/+$/g, ''))
+    .filter(Boolean)
+    .join('/');
+
+const ServerConfigModal: React.FC<ServerConfigModalProps> = ({ server, isOpen, onClose, configScope = 'server' }) => {
   const { showToast } = useGlobal();
   const [selectedIDE, setSelectedIDE] = useState<IDE>('vscode');
 
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      console.log('aaaa');
-      if (e.key === 'Escape' && isOpen) {
+    if (!isOpen) {
+      return undefined;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
         onClose();
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown);
-    };
+    return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isOpen, onClose]);
 
-  const generateMCPConfig = useCallback(() => {
-    const serverName = server.name
+  const selectedOption = useMemo(
+    () => IDE_OPTIONS.find(option => option.id === selectedIDE) ?? IDE_OPTIONS[0],
+    [selectedIDE],
+  );
 
-    // Get base URL and strip port for nginx proxy compatibility
+  const serverName = configScope === 'registry' ? REGISTRY_SERVER_NAME : server?.name || 'server';
+  const title = configScope === 'registry' ? 'Jarvis Registry' : server?.name || 'Server';
+  const subtitle =
+    configScope === 'registry'
+      ? 'Connect to Jarvis Registry from your preferred Copilot environment.'
+      : `Connect to ${serverName} from your preferred Copilot environment.`;
+
+  const generateMCPConfig = useCallback(() => {
     const currentUrl = new URL(window.location.origin);
     const basePath = getBasePath();
-    const url = `${currentUrl.protocol}//${currentUrl.hostname}${basePath}/proxy${server.path}`;
+    const normalizedPath = server?.path || '';
+    const url =
+      configScope === 'registry'
+        ? REGISTRY_SERVER_URL
+        : `${currentUrl.protocol}//${currentUrl.host}/${joinUrlPath(basePath, 'proxy/server', normalizedPath, 'mcp')}`;
 
-    switch (selectedIDE) {
-      case 'vscode':
-        return {
-          servers: {
-            [serverName]: {
-              type: 'http',
-              url,
-              headers: {
-                Authorization: 'Bearer [YOUR_AUTH_TOKEN]',
-              },
-            },
-          },
-          inputs: [
-            {
-              type: 'promptString',
-              id: 'auth-token',
-              description: 'Gateway Authentication Token',
-            },
-          ],
-        };
-      case 'cursor':
-        return {
-          mcpServers: {
-            [serverName]: {
-              url,
-              headers: {
-                Authorization: 'Bearer [YOUR_AUTH_TOKEN]',
-              },
-            },
-          },
-        };
-      case 'cline':
-        return {
-          mcpServers: {
-            [serverName]: {
-              type: 'streamableHttp',
-              url,
-              disabled: false,
-              headers: {
-                Authorization: 'Bearer [YOUR_AUTH_TOKEN]',
-              },
-            },
-          },
-        };
-      case 'claude-code':
-        return {
-          mcpServers: {
-            [serverName]: {
-              type: 'http',
-              url,
-              headers: {
-                Authorization: 'Bearer [YOUR_AUTH_TOKEN]',
-              },
-            },
-          },
-        };
-      default:
-        return {
-          mcpServers: {
-            [serverName]: {
-              type: 'http',
-              url,
-              headers: {
-                Authorization: 'Bearer [YOUR_AUTH_TOKEN]',
-              },
-            },
-          },
-        };
-    }
-  }, [server.name, server.path, selectedIDE]);
+    return {
+      [selectedOption.rootKey]: {
+        [serverName]: {
+          type: 'http',
+          url,
+        },
+      },
+    };
+  }, [configScope, selectedOption.rootKey, server?.path, serverName]);
+
+  const configText = useMemo(() => JSON.stringify(generateMCPConfig(), null, 2), [generateMCPConfig]);
 
   const copyConfigToClipboard = useCallback(async () => {
     try {
-      const config = generateMCPConfig();
-      const configText = JSON.stringify(config, null, 2);
       await navigator.clipboard.writeText(configText);
-
-      showToast?.('Configuration copied to clipboard!', 'success');
+      showToast?.('Configuration copied to clipboard', 'success');
     } catch (error) {
       console.error('Failed to copy to clipboard:', error);
       showToast?.('Failed to copy configuration', 'error');
     }
-  }, [generateMCPConfig, showToast]);
+  }, [configText, showToast]);
 
   if (!isOpen) {
     return null;
   }
 
   return (
-    <div className='fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50'>
-      <div className='bg-white dark:bg-gray-800 rounded-xl p-6 max-w-3xl w-full mx-4 max-h-[80vh]'>
-        <div className='flex items-center justify-between mb-4'>
-          <h3 className='text-lg font-semibold text-gray-900 dark:text-white'>MCP Configuration for {server.title}</h3>
-          <button
+    <div
+      className='fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4 py-6 backdrop-blur-sm'
+      onClick={onClose}
+    >
+      <div
+        className='relative w-full max-w-[720px] rounded-xl border border-[color:var(--jarvis-border)] bg-[var(--jarvis-bg)] p-7 text-[var(--jarvis-text)] shadow-2xl'
+        onClick={event => event.stopPropagation()}
+      >
+        <div className="absolute right-4 top-4 z-10">
+          <IconButton
+            ariaLabel="Close configuration modal"
+            tooltip="Close"
             onClick={onClose}
-            className='text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'
+            size="card"
+            className="border-[color:var(--jarvis-border)] bg-white/[0.04] text-[var(--jarvis-muted)] hover:border-[color:var(--jarvis-border-strong)] hover:bg-white/[0.08] hover:text-[var(--jarvis-text)] shadow-none"
           >
-            ✕
+            <XMarkIcon className="h-4 w-4" />
+          </IconButton>
+        </div>
+
+        <div className='pr-10'>
+          <h3 className='mb-1 text-base font-semibold text-[var(--jarvis-text-strong)]'>MCP configuration</h3>
+          <p className='mb-6 text-sm leading-6 text-[var(--jarvis-subtle)]'>
+            {configScope === 'registry' ? (
+              subtitle
+            ) : (
+              <>
+                Connect to{' '}
+                <span className='rounded bg-[var(--jarvis-primary-soft)] px-2 py-1 font-mono text-xs text-[var(--jarvis-primary-text)]'>
+                  {title}
+                </span>{' '}
+                from your preferred Copilot environment.
+              </>
+            )}
+          </p>
+        </div>
+
+        <div className='mb-5'>
+          <div className='mb-3 text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--jarvis-muted)]'>
+            Environment
+          </div>
+          <div className='flex flex-wrap gap-2'>
+            {IDE_OPTIONS.map(option => (
+              <button
+                key={option.id}
+                type='button'
+                onClick={() => setSelectedIDE(option.id)}
+                className={`rounded-full border px-4 py-2 text-sm font-medium transition ${
+                  selectedIDE === option.id
+                    ? 'border-[var(--jarvis-primary)] bg-[var(--jarvis-primary-soft)] text-[var(--jarvis-primary-text-hover)]'
+                    : 'border-[color:var(--jarvis-border)] bg-white/[0.03] text-[var(--jarvis-muted)] hover:border-[color:var(--jarvis-border-strong)] hover:bg-white/[0.06] hover:text-[var(--jarvis-text)]'
+                }`}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+          <p className='mt-2 text-xs text-[var(--jarvis-faint)]'>{selectedOption.hint}</p>
+        </div>
+
+        <div className='my-5 border-t border-[color:var(--jarvis-border-soft)]' />
+
+        <div className='mb-3 flex items-center justify-between gap-3'>
+          <div className='flex min-w-0 items-center gap-2 text-xs text-[var(--jarvis-subtle)]'>
+            <DocumentTextIcon className='h-4 w-4 flex-shrink-0' />
+            <span className='truncate font-mono'>{selectedOption.filePath}</span>
+          </div>
+
+          <button
+            type='button'
+            onClick={copyConfigToClipboard}
+            className='inline-flex flex-shrink-0 items-center gap-1.5 rounded-md border border-[color:var(--jarvis-border)] bg-white/[0.04] px-3 py-1.5 text-xs font-medium text-[var(--jarvis-text)] transition hover:border-[var(--jarvis-primary)] hover:bg-[var(--jarvis-primary-soft)] hover:text-[var(--jarvis-primary-text-hover)]'
+          >
+            <ClipboardDocumentIcon className='h-4 w-4' />
+            Copy
           </button>
         </div>
 
-        <div className='space-y-4 overflow-auto max-h-[calc(80vh-100px)]'>
-          <div className='bg-gray-50 dark:bg-gray-900 border dark:border-gray-700 rounded-lg p-4'>
-            <h4 className='font-medium text-gray-900 dark:text-white mb-3'>Select your IDE/Tool:</h4>
-            <div className='flex flex-wrap gap-2'>
-              {(['vscode', 'cursor', 'cline', 'claude-code'] as IDE[]).map(ide => (
-                <button
-                  key={ide}
-                  onClick={() => setSelectedIDE(ide)}
-                  className={`px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-                    selectedIDE === ide
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
-                  }`}
-                >
-                  {ide === 'vscode'
-                    ? 'VS Code'
-                    : ide === 'cursor'
-                      ? 'Cursor'
-                      : ide === 'cline'
-                        ? 'Cline'
-                        : 'Claude Code'}
-                </button>
-              ))}
-            </div>
-            <p className='text-xs text-gray-600 dark:text-gray-400 mt-2'>
-              Configuration format optimized for{' '}
-              {selectedIDE === 'vscode'
-                ? 'VS Code'
-                : selectedIDE === 'cursor'
-                  ? 'Cursor'
-                  : selectedIDE === 'cline'
-                    ? 'Cline'
-                    : 'Claude Code'}{' '}
-              integration
-            </p>
-          </div>
+        <pre className='overflow-x-auto rounded-lg border border-white/5 bg-[#0d1117] px-4 py-4 text-xs leading-6 text-[#c9d1d9]'>
+          <code>{configText}</code>
+        </pre>
 
-          <div className='space-y-2'>
-            <div className='flex items-center justify-between'>
-              <h4 className='font-medium text-gray-900 dark:text-white'>Configuration JSON:</h4>
-              <button
-                onClick={copyConfigToClipboard}
-                className='flex items-center gap-2 px-3 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors duration-200'
-              >
-                <ClipboardDocumentIcon className='h-4 w-4' />
-                Copy to Clipboard
-              </button>
-            </div>
-            <pre className='bg-gray-900 text-green-100 p-4 rounded-lg text-sm overflow-x-auto'>
-              {JSON.stringify(generateMCPConfig(), null, 2)}
-            </pre>
+        <div className='mt-4 rounded-lg border border-[rgba(124,58,237,0.15)] bg-[rgba(124,58,237,0.06)] p-3'>
+          <div className='mb-1 flex items-center gap-2 text-xs font-semibold text-[var(--jarvis-primary-text)]'>
+            <InformationCircleIcon className='h-4 w-4' />
+            Authentication
           </div>
+          <p className='text-xs leading-5 text-[var(--jarvis-muted)]'>
+            Authentication is handled automatically by your identity provider.
+          </p>
         </div>
       </div>
     </div>

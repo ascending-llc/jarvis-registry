@@ -80,11 +80,11 @@ const MainConfigForm: React.FC<MainConfigFormProps> = ({
   };
 
   return (
-    <div className='space-y-8'>
+    <div className="space-y-8">
       {/* Section Basic Information */}
       <section>
-        <h3 className='text-lg font-semibold text-gray-900 dark:text-white mb-2'>Basic Information</h3>
-        <div className='space-y-6'>
+        <h3 className="text-lg font-semibold text-[var(--jarvis-text-strong)] mb-2">Basic Information</h3>
+        <div className="space-y-6">
           {/* Title */}
           <FormFields.InputField
             label='Title'
@@ -129,8 +129,8 @@ const MainConfigForm: React.FC<MainConfigFormProps> = ({
 
       {/* Section Network Configuration */}
       <section>
-        <h3 className='text-lg font-semibold text-gray-900 dark:text-white mb-2'>Network Configuration</h3>
-        <div className='space-y-6'>
+        <h3 className="text-lg font-semibold text-[var(--jarvis-text-strong)] mb-2">Network Configuration</h3>
+        <div className="space-y-6">
           {/* MCP Server URL */}
           <FormFields.InputField
             label='MCP Server URL'
@@ -151,15 +151,15 @@ const MainConfigForm: React.FC<MainConfigFormProps> = ({
                 type='button'
                 onClick={handleTestUrl}
                 disabled={isReadOnly || !formData.url}
-                className='btn-input-suffix'
+                className="btn-input-suffix"
                 title={testingUrl ? 'Cancel test' : 'Test URL'}
               >
                 {testingUrl ? (
-                  <div className='animate-spin rounded-full h-4 w-4 border-b-2 border-gray-600 dark:border-white ' />
+                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-[color:var(--jarvis-border)]" />
                 ) : urlTestPassed ? (
-                  <HiCheckCircle className='h-5 w-5 text-green-500' aria-hidden='true' />
+                  <HiCheckCircle className="h-5 w-5 text-[var(--jarvis-success-text)]" aria-hidden='true' />
                 ) : (
-                  <HiBolt className='h-5 w-5' aria-hidden='true' />
+                  <HiBolt className="h-5 w-5" aria-hidden='true' />
                 )}
               </button>
             }
@@ -182,8 +182,8 @@ const MainConfigForm: React.FC<MainConfigFormProps> = ({
 
       {/* Custom Settings */}
       <section>
-        <h3 className='text-lg font-semibold text-gray-900 dark:text-white'>Custom Settings</h3>
-        <span className='block text-xs text-gray-500 dark:text-gray-400 mb-4'>
+        <h3 className="text-lg font-semibold text-[var(--jarvis-text-strong)]">Custom Settings</h3>
+        <span className="block text-xs text-[var(--jarvis-muted)] mb-4">
           Configure advanced options for this MCP server.
         </span>
         <FormFields.KeyValueListField
@@ -198,7 +198,7 @@ const MainConfigForm: React.FC<MainConfigFormProps> = ({
           }}
           disabled={isReadOnly}
           maxItems={5}
-          className='mt-2'
+          className="mt-2"
           validateEmpty={!!errors?.headers}
         />
       </section>
@@ -217,8 +217,8 @@ const MainConfigForm: React.FC<MainConfigFormProps> = ({
 
       {/* Section Metadata */}
       <section>
-        <h3 className='text-lg font-semibold text-gray-900 dark:text-white mb-2'>Metadata</h3>
-        <div className='space-y-6'>
+        <h3 className="text-lg font-semibold text-[var(--jarvis-text-strong)] mb-2">Metadata</h3>
+        <div className="space-y-6">
           {/* Tags */}
           <FormFields.InputField
             label='Tags (optional)'

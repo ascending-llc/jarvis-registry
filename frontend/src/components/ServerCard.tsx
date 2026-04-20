@@ -2,9 +2,9 @@ import {
   ArrowPathIcon,
   CheckCircleIcon,
   ClockIcon,
-  CogIcon,
+  Cog6ToothIcon,
   KeyIcon,
-  PencilIcon,
+  PencilSquareIcon,
   WrenchScrewdriverIcon,
   XMarkIcon,
 } from '@heroicons/react/24/outline';
@@ -12,6 +12,7 @@ import type React from 'react';
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import agentcoreIcon from '@/assets/agentcore.svg';
+import IconButton from '@/components/IconButton';
 import { useGlobal } from '@/contexts/GlobalContext';
 import type { ServerInfo } from '@/contexts/ServerContext';
 import { useServer } from '@/contexts/ServerContext';
@@ -37,6 +38,7 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
   const [showConfig, setShowConfig] = useState(false);
   const [loadingRefresh, setLoadingRefresh] = useState(false);
   const [showApiKeyDialog, setShowApiKeyDialog] = useState(false);
+  const [activeTooltip, setActiveTooltip] = useState<string | null>(null);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -57,16 +59,16 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
   const getAuthStatusIcon = useCallback(() => {
     if (!requiresOauth) return null;
     if (connectionState === ServerConnection.CONNECTED) {
-      return <CheckCircleIcon className='h-4 w-4 text-green-500' />;
+      return <CheckCircleIcon className='h-4 w-4 text-[var(--jarvis-success)]' />;
     }
     if (connectionState === ServerConnection.DISCONNECTED || connectionState === ServerConnection.ERROR) {
-      return <KeyIcon className='h-4 w-4 text-amber-500' />;
+      return <KeyIcon className='h-3.5 w-3.5 text-[var(--jarvis-primary-text)]' />;
     }
     if (connectionState === ServerConnection.CONNECTING) {
       return (
         <>
-          <div className='group-hover/auth:hidden animate-spin rounded-full h-3 w-3 border-b-2 border-slate-200' />
-          <XMarkIcon className='hidden group-hover/auth:block h-4 w-4 text-red-500' />
+          <div className='group-hover/auth:hidden h-3 w-3 animate-spin rounded-full border-b-2 border-[var(--jarvis-text)]' />
+          <XMarkIcon className='hidden h-4 w-4 text-[var(--jarvis-danger-text)] group-hover/auth:block' />
         </>
       );
     }
@@ -186,97 +188,118 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
       <div
         className={`group rounded-2xl shadow-sm hover:shadow-xl transition-all duration-300 h-full flex flex-col relative ${
           isAnthropicServer
-            ? 'bg-gradient-to-br from-purple-50 to-indigo-50 dark:from-purple-900/20 dark:to-indigo-900/20 border-2 border-purple-200 dark:border-purple-700 hover:border-purple-300 dark:hover:border-purple-600'
-            : 'bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 hover:border-gray-200 dark:hover:border-gray-600'
+            ? 'border border-[color:var(--jarvis-primary-soft)] bg-gradient-to-br from-[#1f2432] to-[#242b3f] hover:border-[var(--jarvis-primary-hover)]'
+            : 'border border-[color:var(--jarvis-border)] bg-[var(--jarvis-card)] hover:border-[color:var(--jarvis-border-strong)]'
         }`}
       >
         {loading && (
-          <div className='absolute inset-0 bg-white/20 dark:bg-black/20 backdrop-blur-sm rounded-2xl flex items-center justify-center z-10'>
-            <div className='animate-spin rounded-full h-8 w-8 border-b-2 border-cyan-600'></div>
+          <div className='absolute inset-0 z-10 flex items-center justify-center rounded-2xl bg-[var(--jarvis-overlay)] backdrop-blur-sm'>
+            <div className='h-8 w-8 animate-spin rounded-full border-b-2 border-[var(--jarvis-spinner)]'></div>
           </div>
         )}
 
-        <div className='p-4 pb-3'>
+        <div className='p-4 pb-2.5'>
           {/* Header */}
-          <div className='flex items-start justify-between mb-3 gap-2'>
+          <div className='mb-2.5 flex items-start justify-between gap-2'>
             <div className='flex-1 min-w-0'>
-              <div className='flex items-center gap-1.5 mb-2 min-w-0'>
+              <div className='mb-1.5 flex min-w-0 items-center gap-1.5'>
                 {server.permissions?.VIEW ? (
                   <h3
-                    className='text-base font-bold text-gray-900 dark:text-white truncate min-w-0 flex-1 cursor-pointer hover:text-purple-600 dark:hover:text-purple-400 transition-colors'
+                    className='min-w-0 flex-1 truncate text-[15px] font-medium text-[var(--jarvis-text)] transition-colors hover:text-[var(--jarvis-text-strong)]'
                     onClick={() => navigate(`/server-edit?id=${server.id}&isReadOnly=true`)}
                   >
                     {server.title}
                   </h3>
                 ) : (
-                  <h3 className='text-base font-bold text-gray-900 dark:text-white truncate min-w-0 flex-1'>
+                  <h3 className='min-w-0 flex-1 truncate text-[15px] font-medium text-[var(--jarvis-text)]'>
                     {server.title}
                   </h3>
                 )}
               </div>
 
-              <div className='flex flex-wrap items-center gap-1.5 mb-2'>
+              <div className='mb-2 flex flex-wrap items-center gap-1.5'>
                 {server.official && (
-                  <span className='px-1.5 py-0.5 text-xs font-semibold bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300 rounded-full flex-shrink-0 whitespace-nowrap'>
+                  <span className='whitespace-nowrap rounded-full bg-[var(--jarvis-primary-soft)] px-1.5 py-0.5 text-xs font-semibold text-[var(--jarvis-primary-text-hover)]'>
                     OFFICIAL
                   </span>
                 )}
                 {isAnthropicServer && (
-                  <span className='px-1.5 py-0.5 text-xs font-semibold bg-gradient-to-r from-purple-100 to-indigo-100 text-purple-700 dark:from-purple-900/30 dark:to-indigo-900/30 dark:text-purple-300 rounded-full flex-shrink-0 border border-purple-200 dark:border-purple-600 whitespace-nowrap'>
+                  <span className='whitespace-nowrap rounded-full border border-[color:var(--jarvis-primary-soft)] bg-[var(--jarvis-primary-soft)] px-1.5 py-0.5 text-xs font-semibold text-[var(--jarvis-primary-text-hover)]'>
                     ANTHROPIC
                   </span>
                 )}
                 {/* Check if this is an ASOR server */}
                 {server.tags?.includes('asor') && (
-                  <span className='px-1.5 py-0.5 text-xs font-semibold bg-gradient-to-r from-orange-100 to-red-100 text-orange-700 dark:from-orange-900/30 dark:to-red-900/30 dark:text-orange-300 rounded-full flex-shrink-0 border border-orange-200 dark:border-orange-600 whitespace-nowrap'>
+                  <span className='whitespace-nowrap rounded-full border border-[var(--jarvis-warning)]/35 bg-[var(--jarvis-warning-soft)] px-1.5 py-0.5 text-xs font-semibold text-[var(--jarvis-warning-text)]'>
                     ASOR
                   </span>
                 )}
                 {isSecurityPending && (
-                  <span className='px-1.5 py-0.5 text-xs font-semibold bg-gradient-to-r from-amber-100 to-orange-100 text-amber-700 dark:from-amber-900/30 dark:to-orange-900/30 dark:text-amber-300 rounded-full flex-shrink-0 border border-amber-200 dark:border-amber-600 whitespace-nowrap'>
+                  <span className='whitespace-nowrap rounded-full border border-[var(--jarvis-warning)]/35 bg-[var(--jarvis-warning-soft)] px-1.5 py-0.5 text-xs font-semibold text-[var(--jarvis-warning-text)]'>
                     SECURITY PENDING
                   </span>
                 )}
               </div>
 
-              <code className='text-xs text-gray-600 dark:text-gray-300 bg-gray-50 dark:bg-gray-800/50 px-1.5 py-0.5 rounded font-mono truncate block max-w-full'>
+              <div className='block max-w-full truncate text-[12px] text-[var(--jarvis-muted)]'>
                 {server.path}
-              </code>
+              </div>
             </div>
 
-            <div className='flex gap-1 flex-shrink-0'>
+            <div className='flex flex-shrink-0 gap-0.5'>
               {requiresOauth && (
-                <button
-                  className='group/auth p-1.5 text-amber-500 hover:bg-gray-50 dark:hover:bg-gray-700/50 rounded-lg transition-all duration-200 flex-shrink-0'
+                <IconButton
+                  ariaLabel='Manage API keys'
+                  tooltip='Auth scopes'
                   onClick={handleAuth}
-                  title='Manage API keys'
+                  size='card'
+                  tooltipVisible={activeTooltip === 'auth'}
+                  onMouseEnter={() => setActiveTooltip('auth')}
+                  onMouseLeave={() => setActiveTooltip(null)}
+                  onFocus={() => setActiveTooltip('auth')}
+                  onBlur={() => setActiveTooltip(null)}
+                  className='group/auth text-[var(--jarvis-primary-text)] hover:bg-[var(--jarvis-primary-soft)] hover:text-[var(--jarvis-primary-text-hover)]'
                 >
                   {getAuthStatusIcon()}
-                </button>
+                </IconButton>
               )}
               {server?.permissions?.EDIT && (
-                <button
-                  className='p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50 rounded-lg transition-all duration-200 flex-shrink-0'
+                <IconButton
+                  ariaLabel='Edit server'
+                  tooltip='Edit'
                   onClick={() => toEditPage?.(server)}
-                  title='Edit server'
+                  size='card'
+                  tooltipVisible={activeTooltip === 'edit'}
+                  onMouseEnter={() => setActiveTooltip('edit')}
+                  onMouseLeave={() => setActiveTooltip(null)}
+                  onFocus={() => setActiveTooltip('edit')}
+                  onBlur={() => setActiveTooltip(null)}
+                  className='text-[var(--jarvis-icon)] hover:bg-[var(--jarvis-primary-soft)] hover:text-[var(--jarvis-icon-hover)]'
                 >
-                  <PencilIcon className='h-3.5 w-3.5' />
-                </button>
+                  <PencilSquareIcon className='h-3.5 w-3.5' />
+                </IconButton>
               )}
 
               {/* Configuration Generator Button */}
-              <button
+              <IconButton
+                ariaLabel='Copy MCP configuration'
+                tooltip='Settings'
                 onClick={() => setShowConfig(true)}
-                className='p-1.5 text-gray-400 hover:text-green-600 dark:hover:text-green-300 hover:bg-green-50 dark:hover:bg-green-700/50 rounded-lg transition-all duration-200 flex-shrink-0'
-                title='Copy mcp.json configuration'
+                size='card'
+                tooltipVisible={activeTooltip === 'settings'}
+                onMouseEnter={() => setActiveTooltip('settings')}
+                onMouseLeave={() => setActiveTooltip(null)}
+                onFocus={() => setActiveTooltip('settings')}
+                onBlur={() => setActiveTooltip(null)}
+                className='text-[var(--jarvis-icon)] hover:bg-[var(--jarvis-primary-soft)] hover:text-[var(--jarvis-icon-hover)]'
               >
-                <CogIcon className='h-3.5 w-3.5' />
-              </button>
+                <Cog6ToothIcon className='h-3.5 w-3.5' />
+              </IconButton>
             </div>
           </div>
           {/* content */}
           {/* Description */}
-          <p className='text-gray-600 dark:text-gray-300 text-xs leading-relaxed line-clamp-2 mb-3'>
+          <p className='mb-3 line-clamp-2 text-[12px] leading-[1.45] text-[var(--jarvis-subtle)]'>
             {server.description || 'No description available'}
           </p>
 
@@ -286,13 +309,13 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
               {server.tags.slice(0, 3).map(tag => (
                 <span
                   key={tag}
-                  className='px-1.5 py-0.5 text-xs font-medium bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 rounded truncate max-w-[100px]'
+                  className='max-w-[100px] truncate rounded bg-[var(--jarvis-info-soft)] px-1.5 py-0.5 text-xs font-medium text-[var(--jarvis-info-text)]'
                 >
                   #{tag}
                 </span>
               ))}
               {server.tags.length > 3 && (
-                <span className='px-1.5 py-0.5 text-xs font-medium bg-gray-50 dark:bg-gray-800 text-gray-600 dark:text-gray-300 rounded'>
+                <span className='rounded bg-[var(--jarvis-card-muted)] px-1.5 py-0.5 text-xs font-medium text-[var(--jarvis-subtle)]'>
                   +{server.tags.length - 3}
                 </span>
               )}
@@ -308,10 +331,10 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
                 <button
                   onClick={handleViewTools}
                   disabled={loadingTools}
-                  className='flex items-center gap-1.5 text-blue-600 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300 disabled:opacity-50 hover:bg-blue-50 dark:hover:bg-blue-900/20 px-1.5 py-0.5 -mx-1.5 -my-0.5 rounded transition-all text-xs'
+                  className='-mx-1.5 -my-0.5 flex items-center gap-1.5 rounded px-1.5 py-0.5 text-xs text-[var(--jarvis-info-text)] transition-all hover:bg-[var(--jarvis-info-soft)] hover:text-[var(--jarvis-icon-hover)] disabled:opacity-50'
                   title='View tools'
                 >
-                  <div className='p-1 bg-blue-50 dark:bg-blue-900/30 rounded'>
+                  <div className='rounded bg-[var(--jarvis-card-muted)] p-1'>
                     <WrenchScrewdriverIcon className='h-3.5 w-3.5' />
                   </div>
                   <div>
@@ -320,8 +343,8 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
                   </div>
                 </button>
               ) : (
-                <div className='flex items-center gap-1.5 text-gray-400 dark:text-gray-500'>
-                  <div className='p-1 bg-gray-50 dark:bg-gray-800 rounded'>
+                <div className='flex items-center gap-1.5 text-[var(--jarvis-faint)]'>
+                  <div className='rounded bg-[var(--jarvis-card-muted)] p-1'>
                     <WrenchScrewdriverIcon className='h-3.5 w-3.5' />
                   </div>
                   <div>
@@ -335,34 +358,34 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
         </div>
 
         {/* Footer */}
-        <div className='mt-auto px-3 py-3 border-t border-gray-100 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900/30 rounded-b-2xl'>
+        <div className='mt-auto rounded-b-2xl border-t border-[color:var(--jarvis-border)] bg-[var(--jarvis-bg)]/70 px-3 py-3'>
           <div className='flex flex-col sm:flex-row items-center justify-between gap-1'>
             <div className='flex items-center gap-2 flex-wrap justify-center'>
               {/* Status Indicators */}
               <div className='flex items-center gap-1'>
                 <div
-                  className={`w-2.5 h-2.5 rounded-full ${server.enabled ? 'bg-green-400 shadow-lg shadow-green-400/30' : 'bg-gray-300 dark:bg-gray-600'}`}
+                  className={`h-2.5 w-2.5 rounded-full ${server.enabled ? 'bg-[var(--jarvis-success)] shadow-lg shadow-emerald-500/30' : 'bg-[var(--jarvis-faint)]'}`}
                 />
-                <span className='text-xs font-medium text-gray-700 dark:text-gray-300'>
+                <span className='text-xs font-medium text-[var(--jarvis-muted)]'>
                   {server.enabled ? 'Enabled' : 'Disabled'}
                 </span>
               </div>
 
-              <div className='w-px h-3 bg-gray-200 dark:bg-gray-600' />
+              <div className='h-3 w-px bg-[color:var(--jarvis-border)]' />
 
               <div className='flex items-center gap-1'>
                 <div
                   className={`w-2.5 h-2.5 rounded-full ${
                     server.status === 'active'
-                      ? 'bg-emerald-400 shadow-lg shadow-emerald-400/30'
+                      ? 'bg-[var(--jarvis-success)] shadow-lg shadow-emerald-500/30'
                       : server.status === 'inactive'
-                        ? 'bg-orange-400 shadow-lg shadow-orange-400/30'
+                        ? 'bg-[var(--jarvis-warning)] shadow-lg shadow-amber-500/30'
                         : server.status === 'error'
-                          ? 'bg-red-400 shadow-lg shadow-red-400/30'
-                          : 'bg-amber-400 shadow-lg shadow-amber-400/30'
+                          ? 'bg-[var(--jarvis-danger)] shadow-lg shadow-red-500/30'
+                          : 'bg-[var(--jarvis-warning)] shadow-lg shadow-amber-500/30'
                   }`}
                 />
-                <span className='text-xs font-medium text-gray-700 dark:text-gray-300 max-w-[80px] truncate'>
+                <span className='max-w-[80px] truncate text-xs font-medium text-[var(--jarvis-muted)]'>
                   {server.status === 'active'
                     ? 'Active'
                     : server.status === 'inactive'
@@ -380,7 +403,7 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
               {(() => {
                 const timeText = UTILS.formatTimeSince(server.lastCheckedTime);
                 return server.lastCheckedTime && timeText ? (
-                  <div className='text-xs text-gray-500 dark:text-gray-300 flex items-center gap-1 hidden md:flex'>
+                  <div className='hidden items-center gap-1 text-xs text-[var(--jarvis-muted)] md:flex'>
                     <ClockIcon className='h-3 w-3' />
                     <span>{timeText}</span>
                   </div>
@@ -388,14 +411,16 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
               })()}
 
               {/* Refresh Button */}
-              <button
+              <IconButton
+                ariaLabel="Refresh health status"
+                tooltip="Refresh"
                 onClick={handleRefreshHealth}
                 disabled={loadingRefresh}
-                className='text-gray-500 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-lg transition-all duration-200 disabled:opacity-50'
-                title='Refresh health status'
+                size="card"
+                className="text-[var(--jarvis-icon)] transition-all duration-200 hover:bg-[var(--jarvis-primary-soft)] hover:text-[var(--jarvis-icon-hover)]"
               >
-                <ArrowPathIcon className={`h-3 w-3 ${loadingRefresh ? 'animate-spin' : ''}`} />
-              </button>
+                <ArrowPathIcon className={`h-3 w-3 ${loadingRefresh ? "animate-spin" : ""}`} />
+              </IconButton>
 
               {/* Toggle Switch */}
               <label
@@ -411,7 +436,7 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
                 />
                 <div
                   className={`relative w-7 h-4 rounded-full transition-colors duration-200 ease-in-out ${
-                    server.enabled ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'
+                    server.enabled ? 'bg-[var(--jarvis-primary)]' : 'bg-[var(--jarvis-faint)]'
                   }`}
                 >
                   <div
@@ -438,30 +463,33 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
 
       {/* Tools Modal */}
       {showTools && (
-        <div className='fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50'>
-          <div className='bg-white dark:bg-gray-800 rounded-xl p-6 pt-0 max-w-2xl w-full mx-4 max-h-[80vh] overflow-auto'>
-            <div className='flex items-center justify-between mb-4 sticky top-0 bg-white dark:bg-gray-800 z-10 pb-2 border-b border-gray-100 dark:border-gray-700 -mx-6 px-6 -mt-6 pt-6'>
-              <h3 className='text-lg font-semibold text-gray-900 dark:text-white'>Tools for {server.name}</h3>
-              <button
+        <div className='fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm'>
+          <div className='max-h-[80vh] w-full max-w-2xl overflow-auto rounded-xl bg-[var(--jarvis-card)] p-6 pt-0 text-[var(--jarvis-text)] shadow-xl'>
+            <div className='sticky top-0 z-10 -mx-6 -mt-6 mb-4 flex items-center justify-between border-b border-[color:var(--jarvis-border)] bg-[var(--jarvis-card)] px-6 pb-2 pt-6'>
+              <h3 className='text-lg font-semibold text-[var(--jarvis-text-strong)]'>Tools for {server.name}</h3>
+              <IconButton
+                ariaLabel="Close"
+                tooltip="Close"
                 onClick={() => setShowTools(false)}
-                className='text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'
+                size="card"
+                className="text-[var(--jarvis-icon)] transition-colors hover:text-[var(--jarvis-icon-hover)] border-none bg-transparent hover:bg-transparent shadow-none"
               >
                 <XMarkIcon className='h-6 w-6' />
-              </button>
+              </IconButton>
             </div>
 
             <div className='space-y-4 mt-[2.8rem]'>
               {tools?.length > 0 ? (
                 tools.map((tool: Tool, index: number) => (
-                  <div key={index} className='border border-gray-200 dark:border-gray-700 rounded-lg p-4'>
-                    <h4 className='font-medium text-gray-900 dark:text-white mb-2'>{tool?.function?.name}</h4>
+                  <div key={index} className='rounded-lg border border-[color:var(--jarvis-border)] bg-[var(--jarvis-card-muted)] p-4'>
+                    <h4 className='mb-2 font-medium text-[var(--jarvis-text-strong)]'>{tool?.function?.name}</h4>
                     {tool?.function?.description && (
-                      <p className='text-sm text-gray-600 dark:text-gray-300 mb-2'>{tool?.function?.description}</p>
+                      <p className='mb-2 text-sm text-[var(--jarvis-muted)]'>{tool?.function?.description}</p>
                     )}
                     {tool?.function?.parameters && (
                       <details className='text-xs'>
-                        <summary className='cursor-pointer text-gray-500 dark:text-gray-300'>View Schema</summary>
-                        <pre className='mt-2 p-3 bg-gray-50 dark:bg-gray-900 border dark:border-gray-700 rounded overflow-x-auto text-gray-900 dark:text-gray-100'>
+                        <summary className='cursor-pointer text-[var(--jarvis-muted)]'>View Schema</summary>
+                        <pre className='mt-2 overflow-x-auto rounded border border-[color:var(--jarvis-border)] bg-[var(--jarvis-surface)] p-3 text-[var(--jarvis-text)]'>
                           {JSON.stringify(tool?.function?.parameters, null, 2)}
                         </pre>
                       </details>
@@ -469,7 +497,7 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
                   </div>
                 ))
               ) : (
-                <p className='text-gray-500 dark:text-gray-300'>No tools available for this server.</p>
+                <p className='text-[var(--jarvis-muted)]'>No tools available for this server.</p>
               )}
             </div>
           </div>
