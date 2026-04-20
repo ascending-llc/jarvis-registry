@@ -69,7 +69,7 @@ def create_app(*, lifespan, gateway_mcp_app: FastMCP[McpAppContext]) -> FastAPI:
     # `/proxy/mcpgw/mcp` will be routed to the MCP app instead of `proxy_router`, which has a catch-all route.
     app.mount("/proxy/mcpgw", gateway_mcp_app.streamable_http_app())
     register_routers(app)
-    app.openapi = _build_openapi_factory(app)
+    app.openapi = _customize_openapi(app)  # type: ignore[method-assign]  # FastAPI recommendation
 
     return app
 
@@ -97,7 +97,7 @@ def _mount_static_files(app: FastAPI) -> None:
         logger.warning("Static files directory not found, skipping static files mount")
 
 
-def _build_openapi_factory(app: FastAPI):
+def _customize_openapi(app: FastAPI):
     def custom_openapi() -> dict[str, Any]:
         if app.openapi_schema:
             return app.openapi_schema
@@ -115,7 +115,7 @@ def _build_openapi_factory(app: FastAPI):
                 "type": "http",
                 "scheme": "bearer",
                 "bearerFormat": "JWT",
-                "description": "JWT Bearer token obtained from Keycloak OAuth2 authentication. "
+                "description": "JWT Bearer token obtained from the configured OAuth2 provider. "
                 "Include in Authorization header as: `Authorization: Bearer <token>`",
             }
         }
