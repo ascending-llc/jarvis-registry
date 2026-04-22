@@ -21,6 +21,7 @@ from .extended_acl_entry import ExtendedAclEntry
 from .extended_mcp_server import ExtendedMCPServer
 from .federation import Federation
 from .federation_sync_job import FederationSyncJob
+from .workflow import NodeRun, WorkflowDefinition, WorkflowRun
 
 __all__ = [
     "A2AAgent",
@@ -29,6 +30,9 @@ __all__ = [
     "Federation",
     "FederationSyncJob",
     "ExtendedAccessRole",
+    "NodeRun",
+    "WorkflowDefinition",
+    "WorkflowRun",
     "Group",
     "User",
     "Key",
