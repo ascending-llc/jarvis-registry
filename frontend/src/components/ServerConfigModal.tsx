@@ -1,9 +1,8 @@
 import { ClipboardDocumentIcon, DocumentTextIcon, InformationCircleIcon, XMarkIcon } from '@heroicons/react/24/outline';
 import type React from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-
-import { getBasePath } from '@/config';
 import IconButton from '@/components/IconButton';
+import { getBasePath } from '@/config';
 import { useGlobal } from '@/contexts/GlobalContext';
 import type { ServerInfo } from '@/contexts/ServerContext';
 
@@ -101,7 +100,7 @@ const ServerConfigModal: React.FC<ServerConfigModalProps> = ({ server, isOpen, o
     const url =
       configScope === 'registry'
         ? REGISTRY_SERVER_URL
-        : `${currentUrl.protocol}//${currentUrl.host}/${joinUrlPath(basePath, 'proxy/server', normalizedPath, 'mcp')}`;
+        : `${currentUrl.protocol}//${currentUrl.host}/${joinUrlPath(basePath, 'proxy/server', normalizedPath)}`;
 
     return {
       [selectedOption.rootKey]: {
@@ -138,15 +137,15 @@ const ServerConfigModal: React.FC<ServerConfigModalProps> = ({ server, isOpen, o
         className='relative w-full max-w-[720px] rounded-xl border border-[color:var(--jarvis-border)] bg-[var(--jarvis-bg)] p-7 text-[var(--jarvis-text)] shadow-2xl'
         onClick={event => event.stopPropagation()}
       >
-        <div className="absolute right-4 top-4 z-10">
+        <div className='absolute right-4 top-4 z-10'>
           <IconButton
-            ariaLabel="Close configuration modal"
-            tooltip="Close"
+            ariaLabel='Close configuration modal'
+            tooltip='Close'
             onClick={onClose}
-            size="card"
-            className="border-[color:var(--jarvis-border)] bg-white/[0.04] text-[var(--jarvis-muted)] hover:border-[color:var(--jarvis-border-strong)] hover:bg-white/[0.08] hover:text-[var(--jarvis-text)] shadow-none"
+            size='card'
+            className='border-[color:var(--jarvis-border)] bg-white/[0.04] text-[var(--jarvis-muted)] hover:border-[color:var(--jarvis-border-strong)] hover:bg-white/[0.08] hover:text-[var(--jarvis-text)] shadow-none'
           >
-            <XMarkIcon className="h-4 w-4" />
+            <XMarkIcon className='h-4 w-4' />
           </IconButton>
         </div>
 
