@@ -15,9 +15,14 @@ import asyncio
 import json
 import logging
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from beanie import PydanticObjectId
+
+if TYPE_CHECKING:
+    from redis import Redis
+
+    from registry.services.federation.agentcore_runtime_auth import AgentCoreRuntimeAuthService
 
 from registry_pkgs.database.decorators import get_current_session
 from registry_pkgs.models import (
@@ -88,18 +93,22 @@ async def build_complete_headers_for_server(
     user_id: str | None = None,
     *,
     state_metadata: StateMetadata | None = None,
+    agentcore_auth_service: "AgentCoreRuntimeAuthService | None" = None,
+    redis_client: "Redis | None" = None,
 ) -> dict[str, str]:
     """
     Build complete HTTP headers with ALL authentication types.
-    Consolidates OAuth, apiKey, and custom header logic in one place.
+    Consolidates OAuth, apiKey, custom header, and AgentCore Runtime auth logic in one place.
 
     This eliminates duplicate header building across server_service, proxy_routes, and health_service.
 
     Args:
-        oauth_service:
-        state_metadata:
+        oauth_service: OAuth service for OAuth token management
         server: Server document containing config
         user_id: User ID for OAuth token retrieval (required for OAuth servers)
+        state_metadata: OAuth flow state metadata
+        agentcore_auth_service: AgentCore Runtime auth service for JWT/IAM authentication
+        redis_client: Redis client for JWT token caching
 
     Returns:
         Complete headers dictionary ready for HTTP requests
@@ -137,7 +146,119 @@ async def build_complete_headers_for_server(
     if custom_headers:
         headers.update(custom_headers)
 
-    # 2. Check OAuth and add OAuth headers LAST (highest priority, overrides custom headers)
+    # 2. Check AgentCore Runtime authentication (for federated AgentCore MCP servers)
+    runtime_access_config = decrypted_config.get("runtimeAccess")
+
+    if runtime_access_config:
+        # AgentCore Runtime server with runtimeAccess configuration
+        if not agentcore_auth_service:
+            logger.warning(
+                f"AgentCore Runtime config found for {server.serverName} but auth service not available. "
+                f"Skipping runtime authentication."
+            )
+        else:
+            try:
+                from registry_pkgs.models.enums import AgentCoreRuntimeAccessMode
+                from registry_pkgs.models.federation import AgentCoreRuntimeAccessConfig
+
+                # Parse runtime access config
+                if isinstance(runtime_access_config, dict):
+                    access_config = AgentCoreRuntimeAccessConfig(**runtime_access_config)
+                else:
+                    access_config = runtime_access_config
+
+                # Only handle JWT mode for now (IAM support can be added later if needed)
+                if access_config.mode == AgentCoreRuntimeAccessMode.JWT:
+                    logger.info(f"Building JWT token for AgentCore Runtime server {server.serverName}")
+
+                    # Extract metadata for cache key and JWT generation
+                    metadata = server.federationMetadata or {}
+                    runtime_arn = metadata.get("runtimeArn") or ""
+
+                    # Generate cache key for JWT token
+                    cache_key = f"{settings.redis_key_prefix}:agentcore_jwt:{server.id}:{runtime_arn}"
+
+                    # Try to get cached JWT token
+                    cached_token = None
+                    if redis_client:
+                        try:
+                            cached_value = redis_client.get(cache_key)
+                            if cached_value:
+                                cached_token = (
+                                    cached_value.decode("utf-8") if isinstance(cached_value, bytes) else cached_value
+                                )
+                                logger.debug(f"Using cached JWT token for {server.serverName}")
+                        except Exception as cache_err:
+                            logger.warning(f"Failed to get cached JWT for {server.serverName}: {cache_err}")
+
+                    # Use cached token if available
+                    if cached_token:
+                        headers["Authorization"] = f"Bearer {cached_token}"
+                        logger.info(f"Added cached AgentCore Runtime JWT for {server.serverName}")
+                        return headers
+
+                    # Generate new JWT token if not cached
+                    # Extract region from federationMetadata
+                    region = None
+                    if runtime_arn:
+                        try:
+                            from registry.services.federation.agentcore_discovery import AgentCoreFederationClient
+
+                            region = AgentCoreFederationClient.extract_region_from_arn(runtime_arn)
+                        except Exception as e:
+                            logger.warning(f"Failed to extract region from runtime ARN: {runtime_arn}, error: {e}")
+
+                    if not region:
+                        from registry.core.config import settings as registry_settings
+
+                        region = registry_settings.aws_region or "us-east-1"
+                        logger.debug(f"Using fallback region: {region}")
+
+                    # Build JWT authentication headers
+                    auth_headers, _ = await agentcore_auth_service.build_runtime_http_auth(
+                        runtime_access=access_config,
+                        metadata=metadata,
+                        region=region,
+                    )
+
+                    # Cache the JWT token (270 seconds = 300s token TTL - 30s buffer)
+                    if redis_client and "Authorization" in auth_headers:
+                        try:
+                            token = auth_headers["Authorization"].replace("Bearer ", "")
+                            redis_client.setex(cache_key, 270, token)
+                            logger.debug(f"Cached JWT token for {server.serverName} (TTL: 270s)")
+                        except Exception as cache_err:
+                            logger.warning(f"Failed to cache JWT for {server.serverName}: {cache_err}")
+
+                    # Merge auth headers (Authorization header takes priority)
+                    headers.update(auth_headers)
+                    logger.info(f"Added AgentCore Runtime JWT authentication for {server.serverName}")
+                    return headers
+
+                elif access_config.mode == AgentCoreRuntimeAccessMode.IAM:
+                    logger.info(
+                        f"AgentCore Runtime server {server.serverName} uses IAM authentication. "
+                        "IAM support not yet implemented, skipping runtime auth."
+                    )
+                else:
+                    logger.warning(f"Unknown runtime access mode '{access_config.mode}' for server {server.serverName}")
+            except Exception as exc:
+                logger.error(
+                    f"Failed to build AgentCore Runtime authentication for {server.serverName}: {exc}",
+                    exc_info=True,
+                )
+                raise AuthenticationError(
+                    f"Failed to authenticate with AgentCore Runtime: {exc}",
+                    server_name=server.serverName,
+                )
+    elif decrypted_config.get("authProvider") == "bedrock-agentcore":
+        # Server has authProvider but no runtimeAccess configuration
+        logger.warning(
+            f"Server {server.serverName} has authProvider='bedrock-agentcore' "
+            f"but missing runtimeAccess configuration. Skipping runtime authentication."
+        )
+
+    # 3. Check OAuth and add OAuth headers (high priority, overrides custom headers)
     requires_oauth = decrypted_config.get("requiresOAuth", False) or "oauth" in decrypted_config
 
     if requires_oauth:
@@ -197,7 +318,7 @@ async def build_complete_headers_for_server(
         logger.debug(f"OAuth Bearer token added for {server.serverName} (overrides any custom Authorization header)")
         return headers
 
-    # 2. Handle apiKey authentication (if not OAuth)
+    # 4. Handle apiKey authentication (if not OAuth or AgentCore Runtime)
     api_key_config = decrypted_config.get("apiKey")
     if api_key_config and isinstance(api_key_config, dict):
         key_value = api_key_config.get("key")
