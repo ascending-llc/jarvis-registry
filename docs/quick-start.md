@@ -50,9 +50,6 @@ ENTRA_CLIENT_ID=your_application_client_id_here
 # IMPORTANT: Copy the SECRET VALUE, not the Secret ID
 # Format: xxx~xxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ENTRA_CLIENT_SECRET=your_client_secret_value_here
-
-# Enable Entra ID in OAuth2 providers (set to true when using Entra ID)
-ENTRA_ENABLED=true
 ```
 
 ## Step 3: Generate Secret Keys
@@ -116,12 +113,9 @@ You now have a fully functional Jarvis Registry! Here are your next steps:
 ### Expand Your Setup
 - 📚 **[Full Installation Guide](installation.md)** - Production deployment options
 - 🔐 **[Authentication Setup](auth.md)** - Advanced identity provider configuration
-- 🎯 **[AI Assistants Guide](ai-coding-assistants-setup.md)** - Connect more development tools
 
 ### Enterprise Features
-- 👥 **[Fine-Grained Access Control](scopes.md)** - Team-based permissions
-- 📊 **[Monitoring & Analytics](monitoring.md)** - Usage tracking and health monitoring
-- 🏢 **[Production Deployment](production-deployment.md)** - High availability and scaling
+- 👥 **[Fine-Grained Access Control](design/scopes.md)** - Team-based permissions
 
 ## Troubleshooting Quick Fixes
 
@@ -141,16 +135,10 @@ sudo netstat -tlnp | grep -E ':(80|443|7860|8080)'
 curl http://localhost:7860/health
 
 # Check logs
-docker-compose logs registry
+docker compose logs registry
 ```
 
 ## Getting Help
 
 - 📖 **[Full Documentation](/)** - Comprehensive guides and references
-- 🐛 **[GitHub Issues](https://github.com/agentic-community/mcp-gateway-registry/issues)** - Bug reports and feature requests
-- 💬 **[GitHub Discussions](https://github.com/agentic-community/mcp-gateway-registry/discussions)** - Community support and questions
-- 📧 **[Troubleshooting Guide](troubleshooting.md)** - Common issues and detailed solutions
-
----
-
-**🎯 Pro Tip:** Once you have the basic setup working, explore the [AI Coding Assistants Setup Guide](ai-coding-assistants-setup.md) to connect additional development tools like Cursor, Claude Code, and Cline for a complete enterprise AI development experience!
+- 🐛 **[GitHub Issues](https://github.com/ascending-llc/jarvis-registry/issues)** - Bug reports and feature requests
