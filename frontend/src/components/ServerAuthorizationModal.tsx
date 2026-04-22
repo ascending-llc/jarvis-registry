@@ -3,6 +3,7 @@ import { ArrowPathIcon, KeyIcon, TrashIcon, XMarkIcon } from '@heroicons/react/2
 import type React from 'react';
 import { useState } from 'react';
 
+import IconButton from '@/components/IconButton';
 import { useGlobal } from '@/contexts/GlobalContext';
 import { useServer } from '@/contexts/ServerContext';
 import SERVICES from '@/services';
@@ -112,36 +113,44 @@ const ServerAuthorizationModal: React.FC<ServerAuthorizationModalProps> = ({
       className='fixed inset-0 z-50 flex items-center justify-center p-4'
     >
       <div className='fixed inset-0 bg-black/50' aria-hidden='true' />
-      <div className='w-[512px] h-[140px] bg-white dark:bg-gray-800 shadow-xl rounded-lg p-6 relative'>
+      <div className='w-[512px] h-[140px] bg-[var(--jarvis-card)] bg-[var(--jarvis-card)] shadow-xl rounded-lg p-6 relative'>
         <div className='flex items-start justify-between mb-6'>
           <div className='flex items-center gap-4'>
-            <h3 className='text-xl font-semibold text-gray-900 dark:text-white'>{name}</h3>
+            <h3 className='text-xl font-semibold text-[var(--jarvis-text-strong)] text-[var(--jarvis-text-strong)]'>
+              {name}
+            </h3>
             {isConnecting ? (
-              <div className='flex items-center gap-1.5 text-sm text-blue-500'>
-                <div className='animate-spin rounded-full h-3 w-3 border-b-2 border-slate-600' />
+              <div className='flex items-center gap-1.5 text-sm text-[var(--jarvis-info-text)]'>
+                <div className='animate-spin rounded-full h-3 w-3 border-b-2 border-[color:var(--jarvis-border)]' />
                 Connecting
               </div>
             ) : isAuthenticated ? (
-              <div className='flex items-center gap-1.5 text-sm text-green-500'>
-                <div className='w-2.5 h-2.5 rounded-full bg-emerald-400 shadow-lg shadow-emerald-400/30' />
+              <div className='flex items-center gap-1.5 text-sm text-[var(--jarvis-success-text)]'>
+                <div className='w-2.5 h-2.5 rounded-full bg-[var(--jarvis-success)] shadow-lg shadow-[var(--jarvis-success)]/30' />
                 Authenticated
               </div>
             ) : (
-              <span className='flex items-center gap-1 px-2 py-0.5 bg-amber-50 dark:bg-amber-300 text-amber-600 dark:text-amber-600 rounded-full text-xs font-medium'>
-                <KeyIcon className='h-3 w-3 dark:text-amber-600' />
+              <span className='flex items-center gap-1 px-2 py-0.5 bg-[var(--jarvis-warning-soft)] text-[var(--jarvis-warning-text)] dark:text-[var(--jarvis-warning-text)] rounded-full text-xs font-medium'>
+                <KeyIcon className='h-3 w-3 dark:text-[var(--jarvis-warning-text)]' />
                 OAuth
               </span>
             )}
           </div>
-          <button onClick={onClose} className='text-gray-400 hover:text-gray-600 dark:hover:text-gray-300'>
+          <IconButton
+            ariaLabel='Close'
+            tooltip='Close'
+            onClick={onClose}
+            size='card'
+            className='text-[var(--jarvis-subtle)] hover:text-[var(--jarvis-icon)] border-none bg-transparent hover:bg-transparent shadow-none'
+          >
             <XMarkIcon className='h-6 w-6' />
-          </button>
+          </IconButton>
         </div>
 
         <div className='flex gap-2'>
           {isConnecting && (
             <button
-              className='px-3 h-10 border-0 text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 disabled:bg-gray-500 text-sm rounded-lg cursor-pointer flex items-center justify-center gap-2'
+              className='px-3 h-10 border-0 text-[var(--jarvis-text)] text-[var(--jarvis-text)] bg-[var(--jarvis-card-muted)] bg-[var(--jarvis-card-muted)] hover:bg-[var(--jarvis-card-muted)] hover:bg-[var(--jarvis-card-muted)] disabled:bg-[var(--jarvis-bg)] text-sm rounded-lg cursor-pointer flex items-center justify-center gap-2'
               disabled={loading}
               onClick={onCancel}
             >
@@ -150,12 +159,12 @@ const ServerAuthorizationModal: React.FC<ServerAuthorizationModalProps> = ({
           )}
           {isAuthenticated && (
             <button
-              className='px-3 h-10 border-0 text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 disabled:bg-gray-500 text-sm rounded-lg cursor-pointer flex items-center justify-center gap-2'
+              className='px-3 h-10 border-0 text-[var(--jarvis-text)] text-[var(--jarvis-text)] bg-[var(--jarvis-card-muted)] bg-[var(--jarvis-card-muted)] hover:bg-[var(--jarvis-card-muted)] hover:bg-[var(--jarvis-card-muted)] disabled:bg-[var(--jarvis-bg)] text-sm rounded-lg cursor-pointer flex items-center justify-center gap-2'
               disabled={loading}
               onClick={onClickRevoke}
             >
               {loading ? (
-                <div className='animate-spin rounded-full h-4 w-4 border-b-2 border-slate-200' />
+                <div className='animate-spin rounded-full h-4 w-4 border-b-2 border-[color:var(--jarvis-border)]' />
               ) : (
                 <TrashIcon className='h-4 w-4' />
               )}
@@ -168,7 +177,9 @@ const ServerAuthorizationModal: React.FC<ServerAuthorizationModalProps> = ({
               disabled={loading}
               onClick={handleAuth}
             >
-              {loading && <div className='animate-spin rounded-full h-4 w-4 border-b-2 border-slate-200' />}
+              {loading && (
+                <div className='animate-spin rounded-full h-4 w-4 border-b-2 border-[color:var(--jarvis-border)]' />
+              )}
               {!(loading || isAuthenticated) && <ArrowPathIcon className='h-4 w-4' />}
               {isAuthenticated ? 'Reconnect' : 'Authenticate'}
             </button>

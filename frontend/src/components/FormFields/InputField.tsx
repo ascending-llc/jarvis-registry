@@ -45,9 +45,11 @@ export const InputField: React.FC<InputFieldProps> = ({
   const resolvedType = isPasswordToggle ? (passwordVisible ? 'text' : 'password') : type;
 
   const baseInputClass =
-    'block w-full rounded-md shadow-sm focus:border-purple-500 focus:ring-purple-500 sm:text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500';
+    'block w-full rounded-md border shadow-sm sm:text-sm text-[var(--jarvis-text)] placeholder:text-[var(--jarvis-input-placeholder)] focus:border-[var(--jarvis-primary)] focus:ring-[var(--jarvis-primary)]';
 
-  const borderClass = error ? 'border-red-500 focus:border-red-500' : 'border-gray-300 dark:border-gray-600';
+  const borderClass = error
+    ? 'border-[var(--jarvis-danger)] focus:border-[var(--jarvis-danger)] focus:ring-[var(--jarvis-danger)]'
+    : 'border-[color:var(--jarvis-input-border)]';
 
   const disabledClass = disabled ? 'disabled:opacity-50 disabled:cursor-not-allowed' : '';
 
@@ -57,11 +59,11 @@ export const InputField: React.FC<InputFieldProps> = ({
     <div className={className}>
       {label && (
         <label htmlFor={generatedId} className={`flex items-center justify-between mb-1 ${labelClassName}`}>
-          <span className='text-sm font-medium text-gray-900 dark:text-gray-100'>
-            {label} {required && <span className='text-red-500'>*</span>}
+          <span className='text-sm font-medium text-[var(--jarvis-text)]'>
+            {label} {required && <span className='text-[var(--jarvis-danger)]'>*</span>}
           </span>
           {labelTag && (
-            <span className='text-xs font-semibold uppercase tracking-wide px-2 py-0.5 rounded bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-400'>
+            <span className='rounded bg-[var(--jarvis-primary-soft)] px-2 py-0.5 text-xs font-semibold uppercase tracking-wide text-[var(--jarvis-primary-text)]'>
               {labelTag}
             </span>
           )}
@@ -74,7 +76,10 @@ export const InputField: React.FC<InputFieldProps> = ({
             type={resolvedType}
             disabled={disabled}
             className={`${baseInputClass} ${borderClass} ${disabledClass} ${paddingClass} ${inputClassName}`}
-            style={monospace ? { fontFamily: 'Menlo, Consolas, Courier New, monospace' } : undefined}
+            style={{
+              ...(monospace ? { fontFamily: 'Menlo, Consolas, Courier New, monospace' } : {}),
+              backgroundColor: 'var(--jarvis-input-bg)',
+            }}
             required={required}
             {...props}
           />
@@ -82,7 +87,7 @@ export const InputField: React.FC<InputFieldProps> = ({
             <button
               type='button'
               onClick={() => setPasswordVisible(!passwordVisible)}
-              className='absolute inset-y-0 right-0 flex items-center pr-3 text-gray-400 hover:text-gray-500 dark:text-gray-500 dark:hover:text-gray-400 focus:outline-none'
+              className='absolute inset-y-0 right-0 flex items-center pr-3 text-[var(--jarvis-icon)] hover:text-[var(--jarvis-icon-hover)] focus:outline-none'
             >
               {passwordVisible ? (
                 <EyeSlashIcon className='h-5 w-5' aria-hidden='true' />
@@ -94,8 +99,8 @@ export const InputField: React.FC<InputFieldProps> = ({
         </div>
         {suffix}
       </div>
-      {helperText && <div className='mt-1 text-xs text-gray-500 dark:text-gray-400'>{helperText}</div>}
-      {error && <p className='mt-1 text-xs text-red-500'>{error}</p>}
+      {helperText && <div className='mt-1 text-xs text-[var(--jarvis-muted)]'>{helperText}</div>}
+      {error && <p className='mt-1 text-xs text-[var(--jarvis-danger-text)]'>{error}</p>}
     </div>
   );
 };

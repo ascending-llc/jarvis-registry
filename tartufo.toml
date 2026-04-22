@@ -7,10 +7,12 @@ exclude-path-patterns = [
     {path-pattern = 'uv\.lock$', reason = 'uv lock file'},
     {path-pattern = '.*package-lock\.json$', reason = 'npm lock file'},
     {path-pattern = 'tartufo\.toml$', reason = 'Tartufo config file'},
+    {path-pattern = '^\.env\.example$', reason = 'sample env template with placeholder values'},
 ]
 
 exclude-entropy-patterns = [
-    # {path-pattern = '', pattern = '', reason = ''},
+    {path-pattern = '\\.env\\.example$', pattern = 'JWT_PRIVATE_KEY=.*', reason = '.env.example JWT private key placeholder is not a credential'},
+    {path-pattern = '\\.env\\.example$', pattern = 'JWT_PUBLIC_KEY=.*', reason = '.env.example JWT public key placeholder is not a credential'},
 ]
 
 exclude-signatures = [
@@ -74,4 +76,13 @@ exclude-signatures = [
     {signature = '8f45dd284bd4efd3e0784852777133fb19f36f99c3c5ee6446122588232ab9e6', reason = 'example opaque mock principalId is not a credential'},
     {signature = '9f5bdee1190a259a85019ee82bb0d13e367016045fa7255602fa744ac48ee34b', reason = 'example opaque mock principalId is not a credential'},
     {signature = 'f848ccdd1f99495fac11bee79c21028ba550e0c90d45cbeaab0c256502a40453', reason = 'README.md rewrite diff is not a credential'},
+    {signature = '6bc68f3bd5356dbe6d0d5938a8860df3cee1d044a4a65b51627729b21e9c4e26', reason = '.env.example template refactor diff is not a credential'},
+    {signature = '3fea73da33954da2832bea4a98adf64a6297bf62ec9f07779adcf2fd0b460e15', reason = '.env.example template refactor diff is not a credential'},
+    {signature = '4ed70aac7135b0061b06f3c4d026ed2357f6444530bef4cc96d4933e2bf9e574', reason = '.env.example template refactor diff is not a credential'},
+    {signature = '3b5a7fae41c5add5506c567d8e1149de10969cc8650abd3c8b26cabce26155da', reason = '.env.example template refactor diff is not a credential'},
+    {signature = 'b549cb9bbbb6e8d639555a176bceb338cf4cb09b08abc1a65acc175efb3d4e22', reason = '.env.example template refactor diff is not a credential'},
+    {signature = 'd11b92e004c4b8237a3738aedd8897d31a62a5d51b841bd20ae96d34c00e4d15', reason = '.env.example template refactor diff is not a credential'},
+    {signature = '0c61af40faec641521b0aeb98a2518900fe130db813e195db14e278f06cdf4e3', reason = '.env.example template refactor diff is not a credential'},
+    {signature = 'ab6af4741f3a10119c655c25646652a8e755b2b28a74c119dd4ac1430baf217c', reason = '.env.example template refactor diff is not a credential'},
+    {signature = 'a19ce20e766970f8e5ffd780a504fa01e9f431103efd289b028a038e6a4e670e', reason = '.env.example template refactor diff is not a credential'},
 ]

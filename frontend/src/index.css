@@ -15,6 +15,85 @@
 }
 
 @layer base {
+  :root {
+    --jarvis-bg: #f3f4f6;
+    --jarvis-surface: #ffffff;
+    --jarvis-card: #ffffff;
+    --jarvis-card-muted: #f8fafc;
+    --jarvis-border: rgba(15, 23, 42, 0.08);
+    --jarvis-border-strong: rgba(15, 23, 42, 0.16);
+    --jarvis-border-soft: rgba(15, 23, 42, 0.05);
+    --jarvis-text: #111827;
+    --jarvis-text-strong: #030712;
+    --jarvis-muted: #4b5563;
+    --jarvis-subtle: #6b7280;
+    --jarvis-faint: #9ca3af;
+    --jarvis-primary: #7c3aed;
+    --jarvis-primary-hover: #a855f7;
+    --jarvis-primary-soft: rgba(124, 58, 237, 0.12);
+    --jarvis-primary-soft-hover: rgba(124, 58, 237, 0.22);
+    --jarvis-primary-text: #6d28d9;
+    --jarvis-primary-text-hover: #7c3aed;
+    --jarvis-info-soft: rgba(96, 165, 250, 0.12);
+    --jarvis-info-text: #2563eb;
+    --jarvis-success: #10b981;
+    --jarvis-success-soft: rgba(16, 185, 129, 0.12);
+    --jarvis-success-text: #059669;
+    --jarvis-warning: #f59e0b;
+    --jarvis-warning-soft: rgba(245, 158, 11, 0.12);
+    --jarvis-warning-text: #d97706;
+    --jarvis-danger: #ef4444;
+    --jarvis-danger-soft: rgba(239, 68, 68, 0.12);
+    --jarvis-danger-text: #dc2626;
+    --jarvis-icon: #6b7280;
+    --jarvis-icon-hover: #111827;
+    --jarvis-tooltip-bg: #111827;
+    --jarvis-tooltip-text: #f9fafb;
+    --jarvis-overlay: rgba(15, 23, 42, 0.12);
+    --jarvis-input-bg: rgba(255, 255, 255, 0.94);
+    --jarvis-input-bg-focus: #ffffff;
+    --jarvis-input-border: rgba(15, 23, 42, 0.12);
+    --jarvis-input-placeholder: #9ca3af;
+    --jarvis-spinner: #7c3aed;
+  }
+
+  .dark {
+    --jarvis-bg: #111827;
+    --jarvis-surface: #1a1f2e;
+    --jarvis-card: #1f2937;
+    --jarvis-card-muted: #111827;
+    --jarvis-border: rgba(255, 255, 255, 0.1);
+    --jarvis-border-strong: rgba(255, 255, 255, 0.2);
+    --jarvis-border-soft: rgba(255, 255, 255, 0.08);
+    --jarvis-text: #e5e7eb;
+    --jarvis-text-strong: #f3f4f6;
+    --jarvis-muted: #9ca3af;
+    --jarvis-subtle: #6b7280;
+    --jarvis-faint: #4b5563;
+    --jarvis-primary-text: #a78bfa;
+    --jarvis-primary-text-hover: #c4b5fd;
+    --jarvis-info-text: #93c5fd;
+    --jarvis-success: #10b981;
+    --jarvis-success-soft: rgba(16, 185, 129, 0.12);
+    --jarvis-success-text: #6ee7b7;
+    --jarvis-warning: #f59e0b;
+    --jarvis-warning-soft: rgba(245, 158, 11, 0.12);
+    --jarvis-warning-text: #fbbf24;
+    --jarvis-danger: #ef4444;
+    --jarvis-danger-soft: rgba(239, 68, 68, 0.12);
+    --jarvis-danger-text: #fca5a5;
+    --jarvis-icon: #9ca3af;
+    --jarvis-icon-hover: #e5e7eb;
+    --jarvis-tooltip-bg: #1f2937;
+    --jarvis-tooltip-text: #e5e7eb;
+    --jarvis-overlay: rgba(0, 0, 0, 0.2);
+    --jarvis-input-bg: rgba(255, 255, 255, 0.04);
+    --jarvis-input-bg-focus: rgba(255, 255, 255, 0.08);
+    --jarvis-input-border: rgba(255, 255, 255, 0.1);
+    --jarvis-input-placeholder: #6b7280;
+    --jarvis-spinner: #60a5fa;
+  }
+
   html {
     font-family: "Inter", system-ui, sans-serif;
   }
@@ -23,29 +102,60 @@
     margin: 0;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+    background-color: var(--jarvis-bg);
+    color: var(--jarvis-text);
   }
 }
 
 @layer components {
   .btn-primary {
-    @apply bg-primary-600 hover:bg-primary-700 text-white font-medium px-4 py-2 rounded-lg transition-colors duration-200;
+    @apply font-medium px-4 py-2 rounded-lg transition-colors duration-200 text-white;
+    background-color: var(--jarvis-primary);
+  }
+
+  .btn-primary:hover {
+    background-color: var(--jarvis-primary-hover);
   }
 
   .btn-secondary {
-    @apply bg-gray-100 hover:bg-gray-200 text-gray-900 font-medium px-4 py-2 rounded-lg transition-colors duration-200;
+    @apply font-medium px-4 py-2 rounded-lg transition-colors duration-200;
+    background-color: var(--jarvis-card-muted);
+    color: var(--jarvis-text);
   }
 
   .btn-input-suffix {
-    @apply inline-flex items-center px-3 py-2 border border-gray-300 dark:border-gray-600 shadow-sm text-sm leading-4 font-medium rounded-md text-gray-700 dark:text-gray-200 bg-white dark:bg-gray-700 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors duration-200;
+    @apply inline-flex items-center px-3 py-2 shadow-sm text-sm leading-4 font-medium rounded-md transition-colors duration-200;
+    border: 1px solid var(--jarvis-input-border);
+    color: var(--jarvis-text);
+    background-color: var(--jarvis-input-bg);
     @apply focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed;
   }
 
   .card {
-    @apply bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700;
+    @apply rounded-xl shadow-sm;
+    background-color: var(--jarvis-card);
+    border: 1px solid var(--jarvis-border);
   }
 
   .input {
-    @apply block w-full px-3 py-2 border border-gray-300 rounded-lg placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent;
+    @apply block w-full px-3 py-2 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500;
+    border: 1px solid var(--jarvis-input-border);
+    background-color: var(--jarvis-input-bg);
+    color: var(--jarvis-text);
+  }
+
+  .btn-secondary:hover,
+  .btn-input-suffix:hover {
+    background-color: var(--jarvis-primary-soft);
+  }
+
+  .input::placeholder {
+    color: var(--jarvis-input-placeholder);
+  }
+
+  .input:focus {
+    border-color: var(--jarvis-primary);
+    background-color: var(--jarvis-input-bg-focus);
   }
 
   /* Line clamp utilities for text truncation */

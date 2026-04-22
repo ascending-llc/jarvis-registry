@@ -85,19 +85,21 @@ export const KeyValueListField: React.FC<KeyValueListFieldProps> = ({
           <Disclosure key={index} defaultOpen={true}>
             {({ open }) => {
               const hasAnyError = hasDuplicateError || hasEmptyKeyError || hasEmptyValueError;
-              const borderClass = hasAnyError ? 'border-red-500/50' : 'border-indigo-200 dark:border-gray-700';
+              const borderClass = hasAnyError
+                ? 'border-[var(--jarvis-danger)]/50'
+                : 'border-[color:var(--jarvis-border)]';
 
               const ringClass = open
                 ? hasAnyError
-                  ? 'ring-1 ring-red-500/50'
-                  : 'ring-1 ring-indigo-200 dark:ring-indigo-500/30'
+                  ? 'ring-1 ring-[var(--jarvis-danger)]/30'
+                  : 'ring-1 ring-[var(--jarvis-primary)]/20'
                 : '';
 
               return (
-                <div className={`border rounded-md shadow-sm bg-white dark:bg-gray-800 ${borderClass} ${ringClass}`}>
-                  <div className='flex items-center justify-between w-full px-4 py-3 bg-indigo-50/50 dark:bg-gray-800/50 rounded-t-md'>
+                <div className={`rounded-md border bg-[var(--jarvis-card)] shadow-sm ${borderClass} ${ringClass}`}>
+                  <div className='flex w-full items-center justify-between rounded-t-md bg-[var(--jarvis-card-muted)] px-4 py-3'>
                     <span
-                      className={`text-sm font-medium truncate ${hasAnyError ? 'text-red-600 dark:text-red-400' : 'text-gray-900 dark:text-gray-100'}`}
+                      className={`truncate text-sm font-medium ${hasAnyError ? 'text-[var(--jarvis-danger-text)]' : 'text-[var(--jarvis-text)]'}`}
                     >
                       {item.key || 'New Header'}
                     </span>
@@ -109,7 +111,7 @@ export const KeyValueListField: React.FC<KeyValueListFieldProps> = ({
                           e.stopPropagation();
                           handleCopy(index);
                         }}
-                        className='flex items-center gap-1.5 px-2 py-1 rounded bg-green-50 text-green-700 hover:bg-green-100 dark:bg-green-900/30 dark:text-green-400 dark:hover:bg-green-900/50 text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed'
+                        className='flex items-center gap-1.5 rounded bg-[var(--jarvis-success-soft)] px-2 py-1 text-xs font-medium text-[var(--jarvis-success-text)] transition-colors hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-50'
                       >
                         <DocumentDuplicateIcon className='w-3.5 h-3.5' />
                         Copy
@@ -121,12 +123,12 @@ export const KeyValueListField: React.FC<KeyValueListFieldProps> = ({
                           handleDelete(index);
                         }}
                         disabled={disabled}
-                        className='flex items-center gap-1.5 px-2 py-1 rounded bg-red-50 text-red-700 hover:bg-red-100 dark:bg-red-900/30 dark:text-red-400 dark:hover:bg-red-900/50 text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed'
+                        className='flex items-center gap-1.5 rounded bg-[var(--jarvis-danger-soft)] px-2 py-1 text-xs font-medium text-[var(--jarvis-danger-text)] transition-colors hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-50'
                       >
                         <TrashIcon className='w-3.5 h-3.5' />
                         Delete
                       </button>
-                      <Disclosure.Button className='p-1 rounded text-indigo-500 hover:bg-indigo-100 dark:text-indigo-400 dark:hover:bg-gray-700 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500'>
+                      <Disclosure.Button className='rounded p-1 text-[var(--jarvis-primary-text)] transition-colors hover:bg-[var(--jarvis-primary-soft)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--jarvis-primary)]'>
                         {open ? <ChevronUpIcon className='w-5 h-5' /> : <ChevronDownIcon className='w-5 h-5' />}
                       </Disclosure.Button>
                     </div>
@@ -140,10 +142,10 @@ export const KeyValueListField: React.FC<KeyValueListFieldProps> = ({
                     leaveFrom='transform scale-100 opacity-100'
                     leaveTo='transform scale-95 opacity-0'
                   >
-                    <Disclosure.Panel className='px-4 pb-4 pt-4 border-t border-indigo-100 dark:border-gray-700 space-y-4'>
+                    <Disclosure.Panel className='space-y-4 border-t border-[color:var(--jarvis-border)] px-4 pb-4 pt-4'>
                       <InputField
                         label={keyLabel}
-                        labelClassName='!text-xs !font-bold !text-gray-500 !tracking-wider uppercase'
+                        labelClassName='!text-xs !font-bold !text-[var(--jarvis-muted)] !tracking-wider uppercase'
                         value={item.key}
                         onChange={e => handleUpdate(index, 'key', e.target.value)}
                         placeholder={keyPlaceholder}
@@ -159,7 +161,7 @@ export const KeyValueListField: React.FC<KeyValueListFieldProps> = ({
                       />
                       <InputField
                         label={valueLabel}
-                        labelClassName='!text-xs !font-bold !text-gray-500 !tracking-wider uppercase'
+                        labelClassName='!text-xs !font-bold !text-[var(--jarvis-muted)] !tracking-wider uppercase'
                         value={item.value}
                         onChange={e => handleUpdate(index, 'value', e.target.value)}
                         placeholder={valuePlaceholder}
@@ -183,7 +185,7 @@ export const KeyValueListField: React.FC<KeyValueListFieldProps> = ({
         </button>
       )}
       {maxItems !== undefined && value.length >= maxItems && (
-        <div className='text-xs text-gray-500 mt-2 px-1'>Maximum of {maxItems} headers reached.</div>
+        <div className='mt-2 px-1 text-xs text-[var(--jarvis-muted)]'>Maximum of {maxItems} headers reached.</div>
       )}
     </div>
   );
