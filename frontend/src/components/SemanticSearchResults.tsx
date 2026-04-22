@@ -7,6 +7,7 @@ import type { ServerInfo } from '@/contexts/ServerContext';
 import type { Agent as AgentType } from '@/services/agent/type';
 import type { SemanticAgentHit, SemanticServerHit, SemanticToolHit } from '../hooks/useSemanticSearch';
 import AgentDetailsModal from './AgentDetailsModal';
+import IconButton from './IconButton';
 import ServerConfigModal from './ServerConfigModal';
 
 interface SemanticSearchResultsProps {
@@ -78,15 +79,13 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
       <div className='space-y-8'>
         <div className='flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between'>
           <div>
-            <p className='text-sm font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide'>
-              Semantic Search
-            </p>
-            <h3 className='text-xl font-semibold text-gray-900 dark:text-white'>
-              Results for <span className='text-purple-600 dark:text-purple-300'>“{query}”</span>
+            <p className='text-sm font-medium uppercase tracking-wide text-[var(--jarvis-muted)]'>Semantic Search</p>
+            <h3 className='text-xl font-semibold text-[var(--jarvis-text-strong)]'>
+              Results for <span className='text-[var(--jarvis-primary-text)]'>“{query}”</span>
             </h3>
           </div>
           {loading && (
-            <div className='inline-flex items-center text-sm text-purple-600 dark:text-purple-300'>
+            <div className='inline-flex items-center text-sm text-[var(--jarvis-primary-text)]'>
               <ArrowPathIcon className='h-5 w-5 animate-spin mr-2' />
               Searching…
             </div>
@@ -94,15 +93,15 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
         </div>
 
         {error && (
-          <div className='rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-500/40 dark:bg-red-900/30 dark:text-red-200'>
+          <div className='rounded-2xl border border-[var(--jarvis-danger)]/30 bg-[var(--jarvis-danger-soft)] px-4 py-3 text-sm text-[var(--jarvis-danger-text)]'>
             {error}
           </div>
         )}
 
         {!loading && !error && !hasResults && (
-          <div className='text-center py-16 border border-dashed border-gray-200 dark:border-gray-700 rounded-xl'>
-            <p className='text-lg font-medium text-gray-700 dark:text-gray-200 mb-2'>No semantic matches found</p>
-            <p className='text-sm text-gray-500 dark:text-gray-400 max-w-xl mx-auto'>
+          <div className='rounded-2xl border border-dashed border-[var(--jarvis-border)] bg-[var(--jarvis-surface)]/70 py-16 text-center'>
+            <p className='mb-2 text-lg font-medium text-[var(--jarvis-text)]'>No semantic matches found</p>
+            <p className='mx-auto max-w-xl text-sm text-[var(--jarvis-muted)]'>
               Try refining your query or describing the tools or capabilities you need. Semantic search understands
               natural language — phrases like “servers that handle authentication” or “tools for syncing calendars” work
               great.
@@ -113,8 +112,9 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
         {servers.length > 0 && (
           <section className='space-y-4'>
             <div className='flex items-center justify-between'>
-              <h4 className='text-lg font-semibold text-gray-900 dark:text-gray-100'>
-                Matching Servers <span className='text-sm font-normal text-gray-500'>({servers.length})</span>
+              <h4 className='text-lg font-semibold text-[var(--jarvis-text-strong)]'>
+                Matching Servers{' '}
+                <span className='text-sm font-normal text-[var(--jarvis-muted)]'>({servers.length})</span>
               </h4>
             </div>
             <div
@@ -124,27 +124,29 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
               {servers.map(server => (
                 <div
                   key={server.path}
-                  className='rounded-2xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm hover:shadow-md transition-shadow'
+                  className='rounded-2xl border border-[var(--jarvis-border)] bg-[var(--jarvis-card)] p-5 shadow-sm transition-shadow hover:shadow-md'
                 >
                   <div className='flex items-start justify-between gap-4'>
                     <div>
-                      <p className='text-base font-semibold text-gray-900 dark:text-white'>{server.serverName}</p>
-                      <p className='text-sm text-gray-500 dark:text-gray-300'>{server.path}</p>
+                      <p className='text-base font-semibold text-[var(--jarvis-text-strong)]'>{server.serverName}</p>
+                      <p className='text-sm text-[var(--jarvis-muted)]'>{server.path}</p>
                     </div>
                     <div className='flex items-center gap-2'>
-                      <button
+                      <IconButton
                         onClick={() => setConfigServer(server)}
-                        className='p-2 text-gray-400 hover:text-green-600 dark:hover:text-green-300 hover:bg-green-50 dark:hover:bg-green-700/30 rounded-lg transition-colors'
-                        title='Open MCP configuration'
+                        ariaLabel='Open MCP configuration'
+                        tooltip='Open MCP configuration'
+                        size='card'
+                        className='text-[var(--jarvis-icon)] hover:text-[var(--jarvis-icon-hover)]'
                       >
                         <CogIcon className='h-4 w-4' />
-                      </button>
-                      <span className='inline-flex items-center rounded-full bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-200 px-3 py-1 text-xs font-semibold'>
+                      </IconButton>
+                      <span className='inline-flex items-center rounded-full border border-[var(--jarvis-primary)]/30 bg-[var(--jarvis-primary-soft)] px-3 py-1 text-xs font-semibold text-[var(--jarvis-primary-text)]'>
                         {formatPercent(server.relevanceScore)} match
                       </span>
                     </div>
                   </div>
-                  <p className='mt-3 text-sm text-gray-600 dark:text-gray-300 line-clamp-3'>
+                  <p className='mt-3 line-clamp-3 text-sm text-[var(--jarvis-muted)]'>
                     {server.description || server.matchContext || 'No description available.'}
                   </p>
 
@@ -153,7 +155,7 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
                       {server.tags.slice(0, 6).map(tag => (
                         <span
                           key={tag}
-                          className='px-2.5 py-1 text-xs rounded-full bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-200'
+                          className='rounded-full border border-[var(--jarvis-border-soft)] bg-[var(--jarvis-surface)] px-2.5 py-1 text-xs text-[var(--jarvis-text)]'
                         >
                           {tag}
                         </span>
@@ -162,16 +164,16 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
                   )}
 
                   {server.matchingTools?.length > 0 && (
-                    <div className='mt-4 border-t border-dashed border-gray-200 dark:border-gray-700 pt-3'>
-                      <p className='text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-2'>
+                    <div className='mt-4 border-t border-dashed border-[var(--jarvis-border)] pt-3'>
+                      <p className='mb-2 text-xs font-semibold uppercase tracking-wide text-[var(--jarvis-muted)]'>
                         Relevant tools
                       </p>
                       <ul className='space-y-2'>
                         {server.matchingTools.slice(0, 3).map(tool => (
-                          <li key={tool.toolName} className='text-sm text-gray-700 dark:text-gray-200'>
-                            <span className='font-medium text-gray-900 dark:text-white'>{tool.toolName}</span>
-                            <span className='mx-2 text-gray-400'>•</span>
-                            <span className='text-gray-600 dark:text-gray-300'>
+                          <li key={tool.toolName} className='text-sm text-[var(--jarvis-text)]'>
+                            <span className='font-medium text-[var(--jarvis-text-strong)]'>{tool.toolName}</span>
+                            <span className='mx-2 text-[var(--jarvis-faint)]'>•</span>
+                            <span className='text-[var(--jarvis-muted)]'>
                               {tool.description || tool.matchContext || 'No description'}
                             </span>
                           </li>
@@ -188,8 +190,8 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
         {tools.length > 0 && (
           <section className='space-y-4'>
             <div className='flex items-center justify-between'>
-              <h4 className='text-lg font-semibold text-gray-900 dark:text-gray-100'>
-                Matching Tools <span className='text-sm font-normal text-gray-500'>({tools.length})</span>
+              <h4 className='text-lg font-semibold text-[var(--jarvis-text-strong)]'>
+                Matching Tools <span className='text-sm font-normal text-[var(--jarvis-muted)]'>({tools.length})</span>
               </h4>
             </div>
             <div
@@ -199,20 +201,18 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
               {tools.map(tool => (
                 <div
                   key={`${tool.serverPath}-${tool.toolName}`}
-                  className='rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between'
+                  className='flex flex-col gap-2 rounded-2xl border border-[var(--jarvis-border)] bg-[var(--jarvis-card)] p-4 sm:flex-row sm:items-center sm:justify-between'
                 >
                   <div>
-                    <p className='text-sm font-semibold text-gray-900 dark:text-white'>
+                    <p className='text-sm font-semibold text-[var(--jarvis-text-strong)]'>
                       {tool.toolName}
-                      <span className='ml-2 text-xs font-normal text-gray-500 dark:text-gray-400'>
-                        ({tool.serverName})
-                      </span>
+                      <span className='ml-2 text-xs font-normal text-[var(--jarvis-muted)]'>({tool.serverName})</span>
                     </p>
-                    <p className='text-sm text-gray-600 dark:text-gray-300'>
+                    <p className='text-sm text-[var(--jarvis-muted)]'>
                       {tool.description || tool.matchContext || 'No description available.'}
                     </p>
                   </div>
-                  <span className='inline-flex items-center rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200 px-3 py-1 text-xs font-semibold'>
+                  <span className='inline-flex items-center rounded-full border border-[var(--jarvis-border-soft)] bg-[var(--jarvis-surface)] px-3 py-1 text-xs font-semibold text-[var(--jarvis-text)]'>
                     {formatPercent(tool.relevanceScore)} match
                   </span>
                 </div>
@@ -224,8 +224,9 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
         {agents.length > 0 && (
           <section className='space-y-4'>
             <div className='flex items-center justify-between'>
-              <h4 className='text-lg font-semibold text-gray-900 dark:text-gray-100'>
-                Matching Agents <span className='text-sm font-normal text-gray-500'>({agents.length})</span>
+              <h4 className='text-lg font-semibold text-[var(--jarvis-text-strong)]'>
+                Matching Agents{' '}
+                <span className='text-sm font-normal text-[var(--jarvis-muted)]'>({agents.length})</span>
               </h4>
             </div>
             <div
@@ -235,39 +236,41 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
               {agents.map(agent => (
                 <div
                   key={agent.path}
-                  className='rounded-2xl border border-cyan-200 dark:border-cyan-900/40 bg-white dark:bg-gray-800 p-5 shadow-sm hover:shadow-md transition-shadow'
+                  className='rounded-2xl border border-[var(--jarvis-border)] bg-[var(--jarvis-card)] p-5 shadow-sm transition-shadow hover:shadow-md'
                 >
                   <div className='flex items-start justify-between gap-4'>
                     <div>
-                      <p className='text-base font-semibold text-gray-900 dark:text-white'>{agent.agentName}</p>
-                      <p className='text-xs uppercase tracking-wide text-gray-400 dark:text-gray-500'>
+                      <p className='text-base font-semibold text-[var(--jarvis-text-strong)]'>{agent.agentName}</p>
+                      <p className='text-xs uppercase tracking-wide text-[var(--jarvis-faint)]'>
                         {agent.visibility || 'public'}
                       </p>
                     </div>
                     <div className='flex items-center gap-2'>
-                      <button
+                      <IconButton
                         onClick={() => openAgentDetails(agent)}
-                        className='p-2 text-gray-400 hover:text-cyan-600 dark:hover:text-cyan-300 hover:bg-cyan-50 dark:hover:bg-cyan-700/30 rounded-lg transition-colors'
-                        title='View full agent details'
+                        ariaLabel='View full agent details'
+                        tooltip='View full agent details'
+                        size='card'
+                        className='text-[var(--jarvis-icon)] hover:text-[var(--jarvis-icon-hover)]'
                       >
                         <InformationCircleIcon className='h-4 w-4' />
-                      </button>
-                      <span className='inline-flex items-center rounded-full bg-cyan-100 text-cyan-700 dark:bg-cyan-900/40 dark:text-cyan-200 px-3 py-1 text-xs font-semibold'>
+                      </IconButton>
+                      <span className='inline-flex items-center rounded-full border border-[var(--jarvis-info-text)]/25 bg-[var(--jarvis-info-soft)] px-3 py-1 text-xs font-semibold text-[var(--jarvis-info-text)]'>
                         {formatPercent(agent.relevanceScore)} match
                       </span>
                     </div>
                   </div>
 
-                  <p className='mt-3 text-sm text-gray-600 dark:text-gray-300 line-clamp-3'>
+                  <p className='mt-3 line-clamp-3 text-sm text-[var(--jarvis-muted)]'>
                     {agent.description || agent.matchContext || 'No description available.'}
                   </p>
 
                   {agent.skills?.length > 0 && (
                     <div className='mt-4'>
-                      <p className='text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1'>
+                      <p className='mb-1 text-xs font-semibold uppercase tracking-wide text-[var(--jarvis-muted)]'>
                         Key Skills
                       </p>
-                      <p className='text-xs text-gray-600 dark:text-gray-300'>
+                      <p className='text-xs text-[var(--jarvis-muted)]'>
                         {agent.skills.slice(0, 4).join(', ')}
                         {agent.skills.length > 4 && '…'}
                       </p>
@@ -279,7 +282,7 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
                       {agent.tags.slice(0, 6).map(tag => (
                         <span
                           key={tag}
-                          className='px-2.5 py-1 text-[11px] rounded-full bg-cyan-50 text-cyan-700 dark:bg-cyan-900/40 dark:text-cyan-200'
+                          className='rounded-full border border-[var(--jarvis-info-text)]/20 bg-[var(--jarvis-info-soft)] px-2.5 py-1 text-[11px] text-[var(--jarvis-info-text)]'
                         >
                           {tag}
                         </span>
@@ -287,8 +290,8 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
                     </div>
                   )}
 
-                  <div className='mt-4 flex items-center justify-between text-xs text-gray-500 dark:text-gray-400'>
-                    <span className='font-semibold text-cyan-700 dark:text-cyan-200'>
+                  <div className='mt-4 flex items-center justify-between text-xs text-[var(--jarvis-muted)]'>
+                    <span className='font-semibold text-[var(--jarvis-info-text)]'>
                       {agent.trustLevel || 'unverified'}
                     </span>
                     <span>{agent.isEnabled ? 'Enabled' : 'Disabled'}</span>

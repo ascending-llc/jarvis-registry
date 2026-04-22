@@ -68,26 +68,26 @@ const McpPlaygroundModal = ({ serverName, onClose }: Props) => {
   }, [container, serverName]);
 
   return (
-    <div className='fixed inset-0 z-50 flex items-center justify-center bg-black/50'>
-      <div className='flex flex-col w-[480px] h-[620px] bg-white dark:bg-gray-800 rounded-xl shadow-2xl overflow-hidden'>
-        <div className='flex items-center justify-between px-4 py-3 border-b border-gray-100 dark:border-gray-700'>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+      <div className="flex flex-col w-[480px] h-[620px] bg-[var(--jarvis-card)] rounded-xl shadow-2xl overflow-hidden">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-[color:var(--jarvis-border-soft)] border-[color:var(--jarvis-border)]">
           <div>
-            <p className='text-sm font-semibold text-gray-900 dark:text-white'>Playground</p>
-            <p className='text-xs text-gray-400 font-mono'>{serverName}</p>
+            <p className="text-sm font-semibold text-[var(--jarvis-text-strong)]">Playground</p>
+            <p className="text-xs text-[var(--jarvis-subtle)] font-mono">{serverName}</p>
           </div>
           <button
             onClick={onClose}
-            className='p-1 rounded-md text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700'
+            className="p-1 rounded-md text-[var(--jarvis-subtle)] hover:text-[var(--jarvis-muted)] hover:text-[var(--jarvis-icon-hover)] hover:bg-[var(--jarvis-card-muted)] hover:bg-[var(--jarvis-card-muted)]"
           >
-            <XMarkIcon className='h-5 w-5' />
+            <XMarkIcon className="h-5 w-5" />
           </button>
         </div>
 
-        <div className='flex-1 overflow-hidden'>
+        <div className="flex-1 overflow-hidden">
           {error ? (
-            <div className='h-full flex items-center justify-center text-sm text-red-500'>{error}</div>
+            <div className="h-full flex items-center justify-center text-sm text-[var(--jarvis-danger-text)]">{error}</div>
           ) : (
-            <div ref={setContainer} className='w-full h-full' />
+            <div ref={setContainer} className="w-full h-full" />
           )}
         </div>
       </div>

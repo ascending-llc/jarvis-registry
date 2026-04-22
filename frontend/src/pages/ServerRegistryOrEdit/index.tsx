@@ -317,17 +317,17 @@ const ServerRegistryOrEdit: React.FC = () => {
         />
       )}
       <div className='h-full overflow-y-auto custom-scrollbar -mr-4 sm:-mr-6 lg:-mr-8'>
-        <div className='mx-auto flex flex-col w-3/4 min-h-full bg-white dark:bg-gray-800 rounded-lg'>
+        <div className='mx-auto flex min-h-full w-3/4 flex-col rounded-lg bg-[var(--jarvis-card)]'>
           {/* Header */}
-          <div className='px-6 py-6 flex items-center gap-4 border-b border-gray-100 dark:border-gray-700'>
-            <div className='flex items-center justify-center p-3 rounded-xl bg-[#F3E8FF] dark:bg-purple-900/30'>
-              <McpIcon className='h-8 w-8 text-purple-600 dark:text-purple-300' />
+          <div className='flex items-center gap-4 border-b border-[color:var(--jarvis-border)] px-6 py-6'>
+            <div className='flex items-center justify-center rounded-xl bg-[var(--jarvis-primary-soft)] p-3'>
+              <McpIcon className='h-8 w-8 text-[var(--jarvis-primary-text)]' />
             </div>
             <div>
-              <h1 className='text-2xl font-bold text-gray-900 dark:text-white'>
+              <h1 className='text-2xl font-bold text-[var(--jarvis-text-strong)]'>
                 {isReadOnly ? 'View MCP Server' : isEditMode ? 'Edit MCP Server' : 'Register MCP Server'}
               </h1>
-              <p className='text-base text-gray-500 dark:text-gray-400 mt-0.5'>
+              <p className='mt-0.5 text-base text-[var(--jarvis-muted)]'>
                 Configure a Model Context Protocol server
               </p>
             </div>
@@ -336,7 +336,7 @@ const ServerRegistryOrEdit: React.FC = () => {
           <div className='px-6 py-4 flex-1 flex flex-col'>
             {loadingDetail ? (
               <div className='flex-1 flex items-center justify-center min-h-[200px]'>
-                <div className='animate-spin rounded-full h-8 w-8 border-b-2 border-purple-600'></div>
+                <div className='h-8 w-8 animate-spin rounded-full border-b-2 border-[var(--jarvis-spinner)]'></div>
               </div>
             ) : (
               <MainConfigForm
@@ -350,13 +350,13 @@ const ServerRegistryOrEdit: React.FC = () => {
             )}
           </div>
           {/* Footer */}
-          <div className='px-6 py-4 border-t border-gray-100 dark:border-gray-700 flex flex-wrap items-center justify-between gap-4'>
+          <div className='flex flex-wrap items-center justify-between gap-4 border-t border-[color:var(--jarvis-border)] px-6 py-4'>
           <div className='flex items-center gap-3'>
               {isEditMode && !isReadOnly && serverDetail?.permissions?.DELETE && (
                 <button
                   onClick={handleDelete}
                   disabled={loading}
-                  className='inline-flex items-center px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm text-sm font-medium text-red-500 dark:text-red-400 bg-white dark:bg-gray-800 hover:bg-red-50 dark:hover:bg-red-900/20 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 disabled:opacity-50 disabled:cursor-not-allowed'
+                  className='inline-flex items-center rounded-md border border-transparent bg-[var(--jarvis-danger-soft)] px-4 py-2 text-sm font-medium text-[var(--jarvis-danger-text)] shadow-sm hover:bg-[var(--jarvis-danger)]/20 focus:outline-none focus:ring-2 focus:ring-[var(--jarvis-danger)] focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50'
                 >
                   <TrashIcon className='h-4 w-4' />
                 </button>
@@ -365,7 +365,7 @@ const ServerRegistryOrEdit: React.FC = () => {
                 <button
                   onClick={() => setShareOpen(true)}
                   disabled={loading || loadingDetail}
-                  className='inline-flex items-center px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm text-sm font-medium text-purple-600 dark:text-purple-400 bg-white dark:bg-gray-800 hover:bg-purple-50 dark:hover:bg-purple-900/20 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 disabled:opacity-50 disabled:cursor-not-allowed'
+                  className='inline-flex items-center rounded-md border border-transparent bg-[var(--jarvis-primary-soft)] px-4 py-2 text-sm font-medium text-[var(--jarvis-primary-text)] shadow-sm hover:bg-[var(--jarvis-primary)]/20 focus:outline-none focus:ring-2 focus:ring-[var(--jarvis-primary)] focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50'
                 >
                   <HiOutlineShare className='h-4 w-4' />
                 </button>
@@ -375,7 +375,7 @@ const ServerRegistryOrEdit: React.FC = () => {
               <button
                 onClick={goBack}
                 disabled={loading}
-                className='min-w-[80px] sm:min-w-[120px] md:min-w-[160px] px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm text-sm font-medium text-gray-700 dark:text-gray-200 bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 disabled:opacity-50 disabled:cursor-not-allowed'
+                className='min-w-[80px] rounded-md border border-[color:var(--jarvis-input-border)] bg-[var(--jarvis-input-bg)] px-4 py-2 text-sm font-medium text-[var(--jarvis-text)] shadow-sm focus:outline-none focus:ring-2 focus:ring-[var(--jarvis-primary)] focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 sm:min-w-[120px] md:min-w-[160px]'
               >
                 Cancel
               </button>
@@ -384,7 +384,7 @@ const ServerRegistryOrEdit: React.FC = () => {
                 <button
                   onClick={() => setPlaygroundOpen(true)}
                   disabled={loading || loadingDetail}
-                  className='min-w-[80px] sm:min-w-[120px] md:min-w-[160px] px-4 py-2 border border-purple-300 dark:border-purple-600 rounded-md shadow-sm text-sm font-medium text-purple-700 dark:text-purple-300 bg-white dark:bg-gray-800 hover:bg-purple-50 dark:hover:bg-purple-900/20 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 disabled:opacity-50 disabled:cursor-not-allowed'
+                  className='min-w-[80px] rounded-md border border-[var(--jarvis-primary)]/30 bg-[var(--jarvis-input-bg)] px-4 py-2 text-sm font-medium text-[var(--jarvis-primary-text)] shadow-sm focus:outline-none focus:ring-2 focus:ring-[var(--jarvis-primary)] focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 sm:min-w-[120px] md:min-w-[160px]'
                 >
                   Playground
                 </button>
@@ -393,7 +393,7 @@ const ServerRegistryOrEdit: React.FC = () => {
                 <button
                   onClick={handleSave}
                   disabled={loading}
-                  className='inline-flex items-center justify-center gap-2 min-w-[80px] sm:min-w-[120px] md:min-w-[160px] px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-purple-700 hover:bg-purple-800 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 disabled:opacity-50 disabled:cursor-not-allowed'
+                  className='inline-flex min-w-[80px] items-center justify-center gap-2 rounded-md border border-transparent bg-[var(--jarvis-primary)] px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-[var(--jarvis-primary-hover)] focus:outline-none focus:ring-2 focus:ring-[var(--jarvis-primary)] focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 sm:min-w-[120px] md:min-w-[160px]'
                 >
                   {loading && <div className='animate-spin rounded-full h-4 w-4 border-b-2 border-white'></div>}
                   {isEditMode ? 'Update' : 'Create'}
