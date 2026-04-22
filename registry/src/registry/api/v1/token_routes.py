@@ -1,11 +1,8 @@
 import logging
-import time
-import uuid
 
+import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import ValidationError
-
-from registry_pkgs.core.jwt_utils import build_jwt_payload, encode_jwt
 
 from ...auth.dependencies import CurrentUser
 from ...core.config import settings
@@ -43,72 +40,78 @@ async def generate_user_token(
         expires_in_hours = request_data.expiresInHours
         description = request_data.description
 
-        # Extract user information
-        username = user_context.get("username")
-        user_scopes = user_context.get("scopes", [])
-        user_groups = user_context.get("groups", [])
-        user_id = user_context.get("user_id")
-
-        if not username:
-            raise HTTPException(status_code=400, detail="Username is required in user context")
-
-        # Use requested scopes or default to user scopes
-        final_scopes = requested_scopes if requested_scopes else user_scopes
-
         # Check if requested scopes are within user's current scopes
         if requested_scopes:
-            user_scopes_set = set(user_scopes)
+            user_scopes = set(user_context.get("scopes", []))
             requested_scopes_set = set(requested_scopes)
 
-            invalid_scopes = requested_scopes_set - user_scopes_set
+            # Check if all requested scopes are in user's current scopes
+            invalid_scopes = requested_scopes_set - user_scopes
             if invalid_scopes:
-                logger.warning(f"User '{username}' requested scopes not in their permission: {invalid_scopes}")
+                logger.warning(
+                    f"User '{user_context['username']}' requested scopes not in their permission: {invalid_scopes}"
+                )
                 raise HTTPException(
                     status_code=403,
-                    detail=f"Requested scopes exceed user permissions. Invalid scopes: {list(invalid_scopes)}",
+                    detail=f"Cannot request scopes not in your current permissions. Invalid scopes: {list(invalid_scopes)}",
                 )
 
-        # Generate JWT token locally (moved from auth-server)
-        current_time = int(time.time())
-        expires_in_seconds = expires_in_hours * 3600
-
-        extra_claims = {
-            "user_id": user_id,
-            "scope": " ".join(final_scopes),
-            "groups": user_groups,
-            "jti": str(uuid.uuid4()),
-            "token_use": "access",
-            "client_id": "user-generated",
+        # Prepare request to auth server
+        auth_request = {
+            "user_context": {
+                "username": user_context["username"],
+                "scopes": user_context["scopes"],
+                "groups": user_context["groups"],
+                "user_id": user_context["user_id"],
+            },
+            "requested_scopes": requested_scopes,
+            "expires_in_hours": expires_in_hours,
+            "description": description,
         }
 
-        if description:
-            extra_claims["description"] = description
+        # Call auth server internal API (no authentication needed since both are trusted internal services)
+        async with httpx.AsyncClient() as client:
+            headers = {"Content-Type": "application/json"}
 
-        access_payload = build_jwt_payload(
-            subject=username,
-            issuer=settings.jwt_issuer,
-            audience=settings.jwt_audience,
-            expires_in_seconds=expires_in_seconds,
-            iat=current_time,
-            extra_claims=extra_claims,
-        )
+            auth_server_url = settings.auth_server_url
+            response = await client.post(
+                f"{auth_server_url}/internal/tokens",
+                json=auth_request,
+                headers=headers,
+                timeout=10.0,
+            )
 
-        access_token = encode_jwt(access_payload, settings.jwt_private_key, kid=settings.jwt_self_signed_kid)
+            if response.status_code == 200:
+                token_data = response.json()
+                logger.info(
+                    f"Successfully generated token for user '{user_context['username']}' with expiry {expires_in_hours}h"
+                )
 
-        logger.info(f"Successfully generated token for user '{username}' with expiry {expires_in_hours}h")
+                # Format response using Pydantic schema
+                return TokenGenerateResponse(
+                    success=True,
+                    tokenData=TokenData(
+                        accessToken=token_data.get("access_token"),
+                        expiresIn=token_data.get("expires_in"),
+                        tokenType=token_data.get("token_type", "Bearer"),
+                        scope=token_data.get("scope", ""),
+                    ),
+                    userScopes=user_context["scopes"],
+                    requestedScopes=requested_scopes or user_context["scopes"],
+                )
+            else:
+                error_detail = "Unknown error"
+                try:
+                    error_response = response.json()
+                    error_detail = error_response.get("detail", "Unknown error")
+                except:
+                    error_detail = response.text
 
-        # Format response using Pydantic schema
-        return TokenGenerateResponse(
-            success=True,
-            tokenData=TokenData(
-                accessToken=access_token,
-                expiresIn=expires_in_seconds,
-                tokenType="Bearer",
-                scope=" ".join(final_scopes),
-            ),
-            userScopes=user_scopes,
-            requestedScopes=final_scopes,
-        )
+                logger.warning(f"Auth server returned error {response.status_code}: {error_detail}")
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail=f"Token generation failed: {error_detail}",
+                )
 
     except HTTPException:
         raise
@@ -116,5 +119,5 @@ async def generate_user_token(
         logger.warning(f"Validation error in token generation request: {e}")
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.error(f"Unexpected error generating token for user '{user_context.get('username', 'unknown')}': {e}")
+        logger.error(f"Unexpected error generating token for user '{user_context['username']}': {e}")
         raise HTTPException(status_code=500, detail="Internal error generating token")
