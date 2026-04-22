@@ -68,8 +68,13 @@ class WorkflowRunSync(AsyncMongoDb):
 
     async def _update_workflow_run(self, run_output: WorkflowRunOutput) -> None:
         run = self._workflow_run
-        run.status = _STATUS_MAP.get(run_output.status, WorkflowRunStatus.FAILED)
-        run.finished_at = datetime.now(UTC)
+        mapped_status = _STATUS_MAP.get(run_output.status, WorkflowRunStatus.FAILED)
+        run.status = mapped_status
+        if mapped_status in {WorkflowRunStatus.COMPLETED, WorkflowRunStatus.FAILED}:
+            if run.finished_at is None:
+                run.finished_at = datetime.now(UTC)
+        else:
+            run.finished_at = None
         if run_output.content is not None:
             run.final_output = {"content": str(run_output.content)}
         await run.save()

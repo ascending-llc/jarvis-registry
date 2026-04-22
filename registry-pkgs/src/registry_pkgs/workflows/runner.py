@@ -1,4 +1,4 @@
-"""``WorkflowRunner`` — the single entry point for running a workflow.
+"""``WorkflowRunner`` — the persisted entry point for running a workflow.
 
 Role in the pipeline
 --------------------
@@ -50,15 +50,19 @@ class WorkflowRunner:
     Args:
         executor_registry: Maps executor_key strings to async executor functions.
         db_client:         pymongo AsyncMongoClient for agno session + Beanie persistence.
-        db_name:           MongoDB database name (required when db_client is set).
+        db_name:           MongoDB database name.
     """
 
     def __init__(
         self,
         executor_registry: dict[str, WorkflowExecutor],
-        db_client: Any | None = None,
-        db_name: str | None = None,
+        db_client: Any,
+        db_name: str,
     ) -> None:
+        if db_client is None:
+            raise ValueError("WorkflowRunner requires db_client")
+        if not db_name:
+            raise ValueError("WorkflowRunner requires db_name")
         self._executor_registry = executor_registry
         self._db_client = db_client
         self._db_name = db_name

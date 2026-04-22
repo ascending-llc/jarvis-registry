@@ -10,7 +10,6 @@ Usage:
 from __future__ import annotations
 
 import asyncio
-import os
 import sys
 from pathlib import Path
 
@@ -20,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "registry" / "src")
 from dotenv import load_dotenv
 
 load_dotenv()
+import os
 
 from registry_pkgs.core.config import MongoConfig
 from registry_pkgs.database.mongodb import MongoDB
@@ -28,16 +28,12 @@ from registry_pkgs.models.workflow import WorkflowDefinition, WorkflowNode
 
 
 async def main() -> None:
-    mongo_uri = os.getenv("MONGO_URI", "mongodb://127.0.0.1:27017/jarvis")
-    db_name = mongo_uri.split("://")[-1].rsplit("/", 1)[-1].split("?")[0] or "jarvis"
-
     await MongoDB.connect_db(
         config=MongoConfig(
-            mongo_uri=mongo_uri,
+            mongo_uri=os.getenv("MONGO_URI", "mongodb://127.0.0.1:27017/jarvis"),
             mongodb_username=os.getenv("MONGODB_USERNAME", ""),
             mongodb_password=os.getenv("MONGODB_PASSWORD", ""),
         ),
-        db_name=db_name,
     )
 
     try:

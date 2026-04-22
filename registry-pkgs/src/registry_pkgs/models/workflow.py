@@ -21,6 +21,7 @@ class LoopConfig(BaseModel):
     """Configuration for a loop node."""
 
     max_iterations: int = 10
+    # CEL expression returning bool; True exits the loop.
     end_condition_cel: str | None = None
 
     @field_validator("max_iterations")
@@ -36,13 +37,20 @@ class WorkflowNode(BaseModel):
 
     id: str = Field(default_factory=lambda: str(uuid4()))
     name: str
+    # Step nodes only: MCP tool name or a2a agent name
     node_type: WorkflowNodeType = WorkflowNodeType.STEP
 
     executor_key: str | None = None
-    config: dict = Field(default_factory=dict)
+    config: dict[str, Any] = Field(default_factory=dict)
 
+    # Child nodes for container nodes (parallel / loop / condition / router)
     children: list[WorkflowNode] = Field(default_factory=list)
-
+    # Node Branch
+    # CEL expression used by condition / router nodes.
+    # Condition: returns bool; available variables: input, previous_step_content,
+    #            previous_step_outputs, additional_data, session_state
+    # Router:    returns a step name string; additional variable:
+    #            step_choices (list of all child step names)
     condition_cel: str | None = None
     loop_config: LoopConfig | None = None
 

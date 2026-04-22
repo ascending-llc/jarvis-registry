@@ -43,6 +43,9 @@ def compile_workflow(
                            automatically syncs run state to WorkflowRun / NodeRun.
         db_name:           MongoDB database name (required when db_client is set).
     """
+    if (db_client is None) != (db_name is None):
+        raise ValueError("compile_workflow requires db_client and db_name together")
+
     db: WorkflowRunSync | None = None
     if db_client is not None and db_name is not None:
         node_by_name = {n.name: n for n in flatten_workflow_nodes(definition.nodes)}

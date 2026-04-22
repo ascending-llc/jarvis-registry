@@ -45,17 +45,14 @@ def _print_status(run: WorkflowRun, node_runs: list[NodeRun]) -> None:
 
 
 async def main(definition_id: str, user_text: str) -> None:
-    mongo_uri = os.getenv("MONGO_URI", "mongodb://127.0.0.1:27017/jarvis")
-    db_name = mongo_uri.split("://")[-1].rsplit("/", 1)[-1].split("?")[0] or "jarvis"
-
     await MongoDB.connect_db(
         config=MongoConfig(
-            mongo_uri=mongo_uri,
+            mongo_uri=os.getenv("MONGO_URI", "mongodb://127.0.0.1:27017/jarvis"),
             mongodb_username=os.getenv("MONGODB_USERNAME", ""),
             mongodb_password=os.getenv("MONGODB_PASSWORD", ""),
         ),
-        db_name=db_name,
     )
+    db_name = MongoDB.database_name
 
     try:
         definition = await WorkflowDefinition.get(definition_id)
