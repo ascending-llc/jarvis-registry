@@ -66,7 +66,7 @@ const AgentDetailsModal: React.FC<AgentDetailsModalProps> = ({
 
         <div className="space-y-4">
           <div className="bg-[var(--jarvis-info-soft)] bg-[var(--jarvis-info-soft)] border border-[color:var(--jarvis-info-soft)] border-[color:var(--jarvis-info-soft)] rounded-lg p-4">
-            <h4 className="font-medium text-[var(--jarvis-info-strong)] mb-2">Complete Agent Schema</h4>
+            <h4 className="font-medium text-[var(--jarvis-info-text)] mb-2">Complete Agent Schema</h4>
             <p className="text-sm text-[var(--jarvis-info-text)] text-[var(--jarvis-info-text)]">
               This is the complete A2A agent definition stored in the registry. It includes all metadata, skills,
               security schemes, and configuration details.

@@ -1,5 +1,5 @@
 import type React from 'react';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 
 type IconButtonSize = 'header' | 'card';
 type IconButtonVariant = 'default' | 'primary' | 'solid';
@@ -47,12 +47,13 @@ const IconButton: React.FC<IconButtonProps> = ({
   const [tooltipPlacement, setTooltipPlacement] = useState<'top' | 'bottom'>('bottom');
 
   const controlledTooltip = typeof tooltipVisible === 'boolean';
+  const uniqueId = useId();
   const tooltipId = `icon-tooltip-${
     ariaLabel
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/^-+|-+$/g, '') || 'button'
-  }`;
+  }-${uniqueId}`;
 
   useEffect(() => {
     const updatePlacement = () => {
