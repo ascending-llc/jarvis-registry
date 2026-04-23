@@ -16,6 +16,7 @@ from a2a.types import MessageSendParams
 from beanie import PydanticObjectId
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
+from redis import Redis
 
 from registry_pkgs.models import ResourceType
 from registry_pkgs.models.a2a_agent import TRANSPORT_GRPC, TRANSPORT_HTTP_JSON, TRANSPORT_JSONRPC
@@ -137,7 +138,7 @@ async def proxy_to_mcp_server(
     server: ExtendedMCPServer,
     oauth_service: MCPOAuthService,
     proxy_client: httpx.AsyncClient,
-    redis_client=None,
+    redis_client: Redis,
 ) -> Response:
     """
     Proxy request to MCP server with auth headers.
@@ -435,7 +436,7 @@ async def a2a_agent_proxy(
         # Fallback to card.url for backward compatibility with old data
         base_url = str(agent.card.url)
         logger.warning(
-            f"Agent {agent_registry_path} missing config.url, falling back to card.url: {base_url}. "
+            f"Agent {agent_registry_path} missing config.url, falling back to card.url: {base_url}. "  # nosec B608 - false positive
             "This may fail if card.url is not accessible. Please update the agent to set config.url."
         )
 
@@ -567,7 +568,7 @@ async def dynamic_mcp_post_proxy(
     server_service: ServerServiceV1 = Depends(get_server_service),
     oauth_service: MCPOAuthService = Depends(get_oauth_service),
     proxy_client: httpx.AsyncClient = Depends(get_mcp_proxy_client),
-    redis_client=Depends(get_redis_client),
+    redis_client: Redis = Depends(get_redis_client),
 ):
     """
     Dynamic catch-all route for MCP server proxying, but only works for POST.
@@ -666,7 +667,7 @@ async def dynamic_mcp_get_proxy(
     server_service: ServerServiceV1 = Depends(get_server_service),
     oauth_service: MCPOAuthService = Depends(get_oauth_service),
     proxy_client: httpx.AsyncClient = Depends(get_mcp_proxy_client),
-    redis_client=Depends(get_redis_client),
+    redis_client: Redis = Depends(get_redis_client),
 ):
     """
     Dynamic catch-all route for MCP server proxying, but only works for GET, i.e. the event stream.

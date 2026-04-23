@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import httpx
 from fastapi import Depends, Request
+from redis import Redis
 
 from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRepository
 
@@ -110,6 +111,6 @@ def get_federation_sync_service(container: RegistryContainer = Depends(get_conta
     return container.federation_sync_service
 
 
-def get_redis_client(container: RegistryContainer = Depends(get_container)):
+def get_redis_client(container: RegistryContainer = Depends(get_container)) -> Redis:
     """Get Redis client for caching."""
     return container.redis_client

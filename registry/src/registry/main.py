@@ -20,6 +20,9 @@ from .mcpgw import create_gateway_mcp_app
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
+    from redis import Redis
+
+    from registry_pkgs.vector.client import DatabaseClient
 
     from .mcpgw.core.types import McpAppContext
 
@@ -43,11 +46,14 @@ def _get_gateway_mcp_app(app: FastAPI):
 
 
 class _RuntimeResources:
+    db_client: DatabaseClient
+    redis_client: Redis
+
     """Keep track of infrastructure clients that must be closed during shutdown."""
 
-    def __init__(self):
-        self.db_client = None
-        self.redis_client = None
+    def __init__(self, db_client: DatabaseClient, redis_client: Redis):
+        self.db_client = db_client
+        self.redis_client = redis_client
 
 
 def _initialize_telemetry() -> None:
@@ -59,25 +65,25 @@ def _initialize_telemetry() -> None:
         logger.warning("Failed to initialize telemetry: %s", exc)
 
 
-async def _startup_container(app: FastAPI, resources: _RuntimeResources) -> RegistryContainer:
+async def _startup_container(app: FastAPI) -> _RuntimeResources:
     """Create infra clients, build the registry container, and expose it on app.state."""
     logger.info("Initializing MongoDB connection")
     await init_mongodb(settings.mongo_config)
 
     logger.info("Initializing Redis connection")
-    resources.redis_client = create_redis_client(settings.redis_config)
+    redis_client = create_redis_client(settings.redis_config)
 
     logger.info("Initializing vector database client")
-    resources.db_client = create_database_client(settings.vector_backend_config)
+    db_client = create_database_client(settings.vector_backend_config)
 
     container = RegistryContainer(
         settings=settings,
-        db_client=resources.db_client,
-        redis_client=resources.redis_client,
+        db_client=db_client,
+        redis_client=redis_client,
     )
     app.state.container = container
     await container.startup()
-    return container
+    return _RuntimeResources(db_client, redis_client)
 
 
 async def _shutdown_container(app: FastAPI, resources: _RuntimeResources) -> None:
@@ -120,11 +126,10 @@ async def lifespan(app: FastAPI):
     logging.getLogger().setLevel(logging.WARNING)
 
     logger.info("Starting MCP Gateway Registry")
-    resources = _RuntimeResources()
 
     try:
         _initialize_telemetry()
-        await _startup_container(app, resources)
+        resources = await _startup_container(app)
         logger.info("Application startup completed")
     except Exception as exc:
         logger.error("Failed to initialize services: %s", exc, exc_info=True)

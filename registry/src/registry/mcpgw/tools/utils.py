@@ -25,6 +25,7 @@ from mcp.types import (
     ToolListChangedNotification,
 )
 from pydantic import ValidationError
+from redis import Redis
 
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 
@@ -158,7 +159,7 @@ async def build_authenticated_headers(
     additional_headers: dict[str, str] | None = None,
     *,
     state_metadata: StateMetadata | None = None,
-    redis_client=None,
+    redis_client: Redis | None = None,
 ) -> dict[str, str]:
     """
     Build complete headers with authentication for MCP server requests.

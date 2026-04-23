@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from beanie import PydanticObjectId
+from redis import Redis
 
 if TYPE_CHECKING:
     from redis import Redis
@@ -95,7 +96,7 @@ async def build_complete_headers_for_server(
     user_id: str | None = None,
     *,
     state_metadata: StateMetadata | None = None,
-    redis_client: "Redis | None" = None,
+    redis_client: Redis | None = None,
 ) -> dict[str, str]:
     """
     Build complete HTTP headers with ALL authentication types.
