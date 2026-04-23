@@ -12,21 +12,29 @@ ODM Schema:
 """
 
 import asyncio
+import base64
 import json
 import logging
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from beanie import PydanticObjectId
+from redis import Redis
+
+if TYPE_CHECKING:
+    from redis import Redis
 
 from registry_pkgs.database.decorators import get_current_session
 from registry_pkgs.models import (
     ExtendedMCPServer,
     Token,
 )
+from registry_pkgs.models.enums import AgentCoreRuntimeAccessMode
+from registry_pkgs.models.federation import AgentCoreRuntimeAccessConfig
 from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRepository
 
 from ..auth.oauth.types import StateMetadata
+from ..core.config import settings
 from ..core.mcp_client import get_oauth_metadata_from_server, get_tools_from_server_with_server_info
 from ..core.telemetry_decorators import track_tool_discovery
 from ..schemas.errors import (
@@ -39,7 +47,7 @@ from ..schemas.server_api_schemas import (
     ServerCreateRequest,
     ServerUpdateRequest,
 )
-from ..utils.crypto_utils import encrypt_auth_fields, generate_service_jwt
+from ..utils.crypto_utils import decrypt_auth_fields, encrypt_auth_fields, generate_service_jwt
 from ..utils.schema_converter import convert_dict_keys_to_snake
 from ..utils.utils import generate_server_name_from_title, normalize_headers
 from .oauth.oauth_service import MCPOAuthService
@@ -88,18 +96,20 @@ async def build_complete_headers_for_server(
     user_id: str | None = None,
     *,
     state_metadata: StateMetadata | None = None,
+    redis_client: Redis | None = None,
 ) -> dict[str, str]:
     """
     Build complete HTTP headers with ALL authentication types.
-    Consolidates OAuth, apiKey, and custom header logic in one place.
+    Consolidates OAuth, apiKey, custom header, and AgentCore Runtime auth logic in one place.
 
     This eliminates duplicate header building across server_service, proxy_routes, and health_service.
 
     Args:
-        oauth_service:
-        state_metadata:
+        oauth_service: OAuth service for OAuth token management
         server: Server document containing config
         user_id: User ID for OAuth token retrieval (required for OAuth servers)
+        state_metadata: OAuth flow state metadata
+        redis_client: Redis client for JWT token caching
 
     Returns:
         Complete headers dictionary ready for HTTP requests
@@ -110,10 +120,6 @@ async def build_complete_headers_for_server(
         OAuthTokenError: If OAuth token retrieval/refresh fails
         AuthenticationError: For other authentication failures
     """
-    import base64
-
-    from registry.core.config import settings
-    from registry.utils.crypto_utils import decrypt_auth_fields
 
     config = server.config or {}
     decrypted_config = decrypt_auth_fields(config)
@@ -137,7 +143,82 @@ async def build_complete_headers_for_server(
     if custom_headers:
         headers.update(custom_headers)
 
-    # 2. Check OAuth and add OAuth headers LAST (highest priority, overrides custom headers)
+    # 2. Check AgentCore Runtime authentication (for federated AgentCore MCP servers)
+    runtime_access_config = decrypted_config.get("runtimeAccess")
+
+    if runtime_access_config:
+        # AgentCore Runtime server with runtimeAccess configuration
+        try:
+            # Parse runtime access config
+            if isinstance(runtime_access_config, dict):
+                access_config = AgentCoreRuntimeAccessConfig(**runtime_access_config)
+            else:
+                access_config = runtime_access_config
+
+            # Only handle JWT mode for now (IAM support can be added later if needed)
+            if access_config.mode == AgentCoreRuntimeAccessMode.JWT:
+                logger.info(f"Building JWT token for AgentCore Runtime server {server.serverName}")
+
+                # Generate cache key for JWT token
+                cache_key = f"{settings.redis_key_prefix}:agentcore_jwt:{server.id}"
+
+                # Try to get cached JWT token
+                cached_token = None
+                if redis_client:
+                    try:
+                        cached_value = redis_client.get(cache_key)
+                        if cached_value:
+                            cached_token = (
+                                cached_value.decode("utf-8") if isinstance(cached_value, bytes) else cached_value
+                            )
+                            logger.debug(f"Using cached JWT token for {server.serverName}")
+                    except Exception:
+                        logger.exception(f"Failed to get cached JWT for {server.serverName}")
+
+                # Use cached token if available
+                if cached_token:
+                    headers["Authorization"] = f"Bearer {cached_token}"
+                    logger.info(f"Added cached AgentCore Runtime JWT for {server.serverName}")
+                    return headers
+
+                # Generate new JWT token (AWS only validates iss, aud, and signature)
+                token = generate_service_jwt(
+                    for_agentcore_runtime=True,
+                    expires_in_seconds=300,
+                )
+
+                # Cache the JWT token (270 seconds = 300s token TTL - 30s buffer)
+                if redis_client:
+                    try:
+                        redis_client.setex(cache_key, 270, token)
+                        logger.debug(f"Cached JWT token for {server.serverName} (TTL: 270s)")
+                    except Exception:
+                        logger.exception(f"Failed to cache JWT for {server.serverName}")
+
+                # Set Authorization header
+                headers["Authorization"] = f"Bearer {token}"
+                logger.info(f"Added AgentCore Runtime JWT for {server.serverName}")
+                return headers
+
+            elif access_config.mode == AgentCoreRuntimeAccessMode.IAM:
+                raise NotImplementedError(
+                    f"IAM authentication not yet supported for AgentCore Runtime server {server.serverName}"
+                )
+            else:
+                logger.warning(f"Unknown runtime access mode '{access_config.mode}' for server {server.serverName}")
+        except NotImplementedError:
+            raise
+        except Exception as exc:
+            logger.exception(f"Failed to build AgentCore Runtime authentication for {server.serverName}")
+            raise AuthenticationError(f"Failed to authenticate with AgentCore Runtime: {exc}")
+    elif decrypted_config.get("authProvider") == "bedrock-agentcore":
+        # Server has authProvider but no runtimeAccess configuration
+        logger.warning(
+            f"Server {server.serverName} has authProvider='bedrock-agentcore' "
+            f"but missing runtimeAccess configuration. Skipping runtime authentication."
+        )
+
+    # 3. Check OAuth and add OAuth headers (high priority, overrides custom headers)
     requires_oauth = decrypted_config.get("requiresOAuth", False) or "oauth" in decrypted_config
 
     if requires_oauth:
@@ -197,7 +278,7 @@ async def build_complete_headers_for_server(
         logger.debug(f"OAuth Bearer token added for {server.serverName} (overrides any custom Authorization header)")
         return headers
 
-    # 2. Handle apiKey authentication (if not OAuth)
+    # 4. Handle apiKey authentication (if not OAuth or AgentCore Runtime)
     api_key_config = decrypted_config.get("apiKey")
     if api_key_config and isinstance(api_key_config, dict):
         key_value = api_key_config.get("key")
@@ -1547,7 +1628,7 @@ class ServerServiceV1:
                 stats["total_tools"] = 0
 
         except Exception as e:
-            logger.error(f"Error gathering server statistics: {e}", exc_info=True)
+            logger.exception(f"Error gathering server statistics: {e}")
             stats["total_servers"] = 0
             stats["servers_by_scope"] = {}
             stats["servers_by_status"] = {}
@@ -1616,7 +1697,7 @@ class ServerServiceV1:
                 stats["expired_tokens"] = 0
 
         except Exception as e:
-            logger.error(f"Error gathering token statistics: {e}", exc_info=True)
+            logger.exception(f"Error gathering token statistics: {e}")
             stats["total_tokens"] = 0
             stats["tokens_by_type"] = {}
             stats["active_tokens"] = 0
@@ -1639,7 +1720,7 @@ class ServerServiceV1:
             stats["active_users"] = active_users_results[0]["count"] if active_users_results else 0
 
         except Exception as e:
-            logger.error(f"Error gathering active users statistics: {e}", exc_info=True)
+            logger.exception(f"Error gathering active users statistics: {e}")
             stats["active_users"] = 0
 
         logger.info(
