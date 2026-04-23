@@ -190,11 +190,11 @@ const Dashboard: React.FC = () => {
 
   const handleRegister = useCallback(() => {
     if (viewMode === 'agents') {
-      navigate('/agent-registry');
+      navigate('/agent-registry?fromTab=agents');
     } else if (viewMode === 'external') {
-      navigate('/federation-registry');
+      navigate('/federation-registry?fromTab=external');
     } else {
-      navigate('/server-registry');
+      navigate('/server-registry?fromTab=servers');
     }
   }, [viewMode, navigate]);
 

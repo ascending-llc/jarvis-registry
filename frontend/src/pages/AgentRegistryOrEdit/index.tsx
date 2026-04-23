@@ -60,10 +60,15 @@ const AgentRegistryOrEdit: React.FC = () => {
 
   const isEditMode = !!id;
   const isReadOnly = searchParams.get('isReadOnly') === 'true';
+  const fromTab = searchParams.get('fromTab');
 
   const goBack = useCallback(() => {
-    navigate(-1);
-  }, [navigate]);
+    if (fromTab) {
+      navigate(`/?tab=${fromTab}`, { replace: true });
+    } else {
+      navigate(-1);
+    }
+  }, [navigate, fromTab]);
 
   const getDetail = useCallback(async () => {
     if (!id) return;
