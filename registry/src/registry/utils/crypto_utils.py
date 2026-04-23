@@ -130,8 +130,9 @@ def generate_service_jwt(
             extra_claims=extra_claims,
         )
 
-    # Sign with the registry JWT private key
-    token = encode_jwt(payload, settings.jwt_private_key)
+    # Sign with the registry JWT private key. `kid` header claim is optional according to RFC 7515,
+    # but AgentCore Runtime requires it.
+    token = encode_jwt(payload, settings.jwt_private_key, kid=settings.jwt_self_signed_kid)
 
     return token
 
