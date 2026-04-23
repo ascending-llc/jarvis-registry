@@ -11,27 +11,19 @@ export type GetAuthMeResponse = {
 
 export type GetTokenRequest = {
   expiresInHours: number;
-  description: string;
-  scopeMethod?: 'current' | 'custom';
-  customScopes?: string;
+  description?: string;
+  requestedScopes?: string[];
 };
 
 type TokenData = {
   accessToken: string;
-  refreshToken: string;
   expiresIn: number;
-  refreshExpiresIn: number;
+  tokenType: string;
   scope: string;
-  issuedAt: number;
-  description: string;
 };
 
 export type GetTokenResponse = {
   success: boolean;
-  tokens: TokenData & { tokenType: string };
-  keycloakUrl: string;
-  realm: string;
-  clientId: string;
   tokenData: TokenData;
   userScopes: string[];
   requestedScopes: string[];

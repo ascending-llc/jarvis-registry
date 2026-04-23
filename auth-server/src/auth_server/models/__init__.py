@@ -9,7 +9,7 @@ from .device_flow import (
     DeviceTokenRequest,
     DeviceTokenResponse,
 )
-from .tokens import GenerateTokenRequest, GenerateTokenResponse, TokenValidationResponse
+from .tokens import TokenValidationResponse
 
 __all__ = [
     "DeviceCodeRequest",
@@ -18,6 +18,4 @@ __all__ = [
     "DeviceTokenRequest",
     "DeviceTokenResponse",
     "TokenValidationResponse",
-    "GenerateTokenRequest",
-    "GenerateTokenResponse",
 ]
