@@ -17,7 +17,7 @@ from agno.workflow import (
 
 from registry_pkgs.models.enums import WorkflowNodeType
 from registry_pkgs.models.workflow import WorkflowDefinition, WorkflowNode, WorkflowRun
-from registry_pkgs.workflows.persistence import WorkflowRunSync
+from registry_pkgs.workflows.persistence import WorkflowRunSyncer
 
 WorkflowExecutor = Callable[[StepInput, dict[str, Any]], Awaitable[StepOutput]]
 
@@ -39,17 +39,17 @@ def compile_workflow(
         run:               The WorkflowRun document (already inserted).
         executor_registry: Maps executor_key strings to async executor functions.
         db_client:         pymongo AsyncMongoClient.  When provided (with db_name),
-                           a WorkflowRunSync is attached so agno's upsert_session
+                           a WorkflowRunSyncer is attached so agno's upsert_session
                            automatically syncs run state to WorkflowRun / NodeRun.
         db_name:           MongoDB database name (required when db_client is set).
     """
     if (db_client is None) != (db_name is None):
         raise ValueError("compile_workflow requires db_client and db_name together")
 
-    db: WorkflowRunSync | None = None
+    db: WorkflowRunSyncer | None = None
     if db_client is not None and db_name is not None:
         node_by_name = {n.name: n for n in flatten_workflow_nodes(definition.nodes)}
-        db = WorkflowRunSync(
+        db = WorkflowRunSyncer(
             workflow_run=run,
             node_by_name=node_by_name,
             db_client=db_client,

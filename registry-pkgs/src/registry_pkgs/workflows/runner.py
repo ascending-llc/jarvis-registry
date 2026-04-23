@@ -9,8 +9,8 @@ only need to call ``runner.run()``; everything else is handled internally:
         ├─ load WorkflowDefinition from MongoDB
         ├─ create + insert WorkflowRun (status=RUNNING)
         ├─ compile_workflow()            → agno Workflow  (compiler.py)
-        ├─ workflow.arun()               → executes steps, calls WorkflowRunSync
-        ├─ run.sync()                    → reload final status written by WorkflowRunSync
+        ├─ workflow.arun()               → executes steps, calls WorkflowRunSyncer
+        ├─ run.sync()                    → reload final status written by WorkflowRunSyncer
         └─ return (WorkflowRun, list[NodeRun])
 
 Error handling
@@ -132,7 +132,7 @@ class WorkflowRunner:
                 input=user_text,
                 session_state={"user_text": user_text},
             )
-            # Reload state written by WorkflowRunSync so callers see the latest status.
+            # Reload state written by WorkflowRunSyncer so callers see the latest status.
             await run.sync()
         except Exception as exc:
             # agno may not call upsert_session on a hard failure; write the error

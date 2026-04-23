@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, override
 
 from agno.db.mongo.async_mongo import AsyncMongoDb
 from agno.run.base import RunStatus
 from agno.run.workflow import WorkflowRunOutput
-from agno.session import WorkflowSession
+from agno.session import Session, WorkflowSession
 from agno.workflow import StepOutput
 
 from registry_pkgs.models.enums import NodeRunStatus, WorkflowRunStatus
@@ -25,7 +25,7 @@ _STATUS_MAP: dict[RunStatus, WorkflowRunStatus] = {
 }
 
 
-class WorkflowRunSync(AsyncMongoDb):
+class WorkflowRunSyncer(AsyncMongoDb):
     """Sync agno workflow sessions into WorkflowRun and NodeRun documents."""
 
     def __init__(
@@ -44,11 +44,12 @@ class WorkflowRunSync(AsyncMongoDb):
         self._workflow_run = workflow_run
         self._node_by_name = node_by_name
 
+    @override
     async def upsert_session(
         self,
-        session: Any,
+        session: Session,
         deserialize: bool | None = True,
-    ) -> Any:
+    ) -> Session | dict[str, Any] | None:
         """Persist agno session, then mirror the latest run into Beanie."""
         result = await super().upsert_session(session, deserialize=deserialize)
         if isinstance(session, WorkflowSession) and session.runs:
@@ -56,19 +57,37 @@ class WorkflowRunSync(AsyncMongoDb):
                 await self._sync_to_beanie(session.runs[-1])
             except Exception as e:
                 logger.exception(
-                    "WorkflowRunSync: failed to sync run %s to Beanie, error: %s", self._workflow_run.id, e
+                    "WorkflowRunSyncer: failed to sync run %s to Beanie, error: %s", self._workflow_run.id, e
                 )
         return result
 
+    @override
+    async def upsert_sessions(
+        self,
+        sessions: list[Session],
+        deserialize: bool | None = True,
+        preserve_updated_at: bool = False,
+    ) -> list[Session | dict[str, Any]]:
+        message = "WorkflowRunSyncer should not call upsert_sessions at all."
+        logger.error(message)
+        raise RuntimeError(message)
+
     async def _sync_to_beanie(self, run_output: WorkflowRunOutput) -> None:
         """Write WorkflowRun status and per-step NodeRuns from WorkflowRunOutput."""
-        await self._update_workflow_run(run_output)
-        for step_output in _flatten_step_results(run_output.step_results):
+        step_outputs = _flatten_step_results(run_output.step_results)
+        await self._update_workflow_run(run_output, step_outputs)
+        for step_output in step_outputs:
             await self._upsert_node_run(step_output)
 
-    async def _update_workflow_run(self, run_output: WorkflowRunOutput) -> None:
+    async def _update_workflow_run(
+        self,
+        run_output: WorkflowRunOutput,
+        step_outputs: list[StepOutput] | None = None,
+    ) -> None:
         run = self._workflow_run
         mapped_status = _STATUS_MAP.get(run_output.status, WorkflowRunStatus.FAILED)
+        if any(not step_output.success for step_output in step_outputs or []):
+            mapped_status = WorkflowRunStatus.FAILED
         run.status = mapped_status
         if mapped_status in {WorkflowRunStatus.COMPLETED, WorkflowRunStatus.FAILED}:
             if run.finished_at is None:

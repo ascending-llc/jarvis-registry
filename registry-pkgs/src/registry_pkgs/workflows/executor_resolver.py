@@ -7,11 +7,10 @@ stays in the gateway; callers must pass a user-scoped ``registry_token``.
 from __future__ import annotations
 
 import logging
-import uuid
 from typing import Any
 
-import httpx
 from agno.agent import Agent
+from agno.client.a2a import A2AClient
 from agno.models.base import Model
 from agno.tools.mcp import MCPTools
 from agno.tools.mcp.params import StreamableHTTPClientParams
@@ -85,7 +84,7 @@ async def _resolve_executor(
     )
     if a2a_agent is not None:
         logger.info("executor_key %r → A2A agent %r", key, a2a_agent.path)
-        return _make_a2a_executor(a2a_agent)
+        return _make_a2a_executor(a2a_agent, registry_url=registry_url, registry_token=registry_token)
 
     raise KeyError(
         f"executor_key {key!r} not resolved: "
@@ -102,7 +101,7 @@ def _make_mcp_executor(
     registry_token: str,
 ) -> WorkflowExecutor:
     """Wrap an MCP server as a workflow executor via the Jarvis gateway proxy."""
-    proxy_url = f"{registry_url.rstrip('/')}/gateway/proxy/server/{mcp_server.serverName}"
+    proxy_url = f"{registry_url.rstrip('/')}/proxy/server{mcp_server.path}"
     description = mcp_server.config.get("description", "")
 
     if not registry_token:
@@ -137,19 +136,27 @@ def _make_mcp_executor(
     return executor
 
 
-def _make_a2a_executor(agent: A2AAgent) -> WorkflowExecutor:
-    """Wrap an A2A agent as a workflow executor using JSON-RPC 2.0 tasks/send.
-
-    The agent's URL is taken from ``agent.config.url`` (user-provided) with
-    a fallback to ``agent.card.url`` (protocol card).
-    """
-    url = str(agent.config.url if agent.config and agent.config.url else agent.card.url)
+def _make_a2a_executor(
+    agent: A2AAgent,
+    *,
+    registry_url: str,
+    registry_token: str,
+) -> WorkflowExecutor:
+    """Wrap an A2A agent as a workflow executor using agno's A2A client."""
+    url = f"{registry_url.rstrip('/')}/proxy/a2a/{agent.path.lstrip('/')}"
     agent_name = agent.config.title if agent.config else agent.card.name
+    protocol_version = _a2a_protocol_version(agent)
+
+    if not registry_token:
+        raise ValueError(
+            "registry_token is required for A2A executors. "
+            "Pass a user-scoped Registry access token so the proxy can enforce ACL and runtime auth."
+        )
 
     async def executor(step_input: StepInput, session_state: dict[str, Any]) -> StepOutput:
         text = _build_prompt(step_input)
         try:
-            result_text = await _a2a_send(url, text)
+            result_text = await _a2a_send(url, text, registry_token=registry_token, protocol_version=protocol_version)
             return StepOutput(content=result_text)
         except Exception as exc:
             logger.exception("A2A executor %r failed", agent_name)
@@ -159,34 +166,30 @@ def _make_a2a_executor(agent: A2AAgent) -> WorkflowExecutor:
     return executor
 
 
-async def _a2a_send(url: str, text: str, *, timeout: float = 300.0) -> str:
-    """POST a JSON-RPC 2.0 tasks/send request and extract the response text."""
-    task_id = str(uuid.uuid4())
-    payload = {
-        "jsonrpc": "2.0",
-        "id": task_id,
-        "method": "tasks/send",
-        "params": {
-            "id": task_id,
-            "message": {
-                "parts": [{"type": "text", "text": text}],
-            },
-        },
-    }
+async def _a2a_send(
+    url: str,
+    text: str,
+    *,
+    registry_token: str,
+    protocol_version: str | None = None,
+    timeout: int = 300,
+) -> str:
+    """Send a message through agno's A2A client and return spec-compliant text content."""
+    headers = {"Authorization": f"Bearer {registry_token}"}
+    if protocol_version:
+        headers["A2A-Version"] = protocol_version
+    client = A2AClient(base_url=url, timeout=timeout, protocol="json-rpc")
+    result = await client.send_message(text, headers=headers)
+    return result.content or ""
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        response = await client.post(url, json=payload)
-        response.raise_for_status()
-        data = response.json()
 
-    result = data.get("result", {})
-    artifacts = result.get("artifacts", [])
-    if not artifacts:
-        # Some agents return a flat "output" field
-        return result.get("output", "") or ""
-
-    parts = artifacts[0].get("parts", [])
-    return " ".join(p.get("text", "") for p in parts if p.get("type") == "text")
+def _a2a_protocol_version(agent: A2AAgent) -> str | None:
+    """Determine the A2A protocol version."""
+    version = getattr(agent.card, "protocol_version", None)
+    if not version:
+        return None
+    parts = str(version).split(".")
+    return ".".join(parts[:2]) if len(parts) >= 2 else str(version)
 
 
 def _build_prompt(step_input: StepInput) -> str:

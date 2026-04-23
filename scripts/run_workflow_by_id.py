@@ -6,14 +6,13 @@ import os
 import sys
 from pathlib import Path
 
-from agno.models.anthropic import Claude
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "registry-pkgs" / "src"))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "registry" / "src"))
-
+from agno.models.aws import AwsBedrock
+from agno.workflow import StepInput, StepOutput
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+
+from registry import settings
 
 logging.basicConfig(
     level=logging.INFO,
@@ -23,9 +22,26 @@ logging.basicConfig(
 from registry_pkgs.core.config import MongoConfig
 from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.models.workflow import NodeRun, WorkflowDefinition, WorkflowRun
-from registry_pkgs.workflows.compiler import flatten_workflow_nodes
+from registry_pkgs.workflows.compiler import WorkflowExecutor, flatten_workflow_nodes
 from registry_pkgs.workflows.executor_resolver import build_executor_registry
 from registry_pkgs.workflows.runner import WorkflowRunner
+
+
+async def _echo_executor(step_input: StepInput, session_state: dict) -> StepOutput:
+    session_state["echo_count"] = int(session_state.get("echo_count", 0)) + 1
+    content = step_input.input or step_input.previous_step_content or ""
+    return StepOutput(content=f"echo: {content}")
+
+
+async def _set_value_executor(step_input: StepInput, session_state: dict) -> StepOutput:
+    session_state["sample_value"] = "set by local demo executor"
+    return StepOutput(content=session_state["sample_value"])
+
+
+_LOCAL_DEMO_EXECUTORS: dict[str, WorkflowExecutor] = {
+    "echo": _echo_executor,
+    "set_value": _set_value_executor,
+}
 
 
 def _print_status(run: WorkflowRun, node_runs: list[NodeRun]) -> None:
@@ -63,10 +79,24 @@ async def main(definition_id: str, user_text: str) -> None:
         print(f"Loaded: {definition.name!r}  nodes={[n.name for n in definition.nodes]}\n")
 
         executor_keys = [n.executor_key for n in flatten_workflow_nodes(definition.nodes) if n.executor_key is not None]
-        llm = Claude(name=os.getenv("LLM_NAME", ""))
-        executor_registry = await build_executor_registry(
-            executor_keys, llm=llm, registry_url=os.getenv("REGISTRY_URL", "http://localhost:8000"), registry_token=""
+        llm = AwsBedrock(
+            aws_region=settings.aws_region,
+            aws_session_token=settings.aws_session_token,
+            aws_access_key_id=settings.aws_access_key_id,
+            aws_secret_access_key=settings.aws_secret_access_key,
         )
+        local_executor_keys = [key for key in executor_keys if key in _LOCAL_DEMO_EXECUTORS]
+        remote_executor_keys = [key for key in executor_keys if key not in _LOCAL_DEMO_EXECUTORS]
+        executor_registry = {key: _LOCAL_DEMO_EXECUTORS[key] for key in local_executor_keys}
+        if remote_executor_keys:
+            executor_registry.update(
+                await build_executor_registry(
+                    remote_executor_keys,
+                    llm=llm,
+                    registry_url=os.getenv("REGISTRY_URL", "http://localhost:8000"),
+                    registry_token=os.getenv("REGISTRY_TOKEN", ""),
+                )
+            )
         runner = WorkflowRunner(
             executor_registry=executor_registry,
             db_client=MongoDB.get_client(),
