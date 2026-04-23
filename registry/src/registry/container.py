@@ -177,19 +177,6 @@ class RegistryContainer:
         return AgentScannerService()
 
     @cached_property
-    def agentcore_runtime_auth_service(self):
-        """AgentCore Runtime authentication service for JWT/IAM auth."""
-        from .services.federation.agentcore_clients import AgentCoreClientProvider
-        from .services.federation.agentcore_discovery import AgentCoreFederationClient
-        from .services.federation.agentcore_runtime_auth import AgentCoreRuntimeAuthService
-
-        client_provider = AgentCoreClientProvider()
-        return AgentCoreRuntimeAuthService(
-            client_provider=client_provider,
-            extract_region_from_arn=AgentCoreFederationClient.extract_region_from_arn,
-        )
-
-    @cached_property
     def mcp_proxy_client(self) -> httpx.AsyncClient:
         """Shared httpx client for MCP proxy connection pooling."""
         return httpx.AsyncClient(

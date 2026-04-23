@@ -27,7 +27,6 @@ from ..core.exceptions import InternalServerException, UrlElicitationRequiredExc
 from ..deps import (
     get_a2a_agent_service,
     get_acl_service,
-    get_agentcore_runtime_auth_service,
     get_mcp_proxy_client,
     get_oauth_service,
     get_redis_client,
@@ -138,7 +137,6 @@ async def proxy_to_mcp_server(
     server: ExtendedMCPServer,
     oauth_service: MCPOAuthService,
     proxy_client: httpx.AsyncClient,
-    agentcore_auth_service=None,
     redis_client=None,
 ) -> Response:
     """
@@ -153,7 +151,6 @@ async def proxy_to_mcp_server(
         server: ExtendedMCPServer
         oauth_service: OAuth service for building auth headers
         proxy_client: Shared httpx client for connection pooling
-        agentcore_auth_service: AgentCore Runtime auth service for JWT/IAM authentication
         redis_client: Redis client for JWT token caching
     """
     # Build proxy headers - start with request headers
@@ -178,7 +175,6 @@ async def proxy_to_mcp_server(
             server=server,
             auth_context=auth_context,
             additional_headers=headers,
-            agentcore_auth_service=agentcore_auth_service,
             redis_client=redis_client,
         )
     except UrlElicitationRequiredException as exc:
@@ -571,7 +567,6 @@ async def dynamic_mcp_post_proxy(
     server_service: ServerServiceV1 = Depends(get_server_service),
     oauth_service: MCPOAuthService = Depends(get_oauth_service),
     proxy_client: httpx.AsyncClient = Depends(get_mcp_proxy_client),
-    agentcore_auth_service=Depends(get_agentcore_runtime_auth_service),
     redis_client=Depends(get_redis_client),
 ):
     """
@@ -659,7 +654,6 @@ async def dynamic_mcp_post_proxy(
         server=server,
         oauth_service=oauth_service,
         proxy_client=proxy_client,
-        agentcore_auth_service=agentcore_auth_service,
         redis_client=redis_client,
     )
 
@@ -672,7 +666,6 @@ async def dynamic_mcp_get_proxy(
     server_service: ServerServiceV1 = Depends(get_server_service),
     oauth_service: MCPOAuthService = Depends(get_oauth_service),
     proxy_client: httpx.AsyncClient = Depends(get_mcp_proxy_client),
-    agentcore_auth_service=Depends(get_agentcore_runtime_auth_service),
     redis_client=Depends(get_redis_client),
 ):
     """
@@ -753,7 +746,6 @@ async def dynamic_mcp_get_proxy(
             server=server,
             auth_context=auth_context,
             additional_headers=headers,
-            agentcore_auth_service=agentcore_auth_service,
             redis_client=redis_client,
         )
     except UrlElicitationRequiredException as exc:

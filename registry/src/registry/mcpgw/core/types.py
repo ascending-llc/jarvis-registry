@@ -20,5 +20,4 @@ class McpAppContext:
     mcp_client_service: MCPClientService
     oauth_service: MCPOAuthService
     session_store: SessionStore
-    agentcore_auth_service: object | None = None
     redis_client: object | None = None

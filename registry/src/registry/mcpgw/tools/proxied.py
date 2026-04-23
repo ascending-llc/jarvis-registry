@@ -323,7 +323,6 @@ async def execute_tool_impl(
                     auth_context=user_context,
                     additional_headers=additional_headers,
                     state_metadata=state_metadata,
-                    agentcore_auth_service=ctx.request_context.lifespan_context.agentcore_auth_service,
                     redis_client=ctx.request_context.lifespan_context.redis_client,
                 )
                 session_id = await _get_mcp_client_service(ctx).initialize_mcp_session(
@@ -349,7 +348,6 @@ async def execute_tool_impl(
             auth_context=user_context,
             additional_headers=additional_headers,
             state_metadata=state_metadata,
-            agentcore_auth_service=ctx.request_context.lifespan_context.agentcore_auth_service,
             redis_client=ctx.request_context.lifespan_context.redis_client,
         )
 

@@ -158,7 +158,6 @@ async def build_authenticated_headers(
     additional_headers: dict[str, str] | None = None,
     *,
     state_metadata: StateMetadata | None = None,
-    agentcore_auth_service=None,
     redis_client=None,
 ) -> dict[str, str]:
     """
@@ -166,7 +165,7 @@ async def build_authenticated_headers(
     Consolidates auth logic used by all proxy endpoints.
 
     Supports multiple authentication types:
-    - AgentCore Runtime: JWT/IAM authentication for federated AgentCore MCP servers (with caching)
+    - AgentCore Runtime: JWT authentication for federated AgentCore MCP servers (with caching)
     - OAuth: External access token (RFC 6750) for MCP server resource access
     - Internal JWT: Gateway-to-MCP authentication (always included)
     - API Key: Bearer/Basic/Custom API key authentication
@@ -177,7 +176,6 @@ async def build_authenticated_headers(
         auth_context: Gateway authentication context (user, client_id, scopes, jwt_token)
         additional_headers: Optional additional headers to merge
         state_metadata: OAuth flow state metadata
-        agentcore_auth_service: AgentCore Runtime auth service for JWT/IAM authentication
         redis_client: Redis client for JWT token caching
 
     Returns:
@@ -215,7 +213,6 @@ async def build_authenticated_headers(
             server,
             user_id,
             state_metadata=state_metadata,
-            agentcore_auth_service=agentcore_auth_service,
             redis_client=redis_client,
         )
 

@@ -110,11 +110,6 @@ def get_federation_sync_service(container: RegistryContainer = Depends(get_conta
     return container.federation_sync_service
 
 
-def get_agentcore_runtime_auth_service(container: RegistryContainer = Depends(get_container)):
-    """Get AgentCore Runtime authentication service for JWT/IAM auth."""
-    return container.agentcore_runtime_auth_service
-
-
 def get_redis_client(container: RegistryContainer = Depends(get_container)):
     """Get Redis client for caching."""
     return container.redis_client
