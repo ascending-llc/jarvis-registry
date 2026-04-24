@@ -125,18 +125,13 @@ const ServerRegistryOrEdit: React.FC = () => {
 
   const isEditMode = !!id;
   const isReadOnly = searchParams.get('isReadOnly') === 'true';
-  const fromTab = searchParams.get('fromTab');
 
   useEffect(() => {
     if (id) getDetail();
   }, [id]);
 
   const goBack = () => {
-    if (fromTab) {
-      navigate(`/?tab=${fromTab}`, { replace: true });
-    } else {
-      navigate(-1);
-    }
+    navigate(-1);
   };
 
   useEffect(() => {
