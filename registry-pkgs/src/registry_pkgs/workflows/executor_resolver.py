@@ -111,6 +111,7 @@ def _make_mcp_executor(
         )
 
     mcp_tools = MCPTools(
+        transport="streamable-http",
         server_params=StreamableHTTPClientParams(
             url=proxy_url,
             headers={"Authorization": f"Bearer {registry_token}"},

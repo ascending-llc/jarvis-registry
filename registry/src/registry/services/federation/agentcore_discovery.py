@@ -381,6 +381,7 @@ class AgentCoreFederationClient:
                 "requiresOAuth": False,
                 "authProvider": "bedrock-agentcore",
                 "runtimeAccess": runtime_access.model_dump(mode="json", exclude_none=True),
+                "enabled": status == "READY",
             },
             "author": author_id or PydanticObjectId(),
             "federationMetadata": {
