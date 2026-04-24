@@ -20,9 +20,6 @@ from .core.config import settings
 # Import root-level authorize endpoint
 from .routes.authorize import router as authorize_router
 
-# Import internal-only routes
-from .routes.internal import router as internal_router
-
 # Import consolidated OAuth routes (device flow + auth code PKCE)
 from .routes.oauth_flow import router as oauth_flow_router
 
@@ -124,9 +121,6 @@ app.include_router(authorize_router, prefix="", tags=["authorize-root"])
 
 # Include consolidated OAuth routes with prefix
 app.include_router(oauth_flow_router, prefix=api_prefix)
-
-# Include internal-only routes (mounted under the same API prefix)
-app.include_router(internal_router, prefix=api_prefix)
 
 
 @app.get("/health")

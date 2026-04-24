@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 
 from httpx import AsyncClient
+from redis import Redis
 
 from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRepository
 
@@ -20,3 +21,4 @@ class McpAppContext:
     mcp_client_service: MCPClientService
     oauth_service: MCPOAuthService
     session_store: SessionStore
+    redis_client: Redis

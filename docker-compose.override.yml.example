@@ -1,0 +1,43 @@
+# docker-compose.override.yml.example
+#
+# This file provides examples for overriding the default docker-compose.yml configuration.
+# Copy this file to docker-compose.override.yml and customize it for your environment.
+#
+# Usage:
+#   cp docker-compose.override.yml.example docker-compose.override.yml
+#   # Edit docker-compose.override.yml with your settings
+#   docker-compose --profile dev up -d
+#
+# Note: docker-compose.override.yml is automatically loaded by docker-compose
+# and will override settings from docker-compose.yml
+
+services:
+  # Example: Override auth-server configuration for Microsoft Entra ID
+  auth-server:
+    image: auth-server
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.auth
+
+  registry:
+    image: registry
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.registry
+    environment:
+      - LOG_LEVEL=DEBUG
+    profiles:
+      - disabled
+  keycloak:
+    profiles:
+      - disabled
+  keycloak-db:
+    profiles:
+      - disabled
+  registry-frontend:
+    image: registry-frontend
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.registry-frontend
+    profiles:
+      - disabled

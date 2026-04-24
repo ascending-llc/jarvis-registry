@@ -8,7 +8,7 @@ All schemas use camelCase for API input/output and for MongoDB storage,
 following the same pattern as Server Management and A2A Agent APIs.
 """
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from .case_conversion import APIBaseModel
 
@@ -27,6 +27,22 @@ class UserInfoResponse(APIBaseModel):
 
 
 # ==================== Token Schemas ====================
+
+
+class TokenGenerateRequest(APIBaseModel):
+    """Request schema for token generation"""
+
+    expiresInHours: int = Field(..., description="Token expiration time in hours (must be 1, 8, or 24)")
+    description: str = Field(default="", description="Optional token description")
+    requestedScopes: list[str] | None = Field(default=None, description="Optional list of requested scopes")
+
+    @field_validator("expiresInHours")
+    @classmethod
+    def validate_expires_in_hours(cls, v: int) -> int:
+        """Validate expiresInHours is one of the allowed values"""
+        if v not in [1, 8, 24]:
+            raise ValueError("expiresInHours must be one of: 1, 8, or 24")
+        return v
 
 
 class TokenData(APIBaseModel):

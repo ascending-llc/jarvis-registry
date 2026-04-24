@@ -8,6 +8,7 @@ import { RiGlobalLine } from 'react-icons/ri';
 import type { Role } from '@/services/acl/type';
 import type { PrincipalSearchState } from './usePrincipalSearch';
 import { getRoleDisplayDesc, getRoleDisplayName, type PermissionsState, type PublicShareState } from './useShareModal';
+import IconButton from '@/components/IconButton';
 
 // ── RoleDropdown ──
 
@@ -50,8 +51,8 @@ export const RoleDropdown: React.FC<RoleDropdownProps> = ({
               ref={buttonRef}
               className={`relative w-[240px] rounded-lg border py-2 pl-3 pr-8 text-sm font-medium text-left transition-colors ${
                 disabled
-                  ? 'cursor-not-allowed border-gray-200 bg-gray-100 text-gray-400 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-500'
-                  : 'cursor-default border-gray-200 bg-transparent text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:bg-transparent dark:text-gray-200 dark:hover:bg-gray-700 focus:outline-none focus:ring-1 focus:ring-gray-300 dark:focus:ring-gray-500'
+                  ? 'cursor-not-allowed border-[color:var(--jarvis-border)] bg-[var(--jarvis-card-muted)] text-[var(--jarvis-faint)]'
+                  : 'cursor-default border-[color:var(--jarvis-border)] bg-transparent text-[var(--jarvis-text)] hover:bg-[var(--jarvis-card-muted)] focus:outline-none focus:ring-1 focus:ring-[var(--jarvis-border-strong)]'
               }`}
               style={{ width: ROLE_DROPDOWN_BUTTON_WIDTH }}
               title={disabled ? 'At least one owner is required' : undefined}
@@ -60,7 +61,7 @@ export const RoleDropdown: React.FC<RoleDropdownProps> = ({
                 {resourceLabel} {selectedRoleName}
               </span>
               <span className='pointer-events-none absolute inset-y-0 right-0 flex items-center pr-2'>
-                <HiOutlineChevronDown className='h-4 w-4 text-gray-400 dark:text-gray-400' aria-hidden='true' />
+                <HiOutlineChevronDown className='h-4 w-4 text-[var(--jarvis-icon)]' aria-hidden='true' />
               </span>
             </Listbox.Button>
             {typeof document !== 'undefined' &&
@@ -73,7 +74,7 @@ export const RoleDropdown: React.FC<RoleDropdownProps> = ({
                   leaveTo='opacity-0'
                 >
                   <Listbox.Options
-                    className='fixed z-[80] max-h-60 w-[320px] overflow-auto rounded-xl border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 p-1.5 text-sm shadow-xl focus:outline-none'
+                    className='fixed z-[80] max-h-60 w-[320px] overflow-auto rounded-xl border border-[color:var(--jarvis-border)] bg-[var(--jarvis-card)] p-1.5 text-sm shadow-xl focus:outline-none'
                     style={{
                       width: ROLE_DROPDOWN_OPTIONS_WIDTH,
                       left,
@@ -87,8 +88,8 @@ export const RoleDropdown: React.FC<RoleDropdownProps> = ({
                         className={({ active }) =>
                           `relative cursor-pointer select-none rounded-md py-2.5 pl-9 pr-3 transition-colors ${
                             active
-                              ? 'bg-gray-100 text-gray-900 dark:bg-gray-700 dark:text-white'
-                              : 'text-gray-700 dark:text-gray-300'
+                              ? 'bg-[var(--jarvis-card-muted)] text-[var(--jarvis-text-strong)]'
+                              : 'text-[var(--jarvis-text)]'
                           }`
                         }
                         value={option.accessRoleId}
@@ -100,13 +101,13 @@ export const RoleDropdown: React.FC<RoleDropdownProps> = ({
                                 {resourceLabel} {getRoleDisplayName(option)}
                               </span>
                               <span
-                                className={`block text-xs mt-0.5 ${selected ? 'text-gray-500 dark:text-gray-400' : 'text-gray-400 dark:text-gray-500'}`}
+                                className={`mt-0.5 block text-xs ${selected ? 'text-[var(--jarvis-muted)]' : 'text-[var(--jarvis-faint)]'}`}
                               >
                                 {getRoleDisplayDesc(option)}
                               </span>
                             </div>
                             {selected ? (
-                              <span className='absolute inset-y-0 left-0 flex items-center pl-3 text-gray-900 dark:text-white'>
+                              <span className='absolute inset-y-0 left-0 flex items-center pl-3 text-[var(--jarvis-text-strong)]'>
                                 <HiOutlineCheck className='h-4 w-4' aria-hidden='true' />
                               </span>
                             ) : null}
@@ -135,7 +136,7 @@ export const PrincipalSearch: React.FC<PrincipalSearchProps> = ({ search }) => {
   return (
     <div className='relative mb-4' ref={search.containerRef}>
       <div className='pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3'>
-        <MagnifyingGlassIcon className='h-5 w-5 text-gray-500' />
+        <MagnifyingGlassIcon className='h-5 w-5 text-[var(--jarvis-icon)]' />
       </div>
       <input
         type='text'
@@ -145,17 +146,17 @@ export const PrincipalSearch: React.FC<PrincipalSearchProps> = ({ search }) => {
         onFocus={() => {
           if (search.results.length > 0) search.setShowDropdown(true);
         }}
-        className='block w-full rounded-lg border-gray-200 bg-gray-100 py-3 pl-10 pr-3 text-sm placeholder-gray-500 focus:border-purple-500 focus:bg-white focus:ring-1 focus:ring-purple-500 dark:border-gray-700 dark:bg-gray-700 dark:text-white dark:placeholder-gray-400 dark:focus:bg-gray-800'
+        className='block w-full rounded-lg border-[color:var(--jarvis-input-border)] bg-[var(--jarvis-input-bg)] py-3 pl-10 pr-3 text-sm text-[var(--jarvis-text)] placeholder-[var(--jarvis-input-placeholder)] focus:border-[var(--jarvis-primary)] focus:bg-[var(--jarvis-input-bg-focus)] focus:ring-1 focus:ring-[var(--jarvis-primary)]'
       />
 
       {search.showDropdown && (
-        <div className='absolute z-[60] mt-1 w-full rounded-xl border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 shadow-xl max-h-60 overflow-auto'>
+        <div className='absolute z-[60] mt-1 max-h-60 w-full overflow-auto rounded-xl border border-[color:var(--jarvis-border)] bg-[var(--jarvis-card)] shadow-xl'>
           {search.loading ? (
             <div className='flex items-center justify-center p-4'>
-              <div className='animate-spin rounded-full h-5 w-5 border-b-2 border-purple-600' />
+              <div className='h-5 w-5 animate-spin rounded-full border-b-2 border-[var(--jarvis-spinner)]' />
             </div>
           ) : search.results.length === 0 ? (
-            <div className='p-4 text-center text-sm text-gray-500 dark:text-gray-400'>No results found</div>
+            <div className='p-4 text-center text-sm text-[var(--jarvis-muted)]'>No results found</div>
           ) : (
             <ul className='p-2 space-y-1'>
               {search.results.map(result => {
@@ -164,21 +165,21 @@ export const PrincipalSearch: React.FC<PrincipalSearchProps> = ({ search }) => {
                 return (
                   <li
                     key={`${rawType}:${rawId}`}
-                    className='flex items-center gap-3 p-3 cursor-pointer rounded-lg border border-gray-200 bg-gray-50 hover:bg-gray-100 dark:border-gray-600 dark:bg-gray-800/50 dark:hover:bg-gray-700 transition-colors'
+                    className='flex cursor-pointer items-center gap-3 rounded-lg border border-[color:var(--jarvis-border)] bg-[var(--jarvis-card-muted)] p-3 transition-colors hover:bg-[var(--jarvis-primary-soft)]'
                     onClick={() => search.select(result)}
                   >
-                    <div className='flex h-8 w-8 items-center justify-center rounded-full bg-white dark:bg-gray-700 shadow-sm text-purple-500 dark:text-purple-300'>
+                    <div className='flex h-8 w-8 items-center justify-center rounded-full bg-[var(--jarvis-card)] text-[var(--jarvis-primary-text)] shadow-sm'>
                       {rawType === 'group' ? <HiOutlineUsers className='h-4 w-4' /> : <UserIcon className='h-4 w-4' />}
                     </div>
-                    <div className='text-sm flex-1 min-w-0'>
-                      <p className='font-semibold text-gray-900 dark:text-gray-100 truncate'>{result.name || rawId}</p>
-                      {result.email && <p className='text-gray-500 dark:text-gray-400 truncate'>{result.email}</p>}
+                    <div className='min-w-0 flex-1 text-sm'>
+                      <p className='truncate font-semibold text-[var(--jarvis-text)]'>{result.name || rawId}</p>
+                      {result.email && <p className='truncate text-[var(--jarvis-muted)]'>{result.email}</p>}
                     </div>
                     <span
                       className={`text-xs px-2 py-1 rounded-md font-medium capitalize flex-shrink-0 ${
                         rawType === 'group'
-                          ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/50 dark:text-purple-300'
-                          : 'bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300'
+                          ? 'bg-[var(--jarvis-primary-soft)] text-[var(--jarvis-primary-text)]'
+                          : 'bg-[var(--jarvis-info-soft)] text-[var(--jarvis-info-text)]'
                       }`}
                     >
                       {rawType}
@@ -206,15 +207,15 @@ export const PermissionList: React.FC<PermissionListProps> = ({ permissions, rol
   const ownerRoleId = roles[roles.length - 1]?.accessRoleId ?? '';
 
   return (
-    <div className='rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800'>
+    <div className='rounded-xl border border-[color:var(--jarvis-border)] bg-[var(--jarvis-card)]'>
       {permissions.loading ? (
         <div className='flex items-center justify-center p-8'>
-          <div className='animate-spin rounded-full h-6 w-6 border-b-2 border-purple-600' />
+          <div className='h-6 w-6 animate-spin rounded-full border-b-2 border-[var(--jarvis-spinner)]' />
         </div>
       ) : permissions.list.length === 0 ? (
-        <div className='p-4 text-center text-sm text-gray-500 dark:text-gray-400'>No permissions found.</div>
+        <div className='p-4 text-center text-sm text-[var(--jarvis-muted)]'>No permissions found.</div>
       ) : (
-        <ul className='divide-y divide-gray-100 dark:divide-gray-700'>
+        <ul className='divide-y divide-[color:var(--jarvis-border)]'>
           {permissions.list.map(user => {
             const isLastOwner =
               user.accessRoleId === ownerRoleId &&
@@ -223,7 +224,7 @@ export const PermissionList: React.FC<PermissionListProps> = ({ permissions, rol
             return (
               <li key={`${user.principalType}:${user.principalId}`} className='flex items-center justify-between p-4'>
                 <div className='flex items-center gap-3'>
-                  <div className='flex h-10 w-10 items-center justify-center rounded-full bg-purple-50 text-purple-500 dark:bg-purple-900/40 dark:text-purple-300'>
+                  <div className='flex h-10 w-10 items-center justify-center rounded-full bg-[var(--jarvis-primary-soft)] text-[var(--jarvis-primary-text)]'>
                     {user.principalType === 'group' ? (
                       <HiOutlineUsers className='h-5 w-5' />
                     ) : (
@@ -231,11 +232,11 @@ export const PermissionList: React.FC<PermissionListProps> = ({ permissions, rol
                     )}
                   </div>
                   <div className='text-sm'>
-                    <p className='font-semibold text-gray-900 dark:text-gray-100'>{user.name}</p>
+                    <p className='font-semibold text-[var(--jarvis-text)]'>{user.name}</p>
                     {user.email ? (
-                      <p className='text-gray-500 dark:text-gray-400'>{user.email}</p>
+                      <p className='text-[var(--jarvis-muted)]'>{user.email}</p>
                     ) : (
-                      <p className='text-gray-400 dark:text-gray-500 capitalize text-xs'>{user.principalType}</p>
+                      <p className='text-xs capitalize text-[var(--jarvis-faint)]'>{user.principalType}</p>
                     )}
                   </div>
                 </div>
@@ -249,14 +250,15 @@ export const PermissionList: React.FC<PermissionListProps> = ({ permissions, rol
                     disabled={isLastOwner}
                   />
                   {!isLastOwner ? (
-                    <button
-                      type='button'
+                    <IconButton
+                      ariaLabel="Remove permission"
+                      tooltip="Remove"
                       onClick={() => permissions.remove(user.principalType, user.principalId)}
-                      className='flex h-8 w-8 items-center justify-center rounded-md border border-gray-200 text-gray-500 hover:bg-gray-50 hover:text-gray-700 dark:border-gray-700 dark:hover:bg-gray-700 dark:hover:text-gray-300 transition-colors'
-                      aria-label='Remove permission'
+                      size="card"
+                      className="text-[var(--jarvis-icon)] hover:text-[var(--jarvis-icon-hover)]"
                     >
                       <XMarkIcon className='h-4 w-4' />
-                    </button>
+                    </IconButton>
                   ) : (
                     <div className='w-8 h-8' />
                   )}
@@ -284,17 +286,20 @@ export const PublicShare: React.FC<PublicShareProps> = ({ publicShare, roles, re
       <div className='flex items-center justify-between'>
         <div className='flex items-center gap-2'>
           <RiGlobalLine
-            className={`h-5 w-5 transition-colors ${publicShare.enabled ? 'text-purple-600 dark:text-purple-400' : 'text-gray-600 dark:text-gray-300'}`}
+            className={`h-5 w-5 transition-colors ${publicShare.enabled ? 'text-[var(--jarvis-primary-text)]' : 'text-[var(--jarvis-muted)]'}`}
           />
-          <span className='font-semibold text-gray-800 dark:text-gray-200'>Share with everyone</span>
+          <span className='font-semibold text-[var(--jarvis-text)]'>Share with everyone</span>
           <div className='relative group flex items-center'>
-            <button
-              type='button'
-              className='text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300'
+            <IconButton
+              ariaLabel="Help"
+              tooltip="Info"
+              as="span"
+              size="card"
+              className="text-[var(--jarvis-icon)] hover:text-[var(--jarvis-icon-hover)] border-none bg-transparent hover:bg-transparent shadow-none"
             >
               <QuestionMarkCircleIcon className='h-5 w-5' />
-            </button>
-            <div className='absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block w-72 p-3 bg-white border border-gray-200 dark:bg-gray-800 dark:border-gray-700 text-xs text-gray-700 dark:text-gray-300 rounded-lg shadow-xl z-[70]'>
+            </IconButton>
+            <div className='absolute bottom-full left-1/2 z-[70] mb-2 hidden w-72 -translate-x-1/2 rounded-lg border border-[color:var(--jarvis-border)] bg-[var(--jarvis-card)] p-3 text-xs text-[var(--jarvis-text)] shadow-xl group-hover:block'>
               This {resourceLabel} will be available to everyone. Please ensure this {resourceLabel} is suitable for
               sharing with everyone. Please protect your data.
             </div>
@@ -304,8 +309,8 @@ export const PublicShare: React.FC<PublicShareProps> = ({ publicShare, roles, re
           checked={publicShare.enabled}
           onChange={publicShare.setEnabled}
           className={`${
-            publicShare.enabled ? 'bg-purple-600' : 'bg-gray-300 dark:bg-gray-600'
-          } relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 dark:focus:ring-offset-gray-800`}
+            publicShare.enabled ? 'bg-[var(--jarvis-primary)]' : 'bg-[var(--jarvis-faint)]'
+          } relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-[var(--jarvis-primary)] focus:ring-offset-2`}
         >
           <span className='sr-only'>Enable sharing with everyone</span>
           <span
@@ -319,8 +324,8 @@ export const PublicShare: React.FC<PublicShareProps> = ({ publicShare, roles, re
       {publicShare.enabled && (
         <div className='flex items-center justify-between'>
           <div className='flex items-center gap-2'>
-            <HiOutlineShieldCheck className='h-5 w-5 text-purple-600 dark:text-purple-400' />
-            <span className='font-semibold text-gray-800 dark:text-gray-200'>Permission level for everyone</span>
+            <HiOutlineShieldCheck className='h-5 w-5 text-[var(--jarvis-primary-text)]' />
+            <span className='font-semibold text-[var(--jarvis-text)]'>Permission level for everyone</span>
           </div>
           <RoleDropdown
             value={publicShare.role}

@@ -49,7 +49,7 @@ class RegistryContainer:
     ``app_factory.py``.
     """
 
-    def __init__(self, settings: Settings, *, db_client: DatabaseClient, redis_client: Redis | None):
+    def __init__(self, settings: Settings, *, db_client: DatabaseClient, redis_client: Redis):
         """Store shared infra clients and expose lazily-built app-scoped services."""
         self.settings = settings
         self.db_client = db_client

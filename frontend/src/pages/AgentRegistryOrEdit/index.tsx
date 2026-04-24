@@ -17,13 +17,13 @@ import type { AgentConfig } from './types';
 const INIT_DATA: AgentConfig = { title: '', description: '', path: '', url: '', type: '', trustAgent: false };
 
 const STATUS_STYLE: Record<string, { pill: string; dot: string; label: string }> = {
-  active: { pill: 'bg-emerald-500/15 text-emerald-300', dot: 'bg-emerald-400', label: 'Active' },
-  inactive: { pill: 'bg-orange-500/15 text-orange-300', dot: 'bg-orange-400', label: 'Inactive' },
-  error: { pill: 'bg-red-500/15 text-red-300', dot: 'bg-red-400', label: 'Error' },
+  active: { pill: 'bg-[var(--jarvis-surface)] text-[var(--jarvis-success-text)]', dot: 'bg-[var(--jarvis-success)]', label: 'Active' },
+  inactive: { pill: 'bg-[var(--jarvis-warning-soft)] text-[var(--jarvis-warning-text)]', dot: 'bg-[var(--jarvis-warning)]', label: 'Inactive' },
+  error: { pill: 'bg-[var(--jarvis-surface)] text-[var(--jarvis-danger-text)]', dot: 'bg-[var(--jarvis-danger)]', label: 'Error' },
 };
 
 const getStatusStyle = (status?: string) =>
-  STATUS_STYLE[status ?? ''] ?? { pill: 'bg-amber-500/15 text-amber-300', dot: 'bg-amber-400', label: 'Unknown' };
+  STATUS_STYLE[status ?? ''] ?? { pill: 'bg-[var(--jarvis-surface)] text-[var(--jarvis-warning-text)]', dot: 'bg-[var(--jarvis-warning)]', label: 'Unknown' };
 
 const getErrorMessage = (error: unknown, fallback: string): string => {
   if (typeof error === 'string') return error;
@@ -211,16 +211,16 @@ const AgentRegistryOrEdit: React.FC = () => {
           onClose={() => setShareOpen(false)}
         />
       )}
-      <div className='h-full overflow-y-auto custom-scrollbar -mr-4 sm:-mr-6 lg:-mr-8'>
-        <div className='mx-auto flex flex-col w-3/4 min-h-full bg-white dark:bg-gray-800 rounded-lg'>
+      <div className="h-full overflow-y-auto custom-scrollbar -mr-4 sm:-mr-6 lg:-mr-8">
+        <div className="mx-auto flex flex-col w-3/4 min-h-full bg-[var(--jarvis-card)] rounded-lg">
         {/* Header */}
-        <div className='px-6 py-6 flex items-center gap-4 border-b border-gray-100 dark:border-gray-700'>
-          <div className='flex items-center justify-center p-3 rounded-xl bg-[#F3E8FF] dark:bg-purple-900/30'>
-            <AgentIcon className='h-8 w-8 text-purple-600 dark:text-purple-300' />
+        <div className="px-6 py-6 flex items-center gap-4 border-b border-[color:var(--jarvis-border-soft)] border-[color:var(--jarvis-border)]">
+          <div className="flex items-center justify-center p-3 rounded-xl bg-[#F3E8FF]">
+            <AgentIcon className="h-8 w-8 text-[var(--jarvis-primary)]" />
           </div>
-          <div className='flex-1'>
-            <div className='flex items-center gap-3'>
-              <h1 className='text-2xl font-bold text-gray-900 dark:text-white m-0'>
+          <div className="flex-1">
+            <div className="flex items-center gap-3">
+              <h1 className="text-2xl font-bold text-[var(--jarvis-text-strong)] m-0">
                 {isReadOnly ? 'View Agent' : isEditMode ? 'Edit Agent' : 'Register Agent'}
               </h1>
               {isReadOnly &&
@@ -237,24 +237,24 @@ const AgentRegistryOrEdit: React.FC = () => {
                   );
                 })()}
             </div>
-            <p className='text-base text-gray-500 dark:text-gray-400 mt-0.5'>Configure an Agent</p>
+            <p className="text-base text-[var(--jarvis-muted)] mt-0.5">Configure an Agent</p>
           </div>
         </div>
         {/* Content */}
-        <div className='px-6 py-6 flex-1 flex flex-col'>
+        <div className="px-6 py-6 flex-1 flex flex-col">
           {loadingDetail ? (
-            <div className='flex-1 flex items-center justify-center min-h-[200px]'>
-              <div className='animate-spin rounded-full h-8 w-8 border-b-2 border-purple-600'></div>
+            <div className="flex-1 flex items-center justify-center min-h-[200px]">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-[var(--jarvis-primary)]"></div>
             </div>
           ) : (
-            <div className='space-y-8'>
+            <div className="space-y-8">
               {isEditMode && agentDetail && (
-                <div className='p-4 bg-gray-50 dark:bg-gray-900/50 rounded-lg border border-gray-200 dark:border-gray-700 w-full'>
-                  <span className='block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 uppercase tracking-wide'>
+                <div className="p-4 bg-[var(--jarvis-bg)] bg-[var(--jarvis-card)]/50 rounded-lg border border-[color:var(--jarvis-border)] w-full">
+                  <span className="block text-xs font-medium text-[var(--jarvis-muted)] mb-1 uppercase tracking-wide">
                     Created At
                   </span>
-                  <div className='text-sm text-gray-700 dark:text-gray-300 flex items-center gap-1.5'>
-                    <CalendarIcon className='h-4 w-4 text-gray-500 dark:text-gray-400 shrink-0' />
+                  <div className="text-sm text-[var(--jarvis-text)] flex items-center gap-1.5">
+                    <CalendarIcon className="h-4 w-4 text-[var(--jarvis-muted)] shrink-0" />
                     {new Date(agentDetail.createdAt || new Date()).toLocaleString(undefined, {
                       dateStyle: 'medium',
                       timeStyle: 'short',
@@ -273,33 +273,33 @@ const AgentRegistryOrEdit: React.FC = () => {
           )}
         </div>
         {/* Footer */}
-        <div className='px-6 py-4 border-t border-gray-100 dark:border-gray-700 flex flex-wrap items-center justify-between gap-4'>
-          <div className='flex items-center gap-3'>
+        <div className="px-6 py-4 border-t border-[color:var(--jarvis-border-soft)] border-[color:var(--jarvis-border)] flex flex-wrap items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
             {isEditMode && !isReadOnly && (
               <button
                 onClick={handleDelete}
                 disabled={loading}
-                className='inline-flex items-center px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm text-sm font-medium text-red-500 dark:text-red-400 bg-white dark:bg-gray-800 hover:bg-red-50 dark:hover:bg-red-900/20 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors'
+                className="inline-flex items-center px-4 py-2 border border-[color:var(--jarvis-border)] rounded-md shadow-sm text-sm font-medium text-[var(--jarvis-danger-text)] bg-[var(--jarvis-card)] hover:bg-[var(--jarvis-danger-soft)] hover:bg-[var(--jarvis-danger-soft)] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[var(--jarvis-danger)] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
-                <TrashIcon className='h-4 w-4' />
+                <TrashIcon className="h-4 w-4" />
               </button>
             )}
             {isEditMode && !!id && agentDetail?.permissions?.SHARE && (
               <button
                 onClick={() => setShareOpen(true)}
                 disabled={loading || loadingDetail}
-                className='inline-flex items-center px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm text-sm font-medium text-purple-600 dark:text-purple-400 bg-white dark:bg-gray-800 hover:bg-purple-50 dark:hover:bg-purple-900/20 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors'
+                className="inline-flex items-center px-4 py-2 border border-[color:var(--jarvis-border)] rounded-md shadow-sm text-sm font-medium text-[var(--jarvis-primary)] bg-[var(--jarvis-card)] hover:bg-[var(--jarvis-primary-soft)] hover:bg-[var(--jarvis-primary-soft)] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[var(--jarvis-primary)] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
-                <HiOutlineShare className='h-4 w-4' />
+                <HiOutlineShare className="h-4 w-4" />
               </button>
             )}
           </div>
-          <div className='flex gap-3'>
+          <div className="flex gap-3">
             {isReadOnly ? (
               <button
                 onClick={goBack}
                 disabled={loading}
-                className='min-w-[80px] sm:min-w-[120px] md:min-w-[160px] px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm text-sm font-medium text-gray-700 dark:text-gray-200 bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors'
+                className="min-w-[80px] sm:min-w-[120px] md:min-w-[160px] px-4 py-2 border border-[color:var(--jarvis-border)] rounded-md shadow-sm text-sm font-medium text-[var(--jarvis-text)] bg-[var(--jarvis-card)] hover:bg-[var(--jarvis-card-muted)] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[var(--jarvis-primary)] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
                 Back
               </button>
@@ -308,16 +308,16 @@ const AgentRegistryOrEdit: React.FC = () => {
                 <button
                   onClick={goBack}
                   disabled={loading}
-                  className='min-w-[80px] sm:min-w-[120px] md:min-w-[160px] px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm text-sm font-medium text-gray-700 dark:text-gray-200 bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors'
+                  className="min-w-[80px] sm:min-w-[120px] md:min-w-[160px] px-4 py-2 border border-[color:var(--jarvis-border)] rounded-md shadow-sm text-sm font-medium text-[var(--jarvis-text)] bg-[var(--jarvis-card)] hover:bg-[var(--jarvis-card-muted)] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[var(--jarvis-primary)] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                 >
                   Cancel
                 </button>
                 <button
                   onClick={handleSave}
                   disabled={loading}
-                  className='inline-flex items-center justify-center gap-2 min-w-[80px] sm:min-w-[120px] md:min-w-[160px] px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-purple-700 hover:bg-purple-800 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors'
+                  className="inline-flex items-center justify-center gap-2 min-w-[80px] sm:min-w-[120px] md:min-w-[160px] px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-[var(--jarvis-primary-hover)] hover:bg-[var(--jarvis-primary-hover)] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[var(--jarvis-primary)] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                 >
-                  {loading && <div className='animate-spin rounded-full h-4 w-4 border-b-2 border-white' />}
+                  {loading && <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white" />}
                   {isEditMode ? 'Save Changes' : 'Register Agent'}
                 </button>
               </>
