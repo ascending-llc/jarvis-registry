@@ -30,30 +30,30 @@ const ServerCreationSuccessDialog: React.FC<ServerCreationSuccessDialogProps> = 
       <div className='fixed inset-0 bg-black/50' aria-hidden='true' />
 
       <div className='fixed inset-0 flex items-center justify-center p-4'>
-        <Dialog.Panel className='w-full max-w-lg bg-white dark:bg-gray-800 rounded-xl shadow-xl overflow-hidden'>
+        <Dialog.Panel className='w-full max-w-lg overflow-hidden rounded-xl bg-[var(--jarvis-card)] shadow-xl'>
           {/* Header */}
-          <div className='px-6 py-4 flex items-center justify-between'>
-            <Dialog.Title className='text-lg font-bold text-gray-900 dark:text-white'>
+          <div className='flex items-center justify-between px-6 py-4'>
+            <Dialog.Title className='text-lg font-bold text-[var(--jarvis-text-strong)]'>
               MCP server created successfully
             </Dialog.Title>
             <button
               onClick={onClose}
-              className='text-gray-400 hover:text-gray-500 dark:text-gray-400 dark:hover:text-gray-300'
+              className='text-[var(--jarvis-icon)] hover:text-[var(--jarvis-icon-hover)]'
             >
               <XMarkIcon className='h-6 w-6' />
             </button>
           </div>
 
-          <div className='border-b border-gray-100 dark:border-gray-700' />
+          <div className='border-b border-[color:var(--jarvis-border)]' />
 
           {/* Content */}
           <div className='px-6 py-6'>
-            <p className='text-sm text-gray-500 dark:text-gray-400 mb-4'>
+            <p className='mb-4 text-sm text-[var(--jarvis-muted)]'>
               Copy this redirect URI and configure it in your OAuth provider settings.
             </p>
 
-            <div className='bg-gray-50 dark:bg-gray-700/50 p-4 rounded-lg border border-gray-200 dark:border-gray-600 space-y-2'>
-              <label className='block text-xs font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wider'>
+            <div className='space-y-2 rounded-lg border border-[color:var(--jarvis-border)] bg-[var(--jarvis-card-muted)] p-4'>
+              <label className='block text-xs font-semibold uppercase tracking-wider text-[var(--jarvis-text)]'>
                 Redirect URI
               </label>
               <div className='flex items-center space-x-2'>
@@ -62,12 +62,12 @@ const ServerCreationSuccessDialog: React.FC<ServerCreationSuccessDialogProps> = 
                     type='text'
                     readOnly
                     value={redirectUri}
-                    className='w-full px-3 py-2 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-md text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-purple-500'
+                    className='w-full rounded-md border border-[color:var(--jarvis-input-border)] bg-[var(--jarvis-input-bg)] px-3 py-2 text-sm text-[var(--jarvis-text)] focus:outline-none focus:ring-2 focus:ring-[var(--jarvis-primary)]'
                   />
                 </div>
                 <button
                   onClick={handleCopy}
-                  className='flex items-center px-4 py-2 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-md text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 min-w-[100px] justify-center'
+                  className='flex min-w-[100px] items-center justify-center rounded-md border border-[color:var(--jarvis-input-border)] bg-[var(--jarvis-input-bg)] px-4 py-2 text-sm font-medium text-[var(--jarvis-text)] hover:bg-[var(--jarvis-primary-soft)] focus:outline-none focus:ring-2 focus:ring-[var(--jarvis-primary)] focus:ring-offset-2'
                 >
                   {copied ? 'Copied!' : 'Copy link'}
                 </button>
@@ -76,10 +76,10 @@ const ServerCreationSuccessDialog: React.FC<ServerCreationSuccessDialogProps> = 
           </div>
 
           {/* Footer */}
-          <div className='px-6 py-4 flex justify-end bg-gray-50 dark:bg-gray-800/50 border-t border-gray-100 dark:border-gray-700'>
+          <div className='flex justify-end border-t border-[color:var(--jarvis-border)] bg-[var(--jarvis-card-muted)] px-6 py-4'>
             <button
               onClick={onClose}
-              className='px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-purple-700 hover:bg-green-800 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500'
+              className='rounded-md border border-transparent bg-[var(--jarvis-primary)] px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-[var(--jarvis-primary-hover)] focus:outline-none focus:ring-2 focus:ring-[var(--jarvis-primary)] focus:ring-offset-2'
             >
               Done
             </button>

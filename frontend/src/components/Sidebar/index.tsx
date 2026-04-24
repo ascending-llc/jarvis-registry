@@ -20,7 +20,7 @@ const Sidebar: React.FC<SidebarProps> = ({ sidebarOpen, setSidebarOpen }) => {
       {/* Mobile sidebar only */}
       {window.innerWidth < 768 && (
         <Transition.Root show={sidebarOpen} as={Fragment}>
-          <Dialog as='div' className='relative z-50' onClose={setSidebarOpen}>
+          <Dialog as='div' className="relative z-50" onClose={setSidebarOpen}>
             <Transition.Child
               as={Fragment}
               enter='transition-opacity ease-linear duration-300'
@@ -30,10 +30,10 @@ const Sidebar: React.FC<SidebarProps> = ({ sidebarOpen, setSidebarOpen }) => {
               leaveFrom='opacity-100'
               leaveTo='opacity-0'
             >
-              <div className='fixed inset-0 bg-gray-900/80' />
+              <div className="fixed inset-0 bg-[var(--jarvis-overlay)]" />
             </Transition.Child>
 
-            <div className='fixed inset-0 flex'>
+            <div className="fixed inset-0 flex">
               <Transition.Child
                 as={Fragment}
                 enter='transition ease-in-out duration-300 transform'
@@ -43,7 +43,7 @@ const Sidebar: React.FC<SidebarProps> = ({ sidebarOpen, setSidebarOpen }) => {
                 leaveFrom='translate-x-0'
                 leaveTo='-translate-x-full'
               >
-                <Dialog.Panel className='relative mr-16 flex w-full max-w-xs flex-1'>
+                <Dialog.Panel className="relative mr-16 flex w-full max-w-xs flex-1">
                   <Transition.Child
                     as={Fragment}
                     enter='ease-in-out duration-300'
@@ -53,14 +53,14 @@ const Sidebar: React.FC<SidebarProps> = ({ sidebarOpen, setSidebarOpen }) => {
                     leaveFrom='opacity-100'
                     leaveTo='opacity-0'
                   >
-                    <div className='absolute left-full top-0 flex w-16 justify-center pt-5'>
-                      <button className='-m-2.5 p-2.5' onClick={() => setSidebarOpen(false)} aria-label='Close sidebar'>
-                        <XMarkIcon className='h-6 w-6 text-white' />
+                    <div className="absolute left-full top-0 flex w-16 justify-center pt-5">
+                      <button className="-m-2.5 p-2.5" onClick={() => setSidebarOpen(false)} aria-label='Close sidebar'>
+                        <XMarkIcon className="h-6 w-6 text-white" />
                       </button>
                     </div>
                   </Transition.Child>
 
-                  <div className='flex grow flex-col gap-y-5 overflow-y-auto bg-white dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700'>
+                  <div className="flex grow flex-col gap-y-5 overflow-y-auto bg-[var(--jarvis-card)] bg-[var(--jarvis-card)] border-r border-[color:var(--jarvis-border)] border-[color:var(--jarvis-border)]">
                     <Content setSidebarOpen={setSidebarOpen} />
                   </div>
                 </Dialog.Panel>
@@ -82,7 +82,7 @@ const Sidebar: React.FC<SidebarProps> = ({ sidebarOpen, setSidebarOpen }) => {
             leaveFrom='translate-x-0'
             leaveTo='-translate-x-full'
           >
-            <div className='fixed left-0 top-16 bottom-0 z-40 w-64 lg:w-72 xl:w-80 bg-white dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700 overflow-y-auto'>
+            <div className="fixed left-0 top-16 bottom-0 z-40 w-64 lg:w-72 xl:w-80 bg-[var(--jarvis-card)] bg-[var(--jarvis-card)] border-r border-[color:var(--jarvis-border)] border-[color:var(--jarvis-border)] overflow-y-auto">
               <Content
                 setTokenData={setTokenData}
                 setSidebarOpen={setSidebarOpen}

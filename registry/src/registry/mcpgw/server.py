@@ -130,6 +130,7 @@ def create_mcp_app(*, container_provider: Callable[[], RegistryContainer | None]
                 mcp_client_service=container.mcp_client_service,
                 oauth_service=container.oauth_service,
                 session_store=container.session_store,
+                redis_client=container.redis_client,
             )
 
     # Configure transport security settings from environment variables

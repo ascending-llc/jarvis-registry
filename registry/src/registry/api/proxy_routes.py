@@ -16,6 +16,7 @@ from a2a.types import MessageSendParams
 from beanie import PydanticObjectId
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
+from redis import Redis
 
 from registry_pkgs.models import ResourceType
 from registry_pkgs.models.a2a_agent import TRANSPORT_GRPC, TRANSPORT_HTTP_JSON, TRANSPORT_JSONRPC
@@ -24,7 +25,14 @@ from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 from ..auth.dependencies import CurrentUser, UserContextDict
 from ..core.config import settings
 from ..core.exceptions import InternalServerException, UrlElicitationRequiredException
-from ..deps import get_a2a_agent_service, get_acl_service, get_mcp_proxy_client, get_oauth_service, get_server_service
+from ..deps import (
+    get_a2a_agent_service,
+    get_acl_service,
+    get_mcp_proxy_client,
+    get_oauth_service,
+    get_redis_client,
+    get_server_service,
+)
 from ..mcpgw.tools.utils import build_authenticated_headers, parse_elicitation_id
 from ..services.a2a_agent_service import A2AAgentService
 from ..services.access_control_service import ACLService
@@ -130,18 +138,21 @@ async def proxy_to_mcp_server(
     server: ExtendedMCPServer,
     oauth_service: MCPOAuthService,
     proxy_client: httpx.AsyncClient,
+    redis_client: Redis,
 ) -> Response:
     """
     Proxy request to MCP server with auth headers.
     Handles both regular HTTP and SSE streaming, including OAuth token injection.
 
     Args:
+        request_id: JSON-RPC request ID
         request: Incoming FastAPI request
         target_url: Backend MCP server URL
         auth_context: UserContextDict
         server: ExtendedMCPServer
         oauth_service: OAuth service for building auth headers
         proxy_client: Shared httpx client for connection pooling
+        redis_client: Redis client for JWT token caching
     """
     # Build proxy headers - start with request headers
     headers = dict(request.headers)
@@ -161,7 +172,11 @@ async def proxy_to_mcp_server(
     # Build complete authentication headers using shared utility
     try:
         headers = await build_authenticated_headers(
-            oauth_service=oauth_service, server=server, auth_context=auth_context, additional_headers=headers
+            oauth_service=oauth_service,
+            server=server,
+            auth_context=auth_context,
+            additional_headers=headers,
+            redis_client=redis_client,
         )
     except UrlElicitationRequiredException as exc:
         llm_msg = (
@@ -421,7 +436,7 @@ async def a2a_agent_proxy(
         # Fallback to card.url for backward compatibility with old data
         base_url = str(agent.card.url)
         logger.warning(
-            f"Agent {agent_registry_path} missing config.url, falling back to card.url: {base_url}. "
+            f"Agent {agent_registry_path} missing config.url, falling back to card.url: {base_url}. "  # nosec B608 - false positive
             "This may fail if card.url is not accessible. Please update the agent to set config.url."
         )
 
@@ -553,6 +568,7 @@ async def dynamic_mcp_post_proxy(
     server_service: ServerServiceV1 = Depends(get_server_service),
     oauth_service: MCPOAuthService = Depends(get_oauth_service),
     proxy_client: httpx.AsyncClient = Depends(get_mcp_proxy_client),
+    redis_client: Redis = Depends(get_redis_client),
 ):
     """
     Dynamic catch-all route for MCP server proxying, but only works for POST.
@@ -639,6 +655,7 @@ async def dynamic_mcp_post_proxy(
         server=server,
         oauth_service=oauth_service,
         proxy_client=proxy_client,
+        redis_client=redis_client,
     )
 
 
@@ -650,6 +667,7 @@ async def dynamic_mcp_get_proxy(
     server_service: ServerServiceV1 = Depends(get_server_service),
     oauth_service: MCPOAuthService = Depends(get_oauth_service),
     proxy_client: httpx.AsyncClient = Depends(get_mcp_proxy_client),
+    redis_client: Redis = Depends(get_redis_client),
 ):
     """
     Dynamic catch-all route for MCP server proxying, but only works for GET, i.e. the event stream.
@@ -725,7 +743,11 @@ async def dynamic_mcp_get_proxy(
     # Build complete authentication headers using shared utility
     try:
         headers = await build_authenticated_headers(
-            oauth_service=oauth_service, server=server, auth_context=auth_context, additional_headers=headers
+            oauth_service=oauth_service,
+            server=server,
+            auth_context=auth_context,
+            additional_headers=headers,
+            redis_client=redis_client,
         )
     except UrlElicitationRequiredException as exc:
         # If token expired for a GET request, follow RFC 9457 and RFC 7807.

@@ -4,6 +4,7 @@ import { useState } from 'react';
 
 import SERVICES from '@/services';
 import { useAuth } from '../contexts/AuthContext';
+import IconButton from '@/components/IconButton';
 
 const TokenGeneration: React.FC = () => {
   const { user } = useAuth();
@@ -119,11 +120,11 @@ const TokenGeneration: React.FC = () => {
       {/* Compact Header Section */}
       <div className='flex-shrink-0 pb-2'>
         <div className='text-center'>
-          <div className='mx-auto w-10 h-10 bg-primary-100 dark:bg-primary-900 rounded-full flex items-center justify-center mb-2'>
-            <KeyIcon className='w-5 h-5 text-primary-600 dark:text-primary-400' />
+          <div className='mx-auto mb-2 flex h-10 w-10 items-center justify-center rounded-full bg-[var(--jarvis-primary-soft)]'>
+            <KeyIcon className='h-5 w-5 text-[var(--jarvis-primary-text)]' />
           </div>
-          <h1 className='text-xl font-bold text-gray-900 dark:text-white'>Generate JWT Token</h1>
-          <p className='text-sm text-gray-600 dark:text-gray-400'>
+          <h1 className='text-xl font-bold text-[var(--jarvis-text-strong)]'>Generate JWT Token</h1>
+          <p className='text-sm text-[var(--jarvis-muted)]'>
             Generate a personal access token for programmatic access to MCP servers
           </p>
         </div>
@@ -133,26 +134,26 @@ const TokenGeneration: React.FC = () => {
       <div className='flex-1 overflow-y-auto min-h-0'>
         <div className='max-w-4xl mx-auto space-y-4 pb-6'>
           {/* Current User Permissions - Compact */}
-          <div className='card p-4 bg-gray-50 dark:bg-gray-800'>
-            <h3 className='text-base font-semibold text-gray-900 dark:text-white mb-2'>Your Current Permissions</h3>
+          <div className='card bg-[var(--jarvis-card-muted)] p-4'>
+            <h3 className='mb-2 text-base font-semibold text-[var(--jarvis-text-strong)]'>Your Current Permissions</h3>
             <div className='mb-2'>
-              <span className='text-xs font-medium text-gray-700 dark:text-gray-300'>Current Scopes:</span>
+              <span className='text-xs font-medium text-[var(--jarvis-text)]'>Current Scopes:</span>
               <div className='flex flex-wrap gap-1 mt-1'>
                 {user?.scopes && user.scopes.length > 0 ? (
                   user.scopes.map(scope => (
                     <span
                       key={scope}
-                      className='inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200'
+                      className='inline-flex items-center rounded-full bg-[var(--jarvis-info-soft)] px-2 py-0.5 text-xs font-medium text-[var(--jarvis-info-text)]'
                     >
                       {scope}
                     </span>
                   ))
                 ) : (
-                  <span className='text-xs text-gray-500 dark:text-gray-400'>No scopes available</span>
+                  <span className='text-xs text-[var(--jarvis-muted)]'>No scopes available</span>
                 )}
               </div>
             </div>
-            <p className='text-xs text-gray-600 dark:text-gray-400'>
+            <p className='text-xs text-[var(--jarvis-muted)]'>
               <em>Generated tokens can have the same or fewer permissions than your current scopes.</em>
             </p>
           </div>
@@ -160,7 +161,7 @@ const TokenGeneration: React.FC = () => {
           {/* Token Configuration Form */}
           <div className='card p-4'>
             <form onSubmit={handleGenerateToken} className='space-y-4'>
-              <h3 className='text-base font-semibold text-gray-900 dark:text-white'>Token Configuration</h3>
+              <h3 className='text-base font-semibold text-[var(--jarvis-text-strong)]'>Token Configuration</h3>
 
               {/* Form Fields - Responsive Grid */}
               <div className='grid grid-cols-1 lg:grid-cols-2 gap-4'>
@@ -170,7 +171,7 @@ const TokenGeneration: React.FC = () => {
                   <div>
                     <label
                       htmlFor='description'
-                      className='block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1'
+                      className='mb-1 block text-sm font-medium text-[var(--jarvis-text)]'
                     >
                       Description (optional)
                     </label>
@@ -188,7 +189,7 @@ const TokenGeneration: React.FC = () => {
                   <div>
                     <label
                       htmlFor='expiresInHours'
-                      className='block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1'
+                      className='mb-1 block text-sm font-medium text-[var(--jarvis-text)]'
                     >
                       Expires In
                     </label>
@@ -211,7 +212,7 @@ const TokenGeneration: React.FC = () => {
                 <div className='space-y-3'>
                   {/* Scope Configuration */}
                   <div>
-                    <h4 className='text-sm font-semibold text-gray-900 dark:text-white mb-2'>Scope Configuration</h4>
+                    <h4 className='mb-2 text-sm font-semibold text-[var(--jarvis-text-strong)]'>Scope Configuration</h4>
 
                     <div className='space-y-2'>
                       <label className='flex items-center space-x-2'>
@@ -223,11 +224,11 @@ const TokenGeneration: React.FC = () => {
                           onChange={e =>
                             setFormData(prev => ({ ...prev, scopeMethod: e.target.value as 'current' | 'custom' }))
                           }
-                          className='rounded border-gray-300 text-primary-600 focus:ring-primary-500'
+                          className='rounded border-[color:var(--jarvis-input-border)] text-[var(--jarvis-primary)] focus:ring-[var(--jarvis-primary)]'
                         />
                         <div>
-                          <div className='text-sm font-medium text-gray-900 dark:text-white'>Use my current scopes</div>
-                          <div className='text-xs text-gray-500 dark:text-gray-400'>
+                          <div className='text-sm font-medium text-[var(--jarvis-text)]'>Use my current scopes</div>
+                          <div className='text-xs text-[var(--jarvis-muted)]'>
                             Generate token with all your current permissions
                           </div>
                         </div>
@@ -242,13 +243,13 @@ const TokenGeneration: React.FC = () => {
                           onChange={e =>
                             setFormData(prev => ({ ...prev, scopeMethod: e.target.value as 'current' | 'custom' }))
                           }
-                          className='rounded border-gray-300 text-primary-600 focus:ring-primary-500'
+                          className='rounded border-[color:var(--jarvis-input-border)] text-[var(--jarvis-primary)] focus:ring-[var(--jarvis-primary)]'
                         />
                         <div>
-                          <div className='text-sm font-medium text-gray-900 dark:text-white'>
+                          <div className='text-sm font-medium text-[var(--jarvis-text)]'>
                             Upload custom scopes (JSON)
                           </div>
-                          <div className='text-xs text-gray-500 dark:text-gray-400'>
+                          <div className='text-xs text-[var(--jarvis-muted)]'>
                             Specify custom scopes in JSON format
                           </div>
                         </div>
@@ -260,22 +261,26 @@ const TokenGeneration: React.FC = () => {
                       <div className='mt-3'>
                         <label
                           htmlFor='customScopes'
-                          className='block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1'
+                          className='mb-1 block text-sm font-medium text-[var(--jarvis-text)]'
                         >
                           Custom Scopes (JSON format)
                         </label>
                         <textarea
                           id='customScopes'
-                          className={`input h-24 font-mono text-xs ${scopeValidationError ? 'border-red-300 focus:border-red-500 focus:ring-red-500' : ''}`}
+                          className={`input h-24 font-mono text-xs ${
+                            scopeValidationError
+                              ? '!border-[var(--jarvis-danger)] focus:!border-[var(--jarvis-danger)] focus:!ring-[var(--jarvis-danger)]'
+                              : ''
+                          }`}
                           placeholder={`["mcp-servers-restricted/read", "mcp-registry-user"]`}
                           value={formData.customScopes}
                           onChange={e => setFormData(prev => ({ ...prev, customScopes: e.target.value }))}
                         />
-                        <p className='mt-1 text-xs text-gray-500 dark:text-gray-400'>
+                        <p className='mt-1 text-xs text-[var(--jarvis-muted)]'>
                           Enter a JSON array of scope names. Must be a subset of your current scopes.
                         </p>
                         {scopeValidationError && (
-                          <p className='mt-1 text-xs text-red-600 dark:text-red-400'>{scopeValidationError}</p>
+                          <p className='mt-1 text-xs text-[var(--jarvis-danger-text)]'>{scopeValidationError}</p>
                         )}
                       </div>
                     )}
@@ -304,10 +309,10 @@ const TokenGeneration: React.FC = () => {
 
               {/* Error Display */}
               {error && (
-                <div className='p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg'>
+                <div className='rounded-lg border border-[var(--jarvis-danger)]/30 bg-[var(--jarvis-danger-soft)] p-3'>
                   <div className='flex items-center space-x-2'>
-                    <ExclamationTriangleIcon className='h-4 w-4 text-red-600 dark:text-red-400' />
-                    <span className='text-sm text-red-800 dark:text-red-200'>{error}</span>
+                    <ExclamationTriangleIcon className='h-4 w-4 text-[var(--jarvis-danger-text)]' />
+                    <span className='text-sm text-[var(--jarvis-danger-text)]'>{error}</span>
                   </div>
                 </div>
               )}
@@ -316,31 +321,39 @@ const TokenGeneration: React.FC = () => {
 
           {/* Generated Token Result */}
           {generatedToken && tokenDetails && (
-            <div className='card p-4 bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800'>
+            <div className='card border-[var(--jarvis-success)]/25 bg-[var(--jarvis-success-soft)] p-4'>
               <div className='flex items-center space-x-2 mb-3'>
-                <CheckIcon className='h-5 w-5 text-green-600 dark:text-green-400' />
-                <h3 className='text-lg font-semibold text-green-900 dark:text-green-100'>
+                <CheckIcon className='h-5 w-5 text-[var(--jarvis-success-text)]' />
+                <h3 className='text-lg font-semibold text-[var(--jarvis-success-text)]'>
                   Token Generated Successfully
                 </h3>
               </div>
 
               {/* Token Display */}
               <div className='relative mb-4'>
-                <div className='bg-white dark:bg-gray-800 p-4 rounded-lg border border-green-200 dark:border-green-700'>
-                  <code className='text-sm font-mono break-all text-gray-900 dark:text-gray-100'>{generatedToken}</code>
+                <div className='rounded-lg border border-[var(--jarvis-success)]/25 bg-[var(--jarvis-card)] p-4'>
+                  <code className='break-all text-sm font-mono text-[var(--jarvis-text)]'>{generatedToken}</code>
                 </div>
 
-                <button
-                  onClick={handleCopyToken}
-                  className='absolute top-2 right-2 p-2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 rounded hover:bg-gray-100 dark:hover:bg-gray-700'
-                  title={copied ? 'Copied!' : 'Copy token'}
-                >
-                  {copied ? <CheckIcon className='h-4 w-4 text-green-600' /> : <ClipboardIcon className='h-4 w-4' />}
-                </button>
+                <div className="absolute right-2 top-2 z-10">
+                  <IconButton
+                    ariaLabel="Copy token"
+                    tooltip={copied ? "Copied!" : "Copy token"}
+                    onClick={handleCopyToken}
+                    size="card"
+                    className="text-[var(--jarvis-icon)] hover:bg-[var(--jarvis-card-muted)] hover:text-[var(--jarvis-icon-hover)] border-none bg-transparent hover:bg-transparent shadow-none"
+                  >
+                    {copied ? (
+                      <CheckIcon className='h-4 w-4 text-[var(--jarvis-success-text)]' />
+                    ) : (
+                      <ClipboardIcon className='h-4 w-4' />
+                    )}
+                  </IconButton>
+                </div>
               </div>
 
               {/* Token Details */}
-              <div className='space-y-2 text-sm mb-4 text-gray-900 dark:text-white'>
+              <div className='mb-4 space-y-2 text-sm text-[var(--jarvis-text)]'>
                 <p>
                   <strong>Expires:</strong>{' '}
                   {new Date(Date.now() + tokenDetails.tokenData.expiresIn * 1000).toLocaleString()}
@@ -356,20 +369,20 @@ const TokenGeneration: React.FC = () => {
               </div>
 
               {/* Usage Instructions */}
-              <div className='p-4 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg mb-4'>
-                <h4 className='text-sm font-semibold text-blue-900 dark:text-blue-100 mb-2'>📋 Usage Instructions</h4>
-                <p className='text-sm text-blue-800 dark:text-blue-200 mb-2'>Use this token in your API requests:</p>
-                <code className='block text-sm bg-blue-100 dark:bg-blue-900/40 p-2 rounded font-mono text-blue-900 dark:text-blue-100'>
+              <div className='mb-4 rounded-lg border border-[var(--jarvis-info-text)]/25 bg-[var(--jarvis-info-soft)] p-4'>
+                <h4 className='mb-2 text-sm font-semibold text-[var(--jarvis-info-text)]'>📋 Usage Instructions</h4>
+                <p className='mb-2 text-sm text-[var(--jarvis-info-text)]'>Use this token in your API requests:</p>
+                <code className='block rounded bg-[var(--jarvis-card)] p-2 text-sm font-mono text-[var(--jarvis-info-text)]'>
                   Authorization: Bearer YOUR_TOKEN_HERE
                 </code>
-                <p className='text-xs text-blue-600 dark:text-blue-300 mt-2'>
+                <p className='mt-2 text-xs text-[var(--jarvis-info-text)]'>
                   Replace YOUR_TOKEN_HERE with the token above.
                 </p>
               </div>
 
               {/* Security Warning */}
-              <div className='p-4 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg'>
-                <p className='text-sm text-yellow-800 dark:text-yellow-200'>
+              <div className='rounded-lg border border-[var(--jarvis-warning)]/25 bg-[var(--jarvis-warning-soft)] p-4'>
+                <p className='text-sm text-[var(--jarvis-warning-text)]'>
                   <strong>⚠️ Important:</strong> This token will not be shown again. Save it securely!
                 </p>
               </div>

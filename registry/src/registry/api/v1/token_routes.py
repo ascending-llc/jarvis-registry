@@ -1,28 +1,24 @@
 import logging
+import time
+import uuid
 
-import httpx
-from fastapi import APIRouter, HTTPException, Request, status
-from pydantic import BaseModel
+from fastapi import APIRouter, HTTPException
+from pydantic import ValidationError
+
+from registry_pkgs.core.jwt_utils import build_jwt_payload, encode_jwt
 
 from ...auth.dependencies import CurrentUser
 from ...core.config import settings
-from ...schemas.common_api_schemas import TokenData, TokenGenerateResponse
+from ...schemas.common_api_schemas import TokenData, TokenGenerateRequest, TokenGenerateResponse
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-KEYCLOAK_ADMIN_URL = settings.keycloak_url
-KEYCLOAK_REALM = settings.keycloak_realm
-
-
-class RatingRequest(BaseModel):
-    rating: int
-
 
 @router.post("/tokens/generate", response_model=TokenGenerateResponse, response_model_by_alias=True)
 async def generate_user_token(
-    request: Request,
+    request_data: TokenGenerateRequest,
     user_context: CurrentUser,
 ) -> TokenGenerateResponse:
     """
@@ -30,9 +26,9 @@ async def generate_user_token(
 
     Request body should contain:
     {
-        "requested_scopes": ["scope1", "scope2"],  // Optional, defaults to user's current scopes
-        "expires_in_hours": 8,                     // Optional, must be one of: 1, 8, 24
-        "description": "Token for automation"      // Optional description
+        "expiresInHours": 8,                       // Required, must be one of: 1, 8, or 24
+        "description": "Token for automation",     // Optional description
+        "requestedScopes": ["scope1", "scope2"]    // Optional, defaults to user's current scopes
     }
 
     Returns:
@@ -43,186 +39,82 @@ async def generate_user_token(
     """
 
     try:
-        # Parse request body
-        try:
-            body = await request.json()
-        except Exception as e:
-            logger.warning(f"Invalid JSON in token generation request: {e}")
-            raise HTTPException(status_code=400, detail="Invalid JSON in request body")
+        requested_scopes = request_data.requestedScopes or []
+        expires_in_hours = request_data.expiresInHours
+        description = request_data.description
 
-        requested_scopes = body.get("requested_scopes", [])
-        expires_in_hours = body.get("expires_in_hours", 8)
-        description = body.get("description", "")
+        # Extract user information
+        username = user_context.get("username")
+        user_scopes = user_context.get("scopes", [])
+        user_groups = user_context.get("groups", [])
+        user_id = user_context.get("user_id")
 
-        # Validate expires_in_hours - only allow 1, 8, or 24 hours
-        allowed_hours = [1, 8, 24]
-        if expires_in_hours not in allowed_hours:
-            raise HTTPException(
-                status_code=400,
-                detail=f"expires_in_hours must be one of: {allowed_hours} (1hr, 8hr, or 24hr)",
-            )
+        if not username:
+            raise HTTPException(status_code=400, detail="Username is required in user context")
 
-        # Validate requested_scopes
-        if requested_scopes and not isinstance(requested_scopes, list):
-            raise HTTPException(status_code=400, detail="requested_scopes must be a list of strings")
+        # Use requested scopes or default to user scopes
+        final_scopes = requested_scopes if requested_scopes else user_scopes
 
         # Check if requested scopes are within user's current scopes
         if requested_scopes:
-            user_scopes = set(user_context.get("scopes", []))
+            user_scopes_set = set(user_scopes)
             requested_scopes_set = set(requested_scopes)
 
-            # Check if all requested scopes are in user's current scopes
-            invalid_scopes = requested_scopes_set - user_scopes
+            invalid_scopes = requested_scopes_set - user_scopes_set
             if invalid_scopes:
-                logger.warning(
-                    f"User '{user_context['username']}' requested scopes not in their permission: {invalid_scopes}"
-                )
+                logger.warning(f"User '{username}' requested scopes not in their permission: {invalid_scopes}")
                 raise HTTPException(
                     status_code=403,
-                    detail=f"Cannot request scopes not in your current permissions. Invalid scopes: {list(invalid_scopes)}",
+                    detail=f"Requested scopes exceed user permissions. Invalid scopes: {list(invalid_scopes)}",
                 )
 
-        # Prepare request to auth server
-        auth_request = {
-            "user_context": {
-                "username": user_context["username"],
-                "scopes": user_context["scopes"],
-                "groups": user_context["groups"],
-                "user_id": user_context["user_id"],
-            },
-            "requested_scopes": requested_scopes,
-            "expires_in_hours": expires_in_hours,
-            "description": description,
+        # Generate JWT token locally (moved from auth-server)
+        current_time = int(time.time())
+        expires_in_seconds = expires_in_hours * 3600
+
+        extra_claims = {
+            "user_id": user_id,
+            "scope": " ".join(final_scopes),
+            "groups": user_groups,
+            "jti": str(uuid.uuid4()),
+            "token_use": "access",
+            "client_id": "user-generated",
         }
 
-        # Call auth server internal API (no authentication needed since both are trusted internal services)
-        async with httpx.AsyncClient() as client:
-            headers = {"Content-Type": "application/json"}
+        if description:
+            extra_claims["description"] = description
 
-            auth_server_url = settings.auth_server_url
-            response = await client.post(
-                f"{auth_server_url}/internal/tokens",
-                json=auth_request,
-                headers=headers,
-                timeout=10.0,
-            )
+        access_payload = build_jwt_payload(
+            subject=username,
+            issuer=settings.jwt_issuer,
+            audience=settings.jwt_audience,
+            expires_in_seconds=expires_in_seconds,
+            iat=current_time,
+            extra_claims=extra_claims,
+        )
 
-            if response.status_code == 200:
-                token_data = response.json()
-                logger.info(
-                    f"Successfully generated token for user '{user_context['username']}' with expiry {expires_in_hours}h"
-                )
+        access_token = encode_jwt(access_payload, settings.jwt_private_key, kid=settings.jwt_self_signed_kid)
 
-                # Format response using Pydantic schema
-                return TokenGenerateResponse(
-                    success=True,
-                    tokenData=TokenData(
-                        accessToken=token_data.get("access_token"),
-                        expiresIn=token_data.get("expires_in"),
-                        tokenType=token_data.get("token_type", "Bearer"),
-                        scope=token_data.get("scope", ""),
-                    ),
-                    userScopes=user_context["scopes"],
-                    requestedScopes=requested_scopes or user_context["scopes"],
-                )
-            else:
-                error_detail = "Unknown error"
-                try:
-                    error_response = response.json()
-                    error_detail = error_response.get("detail", "Unknown error")
-                except:
-                    error_detail = response.text
+        logger.info(f"Successfully generated token for user '{username}' with expiry {expires_in_hours}h")
 
-                logger.warning(f"Auth server returned error {response.status_code}: {error_detail}")
-                raise HTTPException(
-                    status_code=response.status_code,
-                    detail=f"Token generation failed: {error_detail}",
-                )
+        # Format response using Pydantic schema
+        return TokenGenerateResponse(
+            success=True,
+            tokenData=TokenData(
+                accessToken=access_token,
+                expiresIn=expires_in_seconds,
+                tokenType="Bearer",
+                scope=" ".join(final_scopes),
+            ),
+            userScopes=user_scopes,
+            requestedScopes=final_scopes,
+        )
 
     except HTTPException:
         raise
+    except ValidationError as e:
+        logger.warning(f"Validation error in token generation request: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Unexpected error generating token for user '{user_context['username']}': {e}")
         raise HTTPException(status_code=500, detail="Internal error generating token")
-
-
-@router.get("/admin/tokens")
-async def get_admin_tokens(
-    user_context: CurrentUser,
-):
-    """
-    Admin-only endpoint to retrieve JWT tokens from Keycloak.
-
-    Returns both access token and refresh token for admin users.
-
-    Returns:
-        JSON object containing access_token, refresh_token, expires_in, etc.
-
-    Raises:
-        HTTPException: If user is not admin or token retrieval fails
-    """
-    # Check if user is admin
-    if not user_context.get("is_admin", False):
-        logger.warning(f"Non-admin user {user_context['username']} attempted to access admin tokens")
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="This endpoint is only available to admin users",
-        )
-
-    try:
-        # Get M2M client credentials from environment
-        m2m_client_id = settings.keycloak_m2m_client_id
-        m2m_client_secret = settings.keycloak_m2m_client_secret
-
-        if not m2m_client_secret:
-            raise HTTPException(status_code=500, detail="Keycloak M2M client secret not configured")
-
-        # Get tokens from Keycloak mcp-gateway realm using M2M client_credentials
-        token_url = f"{KEYCLOAK_ADMIN_URL}/realms/{KEYCLOAK_REALM}/protocol/openid-connect/token"
-
-        data = {
-            "grant_type": "client_credentials",
-            "client_id": m2m_client_id,
-            "client_secret": m2m_client_secret,
-        }
-
-        headers = {"Content-Type": "application/x-www-form-urlencoded"}
-
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.post(token_url, data=data, headers=headers)
-            response.raise_for_status()
-
-            token_data = response.json()
-
-            # No refresh tokens - users should configure longer token lifetimes in Keycloak if needed
-            refresh_token = None
-            refresh_expires_in_seconds = 0
-
-            logger.info(
-                f"Admin user {user_context['username']} retrieved Keycloak M2M tokens (no refresh token - configure token lifetime in Keycloak if needed)"
-            )
-
-            return {
-                "success": True,
-                "tokens": {
-                    "access_token": token_data.get("access_token"),
-                    "refresh_token": refresh_token,  # Custom-generated refresh token
-                    "expires_in": token_data.get("expires_in"),
-                    "refresh_expires_in": refresh_expires_in_seconds,
-                    "token_type": token_data.get("token_type", "Bearer"),
-                    "scope": token_data.get("scope", ""),
-                },
-                "keycloak_url": KEYCLOAK_ADMIN_URL,
-                "realm": KEYCLOAK_REALM,
-                "client_id": m2m_client_id,
-            }
-
-    except httpx.HTTPStatusError as e:
-        logger.error(f"Failed to retrieve Keycloak tokens: HTTP {e.response.status_code}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to authenticate with Keycloak: HTTP {e.response.status_code}",
-        )
-    except Exception as e:
-        logger.error(f"Unexpected error retrieving Keycloak tokens: {e}")
-        raise HTTPException(status_code=500, detail="Internal error retrieving Keycloak tokens")

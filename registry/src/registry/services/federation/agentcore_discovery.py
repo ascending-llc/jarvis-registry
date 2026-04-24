@@ -274,7 +274,6 @@ class AgentCoreFederationClient:
         runtime_base_url = self._build_runtime_invocation_url(
             runtime_arn=runtime_arn,
             region=region,
-            decode_for_storage=True,
         )
 
         card_data = {
@@ -354,8 +353,7 @@ class AgentCoreFederationClient:
         runtime_name = runtime_detail["agentRuntimeName"]
         runtime_version = runtime_detail["agentRuntimeVersion"]
         runtime_mcp_url = (
-            f"{self._build_runtime_invocation_url(runtime_arn=runtime_arn, region=region, decode_for_storage=True)}"
-            "?qualifier=DEFAULT"
+            f"{self._build_runtime_invocation_url(runtime_arn=runtime_arn, region=region)}?qualifier=DEFAULT"
         )
         status = runtime_detail.get("status", "READY")
         runtime_access = AgentCoreRuntimeAuthService.infer_runtime_access(

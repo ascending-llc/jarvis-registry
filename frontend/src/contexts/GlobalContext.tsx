@@ -36,32 +36,32 @@ const Toast: React.FC<ToastProps> = ({ message, type, onClose }) => {
 
   return createPortal(
     <div
-      className='fixed top-4 right-4 z-[100] max-w-full animate-slide-in-top'
+      className="fixed top-4 right-4 z-[100] max-w-full animate-slide-in-top"
       onClick={e => e.stopPropagation()}
       onMouseDown={e => e.stopPropagation()}
     >
       <div
         className={`flex items-center p-4 rounded-lg shadow-lg border ${
-          type === 'success'
-            ? 'bg-green-50 border-green-200 text-green-800 dark:bg-green-900/50 dark:border-green-700 dark:text-green-200'
-            : 'bg-red-50 border-red-200 text-red-800 dark:bg-red-900/50 dark:border-red-700 dark:text-red-200'
-        }`}
+ type === 'success'
+ ? 'bg-[var(--jarvis-success-soft)] border-[color:var(--jarvis-success-soft)] text-[var(--jarvis-success-text)] bg-[var(--jarvis-success-soft)]/50 border-[color:var(--jarvis-success-soft)] text-[var(--jarvis-success-text)]'
+ : 'bg-[var(--jarvis-danger-soft)] border-[color:var(--jarvis-danger-soft)] text-[var(--jarvis-danger-text)] bg-[var(--jarvis-danger-soft)]/50 border-[color:var(--jarvis-danger-soft)] text-[var(--jarvis-danger-text)]'
+ }`}
       >
         {type === 'success' ? (
-          <CheckCircleIcon className='h-5 w-5 mr-3 flex-shrink-0' />
+          <CheckCircleIcon className="h-5 w-5 mr-3 flex-shrink-0" />
         ) : (
-          <ExclamationCircleIcon className='h-5 w-5 mr-3 flex-shrink-0' />
+          <ExclamationCircleIcon className="h-5 w-5 mr-3 flex-shrink-0" />
         )}
-        <p className='text-sm font-medium max-w-full truncate'>{message}</p>
+        <p className="text-sm font-medium max-w-full truncate">{message}</p>
         <button
           onClick={e => {
             e.stopPropagation();
             onClose();
           }}
           onMouseDown={e => e.stopPropagation()}
-          className='ml-3 flex-shrink-0 text-current opacity-70 hover:opacity-100'
+          className="ml-3 flex-shrink-0 text-current opacity-70 hover:opacity-100"
         >
-          <XMarkIcon className='h-4 w-4' />
+          <XMarkIcon className="h-4 w-4" />
         </button>
       </div>
     </div>,

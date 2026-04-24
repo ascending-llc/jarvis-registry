@@ -25,6 +25,7 @@ from mcp.types import (
     ToolListChangedNotification,
 )
 from pydantic import ValidationError
+from redis import Redis
 
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 
@@ -158,20 +159,25 @@ async def build_authenticated_headers(
     additional_headers: dict[str, str] | None = None,
     *,
     state_metadata: StateMetadata | None = None,
+    redis_client: Redis | None = None,
 ) -> dict[str, str]:
     """
     Build complete headers with authentication for MCP server requests.
     Consolidates auth logic used by all proxy endpoints.
 
-    Supports dual authentication:
-    - setting.auth_egress_header: OAuth/external access token (RFC 6750) for MCP server resource access
-    - setting.internal_auth_header: Internal JWT for gateway-to-MCP authentication (always included)
+    Supports multiple authentication types:
+    - AgentCore Runtime: JWT authentication for federated AgentCore MCP servers (with caching)
+    - OAuth: External access token (RFC 6750) for MCP server resource access
+    - Internal JWT: Gateway-to-MCP authentication (always included)
+    - API Key: Bearer/Basic/Custom API key authentication
 
     Args:
-        state_metadata:
+        oauth_service: OAuth service for OAuth token management
         server: MCP server document
         auth_context: Gateway authentication context (user, client_id, scopes, jwt_token)
         additional_headers: Optional additional headers to merge
+        state_metadata: OAuth flow state metadata
+        redis_client: Redis client for JWT token caching
 
     Returns:
         Complete headers dict with authentication
@@ -200,7 +206,7 @@ async def build_authenticated_headers(
     if additional_headers:
         headers.update(additional_headers)
 
-    # Build complete authentication headers (OAuth, apiKey, custom)
+    # Build complete authentication headers (OAuth, apiKey, custom, AgentCore Runtime)
     try:
         user_id = auth_context["user_id"]  # Already validated above
         auth_headers = await build_complete_headers_for_server(
@@ -208,6 +214,7 @@ async def build_authenticated_headers(
             server,
             user_id,
             state_metadata=state_metadata,
+            redis_client=redis_client,
         )
 
         # Merge auth headers with case-insensitive override logic

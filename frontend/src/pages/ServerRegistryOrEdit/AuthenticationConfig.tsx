@@ -108,10 +108,10 @@ const AuthenticationConfig: React.FC<AuthenticationConfigProps> = ({
   const redirectUri = `${window.location.protocol}//${window.location.host}${getBasePath()}/api/v1/mcp${serverPath}/oauth/callback`;
 
   return (
-    <div className='space-y-6'>
+    <div className="space-y-6">
       <div>
-        <h3 className='text-lg font-semibold text-gray-900 dark:text-white mb-2'>Authentication</h3>
-        <div className='space-y-4'>
+        <h3 className="text-lg font-semibold text-[var(--jarvis-text-strong)] mb-2">Authentication</h3>
+        <div className="space-y-4">
           <div>
             <FormFields.RadioGroupField
               label='Authentication Type'
@@ -127,15 +127,15 @@ const AuthenticationConfig: React.FC<AuthenticationConfigProps> = ({
           </div>
 
           {config.type === 'auto' && (
-            <div className='rounded-md bg-gray-50 dark:bg-gray-700/50 p-4 text-sm text-gray-600 dark:text-gray-300'>
+            <div className="rounded-md bg-[var(--jarvis-bg)] bg-[var(--jarvis-card-muted)] p-4 text-sm text-[var(--jarvis-muted)] text-[var(--jarvis-text)]">
               Choose this if your MCP server has no auth requirements.
             </div>
           )}
 
           {config.type === 'apiKey' && (
-            <div className='space-y-4 animate-fadeIn'>
+            <div className="space-y-4 animate-fadeIn">
               <div>
-                <label className='block text-sm font-medium text-gray-900 dark:text-gray-100 mb-2'>
+                <label className="block text-sm font-medium text-[var(--jarvis-text-strong)] mb-2">
                   API Key Source
                 </label>
                 <FormFields.CheckboxField
@@ -180,7 +180,7 @@ const AuthenticationConfig: React.FC<AuthenticationConfigProps> = ({
                 />
 
                 {config.authorizationType === 'custom' && (
-                  <div className='mt-4 animate-fadeIn'>
+                  <div className="mt-4 animate-fadeIn">
                     <FormFields.InputField
                       label='Custom Header Name'
                       required
@@ -197,20 +197,20 @@ const AuthenticationConfig: React.FC<AuthenticationConfigProps> = ({
           )}
 
           {config.type === 'oauth' && (
-            <div className='space-y-4 animate-fadeIn'>
+            <div className="space-y-4 animate-fadeIn">
               {isDiscoverLoading ? (
-                <div className='flex items-center justify-center py-8 space-x-3 text-sm text-gray-500 dark:text-gray-400'>
-                  <div className='animate-spin rounded-full h-5 w-5 border-b-2 border-purple-600' />
+                <div className="flex items-center justify-center py-8 space-x-3 text-sm text-[var(--jarvis-muted)]">
+                  <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-[var(--jarvis-primary)]" />
                   <span>Discovering…</span>
                 </div>
               ) : (
                 <>
                   {registrationEndpoint && (
-                    <div className='rounded-lg border border-purple-200 dark:border-purple-700 bg-purple-50 dark:bg-purple-900/30 p-4'>
-                      <p className='text-sm font-semibold text-purple-700 dark:text-purple-300 mb-1'>
+                    <div className="rounded-lg border border-[var(--jarvis-primary-soft)] bg-[var(--jarvis-primary-soft)] p-4">
+                      <p className="text-sm font-semibold text-[var(--jarvis-primary)] mb-1">
                         🔒 Dynamic Client Registration
                       </p>
-                      <p className='text-xs font-mono text-gray-500 dark:text-gray-400 break-all'>
+                      <p className="text-xs font-mono text-[var(--jarvis-muted)] break-all">
                         {registrationEndpoint}
                       </p>
                     </div>
@@ -297,11 +297,11 @@ const AuthenticationConfig: React.FC<AuthenticationConfigProps> = ({
                         onChange={e => updateConfig({ scope: e.target.value })}
                         helperText={
                           <>
-                            <span className='block'>Space-separated list of permissions.Examples:</span>
-                            <span className='block'>
-                              Generic: <span className='italic'>read write profile</span> • GitHub:
-                              <span className='italic'>repo read:user</span> • Google:
-                              <span className='italic'>openid email profile</span>
+                            <span className="block">Space-separated list of permissions.Examples:</span>
+                            <span className="block">
+                              Generic: <span className="italic">read write profile</span> • GitHub:
+                              <span className="italic">repo read:user</span> • Google:
+                              <span className="italic">openid email profile</span>
                             </span>
                           </>
                         }
@@ -319,9 +319,9 @@ const AuthenticationConfig: React.FC<AuthenticationConfigProps> = ({
                             onClick={() => {
                               navigator.clipboard.writeText(redirectUri);
                             }}
-                            className='btn-input-suffix'
+                            className="btn-input-suffix"
                           >
-                            <ClipboardDocumentIcon className='h-5 w-5' aria-hidden='true' />
+                            <ClipboardDocumentIcon className="h-5 w-5" aria-hidden='true' />
                           </button>
                         }
                       />

@@ -1,18 +1,25 @@
-import { ArrowPathIcon, MagnifyingGlassIcon, PlusIcon, XMarkIcon } from '@heroicons/react/24/outline';
+import { MagnifyingGlassIcon, PlusIcon, XMarkIcon } from '@heroicons/react/24/outline';
 import type React from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { HiCommandLine, HiServerStack } from 'react-icons/hi2';
-import { useNavigate } from 'react-router-dom';
-import McpIcon from '@/assets/McpIcon';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import AgentCard from '@/components/AgentCard';
 import FederationCard from '@/components/FederationCard';
+import IconButton from '@/components/IconButton';
 import SemanticSearchResults from '@/components/SemanticSearchResults';
 import ServerCard from '@/components/ServerCard';
 import { useServer } from '@/contexts/ServerContext';
 import { useSemanticSearch } from '@/hooks/useSemanticSearch';
 
+const RefreshGlyph: React.FC<{ className?: string }> = ({ className = '' }) => (
+  <svg viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='1.8' className={className} aria-hidden='true'>
+    <polyline points='23 4 23 10 17 10' />
+    <path d='M20.49 15a9 9 0 11-2.12-9.36L23 10' />
+  </svg>
+);
+
 const Dashboard: React.FC = () => {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const {
     viewMode,
     setViewMode,
@@ -34,6 +41,16 @@ const Dashboard: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [committedQuery, setCommittedQuery] = useState('');
   const [refreshing, setRefreshing] = useState(false);
+
+  // Sync viewMode with URL tab parameter
+  const urlTab = searchParams.get('tab');
+  useEffect(() => {
+    if (urlTab === 'agents' || urlTab === 'external') {
+      setViewMode(urlTab);
+    } else {
+      setViewMode('servers');
+    }
+  }, [urlTab, setViewMode]);
 
   // Semantic search
   const semanticEnabled = committedQuery.trim().length >= 2;
@@ -64,7 +81,8 @@ const Dashboard: React.FC = () => {
     // Apply filter first
     if (activeFilter === 'enabled') filtered = filtered.filter(s => s.enabled);
     else if (activeFilter === 'disabled') filtered = filtered.filter(s => !s.enabled);
-    else if (activeFilter === 'unhealthy') filtered = filtered.filter(s => s.status === 'inactive');
+    else if (activeFilter === 'unhealthy')
+      filtered = filtered.filter(s => s.status === 'inactive' || s.status === 'error');
 
     // Then apply search
     if (searchTerm) {
@@ -105,9 +123,16 @@ const Dashboard: React.FC = () => {
     return filtered;
   }, [agents, activeFilter, searchTerm]);
 
-  // Filter federations based on searchTerm
+  // Filter federations based on activeFilter and searchTerm
   const filteredFederations = useMemo(() => {
     let filtered = federations;
+
+    // Apply filter first
+    if (activeFilter === 'enabled') filtered = filtered.filter(f => f.status === 'active');
+    else if (activeFilter === 'disabled') filtered = filtered.filter(f => f.status !== 'active');
+    else if (activeFilter === 'unhealthy') filtered = filtered.filter(f => f.syncStatus === 'failed');
+
+    // Then apply search
     if (searchTerm) {
       const query = searchTerm.toLowerCase();
       filtered = filtered.filter(
@@ -118,7 +143,7 @@ const Dashboard: React.FC = () => {
       );
     }
     return filtered;
-  }, [federations, searchTerm]);
+  }, [federations, activeFilter, searchTerm]);
 
   useEffect(() => {
     if (searchTerm.trim().length === 0 && committedQuery.length > 0) {
@@ -139,12 +164,13 @@ const Dashboard: React.FC = () => {
   const handleChangeViewFilter = useCallback(
     (filter: 'servers' | 'agents' | 'external') => {
       setViewMode(filter);
+      setSearchParams(filter === 'servers' ? {} : { tab: filter }, { replace: true });
       if (semanticSectionVisible) {
         setSearchTerm('');
         setCommittedQuery('');
       }
     },
-    [semanticSectionVisible, setViewMode],
+    [semanticSectionVisible, setViewMode, setSearchParams],
   );
 
   const handleRefreshHealth = async () => {
@@ -177,17 +203,16 @@ const Dashboard: React.FC = () => {
       {/* MCP Servers Section */}
       {viewMode === 'servers' && (
         <div className='mb-8'>
-          <h2 className='text-xl font-bold text-gray-900 dark:text-white mb-4'>MCP Servers</h2>
           <div className='relative'>
             {serverLoading && (
-              <div className='absolute inset-0 bg-white/20 dark:bg-black/20 backdrop-blur-sm rounded-2xl flex items-center justify-center z-10'>
-                <div className='animate-spin rounded-full h-8 w-8 border-b-2 border-cyan-600'></div>
+              <div className='absolute inset-0 z-10 flex items-center justify-center rounded-2xl bg-[var(--jarvis-overlay)] backdrop-blur-sm'>
+                <div className='h-8 w-8 animate-spin rounded-full border-b-2 border-[var(--jarvis-spinner)]'></div>
               </div>
             )}
             {filteredServers.length === 0 ? (
-              <div className='text-center py-12 bg-gray-50 dark:bg-gray-800 rounded-lg'>
-                <div className='text-gray-400 text-lg mb-2'>No servers found</div>
-                <p className='text-gray-500 dark:text-gray-300 text-sm'>
+              <div className='rounded-2xl border border-[color:var(--jarvis-border)] bg-[var(--jarvis-card)] py-12 text-center'>
+                <div className='mb-2 text-lg text-[var(--jarvis-faint)]'>No servers found</div>
+                <p className='text-sm text-[var(--jarvis-muted)]'>
                   {searchTerm || activeFilter !== 'all'
                     ? 'Press Enter in the search bar to search semantically'
                     : 'No servers are registered yet'}
@@ -195,7 +220,7 @@ const Dashboard: React.FC = () => {
                 {!searchTerm && activeFilter === 'all' && (
                   <button
                     onClick={handleRegister}
-                    className='mt-4 inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-lg text-white bg-blue-600 hover:bg-blue-700 transition-colors'
+                    className='mt-4 inline-flex items-center rounded-lg bg-[var(--jarvis-primary)] px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-[var(--jarvis-primary-hover)]'
                   >
                     <PlusIcon className='h-4 w-4 mr-2' />
                     Register Server
@@ -222,17 +247,16 @@ const Dashboard: React.FC = () => {
       {/* A2A Agents Section */}
       {viewMode === 'agents' && (
         <div className='mb-8'>
-          <h2 className='text-xl font-bold text-gray-900 dark:text-white mb-4'>A2A Agents</h2>
           <div className='relative'>
             {agentLoading && (
-              <div className='absolute inset-0 bg-white/20 dark:bg-black/20 backdrop-blur-sm rounded-2xl flex items-center justify-center z-10'>
-                <div className='animate-spin rounded-full h-8 w-8 border-b-2 border-cyan-600'></div>
+              <div className='absolute inset-0 z-10 flex items-center justify-center rounded-2xl bg-[var(--jarvis-overlay)] backdrop-blur-sm'>
+                <div className='h-8 w-8 animate-spin rounded-full border-b-2 border-[var(--jarvis-spinner)]'></div>
               </div>
             )}
             {filteredAgents.length === 0 ? (
-              <div className='text-center py-12 bg-cyan-50 dark:bg-cyan-900/20 rounded-lg border border-cyan-200 dark:border-cyan-800'>
-                <div className='text-gray-400 text-lg mb-2'>No agents found</div>
-                <p className='text-gray-500 dark:text-gray-300 text-sm'>
+              <div className='rounded-2xl border border-[color:var(--jarvis-info-text)]/25 bg-[var(--jarvis-info-soft)] py-12 text-center'>
+                <div className='mb-2 text-lg text-[var(--jarvis-faint)]'>No agents found</div>
+                <p className='text-sm text-[var(--jarvis-muted)]'>
                   {searchTerm || activeFilter !== 'all'
                     ? 'Press Enter in the search bar to search semantically'
                     : 'No agents are registered yet'}
@@ -240,7 +264,7 @@ const Dashboard: React.FC = () => {
                 {!searchTerm && activeFilter === 'all' && (
                   <button
                     onClick={handleRegister}
-                    className='mt-4 inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-lg text-white bg-cyan-600 hover:bg-cyan-700 transition-colors'
+                    className='mt-4 inline-flex items-center rounded-lg bg-[var(--jarvis-primary)] px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-[var(--jarvis-primary-hover)]'
                   >
                     <PlusIcon className='h-4 w-4 mr-2' />
                     Register Agent
@@ -267,28 +291,28 @@ const Dashboard: React.FC = () => {
       {/* External Providers Section */}
       {viewMode === 'external' && (
         <div className='mb-8'>
-          <div className='flex items-center justify-between mb-4'>
-            <h2 className='text-xl font-bold text-gray-900 dark:text-white'>External Providers</h2>
-          </div>
           <div className='relative'>
             {federationsLoading && (
-              <div className='absolute inset-0 bg-white/20 dark:bg-black/20 backdrop-blur-sm rounded-2xl flex items-center justify-center z-10'>
-                <div className='animate-spin rounded-full h-8 w-8 border-b-2 border-green-600'></div>
+              <div className='absolute inset-0 z-10 flex items-center justify-center rounded-2xl bg-[var(--jarvis-overlay)] backdrop-blur-sm'>
+                <div className='h-8 w-8 animate-spin rounded-full border-b-2 border-[var(--jarvis-spinner)]'></div>
               </div>
             )}
 
             {filteredFederations.length === 0 ? (
-              <div className='text-center py-12 bg-gray-50 dark:bg-gray-800 rounded-lg border border-dashed border-gray-300 dark:border-gray-600'>
-                <div className='text-gray-400 text-lg mb-2'>
+              <div className='rounded-2xl border border-dashed border-[color:var(--jarvis-border-strong)] bg-[var(--jarvis-card)] py-12 text-center'>
+                <div className='mb-2 text-lg text-[var(--jarvis-faint)]'>
                   {federations.length === 0 ? 'No External Providers Available' : 'No Results Found'}
                 </div>
-                <p className='text-gray-500 dark:text-gray-300 text-sm max-w-md mx-auto'>
+                <p className='mx-auto max-w-md text-sm text-[var(--jarvis-muted)]'>
                   {federations.length === 0
                     ? 'Connect an external provider like AWS AgentCore to automatically sync MCP servers and agents.'
                     : 'Try adjusting your search terms.'}
                 </p>
                 {federations.length === 0 && (
-                  <button onClick={handleRegister} className='mt-4 btn-primary inline-flex items-center space-x-2'>
+                  <button
+                    onClick={handleRegister}
+                    className='mt-4 inline-flex items-center space-x-2 rounded-lg bg-[var(--jarvis-primary)] px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-[var(--jarvis-primary-hover)]'
+                  >
                     <PlusIcon className='h-4 w-4' />
                     <span>Register External</span>
                   </button>
@@ -304,73 +328,57 @@ const Dashboard: React.FC = () => {
           </div>
         </div>
       )}
-
     </>
   );
-
-  const getCardNumber = () => {
-    const serverLength = semanticSectionVisible ? semanticServers.length : filteredServers?.length || 0;
-    const agentLength = semanticSectionVisible ? semanticAgents.length : filteredAgents?.length || 0;
-    if (viewMode === 'servers') {
-      return `Showing ${serverLength} servers`;
-    } else if (viewMode === 'agents') {
-      return `Showing ${agentLength} agents`;
-    } else if (viewMode === 'external') {
-      return `Showing ${filteredFederations.length} providers`;
-    }
-  };
 
   return (
     <div className='flex flex-col h-full'>
       {/* Fixed Header Section */}
-      <div className='flex-shrink-0 space-y-4 pb-4'>
+      <div className='flex-shrink-0 space-y-4 mb-6'>
         {/* View Filter Tabs */}
-        <div className='flex gap-2 border-b border-gray-200 dark:border-gray-700 overflow-x-auto'>
+        <div className='flex gap-6 overflow-x-auto border-b border-[color:var(--jarvis-border)]'>
           <button
             onClick={() => handleChangeViewFilter('servers')}
-            className={`px-4 py-2 text-sm font-medium whitespace-nowrap transition-colors border-b-2 ${
+            className={`inline-flex items-center gap-2 border-b-2 px-1 py-3 text-[15px] font-medium whitespace-nowrap transition-colors ${
               viewMode === 'servers'
-                ? 'border-blue-500 text-blue-600 dark:text-blue-400'
-                : 'border-transparent text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
+                ? 'border-[var(--jarvis-primary)] text-[var(--jarvis-primary)]'
+                : 'border-transparent text-[var(--jarvis-muted)] hover:text-[var(--jarvis-text)] hover:border-[color:var(--jarvis-border)]'
             }`}
           >
-            <McpIcon className='h-6 w-6 inline mr-2' />
             MCP Servers
           </button>
           <button
             onClick={() => handleChangeViewFilter('agents')}
-            className={`px-4 py-2 text-sm font-medium whitespace-nowrap transition-colors border-b-2 ${
+            className={`inline-flex items-center gap-2 border-b-2 px-1 py-3 text-[15px] font-medium whitespace-nowrap transition-colors ${
               viewMode === 'agents'
-                ? 'border-cyan-500 text-cyan-600 dark:text-cyan-400'
-                : 'border-transparent text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
+                ? 'border-[var(--jarvis-primary)] text-[var(--jarvis-primary)]'
+                : 'border-transparent text-[var(--jarvis-muted)] hover:text-[var(--jarvis-text)] hover:border-[color:var(--jarvis-border)]'
             }`}
           >
-            <HiCommandLine className='h-6 w-6 inline mr-2' />
             A2A Agents
           </button>
           <button
             onClick={() => handleChangeViewFilter('external')}
-            className={`px-4 py-2 text-sm font-medium whitespace-nowrap transition-colors border-b-2 ${
+            className={`inline-flex items-center gap-2 border-b-2 px-1 py-3 text-[15px] font-medium whitespace-nowrap transition-colors ${
               viewMode === 'external'
-                ? 'border-green-500 text-green-600 dark:text-green-400'
-                : 'border-transparent text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
+                ? 'border-[var(--jarvis-primary)] text-[var(--jarvis-primary)]'
+                : 'border-transparent text-[var(--jarvis-muted)] hover:text-[var(--jarvis-text)] hover:border-[color:var(--jarvis-border)]'
             }`}
           >
-            <HiServerStack className='h-6 w-6 inline mr-2' />
             External Providers
           </button>
         </div>
 
         {/* Search Bar and Refresh Button */}
-        <div className='flex gap-4 items-center'>
+        <div className='flex items-center gap-3'>
           <div className='relative flex-1'>
             <div className='absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none'>
-              <MagnifyingGlassIcon className='h-5 w-5 text-gray-400' />
+              <MagnifyingGlassIcon className='h-4 w-4 text-[var(--jarvis-subtle)]' />
             </div>
             <input
               type='text'
-              placeholder='Search servers, agents, descriptions, or tags… (Press Enter to run semantic search; typing filters locally.)'
-              className='input pl-10 w-full'
+              placeholder='Search servers, agents, descriptions, or tags...'
+              className='h-10 w-full rounded-lg border border-[color:var(--jarvis-input-border)] bg-[var(--jarvis-input-bg)] pl-10 pr-10 text-sm text-[var(--jarvis-text)] outline-none transition placeholder:text-[var(--jarvis-input-placeholder)] focus:border-[var(--jarvis-primary)] focus:bg-[var(--jarvis-input-bg-focus)] focus:ring-2 focus:ring-[var(--jarvis-primary)]'
               value={searchTerm}
               onChange={e => setSearchTerm(e.target.value)}
               onKeyDown={e => {
@@ -383,43 +391,39 @@ const Dashboard: React.FC = () => {
             {searchTerm && (
               <button
                 onClick={handleClearSearch}
-                className='absolute inset-y-0 right-0 flex items-center pr-3 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200'
+                className='absolute inset-y-0 right-0 flex items-center pr-3 text-[var(--jarvis-subtle)] hover:text-[var(--jarvis-text)]'
               >
                 <XMarkIcon className='h-4 w-4' />
               </button>
             )}
           </div>
 
-          <button
-            onClick={handleRegister}
-            className='btn-primary flex items-center justify-center space-x-2 flex-shrink-0 w-[250px]'
-          >
-            <PlusIcon className='h-4 w-4' />
-            <span>
-              {viewMode === 'agents'
-                ? 'Register Agent'
+          <IconButton
+            ariaLabel='Register'
+            tooltip={
+              viewMode === 'agents'
+                ? 'Register agent'
                 : viewMode === 'external'
-                  ? 'Register External'
-                  : 'Register Server'}
-            </span>
-          </button>
+                  ? 'Register external provider'
+                  : 'Register server'
+            }
+            onClick={handleRegister}
+            variant='solid'
+            className='flex-shrink-0'
+          >
+            <PlusIcon className='h-5 w-5' />
+          </IconButton>
 
-          <button
+          <IconButton
+            ariaLabel='Refresh'
+            tooltip='Refresh'
             onClick={handleRefreshHealth}
             disabled={refreshing}
-            className='btn-secondary flex items-center space-x-2 flex-shrink-0'
+            spinning={refreshing}
+            className='rounded-lg h-10 w-10 flex items-center justify-center border border-[color:var(--jarvis-border)] bg-[var(--jarvis-surface)] hover:bg-[var(--jarvis-card-muted)] text-[var(--jarvis-text)]'
           >
-            <ArrowPathIcon className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />
-            <span>Refresh</span>
-          </button>
-        </div>
-
-        {/* Results count */}
-        <div className='flex items-center justify-between'>
-          <p className='text-sm text-gray-500 dark:text-gray-300'>{getCardNumber()}</p>
-          <p className='text-xs text-gray-400 dark:text-gray-500'>
-            Press Enter to run semantic search; typing filters locally.
-          </p>
+            <RefreshGlyph className='h-4 w-4' />
+          </IconButton>
         </div>
       </div>
 
@@ -437,11 +441,11 @@ const Dashboard: React.FC = () => {
             />
 
             {shouldShowFallbackGrid && (
-              <div className='border-t border-gray-200 dark:border-gray-700 pt-6'>
+              <div className='border-t border-[color:var(--jarvis-border)] pt-6'>
                 <div className='flex items-center justify-between mb-4'>
-                  <h4 className='text-base font-semibold text-gray-900 dark:text-gray-200'>Keyword search fallback</h4>
+                  <h4 className='text-base font-semibold text-[var(--jarvis-text-strong)]'>Keyword search fallback</h4>
                   {semanticError && (
-                    <span className='text-xs font-medium text-red-500'>
+                    <span className='text-xs font-medium text-[var(--jarvis-danger-text)]'>
                       Showing local matches because semantic search is unavailable
                     </span>
                   )}
