@@ -40,7 +40,7 @@ jobs:
 
       - name: Install Python dependencies
         run: |
-          pip install boto3 PyYAML
+          pip install boto3 PyYAML pymongo python-dotenv
 
       - name: Load Application Configuration
         id: config
@@ -78,6 +78,44 @@ jobs:
 
           echo "Updating env vars in EKS pods..."
           kubectl annotate es registry-env force-sync=$(date +%s) --overwrite -n ${{ inputs.application  }}
+
+      - name: Seed AccessRoles Database
+        env:
+          AWS_REGION: ${{ inputs.region }}
+          SECRET_NAME: ${{ steps.config.outputs.secret_name }}
+        run: |
+          echo "Fetching MongoDB credentials from AWS Secrets Manager..."
+          SECRET_JSON=$(aws secretsmanager get-secret-value --secret-id $SECRET_NAME --region $AWS_REGION --query SecretString --output text)
+          
+          ORIGINAL_MONGO_URI=$(echo $SECRET_JSON | python3 -c "import sys, json; print(json.load(sys.stdin).get('MONGO_URI', ''))")
+          export MONGODB_USERNAME=$(echo $SECRET_JSON | python3 -c "import sys, json; print(json.load(sys.stdin).get('MONGODB_USERNAME', ''))")
+          export MONGODB_PASSWORD=$(echo $SECRET_JSON | python3 -c "import sys, json; print(json.load(sys.stdin).get('MONGODB_PASSWORD', ''))")
+          
+          if [ -z "$ORIGINAL_MONGO_URI" ]; then
+            echo "ERROR: MONGO_URI not found in AWS Secrets Manager!"
+            exit 1
+          fi
+          
+          echo "Original MONGO_URI: ${ORIGINAL_MONGO_URI}"
+          
+          # Start kubectl port-forward in background
+          echo "Setting up port-forward to MongoDB service..."
+          kubectl port-forward -n ${{ inputs.application }} svc/mongodb-svc 27017:27017 &
+          PORT_FORWARD_PID=$!
+          
+          # Wait for port-forward to be ready
+          sleep 5
+          
+          # Replace mongodb-svc with localhost for local access
+          export MONGO_URI=$(echo "$ORIGINAL_MONGO_URI" | sed 's/mongodb-svc/localhost/g')
+          echo "Modified MONGO_URI for local access (length: ${#MONGO_URI})"
+          
+          # Run seed script
+          echo "Seeding AccessRoles collection..."
+          python scripts/seed_access_roles_standalone.py
+          
+          # Cleanup port-forward
+          kill $PORT_FORWARD_PID 2>/dev/null || true
 
   build-images:
     uses: ./.github/workflows/build-images-reusable.yaml
