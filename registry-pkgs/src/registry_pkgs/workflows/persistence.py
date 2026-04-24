@@ -9,7 +9,9 @@ from agno.run.base import RunStatus
 from agno.run.workflow import WorkflowRunOutput
 from agno.session import Session, WorkflowSession
 from agno.workflow import StepOutput
+from pymongo.asynchronous.client_session import AsyncClientSession
 
+from registry_pkgs.database.decorators import get_current_session
 from registry_pkgs.models.enums import NodeRunStatus, WorkflowRunStatus
 from registry_pkgs.models.workflow import NodeRun, WorkflowNode, WorkflowRun
 
@@ -53,8 +55,9 @@ class WorkflowRunSyncer(AsyncMongoDb):
         """Persist agno session, then mirror the latest run into Beanie."""
         result = await super().upsert_session(session, deserialize=deserialize)
         if isinstance(session, WorkflowSession) and session.runs:
+            session_data: dict[str, Any] = session.session_data or {}
             try:
-                await self._sync_to_beanie(session.runs[-1])
+                await self._sync_to_beanie(session.runs[-1], session_data=session_data)
             except Exception as e:
                 logger.exception(
                     "WorkflowRunSyncer: failed to sync run %s to Beanie, error: %s", self._workflow_run.id, e
@@ -72,22 +75,69 @@ class WorkflowRunSyncer(AsyncMongoDb):
         logger.error(message)
         raise RuntimeError(message)
 
-    async def _sync_to_beanie(self, run_output: WorkflowRunOutput) -> None:
+    async def _sync_to_beanie(
+        self,
+        run_output: WorkflowRunOutput,
+        session_data: dict[str, Any] | None = None,
+    ) -> None:
         """Write WorkflowRun status and per-step NodeRuns from WorkflowRunOutput."""
         step_outputs = _flatten_step_results(run_output.step_results)
-        await self._update_workflow_run(run_output, step_outputs)
+        final_status = _resolve_workflow_run_status(run_output, step_outputs)
+        active_session = get_current_session()
+
+        if final_status in {WorkflowRunStatus.COMPLETED, WorkflowRunStatus.FAILED}:
+            if active_session is not None:
+                await self._write_run_and_nodes(
+                    run_output,
+                    step_outputs,
+                    session_data=session_data or {},
+                    session=active_session,
+                )
+                return
+
+            # Terminal state must be written atomically when no ambient transaction exists.
+            async with await self.db_client.start_session() as mongo_session:
+                async with mongo_session.start_transaction():
+                    await self._write_run_and_nodes(
+                        run_output,
+                        step_outputs,
+                        session_data=session_data or {},
+                        session=mongo_session,
+                    )
+            return
+
+        # Non-terminal state can be synced outside a transaction, but should still
+        # participate in any ambient transaction when one exists.
+        await self._write_run_and_nodes(
+            run_output,
+            step_outputs,
+            session_data=session_data or {},
+            session=active_session,
+        )
+
+    async def _write_run_and_nodes(
+        self,
+        run_output: WorkflowRunOutput,
+        step_outputs: list[StepOutput],
+        session_data: dict[str, Any],
+        session: AsyncClientSession | None,
+    ) -> None:
+        await self._update_workflow_run(run_output, step_outputs, session=session)
         for step_output in step_outputs:
-            await self._upsert_node_run(step_output)
+            await self._upsert_node_run(
+                step_output,
+                session_data=session_data,
+                session=session,
+            )
 
     async def _update_workflow_run(
         self,
         run_output: WorkflowRunOutput,
         step_outputs: list[StepOutput] | None = None,
-    ) -> None:
+        session: AsyncClientSession | None = None,
+    ) -> WorkflowRunStatus:
         run = self._workflow_run
-        mapped_status = _STATUS_MAP.get(run_output.status, WorkflowRunStatus.FAILED)
-        if any(not step_output.success for step_output in step_outputs or []):
-            mapped_status = WorkflowRunStatus.FAILED
+        mapped_status = _resolve_workflow_run_status(run_output, step_outputs or [])
         run.status = mapped_status
         if mapped_status in {WorkflowRunStatus.COMPLETED, WorkflowRunStatus.FAILED}:
             if run.finished_at is None:
@@ -96,14 +146,20 @@ class WorkflowRunSyncer(AsyncMongoDb):
             run.finished_at = None
         if run_output.content is not None:
             run.final_output = {"content": str(run_output.content)}
-        await run.save()
+        await run.save(session=session)
         logger.info(
             "WorkflowRun %s → status=%s",
             run.id,
             run.status,
         )
+        return run.status
 
-    async def _upsert_node_run(self, step_output: StepOutput) -> None:
+    async def _upsert_node_run(
+        self,
+        step_output: StepOutput,
+        session_data: dict[str, Any] | None = None,
+        session: AsyncClientSession | None = None,
+    ) -> None:
         """Upsert a NodeRun from a StepOutput."""
         step_name = step_output.step_name or ""
         node = self._node_by_name.get(step_name)
@@ -113,6 +169,7 @@ class WorkflowRunSyncer(AsyncMongoDb):
         node_run = await NodeRun.find_one(
             NodeRun.workflow_run_id == run_id,
             NodeRun.node_id == node_id,
+            session=session,
         )
         if node_run is None:
             node_run = NodeRun(
@@ -128,8 +185,17 @@ class WorkflowRunSyncer(AsyncMongoDb):
         if step_output.content is not None:
             node_run.output_snapshot = {"content": str(step_output.content)}
 
-        await node_run.save()
-        logger.debug("NodeRun %s (%s) → %s", node_id, step_name, node_run.status)
+        if session_data:
+            # Read the same key written by _make_a2a_pool_executor so the
+            # selected agent is persisted for retry reconstruction.
+            selected = session_data.get(f"a2a_target_{step_name}")
+            if selected:
+                node_run.selected_a2a_key = str(selected)
+
+        await node_run.save(session=session)
+        logger.debug(
+            "NodeRun %s (%s) → %s (selected_a2a=%r)", node_id, step_name, node_run.status, node_run.selected_a2a_key
+        )
 
 
 def _flatten_step_results(results: list[Any]) -> list[StepOutput]:
@@ -141,3 +207,13 @@ def _flatten_step_results(results: list[Any]) -> list[StepOutput]:
         elif isinstance(item, StepOutput):
             flat.append(item)
     return flat
+
+
+def _resolve_workflow_run_status(
+    run_output: WorkflowRunOutput,
+    step_outputs: list[StepOutput],
+) -> WorkflowRunStatus:
+    mapped_status = _STATUS_MAP.get(run_output.status, WorkflowRunStatus.FAILED)
+    if any(not step_output.success for step_output in step_outputs):
+        return WorkflowRunStatus.FAILED
+    return mapped_status

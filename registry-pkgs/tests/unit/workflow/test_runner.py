@@ -35,30 +35,66 @@ def _run() -> WorkflowRun:
     )
 
 
+def _make_runner(**kwargs) -> runner.WorkflowRunner:
+    """Return a WorkflowRunner with sensible test defaults."""
+    defaults = {
+        "llm": object(),
+        "registry_url": "http://localhost:7860",
+        "db_client": object(),
+        "db_name": "jarvis",
+    }
+    defaults.update(kwargs)
+    return runner.WorkflowRunner(**defaults)
+
+
 @pytest.mark.unit
-class TestWorkflowRunner:
-    def test_runner_requires_db_client_and_db_name(self):
+class TestWorkflowRunnerInit:
+    def test_requires_db_client(self):
         with pytest.raises(ValueError, match="db_client"):
-            runner.WorkflowRunner(executor_registry={}, db_client=None, db_name="jarvis")
+            runner.WorkflowRunner(
+                llm=object(),
+                registry_url="http://x",
+                db_client=None,
+                db_name="jarvis",
+            )
 
+    def test_requires_db_name(self):
         with pytest.raises(ValueError, match="db_name"):
-            runner.WorkflowRunner(executor_registry={}, db_client=object(), db_name="")
+            runner.WorkflowRunner(
+                llm=object(),
+                registry_url="http://x",
+                db_client=object(),
+                db_name="",
+            )
 
+    def test_selector_llm_defaults_to_none(self):
+        r = _make_runner()
+        # selector_llm=None is valid; build_executor_registry falls back to llm.
+        assert r._selector_llm is None
+
+
+@pytest.mark.unit
+class TestWorkflowRunnerRun:
     @pytest.mark.asyncio
-    async def test_run_raises_when_definition_is_missing(self, monkeypatch: pytest.MonkeyPatch):
+    async def test_raises_when_definition_not_found(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(runner.WorkflowDefinition, "get", AsyncMock(return_value=None))
-        workflow_runner = runner.WorkflowRunner(executor_registry={}, db_client=object(), db_name="jarvis")
+        r = _make_runner()
 
         with pytest.raises(ValueError, match="not found"):
-            await workflow_runner.run("missing-id", "hello")
+            await r.run("missing-id", "hello", registry_token="tok")
 
     @pytest.mark.asyncio
-    async def test_run_orchestrates_definition_execution_and_loads_node_runs(self, monkeypatch: pytest.MonkeyPatch):
+    async def test_orchestrates_build_registry_create_execute_and_returns_node_runs(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """run() must call _build_registry → _create_run → _execute in order."""
         definition = _definition()
         run_doc = _run()
         node_runs = [SimpleNamespace(node_name="fetch")]
+        fake_registry = {"tool": object()}
 
         monkeypatch.setattr(runner.WorkflowDefinition, "get", AsyncMock(return_value=definition))
+        monkeypatch.setattr(runner.WorkflowRunner, "_build_registry", AsyncMock(return_value=fake_registry))
         monkeypatch.setattr(runner.WorkflowRunner, "_create_run", AsyncMock(return_value=run_doc))
         monkeypatch.setattr(runner.WorkflowRunner, "_execute", AsyncMock())
 
@@ -66,16 +102,57 @@ class TestWorkflowRunner:
         find_query = SimpleNamespace(to_list=AsyncMock(return_value=node_runs))
         monkeypatch.setattr(runner.NodeRun, "find", lambda *args, **kwargs: find_query)
 
-        workflow_runner = runner.WorkflowRunner(executor_registry={}, db_client=object(), db_name="jarvis")
-        actual_run, actual_node_runs = await workflow_runner.run(str(definition.id), "hello", trigger_source="api")
+        r = _make_runner()
+        actual_run, actual_nodes = await r.run(
+            str(definition.id), "hello", registry_token="user-tok", trigger_source="api"
+        )
 
         assert actual_run is run_doc
-        assert actual_node_runs == node_runs
+        assert actual_nodes == node_runs
+        # registry_token is forwarded to _build_registry
+        runner.WorkflowRunner._build_registry.assert_awaited_once_with(definition, "user-tok")
         runner.WorkflowRunner._create_run.assert_awaited_once_with(definition, "hello", "api")
-        runner.WorkflowRunner._execute.assert_awaited_once_with(run_doc, definition, "hello")
+        runner.WorkflowRunner._execute.assert_awaited_once_with(run_doc, definition, "hello", fake_registry)
 
+
+@pytest.mark.unit
+class TestBuildRegistry:
     @pytest.mark.asyncio
-    async def test_create_run_inserts_running_workflow_with_snapshot(self, monkeypatch: pytest.MonkeyPatch):
+    async def test_extracts_keys_and_pool_nodes_from_definition(self, monkeypatch: pytest.MonkeyPatch):
+        """_build_registry must forward executor_keys + pool_nodes to build_executor_registry."""
+        from registry_pkgs.models.workflow import WorkflowNode
+
+        definition = WorkflowDefinition.model_construct(
+            id=PydanticObjectId(),
+            name="test",
+            nodes=[
+                WorkflowNode(name="mcp-step", executor_key="mcp-tool"),
+                WorkflowNode(name="pool-step", a2a_pool=["agent-a", "agent-b"]),
+            ],
+        )
+
+        captured = {}
+
+        async def fake_build(executor_keys, *, llm, registry_url, registry_token, pool_nodes, selector_llm):
+            captured["executor_keys"] = executor_keys
+            captured["pool_nodes"] = [n.name for n in pool_nodes]
+            captured["registry_token"] = registry_token
+            return {}
+
+        monkeypatch.setattr(runner, "build_executor_registry", fake_build)
+
+        r = _make_runner(registry_url="http://reg")
+        await r._build_registry(definition, "my-token")
+
+        assert captured["executor_keys"] == ["mcp-tool"]
+        assert captured["pool_nodes"] == ["pool-step"]
+        assert captured["registry_token"] == "my-token"
+
+
+@pytest.mark.unit
+class TestCreateRun:
+    @pytest.mark.asyncio
+    async def test_inserts_running_workflow_run_with_snapshot(self, monkeypatch: pytest.MonkeyPatch):
         inserted = []
 
         class FakeWorkflowRun:
@@ -87,10 +164,10 @@ class TestWorkflowRunner:
                 inserted.append(self)
 
         monkeypatch.setattr(runner, "WorkflowRun", FakeWorkflowRun)
-        workflow_runner = runner.WorkflowRunner(executor_registry={}, db_client=object(), db_name="jarvis")
+        r = _make_runner()
         definition = _definition()
 
-        run_doc = await workflow_runner._create_run(definition, "hello", "script")
+        run_doc = await r._create_run(definition, "hello", "script")
 
         assert inserted[0] is run_doc
         assert run_doc.workflow_definition_id == definition.id
@@ -99,23 +176,28 @@ class TestWorkflowRunner:
         assert run_doc.initial_input == {"user_text": "hello"}
         assert run_doc.definition_snapshot["name"] == definition.name
 
+
+@pytest.mark.unit
+class TestExecute:
     @pytest.mark.asyncio
-    async def test_execute_syncs_run_after_success(self, monkeypatch: pytest.MonkeyPatch):
+    async def test_compiles_workflow_and_syncs_run_after_success(self, monkeypatch: pytest.MonkeyPatch):
         workflow = SimpleNamespace(arun=AsyncMock())
-        run_doc = SimpleNamespace(sync=AsyncMock())
+        run_doc = SimpleNamespace(sync=AsyncMock(), id="run-1")
+        fake_registry = {"tool": object()}
 
         monkeypatch.setattr(runner, "compile_workflow", lambda *args, **kwargs: workflow)
-        workflow_runner = runner.WorkflowRunner(
-            executor_registry={"tool": object()}, db_client=object(), db_name="jarvis"
+        r = _make_runner()
+
+        await r._execute(run_doc, _definition(), "hello", fake_registry)
+
+        workflow.arun.assert_awaited_once_with(
+            input="hello",
+            session_state={"user_text": "hello", "_workflow_run_id": "run-1"},
         )
-
-        await workflow_runner._execute(run_doc, _definition(), "hello")
-
-        workflow.arun.assert_awaited_once_with(input="hello", session_state={"user_text": "hello"})
         run_doc.sync.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_execute_marks_run_failed_when_workflow_raises(self, monkeypatch: pytest.MonkeyPatch):
+    async def test_marks_run_failed_and_reraises_when_workflow_raises(self, monkeypatch: pytest.MonkeyPatch):
         workflow = SimpleNamespace(arun=AsyncMock(side_effect=RuntimeError("boom")))
         run_doc = SimpleNamespace(
             status=WorkflowRunStatus.RUNNING,
@@ -126,12 +208,10 @@ class TestWorkflowRunner:
         )
 
         monkeypatch.setattr(runner, "compile_workflow", lambda *args, **kwargs: workflow)
-        workflow_runner = runner.WorkflowRunner(
-            executor_registry={"tool": object()}, db_client=object(), db_name="jarvis"
-        )
+        r = _make_runner()
 
         with pytest.raises(RuntimeError, match="boom"):
-            await workflow_runner._execute(run_doc, _definition(), "hello")
+            await r._execute(run_doc, _definition(), "hello", {})
 
         assert run_doc.status == WorkflowRunStatus.FAILED
         assert run_doc.error_summary == "boom"

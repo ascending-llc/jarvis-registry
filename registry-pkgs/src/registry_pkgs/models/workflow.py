@@ -17,6 +17,38 @@ from registry_pkgs.models.enums import (
 )
 
 
+class StepConfig(BaseModel):
+    """Per-step execution controls for STEP nodes.
+
+    Fields map directly to agno ``Step`` parameters so the workflow engine
+    honours them at runtime without any extra translation layer.
+
+    Attributes:
+        max_retries:  How many times to retry the step on failure (0 = no retry).
+        on_error:     What to do when the step ultimately fails after all retries.
+                      ``"fail"`` aborts the whole workflow run;
+                      ``"skip"`` records the failure and continues to the next step.
+    """
+
+    max_retries: int = 0
+    on_error: str = "fail"
+
+    @field_validator("max_retries")
+    @classmethod
+    def _validate_max_retries(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("max_retries must be >= 0")
+        return value
+
+    @field_validator("on_error")
+    @classmethod
+    def _validate_on_error(cls, value: str) -> str:
+        allowed = {"fail", "skip"}
+        if value not in allowed:
+            raise ValueError(f"on_error must be one of {sorted(allowed)}, got {value!r}")
+        return value
+
+
 class LoopConfig(BaseModel):
     """Configuration for a loop node."""
 
@@ -41,6 +73,9 @@ class WorkflowNode(BaseModel):
     node_type: WorkflowNodeType = WorkflowNodeType.STEP
 
     executor_key: str | None = None
+    a2a_pool: list[str] = Field(default_factory=list)
+    # Per-step retry and error-handling policy (STEP nodes only).
+    step_config: StepConfig | None = None
     config: dict[str, Any] = Field(default_factory=dict)
 
     # Child nodes for container nodes (parallel / loop / condition / router)
@@ -54,11 +89,22 @@ class WorkflowNode(BaseModel):
     condition_cel: str | None = None
     loop_config: LoopConfig | None = None
 
+    @field_validator("a2a_pool")
+    @classmethod
+    def _validate_a2a_pool(cls, value: list[str]) -> list[str]:
+        if len(value) > 5:
+            raise ValueError("a2a_pool must contain at most 5 agents")
+        return value
+
     @model_validator(mode="after")
     def _validate_shape(self) -> WorkflowNode:
         if self.node_type == WorkflowNodeType.STEP:
-            if not self.executor_key:
-                raise ValueError("step node requires executor_key")
+            has_key = bool(self.executor_key)
+            has_pool = bool(self.a2a_pool)
+            if not has_key and not has_pool:
+                raise ValueError("step node requires either executor_key or a2a_pool")
+            if has_key and has_pool:
+                raise ValueError("step node must not define both executor_key and a2a_pool")
             if self.children:
                 raise ValueError("step node must not have children")
             if self.condition_cel is not None:
@@ -67,8 +113,10 @@ class WorkflowNode(BaseModel):
                 raise ValueError("step node must not define loop_config")
             return self
 
-        if self.executor_key is not None:
-            raise ValueError(f"{self.node_type} node must not define executor_key")
+        if self.executor_key is not None or self.a2a_pool:
+            raise ValueError(f"{self.node_type} node must not define executor_key or a2a_pool")
+        if self.step_config is not None:
+            raise ValueError(f"{self.node_type} node must not define step_config")
         if not self.children:
             raise ValueError(f"{self.node_type} node requires children")
 
@@ -153,6 +201,7 @@ class NodeRun(Document):
     attempt: int = 0
     input_snapshot: dict[str, Any] | None = None
     output_snapshot: dict[str, Any] | None = None
+    selected_a2a_key: str | None = None
     error: str | None = None
     started_at: datetime | None = None
     finished_at: datetime | None = None

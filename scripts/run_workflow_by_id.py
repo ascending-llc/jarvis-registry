@@ -22,7 +22,7 @@ logging.basicConfig(
 from registry_pkgs.core.config import MongoConfig
 from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.models.workflow import NodeRun, WorkflowDefinition, WorkflowRun
-from registry_pkgs.workflows.compiler import WorkflowExecutor, flatten_workflow_nodes
+from registry_pkgs.workflows.compiler import StepExecutor, flatten_workflow_nodes
 from registry_pkgs.workflows.executor_resolver import build_executor_registry
 from registry_pkgs.workflows.runner import WorkflowRunner
 
@@ -38,7 +38,7 @@ async def _set_value_executor(step_input: StepInput, session_state: dict) -> Ste
     return StepOutput(content=session_state["sample_value"])
 
 
-_LOCAL_DEMO_EXECUTORS: dict[str, WorkflowExecutor] = {
+_LOCAL_DEMO_EXECUTORS: dict[str, StepExecutor] = {
     "echo": _echo_executor,
     "set_value": _set_value_executor,
 }
