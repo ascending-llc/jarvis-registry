@@ -239,6 +239,34 @@ class FederationStateMachine:
         return FederationStatus.ACTIVE
 
 
+class WorkflowNodeType(StrEnum):
+    STEP = "step"
+    PARALLEL = "parallel"
+    LOOP = "loop"
+    CONDITION = "condition"
+    ROUTER = "router"
+
+
+class WorkflowRunStatus(StrEnum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class NodeRunStatus(StrEnum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+
+
+class ResolvedDependencyResolution(StrEnum):
+    REUSE_PREVIOUS_OUTPUT = "reuse_previous_output"
+    RERUN = "rerun"
+
+
 class FederationJobStateMachine:
     """Centralized rules for federation job status transitions."""
 
