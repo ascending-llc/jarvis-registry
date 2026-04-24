@@ -52,7 +52,7 @@ export const RoleDropdown: React.FC<RoleDropdownProps> = ({
               className={`relative w-[240px] rounded-lg border py-2 pl-3 pr-8 text-sm font-medium text-left transition-colors ${
                 disabled
                   ? 'cursor-not-allowed border-[color:var(--jarvis-border)] bg-[var(--jarvis-card-muted)] text-[var(--jarvis-faint)]'
-                  : 'cursor-default border-[color:var(--jarvis-border)] bg-transparent text-[var(--jarvis-text)] hover:bg-[var(--jarvis-card-muted)] focus:outline-none focus:ring-1 focus:ring-[var(--jarvis-border-strong)]'
+                  : 'cursor-pointer border-[color:var(--jarvis-border)] bg-transparent text-[var(--jarvis-text)] hover:bg-[var(--jarvis-card-muted)] focus:outline-none focus:ring-1 focus:ring-[var(--jarvis-border-strong)]'
               }`}
               style={{ width: ROLE_DROPDOWN_BUTTON_WIDTH }}
               title={disabled ? 'At least one owner is required' : undefined}
