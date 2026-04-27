@@ -205,7 +205,7 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
               <div className='mb-1.5 flex min-w-0 items-center gap-1.5'>
                 {server.permissions?.VIEW ? (
                   <h3
-                    className='min-w-0 flex-1 truncate text-[15px] font-medium text-[var(--jarvis-text)] transition-colors hover:text-[var(--jarvis-text-strong)]'
+                    className='min-w-0 flex-1 truncate cursor-pointer text-[15px] font-medium text-[var(--jarvis-text)] transition-colors hover:text-[var(--jarvis-text-strong)]'
                     onClick={() => navigate(`/server-edit?id=${server.id}&isReadOnly=true`)}
                   >
                     {server.title}

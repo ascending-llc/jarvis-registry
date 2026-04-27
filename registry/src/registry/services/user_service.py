@@ -100,8 +100,6 @@ class UserService:
                 idOnTheSource=user_claims.get("idp_id"),
                 plugins=[],
                 termsAccepted=False,
-                backupCodes=[],
-                refreshToken=[],
                 favorites=[],
                 createdAt=datetime.now(UTC),
                 updatedAt=datetime.now(UTC),

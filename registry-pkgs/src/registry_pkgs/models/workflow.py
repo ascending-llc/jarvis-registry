@@ -113,10 +113,6 @@ class WorkflowNode(BaseModel):
                 raise ValueError("step node must not define loop_config")
             return self
 
-        if self.executor_key is not None or self.a2a_pool:
-            raise ValueError(f"{self.node_type} node must not define executor_key or a2a_pool")
-        if self.step_config is not None:
-            raise ValueError(f"{self.node_type} node must not define step_config")
         if not self.children:
             raise ValueError(f"{self.node_type} node requires children")
 
@@ -201,7 +197,6 @@ class NodeRun(Document):
     attempt: int = 0
     input_snapshot: dict[str, Any] | None = None
     output_snapshot: dict[str, Any] | None = None
-    selected_a2a_key: str | None = None
     error: str | None = None
     started_at: datetime | None = None
     finished_at: datetime | None = None

@@ -5,14 +5,14 @@ import { Fragment, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { HiOutlineCheck, HiOutlineChevronDown, HiOutlineShieldCheck, HiOutlineUsers } from 'react-icons/hi2';
 import { RiGlobalLine } from 'react-icons/ri';
+import IconButton from '@/components/IconButton';
 import type { Role } from '@/services/acl/type';
 import type { PrincipalSearchState } from './usePrincipalSearch';
 import { getRoleDisplayDesc, getRoleDisplayName, type PermissionsState, type PublicShareState } from './useShareModal';
-import IconButton from '@/components/IconButton';
 
 // ── RoleDropdown ──
 
-const ROLE_DROPDOWN_BUTTON_WIDTH = 240;
+const ROLE_DROPDOWN_BUTTON_WIDTH = 280;
 const ROLE_DROPDOWN_OPTIONS_WIDTH = 320;
 
 interface RoleDropdownProps {
@@ -49,10 +49,10 @@ export const RoleDropdown: React.FC<RoleDropdownProps> = ({
           <div className='relative'>
             <Listbox.Button
               ref={buttonRef}
-              className={`relative w-[240px] rounded-lg border py-2 pl-3 pr-8 text-sm font-medium text-left transition-colors ${
+              className={`relative rounded-lg border py-2 pl-3 pr-8 text-sm font-medium text-left transition-colors ${
                 disabled
                   ? 'cursor-not-allowed border-[color:var(--jarvis-border)] bg-[var(--jarvis-card-muted)] text-[var(--jarvis-faint)]'
-                  : 'cursor-default border-[color:var(--jarvis-border)] bg-transparent text-[var(--jarvis-text)] hover:bg-[var(--jarvis-card-muted)] focus:outline-none focus:ring-1 focus:ring-[var(--jarvis-border-strong)]'
+                  : 'cursor-pointer border-[color:var(--jarvis-border)] bg-transparent text-[var(--jarvis-text)] hover:bg-[var(--jarvis-card-muted)] focus:outline-none focus:ring-1 focus:ring-[var(--jarvis-border-strong)]'
               }`}
               style={{ width: ROLE_DROPDOWN_BUTTON_WIDTH }}
               title={disabled ? 'At least one owner is required' : undefined}
@@ -241,7 +241,7 @@ export const PermissionList: React.FC<PermissionListProps> = ({ permissions, rol
                   </div>
                 </div>
 
-                <div className='flex items-center gap-3'>
+                <div className='flex items-center gap-3 flex-shrink-0'>
                   <RoleDropdown
                     value={user.accessRoleId}
                     onChange={(value: string) => permissions.changeRole(user.principalType, user.principalId, value)}
@@ -251,16 +251,16 @@ export const PermissionList: React.FC<PermissionListProps> = ({ permissions, rol
                   />
                   {!isLastOwner ? (
                     <IconButton
-                      ariaLabel="Remove permission"
-                      tooltip="Remove"
+                      ariaLabel='Remove permission'
+                      tooltip='Remove'
                       onClick={() => permissions.remove(user.principalType, user.principalId)}
-                      size="card"
-                      className="text-[var(--jarvis-icon)] hover:text-[var(--jarvis-icon-hover)]"
+                      size='card'
+                      className='text-[var(--jarvis-icon)] hover:text-[var(--jarvis-icon-hover)]'
                     >
                       <XMarkIcon className='h-4 w-4' />
                     </IconButton>
                   ) : (
-                    <div className='w-8 h-8' />
+                    <div className='w-[26px] h-[26px]' />
                   )}
                 </div>
               </li>
@@ -291,11 +291,11 @@ export const PublicShare: React.FC<PublicShareProps> = ({ publicShare, roles, re
           <span className='font-semibold text-[var(--jarvis-text)]'>Share with everyone</span>
           <div className='relative group flex items-center'>
             <IconButton
-              ariaLabel="Help"
-              tooltip="Info"
-              as="span"
-              size="card"
-              className="text-[var(--jarvis-icon)] hover:text-[var(--jarvis-icon-hover)] border-none bg-transparent hover:bg-transparent shadow-none"
+              ariaLabel='Help'
+              tooltip='Info'
+              as='span'
+              size='card'
+              className='text-[var(--jarvis-icon)] hover:text-[var(--jarvis-icon-hover)] border-none bg-transparent hover:bg-transparent shadow-none'
             >
               <QuestionMarkCircleIcon className='h-5 w-5' />
             </IconButton>
