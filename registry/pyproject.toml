@@ -52,6 +52,7 @@ dependencies = [
     "cisco-ai-a2a-scanner>=1.0.0",
     "langchain-text-splitters>=1.1.0",
     "langchain-openai>=1.1.12",
+    "aioboto3>=7.0.0",
 ]
 
 [tool.uv.sources]

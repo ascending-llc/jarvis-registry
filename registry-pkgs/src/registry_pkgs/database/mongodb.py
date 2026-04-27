@@ -20,8 +20,11 @@ from ..models import (
     FederationSyncJob,
     Group,
     Key,
+    NodeRun,
     Token,
     User,
+    WorkflowDefinition,
+    WorkflowRun,
 )
 
 
@@ -127,6 +130,9 @@ class MongoDB:
                     A2AAgent,
                     Federation,
                     FederationSyncJob,
+                    WorkflowDefinition,
+                    WorkflowRun,
+                    NodeRun,
                 ],
             )
         except Exception:

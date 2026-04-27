@@ -32,6 +32,10 @@ dependencies = [
     "protobuf>=5.29.5",
     "grpcio>=1.76.0",
 
+    # Workflow runtime
+    "agno>=2.5.17",
+    "cel-python>=0.1.5",
+
     # Open Telemetry Package
     "opentelemetry-api>=1.20.0",
     "opentelemetry-sdk>=1.20.0",

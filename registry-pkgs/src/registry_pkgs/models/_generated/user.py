@@ -22,6 +22,7 @@ class Favorite(BaseModel):
     agentId: str | None = None
     model: str | None = None
     endpoint: str | None = None
+    spec: str | None = None
 
 
 class User(Document):
@@ -31,7 +32,7 @@ class User(Document):
     emailVerified: bool = False
     avatar: str | None = None
     provider: str = "local"
-    role: str = SystemRoles.USER
+    role: SystemRoles = SystemRoles.USER
     googleId: str | None = None
     facebookId: str | None = None
     openidId: str | None = None

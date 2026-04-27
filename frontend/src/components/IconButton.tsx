@@ -8,7 +8,7 @@ interface IconButtonProps {
   ariaLabel: string;
   tooltip: string;
   children: React.ReactNode;
-  onClick?: () => void;
+  onClick?: (e: React.MouseEvent<HTMLButtonElement>) => void;
   active?: boolean;
   disabled?: boolean;
   spinning?: boolean;
@@ -90,8 +90,8 @@ const IconButton: React.FC<IconButtonProps> = ({
             : variant === 'primary'
               ? 'border-[var(--jarvis-primary)] bg-[var(--jarvis-primary-soft)] text-[var(--jarvis-primary-text)] hover:border-[var(--jarvis-primary-hover)] hover:bg-[var(--jarvis-primary-soft-hover)] hover:text-[var(--jarvis-primary-text-hover)]'
               : variant === 'solid'
-              ? 'border-transparent bg-[var(--jarvis-primary)] text-white hover:bg-[var(--jarvis-primary-hover)] shadow-sm'
-              : 'border-[color:var(--jarvis-border)] bg-[var(--jarvis-input-bg)] text-[var(--jarvis-icon)] hover:border-[color:var(--jarvis-border-strong)] hover:bg-[var(--jarvis-primary-soft)] hover:text-[var(--jarvis-icon-hover)]'
+                ? 'border-transparent bg-[var(--jarvis-primary)] text-white hover:bg-[var(--jarvis-primary-hover)] shadow-sm'
+                : 'border-[color:var(--jarvis-border)] bg-[var(--jarvis-input-bg)] text-[var(--jarvis-icon)] hover:border-[color:var(--jarvis-border-strong)] hover:bg-[var(--jarvis-primary-soft)] hover:text-[var(--jarvis-icon-hover)]'
         } ${disabled ? 'cursor-not-allowed opacity-60' : ''} ${className}`;
 
   const tooltipClasses = `pointer-events-none absolute left-1/2 z-20 -translate-x-1/2 transition-opacity duration-100 ${
