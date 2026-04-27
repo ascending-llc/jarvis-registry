@@ -226,9 +226,7 @@ async def main() -> int:
     finally:
         try:
             await MongoDB.close_db()
-        except BaseException as exc:
-            if isinstance(exc, (KeyboardInterrupt, SystemExit)):
-                raise
+        except Exception as exc:
             print(f"WARNING: MongoDB.close_db failed: {type(exc).__name__}: {exc}")
 
 
