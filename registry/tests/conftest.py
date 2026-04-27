@@ -5,7 +5,6 @@ Pytest configuration and shared fixtures.
 from __future__ import annotations
 
 import asyncio
-import os
 import tempfile
 from collections.abc import AsyncGenerator, Generator
 from pathlib import Path
@@ -14,33 +13,12 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
 from httpx import AsyncClient
 
-# Set the validated environment variables so that `from registry.core.config import settings` does not throw exception.
-os.environ["TOOL_DISCOVERY_MODE"] = "external"
-os.environ["CREDS_KEY"] = os.urandom(32).hex()
+from registry_pkgs.testing.fixtures import setup_registry_test_env
 
-_RSA_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-
-_PRIVATE_KEY = _RSA_KEY.private_bytes(
-    encoding=serialization.Encoding.PEM,
-    format=serialization.PrivateFormat.TraditionalOpenSSL,
-    encryption_algorithm=serialization.NoEncryption(),
-).decode("utf-8")
-os.environ["JWT_PRIVATE_KEY"] = _PRIVATE_KEY
-
-_PUBLIC_KEY = (
-    _RSA_KEY.public_key()
-    .public_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PublicFormat.SubjectPublicKeyInfo,
-    )
-    .decode("utf-8")
-)
-os.environ["JWT_PUBLIC_KEY"] = _PUBLIC_KEY
+_RSA_KEY = setup_registry_test_env()
 
 
 from registry.health.service import HealthMonitoringService
