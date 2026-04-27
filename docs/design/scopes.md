@@ -2,6 +2,10 @@
 
 The registry uses a two-layer authorization model: **scopes** control which API endpoints a user can call, and **ACL** controls which specific resources they can see or modify within those endpoints.
 
+<iframe width="100%" height="450" src="https://www.youtube.com/embed/CK1wRMjuFdE" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
+
+
+
 The canonical source of truth for scope definitions is [`registry-pkgs/src/registry_pkgs/scopes.yml`](../../registry-pkgs/src/registry_pkgs/scopes.yml). The enforcement logic lives in [`registry/src/registry/middleware/rbac.py`](../../registry/src/registry/middleware/rbac.py).
 
 ---

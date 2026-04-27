@@ -61,7 +61,7 @@ Use the interactive **[Generate Secrets](generate-secrets.md)** page to create y
 vim .env
 ```
 
-## Step 4: Deploy Services
+## Step 4: Launch Services
 
 ```bash
 # Start all services
@@ -98,7 +98,7 @@ docker compose ps
 open http://localhost:80
 ```
 
-Use your Entra ID to login 
+Use your Entra ID to login
 
 
 ## 🎉 Success! What's Next?
@@ -110,24 +110,10 @@ You now have a fully functional Jarvis Registry! Here are your next steps:
 - 🤖 **Try AI Assistant Integration** - Use tools through VS Code or your preferred AI assistant
 - 🛠️ **Add Your Own MCP Servers** - Register custom tools for your team
 
-### Expand Your Setup
-- 📚 **[Full Installation Guide](installation.md)** - Production deployment options
-- 🔐 **[Authentication Setup](auth.md)** - Advanced identity provider configuration
-
 ### Enterprise Features
 - 👥 **[Fine-Grained Access Control](design/scopes.md)** - Team-based permissions
 
 ## Troubleshooting Quick Fixes
-
-### Services Won't Start
-```bash
-# Check Docker daemon
-sudo systemctl status docker
-sudo systemctl start docker
-
-# Check port conflicts
-sudo netstat -tlnp | grep -E ':(80|443|7860|8080)'
-```
 
 ### Can't Access Web Interface
 ```bash
@@ -139,6 +125,4 @@ docker compose logs registry
 ```
 
 ## Getting Help
-
-- 📖 **[Full Documentation](/)** - Comprehensive guides and references
 - 🐛 **[GitHub Issues](https://github.com/ascending-llc/jarvis-registry/issues)** - Bug reports and feature requests
