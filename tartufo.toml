@@ -72,6 +72,7 @@ exclude-signatures = [
     {signature = '3cfe6ec38debfb1e1e4dacdf086e0c5b41dddb704c7aee4182c0ef39d3cb1bd0', reason = 'embeddings documentation rewrite diff is not a credential'},
     {signature = '0eabf50262bd3cb68b34d5bd1202ff68a25df41c8f4e93b7044c0b1aa4941bd7', reason = 'embeddings documentation rewrite diff is not a credential'},
     {signature = '8f08d7dc575048e860396d8b14742263c189f3c8c46bf488287953b723eb856d', reason = 'embeddings documentation rewrite diff is not a credential'},
+    {signature = '17b551b04aa009ccc0400901a655126c044369491825160f0b4d8b46d9068d44', reason = 'run_workflow_by_id script JWT construction uses env-var keys, not hardcoded credentials'},
     {signature = 'fe1728ad959bcd13833d501bf98d785c7d88e3fe31ae9dba0f7a7c202fcd8b5b', reason = 'example opaque mock principalId is not a credential'},
     {signature = '8f45dd284bd4efd3e0784852777133fb19f36f99c3c5ee6446122588232ab9e6', reason = 'example opaque mock principalId is not a credential'},
     {signature = '9f5bdee1190a259a85019ee82bb0d13e367016045fa7255602fa744ac48ee34b', reason = 'example opaque mock principalId is not a credential'},

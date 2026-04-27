@@ -58,7 +58,7 @@ class TestAgentCoreFederationClient:
         assert config is not None
         assert config.title == "runtime-a2a"
         assert config.description == "a2a runtime"
-        assert config.type == "http_json"
+        assert config.type == "jsonrpc"
 
     async def test_discover_runtime_entities_classifies_mcp_and_a2a_with_stubber(self, monkeypatch):
         client = AgentCoreFederationClient()

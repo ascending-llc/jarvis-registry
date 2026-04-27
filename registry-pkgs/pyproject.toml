@@ -53,6 +53,7 @@ include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["src"]
+exclude = ["registry_pkgs.testing*"]
 
 [tool.setuptools.package-data]
 registry_pkgs = ["py.typed", "*.yml"]

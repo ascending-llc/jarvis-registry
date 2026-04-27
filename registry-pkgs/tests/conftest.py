@@ -5,6 +5,10 @@ from datetime import UTC, datetime
 import pytest
 from beanie import PydanticObjectId
 
+from registry_pkgs.testing.fixtures import setup_registry_test_env
+
+setup_registry_test_env()
+
 # Import factories for use in tests
 pytest_plugins = ["tests.fixtures.factories"]
 
