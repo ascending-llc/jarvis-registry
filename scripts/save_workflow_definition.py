@@ -169,7 +169,7 @@ async def _print_active_executors() -> None:
 
 
 async def _validate_executor_keys(executor_keys: list[str], a2a_pool: list[str] | None) -> None:
-    mcp_keys, a2a_keys, a2a_agents = await _active_executor_keys()
+    mcp_keys, a2a_keys, _ = await _active_executor_keys()
     valid_keys = set(mcp_keys) | set(a2a_keys)
     missing = [key for key in executor_keys if key.strip("/") not in valid_keys]
     pool_missing = [key for key in (a2a_pool or []) if key.strip("/") not in a2a_keys]

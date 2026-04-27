@@ -6,12 +6,24 @@ from a2a.types import AgentCard
 from beanie import PydanticObjectId
 from pydantic import HttpUrl
 
+from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.models.a2a_agent import A2AAgent, AgentConfig
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 from registry_pkgs.workflows import a2a_executor as a2a_exec
 from registry_pkgs.workflows import executor_resolver
 from registry_pkgs.workflows import mcp_executor as mcp_exec
 from registry_pkgs.workflows.helpers import build_prompt
+
+
+def _jwt_config(**overrides) -> JwtSigningConfig:
+    defaults = {
+        "jwt_private_key": "fake-pem",
+        "jwt_issuer": "https://jarvis.example.com",
+        "jwt_self_signed_kid": "kid-v1",
+        "jwt_audience": "jarvis-services",
+    }
+    defaults.update(overrides)
+    return JwtSigningConfig(**defaults)
 
 
 def _mcp_server(name: str = "github") -> ExtendedMCPServer:
@@ -89,6 +101,8 @@ class TestExecutorResolver:
             llm=SimpleNamespace(),
             registry_url="https://registry.example.com",
             registry_token="token",
+            jwt_config=_jwt_config(),
+            accessible_agent_ids=None,
         )
 
         assert seen == ["alpha", "beta"]
@@ -109,6 +123,8 @@ class TestExecutorResolver:
             llm=SimpleNamespace(),
             registry_url="https://registry.example.com",
             registry_token="token",
+            jwt_config=_jwt_config(),
+            accessible_agent_ids=None,
         )
 
         assert resolved == "mcp-executor"
@@ -120,7 +136,7 @@ class TestExecutorResolver:
         monkeypatch.setattr(executor_resolver.A2AAgent, "find_one", AsyncMock(return_value=_a2a_agent("/deep-intel")))
         captured_agents: list = []
 
-        def fake_make_a2a_executor(agent):
+        def fake_make_a2a_executor(agent, *, jwt_config):
             captured_agents.append(agent)
             return "a2a-executor"
 
@@ -131,6 +147,8 @@ class TestExecutorResolver:
             llm=SimpleNamespace(),
             registry_url="https://registry.example.com",
             registry_token="token",
+            jwt_config=_jwt_config(),
+            accessible_agent_ids=None,
         )
 
         assert resolved == "a2a-executor"
@@ -149,7 +167,48 @@ class TestExecutorResolver:
                 llm=SimpleNamespace(),
                 registry_url="https://registry.example.com",
                 registry_token="token",
+                jwt_config=_jwt_config(),
+                accessible_agent_ids=None,
             )
+
+    @pytest.mark.asyncio
+    async def test_resolve_executor_raises_permission_error_when_agent_not_accessible(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        self._patch_beanie_filters(monkeypatch)
+        agent = _a2a_agent("/deep-intel")
+        monkeypatch.setattr(executor_resolver.ExtendedMCPServer, "find_one", AsyncMock(return_value=None))
+        monkeypatch.setattr(executor_resolver.A2AAgent, "find_one", AsyncMock(return_value=agent))
+        monkeypatch.setattr(executor_resolver, "make_a2a_executor", lambda *args, **kwargs: "a2a-executor")
+
+        with pytest.raises(PermissionError, match="user lacks access"):
+            await executor_resolver._resolve_executor(
+                "deep-intel",
+                llm=SimpleNamespace(),
+                registry_url="https://registry.example.com",
+                registry_token="token",
+                jwt_config=_jwt_config(),
+                accessible_agent_ids=set(),  # explicitly empty: no access
+            )
+
+    @pytest.mark.asyncio
+    async def test_resolve_executor_allows_accessible_a2a_agent(self, monkeypatch: pytest.MonkeyPatch):
+        self._patch_beanie_filters(monkeypatch)
+        agent = _a2a_agent("/deep-intel")
+        monkeypatch.setattr(executor_resolver.ExtendedMCPServer, "find_one", AsyncMock(return_value=None))
+        monkeypatch.setattr(executor_resolver.A2AAgent, "find_one", AsyncMock(return_value=agent))
+        monkeypatch.setattr(executor_resolver, "make_a2a_executor", lambda *args, **kwargs: "a2a-executor")
+
+        resolved = await executor_resolver._resolve_executor(
+            "deep-intel",
+            llm=SimpleNamespace(),
+            registry_url="https://registry.example.com",
+            registry_token="token",
+            jwt_config=_jwt_config(),
+            accessible_agent_ids={str(agent.id)},
+        )
+
+        assert resolved == "a2a-executor"
 
 
 @pytest.mark.unit
@@ -209,6 +268,7 @@ class TestA2AExecutor:
 
         executor = a2a_exec.make_a2a_executor(
             _a2a_agent("/deep-intel", transport="jsonrpc", config_url="https://config.example.com/agent"),
+            jwt_config=_jwt_config(),
         )
         output = await executor(SimpleNamespace(input="hello", previous_step_content=None), {})
 
@@ -230,7 +290,7 @@ class TestA2AExecutor:
         monkeypatch.setattr(a2a_exec, "A2AClient", FailingClient)
         monkeypatch.setattr(a2a_exec, "make_agent_jwt", lambda **kwargs: "tok")
 
-        executor = a2a_exec.make_a2a_executor(_a2a_agent("/deep-intel"))
+        executor = a2a_exec.make_a2a_executor(_a2a_agent("/deep-intel"), jwt_config=_jwt_config())
         output = await executor(SimpleNamespace(input="hi", previous_step_content=None), {})
 
         assert output.success is False
@@ -276,13 +336,6 @@ class TestA2AExecutor:
         built_payloads: list[dict] = []
         encoded_calls: list[tuple] = []
 
-        fake_cfg = SimpleNamespace(
-            jwt_issuer="https://jarvis.example.com",
-            jwt_private_key="fake-pem",
-            jwt_self_signed_kid="kid-v1",
-        )
-        monkeypatch.setattr(a2a_exec, "settings", fake_cfg)
-
         def fake_build_payload(subject, issuer, audience, expires_in_seconds):
             built_payloads.append({"sub": subject, "iss": issuer, "aud": audience, "exp": expires_in_seconds})
             return {"sub": subject, "iss": issuer, "aud": audience}
@@ -296,6 +349,7 @@ class TestA2AExecutor:
 
         token = a2a_exec.make_agent_jwt(
             agent_url="https://agent.example.com",
+            jwt_config=_jwt_config(),
             expires_in_seconds=120,
         )
 

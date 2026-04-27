@@ -37,11 +37,19 @@ def _run() -> WorkflowRun:
 
 def _make_runner(**kwargs) -> runner.WorkflowRunner:
     """Return a WorkflowRunner with sensible test defaults."""
+    from registry_pkgs.core.config import JwtSigningConfig
+
     defaults = {
         "llm": object(),
         "registry_url": "http://localhost:7860",
         "db_client": object(),
         "db_name": "jarvis",
+        "jwt_config": JwtSigningConfig(
+            jwt_private_key="fake-pem",
+            jwt_issuer="https://jarvis.example.com",
+            jwt_self_signed_kid="kid-v1",
+            jwt_audience="jarvis-services",
+        ),
     }
     defaults.update(kwargs)
     return runner.WorkflowRunner(**defaults)
@@ -51,21 +59,11 @@ def _make_runner(**kwargs) -> runner.WorkflowRunner:
 class TestWorkflowRunnerInit:
     def test_requires_db_client(self):
         with pytest.raises(ValueError, match="db_client"):
-            runner.WorkflowRunner(
-                llm=object(),
-                registry_url="http://x",
-                db_client=None,
-                db_name="jarvis",
-            )
+            _make_runner(db_client=None)
 
     def test_requires_db_name(self):
         with pytest.raises(ValueError, match="db_name"):
-            runner.WorkflowRunner(
-                llm=object(),
-                registry_url="http://x",
-                db_client=object(),
-                db_name="",
-            )
+            _make_runner(db_name="")
 
     def test_selector_llm_defaults_to_none(self):
         r = _make_runner()
@@ -81,7 +79,7 @@ class TestWorkflowRunnerRun:
         r = _make_runner()
 
         with pytest.raises(ValueError, match="not found"):
-            await r.run("missing-id", "hello", registry_token="tok")
+            await r.run("missing-id", "hello", registry_token="tok", accessible_agent_ids=None)
 
     @pytest.mark.asyncio
     async def test_orchestrates_build_registry_create_execute_and_returns_node_runs(
@@ -103,14 +101,19 @@ class TestWorkflowRunnerRun:
         monkeypatch.setattr(runner.NodeRun, "find", lambda *args, **kwargs: find_query)
 
         r = _make_runner()
+        accessible = {"agent-id-1"}
         actual_run, actual_nodes = await r.run(
-            str(definition.id), "hello", registry_token="user-tok", trigger_source="api"
+            str(definition.id),
+            "hello",
+            registry_token="user-tok",
+            accessible_agent_ids=accessible,
+            trigger_source="api",
         )
 
         assert actual_run is run_doc
         assert actual_nodes == node_runs
-        # registry_token is forwarded to _build_registry
-        runner.WorkflowRunner._build_registry.assert_awaited_once_with(definition, "user-tok")
+        # registry_token + accessible_agent_ids are forwarded to _build_registry
+        runner.WorkflowRunner._build_registry.assert_awaited_once_with(definition, "user-tok", accessible)
         runner.WorkflowRunner._create_run.assert_awaited_once_with(definition, "hello", "api")
         runner.WorkflowRunner._execute.assert_awaited_once_with(run_doc, definition, "hello", fake_registry)
 
@@ -133,20 +136,32 @@ class TestBuildRegistry:
 
         captured = {}
 
-        async def fake_build(executor_keys, *, llm, registry_url, registry_token, pool_nodes, selector_llm):
+        async def fake_build(
+            executor_keys,
+            *,
+            llm,
+            registry_url,
+            registry_token,
+            jwt_config,
+            accessible_agent_ids,
+            pool_nodes,
+            selector_llm,
+        ):
             captured["executor_keys"] = executor_keys
             captured["pool_nodes"] = [n.name for n in pool_nodes]
             captured["registry_token"] = registry_token
+            captured["accessible_agent_ids"] = accessible_agent_ids
             return {}
 
         monkeypatch.setattr(runner, "build_executor_registry", fake_build)
 
         r = _make_runner(registry_url="http://reg")
-        await r._build_registry(definition, "my-token")
+        await r._build_registry(definition, "my-token", {"agent-id-1"})
 
         assert captured["executor_keys"] == ["mcp-tool"]
         assert captured["pool_nodes"] == ["pool-step"]
         assert captured["registry_token"] == "my-token"
+        assert captured["accessible_agent_ids"] == {"agent-id-1"}
 
 
 @pytest.mark.unit

@@ -50,6 +50,7 @@ from typing import Any
 
 from agno.models.base import Model
 
+from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.models.enums import WorkflowRunStatus
 from registry_pkgs.models.workflow import NodeRun, WorkflowDefinition, WorkflowRun
 from registry_pkgs.workflows.compiler import StepExecutor, compile_workflow, flatten_workflow_nodes
@@ -70,6 +71,8 @@ class WorkflowRunner:
         registry_url:  Base URL of the Jarvis Registry gateway.
         db_client:     pymongo AsyncMongoClient for session + Beanie persistence.
         db_name:       MongoDB database name.
+        jwt_config:    JWT signing config used by A2A executors to mint
+                       short-lived service-to-agent tokens.
         selector_llm:  Optional cheaper/faster model for A2A pool selection.
                        Falls back to ``llm`` when not provided.
     """
@@ -81,6 +84,7 @@ class WorkflowRunner:
         registry_url: str,
         db_client: Any,
         db_name: str,
+        jwt_config: JwtSigningConfig,
         selector_llm: Model | None = None,
     ) -> None:
         if db_client is None:
@@ -93,6 +97,7 @@ class WorkflowRunner:
         self._registry_url = registry_url
         self._db_client = db_client
         self._db_name = db_name
+        self._jwt_config = jwt_config
 
     async def run(
         self,
@@ -100,30 +105,37 @@ class WorkflowRunner:
         user_text: str,
         *,
         registry_token: str,
+        accessible_agent_ids: set[str] | None,
         trigger_source: str = "api",
     ) -> tuple[WorkflowRun, list[NodeRun]]:
         """Execute a workflow definition and return the completed run + per-node results.
 
         Args:
-            definition_id:  MongoDB ObjectId string of the WorkflowDefinition.
-            user_text:      Top-level input passed as ``workflow.arun(input=...)``.
-            registry_token: User-scoped Bearer token.  Used by the gateway to
-                            authenticate MCP / A2A proxy calls on behalf of the
-                            end user.  Must NOT be shared across different users.
-            trigger_source: Label stored on WorkflowRun (e.g. ``"api"``, ``"script"``).
+            definition_id:        MongoDB ObjectId string of the WorkflowDefinition.
+            user_text:            Top-level input passed as ``workflow.arun(input=...)``.
+            registry_token:       User-scoped Bearer token.  Used by the gateway to
+                                  authenticate MCP / A2A proxy calls on behalf of the
+                                  end user.  Must NOT be shared across different users.
+            accessible_agent_ids: ACL filter — set of A2AAgent ID strings the caller
+                                  is authorized to invoke.  ``None`` = unrestricted
+                                  (only safe for trusted service / script contexts;
+                                  user-facing API routes MUST pass a concrete set).
+            trigger_source:       Label stored on WorkflowRun (e.g. ``"api"``, ``"script"``).
 
         Returns:
             A tuple of (WorkflowRun, list[NodeRun]) after the run completes.
 
         Raises:
-            ValueError:  If the WorkflowDefinition is not found.
-            Exception:   Re-raises any agno execution error after marking the run FAILED.
+            ValueError:      If the WorkflowDefinition is not found.
+            PermissionError: If the workflow references an A2A agent the caller
+                             cannot access.
+            Exception:       Re-raises any agno execution error after marking the run FAILED.
         """
         definition = await WorkflowDefinition.get(definition_id)
         if definition is None:
             raise ValueError(f"WorkflowDefinition {definition_id!r} not found")
 
-        executor_registry = await self._build_registry(definition, registry_token)
+        executor_registry = await self._build_registry(definition, registry_token, accessible_agent_ids)
 
         run = await self._create_run(definition, user_text, trigger_source)
         await self._execute(run, definition, user_text, executor_registry)
@@ -135,6 +147,7 @@ class WorkflowRunner:
         self,
         definition: WorkflowDefinition,
         registry_token: str,
+        accessible_agent_ids: set[str] | None,
     ) -> dict[str, StepExecutor]:
         """Extract executor keys + pool nodes from the definition and resolve them.
 
@@ -162,6 +175,8 @@ class WorkflowRunner:
             llm=self._llm,
             registry_url=self._registry_url,
             registry_token=registry_token,
+            jwt_config=self._jwt_config,
+            accessible_agent_ids=accessible_agent_ids,
             pool_nodes=pool_nodes,
             selector_llm=self._selector_llm,
         )

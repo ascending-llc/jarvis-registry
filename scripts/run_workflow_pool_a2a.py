@@ -203,6 +203,7 @@ async def main() -> int:
             registry_url=args.registry_url,
             db_client=MongoDB.get_client(),
             db_name=MongoDB.database_name,
+            jwt_config=settings.jwt_signing_config,
         )
 
         print(f"\nRunning workflow with prompt: {args.prompt!r}\n")
@@ -210,6 +211,7 @@ async def main() -> int:
             str(definition.id),
             args.prompt,
             registry_token=registry_token,
+            accessible_agent_ids=None,  # script context: bypass ACL filtering
             trigger_source="pool-smoke",
         )
         _print_results(run, node_runs)

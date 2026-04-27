@@ -179,6 +179,7 @@ async def main(definition_id: str, user_text: str, *, list_agents: bool = False)
             registry_url=os.getenv("REGISTRY_URL", "http://localhost:8000"),
             db_client=MongoDB.get_client(),
             db_name=MongoDB.database_name,
+            jwt_config=settings.jwt_signing_config,
         )
 
         print(f"Running definition {definition_id!r} with prompt: {user_text!r}\n")
@@ -186,6 +187,7 @@ async def main(definition_id: str, user_text: str, *, list_agents: bool = False)
             definition_id,
             user_text,
             registry_token=registry_token,
+            accessible_agent_ids=None,  # script context: bypass ACL filtering
             trigger_source="script",
         )
         _print_status(run, node_runs)

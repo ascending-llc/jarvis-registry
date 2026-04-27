@@ -55,6 +55,19 @@ class RedisConfig(BaseModel):
     redis_key_prefix: str = Field(default="jarvis-registry", description="Redis key prefix")
 
 
+class JwtSigningConfig(BaseModel):
+    """Subset of settings required to mint short-lived service-to-service JWTs.
+
+    Passed into workflow executors so ``registry_pkgs`` does not need to import
+    the ``registry`` app's full Settings.
+    """
+
+    jwt_private_key: str = Field(description="PEM-encoded RSA private key used to sign tokens")
+    jwt_issuer: str = Field(description="Issuer (`iss`) claim — the registry's public URL")
+    jwt_self_signed_kid: str = Field(description="`kid` header for self-signed JWKS lookup")
+    jwt_audience: str = Field(description="Default audience (`aud`) claim")
+
+
 class TelemetryConfig(BaseModel):
     otel_metrics_config_path: str = Field(default="", description="Metrics config file path")
     otel_exporter_otlp_endpoint: str = Field(
@@ -178,6 +191,15 @@ class JarvisBaseSettings(BaseSettings):
             mongo_uri=self.mongo_uri,
             mongodb_username=self.mongodb_username,
             mongodb_password=self.mongodb_password,
+        )
+
+    @cached_property
+    def jwt_signing_config(self) -> JwtSigningConfig:
+        return JwtSigningConfig(
+            jwt_private_key=self.jwt_private_key,
+            jwt_issuer=self.jwt_issuer,
+            jwt_self_signed_kid=self.jwt_self_signed_kid,
+            jwt_audience=self.jwt_audience,
         )
 
     @cached_property
