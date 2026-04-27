@@ -123,6 +123,8 @@ class WorkflowNode(BaseModel):
                 raise ValueError("parallel node must not define condition_cel")
             if self.loop_config is not None:
                 raise ValueError("parallel node must not define loop_config")
+            if self.step_config is not None:
+                raise ValueError("parallel node must not define step_config")
             return self
 
         if self.node_type == WorkflowNodeType.CONDITION:
@@ -139,6 +141,8 @@ class WorkflowNode(BaseModel):
                 raise ValueError("loop node requires loop_config")
             if self.condition_cel is not None:
                 raise ValueError("loop node must not define condition_cel")
+            if self.step_config is not None:
+                raise ValueError("loop node must not define step_config")
             return self
 
         if self.node_type == WorkflowNodeType.ROUTER:
@@ -198,6 +202,7 @@ class NodeRun(Document):
     input_snapshot: dict[str, Any] | None = None
     output_snapshot: dict[str, Any] | None = None
     error: str | None = None
+    selected_a2a_key: str | None = None
     started_at: datetime | None = None
     finished_at: datetime | None = None
 
