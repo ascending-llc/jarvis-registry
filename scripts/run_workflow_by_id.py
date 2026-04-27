@@ -195,7 +195,7 @@ async def main(definition_id: str, user_text: str, *, list_agents: bool = False)
     finally:
         try:
             await MongoDB.close_db()
-        except BaseException as exc:
+        except Exception as exc:
             if isinstance(exc, (KeyboardInterrupt, SystemExit)):
                 raise
             print(f"WARNING: MongoDB.close_db failed: {type(exc).__name__}: {exc}")

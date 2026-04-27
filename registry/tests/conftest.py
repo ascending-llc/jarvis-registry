@@ -18,8 +18,7 @@ from httpx import AsyncClient
 
 from registry_pkgs.testing.fixtures import setup_registry_test_env
 
-_RSA_KEY = setup_registry_test_env()
-
+setup_registry_test_env()
 
 from registry.health.service import HealthMonitoringService
 
