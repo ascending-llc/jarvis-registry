@@ -305,12 +305,12 @@ class AgentCoreFederationClient:
         )
         return A2AAgent.from_a2a_agent_card(
             card_data=card_data,
-            path=f"/agentcore/a2a/{self._slug(runtime_name)}",
+            path=f"/{self._slug(runtime_name)}",
             author=author_id or PydanticObjectId(),
             config=AgentConfig(
                 title=runtime_name,
                 description=runtime_detail.get("description", f"AgentCore runtime {runtime_name}"),
-                type="http_json",
+                type="jsonrpc",  # Note: need check
                 runtimeAccess=runtime_access,
             ),
             isEnabled=status == "READY",

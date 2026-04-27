@@ -291,8 +291,15 @@ class TestWorkflowPersistence:
         self, monkeypatch: pytest.MonkeyPatch
     ):
         sync = _sync_with_fake_run()
-        mongo_session = SimpleNamespace(start_transaction=lambda: _AsyncContextManager(None))
-        start_session = AsyncMock(return_value=_AsyncContextManager(mongo_session))
+
+        async def start_transaction():
+            return _AsyncContextManager(None)
+
+        mongo_session = SimpleNamespace(start_transaction=start_transaction)
+
+        def start_session():
+            return _AsyncContextManager(mongo_session)
+
         fake_db_client = SimpleNamespace(start_session=start_session)
         sync._write_run_and_nodes = AsyncMock()
 
@@ -307,7 +314,6 @@ class TestWorkflowPersistence:
 
         await sync._sync_to_beanie(run_output)
 
-        start_session.assert_awaited_once_with()
         sync._write_run_and_nodes.assert_awaited_once_with(
             run_output,
             [run_output.step_results[0]],

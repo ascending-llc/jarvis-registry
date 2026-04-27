@@ -96,8 +96,8 @@ class WorkflowRunSyncer(AsyncMongoDb):
                 return
 
             # Terminal state must be written atomically when no ambient transaction exists.
-            async with await self.db_client.start_session() as mongo_session:
-                async with mongo_session.start_transaction():
+            async with self.db_client.start_session() as mongo_session:
+                async with await mongo_session.start_transaction():
                     await self._write_run_and_nodes(
                         run_output,
                         step_outputs,
@@ -186,7 +186,7 @@ class WorkflowRunSyncer(AsyncMongoDb):
             node_run.output_snapshot = {"content": str(step_output.content)}
 
         if session_data:
-            # Read the same key written by _make_a2a_pool_executor so the
+            # Read the same key written by make_a2a_pool_executor so the
             # selected agent is persisted for retry reconstruction.
             selected = session_data.get(f"a2a_target_{step_name}")
             if selected:

@@ -8,7 +8,10 @@ from pydantic import HttpUrl
 
 from registry_pkgs.models.a2a_agent import A2AAgent, AgentConfig
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
+from registry_pkgs.workflows import a2a_executor as a2a_exec
 from registry_pkgs.workflows import executor_resolver
+from registry_pkgs.workflows import mcp_executor as mcp_exec
+from registry_pkgs.workflows.helpers import build_prompt
 
 
 def _mcp_server(name: str = "github") -> ExtendedMCPServer:
@@ -21,7 +24,11 @@ def _mcp_server(name: str = "github") -> ExtendedMCPServer:
     )
 
 
-def _a2a_agent(path: str = "/deep-intel") -> A2AAgent:
+def _a2a_agent(
+    path: str = "/deep-intel",
+    transport: str = "jsonrpc",
+    config_url: str = "https://config.example.com/agent",
+) -> A2AAgent:
     return A2AAgent.model_construct(
         id=PydanticObjectId(),
         path=path,
@@ -39,8 +46,8 @@ def _a2a_agent(path: str = "/deep-intel") -> A2AAgent:
         config=AgentConfig(
             title="Configured Agent",
             description="desc",
-            url=HttpUrl("https://config.example.com/agent"),
-            type="jsonrpc",
+            url=HttpUrl(config_url),
+            type=transport,
         ),
         author=PydanticObjectId(),
         status="active",
@@ -57,8 +64,11 @@ class _FieldExpr:
 
 @pytest.mark.unit
 class TestExecutorResolver:
+    """Tests for the orchestration layer"""
+
     @staticmethod
     def _patch_beanie_filters(monkeypatch: pytest.MonkeyPatch) -> None:
+        """Patch Beanie field expressions used in find_one() calls."""
         monkeypatch.setattr(executor_resolver.ExtendedMCPServer, "serverName", _FieldExpr("serverName"), raising=False)
         monkeypatch.setattr(executor_resolver.ExtendedMCPServer, "status", _FieldExpr("status"), raising=False)
         monkeypatch.setattr(executor_resolver.A2AAgent, "path", _FieldExpr("path"), raising=False)
@@ -91,8 +101,8 @@ class TestExecutorResolver:
             executor_resolver.ExtendedMCPServer, "find_one", AsyncMock(return_value=_mcp_server("github"))
         )
         monkeypatch.setattr(executor_resolver.A2AAgent, "find_one", AsyncMock(return_value=_a2a_agent("/github")))
-        monkeypatch.setattr(executor_resolver, "_make_mcp_executor", lambda *args, **kwargs: "mcp-executor")
-        monkeypatch.setattr(executor_resolver, "_make_a2a_executor", lambda *args, **kwargs: "a2a-executor")
+        monkeypatch.setattr(executor_resolver, "make_mcp_executor", lambda *args, **kwargs: "mcp-executor")
+        monkeypatch.setattr(executor_resolver, "make_a2a_executor", lambda *args, **kwargs: "a2a-executor")
 
         resolved = await executor_resolver._resolve_executor(
             "github",
@@ -108,13 +118,13 @@ class TestExecutorResolver:
         self._patch_beanie_filters(monkeypatch)
         monkeypatch.setattr(executor_resolver.ExtendedMCPServer, "find_one", AsyncMock(return_value=None))
         monkeypatch.setattr(executor_resolver.A2AAgent, "find_one", AsyncMock(return_value=_a2a_agent("/deep-intel")))
-        captured = {}
+        captured_agents: list = []
 
-        def fake_make_a2a_executor(*args, **kwargs):
-            captured.update(kwargs)
+        def fake_make_a2a_executor(agent):
+            captured_agents.append(agent)
             return "a2a-executor"
 
-        monkeypatch.setattr(executor_resolver, "_make_a2a_executor", fake_make_a2a_executor)
+        monkeypatch.setattr(executor_resolver, "make_a2a_executor", fake_make_a2a_executor)
 
         resolved = await executor_resolver._resolve_executor(
             "deep-intel",
@@ -124,7 +134,8 @@ class TestExecutorResolver:
         )
 
         assert resolved == "a2a-executor"
-        assert captured == {"registry_url": "https://registry.example.com", "registry_token": "token"}
+        assert len(captured_agents) == 1
+        assert captured_agents[0].path == "/deep-intel"
 
     @pytest.mark.asyncio
     async def test_resolve_executor_raises_when_key_is_unknown(self, monkeypatch: pytest.MonkeyPatch):
@@ -140,9 +151,14 @@ class TestExecutorResolver:
                 registry_token="token",
             )
 
+
+@pytest.mark.unit
+class TestMcpExecutor:
+    """Tests for mcp_executor.make_mcp_executor."""
+
     def test_make_mcp_executor_requires_registry_token(self):
         with pytest.raises(ValueError, match="registry_token is required"):
-            executor_resolver._make_mcp_executor(
+            mcp_exec.make_mcp_executor(
                 _mcp_server("github"),
                 llm=SimpleNamespace(),
                 registry_url="https://registry.example.com",
@@ -153,10 +169,10 @@ class TestExecutorResolver:
     async def test_make_mcp_executor_returns_step_output(self, monkeypatch: pytest.MonkeyPatch):
         fake_agent_instance = SimpleNamespace(arun=AsyncMock(return_value=SimpleNamespace(content="done")))
 
-        monkeypatch.setattr(executor_resolver, "MCPTools", lambda *args, **kwargs: "mcp-tools")
-        monkeypatch.setattr(executor_resolver, "Agent", lambda **kwargs: fake_agent_instance)
+        monkeypatch.setattr(mcp_exec, "MCPTools", lambda *args, **kwargs: "mcp-tools")
+        monkeypatch.setattr(mcp_exec, "Agent", lambda **kwargs: fake_agent_instance)
 
-        executor = executor_resolver._make_mcp_executor(
+        executor = mcp_exec.make_mcp_executor(
             _mcp_server("github"),
             llm=SimpleNamespace(),
             registry_url="https://registry.example.com",
@@ -169,76 +185,137 @@ class TestExecutorResolver:
         assert output.content == "done"
         fake_agent_instance.arun.assert_awaited_once()
 
-    @pytest.mark.asyncio
-    async def test_make_a2a_executor_uses_registry_proxy_and_wraps_errors(self, monkeypatch: pytest.MonkeyPatch):
-        a2a_send = AsyncMock(side_effect=RuntimeError("boom"))
-        monkeypatch.setattr(executor_resolver, "_a2a_send", a2a_send)
-        executor = executor_resolver._make_a2a_executor(
-            _a2a_agent("/deep-intel"),
-            registry_url="https://registry.example.com",
-            registry_token="token",
-        )
 
+@pytest.mark.unit
+class TestA2AExecutor:
+    """Tests for a2a_executor.make_a2a_executor and helpers."""
+
+    @pytest.mark.asyncio
+    async def test_make_a2a_executor_calls_agent_directly(self, monkeypatch: pytest.MonkeyPatch):
+        """Executor must call agent.config.url directly — no registry proxy."""
+        captured: dict = {}
+
+        class FakeClient:
+            def __init__(self, base_url: str, timeout: int, protocol: str):
+                captured["base_url"] = base_url
+                captured["protocol"] = protocol
+
+            async def send_message(self, message: str, *, headers: dict | None = None):
+                captured["headers"] = headers
+                return SimpleNamespace(content="agent reply")
+
+        monkeypatch.setattr(a2a_exec, "A2AClient", FakeClient)
+        monkeypatch.setattr(a2a_exec, "make_agent_jwt", lambda **kwargs: "generated-jwt")
+
+        executor = a2a_exec.make_a2a_executor(
+            _a2a_agent("/deep-intel", transport="jsonrpc", config_url="https://config.example.com/agent"),
+        )
         output = await executor(SimpleNamespace(input="hello", previous_step_content=None), {})
+
+        assert output.success is True
+        assert output.content == "agent reply"
+        assert captured["base_url"] == "https://config.example.com/agent"
+        assert captured["protocol"] == "json-rpc"
+        assert captured["headers"] == {"Authorization": "Bearer generated-jwt"}
+
+    @pytest.mark.asyncio
+    async def test_make_a2a_executor_wraps_errors(self, monkeypatch: pytest.MonkeyPatch):
+        class FailingClient:
+            def __init__(self, **kwargs):
+                pass
+
+            async def send_message(self, *args, **kwargs):
+                raise RuntimeError("boom")
+
+        monkeypatch.setattr(a2a_exec, "A2AClient", FailingClient)
+        monkeypatch.setattr(a2a_exec, "make_agent_jwt", lambda **kwargs: "tok")
+
+        executor = a2a_exec.make_a2a_executor(_a2a_agent("/deep-intel"))
+        output = await executor(SimpleNamespace(input="hi", previous_step_content=None), {})
 
         assert output.success is False
         assert output.error == "boom"
-        assert output.content == "boom"
         assert executor.__name__ == "deep-intel_a2a_executor"
-        a2a_send.assert_awaited_once_with(
-            "https://registry.example.com/proxy/a2a/deep-intel",
-            "hello",
-            registry_token="token",
-            protocol_version="0.3",
+
+    def testagent_base_url_prefers_config_url(self):
+        agent = _a2a_agent("/x", config_url="https://config.example.com/x")
+        assert a2a_exec.agent_base_url(agent) == "https://config.example.com/x"
+
+    def testagent_base_url_falls_back_to_card_url(self):
+        agent = A2AAgent.model_construct(
+            path="/x",
+            card=AgentCard.model_construct(
+                name="X",
+                url="https://card.example.com/x",
+                version="1.0",
+                protocol_version="1.0",
+                capabilities={},
+                defaultInputModes=[],
+                defaultOutputModes=[],
+                skills=[],
+            ),
+            config=None,
+            author=PydanticObjectId(),
+        )
+        assert a2a_exec.agent_base_url(agent) == "https://card.example.com/x"
+
+    @pytest.mark.parametrize(
+        "transport_type, expected_protocol",
+        [
+            ("jsonrpc", "json-rpc"),
+            ("http_json", "rest"),
+            ("grpc", "rest"),
+            (None, "rest"),
+            ("unknown", "rest"),
+        ],
+    )
+    def test_map_a2a_protocol(self, transport_type: str | None, expected_protocol: str):
+        assert a2a_exec.map_a2a_protocol(transport_type) == expected_protocol
+
+    def test_make_agent_jwt_calls_encode_with_correct_claims(self, monkeypatch: pytest.MonkeyPatch):
+        built_payloads: list[dict] = []
+        encoded_calls: list[tuple] = []
+
+        fake_cfg = SimpleNamespace(
+            jwt_issuer="https://jarvis.example.com",
+            jwt_private_key="fake-pem",
+            jwt_self_signed_kid="kid-v1",
+        )
+        monkeypatch.setattr(a2a_exec, "settings", fake_cfg)
+
+        def fake_build_payload(subject, issuer, audience, expires_in_seconds):
+            built_payloads.append({"sub": subject, "iss": issuer, "aud": audience, "exp": expires_in_seconds})
+            return {"sub": subject, "iss": issuer, "aud": audience}
+
+        def fake_encode(payload, key, kid):
+            encoded_calls.append((payload, key, kid))
+            return "signed-jwt"
+
+        monkeypatch.setattr(a2a_exec, "build_jwt_payload", fake_build_payload)
+        monkeypatch.setattr(a2a_exec, "encode_jwt", fake_encode)
+
+        token = a2a_exec.make_agent_jwt(
+            agent_url="https://agent.example.com",
+            expires_in_seconds=120,
         )
 
-    def test_make_a2a_executor_requires_registry_token(self):
-        with pytest.raises(ValueError, match="registry_token is required"):
-            executor_resolver._make_a2a_executor(
-                _a2a_agent("/deep-intel"),
-                registry_url="https://registry.example.com",
-                registry_token="",
-            )
+        assert token == "signed-jwt"
+        assert built_payloads[0]["sub"] == "jarvis-workflow"
+        assert built_payloads[0]["iss"] == "https://jarvis.example.com"
+        assert built_payloads[0]["aud"] == "https://agent.example.com"
+        assert built_payloads[0]["exp"] == 120
+        _, key_used, kid_used = encoded_calls[0]
+        assert key_used == "fake-pem"
+        assert kid_used == "kid-v1"
 
-    @pytest.mark.asyncio
-    async def test_a2a_send_uses_agno_client_with_version_header(self, monkeypatch: pytest.MonkeyPatch):
-        captured = {}
 
-        class FakeClient:
-            def __init__(self, **kwargs):
-                captured["client_kwargs"] = kwargs
-
-            async def send_message(self, message: str, *, headers: dict | None = None):
-                captured["message"] = message
-                captured["headers"] = headers
-                return SimpleNamespace(content="agent response")
-
-        monkeypatch.setattr(executor_resolver, "A2AClient", FakeClient)
-
-        text = await executor_resolver._a2a_send(
-            "https://registry.example.com/proxy/a2a/deep-intel",
-            "ping",
-            registry_token="token",
-            protocol_version="1.0",
-        )
-
-        assert text == "agent response"
-        assert captured["client_kwargs"] == {
-            "base_url": "https://registry.example.com/proxy/a2a/deep-intel",
-            "timeout": 300,
-            "protocol": "json-rpc",
-        }
-        assert captured["message"] == "ping"
-        assert captured["headers"] == {"Authorization": "Bearer token", "A2A-Version": "1.0"}
-
-    def test_a2a_protocol_version_uses_major_minor_from_agent_card(self):
-        agent = _a2a_agent()
-
-        assert executor_resolver._a2a_protocol_version(agent) == "0.3"
+@pytest.mark.unit
+class TestHelpers:
+    """Tests for shared workflow helper utilities."""
 
     def test_build_prompt_joins_previous_step_content_and_input(self):
-        prompt = executor_resolver._build_prompt(SimpleNamespace(previous_step_content="ctx", input="hello"))
-        empty_prompt = executor_resolver._build_prompt(SimpleNamespace(previous_step_content=None, input=""))
+        prompt = build_prompt(SimpleNamespace(previous_step_content="ctx", input="hello"))
+        empty_prompt = build_prompt(SimpleNamespace(previous_step_content=None, input=""))
 
         assert prompt == "Context from previous step:\nctx\n\nhello"
         assert empty_prompt == "(no input)"
