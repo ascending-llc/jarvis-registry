@@ -36,11 +36,11 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: 3.9
+          python-version: 3.12
 
       - name: Install Python dependencies
         run: |
-          pip install boto3 PyYAML
+          pip install boto3 PyYAML pymongo
 
       - name: Load Application Configuration
         id: config
@@ -78,6 +78,35 @@ jobs:
 
           echo "Updating env vars in EKS pods..."
           kubectl annotate es registry-env force-sync=$(date +%s) --overwrite -n ${{ inputs.application  }}
+
+      - name: Seed AccessRoles Database
+        env:
+          AWS_REGION: ${{ inputs.region }}
+          SECRET_NAME: ${{ steps.config.outputs.secret_name }}
+        run: |
+          SECRET_JSON=$(aws secretsmanager get-secret-value --secret-id $SECRET_NAME --region $AWS_REGION --query SecretString --output text)
+          
+          ORIGINAL_MONGO_URI=$(echo $SECRET_JSON | python3 -c "import sys, json; print(json.load(sys.stdin).get('MONGO_URI', ''))")
+          
+          if [ -z "$ORIGINAL_MONGO_URI" ]; then
+            echo "ERROR: MONGO_URI not found in AWS Secrets Manager!"
+            exit 1
+          fi
+          
+          kubectl port-forward -n ${{ inputs.application }} svc/mongodb-svc 27017:27017 &
+          PORT_FORWARD_PID=$!
+          
+          trap "kill $PORT_FORWARD_PID 2>/dev/null || true" EXIT
+          
+          echo "Waiting for MongoDB to be ready."
+          
+          timeout 30s bash -c "until printf '' 2>/dev/null >/dev/tcp/127.0.0.1/27017; do sleep 1; done" || { echo "Timed out waiting for MongoDB."; exit 1; }
+          
+          echo "MongoDB is ready."
+          
+          export MONGO_URI=$(echo "$ORIGINAL_MONGO_URI" | sed 's/mongodb-svc/localhost/g')
+          
+          python scripts/seed_access_roles_standalone.py
 
   build-images:
     uses: ./.github/workflows/build-images-reusable.yaml
