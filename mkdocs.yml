@@ -107,12 +107,14 @@ nav:
     - Generate Secrets: generate-secrets.md
     - Production Deployment: deployment-guide.md
     - Configuration: configuration.md
-  - Authentication:
-    - Authentication Guide: auth.md
-    - Keycloak Integration: keycloak-integration.md
-    - Amazon Cognito: cognito.md
-    - Microsoft Entra ID: entra-id-setup.md
-  - Core Design:
+  - Core Features:
+    - IDP Integration: features/idp-integration.md
+    - MCPServer Registry: features/mcp-registry.md
+    - A2AAgent Registry: features/a2a-registry.md
+    - AgentCore Federation: features/agentcore-federation.md
+    - FoundryAI Federation: features/foundry-ai-federation.md
+    - Registry Endpoint: features/registry-endpoint.md
+  - Architecture & Design:
     - Security Control Design: design/security-design.md
     - RBAC & Scopes: design/scopes.md
     - ACL Connector Service: design/acl-connector-service.md
