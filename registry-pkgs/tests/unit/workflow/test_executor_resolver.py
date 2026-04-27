@@ -237,11 +237,11 @@ class TestA2AExecutor:
         assert output.error == "boom"
         assert executor.__name__ == "deep-intel_a2a_executor"
 
-    def testagent_base_url_prefers_config_url(self):
+    def test_agent_base_url_prefers_config_url(self):
         agent = _a2a_agent("/x", config_url="https://config.example.com/x")
         assert a2a_exec.agent_base_url(agent) == "https://config.example.com/x"
 
-    def testagent_base_url_falls_back_to_card_url(self):
+    def test_agent_base_url_falls_back_to_card_url(self):
         agent = A2AAgent.model_construct(
             path="/x",
             card=AgentCard.model_construct(
