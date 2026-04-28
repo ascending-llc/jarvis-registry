@@ -1,15 +1,4 @@
 /* ============================================================
-   System font stack (Google Fonts disabled for performance)
-   Provides Roboto-like rendering using OS fonts.
-   ============================================================ */
-:root {
-  --md-text-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-    Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
-  --md-code-font: ui-monospace, "Cascadia Code", "Source Code Pro", Menlo,
-    Consolas, "DejaVu Sans Mono", monospace;
-}
-
-/* ============================================================
    Accessibility: links must be distinguishable without color.
    Adds underline so links are visually distinct for users with
    color-vision deficiencies.
@@ -50,10 +39,17 @@ body[data-md-color-scheme="slate"] .md-logo__light   { display: none !important;
    (adjust --ascending-header-bg to exact hex if needed)
    ============================================================ */
 :root {
+  /* Brand colours */
   --ascending-header-bg: #0a0a0a;
   --ascending-accent:    #1e6fd9;   /* blue accent — tweak to match site */
   --ascending-accent-dark: #7fb0ff;
   --ascending-header-text: #ffffff;
+
+  /* System font stack (Google Fonts disabled for performance) */
+  --md-text-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+  --md-code-font: ui-monospace, "Cascadia Code", "Source Code Pro", Menlo,
+    Consolas, "DejaVu Sans Mono", monospace;
 }
 
 /* Both light and dark themes get the same dark header */
