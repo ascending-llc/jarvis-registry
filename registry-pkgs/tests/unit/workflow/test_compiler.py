@@ -1,11 +1,13 @@
 from types import SimpleNamespace
 
 import pytest
+from agno.workflow.step import OnError
 from beanie import PydanticObjectId
 
 from registry_pkgs.models.enums import WorkflowNodeType, WorkflowRunStatus
-from registry_pkgs.models.workflow import LoopConfig, WorkflowDefinition, WorkflowNode, WorkflowRun
+from registry_pkgs.models.workflow import LoopConfig, StepConfig, WorkflowDefinition, WorkflowNode, WorkflowRun
 from registry_pkgs.workflows import compiler
+from registry_pkgs.workflows.compiler import step_kwargs
 
 
 async def _executor(*args, **kwargs):
@@ -78,7 +80,7 @@ class TestWorkflowCompiler:
     def test_compile_workflow_raises_for_missing_executor_key(self):
         definition = _workflow_definition([_step_node("first", "missing")])
 
-        with pytest.raises(KeyError, match="executor_key 'missing' not found"):
+        with pytest.raises(KeyError, match="executor key 'missing' not found"):
             compiler.compile_workflow(definition, _workflow_run(), executor_registry={})
 
     def test_compile_workflow_builds_agno_steps_and_attaches_sync(self, monkeypatch: pytest.MonkeyPatch):
@@ -185,3 +187,111 @@ class TestWorkflowCompiler:
             "route-a",
             "route-b",
         }
+
+
+@pytest.mark.unit
+class TestStepConfig:
+    # ── StepConfig model validation ──────────────────────────────────────────
+
+    def test_default_step_config_has_safe_production_values(self):
+        cfg = StepConfig()
+        assert cfg.max_retries == 0
+        assert cfg.on_error == "fail"
+
+    def test_step_config_accepts_valid_values(self):
+        cfg = StepConfig(max_retries=3, on_error="skip")
+        assert cfg.max_retries == 3
+        assert cfg.on_error == "skip"
+
+    def test_step_config_rejects_negative_max_retries(self):
+        with pytest.raises(ValueError, match="max_retries must be >= 0"):
+            StepConfig(max_retries=-1)
+
+    def test_step_config_rejects_invalid_on_error(self):
+        with pytest.raises(ValueError, match="on_error must be one of"):
+            StepConfig(on_error="pause")
+
+    def test_step_config_not_allowed_on_parallel_node(self):
+        with pytest.raises(ValueError, match="must not define step_config"):
+            WorkflowNode(
+                name="par",
+                node_type=WorkflowNodeType.PARALLEL,
+                step_config=StepConfig(),
+                children=[_step_node("a", "x"), _step_node("b", "y")],
+            )
+
+    def test_step_config_not_allowed_on_loop_node(self):
+        with pytest.raises(ValueError, match="must not define step_config"):
+            WorkflowNode(
+                name="lp",
+                node_type=WorkflowNodeType.LOOP,
+                step_config=StepConfig(),
+                loop_config=LoopConfig(max_iterations=2),
+                children=[_step_node("body", "x")],
+            )
+
+    # ── _step_kwargs mapping ─────────────────────────────────────────────────
+
+    def test_step_kwargs_defaults_when_no_config(self):
+        kwargs = step_kwargs(None)
+        assert kwargs["max_retries"] == 0
+        assert kwargs["skip_on_failure"] is False
+        assert kwargs["on_error"] == OnError.fail
+
+    def test_step_kwargs_fail_config(self):
+        kwargs = step_kwargs(StepConfig(max_retries=2, on_error="fail"))
+        assert kwargs["max_retries"] == 2
+        assert kwargs["skip_on_failure"] is False
+        assert kwargs["on_error"] == OnError.fail
+
+    def test_step_kwargs_skip_config(self):
+        kwargs = step_kwargs(StepConfig(max_retries=1, on_error="skip"))
+        assert kwargs["max_retries"] == 1
+        assert kwargs["skip_on_failure"] is True
+        assert kwargs["on_error"] == OnError.skip
+
+    # ── compile_workflow honours StepConfig ──────────────────────────────────
+
+    def test_compile_applies_step_config_to_agno_step(self):
+        nodes = [
+            WorkflowNode(
+                name="flaky-step",
+                node_type=WorkflowNodeType.STEP,
+                executor_key="flaky-tool",
+                step_config=StepConfig(max_retries=3, on_error="skip"),
+            ),
+            WorkflowNode(
+                name="critical-step",
+                node_type=WorkflowNodeType.STEP,
+                executor_key="critical-tool",
+                step_config=StepConfig(max_retries=0, on_error="fail"),
+            ),
+        ]
+        definition = _workflow_definition(nodes)
+
+        workflow = compiler.compile_workflow(
+            definition,
+            _workflow_run(),
+            executor_registry={"flaky-tool": _executor, "critical-tool": _executor},
+        )
+
+        flaky = workflow.steps[0]
+        assert flaky.max_retries == 3
+        assert flaky.skip_on_failure is True
+
+        critical = workflow.steps[1]
+        assert critical.max_retries == 0
+        assert critical.skip_on_failure is False
+
+    def test_compile_uses_safe_defaults_when_step_config_absent(self):
+        definition = _workflow_definition([_step_node("plain", "tool")])
+
+        workflow = compiler.compile_workflow(
+            definition,
+            _workflow_run(),
+            executor_registry={"tool": _executor},
+        )
+
+        step = workflow.steps[0]
+        assert step.max_retries == 0
+        assert step.skip_on_failure is False

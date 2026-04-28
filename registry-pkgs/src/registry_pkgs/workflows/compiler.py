@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable
 from typing import Any
 
 from agno.workflow import (
@@ -10,16 +9,14 @@ from agno.workflow import (
     Parallel,
     Router,
     Step,
-    StepInput,
-    StepOutput,
     Workflow,
 )
+from agno.workflow.step import OnError, StepExecutor
 
 from registry_pkgs.models.enums import WorkflowNodeType
-from registry_pkgs.models.workflow import WorkflowDefinition, WorkflowNode, WorkflowRun
+from registry_pkgs.models.workflow import StepConfig, WorkflowDefinition, WorkflowNode, WorkflowRun
 from registry_pkgs.workflows.persistence import WorkflowRunSyncer
-
-WorkflowExecutor = Callable[[StepInput, dict[str, Any]], Awaitable[StepOutput]]
+from registry_pkgs.workflows.types import POOL_KEY_PREFIX
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +25,7 @@ def compile_workflow(
     definition: WorkflowDefinition,
     run: WorkflowRun,
     *,
-    executor_registry: dict[str, WorkflowExecutor],
+    executor_registry: dict[str, StepExecutor],
     db_client: Any | None = None,
     db_name: str | None = None,
 ) -> Workflow:
@@ -58,17 +55,17 @@ def compile_workflow(
 
     def _build(node: WorkflowNode) -> Any:
         if node.node_type == WorkflowNodeType.STEP:
-            executor = executor_registry.get(node.executor_key)  # type: ignore[arg-type]
+            lookup_key = f"{POOL_KEY_PREFIX}{node.id}" if node.a2a_pool else node.executor_key
+            executor = executor_registry.get(lookup_key)  # type: ignore[arg-type]
             if executor is None:
                 raise KeyError(
-                    f"executor_key {node.executor_key!r} not found in executor_registry "
+                    f"executor key {lookup_key!r} not found in executor_registry "
                     f"(registered: {list(executor_registry)})"
                 )
             return Step(
                 name=node.name,
                 executor=executor,
-                max_retries=0,
-                skip_on_failure=False,
+                **step_kwargs(node.step_config),
             )
 
         if node.node_type == WorkflowNodeType.PARALLEL:
@@ -111,6 +108,21 @@ def compile_workflow(
     if db is not None:
         workflow_kwargs["db"] = db
     return Workflow(**workflow_kwargs)
+
+
+def step_kwargs(cfg: StepConfig | None) -> dict[str, Any]:
+    """Translate a StepConfig into agno Step keyword arguments.
+
+    When ``cfg`` is None the step runs with safe production defaults:
+    no retries, fail-fast on error.
+    """
+    if cfg is None:
+        return {"max_retries": 0, "skip_on_failure": False, "on_error": OnError.fail}
+    return {
+        "max_retries": cfg.max_retries,
+        "skip_on_failure": cfg.on_error == "skip",
+        "on_error": OnError.skip if cfg.on_error == "skip" else OnError.fail,
+    }
 
 
 def flatten_workflow_nodes(nodes: list[WorkflowNode]) -> list[WorkflowNode]:

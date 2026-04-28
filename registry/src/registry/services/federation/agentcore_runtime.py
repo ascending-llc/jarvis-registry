@@ -203,7 +203,7 @@ class AgentCoreRuntimeInvoker:
             or AgentConfig(
                 title=fallback_card.get("name", agent.card.name),
                 description=fallback_card.get("description", "") or "",
-                type="http_json",
+                type="jsonrpc",
             ),
             isEnabled=agent.isEnabled,
             status=agent.status,
@@ -1146,7 +1146,7 @@ class AgentCoreRuntimeInvoker:
             agent.config = AgentConfig(
                 title=agent.card.name,
                 description=getattr(agent.card, "description", "") or "",
-                type="http_json",
+                type="jsonrpc",
                 runtimeAccess=promoted,
             )
         else:
@@ -1161,7 +1161,7 @@ class AgentCoreRuntimeInvoker:
             agent.config = AgentConfig(
                 title=agent.card.name,
                 description=getattr(agent.card, "description", "") or "",
-                type="http_json",
+                type="jsonrpc",
                 runtimeAccess=downgraded,
             )
         else:
