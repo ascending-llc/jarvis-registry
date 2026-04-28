@@ -6,7 +6,6 @@ import logging
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
-import uvicorn
 from fastapi import FastAPI
 
 from registry_pkgs.database import close_mongodb, init_mongodb
@@ -154,13 +153,3 @@ gateway_mcp_app = create_gateway_mcp_app(container_provider=_get_current_contain
 # The FastAPI app is exposed at module level so ASGI servers can import ``app``
 # directly while still keeping the startup and shutdown wiring in ``lifespan``.
 app = create_app(lifespan=lifespan, gateway_mcp_app=gateway_mcp_app)
-
-if __name__ == "__main__":
-    uvicorn.run(
-        "registry.main:app",
-        host="0.0.0.0",  # nosec B104 - it's fine to bind to 0.0.0.0 in a container.
-        port=7860,
-        reload=True,
-        log_level=settings.log_level.lower(),
-        log_config=None,  # Disable uvicorn's default logging config to use ours
-    )
