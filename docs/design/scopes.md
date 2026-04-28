@@ -1,6 +1,6 @@
 # RBAC & Scope System Design
 
-The registry uses a two-layer authorization model: **scopes** control which API endpoints a user can call, and **ACL** controls which specific resources they can see or modify within those endpoints.
+The registry uses a two-layer authorization model: **scopes** control which API endpoints a user can call, and **ACL** controls which specific resources they can see or modify within those endpoints. This model is grounded in [enterprise AI governance principles](https://exploreagentic.ai/ai-governance/) and implemented through the [Jarvis Governed AI Layer](https://ascendingdc.com/jarvis-ai/governed-ai/).
 
 <iframe width="100%" height="450" src="https://www.youtube.com/embed/CK1wRMjuFdE" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
 

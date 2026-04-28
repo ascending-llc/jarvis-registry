@@ -2,7 +2,7 @@
 
 Jarvis Registry ships with a built-in **Auth Server** — a standards-compliant OpenID Connect (OIDC) and OAuth 2.0 authorization server. It handles token issuance, validation, and refresh for all users and AI agents connecting to the gateway.
 
-Rather than building its own identity store, the auth server is designed to federate with your existing enterprise Identity Provider (IdP). Configure your IdP once, and every user, group, and service principal flows through automatically.
+Rather than building its own identity store, the auth server is designed to federate with your existing enterprise Identity Provider (IdP). Configure your IdP once, and every user, group, and service principal flows through automatically. This identity-first approach reflects the [AI governance frameworks](https://exploreagentic.ai/ai-governance/) that underpin the [Jarvis Governed AI Layer](https://ascendingdc.com/jarvis-ai/governed-ai/) and [Guardrails](https://ascendingdc.com/jarvis-ai/guardrails/).
 
 ---
 

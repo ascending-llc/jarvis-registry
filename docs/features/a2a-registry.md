@@ -1,12 +1,12 @@
 # A2A Agent Registry
 
-The A2A Agent Registry is the central catalog for autonomous agents exposed through Jarvis Registry. It lets platform teams register agents, organize them by skills and capabilities, control who can access them, and expose them through the same secure gateway used for MCP servers.
+The A2A Agent Registry is the central catalog for [autonomous agents](https://exploreagentic.ai/agentic-ai/) exposed through Jarvis Registry. It lets platform teams register agents, organize them by skills and capabilities, control who can access them, and expose them through the same secure gateway used for MCP servers.
 
 ---
 
 ## What is an A2A Agent?
 
-An A2A agent is an autonomous service that exposes its capabilities through an agent card and a runtime endpoint. Unlike a single MCP tool, an A2A agent typically represents a higher-level worker such as code review, testing, data analysis or documentation generation.
+An A2A agent is an autonomous service that exposes its capabilities through an agent card and a runtime endpoint. Unlike a single MCP tool, an A2A agent typically represents a higher-level worker such as code review, testing, data analysis or documentation generation. For a deeper look at how agentic AI systems are architected in enterprise settings, see [Agentic AI on Explore Agentic](https://exploreagentic.ai/agentic-ai/) and the [Jarvis AI Agents](https://ascendingdc.com/jarvis-ai/agent-flow/) product page.
 
 Common examples include:
 

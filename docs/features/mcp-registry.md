@@ -1,12 +1,12 @@
 # MCP Server Registry
 
-The MCP Server Registry is the central catalog of all Model Context Protocol (MCP) servers available in your enterprise. It acts as the hub — registering servers, managing access, and orchestrating secure token exchange so that any authenticated AI copilot can discover and invoke your tools through a single secure gateway.
+The MCP Server Registry is the central catalog of all [Model Context Protocol (MCP)](https://exploreagentic.ai/mcp/) servers available in your enterprise. It acts as the hub — registering servers, managing access, and orchestrating secure token exchange so that any authenticated AI copilot can discover and invoke your tools through a single secure gateway.
 
 ---
 
 ## What is an MCP Server?
 
-An MCP server is any tool, service, or API that speaks the Model Context Protocol. It can be:
+An MCP server is any tool, service, or API that speaks the [Model Context Protocol](https://exploreagentic.ai/mcp/). It can be:
 
 - **Enterprise tools** — Jira, Salesforce, GitHub, Slack, internal databases
 - **Custom services** — your own Python/TypeScript/Go implementations
