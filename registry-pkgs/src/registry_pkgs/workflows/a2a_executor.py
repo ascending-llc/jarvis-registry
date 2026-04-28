@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-import json
 import logging
 import uuid
-from typing import Any, Literal
+from typing import Any
 from urllib.parse import urlparse
 
 import httpx
+from a2a.client import ClientConfig, ClientFactory
+from a2a.client.card_resolver import A2ACardResolver
+from a2a.types import Message, Part, Role, Task, TextPart
 from agno.agent import Agent
-from agno.client.a2a import A2AClient
 from agno.models.base import Model
 from agno.workflow import StepInput, StepOutput
 from agno.workflow.step import StepExecutor
@@ -16,6 +17,7 @@ from agno.workflow.step import StepExecutor
 from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.core.jwt_utils import build_jwt_payload, encode_jwt
 from registry_pkgs.models.a2a_agent import A2AAgent
+from registry_pkgs.models.enums import FederationProviderType
 from registry_pkgs.workflows.helpers import build_prompt
 
 logger = logging.getLogger(__name__)
@@ -23,11 +25,16 @@ logger = logging.getLogger(__name__)
 _A2A_JWT_TTL_SECONDS = 300
 _A2A_HTTP_TIMEOUT = 300
 
+_AGENTCORE_IAM_UNSUPPORTED_MSG = (
+    "IAM-authenticated AgentCore A2A runtime is not supported for direct workflow execution. "
+    "Please configure JWT auth on the AgentCore runtime (or use a proxy path that handles SigV4)."
+)
+
 
 def _is_agentcore_runtime(agent: A2AAgent) -> bool:
     """Return True when the agent is a federated AWS Bedrock AgentCore runtime."""
     meta = agent.federationMetadata or {}
-    return meta.get("providerType") == "aws_agentcore"
+    return meta.get("providerType") == FederationProviderType.AWS_AGENTCORE
 
 
 def _get_agentcore_auth_mode(agent: A2AAgent) -> str:
@@ -55,37 +62,6 @@ def _get_agentcore_auth_mode(agent: A2AAgent) -> str:
             return "JWT"
 
     return "IAM"
-
-
-def agent_base_url(agent: A2AAgent) -> str:
-    """Resolve the direct-call endpoint for an A2A agent.
-
-    Prefers ``agent.config.url`` (user-configured, where the card was
-    originally fetched) over ``agent.card.url`` (from the card itself,
-    may be a discovery URL).
-    """
-    if agent.config and agent.config.url:
-        return str(agent.config.url).rstrip("/")
-    return str(agent.card.url).rstrip("/")
-
-
-def map_a2a_protocol(transport_type: str | None) -> Literal["rest", "json-rpc"]:
-    """Map the MongoDB ``config.type`` value to agno's A2AClient ``protocol`` literal.
-
-    +--------------+-----------+
-    | config.type  | protocol  |
-    +==============+===========+
-    | jsonrpc      | json-rpc  |
-    | http_json    | rest      |
-    | grpc         | rest      |  ← A2AClient has no gRPC; REST is the safe fallback
-    | (None/other) | rest      |
-    +--------------+-----------+
-    """
-    if transport_type == "jsonrpc":
-        return "json-rpc"
-    if transport_type == "grpc":
-        logger.warning("A2A transport 'grpc' is not natively supported by A2AClient; falling back to 'rest'")
-    return "rest"
 
 
 def make_agent_jwt(
@@ -153,159 +129,90 @@ def _make_agentcore_jwt(
     return encode_jwt(payload, jwt_config.jwt_private_key, kid=jwt_config.jwt_self_signed_kid)
 
 
-def _extract_agentcore_response_content(data: dict[str, Any]) -> str:
-    """Best-effort extraction of text from an AgentCore A2A runtime response.
+def _raise_if_iam_unsupported(agent: A2AAgent) -> None:
+    """Guard: AgentCore IAM-auth runtimes are not supported for direct workflow execution."""
+    if _is_agentcore_runtime(agent) and _get_agentcore_auth_mode(agent) == "IAM":
+        raise NotImplementedError(_AGENTCORE_IAM_UNSUPPORTED_MSG)
 
-    AgentCore A2A runtimes return JSON-RPC 2.0 envelopes.  The actual agent
-    output lives inside ``result.artifacts[].parts[].text``.
+
+def _build_headers(agent: A2AAgent, *, jwt_config: JwtSigningConfig) -> dict[str, str]:
+    """Per-call HTTP headers for an A2A invocation.
+
+    AgentCore runtimes need an extra ``X-Amzn-Bedrock-AgentCore-Runtime-Session-Id``
+    header and a JWT with custom claims; standard A2A agents need only a Bearer JWT.
     """
-    if not isinstance(data, dict):
-        return str(data)
-
-    result = data.get("result") or data
-    if not isinstance(result, dict):
-        return str(result)
-
-    # AgentCore shape: result.artifacts[0].parts[0].text
-    artifacts = result.get("artifacts")
-    if isinstance(artifacts, list) and artifacts:
-        parts = artifacts[0].get("parts")
-        if isinstance(parts, list) and parts:
-            first = parts[0]
-            if isinstance(first, dict):
-                text = first.get("text")
-                if text is not None:
-                    return str(text)
-
-    # Standard A2A shape (fallback for non-AgentCore responses)
-    msg = result.get("message") or {}
-    if isinstance(msg, dict):
-        parts = msg.get("parts")
-        if isinstance(parts, list) and parts:
-            first = parts[0]
-            if isinstance(first, dict):
-                text = first.get("text")
-                if text is not None:
-                    return str(text)
-
-    # Fallback keys
-    for key in ("content", "text", "response"):
-        val = result.get(key)
-        if val is not None:
-            if isinstance(val, str):
-                return val
-            return json.dumps(val, ensure_ascii=False)
-
-    return json.dumps(data, ensure_ascii=False)
+    if _is_agentcore_runtime(agent):
+        return {
+            "Authorization": f"Bearer {_make_agentcore_jwt(agent, jwt_config=jwt_config)}",
+            "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": str(uuid.uuid4()),
+        }
+    token = make_agent_jwt(agent_url=str(agent.card.url).rstrip("/"), jwt_config=jwt_config)
+    return {"Authorization": f"Bearer {token}"}
 
 
-async def _call_agentcore_a2a(agent: A2AAgent, text: str, *, jwt_config: JwtSigningConfig) -> StepOutput:
-    """Execute a task against an AWS Bedrock AgentCore A2A runtime via HTTP.
+def _create_message(text: str) -> Message:
+    """Build an A2A user Message with a single TextPart."""
+    return Message(
+        kind="message",
+        role=Role.user,
+        parts=[Part(TextPart(kind="text", text=text))],
+        message_id=uuid.uuid4().hex,
+    )
 
-    AgentCore runtimes do **not** expose ``/v1/message:send``; the invocation
-    URL (ending in ``/invocations``) is the data-plane endpoint itself.
+
+def _extract_text(event: Any) -> str:
+    """Extract concatenated text from a ``Message`` or ``(Task, update_event)`` tuple.
+
+    Skips non-text parts (``FilePart`` / ``DataPart``).  Falls back to ``str(event)``
+    for unrecognized event shapes.
     """
+    parts: list[Part] = []
+    if isinstance(event, Message):
+        parts = event.parts
+    elif isinstance(event, tuple) and len(event) == 2 and isinstance(event[0], Task):
+        for artifact in event[0].artifacts or []:
+            parts.extend(artifact.parts or [])
+    else:
+        return str(event)
+
+    return "".join(p.root.text for p in parts if isinstance(p.root, TextPart))
+
+
+async def _call_a2a(agent: A2AAgent, text: str, *, jwt_config: JwtSigningConfig) -> StepOutput:
+    """Invoke an A2A agent (standard or AgentCore) via the official ``a2a-sdk``."""
     agent_name = agent.config.title if agent.config else agent.card.name
-    base_url = agent_base_url(agent)
-
-    token = _make_agentcore_jwt(agent, jwt_config=jwt_config)
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-    }
-
-    payload: dict[str, Any] = {
-        "jsonrpc": "2.0",
-        "id": f"req-{uuid.uuid4().hex[:12]}",
-        "method": "message/send",
-        "params": {
-            "message": {
-                "role": "user",
-                "parts": [{"type": "text", "text": text}],
-                "messageId": f"msg-{uuid.uuid4().hex[:12]}",
-            }
-        },
-    }
 
     try:
-        async with httpx.AsyncClient(timeout=_A2A_HTTP_TIMEOUT) as client:
-            response = await client.post(base_url, json=payload, headers=headers)
-            response.raise_for_status()
-            result = response.json()
-            return StepOutput(content=_extract_agentcore_response_content(result))
-    except Exception as exc:
-        logger.exception("AgentCore A2A executor %r failed", agent_name)
-        return StepOutput(content=str(exc), success=False, error=str(exc))
+        async with httpx.AsyncClient(timeout=_A2A_HTTP_TIMEOUT) as httpx_client:
+            headers = _build_headers(agent, jwt_config=jwt_config)
+            httpx_client.headers.update(headers)
 
-
-async def _call_standard_a2a(agent: A2AAgent, text: str, *, jwt_config: JwtSigningConfig) -> StepOutput:
-    """Execute a task against a standard (non-AgentCore) A2A agent.
-
-    Generates a fresh JWT per call and uses agno's ``A2AClient``.
-    """
-    agent_name = agent.config.title if agent.config else agent.card.name
-    base_url = agent_base_url(agent)
-    protocol = map_a2a_protocol(agent.config.type if agent.config else None)
-
-    try:
-        token = make_agent_jwt(agent_url=base_url, jwt_config=jwt_config)
-        client = A2AClient(base_url=base_url, timeout=_A2A_HTTP_TIMEOUT, protocol=protocol)
-        result = await client.send_message(text, headers={"Authorization": f"Bearer {token}"})
-        return StepOutput(content=result.content or "")
+            resolver = A2ACardResolver(httpx_client=httpx_client, base_url=agent.card.url)
+            agent_card = await resolver.get_agent_card()
+            config = ClientConfig(
+                httpx_client=httpx_client,
+                streaming=False,
+            )
+            client = ClientFactory(config).create(agent_card)
+            async for event in client.send_message(_create_message(text)):
+                return StepOutput(content=_extract_text(event))
+        return StepOutput(content="", success=False, error="A2A agent returned no events")
     except Exception as exc:
         logger.exception("A2A executor %r failed", agent_name)
         return StepOutput(content=str(exc), success=False, error=str(exc))
 
 
 def make_a2a_executor(agent: A2AAgent, *, jwt_config: JwtSigningConfig) -> StepExecutor:
-    """Wrap an A2A agent as a workflow executor via a direct call to the agent URL.
-
-    A fresh JWT is generated per invocation (TTL = ``_A2A_JWT_TTL_SECONDS``)
-    using the supplied ``jwt_config``.  The registry proxy is **not** involved.
-
-    Args:
-        agent:      Active ``A2AAgent`` document from MongoDB.
-        jwt_config: JWT signing config (private key, issuer, kid, audience).
-
-    Returns:
-        An async callable that accepts ``(StepInput, session_state)`` and
-        returns a ``StepOutput``.
     """
-    if _is_agentcore_runtime(agent):
-        return _make_agentcore_executor(agent, jwt_config=jwt_config)
+    Wrap an A2A agent as a workflow executor via a direct call to the agent URL.
+    """
 
     async def executor(step_input: StepInput, session_state: dict[str, Any] | None = None) -> StepOutput:
-        return await _call_standard_a2a(agent, build_prompt(step_input), jwt_config=jwt_config)
+        _raise_if_iam_unsupported(agent)
+        return await _call_a2a(agent, build_prompt(step_input), jwt_config=jwt_config)
 
     executor.__name__ = f"{agent.path.lstrip('/')}_a2a_executor"
     return executor
-
-
-def _make_agentcore_executor(agent: A2AAgent, *, jwt_config: JwtSigningConfig) -> StepExecutor:
-    """Build an executor for an AWS Bedrock AgentCore runtime.
-
-    Raises ``NotImplementedError`` at call-time for IAM auth (SigV4 not implemented).
-    """
-    mode = _get_agentcore_auth_mode(agent)
-    executor_name = f"{agent.path.lstrip('/')}_agentcore_executor"
-
-    if mode == "IAM":
-        # SigV4 signing for direct workflow execution is not yet implemented.
-        async def iam_executor(step_input: StepInput, session_state: dict[str, Any] | None = None) -> StepOutput:
-            raise NotImplementedError(
-                "IAM-authenticated AgentCore A2A runtime is not supported for direct workflow execution. "
-                "Please configure JWT auth on the AgentCore runtime (or use a proxy path that handles SigV4)."
-            )
-
-        iam_executor.__name__ = executor_name
-        return iam_executor
-
-    async def agentcore_executor(step_input: StepInput, session_state: dict[str, Any] | None = None) -> StepOutput:
-        return await _call_agentcore_a2a(agent, build_prompt(step_input), jwt_config=jwt_config)
-
-    agentcore_executor.__name__ = executor_name
-    return agentcore_executor
 
 
 def make_a2a_pool_executor(
@@ -393,14 +300,8 @@ def make_a2a_pool_executor(
                     error=f"pool retry failed: agent {selected_path!r} not in accessible set",
                 )
 
-        if _is_agentcore_runtime(selected_agent):
-            mode = _get_agentcore_auth_mode(selected_agent)
-            if mode == "IAM":
-                raise NotImplementedError(
-                    "IAM-authenticated AgentCore A2A runtime is not supported for direct workflow execution. "
-                )
-            return await _call_agentcore_a2a(selected_agent, task, jwt_config=jwt_config)
-        return await _call_standard_a2a(selected_agent, task, jwt_config=jwt_config)
+        _raise_if_iam_unsupported(selected_agent)
+        return await _call_a2a(selected_agent, task, jwt_config=jwt_config)
 
     executor.__name__ = f"{node_name}_pool_executor"
     return executor
@@ -411,18 +312,14 @@ async def _select_agent_with_llm(
     task_description: str,
     selector_agent: Agent,
 ) -> A2AAgent:
-    """
-    Use an LLM to pick the best-fit agent from the pool.
-    """
-    summaries: list[str] = []
-    for agent in agents:
-        skills = ", ".join(f"{s.name}: {s.description}" for s in (agent.card.skills or []) if s.name)
-        summaries.append(
-            f"Path: {agent.path}\n"
-            f"Name: {agent.card.name}\n"
-            f"Description: {agent.card.description or ''}\n"
-            f"Skills: {skills or '(none)'}"
-        )
+    """Use an LLM to pick the best-fit agent from the pool."""
+    summaries = [
+        f"Path: {agent.path}\n"
+        f"Name: {agent.card.name}\n"
+        f"Description: {agent.card.description or ''}\n"
+        f"Skills: {', '.join(f'{s.name}: {s.description}' for s in (agent.card.skills or []) if s.name) or '(none)'}"
+        for agent in agents
+    ]
 
     prompt = (
         f"Task: {task_description}\n\n"
@@ -431,12 +328,11 @@ async def _select_agent_with_llm(
     )
 
     result = await selector_agent.arun(prompt)
-    logger.info(f"_select_agent_with_llm, result: {result}")
     chosen_path = (result.content or "").strip()
 
     agent_by_path = {a.path: a for a in agents}
     selected = agent_by_path.get(chosen_path)
     if selected is None:
         raise ValueError(f"LLM selector returned unknown path {chosen_path!r}; pool: {list(agent_by_path)}")
-    logger.info(f"final selected: {selected}")
+    logger.info("pool selector chose %r", selected.path)
     return selected
