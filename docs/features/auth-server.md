@@ -12,7 +12,7 @@ The auth server implements standard OIDC and OAuth 2.0 flows:
 
 - **Authorization Code Flow** — for browser-based users logging into the Jarvis Registry UI
 - **Device Authorization Flow** — for CLI tools and headless AI agents
-- **Client Credentials Flow** — for machine-to-machine (M2M) service accounts and AI copilots
+- **Client Credentials Flow(Roadmap)** — for machine-to-machine (M2M) service accounts and AI copilots
 - **Token Refresh** — automatic access token renewal via refresh tokens, without re-authentication
 
 All tokens are signed JWTs (RS256). Scopes and group claims from your IdP are preserved and mapped directly to Jarvis Registry [RBAC roles](../design/scopes.md).

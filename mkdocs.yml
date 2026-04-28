@@ -108,7 +108,7 @@ nav:
     - Production Deployment: deployment-guide.md
     - Configuration: configuration.md
   - Core Features:
-    - IDP Integration: features/idp-integration.md
+    - IDP Integration: features/auth-server.md
     - MCPServer Registry: features/mcp-registry.md
     - A2AAgent Registry: features/a2a-registry.md
     - AgentCore Federation: features/agentcore-federation.md
