@@ -28,9 +28,7 @@ theme:
       toggle:
         icon: material/brightness-4
         name: Switch to light mode
-  font:
-    text: Roboto
-    code: Roboto Mono
+  font: false
   features:
     - navigation.tabs
     - navigation.sections
