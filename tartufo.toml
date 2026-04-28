@@ -7,6 +7,7 @@ exclude-path-patterns = [
     {path-pattern = 'uv\.lock$', reason = 'uv lock file'},
     {path-pattern = '.*package-lock\.json$', reason = 'npm lock file'},
     {path-pattern = 'tartufo\.toml$', reason = 'Tartufo config file'},
+    {path-pattern = '.*\.svg$', reason = 'SVG assets are static images and can trigger entropy false positives'},
     {path-pattern = '^\.env\.example$', reason = 'sample env template with placeholder values'},
 ]
 
