@@ -1,4 +1,36 @@
 /* ============================================================
+   System font stack (Google Fonts disabled for performance)
+   Provides Roboto-like rendering using OS fonts.
+   ============================================================ */
+:root {
+  --md-text-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+  --md-code-font: ui-monospace, "Cascadia Code", "Source Code Pro", Menlo,
+    Consolas, "DejaVu Sans Mono", monospace;
+}
+
+/* ============================================================
+   Accessibility: links must be distinguishable without color.
+   Adds underline so links are visually distinct for users with
+   color-vision deficiencies.
+   ============================================================ */
+.md-typeset a {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* Navigation and header links should stay without underline */
+.md-nav__link,
+.md-tabs__link,
+.md-header a,
+.md-footer a,
+.md-header__button,
+.md-source,
+.md-top {
+  text-decoration: none !important;
+}
+
+/* ============================================================
    Dynamic logo: show/hide per theme
    Light logo is shown by default; swapped to dark on slate.
    !important needed to override Material's .md-logo img rules.
