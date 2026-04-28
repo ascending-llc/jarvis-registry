@@ -1,6 +1,6 @@
 # Security Control Design
 
-Security in the registry is layered. Each layer has a distinct responsibility, and they compose in a fixed order on every request.
+Security in the registry is layered. Each layer has a distinct responsibility, and they compose in a fixed order on every request. This design aligns with [enterprise AI governance best practices](https://exploreagentic.ai/ai-governance/) and the [Jarvis AI Guardrails](https://ascendingdc.com/jarvis-ai/guardrails/) model for governed AI deployment.
 
 ---
 

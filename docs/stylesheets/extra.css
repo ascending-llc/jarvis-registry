@@ -20,6 +20,7 @@ body[data-md-color-scheme="slate"] .md-logo__light   { display: none !important;
 :root {
   --ascending-header-bg: #0a0a0a;
   --ascending-accent:    #1e6fd9;   /* blue accent — tweak to match site */
+  --ascending-accent-dark: #7fb0ff;
   --ascending-header-text: #ffffff;
 }
 
@@ -93,4 +94,9 @@ body[data-md-color-scheme="slate"] .md-logo__light   { display: none !important;
 [data-md-color-scheme="slate"] {
   --md-accent-fg-color: var(--ascending-accent);
   --md-primary-fg-color: var(--ascending-header-bg);
+  --md-typeset-a-color: var(--ascending-accent-dark);
+}
+
+body[data-md-color-scheme="slate"] .md-typeset a {
+  color: var(--ascending-accent-dark);
 }

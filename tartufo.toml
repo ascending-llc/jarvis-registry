@@ -7,6 +7,8 @@ exclude-path-patterns = [
     {path-pattern = 'uv\.lock$', reason = 'uv lock file'},
     {path-pattern = '.*package-lock\.json$', reason = 'npm lock file'},
     {path-pattern = 'tartufo\.toml$', reason = 'Tartufo config file'},
+    {path-pattern = '.*\.svg$', reason = 'SVG assets are static images and can trigger entropy false positives'},
+    {path-pattern = 'docs/llms\.txt$', reason = 'llms.txt is a plain-text LLM index file with no credentials'},
     {path-pattern = '^\.env\.example$', reason = 'sample env template with placeholder values'},
 ]
 
@@ -47,6 +49,11 @@ exclude-signatures = [
     {signature = '07da773ec3449bf7427ae18088e7d620bf804a9650693215a7579a058fd5cfdc', reason = 'example MongoDB ObjectID in A2A API design doc is not a credential'},
     {signature = 'bb1b70a97d1bccbd11dbc557c0b9a5b165b7c508a79e478979c5c528edac3bb7', reason = 'example data in ACL connector service design doc is not a credential'},
     {signature = '293f1a6c9ae409f66fc5e726a07e09e20af2de72513886a85653ea3a8cee76f9', reason = 'example data in ACL connector service design doc is not a credential'},
+    {signature = '4aa8238058decefed9d58e0674ce9b52adb3a85552184770ba94fa6a51f22e02', reason = 'docs/llms.txt rewrite — high entropy false positive from bulk content deletion'},
+    {signature = 'd78fd2abf0a94fe13d4f04219d89f5d94a67754239761caf7567e2f243b70217', reason = 'docs/llms.txt rewrite — high entropy false positive from bulk content deletion'},
+    {signature = '53c3448ecf8d834a85987b6502e284ca7907b9546db02c59acac2ffc4135335e', reason = 'docs/llms.txt rewrite — high entropy false positive from bulk content deletion'},
+    {signature = 'a48d5e73ce002761dd79ae2423df05a135749b59ec320cbe1d1b7bc7592696a3', reason = 'docs/llms.txt rewrite — high entropy false positive from bulk content deletion'},
+    {signature = '197384164fb092f253293c757b56f6f626baf35ec0c7b801332e253836261dac', reason = 'docs/llms.txt rewrite — high entropy false positive from bulk content deletion'},
     {signature = '66a1b237ca8a6040ed241189cef2b85c0ad0cf30b9a3d6ed64bc60cd8dbbe9a7', reason = 'example data in ACL connector service design doc is not a credential'},
     {signature = '8617196bbe1ce916a8ea25ec04d268365195e5408b49899c1319f255e70eb46a', reason = 'example data in ACL connector service design doc is not a credential'},
     {signature = '06881ee7b01d6be8048b521ae8d2999cc46c8c7e1e9d1e32b00cf6e729230082', reason = 'example data in design doc is not a credential'},

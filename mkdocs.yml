@@ -1,7 +1,7 @@
 site_name: Jarvis Registry
 site_description: Connect any AI copilot to your enterprise tools through a single gateway with built-in security, auto-discovery, and full observability.
 site_author: ASCENDING Inc
-site_url: https://ascending-llc.github.io/jarvis-registry/
+site_url: https://jarvisregistry.com/
 # Repository
 repo_name: ascending-llc/jarvis-registry
 repo_url: https://github.com/ascending-llc/jarvis-registry
@@ -105,14 +105,16 @@ nav:
   - Get Started:
     - Quick Start: quick-start.md
     - Generate Secrets: generate-secrets.md
-    - Installation: installation.md
+    - Production Deployment: deployment-guide.md
     - Configuration: configuration.md
-  - Authentication:
-    - Authentication Guide: auth.md
-    - Keycloak Integration: keycloak-integration.md
-    - Amazon Cognito: cognito.md
-    - Microsoft Entra ID: entra-id-setup.md
-  - Core Design:
+  - Core Features:
+    - IDP Integration: features/auth-server.md
+    - MCPServer Registry: features/mcp-registry.md
+    - A2AAgent Registry: features/a2a-registry.md
+    - AgentCore Federation: features/agentcore-federation.md
+    - FoundryAI Federation: features/foundry-ai-federation.md
+    - Registry Endpoint: features/registry-endpoint.md
+  - Architecture & Design:
     - Security Control Design: design/security-design.md
     - RBAC & Scopes: design/scopes.md
     - ACL Connector Service: design/acl-connector-service.md

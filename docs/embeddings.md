@@ -4,7 +4,7 @@ This project has two different embedding configurations, and which one applies d
 
 ## Overview
 
-Embeddings are used for semantic search in the registry.
+Embeddings are used for [semantic search](https://exploreagentic.ai/enterprise-rag/) in the registry — the same retrieval architecture patterns that power the [Jarvis AI Knowledge Base](https://ascendingdc.com/jarvis-ai/knowledge-base/).
 
 Depending on deployment mode, semantic search is handled in one of two ways:
 

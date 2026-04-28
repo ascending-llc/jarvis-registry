@@ -8,8 +8,8 @@ Jarvis Registry is the enterprise control plane for AI — connecting copilots, 
 
 One place to connect every AI client and every tool.
 
-- **Universal MCP Support**: Any MCP-compatible copilot (Cursor, Claude Desktop, GitHub Copilot, VS Code) connects out of the box
-- **A2A Agent Registry**: Register and manage autonomous agents alongside human users using the same gateway
+- **Universal MCP Support**: Any [MCP-compatible copilot](https://exploreagentic.ai/mcp/) (Cursor, Claude Desktop, GitHub Copilot, VS Code) connects out of the box
+- **A2A Agent Registry**: Register and manage [autonomous agents](https://exploreagentic.ai/agentic-ai/) alongside human users using the same gateway
 - **Single Endpoint**: No per-tool configuration — one URL gives AI clients access to your entire enterprise tool catalog
 - **Multi-Protocol**: Supports SSE and Streamable HTTP transport, compatible with the latest MCP specification
 
@@ -23,7 +23,7 @@ Identity-first security at every layer, with no custom auth code required.
 - **Role-Based Access Control (RBAC)**: Assign permissions by role, group, or service principal
 - **Fine-Grained ACL**: Enforce access policies down to the individual tool level — not just the server
 - **JWT Token Management**: Centralized token validation, refresh, and vending for both human users and AI agents
-- **Zero-Trust Posture**: Every request is authenticated and authorized before reaching a backend tool
+- **Zero-Trust Posture**: Every request is authenticated and authorized before reaching a backend tool — learn more about [AI governance frameworks](https://exploreagentic.ai/ai-governance/) that inform this design
 
 ---
 
@@ -31,7 +31,7 @@ Identity-first security at every layer, with no custom auth code required.
 
 Agents find the right tool without hardcoded routing.
 
-- **Semantic Search**: Vector-powered search matches natural language queries to MCP servers and A2A agents by skill and description
+- **Semantic Search**: Vector-powered search matches natural language queries to MCP servers and A2A agents by skill and description — see [Enterprise RAG architecture](https://exploreagentic.ai/enterprise-rag/) for the retrieval patterns that underpin this feature
 - **Tag & Skill Filtering**: Multi-dimensional filtering lets agents narrow results by capability, domain, or context
 - **Runtime Discovery**: No static tool lists — agents discover what they need dynamically at runtime
 - **Hybrid Search**: Combines semantic similarity and exact tag matching for precision and recall
@@ -90,4 +90,4 @@ Jarvis Registry is cloud-native and runs anywhere.
 - **Zero Vendor Lock-in**: Open-source, open architecture — bring your own IdP, vector store, and observability backend
 - **Security Without Friction**: Enterprise-grade ACL and RBAC that works with your existing identity provider in hours, not weeks
 - **Scales with Your Agents**: From a single team to hundreds of autonomous agents, the same control plane handles it all
-- **Open Source**: Community-driven with commercial support available from [ASCENDING Inc](https://ascendingdc.com/jarvis-ai/)
+- **Open Source**: Community-driven with commercial support available from [ASCENDING Inc](https://ascendingdc.com/jarvis-ai/) — see the [Jarvis Registry product page](https://ascendingdc.com/jarvis-ai/jarvis-registry) and [Explore Agentic](https://exploreagentic.ai/) for the research and field guides behind the platform
