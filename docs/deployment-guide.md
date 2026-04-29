@@ -146,7 +146,7 @@ All secrets must be populated **before** deploying the Helm chart.
 
 ## Phase 5 — Registry Helm Chart Deployment
 
-The Registry is deployed as a **single Helm release** into the `jarvis` namespace with the release name `jarvis-registry`. Thw helm chart is still under development.
+The Registry is deployed as a **single Helm release** into the `jarvis` namespace with the release name `jarvis-registry`. The Helm chart is still under development.
 
 ### 5.1 Application Pods
 
