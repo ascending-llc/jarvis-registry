@@ -2,8 +2,10 @@
    Accessibility: links must be distinguishable without color.
    Adds underline so links are visually distinct for users with
    color-vision deficiencies.
+   Limit the rule to normal body-content links so generated UI
+   links such as heading permalinks are not underlined.
    ============================================================ */
-.md-typeset a {
+.md-typeset :is(p, li, td, th, blockquote, dd) a {
   text-decoration: underline;
   text-underline-offset: 2px;
 }
