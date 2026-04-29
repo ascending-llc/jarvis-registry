@@ -21,7 +21,7 @@ Whether you are plugging your favorite AI copilot (Claude, OpenAI, or Jarvis Cha
 
 <div align="center">
 <a class="yt-facade" href="https://www.youtube.com/watch?v=EUqWc_mAaXs" target="_blank" rel="noopener noreferrer" aria-label="Watch Jarvis Registry demo on YouTube (opens in new tab)">
-  <img src="https://img.youtube.com/vi/EUqWc_mAaXs/maxresdefault.jpg" alt="Jarvis Registry demo video thumbnail" width="560" height="315" loading="lazy">
+  <img src="https://img.youtube.com/vi/EUqWc_mAaXs/hqdefault.jpg" alt="Jarvis Registry demo video thumbnail" width="560" height="315" loading="lazy">
   <span class="yt-facade__play"></span>
 </a>
 </div>
