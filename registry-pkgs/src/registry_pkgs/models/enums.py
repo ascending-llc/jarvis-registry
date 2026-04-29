@@ -247,13 +247,12 @@ class WorkflowNodeType(StrEnum):
     ROUTER = "router"
 
 
-"""
-PENDING ──→ RUNNING ──→ COMPLETED
-               │
-               ├──→ FAILED
-               ├──→ SKIPPED (on_error="skip" 时)
-               └──→ CANCELLED (workflow 被 cancel)
-"""
+# Workflow run status flow:
+# PENDING ──→ RUNNING ──→ COMPLETED
+#                │
+#                ├──→ FAILED
+#                ├──→ SKIPPED (on_error="skip" 时)
+#                └──→ CANCELLED (workflow 被 cancel)
 
 
 class WorkflowRunStatus(StrEnum):
