@@ -23,7 +23,11 @@ class StepConfig(BaseModel):
 
     Attributes:
         max_retries:          Maximum number of additional attempts after the first failure.
-                              Only meaningful when ``on_error="retry"``; ignored otherwise.
+                              When ``on_error="retry"`` the retry loop is managed by the
+                              executor wrapper with exponential backoff, so agno receives
+                              ``max_retries=0`` and does not interfere.  When ``on_error`` is
+                              ``"fail"`` or ``"skip"`` this value is forwarded to agno for
+                              its own step-level retry logic.
         on_error:             Behaviour when the step ultimately fails after all attempts.
                               ``"fail"``  – abort the whole workflow run (default).
                               ``"skip"``  – record the failure and continue to the next step.

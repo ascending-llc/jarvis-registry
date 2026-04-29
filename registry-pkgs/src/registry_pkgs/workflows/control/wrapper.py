@@ -197,8 +197,12 @@ async def _wait_while_paused(
         pending_directive=None,
         paused_at=datetime.now(UTC),
     )
-    timeout_secs: float = float(run.pause_timeout_seconds) if run else 3600.0
-    paused_at: datetime = run.paused_at or datetime.now(UTC) if run else datetime.now(UTC)
+    if run is None:
+        timeout_secs = 3600.0
+        paused_at = datetime.now(UTC)
+    else:
+        timeout_secs = float(run.pause_timeout_seconds)
+        paused_at = run.paused_at or datetime.now(UTC)
 
     while True:
         next_directive = await directive_queue.wait_for_directive(run_id, timeout=PAUSE_POLL_INTERVAL)

@@ -3,7 +3,7 @@ WorkflowControlService — validates and dispatches user directives to live runs
 
 Responsibilities
 ----------------
-1. Load and ownership-check the ``WorkflowRun`` document.
+1. Load and verify the ``WorkflowRun`` document belongs to the given workflow.
 2. Validate the requested directive via ``WorkflowRunStateMachine.apply_directive``.
 3. Persist ``WorkflowRun.pending_directive`` (and related fields) to MongoDB —
    this is the durable source of truth that survives service restarts.
@@ -327,7 +327,7 @@ class WorkflowControlService:
         return await WorkflowRun.find(WorkflowRun.workflow_definition_id == def_oid).sort("-started_at").to_list()
 
     async def _load_run(self, workflow_definition_id: str, run_id: str) -> WorkflowRun:
-        """Load and ownership-verify a WorkflowRun.
+        """Load a WorkflowRun and verify it belongs to the requested workflow.
 
         Raises:
             HTTPException(404): Run not found or belongs to a different workflow.

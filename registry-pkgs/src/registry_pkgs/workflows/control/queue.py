@@ -110,6 +110,5 @@ class DirectiveQueue:
             return None
         try:
             return await asyncio.wait_for(q.get(), timeout=timeout)
-        except TimeoutError as e:
-            logger.error(f"Waiting for directive {run_id} timed out, error: {e}")
+        except TimeoutError:
             return None

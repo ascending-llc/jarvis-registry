@@ -15,6 +15,7 @@ from registry.api.v1.workflow.control_routes import (
 )
 from registry.schemas.workflow_schemas import RetryRequest
 from registry.services.workflow_control_service import WorkflowControlService
+from registry_pkgs.models.enums import WorkflowRunStatus
 
 
 @pytest.fixture
@@ -37,7 +38,7 @@ def mock_service():
     return service
 
 
-def _make_run(status: str = "RUNNING") -> SimpleNamespace:
+def _make_run(status: WorkflowRunStatus = WorkflowRunStatus.RUNNING) -> SimpleNamespace:
     """Build a lightweight fake WorkflowRun."""
     return SimpleNamespace(
         id=PydanticObjectId(),
@@ -47,7 +48,7 @@ def _make_run(status: str = "RUNNING") -> SimpleNamespace:
 
 @pytest.mark.asyncio
 async def test_pause_run_success(sample_user_context, mock_service):
-    run = _make_run("PAUSED")
+    run = _make_run(WorkflowRunStatus.PAUSED)
     mock_service.send_pause.return_value = run
 
     result = await pause_run(
@@ -59,7 +60,7 @@ async def test_pause_run_success(sample_user_context, mock_service):
 
     mock_service.send_pause.assert_awaited_once_with("wf-1", "run-1")
     assert result.run_id == str(run.id)
-    assert result.status == "PAUSED"
+    assert result.status == WorkflowRunStatus.PAUSED
     assert result.message == "Run paused"
 
 
@@ -97,7 +98,7 @@ async def test_pause_run_wraps_unexpected_exception(sample_user_context, mock_se
 
 @pytest.mark.asyncio
 async def test_resume_run_success(sample_user_context, mock_service):
-    run = _make_run("RUNNING")
+    run = _make_run(WorkflowRunStatus.RUNNING)
     mock_service.send_resume.return_value = run
 
     result = await resume_run(
@@ -109,7 +110,7 @@ async def test_resume_run_success(sample_user_context, mock_service):
 
     mock_service.send_resume.assert_awaited_once_with("wf-1", "run-1")
     assert result.run_id == str(run.id)
-    assert result.status == "RUNNING"
+    assert result.status == WorkflowRunStatus.RUNNING
     assert result.message == "Run resumed"
 
 
@@ -148,7 +149,7 @@ async def test_resume_run_wraps_unexpected_exception(sample_user_context, mock_s
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_cancel_run_success(sample_user_context, mock_service):
-    run = _make_run("CANCELLED")
+    run = _make_run(WorkflowRunStatus.CANCELLED)
     mock_service.send_cancel.return_value = run
 
     result = await cancel_run(
@@ -160,7 +161,7 @@ async def test_cancel_run_success(sample_user_context, mock_service):
 
     mock_service.send_cancel.assert_awaited_once_with("wf-1", "run-1")
     assert result.run_id == str(run.id)
-    assert result.status == "CANCELLED"
+    assert result.status == WorkflowRunStatus.CANCELLED
     assert result.message == "Run cancelled"
 
 
@@ -199,7 +200,7 @@ async def test_cancel_run_wraps_unexpected_exception(sample_user_context, mock_s
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_retry_run_success(sample_user_context, mock_service):
-    child_run = _make_run("PENDING")
+    child_run = _make_run(WorkflowRunStatus.PENDING)
     mock_service.send_retry.return_value = child_run
 
     request = MagicMock(spec=Request)
@@ -224,13 +225,13 @@ async def test_retry_run_success(sample_user_context, mock_service):
         user_id=sample_user_context["user_id"],
     )
     assert result.run_id == str(child_run.id)
-    assert result.status == "PENDING"
+    assert result.status == WorkflowRunStatus.PENDING
     assert "node-2" in result.message
 
 
 @pytest.mark.asyncio
 async def test_retry_run_strips_bearer_prefix(sample_user_context, mock_service):
-    child_run = _make_run("PENDING")
+    child_run = _make_run(WorkflowRunStatus.PENDING)
     mock_service.send_retry.return_value = child_run
 
     request = MagicMock(spec=Request)
@@ -253,7 +254,7 @@ async def test_retry_run_strips_bearer_prefix(sample_user_context, mock_service)
 
 @pytest.mark.asyncio
 async def test_retry_run_empty_auth_header(sample_user_context, mock_service):
-    child_run = _make_run("PENDING")
+    child_run = _make_run(WorkflowRunStatus.PENDING)
     mock_service.send_retry.return_value = child_run
 
     request = MagicMock(spec=Request)

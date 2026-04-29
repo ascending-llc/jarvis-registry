@@ -36,10 +36,10 @@ async def pause_run(
     try:
         run = await service.send_pause(workflow_id, run_id)
         return DirectiveResponse(run_id=str(run.id), status=run.status, message="Run paused")
-    except HTTPException as e:
-        logger.error(f"Pause request failed: {e}, e: {str(e)}")
+    except HTTPException:
         raise
     except Exception as exc:
+        logger.exception("Pause request failed for run %s", run_id)
         raise HTTPException(status_code=500, detail="Internal server error") from exc
 
 
@@ -57,10 +57,10 @@ async def resume_run(
     try:
         run = await service.send_resume(workflow_id, run_id)
         return DirectiveResponse(run_id=str(run.id), status=run.status, message="Run resumed")
-    except HTTPException as exc:
-        logger.error("Unexpected error resume %s, exc: %s", run_id, str(exc))
+    except HTTPException:
         raise
     except Exception as exc:
+        logger.exception("Resume request failed for run %s", run_id)
         raise HTTPException(status_code=500, detail="Internal server error") from exc
 
 
@@ -79,10 +79,10 @@ async def cancel_run(
     try:
         run = await service.send_cancel(workflow_id, run_id)
         return DirectiveResponse(run_id=str(run.id), status=run.status, message="Run cancelled")
-    except HTTPException as exc:
-        logger.error("Unexpected error cancelling run %s, exc: %s", run_id, str(exc))
+    except HTTPException:
         raise
     except Exception as exc:
+        logger.exception("Cancel request failed for run %s", run_id)
         raise HTTPException(status_code=500, detail="Internal server error") from exc
 
 
@@ -121,9 +121,8 @@ async def retry_run(
             status=child_run.status,
             message=f"Retry run created from node {body.from_node_id!r}",
         )
-    except HTTPException as exc:
-        logger.error("Unexpected error retrying run %s, exc: %s", run_id, str(exc))
+    except HTTPException:
         raise
     except Exception as exc:
-        logger.error("Unexpected error retrying run %s", run_id)
+        logger.exception("Retry request failed for run %s", run_id)
         raise HTTPException(status_code=500, detail="Internal server error") from exc

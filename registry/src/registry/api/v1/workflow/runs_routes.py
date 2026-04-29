@@ -58,11 +58,10 @@ async def trigger_run(
             workflow_id=str(run.workflow_definition_id),
             status=str(run.status),
         )
-    except HTTPException as exc:
-        logger.error("Error triggering run for workflow %s: %s", workflow_id, exc)
+    except HTTPException:
         raise
     except Exception as exc:
-        logger.error("Unexpected error triggering run for workflow %s", workflow_id)
+        logger.exception("Unexpected error triggering run for workflow %s", workflow_id)
         raise HTTPException(status_code=500, detail="Internal server error") from exc
 
 
@@ -95,11 +94,10 @@ async def list_runs_status(
                 for r in runs
             ],
         )
-    except HTTPException as exc:
-        logger.error("Error listing runs for workflow %s: %s", workflow_id, exc)
+    except HTTPException:
         raise
     except Exception as exc:
-        logger.error("Unexpected error listing runs for workflow %s", workflow_id)
+        logger.exception("Unexpected error listing runs for workflow %s", workflow_id)
         raise HTTPException(status_code=500, detail="Internal server error") from exc
 
 
@@ -148,8 +146,8 @@ async def get_run_status(
                 key=lambda x: x.node_name,
             ),
         )
-    except HTTPException as exc:
-        logger.error("Error getting run status for %s/%s: %s", workflow_id, run_id, exc)
+    except HTTPException:
         raise
     except Exception as exc:
+        logger.exception("Unexpected error getting run status for %s/%s", workflow_id, run_id)
         raise HTTPException(status_code=500, detail="Internal server error") from exc
