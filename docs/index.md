@@ -1,5 +1,5 @@
 <div align="center">
-<img src="img/jarvis_vertical_logo_w_text_light_bkg.svg" alt="Jarvis Registry Logo" width="100%">
+<img src="img/jarvis_vertical_logo_w_text_light_bkg.svg" alt="Jarvis Registry Logo" width="2000" height="480" style="width:100%;height:auto;">
 
 **Connect any AI copilot or autonomous agent to your enterprise tools — through a single, secure MCP gateway with built-in identity, access control, and full observability.**
 
@@ -20,7 +20,10 @@ Whether you are plugging your favorite AI copilot (Claude, OpenAI, or Jarvis Cha
 ## See It in Action
 
 <div align="center">
-<iframe width="560" height="315" src="https://www.youtube.com/embed/EUqWc_mAaXs?si=WUdFaOM06cQliV1o" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
+<a class="yt-facade" href="https://www.youtube.com/watch?v=EUqWc_mAaXs" target="_blank" rel="noopener noreferrer" aria-label="Watch Jarvis Registry demo on YouTube (opens in new tab)">
+  <img src="https://img.youtube.com/vi/EUqWc_mAaXs/maxresdefault.jpg" alt="Jarvis Registry demo video thumbnail" width="560" height="315" loading="lazy">
+  <span class="yt-facade__play"></span>
+</a>
 </div>
 
 ---

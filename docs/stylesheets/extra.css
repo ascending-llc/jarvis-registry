@@ -128,3 +128,58 @@ body[data-md-color-scheme="slate"] .md-logo__light   { display: none !important;
 body[data-md-color-scheme="slate"] .md-typeset a {
   color: var(--ascending-accent-dark);
 }
+
+/* ============================================================
+   YouTube facade — click-to-load thumbnail replaces auto-loaded
+   iframe to eliminate ~600 KiB of YouTube JS/CSS from initial load.
+   ============================================================ */
+.yt-facade {
+  display: block;
+  position: relative;
+  max-width: 560px;
+  margin: 0 auto;
+  text-decoration: none !important;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #000;
+}
+
+.yt-facade img {
+  display: block;
+  width: 100%;
+  height: auto;
+  opacity: 0.85;
+  transition: opacity 0.2s ease;
+}
+
+.yt-facade:hover img {
+  opacity: 1;
+}
+
+.yt-facade__play {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 68px;
+  height: 48px;
+  background: rgba(0, 0, 0, 0.72);
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s ease;
+  pointer-events: none;
+}
+
+.yt-facade__play::after {
+  content: '';
+  border-style: solid;
+  border-width: 12px 0 12px 22px;
+  border-color: transparent transparent transparent #ffffff;
+  margin-left: 4px;
+}
+
+.yt-facade:hover .yt-facade__play {
+  background: #ff0000;
+}
