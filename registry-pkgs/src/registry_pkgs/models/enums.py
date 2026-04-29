@@ -247,11 +247,22 @@ class WorkflowNodeType(StrEnum):
     ROUTER = "router"
 
 
+"""
+PENDING ──→ RUNNING ──→ COMPLETED
+               │
+               ├──→ FAILED
+               ├──→ SKIPPED (on_error="skip" 时)
+               └──→ CANCELLED (workflow 被 cancel)
+"""
+
+
 class WorkflowRunStatus(StrEnum):
     PENDING = "pending"
     RUNNING = "running"
+    PAUSED = "paused"
     COMPLETED = "completed"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 class NodeRunStatus(StrEnum):
@@ -260,11 +271,83 @@ class NodeRunStatus(StrEnum):
     COMPLETED = "completed"
     FAILED = "failed"
     SKIPPED = "skipped"
+    CANCELLED = "cancelled"
 
 
 class ResolvedDependencyResolution(StrEnum):
     REUSE_PREVIOUS_OUTPUT = "reuse_previous_output"
     RERUN = "rerun"
+
+
+class WorkflowDirective(StrEnum):
+    """User-issued directives that can be sent to a live or finished workflow run."""
+
+    PAUSE = "pause"
+    RESUME = "resume"
+    CANCEL = "cancel"
+    RETRY = "retry"
+
+
+class WorkflowRunStateMachine:
+    """Centralised transition rules for WorkflowRun status changes driven by user directives.
+
+    All callers (API handlers, services) must go through this class instead of
+    performing ad-hoc status comparisons so that the rules live in exactly one
+    place and can be tested independently.
+    """
+
+    # Statuses that can never accept further directives (except idempotent ones).
+    TERMINAL_STATUSES: frozenset[WorkflowRunStatus] = frozenset(
+        {WorkflowRunStatus.COMPLETED, WorkflowRunStatus.FAILED, WorkflowRunStatus.CANCELLED}
+    )
+
+    # Statuses that represent an in-flight execution (can receive pause/cancel).
+    ACTIVE_STATUSES: frozenset[WorkflowRunStatus] = frozenset({WorkflowRunStatus.RUNNING, WorkflowRunStatus.PAUSED})
+
+    @staticmethod
+    def apply_directive(current: WorkflowRunStatus, directive: WorkflowDirective) -> WorkflowRunStatus:
+        """Validate the directive against the current status and return the resulting status.
+
+        Idempotent transitions (pause→pause, cancel→cancel) return ``current`` unchanged.
+        Invalid transitions raise ``ValueError`` with a human-readable message so callers
+        can translate it directly into an HTTP 400 response.
+
+        Args:
+            current:   The run's present status.
+            directive: The directive requested by the user.
+
+        Returns:
+            The new status the run should transition to.
+
+        Raises:
+            ValueError: When the directive is not valid for the current status.
+        """
+        if directive == WorkflowDirective.PAUSE:
+            if current == WorkflowRunStatus.PAUSED:
+                return current  # idempotent
+            if current == WorkflowRunStatus.RUNNING:
+                return WorkflowRunStatus.PAUSED
+            raise ValueError(f"Cannot pause a run in status '{current}'")
+
+        if directive == WorkflowDirective.RESUME:
+            if current == WorkflowRunStatus.PAUSED:
+                return WorkflowRunStatus.RUNNING
+            raise ValueError(f"Cannot resume a run in status '{current}'")
+
+        if directive == WorkflowDirective.CANCEL:
+            if current == WorkflowRunStatus.CANCELLED:
+                return current  # idempotent
+            if current in WorkflowRunStateMachine.ACTIVE_STATUSES:
+                return WorkflowRunStatus.CANCELLED
+            raise ValueError(f"Cannot cancel a run in status '{current}'")
+
+        if directive == WorkflowDirective.RETRY:
+            # RETRY creates a child run; the parent status is intentionally unchanged.
+            if current in {WorkflowRunStatus.COMPLETED, WorkflowRunStatus.FAILED}:
+                return current
+            raise ValueError(f"Cannot retry a run in status '{current}'")
+
+        raise ValueError(f"Unknown directive: '{directive}'")
 
 
 class FederationJobStateMachine:

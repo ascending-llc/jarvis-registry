@@ -211,7 +211,7 @@ async def main() -> int:
             str(definition.id),
             args.prompt,
             registry_token=registry_token,
-            accessible_agent_ids=None,  # script context: bypass ACL filtering
+            user_id=None,  # script context: bypass ACL filtering
             trigger_source="pool-smoke",
         )
         _print_results(run, node_runs)

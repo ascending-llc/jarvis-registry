@@ -29,6 +29,8 @@ group_mappings:
     - acl-read
     - acl-write
     - mcp-proxy-ops
+    - workflows-read
+    - workflows-control
   jarvis-registry-power-user:
     - servers-read
     - agents-read
@@ -43,6 +45,8 @@ group_mappings:
     - acl-read
     - acl-write
     - mcp-proxy-ops
+    - workflows-read
+    - workflows-control
   jarvis-registry-user:
     - servers-read
     - agents-read
@@ -53,12 +57,15 @@ group_mappings:
     - user-read
     - acl-read
     - mcp-proxy-ops
+    - workflows-read
+    - workflows-control
   jarvis-registry-read-only:
     - servers-read
     - agents-read
     - federations-read
     - user-read
     - acl-read
+    - workflows-read
 
 servers-read:
   - action: list_servers
@@ -272,3 +279,30 @@ mcp-proxy-ops:
   - action: proxy_to_mcp_servers
     method: GET,POST
     endpoint: /proxy/{path}
+
+workflows-read:
+  # Read-only access to workflow run status. Granted to all roles including read-only.
+  - action: get_run_status
+    method: GET
+    endpoint: /workflows/{workflow_id}/runs/{run_id}/status
+  - action: list_runs_status
+    method: GET
+    endpoint: /workflows/{workflow_id}/runs/status
+
+workflows-control:
+  # Write directives to live or finished workflow runs. Requires workflows-read.
+  - action: trigger_workflow_run
+    method: POST
+    endpoint: /workflows/{workflow_id}/runs
+  - action: pause_workflow
+    method: POST
+    endpoint: /workflows/{workflow_id}/runs/{run_id}/pause
+  - action: resume_workflow
+    method: POST
+    endpoint: /workflows/{workflow_id}/runs/{run_id}/resume
+  - action: cancel_workflow
+    method: POST
+    endpoint: /workflows/{workflow_id}/runs/{run_id}/cancel
+  - action: retry_workflow
+    method: POST
+    endpoint: /workflows/{workflow_id}/runs/{run_id}/retry

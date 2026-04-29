@@ -31,6 +31,19 @@ _AGENTCORE_IAM_UNSUPPORTED_MSG = (
 )
 
 
+def _normalize_claim_value(value: Any) -> Any:
+    """Normalize JWT claim values sourced from user/federation config."""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        return [_normalize_claim_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_normalize_claim_value(item) for item in value)
+    if isinstance(value, dict):
+        return {key: _normalize_claim_value(item) for key, item in value.items()}
+    return value
+
+
 def _is_agentcore_runtime(agent: A2AAgent) -> bool:
     """Return True when the agent is a federated AWS Bedrock AgentCore runtime."""
     meta = agent.federationMetadata or {}
@@ -108,16 +121,20 @@ def _make_agentcore_jwt(
 
     if runtime_jwt:
         if runtime_jwt.allowedClients:
-            extra_claims["client_id"] = runtime_jwt.allowedClients[0]
+            extra_claims["client_id"] = _normalize_claim_value(runtime_jwt.allowedClients[0])
         if runtime_jwt.allowedScopes:
-            extra_claims["scope"] = " ".join(runtime_jwt.allowedScopes)
+            cleaned_scopes = [
+                scope for scope in (_normalize_claim_value(scope) for scope in runtime_jwt.allowedScopes) if scope
+            ]
+            if cleaned_scopes:
+                extra_claims["scope"] = " ".join(cleaned_scopes)
         if runtime_jwt.customClaims:
-            extra_claims.update(runtime_jwt.customClaims)
+            extra_claims.update(_normalize_claim_value(runtime_jwt.customClaims))
         if runtime_jwt.discoveryUrl:
             parsed = urlparse(runtime_jwt.discoveryUrl)
             issuer = f"{parsed.scheme}://{parsed.netloc}"
         if runtime_jwt.audiences:
-            audience = runtime_jwt.audiences[0]
+            audience = _normalize_claim_value(runtime_jwt.audiences[0])
 
     payload = build_jwt_payload(
         subject="jarvis-workflow",
@@ -181,6 +198,9 @@ def _extract_text(event: Any) -> str:
 async def _call_a2a(agent: A2AAgent, text: str, *, jwt_config: JwtSigningConfig) -> StepOutput:
     """Invoke an A2A agent (standard or AgentCore) via the official ``a2a-sdk``."""
     agent_name = agent.config.title if agent.config else agent.card.name
+    agent_url = agent.card.url if agent.card else "unknown"
+
+    logger.debug("  → calling A2A agent %r  url=%s  prompt=%r", agent_name, agent_url, text[:120])
 
     try:
         async with httpx.AsyncClient(timeout=_A2A_HTTP_TIMEOUT) as httpx_client:
@@ -195,7 +215,10 @@ async def _call_a2a(agent: A2AAgent, text: str, *, jwt_config: JwtSigningConfig)
             )
             client = ClientFactory(config).create(agent_card)
             async for event in client.send_message(_create_message(text)):
-                return StepOutput(content=_extract_text(event))
+                output = _extract_text(event)
+                logger.debug("  ← A2A agent %r responded: %r", agent_name, output[:200])
+                return StepOutput(content=output)
+        logger.warning("  ← A2A agent %r returned no events", agent_name)
         return StepOutput(content="", success=False, error="A2A agent returned no events")
     except Exception as exc:
         logger.exception("A2A executor %r failed", agent_name)
