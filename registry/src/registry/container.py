@@ -5,11 +5,15 @@ from functools import cached_property
 from typing import TYPE_CHECKING
 
 import httpx
+from agno.models.aws import AwsBedrock
 from redis import Redis
 
+from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.vector.client import DatabaseClient
 from registry_pkgs.vector.repositories.a2a_agent_repository import A2AAgentRepository
 from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRepository
+from registry_pkgs.workflows.control import DirectiveQueue
+from registry_pkgs.workflows.runner import WorkflowRunner
 
 from .auth.oauth.flow_state_manager import FlowStateManager
 from .auth.oauth.reconnection import OAuthReconnectionManager
@@ -34,6 +38,7 @@ from .services.search.base import VectorSearchService
 from .services.security_scanner import SecurityScannerService
 from .services.server_service import ServerServiceV1
 from .services.user_service import UserService
+from .services.workflow_control_service import WorkflowControlService
 
 if TYPE_CHECKING:
     from .core.config import Settings
@@ -54,6 +59,7 @@ class RegistryContainer:
         self.settings = settings
         self.db_client = db_client
         self.redis_client = redis_client
+        self.directive_queue = DirectiveQueue()
 
     @cached_property
     def mcp_server_repo(self) -> MCPServerRepository:
@@ -175,6 +181,31 @@ class RegistryContainer:
     @cached_property
     def agent_scanner_service(self) -> AgentScannerService:
         return AgentScannerService()
+
+    @cached_property
+    def workflow_control_service(self) -> WorkflowControlService:
+        return WorkflowControlService(
+            directive_queue=self.directive_queue,
+            runner_factory=lambda: self.workflow_runner,
+        )
+
+    @cached_property
+    def workflow_runner(self) -> WorkflowRunner:
+        llm = AwsBedrock(
+            id=self.settings.llm_model,
+            aws_region=self.settings.aws_region,
+            aws_session_token=self.settings.aws_session_token,
+            aws_access_key_id=self.settings.aws_access_key_id,
+            aws_secret_access_key=self.settings.aws_secret_access_key,
+        )
+        return WorkflowRunner(
+            llm=llm,
+            registry_url=self.settings.registry_url,
+            db_client=MongoDB.get_client(),
+            db_name=MongoDB.database_name,
+            jwt_config=self.settings.jwt_signing_config,
+            directive_queue=self.directive_queue,
+        )
 
     @cached_property
     def mcp_proxy_client(self) -> httpx.AsyncClient:
