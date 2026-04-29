@@ -1,12 +1,25 @@
 """Save a WorkflowDefinition to MongoDB.
 
-Without executor keys, saves a local demo workflow. With executor keys, saves a
-real registry-backed sequential workflow whose keys must resolve to active MCP
-servers or A2A agents when run.
+Supports three definition shapes:
+  1. No args          — saves a local demo workflow (echo + condition).
+  2. executor_keys    — sequential workflow backed by registry MCP/A2A executors.
+  3. --a2a-pool       — adds an A2A pool step after any executor_key steps.
 
 Usage:
-    python scripts/save_workflow_definition.py
-    python scripts/save_workflow_definition.py github slack --name real-workflow
+    # List active executor keys:
+    uv run python scripts/save_workflow_definition.py --list-executors
+
+    # Sequential MCP/A2A workflow:
+    uv run python scripts/save_workflow_definition.py github slack --name my-workflow
+
+    # Pool A2A workflow (pool-only):
+    uv run python scripts/save_workflow_definition.py --a2a-pool agent-1 agent-2 --name pool-demo
+
+    # MCP step + pool A2A step:
+    uv run python scripts/save_workflow_definition.py github --a2a-pool agent-1 agent-2
+
+    # Then run it:
+    uv run python scripts/run_workflow_by_id.py <id> "hello world"
 """
 
 from __future__ import annotations
@@ -34,7 +47,13 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "executor_keys",
         nargs="*",
-        help="Real executor keys to run sequentially. Each key must match an active MCP serverName or A2A path.",
+        help="Executor keys to run sequentially. Each must match an active MCP serverName or A2A path.",
+    )
+    parser.add_argument(
+        "--a2a-pool",
+        nargs="+",
+        metavar="AGENT_KEY",
+        help="Add an A2A pool step with these agent keys (2-5 keys). Appended after executor_key steps.",
     )
     parser.add_argument("--name", default="", help="WorkflowDefinition name.")
     parser.add_argument("--description", default="", help="WorkflowDefinition description.")
@@ -52,73 +71,175 @@ def _parse_args() -> argparse.Namespace:
 
 
 def _build_definition(args: argparse.Namespace) -> WorkflowDefinition:
-    if args.executor_keys:
+    # No args at all → local demo workflow for testing the runner without real backends.
+    if not args.executor_keys and not args.a2a_pool:
         return WorkflowDefinition(
-            name=args.name or "real-sequential-workflow",
-            description=args.description or "Sequential workflow backed by registry MCP/A2A executors.",
+            name=args.name or "sample-echo-pipeline",
+            description=args.description or "Demo workflow: echo + condition (uses local executors).",
             nodes=[
+                WorkflowNode(name="initial-echo", executor_key="echo"),
                 WorkflowNode(
-                    name=f"step-{index}-{key.strip('/').replace('/', '-')}",
-                    executor_key=key,
-                )
-                for index, key in enumerate(args.executor_keys, start=1)
+                    name="value-condition",
+                    node_type=WorkflowNodeType.CONDITION,
+                    condition_cel="session_state.echo_count > 0",
+                    children=[
+                        WorkflowNode(name="set-value-on-true", executor_key="set_value"),
+                        WorkflowNode(name="echo-on-false", executor_key="echo"),
+                    ],
+                ),
             ],
         )
 
-    return WorkflowDefinition(
-        name=args.name or "sample-echo-pipeline",
-        description=args.description or "Echo input, then conditionally set a value or echo again.",
-        nodes=[
-            WorkflowNode(name="initial-echo", executor_key="echo"),
+    nodes: list[WorkflowNode] = []
+
+    # Sequential executor_key steps.
+    for index, key in enumerate(args.executor_keys, start=1):
+        nodes.append(
             WorkflowNode(
-                name="value-condition",
-                node_type=WorkflowNodeType.CONDITION,
-                condition_cel="session_state.echo_count > 0",
-                children=[
-                    WorkflowNode(name="set-value-on-true", executor_key="set_value"),
-                    WorkflowNode(name="echo-on-false", executor_key="echo"),
-                ],
-            ),
-        ],
-    )
+                name=f"step-{index}-{key.strip('/').replace('/', '-')}",
+                executor_key=key,
+            )
+        )
+
+    # Optional pool step appended last.
+    if args.a2a_pool:
+        nodes.append(WorkflowNode(name="pool-a2a-step", a2a_pool=args.a2a_pool))
+
+    # Default name from content when not specified.
+    if not args.name:
+        if args.executor_keys and args.a2a_pool:
+            name = f"{'-'.join(args.executor_keys)}-pool-workflow"
+        elif args.a2a_pool:
+            name = "pool-a2a-workflow"
+        else:
+            name = "-".join(args.executor_keys) + "-workflow"
+    else:
+        name = args.name
+
+    description = args.description or "Sequential workflow backed by registry MCP/A2A executors."
+
+    return WorkflowDefinition(name=name, description=description, nodes=nodes)
 
 
-async def _active_executor_keys() -> tuple[list[str], list[str]]:
+def _a2a_agent_summary(agent: A2AAgent) -> str:
+    """Return a one-line summary for an A2A agent: auth mode, provider, discoveryUrl."""
+    meta = agent.federationMetadata or {}
+    provider = meta.get("providerType", "—")
+
+    if agent.config and agent.config.runtimeAccess:
+        mode = str(
+            agent.config.runtimeAccess.mode.value
+            if hasattr(agent.config.runtimeAccess.mode, "value")
+            else agent.config.runtimeAccess.mode
+        ).upper()
+    else:
+        mode = "—"
+
+    discovery_url = "—"
+    if (
+        agent.config
+        and agent.config.runtimeAccess
+        and agent.config.runtimeAccess.jwt
+        and agent.config.runtimeAccess.jwt.discoveryUrl
+    ):
+        discovery_url = str(agent.config.runtimeAccess.jwt.discoveryUrl)
+
+    return f"  {mode:<5}  {provider:<15}  {agent.path:<35}  {discovery_url}"
+
+
+async def _active_executor_keys() -> tuple[list[str], list[str], list[A2AAgent]]:
     mcp_servers = await ExtendedMCPServer.find(ExtendedMCPServer.status == "active").to_list()
     a2a_agents = await A2AAgent.find(A2AAgent.status == "active").to_list()
     mcp_keys = sorted(server.serverName for server in mcp_servers if server.config.get("enabled") is True)
     a2a_keys = sorted(agent.path.lstrip("/") for agent in a2a_agents)
-    return mcp_keys, a2a_keys
+    return mcp_keys, a2a_keys, a2a_agents
 
 
 async def _print_active_executors() -> None:
-    mcp_keys, a2a_keys = await _active_executor_keys()
+    mcp_keys, a2a_keys, a2a_agents = await _active_executor_keys()
     print("Active MCP executor keys:")
     for key in mcp_keys or ["<none>"]:
         print(f"  {key}")
-    print("\nActive A2A executor keys:")
-    for key in a2a_keys or ["<none>"]:
-        print(f"  {key}")
+
+    print("\nActive A2A executor keys (also valid as --a2a-pool members):")
+    print(f"  {'AUTH':<5}  {'PROVIDER':<15}  {'PATH':<35}  {'DISCOVERY_URL'}")
+    print(f"  {'-' * 5}  {'-' * 15}  {'-' * 35}  {'-' * 40}")
+    for agent in sorted(a2a_agents, key=lambda a: a.path):
+        print(_a2a_agent_summary(agent))
 
 
-async def _validate_executor_keys(executor_keys: list[str]) -> None:
-    mcp_keys, a2a_keys = await _active_executor_keys()
+async def _validate_executor_keys(executor_keys: list[str], a2a_pool: list[str] | None) -> None:
+    mcp_keys, a2a_keys, _ = await _active_executor_keys()
     valid_keys = set(mcp_keys) | set(a2a_keys)
     missing = [key for key in executor_keys if key.strip("/") not in valid_keys]
-    if not missing:
+    pool_missing = [key for key in (a2a_pool or []) if key.strip("/") not in a2a_keys]
+
+    errors: list[str] = []
+    if missing:
+        errors.append(
+            "These executor keys are not active MCP servers or A2A agents:\n" + "\n".join(f"  {k}" for k in missing)
+        )
+    if pool_missing:
+        errors.append("These --a2a-pool keys are not active A2A agents:\n" + "\n".join(f"  {k}" for k in pool_missing))
+
+    if errors:
+        print("ERROR: " + "\n".join(errors))
+        print("\nUse --list-executors to see valid keys.")
+        sys.exit(1)
+
+    if a2a_pool and len(a2a_pool) < 2:
+        print("ERROR: --a2a-pool requires at least 2 agent keys.")
+        sys.exit(1)
+    if a2a_pool and len(a2a_pool) > 5:
+        print("ERROR: --a2a-pool accepts at most 5 agent keys.")
+        sys.exit(1)
+
+
+async def _print_node_agent_details(nodes: list[WorkflowNode]) -> None:
+    """After saving, print discoveryUrl / auth info for every A2A agent referenced."""
+    referenced_paths: set[str] = set()
+    for node in nodes:
+        if node.executor_key:
+            referenced_paths.add(f"/{node.executor_key.strip('/')}")
+        if node.a2a_pool:
+            for key in node.a2a_pool:
+                referenced_paths.add(f"/{key.strip('/')}")
+
+    if not referenced_paths:
         return
 
-    print("ERROR: These executor keys are not active MCP servers or A2A agents:")
-    for key in missing:
-        print(f"  {key}")
-    print("\nUse --list-executors to see valid keys.")
-    print("Use --name to set the workflow name, for example:")
-    print("  uv run python scripts/save_workflow_definition.py github --name github-workflow")
-    sys.exit(1)
+    agents = await A2AAgent.find({"path": {"$in": sorted(referenced_paths)}, "status": "active"}).to_list()
+    if not agents:
+        return
+
+    print("\nAgent endpoints:")
+    print(f"  {'PATH':<35}  {'AUTH':<5}  {'PROVIDER':<15}  {'DISCOVERY_URL'}")
+    print(f"  {'-' * 35}  {'-' * 5}  {'-' * 15}  {'-' * 40}")
+    for agent in sorted(agents, key=lambda a: a.path):
+        meta = agent.federationMetadata or {}
+        provider = meta.get("providerType", "—")
+        if agent.config and agent.config.runtimeAccess:
+            mode = str(
+                agent.config.runtimeAccess.mode.value
+                if hasattr(agent.config.runtimeAccess.mode, "value")
+                else agent.config.runtimeAccess.mode
+            ).upper()
+        else:
+            mode = "—"
+        discovery_url = "—"
+        if (
+            agent.config
+            and agent.config.runtimeAccess
+            and agent.config.runtimeAccess.jwt
+            and agent.config.runtimeAccess.jwt.discoveryUrl
+        ):
+            discovery_url = str(agent.config.runtimeAccess.jwt.discoveryUrl)
+        print(f"  {agent.path:<35}  {mode:<5}  {provider:<15}  {discovery_url}")
 
 
 async def main() -> None:
     args = _parse_args()
+
     await MongoDB.connect_db(
         config=MongoConfig(
             mongo_uri=os.getenv("MONGO_URI", "mongodb://127.0.0.1:27017/jarvis"),
@@ -132,13 +253,23 @@ async def main() -> None:
             await _print_active_executors()
             return
 
-        if args.executor_keys and not args.no_validate:
-            await _validate_executor_keys(args.executor_keys)
+        if not args.no_validate and (args.executor_keys or args.a2a_pool):
+            await _validate_executor_keys(args.executor_keys, args.a2a_pool)
 
         definition = _build_definition(args)
         await definition.insert()
-        print(f"Saved WorkflowDefinition id={definition.id}")
-        print(f"  python scripts/run_workflow_by_id.py {definition.id} 'hello world'")
+
+        print(f"Saved WorkflowDefinition id={definition.id}  name={definition.name!r}")
+        node_summary = ", ".join(
+            (f"pool({n.a2a_pool})" if n.a2a_pool else n.executor_key or n.name) for n in definition.nodes
+        )
+        print(f"  nodes: {node_summary}")
+
+        await _print_node_agent_details(definition.nodes)
+
+        print("\nRun it:")
+        print(f"  uv run python scripts/run_workflow_by_id.py {definition.id} 'your prompt here'")
+
     finally:
         await MongoDB.close_db()
 
