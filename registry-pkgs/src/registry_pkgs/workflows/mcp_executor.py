@@ -63,9 +63,12 @@ def make_mcp_executor(
 
     async def executor(step_input: StepInput, session_state: dict[str, Any] | None = None) -> StepOutput:
         prompt = build_prompt(step_input)
+        logger.debug("  → calling MCP server %r  url=%s  prompt=%r", mcp_server.serverName, proxy_url, prompt[:120])
         try:
             response = await agent.arun(prompt)
-            return StepOutput(content=response.content or "")
+            content = response.content or ""
+            logger.debug("  ← MCP server %r responded: %r", mcp_server.serverName, content[:200])
+            return StepOutput(content=content)
         except Exception as exc:
             logger.exception("MCP executor %r failed", mcp_server.serverName)
             return StepOutput(content=str(exc), success=False, error=str(exc))
