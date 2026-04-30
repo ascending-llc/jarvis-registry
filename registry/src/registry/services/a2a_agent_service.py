@@ -5,6 +5,7 @@ This service handles all A2A agent-related operations using MongoDB, Beanie ODM,
 and the official a2a-sdk for protocol compliance.
 """
 
+import asyncio
 import logging
 import re
 from datetime import UTC, datetime
@@ -22,6 +23,7 @@ from registry.core.exceptions import (
     A2AAgentCardUpstreamException,
 )
 from registry_pkgs.models.a2a_agent import STATUS_ACTIVE, A2AAgent
+from registry_pkgs.vector.repositories.a2a_agent_repository import A2AAgentRepository
 
 from ..schemas.a2a_agent_api_schemas import AgentCreateRequest, AgentUpdateRequest
 
@@ -30,6 +32,42 @@ logger = logging.getLogger(__name__)
 
 class A2AAgentService:
     """Service for A2A Agent operations"""
+
+    def __init__(self, a2a_agent_repo: A2AAgentRepository | None = None):
+        self._a2a_agent_repo = a2a_agent_repo
+
+    def _schedule_sync(self, agent: A2AAgent, *, is_delete: bool) -> None:
+        """Schedule a non-blocking vector sync after a MongoDB write."""
+        if self._a2a_agent_repo is None:
+            return
+        asyncio.create_task(self._sync_to_vector(agent, is_delete=is_delete))
+
+    def _schedule_metadata_update(self, agent_id: str, metadata: dict) -> None:
+        """Schedule a metadata-only Weaviate update (no re-embedding) — used for toggle."""
+        if self._a2a_agent_repo is None:
+            return
+        asyncio.create_task(self._a2a_agent_repo.update_entity_metadata("agent_id", agent_id, metadata))
+
+    def _schedule_delete(self, agent_id: str, agent_name: str | None = None) -> None:
+        """Schedule removal of all Weaviate docs for an agent."""
+        if self._a2a_agent_repo is None:
+            return
+        asyncio.create_task(self._delete_from_vector(agent_id, agent_name))
+
+    async def _sync_to_vector(self, agent: A2AAgent, *, is_delete: bool) -> None:
+        """Sync agent to Weaviate. Errors are logged but never raised — vector DB is a secondary index."""
+        try:
+            result = await self._a2a_agent_repo.sync_agent_to_vector_db(agent, is_delete=is_delete)
+            logger.debug("Vector sync result for agent %s: %s", agent.id, result)
+        except Exception as e:
+            logger.error("Vector sync failed for agent %s: %s", agent.id, e, exc_info=True)
+
+    async def _delete_from_vector(self, agent_id: str, agent_name: str | None = None) -> None:
+        """Remove agent docs from Weaviate. Errors are logged but never raised."""
+        try:
+            await self._a2a_agent_repo.delete_by_agent_id(agent_id, agent_name)
+        except Exception as e:
+            logger.error("Vector delete failed for agent %s: %s", agent_id, e, exc_info=True)
 
     async def _resolve_agent_card_with_fallback(
         self,
@@ -341,6 +379,8 @@ class A2AAgentService:
             logger.info(
                 f"Created agent: {agent.config.title} (ID: {agent.id}, path: {agent.path}) with wellKnown sync enabled"
             )
+
+            self._schedule_sync(agent, is_delete=False)
             return agent
 
         except ValueError:
@@ -470,6 +510,11 @@ class A2AAgentService:
             # Save changes
             await agent.save()
             logger.info(f"Updated agent: {agent.config.title} (ID: {agent_id})")
+
+            if data.is_metadata_only():
+                self._schedule_metadata_update(agent_id, {"is_enabled": agent.isEnabled, "status": agent.status})
+            else:
+                self._schedule_sync(agent, is_delete=True)
             return agent
 
         except ValueError:
@@ -496,8 +541,11 @@ class A2AAgentService:
             if not agent:
                 raise ValueError(f"Agent not found: {agent_id}")
 
+            agent_name = agent.card.name
             await agent.delete()
-            logger.info(f"Deleted agent: {agent.card.name} (ID: {agent_id})")
+            logger.info(f"Deleted agent: {agent_name} (ID: {agent_id})")
+
+            self._schedule_delete(agent_id, agent_name)
             return True
 
         except ValueError:
@@ -530,6 +578,8 @@ class A2AAgentService:
             await agent.save()
 
             logger.info(f"Toggled agent {agent.card.name} to {'enabled' if enabled else 'disabled'}")
+
+            self._schedule_metadata_update(agent_id, {"is_enabled": agent.isEnabled, "status": agent.status})
             return agent
 
         except ValueError:
@@ -614,6 +664,8 @@ class A2AAgentService:
             await agent.save()
 
             logger.info(f"Successfully synced agent {agent.card.name} from well-known: {len(changes)} changes")
+
+            self._schedule_sync(agent, is_delete=True)
 
             return {
                 "message": "Well-known configuration synced successfully",

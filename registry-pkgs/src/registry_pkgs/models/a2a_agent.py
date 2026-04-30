@@ -172,6 +172,11 @@ class A2AAgent(Document):
     federationRefId: PydanticObjectId | None = None
     federationMetadata: dict[str, Any] | None = None
 
+    vectorContentHash: str | None = Field(
+        default=None,
+        description="SHA-256 of vectorized page_content; used to skip re-embedding when content is unchanged",
+    )
+
     # ========== Settings ==========
     class Settings:
         name = "a2a_agents"

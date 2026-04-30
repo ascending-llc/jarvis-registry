@@ -155,6 +155,11 @@ class ExtendedMCPServer(MCPServer):
     federationRefId: PydanticObjectId | None = None
     federationMetadata: dict[str, Any] | None = None
 
+    vectorContentHash: str | None = Field(
+        default=None,
+        description="SHA-256 of vectorized page_content; used to skip re-embedding when content is unchanged",
+    )
+
     class Settings:
         name = "mcpservers"
         keep_nulls = False

@@ -999,7 +999,17 @@ class ServerServiceV1:
 
         await server.save(session=session)
 
-        asyncio.create_task(self.mcp_server_repo.smart_sync(server))
+        if data.is_metadata_only():
+            is_enabled = server.config.get("enabled", False) if server.config else False
+            asyncio.create_task(
+                self.mcp_server_repo.update_entity_metadata(
+                    "server_id",
+                    str(server.id),
+                    {"enabled": is_enabled, "status": server.status},
+                )
+            )
+        else:
+            asyncio.create_task(self.mcp_server_repo.sync_to_vector_db(server, is_delete=True))
         return server
 
     async def delete_server(
@@ -1140,7 +1150,17 @@ class ServerServiceV1:
         await server.save()
         logger.info(f"Toggled server {server.serverName} (ID: {server.id}) enabled to {enabled}")
 
-        asyncio.create_task(self.mcp_server_repo.smart_sync(server))
+        server_id_str = str(server.id)
+        is_enabled = server.config.get("enabled", False) if server.config else False
+        asyncio.create_task(
+            self.mcp_server_repo.update_entity_metadata(
+                "server_id",
+                server_id_str,
+                {"enabled": is_enabled, "status": server.status},
+            )
+        )
+        if enabled:
+            asyncio.create_task(self.mcp_server_repo.sync_to_vector_db(server, is_delete=True))
         return server
 
     async def get_server_tools(

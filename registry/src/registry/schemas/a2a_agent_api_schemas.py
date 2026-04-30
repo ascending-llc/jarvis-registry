@@ -97,6 +97,10 @@ class AgentUpdateRequest(APIBaseModel):
     type: str | None = Field(None, description="Transport type: jsonrpc, grpc, http_json")
     enabled: bool | None = Field(None, description="Whether agent is enabled")
 
+    def is_metadata_only(self) -> bool:
+        """True when only fields that live in Weaviate metadata (not page_content) were set."""
+        return self.model_fields_set <= {"enabled"}
+
 
 class AgentToggleRequest(APIBaseModel):
     """Request schema for toggling agent status"""
