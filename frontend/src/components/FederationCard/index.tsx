@@ -76,7 +76,7 @@ const FederationCard: React.FC<FederationCardProps> = ({ federation }) => {
   };
 
   return (
-    <div className='group mb-3 rounded-xl border border-[color:var(--jarvis-border)] bg-[var(--jarvis-card)] p-5 transition-colors hover:border-[color:var(--jarvis-border-strong)]'>
+    <div className='group mb-3 rounded-xl border border-[color:var(--jarvis-border)] bg-[var(--jarvis-card)] p-5 transition-all duration-300 hover:border-[color:var(--jarvis-border-strong)] shadow-sm hover:shadow-xl hover:-translate-y-1'>
       {/* Header */}
       <div className='flex items-start justify-between mb-3'>
         <div className='flex items-center gap-3'>
