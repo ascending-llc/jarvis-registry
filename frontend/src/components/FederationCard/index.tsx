@@ -11,6 +11,7 @@ import { useGlobal } from '@/contexts/GlobalContext';
 import { useServer } from '@/contexts/ServerContext';
 import SERVICES from '@/services';
 import type { Federation } from '@/services/federation/type';
+import UTILS from '@/utils';
 
 interface FederationCardProps {
   federation: Federation;
@@ -62,18 +63,6 @@ const FederationCard: React.FC<FederationCardProps> = ({ federation }) => {
 
   const isAws = federation.providerType === 'aws_agentcore';
   const isAzure = federation.providerType === 'azure_ai_foundry';
-
-  const formatDistanceToNow = (dateString?: string | null) => {
-    if (!dateString) return 'Never';
-    // Simple mock formatted relative time. In a real project you might use date-fns `formatDistanceToNowStrict`
-    const date = new Date(dateString);
-    const now = new Date();
-    const diffInSeconds = Math.floor((now.getTime() - date.getTime()) / 1000);
-    if (diffInSeconds < 60) return 'Just now';
-    if (diffInSeconds < 3600) return `${Math.floor(diffInSeconds / 60)} min ago`;
-    if (diffInSeconds < 86400) return `${Math.floor(diffInSeconds / 3600)} hours ago`;
-    return `${Math.floor(diffInSeconds / 86400)} days ago`;
-  };
 
   return (
     <div className='group mb-3 rounded-xl border border-[color:var(--jarvis-border)] bg-[var(--jarvis-card)] p-5 transition-all duration-300 hover:border-[color:var(--jarvis-border-strong)] shadow-sm hover:shadow-xl hover:-translate-y-1'>
@@ -139,21 +128,21 @@ const FederationCard: React.FC<FederationCardProps> = ({ federation }) => {
           </div>
 
           <IconButton
-            ariaLabel="Edit federation"
-            tooltip="Edit"
+            ariaLabel='Edit federation'
+            tooltip='Edit'
             onClick={handleEditClick}
-            size="card"
-            className="text-[var(--jarvis-icon)] hover:bg-[var(--jarvis-primary-soft)] hover:text-[var(--jarvis-icon-hover)]"
+            size='card'
+            className='text-[var(--jarvis-icon)] hover:bg-[var(--jarvis-primary-soft)] hover:text-[var(--jarvis-icon-hover)]'
           >
             <PencilSquareIcon className='w-3.5 h-3.5' />
           </IconButton>
           <IconButton
-            ariaLabel="Sync federation"
-            tooltip="Sync Now"
+            ariaLabel='Sync federation'
+            tooltip='Sync Now'
             onClick={handleSyncClick}
             disabled={isSyncing}
-            size="card"
-            className="text-[var(--jarvis-icon)] hover:bg-[var(--jarvis-primary-soft)] hover:text-[var(--jarvis-icon-hover)]"
+            size='card'
+            className='text-[var(--jarvis-icon)] hover:bg-[var(--jarvis-primary-soft)] hover:text-[var(--jarvis-icon-hover)]'
           >
             <ArrowPathIcon className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
           </IconButton>
@@ -172,7 +161,7 @@ const FederationCard: React.FC<FederationCardProps> = ({ federation }) => {
           <FiClock className='w-3.5 h-3.5' />
           {federation.syncStatus === 'syncing' || isSyncing
             ? 'Sync in progress...'
-            : `Last synced: ${formatDistanceToNow(federation.lastSync?.finishedAt)}`}
+            : `Last synced: ${UTILS.formatTimeSince(federation.lastSync?.finishedAt) ?? 'Never'}`}
         </span>
       </div>
 
