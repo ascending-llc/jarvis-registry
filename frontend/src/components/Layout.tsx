@@ -12,7 +12,8 @@ import { Link, useLocation } from 'react-router-dom';
 import IconButton from '@/components/IconButton';
 import ServerConfigModal from '@/components/ServerConfigModal';
 import SERVICES from '@/services';
-import logo from '../assets/jarvis_logo_w_text_light_bkg.svg';
+import logoDark from '../assets/jarvis_logo_w_text_dark_bkg.svg';
+import logoLight from '../assets/jarvis_logo_w_text_light_bkg.svg';
 import { useServer } from '../contexts/ServerContext';
 import { useTheme } from '../contexts/ThemeContext';
 import Sidebar from './Sidebar';
@@ -85,7 +86,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
               <div className='flex items-center ml-2'>
                 <Link to='/' className='flex items-center group'>
                   <div className='h-9 w-9 flex items-center justify-center bg-[var(--jarvis-surface)] rounded-xl shadow-sm border border-[color:var(--jarvis-border-strong)] transition-all group-hover:border-[color:var(--jarvis-primary)]'>
-                    <img src={logo} alt='Jarvis Registry Logo' className='h-6 w-6' />
+                    <img src={theme === 'dark' ? logoDark : logoLight} alt='Jarvis Registry Logo' className='h-6 w-6' />
                   </div>
                   <span className='ml-3 text-lg font-bold text-[var(--jarvis-text-strong)] tracking-tight transition-colors group-hover:text-[var(--jarvis-primary-text)]'>
                     Jarvis Registry
@@ -161,7 +162,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
 
         {/* Main content */}
         <main
-          className={`flex-1 flex flex-col transition-all duration-300 ${sidebarOpen ? 'md:ml-64 lg:ml-72 xl:ml-80' : 'md:ml-16'}`}
+          className={`flex-1 flex flex-col transition-all duration-300 ${sidebarOpen ? 'md:ml-[272px]' : 'md:ml-16'}`}
         >
           <div className='flex-1 flex flex-col px-4 sm:px-6 lg:px-8 pt-4 md:pt-8 pb-1 md:pb-2 overflow-hidden'>
             {children}

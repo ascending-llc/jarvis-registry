@@ -74,7 +74,7 @@ const Sidebar: React.FC<SidebarProps> = ({ sidebarOpen, setSidebarOpen }) => {
       <div className='hidden md:block'>
         <div
           className={`fixed left-0 top-16 bottom-0 z-40 bg-[var(--jarvis-bg)] border-r border-[color:var(--jarvis-border)] overflow-y-auto overflow-x-hidden transition-all duration-300 ${
-            sidebarOpen ? 'w-64 lg:w-72 xl:w-80' : 'w-16'
+            sidebarOpen ? 'w-[272px]' : 'w-16'
           }`}
         >
           <Content

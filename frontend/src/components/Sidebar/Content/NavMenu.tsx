@@ -57,7 +57,7 @@ const NavButton: React.FC<{
       onClick={onClick}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      className={`w-full flex items-center rounded-lg px-2 py-2 text-sm font-medium transition-colors ${
+      className={`w-full flex items-center rounded-lg px-2 py-2 text-base font-medium transition-colors ${
         active
           ? 'bg-[var(--jarvis-primary-soft)] text-[var(--jarvis-primary-text)]'
           : 'text-[var(--jarvis-muted)] hover:bg-[var(--jarvis-surface)] hover:text-[var(--jarvis-text)]'
@@ -129,7 +129,7 @@ const NavMenu: React.FC<NavMenuProps> = ({ sidebarOpen, setSidebarOpen }) => {
             }`}
           >
             <span className='whitespace-nowrap'>MCP Servers</span>
-            <span className='rounded-full bg-[var(--jarvis-bg)] px-2 py-0.5 text-xs font-semibold text-[var(--jarvis-muted)]'>
+            <span className='rounded-full bg-[var(--jarvis-bg)] px-2 py-0.5 text-sm font-semibold text-[var(--jarvis-muted)]'>
               {stats.total}
             </span>
           </div>
@@ -148,7 +148,7 @@ const NavMenu: React.FC<NavMenuProps> = ({ sidebarOpen, setSidebarOpen }) => {
             }`}
           >
             <span className='whitespace-nowrap'>A2A Agents</span>
-            <span className='rounded-full bg-[var(--jarvis-bg)] px-2 py-0.5 text-xs font-semibold text-[var(--jarvis-muted)]'>
+            <span className='rounded-full bg-[var(--jarvis-bg)] px-2 py-0.5 text-sm font-semibold text-[var(--jarvis-muted)]'>
               {agentStats.total}
             </span>
           </div>
@@ -186,7 +186,7 @@ const NavMenu: React.FC<NavMenuProps> = ({ sidebarOpen, setSidebarOpen }) => {
             }`}
           >
             <span className='whitespace-nowrap'>External Providers</span>
-            <span className='rounded-full bg-[var(--jarvis-bg)] px-2 py-0.5 text-xs font-semibold text-[var(--jarvis-muted)]'>
+            <span className='rounded-full bg-[var(--jarvis-bg)] px-2 py-0.5 text-sm font-semibold text-[var(--jarvis-muted)]'>
               {federationStats?.total || 0}
             </span>
           </div>
@@ -236,7 +236,7 @@ const NavMenu: React.FC<NavMenuProps> = ({ sidebarOpen, setSidebarOpen }) => {
                   <div
                     className={`w-2 h-2 rounded-full ${
                       filter.key === 'all'
-                        ? 'bg-[var(--jarvis-border-strong)]'
+                        ? 'bg-[var(--jarvis-primary)]'
                         : filter.key === 'enabled'
                           ? 'bg-[var(--jarvis-success-text)]'
                           : filter.key === 'disabled'

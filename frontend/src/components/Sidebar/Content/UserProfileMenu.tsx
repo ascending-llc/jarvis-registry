@@ -72,7 +72,7 @@ const UserProfileMenu: React.FC<UserProfileMenuProps> = ({ sidebarOpen }) => {
               >
                 <div className='flex-1 min-w-0 text-left overflow-hidden'>
                   <div className='text-sm font-medium text-[var(--jarvis-text-strong)] truncate'>{getFirstName()}</div>
-                  <div className='text-xs text-[var(--jarvis-muted)] truncate'>
+                  <div className='text-xs text-[var(--jarvis-muted)] truncate' title={getUserEmail() || undefined}>
                     {getUserEmail() || (user.isAdmin ? 'Admin Access' : 'User Access')}
                   </div>
                 </div>
