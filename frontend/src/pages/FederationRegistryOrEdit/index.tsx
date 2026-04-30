@@ -10,21 +10,10 @@ import { useGlobal } from '@/contexts/GlobalContext';
 import { useServer } from '@/contexts/ServerContext';
 import SERVICES from '@/services';
 import type { Federation } from '@/services/federation/type';
+import UTILS from '@/utils';
 
 import MainConfigForm from './MainConfigForm';
 import type { FederationFormConfig } from './types';
-
-const formatDistanceToNow = (dateStr: string): string => {
-  if (!dateStr) return '';
-  const diff = Date.now() - new Date(dateStr).getTime();
-  const minutes = Math.floor(diff / 60000);
-  const hours = Math.floor(minutes / 60);
-  const days = Math.floor(hours / 24);
-  if (days > 0) return `${days} day${days !== 1 ? 's' : ''} ago`;
-  if (hours > 0) return `${hours} hour${hours !== 1 ? 's' : ''} ago`;
-  if (minutes > 0) return `${minutes} min ago`;
-  return 'just now';
-};
 
 const INIT_DATA: FederationFormConfig = {
   providerType: 'aws_agentcore',
@@ -280,149 +269,151 @@ const FederationRegistryOrEdit: React.FC = () => {
           onClose={() => setShareOpen(false)}
         />
       )}
-      <div className="h-full overflow-y-auto custom-scrollbar -mr-4 sm:-mr-6 lg:-mr-8">
-        <div className="mx-auto flex flex-col w-3/4 min-h-full bg-[var(--jarvis-card)] rounded-lg">
-        {/* Header */}
-        <div className="px-6 py-6 flex items-center gap-4 border-b border-[color:var(--jarvis-border-soft)] border-[color:var(--jarvis-border)]">
-          <div className="flex items-center justify-center p-3 rounded-xl bg-[#F3E8FF]">
-            <FiServer className="h-8 w-8 text-[var(--jarvis-primary)]" />
-          </div>
-          <div>
-            <h1 className="text-2xl font-bold text-[var(--jarvis-text-strong)]">
-              {isReadOnly ? 'View External' : isEditMode ? 'Edit External' : 'Register External'}
-            </h1>
-            <p className="text-base text-[var(--jarvis-muted)] mt-0.5">
-              Configure remote discovery for MCP servers and agents
-            </p>
-          </div>
-        </div>
-
-        {/* Content */}
-        <div className="px-6 py-4 flex-1 flex flex-col">
-          {loadingDetail ? (
-            <div className="flex-1 flex items-center justify-center min-h-[200px]">
-              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-[var(--jarvis-primary)]"></div>
+      <div className='h-full overflow-y-auto custom-scrollbar -mr-4 sm:-mr-6 lg:-mr-8'>
+        <div className='mx-auto flex flex-col w-3/4 min-h-full bg-[var(--jarvis-card)] rounded-lg'>
+          {/* Header */}
+          <div className='px-6 py-6 flex items-center gap-4 border-b border-[color:var(--jarvis-border-soft)] border-[color:var(--jarvis-border)]'>
+            <div className='flex items-center justify-center p-3 rounded-xl bg-[#F3E8FF]'>
+              <FiServer className='h-8 w-8 text-[var(--jarvis-primary)]' />
             </div>
-          ) : (
-            <>
-              {isEditMode && federation && (
-                <div className="mb-4 flex flex-wrap gap-4 text-sm text-[var(--jarvis-muted)]">
-                  <span className="flex items-center gap-1.5">
-                    <CalendarIcon className="h-3.5 w-3.5" />
-                    Created:{' '}
-                    {new Date(federation.createdAt).toLocaleDateString(undefined, {
-                      month: 'short',
-                      day: 'numeric',
-                      year: 'numeric',
-                    })}
-                  </span>
-                  <span className="flex items-center gap-1.5">
-                    <ClockIcon className="h-3.5 w-3.5" />
-                    Last synced:{' '}
-                    {federation.lastSync?.finishedAt ? formatDistanceToNow(federation.lastSync.finishedAt) : 'Never'}
-                  </span>
-                </div>
-              )}
-              <MainConfigForm
-                formData={formData}
-                updateField={updateField}
-                errors={errors}
-                isEditMode={isEditMode}
-                isReadOnly={isReadOnly}
-                onTestConnection={handleTestConnection}
-                testConnectionLoading={testConnectionLoading}
-                testConnectionResult={testConnectionResult}
-              />
-            </>
-          )}
+            <div>
+              <h1 className='text-2xl font-bold text-[var(--jarvis-text-strong)]'>
+                {isReadOnly ? 'View External' : isEditMode ? 'Edit External' : 'Register External'}
+              </h1>
+              <p className='text-base text-[var(--jarvis-muted)] mt-0.5'>
+                Configure remote discovery for MCP servers and agents
+              </p>
+            </div>
+          </div>
 
-          {isReadOnly && federation && (
-            <div className="mt-8 border-t border-[color:var(--jarvis-border)] pt-6">
-              <h3 className="text-lg font-medium text-[var(--jarvis-text-strong)] mb-4">Discovered Resources</h3>
-              <div className="grid grid-cols-3 gap-4">
-                <div className="bg-[var(--jarvis-bg)] bg-[var(--jarvis-card)] rounded-lg p-5 border border-[color:var(--jarvis-border)] text-center">
-                  <div className="text-3xl font-bold text-[var(--jarvis-primary)]">
-                    {federation.stats?.mcpServerCount || 0}
+          {/* Content */}
+          <div className='px-6 py-4 flex-1 flex flex-col'>
+            {loadingDetail ? (
+              <div className='flex-1 flex items-center justify-center min-h-[200px]'>
+                <div className='animate-spin rounded-full h-8 w-8 border-b-2 border-[var(--jarvis-primary)]'></div>
+              </div>
+            ) : (
+              <>
+                {isEditMode && federation && (
+                  <div className='mb-4 flex flex-wrap gap-4 text-sm text-[var(--jarvis-muted)]'>
+                    <span className='flex items-center gap-1.5'>
+                      <CalendarIcon className='h-3.5 w-3.5' />
+                      Created:{' '}
+                      {new Date(federation.createdAt).toLocaleDateString(undefined, {
+                        month: 'short',
+                        day: 'numeric',
+                        year: 'numeric',
+                      })}
+                    </span>
+                    <span className='flex items-center gap-1.5'>
+                      <ClockIcon className='h-3.5 w-3.5' />
+                      Last synced:{' '}
+                      {federation.lastSync?.finishedAt
+                        ? (UTILS.formatTimeSince(federation.lastSync.finishedAt) ?? 'Never')
+                        : 'Never'}
+                    </span>
                   </div>
-                  <div className="text-sm text-[var(--jarvis-muted)] mt-1">MCP Servers</div>
-                </div>
-                <div className="bg-[var(--jarvis-bg)] bg-[var(--jarvis-card)] rounded-lg p-5 border border-[color:var(--jarvis-border)] text-center">
-                  <div className="text-3xl font-bold text-[var(--jarvis-success-text)]">
-                    {federation.stats?.agentCount || 0}
+                )}
+                <MainConfigForm
+                  formData={formData}
+                  updateField={updateField}
+                  errors={errors}
+                  isEditMode={isEditMode}
+                  isReadOnly={isReadOnly}
+                  onTestConnection={handleTestConnection}
+                  testConnectionLoading={testConnectionLoading}
+                  testConnectionResult={testConnectionResult}
+                />
+              </>
+            )}
+
+            {isReadOnly && federation && (
+              <div className='mt-8 border-t border-[color:var(--jarvis-border)] pt-6'>
+                <h3 className='text-lg font-medium text-[var(--jarvis-text-strong)] mb-4'>Discovered Resources</h3>
+                <div className='grid grid-cols-3 gap-4'>
+                  <div className='bg-[var(--jarvis-bg)] bg-[var(--jarvis-card)] rounded-lg p-5 border border-[color:var(--jarvis-border)] text-center'>
+                    <div className='text-3xl font-bold text-[var(--jarvis-primary)]'>
+                      {federation.stats?.mcpServerCount || 0}
+                    </div>
+                    <div className='text-sm text-[var(--jarvis-muted)] mt-1'>MCP Servers</div>
                   </div>
-                  <div className="text-sm text-[var(--jarvis-muted)] mt-1">AI Agents</div>
-                </div>
-                <div className="bg-[var(--jarvis-bg)] bg-[var(--jarvis-card)] rounded-lg p-5 border border-[color:var(--jarvis-border)] text-center">
-                  <div className="text-3xl font-bold text-[var(--jarvis-info-text)]">
-                    {federation.stats?.importedTotal || 0}
+                  <div className='bg-[var(--jarvis-bg)] bg-[var(--jarvis-card)] rounded-lg p-5 border border-[color:var(--jarvis-border)] text-center'>
+                    <div className='text-3xl font-bold text-[var(--jarvis-success-text)]'>
+                      {federation.stats?.agentCount || 0}
+                    </div>
+                    <div className='text-sm text-[var(--jarvis-muted)] mt-1'>AI Agents</div>
                   </div>
-                  <div className="text-sm text-[var(--jarvis-muted)] mt-1">Total Imported</div>
+                  <div className='bg-[var(--jarvis-bg)] bg-[var(--jarvis-card)] rounded-lg p-5 border border-[color:var(--jarvis-border)] text-center'>
+                    <div className='text-3xl font-bold text-[var(--jarvis-info-text)]'>
+                      {federation.stats?.importedTotal || 0}
+                    </div>
+                    <div className='text-sm text-[var(--jarvis-muted)] mt-1'>Total Imported</div>
+                  </div>
                 </div>
               </div>
-            </div>
-          )}
-        </div>
-
-        {/* Footer */}
-        <div className="px-6 py-4 border-t border-[color:var(--jarvis-border-soft)] border-[color:var(--jarvis-border)] flex flex-wrap items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            {isEditMode && !isReadOnly && federation?.permissions?.DELETE && (
-              <button
-                onClick={handleDelete}
-                disabled={loading}
-                className="inline-flex items-center px-4 py-2 border border-[color:var(--jarvis-border)] rounded-md shadow-sm text-sm font-medium text-[var(--jarvis-danger-text)] bg-[var(--jarvis-card)] hover:bg-[var(--jarvis-danger-soft)] hover:bg-[var(--jarvis-danger-soft)] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[var(--jarvis-danger)] disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                <TrashIcon className="h-4 w-4" />
-              </button>
-            )}
-            {isEditMode && !!id && federation?.permissions?.SHARE && (
-              <button
-                onClick={() => setShareOpen(true)}
-                disabled={loading || loadingDetail}
-                className="inline-flex items-center px-4 py-2 border border-[color:var(--jarvis-border)] rounded-md shadow-sm text-sm font-medium text-[var(--jarvis-primary)] bg-[var(--jarvis-card)] hover:bg-[var(--jarvis-primary-soft)] hover:bg-[var(--jarvis-primary-soft)] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[var(--jarvis-primary)] disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                <HiOutlineShare className="h-4 w-4" />
-              </button>
             )}
           </div>
 
-          <div className="flex gap-3">
-            <button
-              onClick={goBack}
-              disabled={loading}
-              className="min-w-[80px] sm:min-w-[120px] md:min-w-[160px] px-4 py-2 border border-[color:var(--jarvis-border)] rounded-md shadow-sm text-sm font-medium text-[var(--jarvis-text)] bg-[var(--jarvis-card)] hover:bg-[var(--jarvis-card-muted)] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[var(--jarvis-primary)] disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {isReadOnly ? 'Back' : 'Cancel'}
-            </button>
+          {/* Footer */}
+          <div className='px-6 py-4 border-t border-[color:var(--jarvis-border-soft)] border-[color:var(--jarvis-border)] flex flex-wrap items-center justify-between gap-4'>
+            <div className='flex items-center gap-3'>
+              {isEditMode && !isReadOnly && federation?.permissions?.DELETE && (
+                <button
+                  onClick={handleDelete}
+                  disabled={loading}
+                  className='inline-flex items-center px-4 py-2 border border-[color:var(--jarvis-border)] rounded-md shadow-sm text-sm font-medium text-[var(--jarvis-danger-text)] bg-[var(--jarvis-card)] hover:bg-[var(--jarvis-danger-soft)] hover:bg-[var(--jarvis-danger-soft)] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[var(--jarvis-danger)] disabled:opacity-50 disabled:cursor-not-allowed'
+                >
+                  <TrashIcon className='h-4 w-4' />
+                </button>
+              )}
+              {isEditMode && !!id && federation?.permissions?.SHARE && (
+                <button
+                  onClick={() => setShareOpen(true)}
+                  disabled={loading || loadingDetail}
+                  className='inline-flex items-center px-4 py-2 border border-[color:var(--jarvis-border)] rounded-md shadow-sm text-sm font-medium text-[var(--jarvis-primary)] bg-[var(--jarvis-card)] hover:bg-[var(--jarvis-primary-soft)] hover:bg-[var(--jarvis-primary-soft)] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[var(--jarvis-primary)] disabled:opacity-50 disabled:cursor-not-allowed'
+                >
+                  <HiOutlineShare className='h-4 w-4' />
+                </button>
+              )}
+            </div>
 
-            {isReadOnly && (
+            <div className='flex gap-3'>
               <button
-                onClick={handleSync}
-                disabled={loading || loadingDetail || isSyncing}
-                className="inline-flex items-center justify-center gap-2 min-w-[80px] sm:min-w-[120px] md:min-w-[160px] px-4 py-2 border border-[var(--jarvis-primary-soft)] rounded-md shadow-sm text-sm font-medium text-[var(--jarvis-primary)] bg-[var(--jarvis-card)] hover:bg-[var(--jarvis-primary-soft)] hover:bg-[var(--jarvis-primary-soft)] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[var(--jarvis-primary)] disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {isSyncing && (
-                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-[var(--jarvis-primary)]"></div>
-                )}
-                {!isSyncing && <ArrowPathIcon className="h-4 w-4" />}
-                Sync Now
-              </button>
-            )}
-
-            {!isReadOnly && (
-              <button
-                onClick={handleSave}
+                onClick={goBack}
                 disabled={loading}
-                className="inline-flex items-center justify-center gap-2 min-w-[80px] sm:min-w-[120px] md:min-w-[160px] px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-[var(--jarvis-primary-hover)] hover:bg-[var(--jarvis-primary-hover)] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[var(--jarvis-primary)] disabled:opacity-50 disabled:cursor-not-allowed"
+                className='min-w-[80px] sm:min-w-[120px] md:min-w-[160px] px-4 py-2 border border-[color:var(--jarvis-border)] rounded-md shadow-sm text-sm font-medium text-[var(--jarvis-text)] bg-[var(--jarvis-card)] hover:bg-[var(--jarvis-card-muted)] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[var(--jarvis-primary)] disabled:opacity-50 disabled:cursor-not-allowed'
               >
-                {loading && <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>}
-                {isEditMode ? 'Update' : 'Register External'}
+                {isReadOnly ? 'Back' : 'Cancel'}
               </button>
-            )}
+
+              {isReadOnly && (
+                <button
+                  onClick={handleSync}
+                  disabled={loading || loadingDetail || isSyncing}
+                  className='inline-flex items-center justify-center gap-2 min-w-[80px] sm:min-w-[120px] md:min-w-[160px] px-4 py-2 border border-[var(--jarvis-primary-soft)] rounded-md shadow-sm text-sm font-medium text-[var(--jarvis-primary)] bg-[var(--jarvis-card)] hover:bg-[var(--jarvis-primary-soft)] hover:bg-[var(--jarvis-primary-soft)] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[var(--jarvis-primary)] disabled:opacity-50 disabled:cursor-not-allowed'
+                >
+                  {isSyncing && (
+                    <div className='animate-spin rounded-full h-4 w-4 border-b-2 border-[var(--jarvis-primary)]'></div>
+                  )}
+                  {!isSyncing && <ArrowPathIcon className='h-4 w-4' />}
+                  Sync Now
+                </button>
+              )}
+
+              {!isReadOnly && (
+                <button
+                  onClick={handleSave}
+                  disabled={loading}
+                  className='inline-flex items-center justify-center gap-2 min-w-[80px] sm:min-w-[120px] md:min-w-[160px] px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-[var(--jarvis-primary-hover)] hover:bg-[var(--jarvis-primary-hover)] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[var(--jarvis-primary)] disabled:opacity-50 disabled:cursor-not-allowed'
+                >
+                  {loading && <div className='animate-spin rounded-full h-4 w-4 border-b-2 border-white'></div>}
+                  {isEditMode ? 'Update' : 'Register External'}
+                </button>
+              )}
+            </div>
           </div>
         </div>
       </div>
-    </div>
     </>
   );
 };
