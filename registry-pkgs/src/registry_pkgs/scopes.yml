@@ -24,6 +24,8 @@ group_mappings:
     - federations-share
     - servers-share
     - agents-share
+    - workflows-read
+    - workflows-write
     - system-ops
     - user-read
     - acl-read
@@ -39,6 +41,8 @@ group_mappings:
     - federations-share
     - servers-share
     - agents-share
+    - workflows-read
+    - workflows-write
     - user-read
     - acl-read
     - acl-write
@@ -50,6 +54,8 @@ group_mappings:
     - server-write
     - federations-read
     - federations-write
+    - workflows-read
+    - workflows-write
     - user-read
     - acl-read
     - mcp-proxy-ops
@@ -57,6 +63,7 @@ group_mappings:
     - servers-read
     - agents-read
     - federations-read
+    - workflows-read
     - user-read
     - acl-read
 
@@ -272,3 +279,31 @@ mcp-proxy-ops:
   - action: proxy_to_mcp_servers
     method: GET,POST
     endpoint: /proxy/{path}
+
+workflows-read:
+  - action: list_workflows
+    method: GET
+    endpoint: /workflows
+  - action: get_workflow
+    method: GET
+    endpoint: /workflows/{workflow_id}
+  - action: list_workflow_runs
+    method: GET
+    endpoint: /workflows/{workflow_id}/runs
+  - action: get_workflow_run
+    method: GET
+    endpoint: /workflows/{workflow_id}/runs/{run_id}
+
+workflows-write:
+  - action: create_workflow
+    method: POST
+    endpoint: /workflows
+  - action: update_workflow
+    method: PUT
+    endpoint: /workflows/{workflow_id}
+  - action: delete_workflow
+    method: DELETE
+    endpoint: /workflows/{workflow_id}
+  - action: trigger_workflow_run
+    method: POST
+    endpoint: /workflows/{workflow_id}/runs

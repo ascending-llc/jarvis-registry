@@ -25,6 +25,7 @@ from .services.oauth.token_service import TokenService
 from .services.search.base import VectorSearchService
 from .services.server_service import ServerServiceV1
 from .services.user_service import UserService
+from .services.workflow_service import WorkflowService
 
 
 def get_container(request: Request) -> RegistryContainer:
@@ -114,3 +115,12 @@ def get_federation_sync_service(container: RegistryContainer = Depends(get_conta
 def get_redis_client(container: RegistryContainer = Depends(get_container)) -> Redis:
     """Get Redis client for caching."""
     return container.redis_client
+
+
+def get_workflow_service(container: RegistryContainer = Depends(get_container)) -> WorkflowService:
+    return container.workflow_service
+
+
+def get_workflow_runner(container: RegistryContainer = Depends(get_container)):
+    """Get WorkflowRunner instance (may be None if dependencies not available)"""
+    return container.workflow_runner

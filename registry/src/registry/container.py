@@ -34,6 +34,16 @@ from .services.search.base import VectorSearchService
 from .services.security_scanner import SecurityScannerService
 from .services.server_service import ServerServiceV1
 from .services.user_service import UserService
+from .services.workflow_service import WorkflowService
+
+# Import WorkflowRunner only when needed (conditional import for optional dependency)
+try:
+    from registry_pkgs.workflows.runner import WorkflowRunner
+
+    WORKFLOW_RUNNER_AVAILABLE = True
+except ImportError:
+    WORKFLOW_RUNNER_AVAILABLE = False
+    WorkflowRunner = None  # type: ignore
 
 if TYPE_CHECKING:
     from .core.config import Settings
@@ -177,6 +187,60 @@ class RegistryContainer:
         return AgentScannerService()
 
     @cached_property
+    def workflow_service(self) -> WorkflowService:
+        return WorkflowService()
+
+    def init_workflow_runner(self) -> WorkflowRunner | None:
+        """
+        Initialize WorkflowRunner for executing workflows.
+
+        This should be called during app startup, not on first request.
+        Returns None if agno dependencies are not installed or initialization fails.
+        """
+        if not WORKFLOW_RUNNER_AVAILABLE:
+            logger.warning("WorkflowRunner not available - agno dependencies not installed")
+            return None
+
+        try:
+            from agno.models.aws import AwsBedrock
+
+            from registry_pkgs.database.mongodb import MongoDB
+
+            # Create LLM model for workflow execution
+            llm = AwsBedrock(
+                id=self.settings.llm_model if hasattr(self.settings, "llm_model") else "us.amazon.nova-lite-v1:0",
+                aws_region=self.settings.aws_region,
+                aws_access_key_id=self.settings.aws_access_key_id,
+                aws_secret_access_key=self.settings.aws_secret_access_key,
+                aws_session_token=self.settings.aws_session_token,
+            )
+
+            # Get registry URL (construct from settings or use default)
+            registry_url = f"http://localhost:{self.settings.port if hasattr(self.settings, 'port') else 8000}"
+
+            # Create WorkflowRunner
+            runner = WorkflowRunner(
+                llm=llm,
+                registry_url=registry_url,
+                db_client=MongoDB.get_client(),
+                db_name=MongoDB.database_name,
+                jwt_config=self.settings.jwt_signing_config,
+            )
+
+            logger.info("WorkflowRunner initialized successfully")
+            return runner
+
+        except Exception as e:
+            logger.error(f"Failed to initialize WorkflowRunner: {e}", exc_info=True)
+            return None
+
+    @property
+    def workflow_runner(self) -> WorkflowRunner | None:
+        """Get WorkflowRunner instance (initialized during startup)."""
+        # This will be set by startup() method
+        return getattr(self, "_workflow_runner", None)
+
+    @cached_property
     def mcp_proxy_client(self) -> httpx.AsyncClient:
         """Shared httpx client for MCP proxy connection pooling."""
         return httpx.AsyncClient(
@@ -227,6 +291,13 @@ class RegistryContainer:
 
         logger.info("Initializing federation service...")
         self._initialize_federation()
+
+        logger.info("Initializing workflow runner...")
+        self._workflow_runner = self.init_workflow_runner()
+        if self._workflow_runner:
+            logger.info("Workflow runner initialized successfully")
+        else:
+            logger.warning("Workflow runner not available - workflow execution disabled")
 
     async def shutdown(self) -> None:
         """Shutdown services that hold background tasks or external resources."""
