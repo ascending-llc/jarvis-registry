@@ -1,5 +1,7 @@
 import { GlobeAltIcon, QueueListIcon } from '@heroicons/react/24/outline';
 import type React from 'react';
+import { useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useSearchParams } from 'react-router-dom';
 
 import AgentIcon from '@/assets/AgentIcon';
@@ -10,6 +12,62 @@ interface NavMenuProps {
   sidebarOpen: boolean;
   setSidebarOpen: (open: boolean) => void;
 }
+
+/** Portal-based tooltip to escape overflow:hidden on the sidebar */
+const SidebarTooltip: React.FC<{ label: string; visible: boolean; anchorEl: HTMLElement | null }> = ({
+  label,
+  visible,
+  anchorEl,
+}) => {
+  if (!visible || !anchorEl) return null;
+
+  const rect = anchorEl.getBoundingClientRect();
+  const top = rect.top + rect.height / 2;
+  const left = rect.right + 8;
+
+  return createPortal(
+    <div
+      style={{ top, left, transform: 'translateY(-50%)' }}
+      className='pointer-events-none fixed z-[9999] transition-opacity duration-150'
+    >
+      <span className='relative block whitespace-nowrap rounded-md bg-[var(--jarvis-tooltip-bg)] px-2.5 py-1 text-[11px] font-medium text-[var(--jarvis-tooltip-text)] shadow-lg'>
+        {/* Arrow pointing left */}
+        <span className='absolute right-full top-1/2 -translate-y-1/2 border-4 border-transparent border-r-[var(--jarvis-tooltip-bg)]' />
+        <span className='relative z-10'>{label}</span>
+      </span>
+    </div>,
+    document.body,
+  );
+};
+
+/** Nav button with optional portal tooltip (shown only when sidebar is collapsed) */
+const NavButton: React.FC<{
+  label: string;
+  showTooltip: boolean;
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}> = ({ label, showTooltip, active, onClick, children }) => {
+  const [hovered, setHovered] = useState(false);
+  const ref = useRef<HTMLButtonElement>(null);
+
+  return (
+    <button
+      ref={ref}
+      onClick={onClick}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      className={`w-full flex items-center rounded-lg px-2 py-2 text-sm font-medium transition-colors ${
+        active
+          ? 'bg-[var(--jarvis-primary-soft)] text-[var(--jarvis-primary-text)]'
+          : 'text-[var(--jarvis-muted)] hover:bg-[var(--jarvis-surface)] hover:text-[var(--jarvis-text)]'
+      }`}
+    >
+      {children}
+      {showTooltip && <SidebarTooltip label={label} visible={hovered} anchorEl={ref.current} />}
+    </button>
+  );
+};
 
 const filters = [
   { key: 'all', label: 'All', colorClass: 'bg-[var(--jarvis-card-muted)] text-[var(--jarvis-text)]' },
@@ -44,32 +102,30 @@ const NavMenu: React.FC<NavMenuProps> = ({ sidebarOpen, setSidebarOpen }) => {
     if (window.innerWidth < 768) setSidebarOpen(false);
   };
 
+  const collapsed = !sidebarOpen;
+
   return (
     <div className='flex-1 overflow-y-auto px-3 py-4'>
       {/* Resources Section */}
       <div className='space-y-1'>
         <div
           className={`text-xs font-semibold uppercase tracking-wider text-[var(--jarvis-faint)] overflow-hidden transition-all duration-300 ${
-            !sidebarOpen ? 'max-h-0 opacity-0 mb-0' : 'max-h-8 opacity-100 mb-2'
+            collapsed ? 'max-h-0 opacity-0 mb-0' : 'max-h-8 opacity-100 mb-2'
           }`}
         >
           <div className='px-3 pt-1'>Resources</div>
         </div>
 
-        {/* MCP Servers */}
-        <button
+        <NavButton
+          label='MCP Servers'
+          showTooltip={collapsed}
+          active={viewMode === 'servers'}
           onClick={() => handleNavigation('servers')}
-          className={`w-full flex items-center rounded-lg px-2 py-2 text-sm font-medium transition-colors ${
-            viewMode === 'servers'
-              ? 'bg-[var(--jarvis-primary-soft)] text-[var(--jarvis-primary-text)]'
-              : 'text-[var(--jarvis-muted)] hover:bg-[var(--jarvis-card-muted)] hover:text-[var(--jarvis-text)]'
-          }`}
-          title='MCP Servers'
         >
           <McpIcon className='h-5 w-5 flex-shrink-0' />
           <div
             className={`flex flex-1 items-center justify-between overflow-hidden transition-all duration-300 ${
-              !sidebarOpen ? 'max-w-0 opacity-0 ml-0' : 'max-w-xs opacity-100 ml-3'
+              collapsed ? 'max-w-0 opacity-0 ml-0' : 'max-w-xs opacity-100 ml-3'
             }`}
           >
             <span className='whitespace-nowrap'>MCP Servers</span>
@@ -77,22 +133,18 @@ const NavMenu: React.FC<NavMenuProps> = ({ sidebarOpen, setSidebarOpen }) => {
               {stats.total}
             </span>
           </div>
-        </button>
+        </NavButton>
 
-        {/* A2A Agents */}
-        <button
+        <NavButton
+          label='A2A Agents'
+          showTooltip={collapsed}
+          active={viewMode === 'agents'}
           onClick={() => handleNavigation('agents')}
-          className={`w-full flex items-center rounded-lg px-2 py-2 text-sm font-medium transition-colors ${
-            viewMode === 'agents'
-              ? 'bg-[var(--jarvis-primary-soft)] text-[var(--jarvis-primary-text)]'
-              : 'text-[var(--jarvis-muted)] hover:bg-[var(--jarvis-card-muted)] hover:text-[var(--jarvis-text)]'
-          }`}
-          title='A2A Agents'
         >
           <AgentIcon className='h-5 w-5 flex-shrink-0' />
           <div
             className={`flex flex-1 items-center justify-between overflow-hidden transition-all duration-300 ${
-              !sidebarOpen ? 'max-w-0 opacity-0 ml-0' : 'max-w-xs opacity-100 ml-3'
+              collapsed ? 'max-w-0 opacity-0 ml-0' : 'max-w-xs opacity-100 ml-3'
             }`}
           >
             <span className='whitespace-nowrap'>A2A Agents</span>
@@ -100,22 +152,18 @@ const NavMenu: React.FC<NavMenuProps> = ({ sidebarOpen, setSidebarOpen }) => {
               {agentStats.total}
             </span>
           </div>
-        </button>
+        </NavButton>
 
-        {/* Workflow */}
-        <button
+        <NavButton
+          label='Workflow'
+          showTooltip={collapsed}
+          active={viewMode === 'workflow'}
           onClick={() => handleNavigation('workflow')}
-          className={`w-full flex items-center rounded-lg px-2 py-2 text-sm font-medium transition-colors ${
-            viewMode === 'workflow'
-              ? 'bg-[var(--jarvis-primary-soft)] text-[var(--jarvis-primary-text)]'
-              : 'text-[var(--jarvis-muted)] hover:bg-[var(--jarvis-card-muted)] hover:text-[var(--jarvis-text)]'
-          }`}
-          title='Workflow'
         >
           <QueueListIcon className='h-5 w-5 flex-shrink-0' />
           <div
             className={`flex flex-1 items-center justify-between overflow-hidden transition-all duration-300 ${
-              !sidebarOpen ? 'max-w-0 opacity-0 ml-0' : 'max-w-xs opacity-100 ml-3'
+              collapsed ? 'max-w-0 opacity-0 ml-0' : 'max-w-xs opacity-100 ml-3'
             }`}
           >
             <span className='whitespace-nowrap'>Workflow</span>
@@ -123,22 +171,18 @@ const NavMenu: React.FC<NavMenuProps> = ({ sidebarOpen, setSidebarOpen }) => {
               BETA
             </span>
           </div>
-        </button>
+        </NavButton>
 
-        {/* External Providers */}
-        <button
+        <NavButton
+          label='External Providers'
+          showTooltip={collapsed}
+          active={viewMode === 'external'}
           onClick={() => handleNavigation('external')}
-          className={`w-full flex items-center rounded-lg px-2 py-2 text-sm font-medium transition-colors ${
-            viewMode === 'external'
-              ? 'bg-[var(--jarvis-primary-soft)] text-[var(--jarvis-primary-text)]'
-              : 'text-[var(--jarvis-muted)] hover:bg-[var(--jarvis-card-muted)] hover:text-[var(--jarvis-text)]'
-          }`}
-          title='External Providers'
         >
           <GlobeAltIcon className='h-5 w-5 flex-shrink-0' />
           <div
             className={`flex flex-1 items-center justify-between overflow-hidden transition-all duration-300 ${
-              !sidebarOpen ? 'max-w-0 opacity-0 ml-0' : 'max-w-xs opacity-100 ml-3'
+              collapsed ? 'max-w-0 opacity-0 ml-0' : 'max-w-xs opacity-100 ml-3'
             }`}
           >
             <span className='whitespace-nowrap'>External Providers</span>
@@ -146,13 +190,13 @@ const NavMenu: React.FC<NavMenuProps> = ({ sidebarOpen, setSidebarOpen }) => {
               {federationStats?.total || 0}
             </span>
           </div>
-        </button>
+        </NavButton>
       </div>
 
       {/* Filter by status Section */}
       <div
         className={`space-y-1 overflow-hidden transition-all duration-300 ${
-          !sidebarOpen ? 'max-h-0 opacity-0 mt-0' : 'max-h-[500px] opacity-100 mt-6'
+          collapsed ? 'max-h-0 opacity-0 mt-0' : 'max-h-[500px] opacity-100 mt-6'
         }`}
       >
         <div className='px-3 mb-2 text-xs font-semibold uppercase tracking-wider text-[var(--jarvis-faint)]'>
@@ -185,7 +229,7 @@ const NavMenu: React.FC<NavMenuProps> = ({ sidebarOpen, setSidebarOpen }) => {
                 className={`w-full flex items-center px-2 py-1.5 rounded-md text-sm transition-colors ${
                   activeFilter === filter.key
                     ? 'bg-[var(--jarvis-card-muted)] text-[var(--jarvis-text)]'
-                    : 'text-[var(--jarvis-muted)] hover:bg-[var(--jarvis-bg)] hover:text-[var(--jarvis-text)]'
+                    : 'text-[var(--jarvis-muted)] hover:bg-[var(--jarvis-surface)] hover:text-[var(--jarvis-text)]'
                 }`}
               >
                 <div className='w-5 flex justify-center flex-shrink-0'>
