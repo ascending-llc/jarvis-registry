@@ -228,8 +228,8 @@ const NavMenu: React.FC<NavMenuProps> = ({ sidebarOpen, setSidebarOpen }) => {
                 onClick={() => setActiveFilter(filter.key)}
                 className={`w-full flex items-center px-2 py-1.5 rounded-md text-sm transition-colors ${
                   activeFilter === filter.key
-                    ? 'bg-[var(--jarvis-card-muted)] text-[var(--jarvis-text)]'
-                    : 'text-[var(--jarvis-muted)] hover:bg-[var(--jarvis-surface)] hover:text-[var(--jarvis-text)]'
+                    ? 'bg-black/[0.08] dark:bg-white/[0.10] text-[var(--jarvis-text)]'
+                    : 'text-[var(--jarvis-muted)] hover:bg-black/[0.05] dark:hover:bg-white/[0.06] hover:text-[var(--jarvis-text)]'
                 }`}
               >
                 <div className='w-5 flex justify-center flex-shrink-0'>
