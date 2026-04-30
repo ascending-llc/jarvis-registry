@@ -1,6 +1,6 @@
-# Jarvis Registry Deployment Guide — Production (Component Reference)
+# [Jarvis Registry](https://ascendingdc.com/jarvis-ai/jarvis-registry) Deployment Guide — Production (Component Reference)
 
-> This guide is cloud-platform-agnostic. It describes **what components are needed and why** for deploying Jarvis Registry to an existing Kubernetes cluster on AWS (EKS) or Azure (AKS). Sections that differ between platforms are clearly marked.
+> This guide is cloud-platform-agnostic. It describes **what components are needed and why** for deploying [Jarvis Registry](https://ascendingdc.com/jarvis-ai/jarvis-registry) to an existing Kubernetes cluster on AWS (EKS) or Azure (AKS). Sections that differ between platforms are clearly marked.
 
 ---
 
@@ -88,15 +88,15 @@ flowchart LR
     DataCache ~~~ Observability
 
     %% ===== Styling =====
-    classDef idpStyle fill:#d4f5d4,stroke:#4a9d4a,stroke-width:2px,color:#1a3d1a
-    classDef k8sStyle fill:#fff8d6,stroke:#c9a227,stroke-width:2px,color:#3d3000
-    classDef ingressStyle fill:#d6e8e3,stroke:#5a9b8c,stroke-width:1.5px,color:#1a3d35
-    classDef podsStyle fill:#fce5b6,stroke:#d99a3a,stroke-width:1.5px,color:#4a2e00
-    classDef dataStyle fill:#fce5b6,stroke:#d99a3a,stroke-width:1.5px,color:#4a2e00
-    classDef obsStyle fill:#fce5b6,stroke:#d99a3a,stroke-width:1.5px,color:#4a2e00
-    classDef remoteStyle fill:#d4f5d4,stroke:#4a9d4a,stroke-width:2px,color:#1a3d1a
-    classDef nodeStyle fill:#dcd6f7,stroke:#6b5fb5,stroke-width:1px,color:#1f1a4a
-    classDef extStyle fill:#f7d6e0,stroke:#b55f7c,stroke-width:1.5px,color:#4a1a2e
+    classDef idpStyle fill:#d4f5d4,stroke:#4a9d4a,stroke-width:2px
+    classDef k8sStyle fill:#fff8d6,stroke:#c9a227,stroke-width:2px
+    classDef ingressStyle fill:#d6e8e3,stroke:#5a9b8c,stroke-width:1.5px
+    classDef podsStyle fill:#fce5b6,stroke:#d99a3a,stroke-width:1.5px
+    classDef dataStyle fill:#fce5b6,stroke:#d99a3a,stroke-width:1.5px
+    classDef obsStyle fill:#fce5b6,stroke:#d99a3a,stroke-width:1.5px
+    classDef remoteStyle fill:#d4f5d4,stroke:#4a9d4a,stroke-width:2px
+    classDef nodeStyle fill:#dcd6f7,stroke:#6b5fb5,stroke-width:1px
+    classDef extStyle fill:#f7d6e0,stroke:#b55f7c,stroke-width:1.5px
 
     class IdP idpStyle
     class K8s k8sStyle
@@ -238,9 +238,9 @@ These pods are the same on both platforms:
 
 | Component | Role | Node Affinity |
 |---|---|---|
-| **Registry Backend** | Core backend — MCP server registry, A2A agent registry, tool discovery | User / On-Demand |
-| **Registry Frontend** | Web UI — browse and manage MCP servers and agents | User / On-Demand |
-| **Auth Server** | OAuth2/OIDC authentication proxy — handles Entra ID login flow (port 8888) | User / On-Demand |
+| **Registry Backend** | Core backend — [MCP server registry](https://exploreagentic.ai/), [A2A agent registry](https://ascendingdc.com/jarvis-ai/agent-flow/), tool discovery | User / On-Demand |
+| **Registry Frontend** | Web UI — browse and manage [MCP servers and agents](https://exploreagentic.ai/) | User / On-Demand |
+| **[Auth Server](https://ascendingdc.com/jarvis-ai/governed-ai/)** | OAuth2/OIDC authentication proxy — handles Entra ID login flow (port 8888) | User / On-Demand |
 | **MongoDB** | Primary database — stores registry entries, users, and RBAC configuration | User / On-Demand |
 | **Weaviate** | Vector database — semantic search over registered tools and agents | User / On-Demand |
 | **Redis** | Session cache and task queue broker | Any |
@@ -325,4 +325,4 @@ After the Helm chart is deployed, the **Application Gateway for Containers** fro
 - [ ] Load balancer / Application Gateway is active and the domain resolves correctly
 - [ ] HTTPS is accessible on the client domain with a valid TLS certificate
 - [ ] Client can log in via Entra ID (or configured IdP) successfully
-- [ ] MCP servers and agents are visible and discoverable in the Registry UI
+- [ ] [MCP servers and agents](https://exploreagentic.ai/) are visible and discoverable in the Registry UI
