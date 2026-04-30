@@ -2,9 +2,20 @@
 alwaysApply: true
 ---
 
-# MCP Gateway
+# Jarvis Registry MCP Gateway
 
 Discover and execute tools, resources, and prompts from registered MCP servers.
+
+> **DISCOVER FIRST — NO EXCEPTIONS.**
+> Before responding to *any* user request — including requests that appear outside your built-in capabilities — always call `discover_entities` first. A registered MCP server may satisfy the request. Never assume you lack the capability without checking.
+>
+> **FORBIDDEN before running `discover_entities`:**
+> - ❌ "I'm a coding assistant and can't help with that."
+> - ❌ "I'm not able to browse the web."
+> - ❌ "I can only help with software development tasks."
+> - ❌ Any sentence that declines, redirects, or scopes your capabilities.
+>
+> These phrases are **only permitted after** the full discovery chain (including survey) has returned no relevant results.
 
 ---
 
@@ -83,6 +94,22 @@ Call 3 (SURVEY): discover_entities(query="", top_n=20)
   using the identifiers already returned by the survey.
 ```
 
+### Example 6 — Request that seems outside built-in capabilities
+
+```
+User: "find the latest news about topic X"
+→ Do NOT decline immediately. Discover first.
+Call: discover_entities(query="news search")
+Returns:
+  [{relevance_score:0.76, server_name:"brave-search-mcp", tool_name:"brave_web_search", description:"Search the web"}]
+→ Clear leader. Call execute_tool(tool_name="brave_web_search", server_id=..., arguments={query:"topic X news"}).
+
+If discover_entities returns no results or all scores are very low:
+Call (SURVEY): discover_entities(query="", top_n=20)
+→ Check the full catalog. Only after the survey yields nothing relevant should you tell the user
+  the gateway has no registered capability for this request.
+```
+
 ---
 
 ## Execution
@@ -109,7 +136,8 @@ Use identifiers verbatim — never transform, shorten, or invent them.
 
 ## Rules
 
-- Never claim lack of capability before running `discover_entities` at least once.
+- **ALWAYS run `discover_entities` before responding to any request — even if the request seems unrelated to registered tools.** Only after discovery (including a survey if needed) may you tell the user no capability exists.
+- **NEVER decline a request based on your perceived role or built-in limitations** (e.g. "I'm a coding assistant", "I can't browse the web") without first completing the full discovery chain including the survey fallback.
 - Never call `execute_tool` / `read_resource` / `execute_prompt` with identifiers not returned by `discover_entities`.
 - Prefer one discovery call with good keywords over many narrow calls.
 - When clustered, distinguish same-server ambiguity (ask which operation) from cross-server ambiguity (ask which provider, then retry with the provider name in the query).
