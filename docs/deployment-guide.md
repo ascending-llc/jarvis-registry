@@ -23,7 +23,91 @@ Before starting this guide, the following must already be in place:
 
 ## Overview — Deployment Phases
 
-![Jarvis Registry Deployment Diagram](img/registry_diagram.png)
+```mermaid
+flowchart LR
+    %% ===== Identity Provider =====
+    subgraph IdP["🔐 Identity Provider (IdP)"]
+        direction TB
+        Entra["Entra ID"]
+        Cognito["AWS Cognito"]
+    end
+
+    %% ===== Kubernetes Cluster =====
+    subgraph K8s["☸️ Kubernetes Cluster"]
+        direction TB
+
+        subgraph Ingress["🌐 Ingress"]
+            ALB["ALB (AWS) /<br/>App Gateway for Containers (Azure)"]
+        end
+
+        subgraph AppPods["⚙️ Application Pods"]
+            direction LR
+            AuthServer["Auth Server"]
+            Frontend["Registry Frontend"]
+            Backend["Registry Backend"]
+        end
+
+        subgraph DataCache["💾 Data & Cache"]
+            direction TB
+            Redis["Redis"]
+            MongoDB["MongoDB"]
+            Weaviate["Weaviate"]
+        end
+
+        subgraph Observability["📊 Observability"]
+            direction TB
+            Grafana["Grafana<br/><i>(optional)</i>"]
+            Prometheus["Prometheus<br/><i>(optional)</i>"]
+            OTel["OTel Collector"]
+        end
+    end
+
+    %% ===== External Services =====
+    subgraph Remote["🔌 MCP Servers"]
+        direction TB
+        RMCP1["MCP Server 1"]
+        RMCP2["MCP Server 2"]
+    end
+
+    subgraph ExtObs["📈 Your Own Observability Tool"]
+        direction TB
+        Datadog["Datadog"]
+        Splunk["Splunk"]
+        NewRelic["New Relic"]
+    end
+
+    %% ===== Connections =====
+    ALB ==> AuthServer
+    ALB ==> Frontend
+    Frontend ==> Backend
+    AuthServer <==> IdP
+    Backend ==> Remote
+    OTel -.-> ExtObs
+
+    %% Keep Data & Cache and Observability on the same row
+    DataCache ~~~ Observability
+
+    %% ===== Styling =====
+    classDef idpStyle fill:#d4f5d4,stroke:#4a9d4a,stroke-width:2px,color:#1a3d1a
+    classDef k8sStyle fill:#fff8d6,stroke:#c9a227,stroke-width:2px,color:#3d3000
+    classDef ingressStyle fill:#d6e8e3,stroke:#5a9b8c,stroke-width:1.5px,color:#1a3d35
+    classDef podsStyle fill:#fce5b6,stroke:#d99a3a,stroke-width:1.5px,color:#4a2e00
+    classDef dataStyle fill:#fce5b6,stroke:#d99a3a,stroke-width:1.5px,color:#4a2e00
+    classDef obsStyle fill:#fce5b6,stroke:#d99a3a,stroke-width:1.5px,color:#4a2e00
+    classDef remoteStyle fill:#d4f5d4,stroke:#4a9d4a,stroke-width:2px,color:#1a3d1a
+    classDef nodeStyle fill:#dcd6f7,stroke:#6b5fb5,stroke-width:1px,color:#1f1a4a
+    classDef extStyle fill:#f7d6e0,stroke:#b55f7c,stroke-width:1.5px,color:#4a1a2e
+
+    class IdP idpStyle
+    class K8s k8sStyle
+    class Ingress ingressStyle
+    class AppPods podsStyle
+    class DataCache dataStyle
+    class Observability obsStyle
+    class Remote remoteStyle
+    class ExtObs extStyle
+    class Entra,Cognito,ALB,AuthServer,Frontend,Backend,Redis,MongoDB,Weaviate,Grafana,Prometheus,OTel,RMCP1,RMCP2,Datadog,Splunk,NewRelic nodeStyle
+```
 
 | # | Phase | Description |
 |---|---|---|
