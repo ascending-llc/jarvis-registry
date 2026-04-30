@@ -230,7 +230,7 @@ All secrets must be populated **before** deploying the Helm chart.
 
 ## Phase 5 — Registry Helm Chart Deployment
 
-The Registry is deployed as a **single Helm release** into the `jarvis` namespace with the release name `jarvis-registry`. The Helm chart is still under development.
+The Registry is deployed as a **single Helm release** into the `jarvis` namespace with the release name `jarvis-registry`. The Helm chart is on the roadmap to be released.
 
 ### 5.1 Application Pods
 
@@ -244,8 +244,8 @@ These pods are the same on both platforms:
 | **MongoDB** | Primary database — stores registry entries, users, and RBAC configuration | User / On-Demand |
 | **Weaviate** | Vector database — semantic search over registered tools and agents | User / On-Demand |
 | **Redis** | Session cache and task queue broker | Any |
-| **Prometheus** | Metrics collection from all Registry services | Any |
-| **Grafana** | Metrics dashboard for observability | Any |
+| **Prometheus** *(optional)* | Metrics collection from all Registry services. Optional — if you use your own observability tool, you can connect it to the OTEL Collector instead. | Any |
+| **Grafana** *(optional)* | Metrics dashboard for observability. Optional — if you use your own observability tool, you can connect it to the OTEL Collector instead. | Any |
 | **OpenTelemetry Collector** | Collects and forwards traces, metrics, and logs from all services | Any |
 
 ### 5.2 Kubernetes Resources Created by the Helm Chart
