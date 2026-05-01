@@ -61,6 +61,8 @@ class BaseVectorSyncRepository(Repository[T], ABC):
         Falls back silently when the adapter does not support update_metadata.
         """
         result = VectorSyncResult()
+        if not self.ensure_collection():
+            raise RuntimeError(f"collection '{self.collection}' is not initialized")
         try:
             if not hasattr(self.adapter, "update_metadata"):
                 logger.warning(
@@ -83,15 +85,23 @@ class BaseVectorSyncRepository(Repository[T], ABC):
                 )
                 return result
 
-            success = 0
-            for doc in existing_docs:
-                ok = self.adapter.update_metadata(
-                    doc_id=doc.id,
-                    metadata=metadata,
+            doc_ids = [doc.id for doc in existing_docs]
+            if hasattr(self.adapter, "batch_update_properties"):
+                success = self.adapter.batch_update_properties(
+                    doc_ids=doc_ids,
+                    update_data=metadata,
                     collection_name=self.collection,
                 )
-                if ok:
-                    success += 1
+            else:
+                success = sum(
+                    1
+                    for doc_id in doc_ids
+                    if self.adapter.update_metadata(
+                        doc_id=doc_id,
+                        metadata=metadata,
+                        collection_name=self.collection,
+                    )
+                )
 
             result.metadata_updated = success
             logger.info(
@@ -121,9 +131,9 @@ class BaseVectorSyncRepository(Repository[T], ABC):
             is_delete: True (CRUD path) — delete existing docs before reinserting.
                        False (federation path) — external caller already deleted; insert only.
         """
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     async def delete_by_entity_id(self, entity_id: str, entity_name: str | None = None) -> int:
         """Remove all Weaviate docs for the given entity MongoDB ID."""
-        ...
+        raise NotImplementedError

@@ -289,6 +289,26 @@ class ExtendedMCPServer(MCPServer):
             metadata["tags"] = list(self.tags)
         return metadata
 
+    def mutable_metadata(self) -> dict[str, Any]:
+        """Return metadata fields that can change without affecting page_content.
+
+        serverName and path are intentionally excluded: both appear in page_content
+        (as doc prefix), so changing either always changes vectorContentHash and
+        triggers a full rebuild — they never reach this path.
+        """
+        is_enabled = self.status == "active"
+        if self.config and isinstance(self.config.get("enabled"), bool):
+            is_enabled = self.config["enabled"]
+        meta: dict[str, Any] = {
+            "status": self.status,
+            "enabled": is_enabled,
+            "tags": list(self.tags) if self.tags else [],
+        }
+        runtime_version = (self.federationMetadata or {}).get("runtimeVersion")
+        if runtime_version is not None:
+            meta["runtimeVersion"] = str(runtime_version)
+        return meta
+
     def _split_if_needed(
         self, content: str, metadata: dict[str, Any], chunking_config: ChunkingConfig
     ) -> list[LangChainDocument]:

@@ -908,12 +908,11 @@ class ServerServiceV1:
         if server.vectorContentHash != old_hash:
             asyncio.create_task(self.mcp_server_repo.sync_to_vector_db(server, is_delete=True))
         else:
-            is_enabled = server.config.get("enabled", False) if server.config else False
             asyncio.create_task(
                 self.mcp_server_repo.update_entity_metadata(
                     "server_id",
                     str(server.id),
-                    {"enabled": is_enabled, "status": server.status},
+                    server.mutable_metadata(),
                 )
             )
 
