@@ -8,6 +8,7 @@ from beanie import PydanticObjectId
 from registry_pkgs.models.enums import WorkflowRunStatus
 from registry_pkgs.models.workflow import WorkflowDefinition, WorkflowNode, WorkflowRun
 from registry_pkgs.workflows import runner
+from registry_pkgs.workflows.control.wrapper import WorkflowCancelledError
 
 
 class _FieldExpr:
@@ -79,7 +80,7 @@ class TestWorkflowRunnerRun:
         r = _make_runner()
 
         with pytest.raises(ValueError, match="not found"):
-            await r.run("missing-id", "hello", registry_token="tok", accessible_agent_ids=None)
+            await r.run("missing-id", "hello", registry_token="tok", user_id=None)
 
     @pytest.mark.asyncio
     async def test_orchestrates_build_registry_create_execute_and_returns_node_runs(
@@ -101,21 +102,21 @@ class TestWorkflowRunnerRun:
         monkeypatch.setattr(runner.NodeRun, "find", lambda *args, **kwargs: find_query)
 
         r = _make_runner()
-        accessible = {"agent-id-1"}
+        user_id = "user-1"
         actual_run, actual_nodes = await r.run(
             str(definition.id),
             "hello",
             registry_token="user-tok",
-            accessible_agent_ids=accessible,
+            user_id=user_id,
             trigger_source="api",
         )
 
         assert actual_run is run_doc
         assert actual_nodes == node_runs
-        # registry_token + accessible_agent_ids are forwarded to _build_registry
-        runner.WorkflowRunner._build_registry.assert_awaited_once_with(definition, "user-tok", accessible)
+        # registry_token + user_id are forwarded to _build_registry
+        runner.WorkflowRunner._build_registry.assert_awaited_once_with(definition, "user-tok", user_id)
         runner.WorkflowRunner._create_run.assert_awaited_once_with(definition, "hello", "api")
-        runner.WorkflowRunner._execute.assert_awaited_once_with(run_doc, definition, "hello", fake_registry)
+        runner.WorkflowRunner._execute.assert_awaited_once_with(run_doc, definition, "hello", fake_registry, None)
 
 
 @pytest.mark.unit
@@ -143,25 +144,25 @@ class TestBuildRegistry:
             registry_url,
             registry_token,
             jwt_config,
-            accessible_agent_ids,
+            user_id,
             pool_nodes,
             selector_llm,
         ):
             captured["executor_keys"] = executor_keys
             captured["pool_nodes"] = [n.name for n in pool_nodes]
             captured["registry_token"] = registry_token
-            captured["accessible_agent_ids"] = accessible_agent_ids
+            captured["user_id"] = user_id
             return {}
 
         monkeypatch.setattr(runner, "build_executor_registry", fake_build)
 
         r = _make_runner(registry_url="http://reg")
-        await r._build_registry(definition, "my-token", {"agent-id-1"})
+        await r._build_registry(definition, "my-token", "user-1")
 
         assert captured["executor_keys"] == ["mcp-tool"]
         assert captured["pool_nodes"] == ["pool-step"]
         assert captured["registry_token"] == "my-token"
-        assert captured["accessible_agent_ids"] == {"agent-id-1"}
+        assert captured["user_id"] == "user-1"
 
 
 @pytest.mark.unit
@@ -233,3 +234,27 @@ class TestExecute:
         assert isinstance(run_doc.finished_at, datetime)
         assert run_doc.finished_at.tzinfo == UTC
         run_doc.save.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_marks_run_cancelled_when_workflow_is_cancelled(self, monkeypatch: pytest.MonkeyPatch):
+        workflow = SimpleNamespace(arun=AsyncMock(side_effect=WorkflowCancelledError("Workflow cancelled by user")))
+        run_doc = SimpleNamespace(
+            status=WorkflowRunStatus.RUNNING,
+            error_summary=None,
+            finished_at=None,
+            save=AsyncMock(),
+            sync=AsyncMock(),
+            id="run-1",
+        )
+
+        monkeypatch.setattr(runner, "compile_workflow", lambda *args, **kwargs: workflow)
+        r = _make_runner()
+
+        await r._execute(run_doc, _definition(), "hello", {})
+
+        assert run_doc.status == WorkflowRunStatus.CANCELLED
+        assert run_doc.error_summary == "Workflow cancelled by user"
+        assert isinstance(run_doc.finished_at, datetime)
+        assert run_doc.finished_at.tzinfo == UTC
+        run_doc.save.assert_awaited_once()
+        run_doc.sync.assert_not_called()

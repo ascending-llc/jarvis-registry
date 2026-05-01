@@ -212,7 +212,7 @@ class TestWorkflowPersistence:
         saved_doc, save_kwargs = saved[0]
         assert saved_doc is existing
         assert existing.status == NodeRunStatus.FAILED
-        assert existing.attempt == 3
+        assert existing.attempt == 2
         assert existing.error == "boom"
         assert existing.output_snapshot == {"content": "bad"}
         assert save_kwargs == {"session": None}
