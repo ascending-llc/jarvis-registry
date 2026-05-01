@@ -3,8 +3,15 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from tests.conftest import make_container
 
-from registry.api.v1.search_routes import SearchRequest, SemanticSearchRequest, search_servers, semantic_search
-from registry_pkgs.models.enums import ServerEntityType
+from registry.api.v1.search_routes import (
+    AgentSemanticSearchRequest,
+    SearchRequest,
+    SemanticSearchRequest,
+    search_agents,
+    search_servers,
+    semantic_search,
+)
+from registry_pkgs.models.enums import A2AEntityType, MCPEntityType
 from registry_pkgs.vector.enum.enums import SearchType
 
 
@@ -61,13 +68,7 @@ async def test_search_servers_uses_vector_directly():
     mcp_server_repo.asearch_with_rerank = AsyncMock(return_value=tool_results)
 
     response = await search_servers(
-        search=SearchRequest(
-            query="github",
-            top_n=2,
-            search_type=SearchType.HYBRID,
-            type_list=[ServerEntityType.TOOL],
-            include_disabled=False,
-        ),
+        search=SearchRequest(query="github", top_n=2, search_type=SearchType.HYBRID, type_list=[MCPEntityType.TOOL]),
         user_context={"username": "tester"},
         mcp_server_repo=mcp_server_repo,
     )
@@ -87,13 +88,7 @@ async def test_search_servers_filters_metadata_when_tool_query_is_empty():
     )
 
     response = await search_servers(
-        search=SearchRequest(
-            query="",
-            top_n=5,
-            search_type=SearchType.HYBRID,
-            type_list=[ServerEntityType.TOOL],
-            include_disabled=False,
-        ),
+        search=SearchRequest(query="", top_n=5, search_type=SearchType.HYBRID, type_list=[MCPEntityType.TOOL]),
         user_context={"username": "tester"},
         mcp_server_repo=mcp_server_repo,
     )
@@ -102,3 +97,68 @@ async def test_search_servers_filters_metadata_when_tool_query_is_empty():
     assert response["query"] == ""
     assert response["total"] == 1
     assert response["results"] == filter_results
+
+
+@pytest.mark.asyncio
+async def test_search_agents_returns_agents_and_skills():
+    """search_agents splits raw docs by entity_type into agents and skills."""
+    agent_doc = {
+        "agent_id": "agent-1",
+        "agent_name": "deep-intel",
+        "path": "/deep-intel",
+        "entity_type": A2AEntityType.AGENT,
+        "relevance_score": 0.85,
+        "description": "Deep intel agent",
+        "tags": ["research"],
+        "is_enabled": True,
+    }
+    skill_doc = {
+        "agent_id": "agent-1",
+        "agent_name": "deep-intel",
+        "path": "/deep-intel",
+        "entity_type": A2AEntityType.SKILL,
+        "skill_name": "web_search",
+        "relevance_score": 0.75,
+        "description": "Search the web",
+        "is_enabled": True,
+    }
+    a2a_agent_repo = MagicMock()
+    a2a_agent_repo.asearch_with_rerank = AsyncMock(return_value=[agent_doc, skill_doc])
+
+    request = make_container(state=make_container(is_authenticated=True, user={"username": "tester"}))
+
+    response = await search_agents(
+        request=request,
+        search_request=AgentSemanticSearchRequest(query="intel research", maxResults=5),
+        a2a_agent_repo=a2a_agent_repo,
+    )
+
+    assert response.totalAgents == 1
+    assert response.totalSkills == 1
+    assert response.agents[0].agentName == "deep-intel"
+    assert response.agents[0].tags == ["research"]
+    assert response.skills[0].skillName == "web_search"
+
+
+@pytest.mark.asyncio
+async def test_search_agents_uses_afilter_for_empty_query():
+    """search_agents falls back to afilter when query is empty."""
+    a2a_agent_repo = MagicMock()
+    a2a_agent_repo.afilter = AsyncMock(return_value=[])
+    a2a_agent_repo.asearch_with_rerank = AsyncMock(
+        side_effect=AssertionError("vector search should not run for empty query")
+    )
+
+    request = make_container(state=make_container(is_authenticated=True, user={"username": "tester"}))
+
+    response = await search_agents(
+        request=request,
+        search_request=AgentSemanticSearchRequest(query="", maxResults=10),
+        a2a_agent_repo=a2a_agent_repo,
+    )
+
+    a2a_agent_repo.afilter.assert_awaited_once_with(
+        filters={"is_enabled": True, "entity_type": list(A2AEntityType)}, limit=10
+    )
+    assert response.totalAgents == 0
+    assert response.totalSkills == 0

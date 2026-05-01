@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 
 from ...models import ExtendedMCPServer
-from ...models.enums import ServerEntityType
+from ...models.enums import MCPEntityType
 from ..base_sync_repository import BaseVectorSyncRepository
 from ..client import DatabaseClient
 from ..sync_result import VectorSyncResult
@@ -87,7 +87,7 @@ class MCPServerRepository(BaseVectorSyncRepository[ExtendedMCPServer]):
             )
             return 0
         total_deleted = 0
-        for entity_type in ServerEntityType:
+        for entity_type in MCPEntityType:
             docs = self.adapter.filter_by_metadata(
                 filters={"server_id": entity_id, "entity_type": entity_type.value},
                 limit=1000,

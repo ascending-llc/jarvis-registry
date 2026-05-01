@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from httpx import AsyncClient
 from redis import Redis
 
+from registry_pkgs.vector.repositories.a2a_agent_repository import A2AAgentRepository
 from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRepository
 
 from ...core.mcp_client import MCPClientService
@@ -18,6 +19,7 @@ class McpAppContext:
     proxy_client: AsyncClient
     server_service: ServerServiceV1
     mcp_server_repo: MCPServerRepository
+    a2a_agent_repo: A2AAgentRepository
     mcp_client_service: MCPClientService
     oauth_service: MCPOAuthService
     session_store: SessionStore
