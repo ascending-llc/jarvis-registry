@@ -29,7 +29,7 @@ auth-server = { workspace = true }
 [project.scripts]
 # Data management scripts
 seed-data = "scripts.seed_mongodb:cli"
-sync-mongo-weaviate = "scripts.sync_mongo_to_weaviate:cli"
+vector-sync = "scripts.vector_sync:cli"
 sync-version = "scripts.sync_version:main"
 federation-job-admin = "scripts.federation_job_admin:cli"
 download-beanie-models = "scripts.download_beanie_models:main"

@@ -24,9 +24,8 @@ class _FakeAdapter:
         return True
 
     def filter_by_metadata(self, filters, limit: int, collection_name: str | None = None, **kwargs) -> list[Document]:
-        offset = kwargs.get("offset", 0)
         matched = [doc for doc in self.docs if all(doc.metadata.get(k) == v for k, v in filters.items())]
-        return matched[offset : offset + limit]
+        return matched[:limit]
 
     def delete(self, ids: list[str], collection_name: str | None = None) -> None:
         self.deleted_ids.extend(ids)
@@ -45,7 +44,7 @@ def _make_mcp_repo(docs: list[Document]) -> MCPServerRepository:
     return MCPServerRepository(SimpleNamespace(adapter=_FakeAdapter(docs)))
 
 
-def _make_agent(page_content: str = "x", hash_override=None) -> SimpleNamespace:
+def _make_agent(page_content: str = "x") -> SimpleNamespace:
     """Build a minimal agent stub whose hash is based on page_content."""
     agent = SimpleNamespace(
         id="agent-demo-id",
@@ -55,16 +54,11 @@ def _make_agent(page_content: str = "x", hash_override=None) -> SimpleNamespace:
         status="active",
         to_documents=lambda: [Document(page_content=page_content, metadata={})],
     )
-    # Compute the real hash the repo would compute, then optionally override
-    import hashlib
-
-    computed = hashlib.sha256(page_content.encode()).hexdigest()
-    agent.vectorContentHash = hash_override if hash_override is not None else None
-    agent._real_hash = computed
+    agent.vectorContentHash = None
     return agent
 
 
-def _make_server(page_content: str = "x", hash_override=None) -> SimpleNamespace:
+def _make_server(page_content: str = "x") -> SimpleNamespace:
     server = SimpleNamespace(
         id="server-demo-id",
         serverName="demo-server",
@@ -73,132 +67,43 @@ def _make_server(page_content: str = "x", hash_override=None) -> SimpleNamespace
         config={"enabled": True},
         to_documents=lambda: [Document(page_content=page_content, metadata={})],
     )
-    import hashlib
-
-    computed = hashlib.sha256(page_content.encode()).hexdigest()
-    server.vectorContentHash = hash_override if hash_override is not None else None
-    server._real_hash = computed
+    server.vectorContentHash = None
     return server
 
 
 @pytest.mark.asyncio
-async def test_a2a_sync_skips_when_hash_matches_and_docs_exist():
-    """Case 4: hash matches + docs in Weaviate → skip, no asave call."""
+async def test_a2a_sync_rebuilds_when_called():
+    """sync_to_vector_db no longer has a hash gate — calling it always rebuilds."""
     page_content = "agent page content"
-    import hashlib
 
-    correct_hash = hashlib.sha256(page_content.encode()).hexdigest()
     existing_doc = Document(page_content=page_content, metadata={"agent_id": "agent-demo-id"})
 
     repo = _make_a2a_repo([existing_doc])
-    repo.asave = AsyncMock()
-
-    agent = _make_agent(page_content, hash_override=correct_hash)
-    agent.set = AsyncMock()
-
-    result = await repo.sync_to_vector_db(agent, is_delete=False)
-
-    assert result["skipped"] == 1
-    assert result["indexed"] == 0
-    repo.asave.assert_not_awaited()
-    agent.set.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_a2a_sync_rebuilds_when_hash_differs():
-    """Cases 1/2/3: hash mismatch → full rebuild."""
-    repo = _make_a2a_repo([])
-    repo.asave = AsyncMock(return_value=["doc-id-1", "doc-id-2"])
-
-    agent = _make_agent("agent page content", hash_override="stale-hash")
-    agent.set = AsyncMock()
-
-    result = await repo.sync_to_vector_db(agent, is_delete=False)
-
-    assert result["indexed"] == 2
-    assert result["skipped"] == 0
-    repo.asave.assert_awaited_once()
-    agent.set.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_a2a_sync_rebuilds_when_hash_matches_but_docs_missing():
-    """Case 5: hash matches but Weaviate has no docs → rebuild silently."""
-    page_content = "agent page content"
-    import hashlib
-
-    correct_hash = hashlib.sha256(page_content.encode()).hexdigest()
-
-    repo = _make_a2a_repo([])  # no existing docs
     repo.asave = AsyncMock(return_value=["doc-id-1"])
 
-    agent = _make_agent(page_content, hash_override=correct_hash)
-    agent.set = AsyncMock()
+    agent = _make_agent(page_content)
 
     result = await repo.sync_to_vector_db(agent, is_delete=False)
 
     assert result["indexed"] == 1
-    assert result["skipped"] == 0
     repo.asave.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_mcp_sync_skips_when_hash_matches_and_docs_exist():
-    """Case 4: hash matches + docs in Weaviate → skip, no asave call."""
+async def test_mcp_sync_rebuilds_when_called():
+    """sync_to_vector_db no longer has a hash gate — calling it always rebuilds."""
     page_content = "server page content"
-    import hashlib
 
-    correct_hash = hashlib.sha256(page_content.encode()).hexdigest()
     existing_doc = Document(page_content=page_content, metadata={"server_id": "server-demo-id"})
 
     repo = _make_mcp_repo([existing_doc])
-    repo.asave = AsyncMock()
-
-    server = _make_server(page_content, hash_override=correct_hash)
-    server.set = AsyncMock()
-
-    result = await repo.sync_to_vector_db(server, is_delete=False)
-
-    assert result["skipped"] == 1
-    assert result["indexed_tools"] == 0
-    repo.asave.assert_not_awaited()
-    server.set.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_mcp_sync_rebuilds_when_hash_differs():
-    """Cases 1/2/3: hash mismatch → full rebuild."""
-    repo = _make_mcp_repo([])
-    repo.asave = AsyncMock(return_value=["doc-1", "doc-2"])
-
-    server = _make_server("server page content", hash_override="stale-hash")
-    server.set = AsyncMock()
-
-    result = await repo.sync_to_vector_db(server, is_delete=False)
-
-    assert result["indexed_tools"] == 2
-    assert result["skipped"] == 0
-    repo.asave.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_mcp_sync_rebuilds_when_hash_matches_but_docs_missing():
-    """Case 5: hash matches but Weaviate has no docs → rebuild."""
-    page_content = "server page content"
-    import hashlib
-
-    correct_hash = hashlib.sha256(page_content.encode()).hexdigest()
-
-    repo = _make_mcp_repo([])  # no existing docs
     repo.asave = AsyncMock(return_value=["doc-1"])
 
-    server = _make_server(page_content, hash_override=correct_hash)
-    server.set = AsyncMock()
+    server = _make_server(page_content)
 
     result = await repo.sync_to_vector_db(server, is_delete=False)
 
     assert result["indexed_tools"] == 1
-    assert result["skipped"] == 0
     repo.asave.assert_awaited_once()
 
 
@@ -212,28 +117,6 @@ def test_a2a_has_runtime_identity_returns_false_when_schema_missing():
     repo = _make_a2a_repo([])
     repo._collection_has_property = MagicMock(return_value=False)
     assert repo.has_runtime_identity("fed-1", "arn:runtime:1") is False
-
-
-@pytest.mark.asyncio
-async def test_a2a_sync_agent_to_vector_db_alias_delegates_to_sync_to_vector_db():
-    """sync_agent_to_vector_db is kept as alias so federation_sync_service still works."""
-    repo = _make_a2a_repo([])
-    repo.sync_to_vector_db = AsyncMock(return_value={"indexed": 1, "skipped": 0})
-
-    agent = SimpleNamespace()
-    await repo.sync_agent_to_vector_db(agent, is_delete=True)
-
-    repo.sync_to_vector_db.assert_awaited_once_with(agent, is_delete=True)
-
-
-@pytest.mark.asyncio
-async def test_mcp_sync_server_to_vector_db_alias_delegates_to_sync_to_vector_db():
-    """sync_server_to_vector_db is kept as alias so federation_sync_service still works."""
-    repo = _make_mcp_repo([])
-    repo.sync_to_vector_db = AsyncMock(return_value={"indexed_tools": 1, "skipped": 0})
-
-    server = SimpleNamespace()
-    await repo.sync_server_to_vector_db(server, is_delete=False)
 
 
 # ---------------------------------------------------------------------------
@@ -298,23 +181,6 @@ async def test_update_entity_metadata_skips_when_adapter_lacks_update_metadata()
     assert result.error is None
 
 
-# ---------------------------------------------------------------------------
-# delete_by_entity_id / delete_by_agent_id / delete_by_server_id
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_a2a_delete_by_agent_id_delegates_to_adelete_by_filter():
-    """delete_by_agent_id calls adelete_by_filter with the correct agent_id filter."""
-    repo = _make_a2a_repo([])
-    repo.adelete_by_filter = AsyncMock(return_value=3)
-
-    deleted = await repo.delete_by_agent_id("agent-99", "my-agent")
-
-    repo.adelete_by_filter.assert_awaited_once_with({"agent_id": "agent-99"})
-    assert deleted == 3
-
-
 @pytest.mark.asyncio
 async def test_mcp_delete_by_server_id_returns_count():
     """delete_by_server_id returns the total number of docs removed across all entity types."""
@@ -343,11 +209,6 @@ async def test_mcp_delete_by_server_id_returns_zero_when_no_docs():
     assert count == 0
 
 
-# ---------------------------------------------------------------------------
-# delete_by_runtime_identity
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_delete_by_runtime_identity_removes_matching_docs():
     """delete_by_runtime_identity issues adelete_by_filter with federation + runtime ARN."""
@@ -371,32 +232,3 @@ async def test_delete_by_runtime_identity_skips_when_schema_missing():
     deleted = await repo.delete_by_runtime_identity("fed-X", "arn:runtime:1")
 
     assert deleted == 0
-
-
-# ---------------------------------------------------------------------------
-# _FakeAdapter filter correctness
-# ---------------------------------------------------------------------------
-
-
-def test_fake_adapter_filter_by_metadata_respects_filters():
-    """filter_by_metadata must only return docs whose metadata matches all filters."""
-    docs = [
-        Document(page_content="a", metadata={"type": "tool", "owner": "alice"}, id="d1"),
-        Document(page_content="b", metadata={"type": "tool", "owner": "bob"}, id="d2"),
-        Document(page_content="c", metadata={"type": "resource", "owner": "alice"}, id="d3"),
-    ]
-    adapter = _FakeAdapter(docs)
-
-    result = adapter.filter_by_metadata(filters={"type": "tool", "owner": "alice"}, limit=10)
-
-    assert len(result) == 1
-    assert result[0].id == "d1"
-
-
-def test_fake_adapter_filter_returns_empty_when_no_match():
-    docs = [Document(page_content="x", metadata={"k": "v"}, id="d1")]
-    adapter = _FakeAdapter(docs)
-
-    result = adapter.filter_by_metadata(filters={"k": "missing"}, limit=10)
-
-    assert result == []

@@ -40,34 +40,46 @@ class A2AAgentService:
         """Schedule a non-blocking vector sync after a MongoDB write."""
         if self._a2a_agent_repo is None:
             return
-        asyncio.create_task(self._sync_to_vector(agent, is_delete=is_delete))
 
-    def _schedule_metadata_update(self, agent_id: str, metadata: dict) -> None:
-        """Schedule a metadata-only Weaviate update (no re-embedding) — used for toggle."""
-        if self._a2a_agent_repo is None:
-            return
-        asyncio.create_task(self._a2a_agent_repo.update_entity_metadata("agent_id", agent_id, metadata))
+        async def _task():
+            try:
+                result = await self._a2a_agent_repo.sync_to_vector_db(agent, is_delete=is_delete)
+                logger.debug("Vector sync result for agent %s: %s", agent.id, result)
+            except Exception as e:
+                logger.error("Vector sync failed for agent %s: %s", agent.id, e, exc_info=True)
+
+        asyncio.create_task(_task())
 
     def _schedule_delete(self, agent_id: str, agent_name: str | None = None) -> None:
         """Schedule removal of all Weaviate docs for an agent."""
         if self._a2a_agent_repo is None:
             return
-        asyncio.create_task(self._delete_from_vector(agent_id, agent_name))
 
-    async def _sync_to_vector(self, agent: A2AAgent, *, is_delete: bool) -> None:
-        """Sync agent to Weaviate. Errors are logged but never raised — vector DB is a secondary index."""
-        try:
-            result = await self._a2a_agent_repo.sync_agent_to_vector_db(agent, is_delete=is_delete)
-            logger.debug("Vector sync result for agent %s: %s", agent.id, result)
-        except Exception as e:
-            logger.error("Vector sync failed for agent %s: %s", agent.id, e, exc_info=True)
+        async def _task():
+            try:
+                await self._a2a_agent_repo.delete_by_agent_id(agent_id, agent_name)
+            except Exception as e:
+                logger.error("Vector delete failed for agent %s: %s", agent_id, e, exc_info=True)
 
-    async def _delete_from_vector(self, agent_id: str, agent_name: str | None = None) -> None:
-        """Remove agent docs from Weaviate. Errors are logged but never raised."""
-        try:
-            await self._a2a_agent_repo.delete_by_agent_id(agent_id, agent_name)
-        except Exception as e:
-            logger.error("Vector delete failed for agent %s: %s", agent_id, e, exc_info=True)
+        asyncio.create_task(_task())
+
+    def _schedule_vector_sync(self, agent: A2AAgent, old_hash: str | None) -> None:
+        """Schedule vector sync or metadata-only update based on content hash change."""
+        if self._a2a_agent_repo is None:
+            return
+        if agent.vectorContentHash != old_hash:
+            self._schedule_sync(agent, is_delete=True)
+        else:
+
+            async def _task():
+                try:
+                    await self._a2a_agent_repo.update_entity_metadata(
+                        "agent_id", str(agent.id), {"is_enabled": agent.isEnabled, "status": agent.status}
+                    )
+                except Exception as e:
+                    logger.error("Vector metadata update failed for agent %s: %s", agent.id, e, exc_info=True)
+
+            asyncio.create_task(_task())
 
     async def _resolve_agent_card_with_fallback(
         self,
@@ -508,13 +520,11 @@ class A2AAgentService:
             agent.updatedAt = datetime.now(UTC)
 
             # Save changes
+            old_hash = agent.vectorContentHash
             await agent.save()
             logger.info(f"Updated agent: {agent.config.title} (ID: {agent_id})")
 
-            if data.is_metadata_only():
-                self._schedule_metadata_update(agent_id, {"is_enabled": agent.isEnabled, "status": agent.status})
-            else:
-                self._schedule_sync(agent, is_delete=True)
+            self._schedule_vector_sync(agent, old_hash)
             return agent
 
         except ValueError:
@@ -575,11 +585,13 @@ class A2AAgentService:
 
             agent.isEnabled = enabled
             agent.updatedAt = datetime.now(UTC)
+
+            old_hash = agent.vectorContentHash
             await agent.save()
 
             logger.info(f"Toggled agent {agent.card.name} to {'enabled' if enabled else 'disabled'}")
 
-            self._schedule_metadata_update(agent_id, {"is_enabled": agent.isEnabled, "status": agent.status})
+            self._schedule_vector_sync(agent, old_hash)
             return agent
 
         except ValueError:

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import logging
 from abc import ABC, abstractmethod
 from typing import Any, TypeVar
@@ -113,35 +112,9 @@ class BaseVectorSyncRepository(Repository[T], ABC):
             result.error = str(e)
         return result
 
-    @staticmethod
-    def _compute_content_hash(entity: Any) -> str:
-        """Stable SHA-256 of page_content only — no metadata, no timestamps.
-
-        Sorting the page_content list ensures the hash is independent of
-        the order in which to_documents() returns documents.
-        """
-        docs = entity.to_documents()
-        contents = sorted(doc.page_content for doc in docs)
-        fingerprint = "\n---\n".join(contents)
-        return hashlib.sha256(fingerprint.encode()).hexdigest()
-
-    def _vector_docs_exist(self, entity_id_field: str, entity_id: str) -> bool:
-        """Lightweight existence check — metadata filter only, no token cost.
-
-        Used after a hash match (Case 5) to detect silently-deleted Weaviate docs.
-        """
-        if not self._collection_has_property(entity_id_field):
-            return False
-        docs = self.adapter.filter_by_metadata(
-            filters={entity_id_field: entity_id},
-            limit=1,
-            collection_name=self.collection,
-        )
-        return bool(docs)
-
     @abstractmethod
     async def sync_to_vector_db(self, entity: Any, *, is_delete: bool = True) -> dict:
-        """Hash-gated full rebuild.
+        """Full rebuild — call only when content has changed.
 
         Args:
             entity: The A2AAgent or ExtendedMCPServer instance.

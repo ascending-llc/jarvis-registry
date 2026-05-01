@@ -115,10 +115,6 @@ class ServerUpdateRequest(APIBaseModel):
     status: str | None = None
     enabled: bool | None = None
 
-    def is_metadata_only(self) -> bool:
-        """True when only fields that live in Weaviate metadata (not page_content) were set."""
-        return self.model_fields_set <= {"enabled", "status"}
-
     @field_validator("tags", mode="before")
     @classmethod
     def normalize_tags(cls, v):

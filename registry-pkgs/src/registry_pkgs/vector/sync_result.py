@@ -10,7 +10,6 @@ class VectorSyncResult:
     indexed: int = 0
     failed: int = 0
     deleted: int = 0
-    skipped: int = 0
     metadata_updated: int = 0
     version: str | None = None
     error: str | None = None
@@ -20,7 +19,6 @@ class VectorSyncResult:
             "indexed": self.indexed,
             "failed": self.failed,
             "deleted": self.deleted,
-            "skipped": self.skipped,
             "metadata_updated": self.metadata_updated,
             "version": self.version,
             "error": self.error,
@@ -32,7 +30,6 @@ class VectorSyncResult:
             "indexed_tools": self.indexed,
             "failed_tools": self.failed,
             "deleted": self.deleted,
-            "skipped": self.skipped,
             "version": self.version,
             "error": self.error,
         }
