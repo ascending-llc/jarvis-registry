@@ -31,6 +31,13 @@ class _FakeAdapter:
         self.deleted_ids.extend(ids)
         self.docs = [doc for doc in self.docs if doc.id not in ids]
 
+    def delete_by_filter(self, filters: dict, collection_name: str | None = None) -> int:
+        matched = [doc for doc in self.docs if all(doc.metadata.get(k) == v for k, v in filters.items())]
+        ids = [doc.id for doc in matched]
+        self.deleted_ids.extend(ids)
+        self.docs = [doc for doc in self.docs if doc.id not in ids]
+        return len(ids)
+
     def update_metadata(self, doc_id: str, metadata: dict, collection_name: str | None = None) -> bool:
         self.metadata_updates.append((doc_id, metadata))
         return True
