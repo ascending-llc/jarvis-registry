@@ -45,11 +45,12 @@ Key Principle:
 - numTools is a calculated field, not stored in the database
 """
 
+import hashlib
 import logging
 from datetime import datetime
 from typing import Any, ClassVar
 
-from beanie import PydanticObjectId
+from beanie import Insert, PydanticObjectId, Replace, Save, SaveChanges, Update, before_event
 from langchain_core.documents import Document as LangChainDocument
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pydantic import Field
@@ -155,6 +156,11 @@ class ExtendedMCPServer(MCPServer):
     federationRefId: PydanticObjectId | None = None
     federationMetadata: dict[str, Any] | None = None
 
+    vectorContentHash: str | None = Field(
+        default=None,
+        description="SHA-256 of vectorized page_content; used to skip re-embedding when content is unchanged",
+    )
+
     class Settings:
         name = "mcpservers"
         keep_nulls = False
@@ -166,6 +172,19 @@ class ExtendedMCPServer(MCPServer):
             IndexModel([("federationRefId", 1)]),
             IndexModel([("federationMetadata.runtimeArn", 1)], sparse=True),
         ]
+
+    @before_event(Insert, Replace, Save, SaveChanges, Update)
+    def _refresh_content_hash(self):
+        """Recompute vectorContentHash before every write.
+
+        Service layer captures the hash before .save() and compares after to decide whether to
+        call sync_to_vector_db (full rebuild) or update_entity_metadata (metadata-only patch).
+        This contract holds as long as enabled/status are NOT included in page_content — if
+        to_documents() ever embeds those fields, toggle paths will incorrectly trigger full syncs.
+        """
+        docs = self.to_documents()
+        contents = sorted(doc.page_content for doc in docs)
+        self.vectorContentHash = hashlib.sha256("\n---\n".join(contents).encode()).hexdigest()
 
     # ========== Vector Search Integration (Weaviate) ==========
     COLLECTION_NAME: ClassVar[str] = "MCP_Servers"
@@ -269,6 +288,26 @@ class ExtendedMCPServer(MCPServer):
         if self.tags:
             metadata["tags"] = list(self.tags)
         return metadata
+
+    def mutable_metadata(self) -> dict[str, Any]:
+        """Return metadata fields that can change without affecting page_content.
+
+        serverName and path are intentionally excluded: both appear in page_content
+        (as doc prefix), so changing either always changes vectorContentHash and
+        triggers a full rebuild — they never reach this path.
+        """
+        is_enabled = self.status == "active"
+        if self.config and isinstance(self.config.get("enabled"), bool):
+            is_enabled = self.config["enabled"]
+        meta: dict[str, Any] = {
+            "status": self.status,
+            "enabled": is_enabled,
+            "tags": list(self.tags) if self.tags else [],
+        }
+        runtime_version = (self.federationMetadata or {}).get("runtimeVersion")
+        if runtime_version is not None:
+            meta["runtimeVersion"] = str(runtime_version)
+        return meta
 
     def _split_if_needed(
         self, content: str, metadata: dict[str, Any], chunking_config: ChunkingConfig

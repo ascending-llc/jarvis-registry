@@ -425,7 +425,7 @@ class AgentCoreImportService:
             dry_run=False,
         )
 
-        await self.mcp_server_repo.sync_server_to_vector_db(created_server)
+        await self.mcp_server_repo.sync_to_vector_db(created_server)
         return created_server
 
     async def _import_single_a2a_agent(
@@ -522,7 +522,7 @@ class AgentCoreImportService:
             viewer_id=viewer_id,
             dry_run=False,
         )
-        await self.a2a_agent_repo.sync_agent_to_vector_db(discovered_agent, is_delete=False)
+        await self.a2a_agent_repo.sync_to_vector_db(discovered_agent, is_delete=False)
         return discovered_agent
 
     async def _update_a2a_agent(
@@ -545,7 +545,7 @@ class AgentCoreImportService:
         existing.updatedAt = datetime.now(UTC)
         await existing.save(session=get_current_session())
         if detected_changes:
-            await self.a2a_agent_repo.sync_agent_to_vector_db(existing, is_delete=True)
+            await self.a2a_agent_repo.sync_to_vector_db(existing, is_delete=True)
         return detected_changes
 
     async def _update_server(
@@ -578,7 +578,7 @@ class AgentCoreImportService:
         await existing.save(session=get_current_session())
 
         if detected_changes:
-            await self.mcp_server_repo.sync_server_to_vector_db(existing, is_delete=True)
+            await self.mcp_server_repo.sync_to_vector_db(existing, is_delete=True)
 
         return detected_changes
 

@@ -13,13 +13,9 @@ class _FakeRepo:
     def __init__(self):
         self.synced = []
 
-    async def sync_server_to_vector_db(self, server, is_delete=True):
+    async def sync_to_vector_db(self, server, is_delete=True):
         self.synced.append(server)
         return {"indexed_tools": 1, "failed_tools": 0, "deleted": 0}
-
-    async def smart_sync(self, server):
-        self.synced.append(server)
-        return True
 
     async def delete_by_server_id(self, server_id, server_name=None):
         self.synced.append(("deleted", server_id, server_name))
@@ -30,7 +26,7 @@ class _FakeA2ARepo:
     def __init__(self):
         self.synced = []
 
-    async def sync_agent_to_vector_db(self, agent, is_delete=True):
+    async def sync_to_vector_db(self, agent, is_delete=True):
         self.synced.append((agent, is_delete))
         return {"indexed": 1, "failed": 0, "deleted": 0}
 

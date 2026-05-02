@@ -274,7 +274,7 @@ async def _retry_vector_sync(federation_id: ObjectId) -> None:
 
         for server in mcp_servers:
             try:
-                result = await mcp_repo.sync_server_to_vector_db(server, is_delete=False)
+                result = await mcp_repo.sync_to_vector_db(server, is_delete=False)
                 if not result or result.get("failed_tools"):
                     mcp_failed += 1
                     detail = result.get("error") if result else "sync returned no result"
@@ -290,7 +290,7 @@ async def _retry_vector_sync(federation_id: ObjectId) -> None:
 
         for agent in a2a_agents:
             try:
-                result = await a2a_repo.sync_agent_to_vector_db(agent, is_delete=False)
+                result = await a2a_repo.sync_to_vector_db(agent, is_delete=False)
                 if not result or result.get("failed"):
                     a2a_failed += 1
                     detail = result.get("error") if result else "sync returned no result"

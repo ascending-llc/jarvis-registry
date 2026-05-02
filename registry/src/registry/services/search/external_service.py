@@ -119,7 +119,7 @@ class ExternalVectorSearchService(VectorSearchService):
             server = ExtendedMCPServer.from_server_info(server_info=server_info, is_enabled=is_enabled)
 
             # Use specialized repository's sync method
-            result = await self.mcp_server_repo.sync_server_to_vector_db(server=server, is_delete=True)
+            result = await self.mcp_server_repo.sync_to_vector_db(server=server, is_delete=True)
 
             return result if result else {"indexed_tools": 0, "failed_tools": 1}
 

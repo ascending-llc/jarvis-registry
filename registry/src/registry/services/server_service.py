@@ -16,13 +16,10 @@ import base64
 import json
 import logging
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from beanie import PydanticObjectId
 from redis import Redis
-
-if TYPE_CHECKING:
-    from redis import Redis
 
 from registry_pkgs.database.decorators import get_current_session
 from registry_pkgs.models import (
@@ -35,7 +32,7 @@ from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRep
 
 from ..auth.oauth.types import StateMetadata
 from ..core.config import settings
-from ..core.mcp_client import get_oauth_metadata_from_server, get_tools_from_server_with_server_info
+from ..core.mcp_client import get_oauth_metadata_from_server
 from ..core.telemetry_decorators import track_tool_discovery
 from ..schemas.errors import (
     AuthenticationError,
@@ -316,24 +313,6 @@ async def build_complete_headers_for_server(
                 headers["Authorization"] = f"Bearer {key_value}"
 
     return headers
-
-
-def _detect_oauth_requirement(oauth_field: Any | None) -> bool:
-    """
-    Detect if OAuth is required based on oauth field.
-
-    This helper eliminates duplicate OAuth detection logic in _build_config_from_request
-    and _update_config_from_request.
-
-    Args:
-        oauth_field: OAuth configuration object (if present)
-
-    Returns:
-        True if OAuth is required, False otherwise
-
-    Deprecated: Use _calculate_requires_oauth instead which checks if oauth is non-empty
-    """
-    return oauth_field is not None and isinstance(oauth_field, dict) and len(oauth_field) > 0
 
 
 def _validate_and_merge_oauth_metadata(
@@ -924,6 +903,32 @@ class ServerServiceV1:
                 await server.delete(session=session)
         return server
 
+    def _schedule_vector_sync(self, server: ExtendedMCPServer, old_hash: str | None) -> None:
+        """Schedule vector sync or metadata-only update based on content hash change."""
+        if self.mcp_server_repo is None:
+            return
+        if server.vectorContentHash != old_hash:
+
+            async def _sync_task(s: ExtendedMCPServer = server) -> None:
+                try:
+                    result = await self.mcp_server_repo.sync_to_vector_db(s, is_delete=True)
+                    logger.debug("Vector sync result for server %s: %s", s.id, result)
+                except Exception as e:
+                    logger.error("Vector sync failed for server %s: %s", s.id, e, exc_info=True)
+
+            asyncio.create_task(_sync_task())
+        else:
+            server_id = str(server.id)
+            metadata = server.mutable_metadata()
+
+            async def _metadata_task() -> None:
+                try:
+                    await self.mcp_server_repo.update_entity_metadata("server_id", server_id, metadata)
+                except Exception as e:
+                    logger.error("Vector metadata update failed for server %s: %s", server_id, e, exc_info=True)
+
+            asyncio.create_task(_metadata_task())
+
     async def update_server(
         self,
         server_id: str,
@@ -997,9 +1002,10 @@ class ServerServiceV1:
         # Update the updatedAt timestamp
         server.updatedAt = _get_current_utc_time()
 
+        old_hash = server.vectorContentHash
         await server.save(session=session)
 
-        asyncio.create_task(self.mcp_server_repo.smart_sync(server))
+        self._schedule_vector_sync(server, old_hash)
         return server
 
     async def delete_server(
@@ -1137,10 +1143,12 @@ class ServerServiceV1:
 
         # Update the updatedAt timestamp
         server.updatedAt = _get_current_utc_time()
+
+        old_hash = server.vectorContentHash
         await server.save()
         logger.info(f"Toggled server {server.serverName} (ID: {server.id}) enabled to {enabled}")
 
-        asyncio.create_task(self.mcp_server_repo.smart_sync(server))
+        self._schedule_vector_sync(server, old_hash)
         return server
 
     async def get_server_tools(
@@ -1301,111 +1309,6 @@ class ServerServiceV1:
             error_msg = f"Error: {type(e).__name__} - {str(e)}"
             logger.error(f"Retrieval error for server {server.serverName}: {e}")
             return None, None, None, None, error_msg
-
-    async def retrieve_tools_with_oauth(
-        self,
-        server: ExtendedMCPServer,
-        user_id: str,
-    ) -> tuple[list[dict[str, Any]] | None, str | None]:
-        """
-        Retrieve tools from a server using OAuth authentication.
-
-        Args:
-            server: Server document
-            user_id: User ID for OAuth token retrieval
-
-        Returns:
-            Tuple of (tool_list, error_message)
-            If successful, returns (tool_list, None)
-            If failed, returns (None, error_message)
-        """
-        from registry.auth.oauth import OAuthClient
-
-        config = server.config or {}
-        url = config.get("url")
-
-        if not url:
-            return None, "No URL configured"
-
-        try:
-            # Get OAuth tokens for the user
-            oauth_tokens = await self.token_service.get_oauth_tokens(user_id, server.serverName)
-
-            if not oauth_tokens or not oauth_tokens.access_token:
-                return None, f"No OAuth tokens found for user {user_id}"
-
-            # Build server_info dict with OAuth token
-            server_info = {
-                "type": config.get("type", "streamable-http"),
-                "tags": server.tags or [],
-                "headers": [{"Authorization": f"Bearer {oauth_tokens.access_token}"}],
-            }
-
-            logger.info(f"Retrieving tools from {url} for server {server.serverName} with OAuth token")
-
-            # Try to get tools with current token
-            tool_list = await get_tools_from_server_with_server_info(url, server_info)
-
-            # If failed with 401-like error, try refreshing token
-            if tool_list is None:
-                logger.info(f"Failed to retrieve tools, attempting token refresh for {server.serverName}")
-
-                # Get OAuth config
-                oauth_config = config.get("oauth")
-                if not oauth_config:
-                    return None, "No OAuth configuration found"
-
-                # Get refresh token
-                refresh_token_doc = await self.token_service.get_oauth_refresh_token(user_id, server.serverName)
-                if not refresh_token_doc or not refresh_token_doc.token:
-                    return None, "No refresh token available"
-
-                # Refresh tokens using Authlib
-                oauth_client = OAuthClient()
-                new_tokens = await oauth_client.refresh_tokens(
-                    oauth_config=oauth_config, refresh_token=refresh_token_doc.token
-                )
-
-                if not new_tokens:
-                    return None, "Failed to refresh OAuth tokens"
-
-                # Store refreshed tokens
-                metadata = {
-                    "authorization_endpoint": oauth_config.get("authorization_url"),
-                    "token_endpoint": oauth_config.get("token_url"),
-                    "issuer": oauth_config.get("issuer"),
-                    "scopes_supported": oauth_config.get("scope", "").split() if oauth_config.get("scope") else [],
-                    "grant_types_supported": ["authorization_code", "refresh_token"],
-                    "response_types_supported": ["code"],
-                }
-                await self.token_service.store_oauth_tokens(
-                    user_id=user_id,
-                    service_name=server.serverName,
-                    tokens=new_tokens,
-                    metadata=metadata,
-                )
-                logger.info(f"Refreshed and stored new OAuth tokens for {user_id}/{server.serverName}")
-
-                # Retry with new token
-                server_info["headers"] = [{"Authorization": f"Bearer {new_tokens.access_token}"}]
-                tool_list = await get_tools_from_server_with_server_info(url, server_info)
-
-            if tool_list is None:
-                return (
-                    None,
-                    "Failed to retrieve tools from MCP server even after token refresh",
-                )
-
-            logger.info(f"Retrieved {len(tool_list)} tools from {server.serverName} with OAuth")
-            return tool_list, None
-
-        except Exception as e:
-            error_msg = f"Error retrieving tools with OAuth: {type(e).__name__} - {str(e)}"
-            logger.error(
-                f"OAuth tool retrieval error for server {server.serverName}: {e}",
-                exc_info=True,
-            )
-            return None, error_msg
 
     async def retrieve_tools_and_capabilities_from_server(
         self,
@@ -1729,9 +1632,3 @@ class ServerServiceV1:
         )
 
         return stats
-
-    async def get_server_config(self, server_id: str) -> ExtendedMCPServer | None:
-        """
-        Get service config for a specific MCP server
-        """
-        pass
