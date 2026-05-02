@@ -45,15 +45,6 @@ class A2AAgentRepository(BaseVectorSyncRepository[A2AAgent]):
                 if result.deleted:
                     logger.debug("Deleted %d old docs for agent_id=%s", result.deleted, agent_id)
 
-            docs = agent.to_documents()
-            if not docs:
-                logger.info(
-                    "Agent '%s' (agent_id=%s) has no skills — nothing to index.",
-                    agent.card.name,
-                    agent_id,
-                )
-                return result.to_dict()
-
             doc_ids = await self.asave(agent)
             if doc_ids:
                 result.indexed = len(doc_ids)

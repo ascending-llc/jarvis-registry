@@ -30,6 +30,7 @@ class VectorSyncResult:
             "indexed_tools": self.indexed,
             "failed_tools": self.failed,
             "deleted": self.deleted,
+            "metadata_updated": self.metadata_updated,
             "version": self.version,
             "error": self.error,
         }
