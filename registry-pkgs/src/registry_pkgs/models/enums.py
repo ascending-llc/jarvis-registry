@@ -8,12 +8,19 @@ class ToolDiscoveryMode(StrEnum):
     EMBEDDED = "embedded"
 
 
-class ServerEntityType(StrEnum):
-    """Entity type enumeration for vector documents"""
+class MCPEntityType(StrEnum):
+    """Entity types stored in the MCP_Servers Weaviate collection."""
 
     TOOL = "tool"
     RESOURCE = "resource"
     PROMPT = "prompt"
+
+
+class A2AEntityType(StrEnum):
+    """Entity types stored in the A2a_agents Weaviate collection."""
+
+    AGENT = "agent"
+    SKILL = "skill"
 
 
 class PermissionBits:

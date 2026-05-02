@@ -57,7 +57,7 @@ from pydantic import Field
 from pymongo import IndexModel
 
 from ..core.config import ChunkingConfig
-from ..models.enums import ServerEntityType
+from ..models.enums import MCPEntityType
 from ._generated import MCPServer
 
 logger = logging.getLogger(__name__)
@@ -237,8 +237,13 @@ class ExtendedMCPServer(MCPServer):
         downstream_tool_name = tool_data.get("mcpToolName", tool_name)
         content = self.generate_tool_content(downstream_tool_name, tool_data)
 
-        metadata = self._get_base_metadata(ServerEntityType.TOOL)
-        metadata.update({"tool_name": downstream_tool_name})
+        metadata = self._get_base_metadata(MCPEntityType.TOOL)
+        metadata["tool_name"] = downstream_tool_name
+        # Store the full parameter schema so LLMs can execute without a separate lookup.
+        func = tool_data.get("function", {}) if isinstance(tool_data, dict) else {}
+        input_schema = func.get("parameters")
+        if input_schema:
+            metadata["input_schema"] = input_schema
 
         return self._split_if_needed(content, metadata, chunking_config)
 
@@ -246,7 +251,7 @@ class ExtendedMCPServer(MCPServer):
         """Create Resource document(s) with text splitting if needed."""
         content = self.generate_resource_content(resource)
 
-        metadata = self._get_base_metadata(ServerEntityType.RESOURCE)
+        metadata = self._get_base_metadata(MCPEntityType.RESOURCE)
         metadata.update({"resource_name": resource.get("name", ""), "resource_uri": resource.get("uri", "")})
 
         return self._split_if_needed(content, metadata, chunking_config)
@@ -255,12 +260,12 @@ class ExtendedMCPServer(MCPServer):
         """Create Prompt document(s) with text splitting if needed."""
         content = self.generate_prompt_content(prompt)
 
-        metadata = self._get_base_metadata(ServerEntityType.PROMPT)
+        metadata = self._get_base_metadata(MCPEntityType.PROMPT)
         metadata.update({"prompt_name": prompt.get("name", "")})
 
         return self._split_if_needed(content, metadata, chunking_config)
 
-    def _get_base_metadata(self, entity_type: ServerEntityType) -> dict[str, Any]:
+    def _get_base_metadata(self, entity_type: MCPEntityType) -> dict[str, Any]:
         """Get base metadata shared by all document types."""
         is_enabled = self.status == "active"
         if self.config and isinstance(self.config.get("enabled"), bool):
@@ -504,12 +509,13 @@ class ExtendedMCPServer(MCPServer):
         }
 
         entity_type = metadata.get("entity_type")
-        if entity_type == ServerEntityType.TOOL:
+        if entity_type == MCPEntityType.TOOL:
             result["tool_name"] = metadata.get("tool_name")
-        elif entity_type == ServerEntityType.RESOURCE:
+            result["input_schema"] = metadata.get("input_schema")
+        elif entity_type == MCPEntityType.RESOURCE:
             result["resource_name"] = metadata.get("resource_name")
             result["resource_uri"] = metadata.get("resource_uri")
-        elif entity_type == ServerEntityType.PROMPT:
+        elif entity_type == MCPEntityType.PROMPT:
             result["prompt_name"] = metadata.get("prompt_name")
 
         return result
