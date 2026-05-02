@@ -905,16 +905,29 @@ class ServerServiceV1:
 
     def _schedule_vector_sync(self, server: ExtendedMCPServer, old_hash: str | None) -> None:
         """Schedule vector sync or metadata-only update based on content hash change."""
+        if self.mcp_server_repo is None:
+            return
         if server.vectorContentHash != old_hash:
-            asyncio.create_task(self.mcp_server_repo.sync_to_vector_db(server, is_delete=True))
+
+            async def _sync_task(s: ExtendedMCPServer = server) -> None:
+                try:
+                    result = await self.mcp_server_repo.sync_to_vector_db(s, is_delete=True)
+                    logger.debug("Vector sync result for server %s: %s", s.id, result)
+                except Exception as e:
+                    logger.error("Vector sync failed for server %s: %s", s.id, e, exc_info=True)
+
+            asyncio.create_task(_sync_task())
         else:
-            asyncio.create_task(
-                self.mcp_server_repo.update_entity_metadata(
-                    "server_id",
-                    str(server.id),
-                    server.mutable_metadata(),
-                )
-            )
+            server_id = str(server.id)
+            metadata = server.mutable_metadata()
+
+            async def _metadata_task() -> None:
+                try:
+                    await self.mcp_server_repo.update_entity_metadata("server_id", server_id, metadata)
+                except Exception as e:
+                    logger.error("Vector metadata update failed for server %s: %s", server_id, e, exc_info=True)
+
+            asyncio.create_task(_metadata_task())
 
     async def update_server(
         self,

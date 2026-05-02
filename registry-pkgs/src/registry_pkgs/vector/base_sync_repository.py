@@ -61,7 +61,7 @@ class BaseVectorSyncRepository(Repository[T], ABC):
         Falls back silently when the adapter does not support update_metadata.
         """
         result = VectorSyncResult()
-        if not self.ensure_collection():
+        if not await self.ensure_collection():
             raise RuntimeError(f"collection '{self.collection}' is not initialized")
         try:
             if not hasattr(self.adapter, "update_metadata"):

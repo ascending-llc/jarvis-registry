@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 
 from ...models import ExtendedMCPServer
-from ...models.enums import MCPEntityType
 from ..base_sync_repository import BaseVectorSyncRepository
 from ..client import DatabaseClient
 from ..sync_result import VectorSyncResult
@@ -86,24 +85,14 @@ class MCPServerRepository(BaseVectorSyncRepository[ExtendedMCPServer]):
                 entity_name or entity_id,
             )
             return 0
-        total_deleted = 0
-        for entity_type in MCPEntityType:
-            docs = self.adapter.filter_by_metadata(
-                filters={"server_id": entity_id, "entity_type": entity_type.value},
-                limit=1000,
-                collection_name=self.collection,
-            )
-            if docs:
-                self.adapter.delete(ids=[doc.id for doc in docs], collection_name=self.collection)
-                total_deleted += len(docs)
-                logger.debug("[%s] Deleted %d docs for server_id=%s", entity_type.value, len(docs), entity_id)
+        deleted = await self.adelete_by_filter({"server_id": entity_id})
         logger.info(
             "Deleted %d Weaviate docs for server '%s' (server_id=%s).",
-            total_deleted,
+            deleted,
             entity_name or "?",
             entity_id,
         )
-        return total_deleted
+        return deleted
 
     async def delete_by_server_id(self, server_id: str, server_name: str | None = None) -> int:
         return await self.delete_by_entity_id(server_id, server_name)
