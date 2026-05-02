@@ -8,6 +8,7 @@ from registry.api.v1.search_routes import (
     SearchRequest,
     SemanticSearchRequest,
     search_agents,
+    search_entities_impl,
     search_servers,
     semantic_search,
 )
@@ -97,6 +98,43 @@ async def test_search_servers_filters_metadata_when_tool_query_is_empty():
     assert response["query"] == ""
     assert response["total"] == 1
     assert response["results"] == filter_results
+
+
+@pytest.mark.asyncio
+async def test_search_request_accepts_a2a_entity_types():
+    request = SearchRequest(type_list=[A2AEntityType.AGENT, A2AEntityType.SKILL])
+
+    assert request.type_list == [A2AEntityType.AGENT, A2AEntityType.SKILL]
+
+
+@pytest.mark.asyncio
+async def test_search_entities_impl_routes_a2a_types_to_a2a_repo():
+    a2a_results = [
+        {
+            "agent_id": "agent-1",
+            "agent_name": "deep-intel",
+            "path": "/deep-intel",
+            "entity_type": A2AEntityType.AGENT,
+            "relevance_score": 0.91,
+        }
+    ]
+    mcp_server_repo = MagicMock()
+    mcp_server_repo.asearch_with_rerank = AsyncMock(
+        side_effect=AssertionError("MCP repo should not run for pure A2A searches")
+    )
+    a2a_agent_repo = MagicMock()
+    a2a_agent_repo.asearch_with_rerank = AsyncMock(return_value=a2a_results)
+
+    response = await search_entities_impl(
+        SearchRequest(query="deep intel", top_n=3, search_type=SearchType.HYBRID, type_list=[A2AEntityType.AGENT]),
+        {"username": "tester"},
+        mcp_server_repo=mcp_server_repo,
+        a2a_agent_repo=a2a_agent_repo,
+    )
+
+    a2a_agent_repo.asearch_with_rerank.assert_awaited_once()
+    assert response["total"] == 1
+    assert response["results"] == a2a_results
 
 
 @pytest.mark.asyncio

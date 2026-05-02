@@ -44,6 +44,9 @@ Read the user's request and classify it into ONE of:
   AMBIGUOUS — cannot determine from context alone.
              → call BOTH tools with the same query concurrently, then pick the
                clearest leader across the combined result set.
+             WARNING: scores from the two tools are NOT comparable — they come
+             from separate Weaviate collections with independent rerankers.
+             Use description semantics to decide, not score magnitude.
 
 ════════════════════════════════════════════════════════════
 STAGE 2 — TARGETED DISCOVERY
@@ -67,8 +70,10 @@ Drop filler words, pronouns, articles, and tense. Do NOT pass the raw sentence.
     Switch to type_list=["skill"] and include agent_name in query ONLY after you
     have already chosen an agent and want to target a specific skill within it.
     Returns: path + agent_id  |  skill_name + path + agent_id  (when type_list=["skill"])
-    Execute: delegate the task to the agent at <path> via A2A protocol (agent_id=<agent_id>).
-             The client handles A2A invocation — this gateway only resolves the address.
+    Execute: THIS IS A TERMINAL STEP — there is no further execution tool to call.
+             Return the agent's path and agent_id to the user or the calling system,
+             which will invoke the agent via the A2A client. Do NOT attempt to call
+             any execute_* tool with these identifiers.
 
 ════════════════════════════════════════════════════════════
 RESULT EVALUATION  (same rule for both tools)
@@ -109,16 +114,19 @@ Example 2 — DELEGATE → discover_agents, clear leader:
   Intent: DELEGATE (multi-step analysis, domain expertise).
   Call: discover_agents(query="deep intel competitive analysis")
   → top result: {entity_type:"agent", agent_name:"Deep Intel Agent", path:"/deep-intel", agent_id:"..."}
-  → delegate to agent at path "/deep-intel" via A2A protocol.
+  → TERMINAL: return path="/deep-intel" and agent_id to the caller. No execute_* call needed.
 
-Example 3 — AMBIGUOUS → call both, pick leader:
+Example 3 — AMBIGUOUS → call both, pick leader by description:
   User: "Help me with customer support for an angry customer."
   Intent: AMBIGUOUS (could be a tool or a specialized agent).
   Call A: discover_mcp_entities(query="customer support")
   Call B: discover_agents(query="customer support")
-  → B returns {entity_type:"agent", relevance_score:0.77, path:"/support-agent"}
-  → A returns {entity_type:"tool", relevance_score:0.31}
-  → Clear leader from agents. Delegate to "/support-agent".
+  → B returns {entity_type:"agent", description:"Autonomous customer support agent — handles complaints,
+               refunds, and escalations end-to-end", path:"/support-agent"}
+  → A returns {entity_type:"tool", description:"Send a support ticket via Zendesk API"}
+  → Scores are NOT comparable across collections. Read descriptions instead:
+    B's description matches "handle an angry customer" far better than A's single-ticket tool.
+  → TERMINAL: return path="/support-agent" to the caller.
 
 Example 4 — ATOMIC, clustered within same server:
   User: "Do something with Slack."
