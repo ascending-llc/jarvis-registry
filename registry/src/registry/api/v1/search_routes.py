@@ -265,9 +265,12 @@ class SearchRequest(BaseModel):
     query: str = Field(default="", min_length=0, max_length=512, description="Natural language query")
     top_n: int = Field(1, description="Number of results to return")
     search_type: SearchType = Field(default=SearchType.HYBRID, description="Type of search to perform")
-    type_list: list[MCPEntityType] | None = Field(
+    type_list: list[MCPEntityType | A2AEntityType] | None = Field(
         default_factory=lambda: list(MCPEntityType),
-        description="MCP entity types to search: 'tool', 'resource', 'prompt'. Default: all.",
+        description=(
+            "Entity types to search. MCP types: 'tool', 'resource', 'prompt'. "
+            "A2A types: 'agent', 'skill'. Default: all MCP types."
+        ),
     )
     include_disabled: bool = Field(default=False, description="Include disabled results")
 
@@ -341,7 +344,7 @@ async def search_entities_impl(
     Results are merged and re-sorted by relevance_score before truncation to top_n.
     Every document embeds its server/agent context so no MongoDB lookup is needed.
     """
-    query = search.query
+    query = search.query.strip()
     top_n = search.top_n
     start_time = time.perf_counter()
     success = False
@@ -403,7 +406,9 @@ def _record_discovery_metrics(
 ) -> None:
     discovered_names: set[str] = set()
     for result in search_results:
-        name = result.get("server_name") if isinstance(result, dict) else None
+        if not isinstance(result, dict):
+            continue
+        name = result.get("server_name") or result.get("agent_name")
         if name:
             discovered_names.add(name)
 
