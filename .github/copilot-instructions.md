@@ -392,6 +392,8 @@ This project is indexed by GitNexus as **jarvis-registry** (17939 symbols, 27750
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
+**Pulling the shared index:** CI rebuilds and republishes the index to `s3://jarvis-registry-gitnexus/main/latest/` on every push to `main`. First time on a new clone? `uv run poe gitnexus-pull`. Have local changes you want indexed before the next push to main? `uv run poe gitnexus-fresh`.
+
 ## Always Do
 
 - **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `gitnexus_impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user.

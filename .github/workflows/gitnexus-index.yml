@@ -1,0 +1,63 @@
+name: GitNexus Index
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+      - '.github/**'
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: gitnexus-main
+  cancel-in-progress: true
+
+jobs:
+  index:
+    name: Re-index and publish to S3
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Cache npm and gitnexus tree-sitter grammars
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.npm
+            ~/.cache/gitnexus
+          key: ${{ runner.os }}-gitnexus-v1
+
+      - name: Run gitnexus analyze
+        run: npx -y gitnexus@latest analyze --force --embeddings --skip-agents-md
+
+      - name: Assume IAM role
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.SAAS_AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: gitnexus-index-session
+          aws-region: us-east-1
+
+      - name: Publish index to S3 (per-commit snapshot)
+        run: |
+          aws s3 sync .gitnexus/ \
+            s3://jarvis-registry-gitnexus/main/${{ github.sha }}/ \
+            --delete
+
+      - name: Publish index to S3 (latest pointer)
+        run: |
+          aws s3 sync .gitnexus/ \
+            s3://jarvis-registry-gitnexus/main/latest/ \
+            --delete
