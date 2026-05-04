@@ -359,3 +359,4 @@ image-manifest.json
 # Artifacts produced by Playwright for frontend test
 /.playwright-cli
 /.playwright
+.gitnexus
