@@ -168,9 +168,9 @@ class Settings(JarvisBaseSettings):
     def _validate_service_urls(self) -> Self:
         result = urlparse(self.registry_client_url)
 
-        if result.path != self.service_base_path:
+        if result.path.rstrip("/") != self.service_base_path:
             raise ValueError(
-                "When both REGISTRY_URL and REGISTRY_CLIENT_URL exist, their path portion must match, "
+                "When both REGISTRY_URL and REGISTRY_CLIENT_URL exist, their path portion must match after stripping trailing slash, "
                 f"but they are '{self.registry_url}' and '{self.registry_client_url}' respectively."
             )
 

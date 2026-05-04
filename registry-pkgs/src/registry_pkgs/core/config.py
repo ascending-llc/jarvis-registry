@@ -226,6 +226,16 @@ class JarvisBaseSettings(BaseSettings):
         return load_scopes_config(self.scopes_file_config)
 
     @cached_property
+    def scopes_set(self) -> set[str]:
+        scopes: set[str] = set()
+
+        for key in self.scopes_config:
+            if key != "group_mappings":
+                scopes.add(key)
+
+        return scopes
+
+    @cached_property
     def jwt_issuer(self) -> str:
         """
         Per RFC 8414 requirement on issuer:
@@ -244,13 +254,13 @@ class JarvisBaseSettings(BaseSettings):
     @cached_property
     def service_base_path(self) -> str:
         """
-        The path portion of `REGISTRY_URL`. When both `REGISTRY_URL` and `REGISTRY_CLIENT_URL` exist,
-        their path portion must match.
-        NOTE: If the URL has no path portion, the value is empty string "" (no path), instead of "/" (root path).
+        The path portion of `REGISTRY_URL`, with trailing "/" stripped.
+        When both `REGISTRY_URL` and `REGISTRY_CLIENT_URL` exist,
+        their path portion must match after stripping trailing "/".
         """
         result = urlparse(self.registry_url)
 
-        return result.path
+        return result.path.rstrip("/")
 
     def configure_logging(self, package_name: str) -> None:
         """

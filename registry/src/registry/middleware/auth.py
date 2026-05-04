@@ -118,24 +118,22 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
 
             except AuthenticationError as e:
                 auth_ctx.set_success(False)
-                logger.warning(f"Auth failed for {path}: {e}")
 
-                # Add WWW-Authenticate header for MCP OAuth discovery
-                # Extract server name from path for MCP proxy requests
-                server_name = None
-                if path.startswith("/proxy/"):
-                    server_name = path.split("/")[2] if len(path.split("/")) > 2 else None
+                logger.exception(f"Auth failed for {path}")
 
                 headers = {"Connection": "close"}
-                if server_name:
-                    # For MCP proxy paths, RFC 9728 (OAuth 2.0 Protected Resource Metadata)
-                    registry_url = settings.registry_client_url.rstrip("/")
-                    oauth_discovery = f"{registry_url}/.well-known/oauth-protected-resource/proxy/{server_name}"
+
+                if path.startswith("/proxy/"):
+                    # Add WWW-Authenticate header for MCP related routes (both `mcpgw` and dynamic catch-all),
+                    # so that AI agents can perform Dynamic Client Registration.
                     headers["WWW-Authenticate"] = (
-                        f'Bearer realm="{settings.jarvis_realm}", resource_metadata="{oauth_discovery}"'
+                        f'Bearer realm="{settings.jarvis_realm}", '
+                        f'resource_metadata="{settings.jwt_issuer}/.well-known/oauth-protected-resource{settings.service_base_path}{path}", '
+                        'scope="mcp-proxy-ops"'
                     )
                 else:
-                    # For other authenticated paths, use general OAuth discovery
+                    # For non-MCP related routes, the only caller is our frontend, which knows the auth-server routes.
+                    # Therefore we don't include resource_metadata here.
                     headers["WWW-Authenticate"] = f'Bearer realm="{settings.jarvis_realm}"'
 
                 return JSONResponse(status_code=401, content={"detail": str(e)}, headers=headers)

@@ -167,7 +167,7 @@ class TestSettings:
         os.environ,
         {
             **_SETTINGS_ENV,
-            "REGISTRY_URL": "http://localhost/gateway",
+            "REGISTRY_URL": "http://localhost/gateway/",
             "REGISTRY_CLIENT_URL": "http://localhost/gateway",
         },
     )

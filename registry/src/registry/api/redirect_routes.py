@@ -101,6 +101,8 @@ async def oauth2_callback(
         try:
             async with httpx.AsyncClient() as client:
                 auth_server_url = settings.auth_server_url.rstrip("/")
+                # registry_redirect_uri is used as a validation check of `redirect_uri` by auth-server,
+                # so we should use `settings.registry_url`, i.e. the URL of the registry backend.
                 registry_redirect_uri = f"{settings.registry_url}/redirect"
 
                 response = await client.post(
