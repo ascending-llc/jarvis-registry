@@ -349,6 +349,7 @@ async def device_token(request: Request, user_service: UserService = Depends(get
     grant_type: str | None = params["grant_type"]
     device_code: str | None = params["device_code"]
     client_id: str | None = params["client_id"]
+    client_secret: str | None = params["client_secret"]
     code: str | None = params["code"]
     code_verifier: str | None = params["code_verifier"]
     refresh_token: str | None = params["refresh_token"]
@@ -376,6 +377,8 @@ async def device_token(request: Request, user_service: UserService = Depends(get
         auth_code_data["used"] = True
         if auth_code_data["client_id"] != client_id:
             return oauth_error_response("invalid_client", "client_id mismatch")
+        if client_id == settings.registry_app_name and client_secret != settings.registry_client_secret:
+            return oauth_error_response("invalid_client", "missing or invalid client_secret")
         if auth_code_data["redirect_uri"] != redirect_uri:
             return oauth_error_response("invalid_grant", "redirect_uri mismatch")
         current_time = int(time.time())
