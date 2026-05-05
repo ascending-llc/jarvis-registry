@@ -10,6 +10,7 @@ from authlib.oauth2.rfc7636 import create_s256_code_challenge
 from fastapi import APIRouter, Cookie, Depends, Request, status
 from fastapi.responses import JSONResponse, RedirectResponse
 
+from registry_pkgs.core.jwt_utils import decode_jwt_unverified
 from registry_pkgs.core.scopes import map_groups_to_scopes
 
 from ..core.config import settings
@@ -151,9 +152,6 @@ async def oauth2_callback(
                         url=f"{settings.registry_client_url}/login?error=oauth2_invalid_response", status_code=302
                     )
 
-                # Decode JWT to extract user information (no signature verification for internal use)
-                from registry_pkgs.core.jwt_utils import decode_jwt_unverified
-
                 user_claims = decode_jwt_unverified(access_token)
 
                 logger.info(f"OAuth2 callback exchanged code for JWT token: {user_claims.get('sub')}")
@@ -161,8 +159,9 @@ async def oauth2_callback(
         except httpx.TimeoutException:
             logger.error("Timeout exchanging authorization code with auth server")
             return RedirectResponse(url=f"{settings.registry_client_url}/login?error=oauth2_timeout", status_code=302)
-        except Exception as e:
-            logger.error(f"Failed to exchange authorization code for token: {e}")
+        except Exception:
+            logger.exception("Failed to exchange authorization code for token")
+
             return RedirectResponse(
                 url=f"{settings.registry_client_url}/login?error=oauth2_exchange_error", status_code=302
             )
