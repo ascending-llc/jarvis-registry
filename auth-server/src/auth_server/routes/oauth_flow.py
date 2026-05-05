@@ -158,11 +158,15 @@ def get_client(client_id: str) -> dict[str, Any] | None:
     return registered_clients.get(client_id)
 
 
-def validate_client_credentials(client_id: str, client_secret: str) -> bool:
-    client = registered_clients.get(client_id)
-    if not client:
+def validate_client_credentials(client_id: str, client_secret: str | None = None) -> bool:
+    client_metadata = registered_clients.get(client_id)
+
+    if client_metadata is None:
         return False
-    return client.get("client_secret") == client_secret
+    elif client_metadata["token_endpoint_auth_method"] == "client_secret_post":
+        return client_metadata.get("client_secret") == client_secret
+    else:
+        return True
 
 
 def list_registered_clients() -> list[dict[str, Any]]:

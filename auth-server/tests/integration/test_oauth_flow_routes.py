@@ -41,7 +41,6 @@ class TestDynamicClientRegistration:
 
         # Verify required RFC 7591 fields
         assert "client_id" in data
-        assert "client_secret" in data
         assert "client_id_issued_at" in data
         assert "client_secret_expires_at" in data
 
@@ -53,9 +52,10 @@ class TestDynamicClientRegistration:
 
         # Verify default values
         assert "authorization_code" in data["grant_types"]
-        assert "urn:ietf:params:oauth:grant-type:device_code" in data["grant_types"]
+        assert "refresh_token" in data["grant_types"]
+        assert "urn:ietf:params:oauth:grant-type:device_code" not in data["grant_types"]
         assert "code" in data["response_types"]
-        assert data["token_endpoint_auth_method"] == "client_secret_post"
+        assert data["token_endpoint_auth_method"] == "none"
 
         # Verify client stored in memory
         assert data["client_id"] in registered_clients
@@ -70,7 +70,7 @@ class TestDynamicClientRegistration:
             "response_types": ["code"],
             "scope": "registry-admin",
             "contacts": ["admin@example.com"],
-            "token_endpoint_auth_method": "client_secret_basic",
+            "token_endpoint_auth_method": "client_secret_post",
         }
 
         response = test_client.post(f"{API_PREFIX}/oauth2/register", json=registration_data)
@@ -82,15 +82,27 @@ class TestDynamicClientRegistration:
         assert data["client_name"] == registration_data["client_name"]
         assert data["client_uri"] == registration_data["client_uri"]
         assert data["redirect_uris"] == registration_data["redirect_uris"]
-        assert data["grant_types"] == registration_data["grant_types"]
-        assert data["response_types"] == registration_data["response_types"]
+        assert data["grant_types"] == ["authorization_code", "refresh_token"]
+        assert data["response_types"] == ["code"]
         assert data["scope"] == registration_data["scope"]
         assert data["token_endpoint_auth_method"] == registration_data["token_endpoint_auth_method"]
 
     def test_register_multiple_clients(self, test_client: TestClient, clear_device_storage):
         """Test registering multiple clients generates unique credentials."""
-        response1 = test_client.post(f"{API_PREFIX}/oauth2/register", json={"client_name": "Client 1"})
-        response2 = test_client.post(f"{API_PREFIX}/oauth2/register", json={"client_name": "Client 2"})
+        response1 = test_client.post(
+            f"{API_PREFIX}/oauth2/register",
+            json={
+                "client_name": "Client 1",
+                "token_endpoint_auth_method": "client_secret_post",
+            },
+        )
+        response2 = test_client.post(
+            f"{API_PREFIX}/oauth2/register",
+            json={
+                "client_name": "Client 2",
+                "token_endpoint_auth_method": "client_secret_post",
+            },
+        )
 
         assert response1.status_code == 200
         assert response2.status_code == 200
@@ -131,7 +143,13 @@ class TestDynamicClientRegistration:
     def test_validate_client_credentials_valid(self, test_client: TestClient, clear_device_storage):
         """Test validating correct client credentials."""
         # Register a client
-        response = test_client.post(f"{API_PREFIX}/oauth2/register", json={"client_name": "Test Client"})
+        response = test_client.post(
+            f"{API_PREFIX}/oauth2/register",
+            json={
+                "client_name": "Test Client",
+                "token_endpoint_auth_method": "client_secret_post",
+            },
+        )
         assert response.status_code == 200
 
         data = response.json()
@@ -144,7 +162,13 @@ class TestDynamicClientRegistration:
     def test_validate_client_credentials_invalid_secret(self, test_client: TestClient, clear_device_storage):
         """Test validating incorrect client secret."""
         # Register a client
-        response = test_client.post(f"{API_PREFIX}/oauth2/register", json={"client_name": "Test Client"})
+        response = test_client.post(
+            f"{API_PREFIX}/oauth2/register",
+            json={
+                "client_name": "Test Client",
+                "token_endpoint_auth_method": "client_secret_post",
+            },
+        )
         assert response.status_code == 200
 
         client_id = response.json()["client_id"]
@@ -732,7 +756,6 @@ class TestEndToEndIntegration:
         )
         assert reg_response.status_code == 200
         client_id = reg_response.json()["client_id"]
-        client_secret = reg_response.json()["client_secret"]
 
         # Step 2: Initiate device flow
         device_response = test_client.post(
@@ -763,4 +786,4 @@ class TestEndToEndIntegration:
         assert access_token == "integration-test-token"
 
         # Verify client credentials still valid
-        assert validate_client_credentials(client_id, client_secret) is True
+        assert validate_client_credentials(client_id) is True
