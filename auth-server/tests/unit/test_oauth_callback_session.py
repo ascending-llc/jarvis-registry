@@ -47,8 +47,7 @@ def mock_oauth_config():
                 "groups_claim": "groups",
                 "display_name": "Microsoft Entra ID",
             }
-        },
-        "registry": {"success_redirect": "/dashboard", "error_redirect": "/login"},
+        }
     }
 
 

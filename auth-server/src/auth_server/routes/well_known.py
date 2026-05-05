@@ -55,7 +55,7 @@ async def oauth_authorization_server_metadata():
             "refresh_token",
             "urn:ietf:params:oauth:grant-type:device_code",
         ],
-        "token_endpoint_auth_methods_supported": ["client_secret_post", "client_secret_basic", "none"],
+        "token_endpoint_auth_methods_supported": ["client_secret_post", "none"],
         "code_challenge_methods_supported": ["S256"],
         "scopes_supported": scope_names,
         "service_documentation": f"{auth_server_url}/docs",
@@ -91,7 +91,7 @@ async def openid_configuration():
         "subject_types_supported": ["public"],
         "id_token_signing_alg_values_supported": ["RS256"],
         "scopes_supported": ["openid", "profile", "email"],
-        "token_endpoint_auth_methods_supported": ["client_secret_post", "client_secret_basic", "none"],
+        "token_endpoint_auth_methods_supported": ["client_secret_post", "none"],
         "code_challenge_methods_supported": ["S256"],
         "claims_supported": ["sub", "email", "name", "groups"],
         "grant_types_supported": [

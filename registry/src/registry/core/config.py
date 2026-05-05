@@ -2,7 +2,6 @@ import logging
 from functools import cached_property
 from pathlib import Path
 from typing import Self
-from urllib.parse import urlparse
 
 from pydantic import model_validator
 
@@ -32,11 +31,6 @@ class Settings(JarvisBaseSettings):
     session_max_age_seconds: int = 60 * 60 * 8
     session_cookie_secure: bool = True
     session_cookie_domain: str | None = None
-
-    # ==================== Frontend URL ====================
-    # registry_client_url is the URL of the frontend React app running in the Nginx container.
-    # It is used to redirect traffic bound for the frontend.
-    registry_client_url: str = "http://localhost:5173"
 
     # ==================== Headers ====================
     auth_egress_header: str = "Authorization"
@@ -165,18 +159,6 @@ class Settings(JarvisBaseSettings):
     # ==================== Model Validation ====================
 
     @model_validator(mode="after")
-    def _validate_service_urls(self) -> Self:
-        result = urlparse(self.registry_client_url)
-
-        if result.path.rstrip("/") != self.service_base_path:
-            raise ValueError(
-                "When both REGISTRY_URL and REGISTRY_CLIENT_URL exist, their path portion must match after stripping trailing slash, "
-                f"but they are '{self.registry_url}' and '{self.registry_client_url}' respectively."
-            )
-
-        return self
-
-    @model_validator(mode="after")
     def _validate_tool_discovery_mode(self) -> Self:
         if self.x_jarvis_registry_import_checks == "disabled":
             logging.warning("TOOL_DISCOVERY_MODE validation is disabled. This should only happen in CI import checks.")
@@ -206,6 +188,10 @@ class Settings(JarvisBaseSettings):
             raise ValueError(f"CREDS_KEY must be a valid hex string, but it is {self.creds_key}") from exc
 
         return self
+
+    @cached_property
+    def registry_redirect_uri(self) -> str:
+        return f"{self.registry_url.rstrip('/')}/redirect"
 
     @cached_property
     def encryption_key(self) -> bytes:
