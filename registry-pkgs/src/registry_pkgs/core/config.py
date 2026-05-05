@@ -202,9 +202,6 @@ class JarvisBaseSettings(BaseSettings):
         if not self.secret_key:
             self.secret_key = secrets.token_hex(32)
 
-        if not self.registry_client_secret:
-            self.registry_client_secret = secrets.token_hex(32)
-
         if self.auth_server_api_prefix:
             prefix = self.auth_server_api_prefix.rstrip("/")
             if not self.auth_server_url.endswith(prefix):
