@@ -526,7 +526,7 @@ async def get_oauth2_providers(oauth2_config: OAuth2Config = Depends(get_oauth2_
         return {"providers": [], "error": str(e)}
 
 
-@router.get(f"/oauth2/login/{'{provider}'}")
+@router.get("/oauth2/login/{provider}")
 async def oauth2_login(
     provider: AllowedProvider,
     response_type: str,
@@ -609,7 +609,7 @@ async def oauth2_login(
         return RedirectResponse(url=f"{error_url}?error=server_error", status_code=302)
 
 
-@router.get(f"/oauth2/callback/{'{provider}'}")
+@router.get("/oauth2/callback/{provider}")
 async def oauth2_callback(
     provider: AllowedProvider,
     code: str | None = None,
