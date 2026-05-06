@@ -247,14 +247,14 @@ class JarvisBaseSettings(BaseSettings):
         return load_scopes_config(self.scopes_file_config)
 
     @cached_property
-    def scopes_set(self) -> set[str]:
+    def scopes_list(self) -> list[str]:
         scopes: set[str] = set()
 
         for key in self.scopes_config:
             if key != "group_mappings":
                 scopes.add(key)
 
-        return scopes
+        return list(scopes)
 
     @cached_property
     def jwt_issuer(self) -> str:

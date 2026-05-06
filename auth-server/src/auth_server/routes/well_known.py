@@ -135,7 +135,7 @@ async def jwks_endpoint():
 async def protected_resource_metadata(server_path: str):
     return {
         "resource": f"{settings.jwt_issuer}{settings.service_base_path}/proxy/{server_path}",
-        "authorization_server": settings.jwt_issuer,
-        "scopes_supported": " ".join(settings.scopes_set),
+        "authorization_servers": [settings.jwt_issuer],
+        "scopes_supported": settings.scopes_list,
         "bearer_methods_supported": ["header"],
     }
