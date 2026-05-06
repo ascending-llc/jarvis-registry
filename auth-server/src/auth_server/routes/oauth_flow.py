@@ -95,6 +95,12 @@ DEVICE_CODE_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code"
 @router.post("/oauth2/register", response_model=ClientRegistrationResponse, response_model_exclude_none=True)
 async def register_client(registration: ClientRegistrationRequest, request: Request) -> ClientRegistrationResponse:
     try:
+        logger.info(
+            f"incoming DCR request. client_name: {registration.client_name}, grant_types: {registration.grant_types}, "
+            f"response_types: {registration.response_types}, scope: {registration.scope}, "
+            f"token_endpoint_auth_method: {registration.token_endpoint_auth_method}."
+        )
+
         client_id = f"mcp-client-{secrets.token_urlsafe(16)}"
 
         if registration.token_endpoint_auth_method == "client_secret_post":
@@ -470,51 +476,50 @@ async def device_token(request: Request, user_service: UserService = Depends(get
             )
         return oauth_error_response("server_error", "unexpected server state", 500)
 
-    else:
-        if grant_type == "refresh_token":
-            if not refresh_token:
-                return oauth_error_response("invalid_request", "refresh_token is required")
-            rt_data = refresh_tokens_storage.get(refresh_token)
-            if not rt_data:
-                return oauth_error_response("invalid_grant", "refresh token invalid or expired")
-            if rt_data.get("client_id") != client_id:
-                return oauth_error_response("invalid_client", "client_id mismatch")
-            now = int(time.time())
-            if now > rt_data.get("expires_at", 0):
-                del refresh_tokens_storage[refresh_token]
-                return oauth_error_response("invalid_grant", "refresh token expired")
+    elif grant_type == "refresh_token":
+        if not refresh_token:
+            return oauth_error_response("invalid_request", "refresh_token is required")
+        rt_data = refresh_tokens_storage.get(refresh_token)
+        if not rt_data:
+            return oauth_error_response("invalid_grant", "refresh token invalid or expired")
+        if rt_data.get("client_id") != client_id:
+            return oauth_error_response("invalid_client", "client_id mismatch")
+        now = int(time.time())
+        if now > rt_data.get("expires_at", 0):
+            del refresh_tokens_storage[refresh_token]
+            return oauth_error_response("invalid_grant", "refresh token expired")
 
-            user_info = rt_data["user_info"]
+        user_info = rt_data["user_info"]
 
-            # Resolve user_id from MongoDB
-            user_id = await user_service.resolve_user_id(user_info)
+        # Resolve user_id from MongoDB
+        user_id = await user_service.resolve_user_id(user_info)
 
-            token_payload = build_jwt_payload(
-                subject=user_info["username"],
-                issuer=JWT_ISSUER,
-                audience=JWT_AUDIENCE,
-                expires_in_seconds=3600,
-                iat=now,
-                extra_claims={
-                    "user_id": user_id,
-                    "client_id": client_id,
-                    "scope": rt_data.get("scope", ""),
-                    "groups": user_info.get("groups", []),
-                    "token_use": "access",
-                    "auth_provider": settings.auth_provider,
-                },
-            )
+        token_payload = build_jwt_payload(
+            subject=user_info["username"],
+            issuer=JWT_ISSUER,
+            audience=JWT_AUDIENCE,
+            expires_in_seconds=3600,
+            iat=now,
+            extra_claims={
+                "user_id": user_id,
+                "client_id": client_id,
+                "scope": rt_data.get("scope", ""),
+                "groups": user_info.get("groups", []),
+                "token_use": "access",
+                "auth_provider": settings.auth_provider,
+            },
+        )
 
-            access_token = encode_jwt(token_payload, PRIVATE_KEY, kid=JWT_SELF_SIGNED_KID)
-            return DeviceTokenResponse(
-                access_token=access_token,
-                token_type="Bearer",
-                expires_in=3600,
-                scope=rt_data.get("scope", ""),
-                refresh_token=refresh_token,
-            )
+        access_token = encode_jwt(token_payload, PRIVATE_KEY, kid=JWT_SELF_SIGNED_KID)
+        return DeviceTokenResponse(
+            access_token=access_token,
+            token_type="Bearer",
+            expires_in=3600,
+            scope=rt_data.get("scope", ""),
+            refresh_token=refresh_token,
+        )
 
-        return oauth_error_response("unsupported_grant_type", f"grant_type '{grant_type}' is not supported")
+    return oauth_error_response("unsupported_grant_type", f"grant_type '{grant_type}' is not supported")
 
 
 @router.get("/oauth2/providers")
@@ -836,7 +841,7 @@ async def oauth2_logout(
 
         logout_url = provider_config["logout_url"]
 
-        logout_params = {"client_id": provider_config["client_id"], "logout_uri": redirect_uri}
+        logout_params = {"client_id": provider_config["client_id"], "post_logout_redirect_uri": redirect_uri}
 
         logout_redirect_url = f"{logout_url}?{urlencode(logout_params)}"
 

@@ -8,7 +8,7 @@ from urllib.parse import quote, urlencode
 import httpx
 from authlib.oauth2.rfc7636 import create_s256_code_challenge
 from fastapi import APIRouter, Cookie, Depends, Request, status
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 
 from registry_pkgs.core.jwt_utils import decode_jwt_unverified
 from registry_pkgs.core.scopes import map_groups_to_scopes
@@ -256,61 +256,13 @@ async def oauth2_callback(
         )
 
 
-async def logout_handler(
-    request: Request, session: Annotated[str | None, Cookie(alias=settings.session_cookie_name)] = None
-):
-    """Shared logout logic for GET and POST requests"""
-    try:
-        # Check if user was logged in via OAuth2
-        provider = None
-        if session:
-            try:
-                from registry_pkgs.core.jwt_utils import decode_jwt_unverified
-
-                # Peek at claims to check auth method — no verification needed for logout routing
-                claims = decode_jwt_unverified(session)
-
-                if claims.get("auth_method") == "oauth2":
-                    provider = claims.get("provider")
-                    logger.info(f"User was authenticated via OAuth2 provider: {provider}")
-
-            except Exception as e:
-                logger.debug(f"Could not decode JWT for logout: {e}")
-
-        # Clear all authentication cookies
-        response = RedirectResponse(url=f"{settings.registry_client_url}/login", status_code=status.HTTP_303_SEE_OTHER)
-        response.delete_cookie(settings.session_cookie_name, path="/")
-        response.delete_cookie(settings.refresh_cookie_name, path="/")
-
-        # If user was logged in via OAuth2, redirect to provider logout
-        if provider:
-            auth_external_url = settings.auth_server_external_url
-            redirect_uri = f"{settings.registry_client_url}/login"
-
-            logout_url = f"{auth_external_url}/oauth2/logout/{provider}?redirect_uri={redirect_uri}"
-            logger.info(f"Redirecting to {provider} logout: {logout_url}")
-            response = RedirectResponse(url=logout_url, status_code=status.HTTP_303_SEE_OTHER)
-            response.delete_cookie(settings.session_cookie_name, path="/")
-            response.delete_cookie(settings.refresh_cookie_name, path="/")
-
-        logger.info("User logged out, JWT cookies cleared")
-        return response
-
-    except Exception as e:
-        logger.error(f"Error during logout: {e}")
-        # Fallback to simple logout
-        response = RedirectResponse(url=f"{settings.registry_client_url}/login", status_code=status.HTTP_303_SEE_OTHER)
-        response.delete_cookie(settings.session_cookie_name, path="/")
-        response.delete_cookie(settings.refresh_cookie_name, path="/")
-        return response
-
-
 @router.post("/redirect/logout")
-async def logout_post(
-    request: Request, session: Annotated[str | None, Cookie(alias=settings.session_cookie_name)] = None
-):
-    """Handle logout via POST request (for forms)"""
-    return await logout_handler(request, session)
+async def logout_post():
+    response = Response(status_code=status.HTTP_204_NO_CONTENT)
+    response.delete_cookie(settings.session_cookie_name, path="/")
+    response.delete_cookie(settings.refresh_cookie_name, path="/")
+
+    return response
 
 
 @router.post("/redirect/refresh")
