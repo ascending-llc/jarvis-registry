@@ -65,8 +65,14 @@ backend)
     echo "Running in ${TOOL_DISCOVERY_MODE:-unknown} tool discovery mode"
 
     # Start the registry
+    # Pass NGINX_BASE_PATH as uvicorn --root-path so that:
+    # 1. scope["root_path"] is set correctly for Swagger UI URL generation.
+    # 2. scope["path"] is prefixed so that get_route_path() strips it, which
+    #    fixes routing for mounted sub-apps (e.g. FastMCP at /proxy/mcpgw).
+    # Do NOT set root_path= on the FastAPI constructor - that overwrites scope["root_path"]
+    # on every request and breaks sub-app mount matching.
     echo "Starting MCP Registry on port 7860..."
-    exec uvicorn registry.main:app --host 0.0.0.0 --port 7860
+    exec uvicorn registry.main:app --host 0.0.0.0 --port 7860 --root-path "${NGINX_BASE_PATH:-}"
     ;;
 *)
     echo "Unknown MODE: $MODE"
