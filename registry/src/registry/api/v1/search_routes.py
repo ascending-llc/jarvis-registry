@@ -285,10 +285,10 @@ def _build_mcp_filters(search: SearchRequest, mcp_types: list[MCPEntityType]) ->
 
 
 def _build_a2a_filters(search: SearchRequest, a2a_types: list[A2AEntityType]) -> dict[str, object]:
-    """Build vector-store filters for the A2A collection (uses 'is_enabled' key)."""
+    """Build vector-store filters for the A2A collection (uses 'enabled' key)."""
     filters: dict[str, object] = {"entity_type": a2a_types}
     if not search.include_disabled:
-        filters["is_enabled"] = True
+        filters["enabled"] = True
     return filters
 
 
@@ -470,7 +470,7 @@ async def search_agents(
 
     filters: dict[str, object] = {"entity_type": entity_types}
     if not search_request.includeDisabled:
-        filters["is_enabled"] = True
+        filters["enabled"] = True
 
     query = search_request.query.strip()
     try:
@@ -504,7 +504,7 @@ async def search_agents(
                     agentName=doc.get("agent_name", ""),
                     description=doc.get("description"),
                     tags=doc.get("tags") or [],
-                    isEnabled=doc.get("is_enabled", False),
+                    isEnabled=doc.get("enabled", False),
                     relevanceScore=doc.get("relevance_score") or 0.0,
                     matchContext=doc.get("match_context"),
                 )
@@ -537,24 +537,27 @@ async def search_servers(
     search: SearchRequest,
     user_context: CurrentUser,
     mcp_server_repo: MCPServerRepository = Depends(get_mcp_server_repo),
+    a2a_agent_repo: A2AAgentRepository = Depends(get_a2a_agent_repo),
 ):
     """
-    Search for MCP tools, resources, and prompts via vector search.
+    Search for MCP tools, resources, prompts, and A2A agents/skills via vector search.
 
-    All searches target the MCP_Servers Weaviate collection.
-    For A2A agent/skill discovery use POST /search/agents instead.
+    Routes to the appropriate Weaviate collection based on entity type:
+    - tool / resource / prompt -> MCP_Servers collection
+    - agent / skill            -> A2a_agents collection
 
     Results always contain the execution-ready identifier for the entity type:
     - tool   -> tool_name
     - resource -> resource_uri
     - prompt -> prompt_name
+    - agent / skill -> path + agent_id
 
     Request body:
     {
         "query": "search",
         "top_n": 5,
         "search_type": "hybrid",
-        "type_list": ["tool", "resource", "prompt"],
+        "type_list": ["tool", "resource", "prompt", "agent", "skill"],
         "include_disabled": false
     }
     """
@@ -562,4 +565,5 @@ async def search_servers(
         search,
         user_context,
         mcp_server_repo=mcp_server_repo,
+        a2a_agent_repo=a2a_agent_repo,
     )

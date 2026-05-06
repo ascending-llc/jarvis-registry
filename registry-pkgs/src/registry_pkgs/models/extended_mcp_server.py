@@ -361,19 +361,19 @@ class ExtendedMCPServer(MCPServer):
         on tool/resource/prompt docs can match server-level terms (e.g. "github") without
         requiring a separate MongoDB lookup.
 
-        Format: serverName | path | title | description
+        Format: serverName | path | title | description | Tags: tag1, tag2
+        Tags are included so queries like "github tool" or "version-control resource" match
+        even when the tag term doesn't appear in the individual tool/resource description.
         """
-        return " | ".join(
-            filter(
-                None,
-                [
-                    self.serverName,
-                    self.path,
-                    self.config.get("title", ""),
-                    self.config.get("description", ""),
-                ],
-            )
-        )
+        parts = [
+            self.serverName,
+            self.path,
+            self.config.get("title", ""),
+            self.config.get("description", ""),
+        ]
+        if self.tags:
+            parts.append(f"Tags: {', '.join(self.tags)}")
+        return " | ".join(filter(None, parts))
 
     def generate_tool_content(self, tool_name: str, tool_data: dict) -> str:
         """

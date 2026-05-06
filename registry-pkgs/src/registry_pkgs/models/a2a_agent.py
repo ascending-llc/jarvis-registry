@@ -225,9 +225,9 @@ class A2AAgent(Document):
     def to_searchable_text(self) -> str:
         """Generate searchable text for vector embedding.
 
-        Only natural-language semantic content is included. Technical metadata
-        (agent ID, protocol version, transport, I/O modes) lives in document
-        metadata and is excluded here to avoid diluting the embedding vector.
+        Includes all natural-language and structured fields from the AgentCard
+        so that semantic discovery covers capabilities, transport, I/O modes,
+        security scheme names, and skill details — not just title/description.
         """
         title = self.config.title if self.config else self.card.name
         # Prefer the registry-provided description; fall back to the card description.
@@ -240,6 +240,35 @@ class A2AAgent(Document):
         if description:
             parts.append(f"Description: {description}")
         parts.append(f"Path: {self.path}")
+
+        # Protocol and transport info — helps queries like "find me a streaming agent"
+        if self.card.protocolVersion:
+            parts.append(f"Protocol Version: {self.card.protocolVersion}")
+        if self.card.preferredTransport:
+            parts.append(f"Preferred Transport: {self.card.preferredTransport}")
+        if self.card.defaultInputModes:
+            parts.append(f"Input Modes: {', '.join(self.card.defaultInputModes)}")
+        if self.card.defaultOutputModes:
+            parts.append(f"Output Modes: {', '.join(self.card.defaultOutputModes)}")
+
+        # Capabilities — searchable by feature name
+        if self.card.capabilities:
+            cap = self.card.capabilities
+            cap_parts: list[str] = []
+            if getattr(cap, "streaming", False):
+                cap_parts.append("streaming")
+            if getattr(cap, "pushNotifications", False):
+                cap_parts.append("push notifications")
+            if getattr(cap, "stateTransitionHistory", False):
+                cap_parts.append("state transition history")
+            if cap_parts:
+                parts.append(f"Capabilities: {', '.join(cap_parts)}")
+
+        # Security scheme names — helps queries like "find me an OAuth agent"
+        if self.card.securitySchemes:
+            scheme_names = list(self.card.securitySchemes.keys())
+            if scheme_names:
+                parts.append(f"Security Schemes: {', '.join(scheme_names)}")
 
         if self.card.skills:
             skills_text = "\n".join(
@@ -301,17 +330,28 @@ class A2AAgent(Document):
             skill_name = getattr(skill, "name", "") or ""
             skill_desc = getattr(skill, "description", "") or ""
             skill_tags = getattr(skill, "tags", None) or []
+            skill_input_modes = getattr(skill, "input_modes", None) or []
+            skill_output_modes = getattr(skill, "output_modes", None) or []
+            skill_examples = getattr(skill, "examples", None) or []
             # Backward compatibility: if config is None, use card data
             agent_display_name = self.config.title if self.config else self.card.name
-            content = (
-                f"Agent: {agent_display_name}\n"
-                f"Skill: {skill_name}\n"
-                f"Description: {skill_desc}\n"
-                f"Tags: {', '.join(skill_tags)}"
-            )
+            skill_parts = [
+                f"Agent: {agent_display_name}",
+                f"Skill: {skill_name}",
+            ]
+            if skill_desc:
+                skill_parts.append(f"Description: {skill_desc}")
+            if skill_tags:
+                skill_parts.append(f"Tags: {', '.join(skill_tags)}")
+            if skill_input_modes:
+                skill_parts.append(f"Input Modes: {', '.join(skill_input_modes)}")
+            if skill_output_modes:
+                skill_parts.append(f"Output Modes: {', '.join(skill_output_modes)}")
+            if skill_examples:
+                skill_parts.append(f"Examples: {' | '.join(skill_examples[:3])}")
             docs.append(
                 LangChainDocument(
-                    page_content=content,
+                    page_content="\n".join(skill_parts),
                     metadata={
                         **base_metadata,
                         "entity_type": A2AEntityType.SKILL,
@@ -338,7 +378,6 @@ class A2AAgent(Document):
             "relevance_score": round(float(raw_score), 3) if raw_score is not None else None,
             "description": document.page_content,
             "tags": metadata.get("tags") or [],
-            "is_enabled": metadata.get("is_enabled"),
         }
         if metadata.get("entity_type") == A2AEntityType.SKILL:
             result["skill_name"] = metadata.get("skill_name")

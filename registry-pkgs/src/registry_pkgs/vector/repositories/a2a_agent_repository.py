@@ -18,6 +18,7 @@ class A2AAgentRepository(BaseVectorSyncRepository[A2AAgent]):
         "agent_id": "text",
         "federation_id": "text",
         "runtimeArn": "text",
+        "path": "text",
         "enabled": "bool",
     }
 
