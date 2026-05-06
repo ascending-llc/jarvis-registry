@@ -133,8 +133,18 @@ async def jwks_endpoint():
 
 @router.get(f"/.well-known/oauth-protected-resource{settings.service_base_path}/proxy/{{server_path:path}}")
 async def protected_resource_metadata(server_path: str):
+    """
+    `resource` lives on the registry backend, so we use `settings.registry_url`.
+    `authorization_servers` includes our auth-server, so we use `settings.jwt_issuer`,
+    which is the protocol+domain(+port) part of `settings.auth_server_external_url`.
+    `registry_url` is protocol+domain(+port) followed by `service_base_path`, so the well-known route complies with RFC 9728.
+    In EKS all URLs use the same domain name and traffic is handled by k8s Ingress.
+    The current way of writing it only makes a difference when running services locally in Docker Compose,
+    where registry backend and auth-server live on different ports of localhost.
+    """
+
     return {
-        "resource": f"{settings.jwt_issuer}{settings.service_base_path}/proxy/{server_path}",
+        "resource": f"{settings.registry_url}/proxy/{server_path}",
         "authorization_servers": [settings.jwt_issuer],
         "scopes_supported": settings.scopes_list,
         "bearer_methods_supported": ["header"],

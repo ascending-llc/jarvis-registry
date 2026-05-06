@@ -210,6 +210,12 @@ class JarvisBaseSettings(BaseSettings):
             if not self.auth_server_external_url.endswith(prefix):
                 self.auth_server_external_url = f"{self.auth_server_external_url.rstrip('/')}{prefix}"
 
+        if self.registry_url.endswith("/"):
+            self.registry_url = self.registry_url.rstrip("/")
+
+        if self.registry_client_url.endswith("/"):
+            self.registry_client_url = self.registry_client_url.rstrip("/")
+
     # ==================== Shared Properties ====================
 
     @cached_property
