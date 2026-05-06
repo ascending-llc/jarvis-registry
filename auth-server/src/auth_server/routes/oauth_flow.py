@@ -374,7 +374,6 @@ async def device_token(request: Request, user_service: UserService = Depends(get
         if auth_code_data.get("used"):
             del authorization_codes_storage[code]
             return oauth_error_response("invalid_grant", "authorization code already used")
-        auth_code_data["used"] = True
         if auth_code_data["client_id"] != client_id:
             return oauth_error_response("invalid_client", "client_id mismatch")
         if client_id == settings.registry_app_name and client_secret != settings.registry_client_secret:
@@ -399,6 +398,7 @@ async def device_token(request: Request, user_service: UserService = Depends(get
             if computed_challenge != code_challenge:
                 return oauth_error_response("invalid_grant", "code_verifier validation failed")
 
+        auth_code_data["used"] = True
         user_info = auth_code_data["user_info"]
         user_groups = user_info.get("groups", [])
         user_scopes = (
