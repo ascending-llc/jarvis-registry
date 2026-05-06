@@ -273,8 +273,7 @@ class A2AAgent(Document):
             "agent_id": agent_id,
             "agent_name": agent_name,  # Keep key stable for backward compatibility
             "path": self.path,
-            "status": self.status,
-            "is_enabled": self.isEnabled,
+            "enabled": self.isEnabled,
             "tags": self.tags,
         }
         # Federation metadata lets vector sync target one federated A2A runtime precisely.
@@ -333,10 +332,12 @@ class A2AAgent(Document):
             "agent_name": metadata.get("agent_name"),
             "path": metadata.get("path"),
             "entity_type": metadata.get("entity_type"),
+            "skill_name": metadata.get("skill_name"),
+            "enabled": metadata.get("enabled"),
+            "content": document.page_content,
             "relevance_score": round(float(raw_score), 3) if raw_score is not None else None,
             "description": document.page_content,
             "tags": metadata.get("tags") or [],
-            "status": metadata.get("status"),
             "is_enabled": metadata.get("is_enabled"),
         }
         if metadata.get("entity_type") == A2AEntityType.SKILL:

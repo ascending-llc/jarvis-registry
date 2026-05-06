@@ -74,7 +74,7 @@ class A2AAgentService:
             async def _task():
                 try:
                     await self._a2a_agent_repo.update_entity_metadata(
-                        "agent_id", str(agent.id), {"is_enabled": agent.isEnabled, "status": agent.status}
+                        "agent_id", str(agent.id), {"enabled": agent.isEnabled}
                     )
                 except Exception as e:
                     logger.error("Vector metadata update failed for agent %s: %s", agent.id, e, exc_info=True)

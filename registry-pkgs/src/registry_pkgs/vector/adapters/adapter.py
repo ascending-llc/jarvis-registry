@@ -402,6 +402,14 @@ class VectorStoreAdapter(ABC):
         """
         return True
 
+    def ensure_filterable_properties(self, collection_name: str, property_names: dict[str, str] | list[str]) -> None:
+        """Ensure the given property names are declared in the collection schema so they can be filtered on.
+
+        Default is a no-op — adapters without strict schema constraints (e.g., in-memory, ChromaDB)
+        don't need this. Weaviate overrides it to add missing properties with the correct data type.
+        """
+        logger.debug("ensure_filterable_properties: no-op for %s", self.__class__.__name__)
+
     def update_metadata(self, doc_id: str, metadata: dict[str, Any], collection_name: str | None = None) -> bool:
         """
         Update metadata fields only without re-vectorization.

@@ -22,8 +22,12 @@ class BaseVectorSyncRepository(Repository[T], ABC):
     """
 
     async def ensure_collection(self) -> bool:
-        """Ensure the backing Weaviate collection exists."""
-        return await self._ensure_collection()
+        """Ensure the backing Weaviate collection exists and has all required filterable properties."""
+        result = await self._ensure_collection()
+        filterable = getattr(self, "FILTERABLE_PROPERTIES", [])
+        if filterable:
+            self.adapter.ensure_filterable_properties(self.collection, filterable)
+        return result
 
     async def delete_by_runtime_identity(self, federation_id: str, runtime_arn: str) -> int:
         """Delete all Weaviate docs that match a federation identity.
