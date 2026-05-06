@@ -79,7 +79,6 @@ services:
       - AUTH_SERVER_URL=http://auth-server:8888
     ports:
       - "80:80"
-      - "443:443"
     depends_on:
       - registry
     restart: unless-stopped
@@ -163,7 +162,6 @@ services:
       - ENTRA_ROLE_TOKEN_KIND=${ENTRA_ROLE_TOKEN_KIND:-id}
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
       - OTEL_SERVICE_NAME=auth-server
-      - REGISTRY_CLIENT_URL=${REGISTRY_CLIENT_URL:-http://registry-frontend}
       - SCOPES_CONFIG_PATH=/app/scopes.yml
       # MongoDB configuration
       - MONGO_URI=mongodb://registry-mongodb:27017/jarvis

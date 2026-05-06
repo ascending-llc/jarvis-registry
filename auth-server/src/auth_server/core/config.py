@@ -59,14 +59,6 @@ class AuthSettings(JarvisBaseSettings):
     device_code_expiry_seconds: int = 600  # 10 minutes
     device_code_poll_interval: int = 5  # Poll every 5 seconds
 
-    # ==================== OAuth Session Settings ====================
-    oauth_session_ttl_seconds: int = 600  # 10 minutes for OAuth2 flow (default)
-    # Note: This is the maximum time between initiating OAuth flow and completing the callback.
-    # For security (CSRF protection), this should not be too long.
-    # If Claude Desktop reconnection receives "session_expired", the OAuth session has expired and
-    # Claude Desktop will automatically re-initiate the OAuth flow (the user may be prompted again
-    # by the provider, but no manual restart of the flow is required).
-
     @field_validator("auth_provider")
     @classmethod
     def validate_auth_provider(cls, v: str) -> str:

@@ -15,14 +15,16 @@ from a2a.client.transports.rest import RestTransport
 from a2a.types import MessageSendParams
 from beanie import PydanticObjectId
 from fastapi import APIRouter, Depends, Request, Response
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from redis import Redis
+from starlette.routing import get_route_path
 
 from registry_pkgs.models import ResourceType
 from registry_pkgs.models.a2a_agent import TRANSPORT_GRPC, TRANSPORT_HTTP_JSON, TRANSPORT_JSONRPC
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 
 from ..auth.dependencies import CurrentUser, UserContextDict
+from ..auth.oauth.types import ClientBranding
 from ..core.config import settings
 from ..core.exceptions import InternalServerException, UrlElicitationRequiredException
 from ..deps import (
@@ -33,7 +35,7 @@ from ..deps import (
     get_redis_client,
     get_server_service,
 )
-from ..mcpgw.tools.utils import build_authenticated_headers, parse_elicitation_id
+from ..mcpgw.tools.utils import build_authenticated_headers, get_target_url, parse_elicitation_id
 from ..services.a2a_agent_service import A2AAgentService
 from ..services.access_control_service import ACLService
 from ..services.oauth.oauth_service import MCPOAuthService
@@ -52,14 +54,45 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["MCP Proxy"])
 
 
-async def _extract_request_id(request: Request) -> str | int | None:
-    """Extract JSON-RPC request ID from request body."""
+async def _parse_json_rpc_body(request: Request) -> dict[str, Any] | None:
+    """
+    Parse the JSON RPC message body and returns a dictionary. If parsing fails, return None.
+
+    Raises: Nothing.
+    """
     try:
         body = await request.body()
 
         json_body = json.loads(body)
 
-        id_ = json_body["id"]
+        if not isinstance(json_body, dict):
+            logger.error("The JSON RPC message body is not a JSON object.")
+
+            return None
+
+        return json_body
+    except Exception:
+        logger.exception("failed to parse JSON RPC message body")
+
+        return None
+
+
+def _is_notification(msg_dict: dict[str, Any]) -> bool:
+    if "id" in msg_dict:
+        # Notifications are not allowed to have "id".
+        return False
+    elif "method" not in msg_dict or not isinstance(msg_dict["method"], str):
+        # Notifications must have the "method" field and it's a string.
+        return False
+    else:
+        # If the message is a notification, its "method" field must start with "notifications/"
+        return msg_dict["method"].startswith("notifications/")
+
+
+def _extract_request_id(request_dict: dict[str, Any]) -> str | int | None:
+    """Extract JSON-RPC request ID from request body."""
+    try:
+        id_ = request_dict["id"]
 
         if not isinstance(id_, str) and not isinstance(id_, int):
             return None
@@ -96,38 +129,6 @@ def _get_elicitation_id(auth_url: str) -> str:
         return str(uuid4())
 
     return id_
-
-
-def _build_target_url(server: ExtendedMCPServer, remaining_path: str = "") -> str:
-    """
-    Build complete target URL for proxying to MCP server.
-    Consolidates URL building logic used across all proxy endpoints.
-
-    Args:
-        server: MCP server document
-        remaining_path: Optional path to append after server base URL
-
-    Returns:
-        Complete target URL
-
-    Raises:
-        InternalServerException: If server URL is not configured
-    """
-    config = server.config or {}
-    base_url = config.get("url")
-
-    if not base_url:
-        raise InternalServerException("Server URL not configured")
-
-    # If no remaining path, return base URL as-is
-    if not remaining_path:
-        return base_url
-
-    # Ensure base URL has trailing slash before appending path
-    if not base_url.endswith("/"):
-        base_url += "/"
-
-    return base_url + remaining_path
 
 
 async def proxy_to_mcp_server(
@@ -176,6 +177,7 @@ async def proxy_to_mcp_server(
             server=server,
             auth_context=auth_context,
             additional_headers=headers,
+            state_metadata={"client_branding": ClientBranding.UNRECOGNIZED, "notify_elicitation_complete": False},
             redis_client=redis_client,
         )
     except UrlElicitationRequiredException as exc:
@@ -436,7 +438,7 @@ async def a2a_agent_proxy(
         # Fallback to card.url for backward compatibility with old data
         base_url = str(agent.card.url)
         logger.warning(
-            f"Agent {agent_registry_path} missing config.url, falling back to card.url: {base_url}. "  # nosec B608 - false positive
+            f"Agent {agent_registry_path} missing config.url, falling back to card.url: {base_url}. "  # nosec B608 - this is not a SQL query.
             "This may fail if card.url is not accessible. Please update the agent to set config.url."
         )
 
@@ -579,7 +581,21 @@ async def dynamic_mcp_post_proxy(
 
     MCP protocol only uses GET and POST methods.
     """
-    request_id = await _extract_request_id(request)
+    # If client accidentally tries to connect to our MCP Gateway via the dynamic catch-all route,
+    # respond with a permanent redirect.
+    if get_route_path(request.scope) == "/proxy/server/mcpgw/mcp":
+        return RedirectResponse(f"{settings.registry_url.rstrip('/')}/proxy/mcpgw/mcp", status_code=308)
+
+    msg_body = await _parse_json_rpc_body(request)
+    if msg_body is None:
+        # Bad request body. Just return 400.
+        return Response(status_code=400)
+
+    if _is_notification(msg_body):
+        # On notification (e.g. `notifications/initialized`), MCP spec requires 202 with empty body.
+        return Response(status_code=202)
+
+    request_id = _extract_request_id(msg_body)
     if request_id is None:
         return JSONResponse(
             status_code=200,
@@ -627,15 +643,12 @@ async def dynamic_mcp_post_proxy(
             ),
         )
 
-    # Build target URL
+    # Get target URL
     try:
-        # First extract remaining path after server path
-        remaining_path = path[len(server_path) :].lstrip("/")
-
-        target_url = _build_target_url(server, remaining_path)
-    except Exception:
-        logger.exception("Error building target URL")
-
+        target_url = get_target_url(server)
+    except InternalServerException:
+        # POST requests use JSON-RPC. There is no problem at the HTTP layer, so use status code 200 for HTTP
+        # and embed JSON-RPC error code -32603 in response body.
         return JSONResponse(
             status_code=200,
             content=_build_jsonrpc_error(
@@ -678,6 +691,11 @@ async def dynamic_mcp_get_proxy(
 
     MCP protocol only uses GET and POST methods.
     """
+    # If client accidentally tries to connect to our MCP Gateway via the dynamic catch-all route,
+    # respond with a permanent redirect.
+    if get_route_path(request.scope) == "/proxy/server/mcpgw/mcp":
+        return RedirectResponse(f"{settings.registry_url.rstrip('/')}/proxy/mcpgw/mcp", status_code=308)
+
     # Extract registered server path from request URL
     path = f"/{full_path}"
     server_path = await extract_server_path_from_request(path, server_service)
@@ -708,15 +726,11 @@ async def dynamic_mcp_get_proxy(
             content={"error": f"MCP server with path '{server_path}' is not on streamable-http transport."},
         )
 
-    # Build target URL
+    # Get target URL
     try:
-        # First extract remaining path after server path
-        remaining_path = path[len(server_path) :].lstrip("/")
-
-        target_url = _build_target_url(server, remaining_path)
-    except Exception:
-        logger.exception("Error building target URL")
-
+        target_url = get_target_url(server)
+    except InternalServerException:
+        # GET requests doesn't use JSON-RPC, so use HTTP status code 500.
         return JSONResponse(
             status_code=500, content={"error": "Server URL is not configured. The MCP server is not reachable."}
         )
@@ -747,6 +761,7 @@ async def dynamic_mcp_get_proxy(
             server=server,
             auth_context=auth_context,
             additional_headers=headers,
+            state_metadata={"client_branding": ClientBranding.UNRECOGNIZED, "notify_elicitation_complete": False},
             redis_client=redis_client,
         )
     except UrlElicitationRequiredException as exc:

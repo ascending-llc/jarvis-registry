@@ -3,7 +3,7 @@ import logging
 from fastapi import Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.routing import compile_path
+from starlette.routing import compile_path, get_route_path
 
 from registry_pkgs.core.jwt_utils import ExpiredSignatureError, InvalidTokenError, decode_jwt, get_token_kid
 from registry_pkgs.core.scopes import map_groups_to_scopes
@@ -58,6 +58,7 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
                 "/login",
                 "/health",
                 "/docs",
+                "/redoc",
                 "/openapi.json",
                 "/static/{path:path}",
                 "/redirect",
@@ -90,7 +91,11 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
         return compiled
 
     async def dispatch(self, request: Request, call_next):
-        path = request.url.path
+        # Use get_route_path to strip the root_path prefix (set by uvicorn --root-path).
+        # request.url.path reads scope["path"] directly, which includes the prefix when
+        # uvicorn is started with --root-path. get_route_path strips it, matching what
+        # the router itself sees when resolving routes.
+        path = get_route_path(request.scope)
 
         # Check authenticated paths first (these override public patterns)
         if self._match_path(path, self.public_paths_compiled):
@@ -117,24 +122,22 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
 
             except AuthenticationError as e:
                 auth_ctx.set_success(False)
-                logger.warning(f"Auth failed for {path}: {e}")
 
-                # Add WWW-Authenticate header for MCP OAuth discovery
-                # Extract server name from path for MCP proxy requests
-                server_name = None
-                if path.startswith("/proxy/"):
-                    server_name = path.split("/")[2] if len(path.split("/")) > 2 else None
+                logger.warning(f"Auth failed for {path}")
 
                 headers = {"Connection": "close"}
-                if server_name:
-                    # For MCP proxy paths, RFC 9728 (OAuth 2.0 Protected Resource Metadata)
-                    registry_url = settings.registry_client_url.rstrip("/")
-                    oauth_discovery = f"{registry_url}/.well-known/oauth-protected-resource/proxy/{server_name}"
+
+                if path.startswith("/proxy/"):
+                    # Add WWW-Authenticate header for MCP related routes (both `mcpgw` and dynamic catch-all),
+                    # so that AI agents can perform Dynamic Client Registration.
                     headers["WWW-Authenticate"] = (
-                        f'Bearer realm="{settings.jarvis_realm}", resource_metadata="{oauth_discovery}"'
+                        f'Bearer realm="{settings.jarvis_realm}", '
+                        f'resource_metadata="{settings.jwt_issuer}/.well-known/oauth-protected-resource{settings.service_base_path}{path}", '
+                        'scope="mcp-proxy-ops"'
                     )
                 else:
-                    # For other authenticated paths, use general OAuth discovery
+                    # For non-MCP related routes, the only caller is our frontend, which knows the auth-server routes.
+                    # Therefore we don't include resource_metadata here.
                     headers["WWW-Authenticate"] = f'Bearer realm="{settings.jarvis_realm}"'
 
                 return JSONResponse(status_code=401, content={"detail": str(e)}, headers=headers)
@@ -248,10 +251,6 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
             if not scopes:
                 logger.debug(f"JWT token has no scopes and groups mapping failed. Groups: {groups}")
                 return None
-            # Optional: Verify client_id if present
-            client_id = claims.get("client_id")
-            if client_id and client_id != "user-generated":
-                logger.debug(f"JWT token has unexpected client_id: {client_id}")
 
             # Log token validation success with additional details
             token_type = claims.get("token_type", "unknown")

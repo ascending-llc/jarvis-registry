@@ -36,39 +36,39 @@ providers:
     name_claim: "name"
     enabled: false
 
-  github:
-    display_name: "GitHub"
-    client_id: "${GITHUB_CLIENT_ID}"
-    client_secret: "${GITHUB_CLIENT_SECRET}"
-    auth_url: "https://github.com/login/oauth/authorize"
-    token_url: "https://github.com/login/oauth/access_token"
-    user_info_url: "https://api.github.com/user"
-    scopes: ["read:user", "user:email"]
-    response_type: "code"
-    grant_type: "authorization_code"
-    # GitHub specific claim mapping
-    username_claim: "login"
-    groups_claim: null  # GitHub doesn't provide groups in basic scope
-    email_claim: "email"
-    name_claim: "name"
-    enabled: false  # Enable web-based OAuth2 flow for GitHub
+  # github:
+  #   display_name: "GitHub"
+  #   client_id: "${GITHUB_CLIENT_ID}"
+  #   client_secret: "${GITHUB_CLIENT_SECRET}"
+  #   auth_url: "https://github.com/login/oauth/authorize"
+  #   token_url: "https://github.com/login/oauth/access_token"
+  #   user_info_url: "https://api.github.com/user"
+  #   scopes: ["read:user", "user:email"]
+  #   response_type: "code"
+  #   grant_type: "authorization_code"
+  #   # GitHub specific claim mapping
+  #   username_claim: "login"
+  #   groups_claim: null  # GitHub doesn't provide groups in basic scope
+  #   email_claim: "email"
+  #   name_claim: "name"
+  #   enabled: false  # Enable web-based OAuth2 flow for GitHub
 
-  google:
-    display_name: "Google"
-    client_id: "${GOOGLE_CLIENT_ID}"
-    client_secret: "${GOOGLE_CLIENT_SECRET}"
-    auth_url: "https://accounts.google.com/o/oauth2/auth"
-    token_url: "https://oauth2.googleapis.com/token"
-    user_info_url: "https://www.googleapis.com/oauth2/v2/userinfo"
-    scopes: ["openid", "email", "profile"]
-    response_type: "code"
-    grant_type: "authorization_code"
-    # Google specific claim mapping
-    username_claim: "email"
-    groups_claim: null  # Google doesn't provide groups in basic scope
-    email_claim: "email"
-    name_claim: "name"
-    enabled: false  # Disabled by default
+  # google:
+  #   display_name: "Google"
+  #   client_id: "${GOOGLE_CLIENT_ID}"
+  #   client_secret: "${GOOGLE_CLIENT_SECRET}"
+  #   auth_url: "https://accounts.google.com/o/oauth2/auth"
+  #   token_url: "https://oauth2.googleapis.com/token"
+  #   user_info_url: "https://www.googleapis.com/oauth2/v2/userinfo"
+  #   scopes: ["openid", "email", "profile"]
+  #   response_type: "code"
+  #   grant_type: "authorization_code"
+  #   # Google specific claim mapping
+  #   username_claim: "email"
+  #   groups_claim: null  # Google doesn't provide groups in basic scope
+  #   email_claim: "email"
+  #   name_claim: "name"
+  #   enabled: false  # Disabled by default
 
   entra:
     display_name: "Microsoft Entra ID"
@@ -94,18 +94,3 @@ providers:
     # M2M (Machine-to-Machine) default scope
     m2m_scope: "${ENTRA_M2M_SCOPE:-https://graph.microsoft.com/.default}"
     enabled: true
-
-# Default session settings
-session:
-  max_age_seconds: 28800  # 8 hours
-  cookie_name: "mcp_oauth_session"
-  secure: true  # Set to false for development
-  httponly: true
-  samesite: "lax"
-  domain: "${SESSION_COOKIE_DOMAIN}"  # Set to your domain (with leading dot) to share cookies across subdomains, e.g., ".example.com"
-
-# Registry integration settings
-registry:
-  callback_url: "${REGISTRY_URL}/auth/callback"
-  success_redirect: "${REGISTRY_URL}/"
-  error_redirect: "${REGISTRY_URL}/login"

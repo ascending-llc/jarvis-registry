@@ -7,7 +7,7 @@ from uuid import UUID
 import pytest
 
 from registry.auth.oauth.flow_state_manager import FlowStateManager
-from registry.auth.oauth.types import ClientBranding
+from registry.auth.oauth.types import ClientBranding, StateMetadata
 from registry.schemas.enums import OAuthFlowStatus
 
 
@@ -41,7 +41,7 @@ class TestFlowStateManager:
         # Check format: user_id:server_name
         assert flow_id == f"{user_id}:{server_name}"
 
-    def test_encode_decode_state(self):
+    def test_encode_decode_state(self) -> None:
         """Test encoding and decoding state parameter."""
         manager = FlowStateManager()
 
@@ -66,7 +66,10 @@ class TestFlowStateManager:
 
         # Encode/decode with flow_id and state_metadata
         flow_id = "test-flow-id"
-        state_metadata = {"client_branding": ClientBranding.CLAUDE}
+        state_metadata: StateMetadata = {
+            "client_branding": ClientBranding.CLAUDE,
+            "notify_elicitation_complete": False,
+        }
         state = manager.encode_state(flow_id, state_metadata=state_metadata)
         state_dict = manager.decode_state(state)
         elicitation_id = state_dict["meta"]["elicitation_id"]
@@ -74,6 +77,7 @@ class TestFlowStateManager:
         assert state_dict["flow_id"] == flow_id
         assert isinstance(state_dict["security_token"], str)
         assert state_dict["meta"]["client_branding"] == ClientBranding.CLAUDE
+        assert state_dict["meta"]["notify_elicitation_complete"] == state_metadata["notify_elicitation_complete"]
         assert UUID(elicitation_id).version == 4
 
     def _prepare_wrong_state(self, dict_: dict[str, Any]) -> str:

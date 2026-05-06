@@ -1,37 +1,25 @@
 import logging
 import re
 from pathlib import Path
-from threading import Lock
 from typing import Any
 
 import yaml
 
+from ..core.config import AuthSettings
+from ..core.types import AllowedProvider, AuthProviderConfig, EntraConfig, OAuth2Config
+
 logger = logging.getLogger(__name__)
-
-
-def _get_settings_value(var_name: str) -> str | None:
-    """Resolve an oauth2 placeholder from auth-server settings."""
-    from ..core.config import settings
-
-    field_name = var_name.strip().lower()
-    value = getattr(settings, field_name, None)
-    if value is None:
-        return None
-    if isinstance(value, bool):
-        return str(value).lower()
-    return str(value)
 
 
 class OAuth2ConfigLoader:
     """OAuth2 configuration loader with environment variable substitution."""
 
-    def __init__(self):
-        self._lock = Lock()
-        self._config: dict[str, Any] | None = None
-        with self._lock:
-            self._config = self._load_config()
+    def __init__(self, settings: AuthSettings):
+        self._settings = settings
+        # Eagerly load OAuth2 config so app can fail early and loudly on start-up if config file is off.
+        self._config = self._load_config()
 
-    def _load_config(self) -> dict[str, Any]:
+    def _load_config(self) -> OAuth2Config:
         """Load OAuth2 providers configuration from oauth2_providers.yml.
 
         Returns:
@@ -53,15 +41,21 @@ class OAuth2ConfigLoader:
             logger.info(f"Successfully loaded OAuth2 configuration with providers: {providers}")
 
             return processed_config
-        except FileNotFoundError:
-            logger.error("OAuth2 configuration file not found")
-            return {"providers": {}, "session": {}, "registry": {}}
-        except yaml.YAMLError as e:
-            logger.error(f"Failed to parse OAuth2 configuration YAML: {e}")
-            return {"providers": {}, "session": {}, "registry": {}}
-        except Exception as e:
-            logger.error(f"Failed to load OAuth2 configuration: {e}")
-            return {"providers": {}, "session": {}, "registry": {}}
+        except Exception:
+            logger.exception("Failed to load OAuth2 configuration")
+
+            raise
+
+    def _get_value(self, var_name: str) -> str | None:
+        field_name = var_name.strip().lower()
+
+        value = getattr(self._settings, field_name, None)
+
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return str(value).lower()
+        return str(value)
 
     def _substitute_env_vars(self, config: Any) -> Any:
         """Recursively substitute environment variables in configuration.
@@ -81,9 +75,9 @@ class OAuth2ConfigLoader:
         elif isinstance(config, str) and "${" in config:
             # Handle special case for auto-derived Cognito domain
             if "COGNITO_DOMAIN:-auto" in config:
-                cognito_domain = _get_settings_value("COGNITO_DOMAIN")
+                cognito_domain = self._get_value("COGNITO_DOMAIN")
                 if not cognito_domain:
-                    user_pool_id = _get_settings_value("COGNITO_USER_POOL_ID") or ""
+                    user_pool_id = self._get_value("COGNITO_USER_POOL_ID") or ""
                     cognito_domain = self._auto_derive_cognito_domain(user_pool_id)
                 config = config.replace("${COGNITO_DOMAIN:-auto}", cognito_domain)
 
@@ -93,10 +87,10 @@ class OAuth2ConfigLoader:
                 # Check if it has a default value
                 if ":-" in var_expr:
                     var_name, default_value = var_expr.split(":-", 1)
-                    return _get_settings_value(var_name) or default_value.strip()
+                    return self._get_value(var_name) or default_value.strip()
                 else:
                     var_name = var_expr.strip()
-                    value = _get_settings_value(var_name)
+                    value = self._get_value(var_name)
                     if value is not None:
                         return value
 
@@ -126,53 +120,15 @@ class OAuth2ConfigLoader:
         logger.info(f"Auto-derived Cognito domain '{domain}' from user pool ID '{user_pool_id}'")
         return domain
 
-    @property
-    def config(self) -> dict[str, Any]:
-        """Get the loaded OAuth2 configuration.
+    def get_config(self) -> OAuth2Config:
+        """Get the loaded OAuth2 configuration."""
 
-        Returns:
-            Dictionary containing the OAuth2 configuration
-        """
-        if self._config is None:
-            # This should never happen due to __init__, but just in case
-            with self._lock:
-                if self._config is None:
-                    self._config = self._load_config()
         return self._config
 
-    def reload(self) -> dict[str, Any]:
-        """Force reload the configuration from file.
+    def get_provider_config(
+        self,
+        provider: AllowedProvider,
+    ) -> AuthProviderConfig | EntraConfig:
+        """Get configuration for a specific provider."""
 
-        This method can be used to refresh the configuration without
-        restarting the application.
-
-        Returns:
-            Dictionary containing the reloaded OAuth2 configuration
-        """
-        with self._lock:
-            logger.info("Reloading OAuth2 configuration...")
-            self._config = self._load_config()
-            return self._config
-
-    def get_provider_config(self, provider_name: str) -> dict[str, Any] | None:
-        """Get configuration for a specific provider.
-
-        Args:
-            provider_name: Name of the provider (e.g., 'keycloak', 'cognito', 'entra')
-
-        Returns:
-            Provider configuration dictionary or None if not found
-        """
-        return self.config.get("providers", {}).get(provider_name)
-
-    def get_enabled_providers(self) -> list:
-        """Get list of all enabled provider names.
-
-        Returns:
-            List of enabled provider names
-        """
-        enabled = []
-        for provider_name, config in self.config.get("providers", {}).items():
-            if config.get("enabled", False):
-                enabled.append(provider_name)
-        return enabled
+        return self.get_config()["providers"][provider]

@@ -6,7 +6,7 @@ from typing import Any
 from fastapi import Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.routing import compile_path
+from starlette.routing import compile_path, get_route_path
 
 from ..auth.dependencies import effective_scopes_from_context
 from ..core.config import settings
@@ -197,7 +197,7 @@ class ScopePermissionMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         method = request.method.upper()
-        normalized_path = _normalize_path(request.url.path)
+        normalized_path = _normalize_path(get_route_path(request.scope))
         logger.debug(f"RBAC check - path: {normalized_path}, method: {method}")
 
         user_context = getattr(request.state, "user", {}) or {}
