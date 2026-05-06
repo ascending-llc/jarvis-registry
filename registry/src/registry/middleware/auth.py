@@ -3,7 +3,7 @@ import logging
 from fastapi import Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.routing import compile_path
+from starlette.routing import compile_path, get_route_path
 
 from registry_pkgs.core.jwt_utils import ExpiredSignatureError, InvalidTokenError, decode_jwt, get_token_kid
 from registry_pkgs.core.scopes import map_groups_to_scopes
@@ -91,7 +91,11 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
         return compiled
 
     async def dispatch(self, request: Request, call_next):
-        path = request.url.path
+        # Use get_route_path to strip the root_path prefix (set by uvicorn --root-path).
+        # request.url.path reads scope["path"] directly, which includes the prefix when
+        # uvicorn is started with --root-path. get_route_path strips it, matching what
+        # the router itself sees when resolving routes.
+        path = get_route_path(request.scope)
 
         # Check authenticated paths first (these override public patterns)
         if self._match_path(path, self.public_paths_compiled):

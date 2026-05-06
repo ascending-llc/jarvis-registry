@@ -17,6 +17,7 @@ from beanie import PydanticObjectId
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from redis import Redis
+from starlette.routing import get_route_path
 
 from registry_pkgs.models import ResourceType
 from registry_pkgs.models.a2a_agent import TRANSPORT_GRPC, TRANSPORT_HTTP_JSON, TRANSPORT_JSONRPC
@@ -582,7 +583,7 @@ async def dynamic_mcp_post_proxy(
     """
     # If client accidentally tries to connect to our MCP Gateway via the dynamic catch-all route,
     # respond with a permanent redirect.
-    if request.url.path == "/proxy/server/mcpgw/mcp":
+    if get_route_path(request.scope) == "/proxy/server/mcpgw/mcp":
         return RedirectResponse(f"{settings.registry_url.rstrip('/')}/proxy/mcpgw/mcp", status_code=308)
 
     msg_body = await _parse_json_rpc_body(request)
@@ -692,7 +693,7 @@ async def dynamic_mcp_get_proxy(
     """
     # If client accidentally tries to connect to our MCP Gateway via the dynamic catch-all route,
     # respond with a permanent redirect.
-    if request.url.path == "/proxy/server/mcpgw/mcp":
+    if get_route_path(request.scope) == "/proxy/server/mcpgw/mcp":
         return RedirectResponse(f"{settings.registry_url.rstrip('/')}/proxy/mcpgw/mcp", status_code=308)
 
     # Extract registered server path from request URL
