@@ -42,6 +42,9 @@ class _FakeAdapter:
         self.metadata_updates.append((doc_id, metadata))
         return True
 
+    def ensure_filterable_properties(self, collection_name: str, property_names) -> None:
+        pass
+
 
 def _make_a2a_repo(docs: list[Document]) -> A2AAgentRepository:
     return A2AAgentRepository(SimpleNamespace(adapter=_FakeAdapter(docs)))
@@ -179,6 +182,9 @@ async def test_update_entity_metadata_skips_when_adapter_lacks_update_metadata()
 
         def filter_by_metadata(self, filters, limit, **kwargs):
             return [Document(page_content="x", metadata={"agent_id": "a"}, id="d1")]
+
+        def ensure_filterable_properties(self, collection_name: str, property_names) -> None:
+            pass
 
     repo = A2AAgentRepository(SimpleNamespace(adapter=_LegacyAdapter()))
 
