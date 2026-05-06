@@ -311,7 +311,7 @@ async def approve_device(request: DeviceApprovalRequest):
 async def _parse_device_token_params(request: Request) -> dict:
     content_type = request.headers.get("content-type", "")
 
-    if content_type == "application/json":
+    if content_type.startswith("application/json"):
         body = await request.json()
 
         return {
@@ -324,7 +324,7 @@ async def _parse_device_token_params(request: Request) -> dict:
             "refresh_token": body.get("refresh_token"),
             "redirect_uri": body.get("redirect_uri"),
         }
-    elif content_type == "application/x-www-form-urlencoded":
+    elif content_type.startswith("application/x-www-form-urlencoded"):
         form = await request.form()
 
         return {
