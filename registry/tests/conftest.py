@@ -262,6 +262,7 @@ def test_client(mock_auth_middleware) -> TestClient:
         status_resolver=Mock(),
         vector_service=Mock(),
         mcp_server_repo=Mock(),
+        a2a_agent_repo=Mock(),
         session_store=Mock(),
         health_service=Mock(),
     )

@@ -196,7 +196,7 @@ async def test_search_agents_uses_afilter_for_empty_query():
     )
 
     a2a_agent_repo.afilter.assert_awaited_once_with(
-        filters={"is_enabled": True, "entity_type": list(A2AEntityType)}, limit=10
+        filters={"enabled": True, "entity_type": list(A2AEntityType)}, limit=10
     )
     assert response.totalAgents == 0
     assert response.totalSkills == 0

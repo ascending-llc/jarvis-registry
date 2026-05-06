@@ -168,6 +168,10 @@ class TestServerSearchRoutes:
                 asearch_with_rerank=AsyncMock(return_value=[]),
                 afilter=AsyncMock(return_value=[]),
             ),
+            a2a_agent_repo=make_container(
+                asearch_with_rerank=AsyncMock(return_value=[]),
+                afilter=AsyncMock(return_value=[]),
+            ),
             status_resolver=AsyncMock(),
         )
 
