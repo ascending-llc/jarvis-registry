@@ -14,7 +14,7 @@ from registry_pkgs.core.jwt_utils import decode_jwt_unverified
 from registry_pkgs.core.scopes import map_groups_to_scopes
 
 from ..core.config import settings
-from ..deps import get_user_service
+from ..deps import check_if_https, get_user_service
 from ..services.user_service import UserService
 from ..utils.crypto_utils import (
     decrypt_value,
@@ -50,7 +50,7 @@ async def get_oauth2_providers():
 
 # OAuth2 login redirect avoid /auth/ route collision with auth server
 @router.get("/redirect/{provider}")
-async def oauth2_login_redirect(provider: str):
+async def oauth2_login_redirect(provider: str, is_https: bool = Depends(check_if_https)):
     """Redirect to auth server for OAuth2 login"""
     try:
         # Registry backend receives `code` from auth-server, and calls the /token endpoint of auth-server.
@@ -79,6 +79,7 @@ async def oauth2_login_redirect(provider: str):
             value=encrypt_value(code_verifier),
             max_age=settings.oauth_session_ttl_seconds,
             httponly=True,
+            secure=settings.session_cookie_secure and is_https,
             samesite="lax",
         )
         return resp
@@ -95,6 +96,7 @@ async def oauth2_callback(
     details: str | None = None,
     registry_oauth2_code_verifier: str = Cookie(None),
     user_service: UserService = Depends(get_user_service),
+    is_https: bool = Depends(check_if_https),
 ):
     """Handle OAuth2 callback from auth server
     This endpoint receives an authorization code and exchanges it for a JWT access token.
@@ -203,8 +205,6 @@ async def oauth2_callback(
         resp.delete_cookie("registry_oauth2_code_verifier")
 
         # Determine cookie security settings
-        x_forwarded_proto = request.headers.get("x-forwarded-proto", "")
-        is_https = x_forwarded_proto == "https" or request.url.scheme == "https"
         cookie_secure = settings.session_cookie_secure and is_https
 
         # Set access token cookie (1 day)
@@ -303,6 +303,7 @@ async def logout_post(
 async def refresh_token(
     request: Request,
     refresh: Annotated[str | None, Cookie(alias="jarvis_registry_refresh")] = None,
+    is_https: bool = Depends(check_if_https),
 ):
     """
     Refresh access token using refresh token from cookie.
@@ -377,8 +378,6 @@ async def refresh_token(
             )
 
             # Determine cookie security settings
-            x_forwarded_proto = request.headers.get("x-forwarded-proto", "")
-            is_https = x_forwarded_proto == "https" or request.url.scheme == "https"
             cookie_secure = settings.session_cookie_secure and is_https
 
             # Create response with new access token

@@ -31,3 +31,8 @@ def get_signer(container: AuthContainer = Depends(get_container)) -> URLSafeTime
 
 def get_auth_provider(provider: AllowedProvider, container: AuthContainer = Depends(get_container)) -> AuthProvider:
     return container.get_auth_provider(provider)
+
+
+def check_if_https(request: Request) -> bool:
+    x_forwarded_proto = request.headers.get("x-forwarded-proto", "")
+    return x_forwarded_proto == "https" or request.url.scheme == "https"

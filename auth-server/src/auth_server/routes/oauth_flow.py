@@ -32,7 +32,7 @@ from ..core.state import (
     user_codes_storage,
 )
 from ..core.types import AllowedProvider, AuthProviderConfig, EntraConfig, OAuth2Config
-from ..deps import get_auth_provider, get_oauth2_config, get_signer, get_user_service, get_validator
+from ..deps import check_if_https, get_auth_provider, get_oauth2_config, get_signer, get_user_service, get_validator
 from ..models.device_flow import DeviceApprovalRequest, DeviceCodeResponse, DeviceTokenResponse
 from ..providers.base import AuthProvider
 from ..services.cognito_validator_service import SimplifiedCognitoValidator
@@ -545,6 +545,7 @@ async def oauth2_login(
     state: str | None = None,
     oauth2_config: OAuth2Config = Depends(get_oauth2_config),
     signer: URLSafeTimedSerializer = Depends(get_signer),
+    is_https: bool = Depends(check_if_https),
 ):
     try:
         provider_config = oauth2_config["providers"][provider]
@@ -607,6 +608,7 @@ async def oauth2_login(
             value=temp_session,
             max_age=settings.oauth_session_ttl_seconds,
             httponly=True,
+            secure=settings.session_cookie_secure and is_https,
             samesite="lax",
         )
         return response

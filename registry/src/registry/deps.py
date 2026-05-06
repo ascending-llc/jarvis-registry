@@ -112,3 +112,8 @@ def get_federation_sync_service(container: RegistryContainer = Depends(get_conta
 def get_redis_client(container: RegistryContainer = Depends(get_container)) -> Redis:
     """Get Redis client for caching."""
     return container.redis_client
+
+
+def check_if_https(request: Request) -> bool:
+    x_forwarded_proto = request.headers.get("x-forwarded-proto", "")
+    return x_forwarded_proto == "https" or request.url.scheme == "https"

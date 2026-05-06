@@ -91,12 +91,13 @@ class JarvisBaseSettings(BaseSettings):
     )
 
     # ==================== OAuth Session Settings ====================
-    oauth_session_ttl_seconds: int = 600  # 10 minutes for OAuth2 flow (default)
     # Note: This is the maximum time between initiating OAuth flow and completing the callback.
     # For security (CSRF protection), this should not be too long.
     # If Claude Desktop reconnection receives "session_expired", the OAuth session has expired and
     # Claude Desktop will automatically re-initiate the OAuth flow (the user may be prompted again
     # by the provider, but no manual restart of the flow is required).
+    oauth_session_ttl_seconds: int = 600  # 10 minutes for OAuth2 flow (default)
+    session_cookie_secure: bool = True
 
     # ==================== Signature (NOT related to JWT) ====================
     secret_key: str = ""

@@ -29,7 +29,6 @@ class Settings(JarvisBaseSettings):
     session_cookie_name: str = "jarvis_registry_session"
     refresh_cookie_name: str = "jarvis_registry_refresh"
     session_max_age_seconds: int = 60 * 60 * 8
-    session_cookie_secure: bool = True
     session_cookie_domain: str | None = None
 
     # ==================== Headers ====================
