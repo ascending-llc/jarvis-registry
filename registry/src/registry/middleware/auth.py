@@ -251,10 +251,6 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
             if not scopes:
                 logger.debug(f"JWT token has no scopes and groups mapping failed. Groups: {groups}")
                 return None
-            # Optional: Verify client_id if present
-            client_id = claims.get("client_id")
-            if client_id and client_id != "user-generated":
-                logger.debug(f"JWT token has unexpected client_id: {client_id}")
 
             # Log token validation success with additional details
             token_type = claims.get("token_type", "unknown")
