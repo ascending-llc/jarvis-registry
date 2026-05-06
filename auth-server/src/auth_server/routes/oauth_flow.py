@@ -742,7 +742,10 @@ async def oauth2_callback(
             "created_at": current_time,
         }
 
-        redirect_params = {"code": authorization_code, "state": session_data["client_state"]}
+        redirect_params = {"code": authorization_code}
+        client_state = session_data.get("client_state")
+        if client_state:
+            redirect_params["state"] = client_state
 
         redirect_url = f"{client_redirect_uri}?{urlencode(redirect_params)}"
         logger.info(

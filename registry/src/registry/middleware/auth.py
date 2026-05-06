@@ -123,7 +123,7 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
             except AuthenticationError as e:
                 auth_ctx.set_success(False)
 
-                logger.exception(f"Auth failed for {path}")
+                logger.warning(f"Auth failed for {path}")
 
                 headers = {"Connection": "close"}
 
