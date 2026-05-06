@@ -1,4 +1,4 @@
-import { MagnifyingGlassIcon, PlusIcon, XMarkIcon } from '@heroicons/react/24/outline';
+import { PlusIcon } from '@heroicons/react/24/outline';
 import type React from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
@@ -19,7 +19,7 @@ const RefreshGlyph: React.FC<{ className?: string }> = ({ className = '' }) => (
 
 const Dashboard: React.FC = () => {
   const navigate = useNavigate();
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [searchParams] = useSearchParams();
   const {
     viewMode,
     setViewMode,
@@ -36,16 +36,17 @@ const Dashboard: React.FC = () => {
     federations,
     federationsLoading,
     refreshFederationData,
+    searchTerm,
+    committedQuery,
+    setCommittedQuery,
   } = useServer();
 
-  const [searchTerm, setSearchTerm] = useState('');
-  const [committedQuery, setCommittedQuery] = useState('');
   const [refreshing, setRefreshing] = useState(false);
 
   // Sync viewMode with URL tab parameter
   const urlTab = searchParams.get('tab');
   useEffect(() => {
-    if (urlTab === 'agents' || urlTab === 'external') {
+    if (urlTab === 'agents' || urlTab === 'external' || urlTab === 'workflow') {
       setViewMode(urlTab);
     } else {
       setViewMode('servers');
@@ -149,29 +150,7 @@ const Dashboard: React.FC = () => {
     if (searchTerm.trim().length === 0 && committedQuery.length > 0) {
       setCommittedQuery('');
     }
-  }, [searchTerm, committedQuery]);
-
-  const handleSemanticSearch = useCallback(() => {
-    const trimmed = searchTerm.trim();
-    setCommittedQuery(trimmed);
-  }, [searchTerm]);
-
-  const handleClearSearch = useCallback(() => {
-    setSearchTerm('');
-    setCommittedQuery('');
-  }, []);
-
-  const handleChangeViewFilter = useCallback(
-    (filter: 'servers' | 'agents' | 'external') => {
-      setViewMode(filter);
-      setSearchParams(filter === 'servers' ? {} : { tab: filter }, { replace: true });
-      if (semanticSectionVisible) {
-        setSearchTerm('');
-        setCommittedQuery('');
-      }
-    },
-    [semanticSectionVisible, setViewMode, setSearchParams],
-  );
+  }, [searchTerm, committedQuery, setCommittedQuery]);
 
   const handleRefreshHealth = async () => {
     setRefreshing(true);
@@ -288,6 +267,18 @@ const Dashboard: React.FC = () => {
         </div>
       )}
 
+      {/* Workflow Section (Placeholder) */}
+      {viewMode === 'workflow' && (
+        <div className='mb-8'>
+          <div className='rounded-2xl border border-dashed border-[color:var(--jarvis-border-strong)] bg-[var(--jarvis-card)] py-20 text-center'>
+            <div className='mb-2 text-xl font-medium text-[var(--jarvis-faint)]'>Coming soon...</div>
+            <p className='mx-auto max-w-md text-sm text-[var(--jarvis-muted)]'>
+              The Workflow feature is currently in beta and will be available in a future update.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* External Providers Section */}
       {viewMode === 'external' && (
         <div className='mb-8'>
@@ -333,102 +324,62 @@ const Dashboard: React.FC = () => {
 
   return (
     <div className='flex flex-col h-full'>
-      {/* Fixed Header Section */}
-      <div className='flex-shrink-0 space-y-4 mb-6'>
-        {/* View Filter Tabs */}
-        <div className='flex gap-6 overflow-x-auto border-b border-[color:var(--jarvis-border)]'>
-          <button
-            onClick={() => handleChangeViewFilter('servers')}
-            className={`inline-flex items-center gap-2 border-b-2 px-1 py-3 text-[15px] font-medium whitespace-nowrap transition-colors ${
-              viewMode === 'servers'
-                ? 'border-[var(--jarvis-primary)] text-[var(--jarvis-primary)]'
-                : 'border-transparent text-[var(--jarvis-muted)] hover:text-[var(--jarvis-text)] hover:border-[color:var(--jarvis-border)]'
-            }`}
-          >
-            MCP Servers
-          </button>
-          <button
-            onClick={() => handleChangeViewFilter('agents')}
-            className={`inline-flex items-center gap-2 border-b-2 px-1 py-3 text-[15px] font-medium whitespace-nowrap transition-colors ${
-              viewMode === 'agents'
-                ? 'border-[var(--jarvis-primary)] text-[var(--jarvis-primary)]'
-                : 'border-transparent text-[var(--jarvis-muted)] hover:text-[var(--jarvis-text)] hover:border-[color:var(--jarvis-border)]'
-            }`}
-          >
-            A2A Agents
-          </button>
-          <button
-            onClick={() => handleChangeViewFilter('external')}
-            className={`inline-flex items-center gap-2 border-b-2 px-1 py-3 text-[15px] font-medium whitespace-nowrap transition-colors ${
-              viewMode === 'external'
-                ? 'border-[var(--jarvis-primary)] text-[var(--jarvis-primary)]'
-                : 'border-transparent text-[var(--jarvis-muted)] hover:text-[var(--jarvis-text)] hover:border-[color:var(--jarvis-border)]'
-            }`}
-          >
-            External Providers
-          </button>
-        </div>
-
-        {/* Search Bar and Refresh Button */}
-        <div className='flex items-center gap-3'>
-          <div className='relative flex-1'>
-            <div className='absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none'>
-              <MagnifyingGlassIcon className='h-4 w-4 text-[var(--jarvis-subtle)]' />
-            </div>
-            <input
-              type='text'
-              placeholder='Search servers, agents, descriptions, or tags...'
-              className='h-10 w-full rounded-lg border border-[color:var(--jarvis-input-border)] bg-[var(--jarvis-input-bg)] pl-10 pr-10 text-sm text-[var(--jarvis-text)] outline-none transition placeholder:text-[var(--jarvis-input-placeholder)] focus:border-[var(--jarvis-primary)] focus:bg-[var(--jarvis-input-bg-focus)] focus:ring-2 focus:ring-[var(--jarvis-primary)]'
-              value={searchTerm}
-              onChange={e => setSearchTerm(e.target.value)}
-              onKeyDown={e => {
-                if (e.key === 'Enter') {
-                  e.preventDefault();
-                  handleSemanticSearch();
-                }
-              }}
-            />
-            {searchTerm && (
-              <button
-                onClick={handleClearSearch}
-                className='absolute inset-y-0 right-0 flex items-center pr-3 text-[var(--jarvis-subtle)] hover:text-[var(--jarvis-text)]'
-              >
-                <XMarkIcon className='h-4 w-4' />
-              </button>
-            )}
+      {/* Section Header */}
+      <div className='flex items-start justify-between flex-shrink-0 mb-6'>
+        <div className='flex flex-col space-y-1.5'>
+          <div className='flex items-center space-x-3'>
+            <h2 className='text-2xl font-bold tracking-tight text-[var(--jarvis-text-strong)]'>
+              {viewMode === 'servers' && 'MCP Servers'}
+              {viewMode === 'agents' && 'A2A Agents'}
+              {viewMode === 'external' && 'External Providers'}
+              {viewMode === 'workflow' && 'Workflow'}
+            </h2>
           </div>
-
-          <IconButton
-            ariaLabel='Register'
-            tooltip={
-              viewMode === 'agents'
-                ? 'Register agent'
-                : viewMode === 'external'
-                  ? 'Register external provider'
-                  : 'Register server'
-            }
-            onClick={handleRegister}
-            variant='solid'
-            className='flex-shrink-0'
-          >
-            <PlusIcon className='h-5 w-5' />
-          </IconButton>
-
-          <IconButton
-            ariaLabel='Refresh'
-            tooltip='Refresh'
-            onClick={handleRefreshHealth}
-            disabled={refreshing}
-            spinning={refreshing}
-            className='rounded-lg h-10 w-10 flex items-center justify-center border border-[color:var(--jarvis-border)] bg-[var(--jarvis-surface)] hover:bg-[var(--jarvis-card-muted)] text-[var(--jarvis-text)]'
-          >
-            <RefreshGlyph className='h-4 w-4' />
-          </IconButton>
+          <p className='text-sm text-[var(--jarvis-muted)] max-w-2xl'>
+            {viewMode === 'servers' &&
+              'Model Context Protocol servers federated and discoverable through your Jarvis registry.'}
+            {viewMode === 'agents' &&
+              'Agent-to-Agent protocol endpoints with auto-discovered .well-known capabilities.'}
+            {viewMode === 'external' && 'Federated MCP servers and agents from AWS AgentCore and Azure AI Foundry.'}
+            {viewMode === 'workflow' &&
+              'The Workflow feature is currently in beta and will be available in a future update.'}
+          </p>
         </div>
+
+        {viewMode !== 'workflow' && (
+          <div className='flex items-center gap-3'>
+            <IconButton
+              ariaLabel='Refresh'
+              tooltip='Refresh'
+              onClick={handleRefreshHealth}
+              disabled={refreshing}
+              spinning={refreshing}
+              className='rounded-lg h-10 w-10 flex items-center justify-center border border-[color:var(--jarvis-border)] bg-[var(--jarvis-surface)] hover:bg-[var(--jarvis-card-muted)] text-[var(--jarvis-text)] transition-colors'
+            >
+              <RefreshGlyph className='h-4 w-4' />
+            </IconButton>
+
+            <IconButton
+              ariaLabel='Register'
+              tooltip={
+                viewMode === 'agents'
+                  ? 'Register Agent'
+                  : viewMode === 'external'
+                    ? 'Register Provider'
+                    : 'Register Server'
+              }
+              onClick={handleRegister}
+              variant='solid'
+              className='rounded-lg h-10 w-10 flex items-center justify-center bg-[var(--jarvis-primary)] text-white hover:bg-[var(--jarvis-primary-hover)] shadow-sm transition-colors'
+            >
+              <PlusIcon className='h-5 w-5' />
+            </IconButton>
+          </div>
+        )}
       </div>
 
       {/* Scrollable Content Area */}
-      <div className='flex-1 overflow-y-auto min-h-0 space-y-10 pr-4 sm:pr-6 lg:pr-8 -mr-4 sm:-mr-6 lg:-mr-8'>
+      <div className='flex-1 overflow-y-auto min-h-0 space-y-10 pr-4 sm:pr-6 lg:pr-8 -mr-4 sm:-mr-6 lg:-mr-8 pt-2 pb-4'>
         {semanticSectionVisible ? (
           <>
             <SemanticSearchResults

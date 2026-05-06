@@ -6,7 +6,7 @@
 [![License](https://img.shields.io/github/license/ascending-llc/jarvis-registry?style=flat)](https://github.com/ascending-llc/jarvis-registry/blob/main/LICENSE)
 [![GitHub release](https://img.shields.io/github/v/release/ascending-llc/jarvis-registry?style=flat&logo=github)](https://github.com/ascending-llc/jarvis-registry/releases)
 
-[🚀 Quick Start](#quick-start) | [📖 Documentation](https://ascending-llc.github.io/jarvis-registry/) | [🎬 Demo](https://youtu.be/EUqWc_mAaXs) | [🌐 Website](https://ascendingdc.com/jarvis-ai/jarvis-registry/)
+[🚀 Quick Start](#quick-start) | [📖 Documentation](https://jarvisregistry.com/) | [🎬 Demo](https://youtu.be/EUqWc_mAaXs) | [🌐 Website](https://ascendingdc.com/jarvis-ai/jarvis-registry/)
 
 </div>
 
@@ -65,15 +65,15 @@ See the full [Get Started guide](docs/quick-start.md) for detailed instructions.
 
 ## Documentation
 
-Full documentation is available at **[ascending-llc.github.io/jarvis-registry](https://ascending-llc.github.io/jarvis-registry/)**:
+Full documentation is available at **[jarvisregistry.com](https://jarvisregistry.com)**:
 
 | Section | Description |
 |---|---|
-| [Why Use Jarvis Registry](docs/FEATURES.md) | Benefits, use cases, and competitive advantages |
-| [Get Started](docs/quick-start.md) | Installation, configuration, and first run |
-| [Authentication](docs/auth.md) | IdP setup for Keycloak, Cognito, and Entra ID |
-| [Core Design](docs/design/) | Architecture, RBAC, ACL, federation, and A2A |
-| [API Reference](docs/api-reference.md) | REST API and MCP endpoint documentation |
+| [Why Use Registry](https://jarvisregistry.com/FEATURES/) | Benefits, use cases, and competitive advantages |
+| [Get Started](https://jarvisregistry.com/quick-start/) | Installation, configuration, and first run |
+| [Core Features](https://jarvisregistry.com/features/auth-server/) | IDP integration, MCP/A2A registry, federation |
+| [Architecture & Design](https://jarvisregistry.com/design/security-design/) | Security, RBAC, ACL, agent workflow, federation |
+| [Project](https://jarvisregistry.com/CONTRIBUTING/) | Contributing, license, and code of conduct |
 
 ---
 
@@ -108,10 +108,20 @@ Licensed under the Apache 2.0 License — see the [LICENSE](LICENSE) file for de
 
 ---
 
+## Star History
+
+<div align="center">
+
+[![Star History Chart](https://api.star-history.com/svg?repos=ascending-llc/jarvis-registry&type=Date)](https://star-history.com/#ascending-llc/jarvis-registry&Date)
+
+</div>
+
+---
+
 <div align="center">
 
 **⭐ Star this repository if it helps your organization!**
 
-[Get Started](docs/quick-start.md) | [Documentation](https://ascending-llc.github.io/jarvis-registry/) | [Website](https://ascendingdc.com/jarvis-ai/) | [YouTube](https://www.youtube.com/channel/UCi5_sn38igXkk-4hsR0JGtw) | [LinkedIn](https://www.linkedin.com/company/ascendingllc/mycompany/)
+[Get Started](docs/quick-start.md) | [Documentation](https://jarvisregistry.com/) | [Website](https://ascendingdc.com/jarvis-ai/) | [YouTube](https://www.youtube.com/channel/UCi5_sn38igXkk-4hsR0JGtw) | [LinkedIn](https://www.linkedin.com/company/ascendingllc/mycompany/)
 
 </div>
