@@ -125,6 +125,9 @@ body[data-md-color-scheme="slate"] .md-logo__light   { display: none !important;
   --md-accent-fg-color: var(--ascending-accent);
   --md-primary-fg-color: var(--ascending-header-bg);
   --md-typeset-a-color: var(--ascending-accent-dark);
+
+  /* Mermaid label text color in dark theme */
+  --md-mermaid-label-fg-color: #111827;
 }
 
 body[data-md-color-scheme="slate"] .md-typeset a {
