@@ -169,8 +169,15 @@ class TestAuthRoutes:
         mock_user_service = Mock()
         mock_user_service.get_user_by_user_id = AsyncMock(return_value=mock_user)
 
+        user_claims = {
+            "sub": "someone",
+            "user_id": "12345",
+        }
+
         with (
             patch("registry.api.redirect_routes.httpx.AsyncClient") as mock_client,
+            patch("registry.api.redirect_routes.decrypt_value") as mock_decrypter,
+            patch("registry.api.redirect_routes.decode_jwt_unverified") as mock_decoder,
             patch(
                 "registry.api.redirect_routes.generate_token_pair",
                 return_value=("mock-access-token", "mock-refresh-token"),
@@ -178,17 +185,19 @@ class TestAuthRoutes:
         ):
             mock_client_instance = mock_client.return_value.__aenter__.return_value
             mock_client_instance.post = AsyncMock(return_value=mock_response)
+            mock_decrypter.return_value = "123"
+            mock_decoder.return_value = user_claims
 
             response = await oauth2_callback(
                 mock_request,
                 code=mock_code,
+                registry_oauth2_code_verifier="a-cookie",
                 user_service=mock_user_service,
             )
 
         assert isinstance(response, RedirectResponse)
         assert response.status_code == 302
-        # Registry client URL may or may not have trailing slash
-        assert response.headers["location"] == f"{mock_settings.registry_client_url}/login?error=oauth2_exchange_error"
+        assert response.headers["location"] == f"{mock_settings.registry_client_url}"
 
     @pytest.mark.asyncio
     async def test_oauth2_callback_user_not_found(self, mock_request, mock_code, mock_settings):

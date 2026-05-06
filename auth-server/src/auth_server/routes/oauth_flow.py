@@ -624,7 +624,7 @@ async def oauth2_callback(
     code: str | None = None,
     state: str | None = None,
     error: str | None = None,
-    oauth2_temp_session: str = Cookie(None),
+    oauth2_temp_session: str | None = Cookie(None),
     oauth2_config: OAuth2Config = Depends(get_oauth2_config),
     user_service: UserService = Depends(get_user_service),
     signer: URLSafeTimedSerializer = Depends(get_signer),

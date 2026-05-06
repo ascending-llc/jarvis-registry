@@ -94,7 +94,7 @@ async def oauth2_callback(
     code: str | None = None,
     error: str | None = None,
     details: str | None = None,
-    registry_oauth2_code_verifier: str = Cookie(None),
+    registry_oauth2_code_verifier: str | None = Cookie(None),
     user_service: UserService = Depends(get_user_service),
     is_https: bool = Depends(check_if_https),
 ):
@@ -123,6 +123,20 @@ async def oauth2_callback(
                 url=f"{settings.registry_client_url}/login?error=oauth2_missing_code", status_code=302
             )
 
+        if registry_oauth2_code_verifier is None:
+            return RedirectResponse(
+                url=f"{settings.registry_client_url}/login?error=oauth2_missing_code_verifier", status_code=302
+            )
+
+        try:
+            code_verifier = decrypt_value(registry_oauth2_code_verifier)
+        except Exception:
+            logger.exception("failed to decrypt registry_oauth2_code_verifier cookie.")
+
+            return RedirectResponse(
+                url=f"{settings.registry_client_url}/login?error=oauth2_missing_code_verifier", status_code=302
+            )
+
         # Exchange authorization code for JWT access token (standard OAuth2 flow)
         try:
             async with httpx.AsyncClient() as client:
@@ -134,7 +148,7 @@ async def oauth2_callback(
                         "redirect_uri": settings.registry_redirect_uri,
                         "client_id": settings.registry_app_name,
                         "client_secret": settings.registry_client_secret,
-                        "code_verifier": decrypt_value(registry_oauth2_code_verifier),
+                        "code_verifier": code_verifier,
                     },
                     timeout=10.0,
                 )
