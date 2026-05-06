@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from ...models import ExtendedMCPServer
@@ -12,6 +13,14 @@ logger = logging.getLogger(__name__)
 
 class MCPServerRepository(BaseVectorSyncRepository[ExtendedMCPServer]):
     """Vector sync repository for MCP servers."""
+
+    FILTERABLE_PROPERTIES = {
+        "server_id": "text",
+        "federation_id": "text",
+        "runtimeArn": "text",
+        "path": "text",
+        "enabled": "bool",
+    }
 
     def __init__(self, db_client: DatabaseClient):
         super().__init__(db_client, ExtendedMCPServer)
@@ -41,9 +50,18 @@ class MCPServerRepository(BaseVectorSyncRepository[ExtendedMCPServer]):
             await self.ensure_collection()
 
             if is_delete and self._collection_has_property("server_id"):
-                result.deleted = await self.adelete_by_filter({"server_id": server_id})
-                if result.deleted:
-                    logger.debug("Deleted %d old docs for server_id=%s", result.deleted, server_id)
+                try:
+                    result.deleted = await asyncio.wait_for(
+                        self.adelete_by_filter({"server_id": server_id}),
+                        timeout=10.0,
+                    )
+                    if result.deleted:
+                        logger.debug("Deleted %d old docs for server_id=%s", result.deleted, server_id)
+                except TimeoutError:
+                    logger.warning(
+                        "adelete_by_filter timed out for server_id=%s — skipping delete, proceeding with insert",
+                        server_id,
+                    )
 
             docs = server.to_documents()
             if not docs:

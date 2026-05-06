@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from ...models import A2AAgent
@@ -12,6 +13,13 @@ logger = logging.getLogger(__name__)
 
 class A2AAgentRepository(BaseVectorSyncRepository[A2AAgent]):
     """Vector sync repository for A2A agents."""
+
+    FILTERABLE_PROPERTIES = {
+        "agent_id": "text",
+        "federation_id": "text",
+        "runtimeArn": "text",
+        "enabled": "bool",
+    }
 
     def __init__(self, db_client: DatabaseClient):
         super().__init__(db_client, A2AAgent)
@@ -41,9 +49,18 @@ class A2AAgentRepository(BaseVectorSyncRepository[A2AAgent]):
             await self.ensure_collection()
 
             if is_delete and self._collection_has_property("agent_id"):
-                result.deleted = await self.adelete_by_filter({"agent_id": agent_id})
-                if result.deleted:
-                    logger.debug("Deleted %d old docs for agent_id=%s", result.deleted, agent_id)
+                try:
+                    result.deleted = await asyncio.wait_for(
+                        self.adelete_by_filter({"agent_id": agent_id}),
+                        timeout=10.0,
+                    )
+                    if result.deleted:
+                        logger.debug("Deleted %d old docs for agent_id=%s", result.deleted, agent_id)
+                except TimeoutError:
+                    logger.warning(
+                        "adelete_by_filter timed out for agent_id=%s — skipping delete, proceeding with insert",
+                        agent_id,
+                    )
 
             doc_ids = await self.asave(agent)
             if doc_ids:

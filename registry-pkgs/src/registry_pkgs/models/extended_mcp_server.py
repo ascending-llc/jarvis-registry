@@ -262,9 +262,9 @@ class ExtendedMCPServer(MCPServer):
 
     def _get_base_metadata(self, entity_type: ServerEntityType) -> dict[str, Any]:
         """Get base metadata shared by all document types."""
-        is_enabled = self.status == "active"
-        if self.config and isinstance(self.config.get("enabled"), bool):
-            is_enabled = self.config["enabled"]
+        enabled = (
+            bool(self.config.get("enabled")) if self.config and isinstance(self.config.get("enabled"), bool) else False
+        )
 
         metadata = {
             "collection": self.COLLECTION_NAME,
@@ -272,8 +272,7 @@ class ExtendedMCPServer(MCPServer):
             "server_id": str(self.id) if self.id else None,
             "server_name": self.serverName,
             "path": self.path,
-            "status": self.status,
-            "enabled": is_enabled,
+            "enabled": enabled,
         }
         # Federation metadata lets vector sync target one federated MCP runtime precisely.
         if self.federationRefId is not None:
@@ -296,12 +295,11 @@ class ExtendedMCPServer(MCPServer):
         (as doc prefix), so changing either always changes vectorContentHash and
         triggers a full rebuild — they never reach this path.
         """
-        is_enabled = self.status == "active"
-        if self.config and isinstance(self.config.get("enabled"), bool):
-            is_enabled = self.config["enabled"]
+        enabled = (
+            bool(self.config.get("enabled")) if self.config and isinstance(self.config.get("enabled"), bool) else False
+        )
         meta: dict[str, Any] = {
-            "status": self.status,
-            "enabled": is_enabled,
+            "enabled": enabled,
             "tags": list(self.tags) if self.tags else [],
         }
         runtime_version = (self.federationMetadata or {}).get("runtimeVersion")

@@ -1148,7 +1148,12 @@ class ServerServiceV1:
         await server.save()
         logger.info(f"Toggled server {server.serverName} (ID: {server.id}) enabled to {enabled}")
 
-        self._schedule_vector_sync(server, old_hash)
+        # When enabling, always force a full sync — Weaviate may be empty even if the
+        # content hash hasn't changed (e.g. after a collection reset or a previous failed sync).
+        if enabled:
+            self._schedule_vector_sync(server, old_hash=None)
+        else:
+            self._schedule_vector_sync(server, old_hash)
         return server
 
     async def get_server_tools(
