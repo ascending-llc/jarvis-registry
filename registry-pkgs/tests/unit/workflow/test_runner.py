@@ -3,6 +3,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from agno.run.base import RunStatus
+from agno.run.workflow import WorkflowRunOutput
 from beanie import PydanticObjectId
 
 from registry_pkgs.models.enums import WorkflowRunStatus
@@ -113,9 +115,66 @@ class TestWorkflowRunnerRun:
         assert actual_run is run_doc
         assert actual_nodes == node_runs
         # registry_token + accessible_agent_ids are forwarded to _build_registry
-        runner.WorkflowRunner._build_registry.assert_awaited_once_with(definition, "user-tok", accessible)
+        runner.WorkflowRunner._build_registry.assert_awaited_once_with(
+            definition,
+            "user-tok",
+            accessible,
+            registry_url=None,
+        )
         runner.WorkflowRunner._create_run.assert_awaited_once_with(definition, "hello", "api")
         runner.WorkflowRunner._execute.assert_awaited_once_with(run_doc, definition, "hello", fake_registry)
+
+    @pytest.mark.asyncio
+    async def test_run_existing_executes_existing_run_without_creating_new_run(self, monkeypatch: pytest.MonkeyPatch):
+        definition = _definition()
+        existing_run = SimpleNamespace(
+            id=PydanticObjectId(),
+            workflow_definition_id=definition.id,
+            status=WorkflowRunStatus.PENDING,
+            error_summary="old error",
+            finished_at=datetime.now(UTC),
+            initial_input=None,
+            definition_snapshot=None,
+            save=AsyncMock(),
+        )
+        node_runs = [SimpleNamespace(node_name="fetch")]
+        fake_registry = {"tool": object()}
+
+        monkeypatch.setattr(runner.WorkflowDefinition, "get", AsyncMock(return_value=definition))
+        monkeypatch.setattr(runner.WorkflowRunner, "_build_registry", AsyncMock(return_value=fake_registry))
+        monkeypatch.setattr(runner.WorkflowRunner, "_execute", AsyncMock())
+        monkeypatch.setattr(
+            runner.WorkflowRunner, "_create_run", AsyncMock(side_effect=AssertionError("should not create"))
+        )
+
+        monkeypatch.setattr(runner.NodeRun, "workflow_run_id", _FieldExpr("workflow_run_id"), raising=False)
+        find_query = SimpleNamespace(to_list=AsyncMock(return_value=node_runs))
+        monkeypatch.setattr(runner.NodeRun, "find", lambda *args, **kwargs: find_query)
+
+        r = _make_runner()
+        actual_run, actual_nodes = await r.run_existing(
+            existing_run,
+            "hello",
+            registry_token="user-tok",
+            accessible_agent_ids={"agent-id-1"},
+        )
+
+        assert actual_run is existing_run
+        assert actual_nodes == node_runs
+        assert existing_run.status == WorkflowRunStatus.RUNNING
+        assert existing_run.error_summary is None
+        assert existing_run.finished_at is None
+        assert existing_run.initial_input == {"user_text": "hello"}
+        assert existing_run.definition_snapshot["name"] == definition.name
+        existing_run.save.assert_awaited_once()
+        runner.WorkflowRunner._build_registry.assert_awaited_once_with(
+            definition,
+            "user-tok",
+            {"agent-id-1"},
+            registry_url=None,
+        )
+        runner.WorkflowRunner._execute.assert_awaited_once_with(existing_run, definition, "hello", fake_registry)
+        runner.WorkflowRunner._create_run.assert_not_awaited()
 
 
 @pytest.mark.unit
@@ -196,8 +255,18 @@ class TestCreateRun:
 class TestExecute:
     @pytest.mark.asyncio
     async def test_compiles_workflow_and_syncs_run_after_success(self, monkeypatch: pytest.MonkeyPatch):
-        workflow = SimpleNamespace(arun=AsyncMock())
-        run_doc = SimpleNamespace(sync=AsyncMock(), id="run-1")
+        workflow = SimpleNamespace(
+            arun=AsyncMock(return_value=WorkflowRunOutput(content="done", status=RunStatus.completed, step_results=[]))
+        )
+        run_doc = SimpleNamespace(
+            sync=AsyncMock(),
+            save=AsyncMock(),
+            id="run-1",
+            status=WorkflowRunStatus.RUNNING,
+            error_summary=None,
+            final_output=None,
+            finished_at=None,
+        )
         fake_registry = {"tool": object()}
 
         monkeypatch.setattr(runner, "compile_workflow", lambda *args, **kwargs: workflow)
@@ -210,6 +279,10 @@ class TestExecute:
             session_state={"user_text": "hello", "_workflow_run_id": "run-1"},
         )
         run_doc.sync.assert_awaited_once()
+        run_doc.save.assert_awaited_once()
+        assert run_doc.status == WorkflowRunStatus.COMPLETED
+        assert run_doc.final_output == {"content": "done"}
+        assert run_doc.finished_at is not None
 
     @pytest.mark.asyncio
     async def test_marks_run_failed_and_reraises_when_workflow_raises(self, monkeypatch: pytest.MonkeyPatch):
@@ -232,4 +305,31 @@ class TestExecute:
         assert run_doc.error_summary == "boom"
         assert isinstance(run_doc.finished_at, datetime)
         assert run_doc.finished_at.tzinfo == UTC
+        run_doc.save.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_marks_run_failed_when_arun_returns_non_terminal_status(self, monkeypatch: pytest.MonkeyPatch):
+        workflow = SimpleNamespace(
+            arun=AsyncMock(
+                return_value=WorkflowRunOutput(content="not done", status=RunStatus.running, step_results=[])
+            )
+        )
+        run_doc = SimpleNamespace(
+            sync=AsyncMock(),
+            save=AsyncMock(),
+            id="run-1",
+            status=WorkflowRunStatus.RUNNING,
+            error_summary=None,
+            final_output=None,
+            finished_at=None,
+        )
+
+        monkeypatch.setattr(runner, "compile_workflow", lambda *args, **kwargs: workflow)
+        r = _make_runner()
+
+        await r._execute(run_doc, _definition(), "hello", {})
+
+        assert run_doc.status == WorkflowRunStatus.FAILED
+        assert run_doc.error_summary == "Workflow returned non-terminal status after execution: RUNNING"
+        assert isinstance(run_doc.finished_at, datetime)
         run_doc.save.assert_awaited_once()

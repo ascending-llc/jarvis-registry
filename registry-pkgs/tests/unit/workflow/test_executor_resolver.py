@@ -227,8 +227,9 @@ class TestMcpExecutor:
     @pytest.mark.asyncio
     async def test_make_mcp_executor_returns_step_output(self, monkeypatch: pytest.MonkeyPatch):
         fake_agent_instance = SimpleNamespace(arun=AsyncMock(return_value=SimpleNamespace(content="done")))
+        fake_mcp_tools = SimpleNamespace(initialized=True, connect=AsyncMock())
 
-        monkeypatch.setattr(mcp_exec, "MCPTools", lambda *args, **kwargs: "mcp-tools")
+        monkeypatch.setattr(mcp_exec, "MCPTools", lambda *args, **kwargs: fake_mcp_tools)
         monkeypatch.setattr(mcp_exec, "Agent", lambda **kwargs: fake_agent_instance)
 
         executor = mcp_exec.make_mcp_executor(
@@ -242,7 +243,69 @@ class TestMcpExecutor:
 
         assert output.success is True
         assert output.content == "done"
+        fake_mcp_tools.connect.assert_awaited_once_with(force=False)
         fake_agent_instance.arun.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_make_mcp_executor_reraises_agent_failures(self, monkeypatch: pytest.MonkeyPatch):
+        fake_agent_instance = SimpleNamespace(arun=AsyncMock(side_effect=RuntimeError("init failed")))
+        fake_mcp_tools = SimpleNamespace(initialized=True, connect=AsyncMock())
+
+        monkeypatch.setattr(mcp_exec, "MCPTools", lambda *args, **kwargs: fake_mcp_tools)
+        monkeypatch.setattr(mcp_exec, "Agent", lambda **kwargs: fake_agent_instance)
+
+        executor = mcp_exec.make_mcp_executor(
+            _mcp_server("github"),
+            llm=SimpleNamespace(),
+            registry_url="https://registry.example.com",
+            registry_token="token",
+        )
+
+        with pytest.raises(RuntimeError, match="MCP executor 'github' failed: init failed"):
+            await executor(SimpleNamespace(input="hello", previous_step_content="ctx"), {})
+
+    @pytest.mark.asyncio
+    async def test_make_mcp_executor_raises_when_agent_returns_error_status(self, monkeypatch: pytest.MonkeyPatch):
+        fake_agent_instance = SimpleNamespace(
+            arun=AsyncMock(return_value=SimpleNamespace(content="Unable to locate credentials", status="error"))
+        )
+        fake_mcp_tools = SimpleNamespace(initialized=True, connect=AsyncMock())
+
+        monkeypatch.setattr(mcp_exec, "MCPTools", lambda *args, **kwargs: fake_mcp_tools)
+        monkeypatch.setattr(mcp_exec, "Agent", lambda **kwargs: fake_agent_instance)
+
+        executor = mcp_exec.make_mcp_executor(
+            _mcp_server("github"),
+            llm=SimpleNamespace(),
+            registry_url="https://registry.example.com",
+            registry_token="token",
+        )
+
+        with pytest.raises(RuntimeError, match="Unable to locate credentials"):
+            await executor(SimpleNamespace(input="hello", previous_step_content="ctx"), {})
+
+    @pytest.mark.asyncio
+    async def test_make_mcp_executor_raises_when_agent_returns_credential_error_content(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        fake_agent_instance = SimpleNamespace(
+            arun=AsyncMock(return_value=SimpleNamespace(content="Unable to locate credentials", status="completed"))
+        )
+        fake_mcp_tools = SimpleNamespace(initialized=True, connect=AsyncMock())
+
+        monkeypatch.setattr(mcp_exec, "MCPTools", lambda *args, **kwargs: fake_mcp_tools)
+        monkeypatch.setattr(mcp_exec, "Agent", lambda **kwargs: fake_agent_instance)
+
+        executor = mcp_exec.make_mcp_executor(
+            _mcp_server("github"),
+            llm=SimpleNamespace(),
+            registry_url="https://registry.example.com",
+            registry_token="token",
+        )
+
+        with pytest.raises(RuntimeError, match="Unable to locate credentials"):
+            await executor(SimpleNamespace(input="hello", previous_step_content="ctx"), {})
 
 
 @pytest.mark.unit

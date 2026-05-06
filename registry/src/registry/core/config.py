@@ -34,6 +34,7 @@ class Settings(JarvisBaseSettings):
 
     # ==================== Service URLs ====================
     registry_client_url: str = "http://localhost:5173"
+    registry_internal_url: str = "http://localhost:7860"
 
     # ==================== Headers ====================
     auth_egress_header: str = "Authorization"

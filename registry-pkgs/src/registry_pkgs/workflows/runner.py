@@ -49,12 +49,15 @@ from datetime import UTC, datetime
 from typing import Any
 
 from agno.models.base import Model
+from agno.run.base import RunStatus
+from agno.run.workflow import WorkflowRunOutput
 
 from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.models.enums import WorkflowRunStatus
 from registry_pkgs.models.workflow import NodeRun, WorkflowDefinition, WorkflowRun
 from registry_pkgs.workflows.compiler import StepExecutor, compile_workflow, flatten_workflow_nodes
 from registry_pkgs.workflows.executor_resolver import build_executor_registry
+from registry_pkgs.workflows.persistence import _flatten_step_results, _resolve_workflow_run_status
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +110,7 @@ class WorkflowRunner:
         registry_token: str,
         accessible_agent_ids: set[str] | None,
         trigger_source: str = "api",
+        registry_url: str | None = None,
     ) -> tuple[WorkflowRun, list[NodeRun]]:
         """Execute a workflow definition and return the completed run + per-node results.
 
@@ -135,9 +139,54 @@ class WorkflowRunner:
         if definition is None:
             raise ValueError(f"WorkflowDefinition {definition_id!r} not found")
 
-        executor_registry = await self._build_registry(definition, registry_token, accessible_agent_ids)
+        executor_registry = await self._build_registry(
+            definition,
+            registry_token,
+            accessible_agent_ids,
+            registry_url=registry_url,
+        )
 
         run = await self._create_run(definition, user_text, trigger_source)
+        await self._execute(run, definition, user_text, executor_registry)
+
+        node_runs = await NodeRun.find(NodeRun.workflow_run_id == run.id).to_list()
+        return run, node_runs
+
+    async def run_existing(
+        self,
+        run: WorkflowRun,
+        user_text: str,
+        *,
+        registry_token: str,
+        accessible_agent_ids: set[str] | None,
+        registry_url: str | None = None,
+    ) -> tuple[WorkflowRun, list[NodeRun]]:
+        """Execute an already-created WorkflowRun.
+
+        API trigger paths create the run first so they can return the accepted
+        run id immediately. This method executes that same document instead of
+        inserting a second WorkflowRun.
+        """
+        definition = await WorkflowDefinition.get(run.workflow_definition_id)
+        if definition is None:
+            raise ValueError(f"WorkflowDefinition {str(run.workflow_definition_id)!r} not found")
+
+        executor_registry = await self._build_registry(
+            definition,
+            registry_token,
+            accessible_agent_ids,
+            registry_url=registry_url,
+        )
+
+        run.status = WorkflowRunStatus.RUNNING
+        run.error_summary = None
+        run.finished_at = None
+        if run.initial_input is None:
+            run.initial_input = {"user_text": user_text}
+        if run.definition_snapshot is None:
+            run.definition_snapshot = definition.model_dump(mode="json")
+        await run.save()
+
         await self._execute(run, definition, user_text, executor_registry)
 
         node_runs = await NodeRun.find(NodeRun.workflow_run_id == run.id).to_list()
@@ -148,6 +197,7 @@ class WorkflowRunner:
         definition: WorkflowDefinition,
         registry_token: str,
         accessible_agent_ids: set[str] | None,
+        registry_url: str | None = None,
     ) -> dict[str, StepExecutor]:
         """Extract executor keys + pool nodes from the definition and resolve them.
 
@@ -173,7 +223,7 @@ class WorkflowRunner:
         return await build_executor_registry(
             executor_keys,
             llm=self._llm,
-            registry_url=self._registry_url,
+            registry_url=registry_url or self._registry_url,
             registry_token=registry_token,
             jwt_config=self._jwt_config,
             accessible_agent_ids=accessible_agent_ids,
@@ -221,7 +271,7 @@ class WorkflowRunner:
             db_name=self._db_name,
         )
         try:
-            await workflow.arun(
+            run_output = await workflow.arun(
                 input=user_text,
                 # _workflow_run_id lets executor closures reference the current
                 # run (e.g. for custom logging or future retry reconstruction).
@@ -229,6 +279,7 @@ class WorkflowRunner:
             )
             # Reload state written by WorkflowRunSyncer so callers see the latest status.
             await run.sync()
+            await self._finalize_run_from_output(run, run_output)
         except Exception as exc:
             # agno may not call upsert_session on a hard failure; write the error
             # directly so the record is never left dangling as RUNNING.
@@ -238,3 +289,34 @@ class WorkflowRunner:
             await run.save()
             logger.error("WorkflowRun %s failed: %s", run.id, exc, exc_info=True)
             raise
+
+    async def _finalize_run_from_output(self, run: WorkflowRun, run_output: WorkflowRunOutput) -> None:
+        """Ensure the WorkflowRun document reaches a terminal state after arun returns."""
+        step_outputs = _flatten_step_results(run_output.step_results)
+        resolved_status = _resolve_workflow_run_status(run_output, step_outputs)
+
+        if resolved_status not in {WorkflowRunStatus.COMPLETED, WorkflowRunStatus.FAILED}:
+            resolved_status = WorkflowRunStatus.FAILED
+            run.error_summary = (
+                f"Workflow returned non-terminal status after execution: "
+                f"{getattr(run_output.status, 'value', run_output.status)}"
+            )
+
+        if resolved_status == WorkflowRunStatus.FAILED and not run.error_summary:
+            failed_step = next((step for step in step_outputs if not step.success), None)
+            if failed_step is not None and failed_step.error:
+                run.error_summary = str(failed_step.error)
+            elif run_output.status == RunStatus.error and run_output.content is not None:
+                run.error_summary = str(run_output.content)
+            else:
+                run.error_summary = "Workflow execution failed"
+
+        if resolved_status == WorkflowRunStatus.COMPLETED:
+            run.error_summary = None
+            if run_output.content is not None:
+                run.final_output = {"content": str(run_output.content)}
+
+        run.status = resolved_status
+        if run.finished_at is None:
+            run.finished_at = datetime.now(UTC)
+        await run.save()
