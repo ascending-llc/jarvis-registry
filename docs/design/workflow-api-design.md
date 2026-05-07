@@ -491,7 +491,24 @@
       "startedAt": "2024-01-25T10:00:00Z",
       "finishedAt": "2024-01-25T10:05:30Z",
       "parentRunId": null,
-      "errorSummary": null
+      "errorSummary": null,
+      "nodeRuns": [
+        {
+          "id": "507f1f77bcf86cd799439030",
+          "workflowRunId": "507f1f77bcf86cd799439020",
+          "nodeId": "node-1",
+          "nodeName": "Validate Customer Data",
+          "status": "completed",
+          "attempt": 1,
+          "inputSnapshot": null,
+          "outputSnapshot": {
+            "valid": true
+          },
+          "error": null,
+          "startedAt": "2024-01-25T10:00:05Z",
+          "finishedAt": "2024-01-25T10:00:10Z"
+        }
+      ]
     },
     {
       "id": "507f1f77bcf86cd799439021",
@@ -501,7 +518,22 @@
       "startedAt": "2024-01-25T11:00:00Z",
       "finishedAt": "2024-01-25T11:02:15Z",
       "parentRunId": null,
-      "errorSummary": "Node 'Validate Customer Data' failed: Invalid email format"
+      "errorSummary": "Node 'Validate Customer Data' failed: Invalid email format",
+      "nodeRuns": [
+        {
+          "id": "507f1f77bcf86cd799439031",
+          "workflowRunId": "507f1f77bcf86cd799439021",
+          "nodeId": "node-1",
+          "nodeName": "Validate Customer Data",
+          "status": "failed",
+          "attempt": 1,
+          "inputSnapshot": null,
+          "outputSnapshot": null,
+          "error": "Invalid email format",
+          "startedAt": "2024-01-25T11:00:05Z",
+          "finishedAt": "2024-01-25T11:00:10Z"
+        }
+      ]
     }
   ],
   "pagination": {

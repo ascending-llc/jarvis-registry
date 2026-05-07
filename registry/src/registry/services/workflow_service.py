@@ -313,7 +313,7 @@ class WorkflowService:
         status: str | None = None,
         page: int = 1,
         per_page: int = 20,
-    ) -> tuple[list[WorkflowRun], int]:
+    ) -> tuple[list[tuple[WorkflowRun, list[NodeRun]]], int]:
         """
         List workflow runs with optional filtering and pagination.
 
@@ -324,7 +324,7 @@ class WorkflowService:
             per_page: Items per page
 
         Returns:
-            Tuple of (runs list, total count)
+            Tuple of ((run, node runs) list, total count)
 
         Raises:
             ValueError: If workflow not found
@@ -346,11 +346,20 @@ class WorkflowService:
             # Get paginated results
             skip = (page - 1) * per_page
             runs = await WorkflowRun.find(filters).sort("-started_at").skip(skip).limit(per_page).to_list()
+            run_ids = [run.id for run in runs]
+            node_runs_by_run_id: dict[str, list[NodeRun]] = {str(run_id): [] for run_id in run_ids}
+
+            if run_ids:
+                node_runs = await NodeRun.find({"workflow_run_id": {"$in": run_ids}}).sort("started_at").to_list()
+                for node_run in node_runs:
+                    node_runs_by_run_id.setdefault(str(node_run.workflow_run_id), []).append(node_run)
+
+            runs_with_nodes = [(run, node_runs_by_run_id.get(str(run.id), [])) for run in runs]
 
             logger.info(
                 f"Listed {len(runs)} workflow runs for {workflow_id} (total: {total}, page: {page}, status: {status})"
             )
-            return runs, total
+            return runs_with_nodes, total
 
         except ValueError:
             raise

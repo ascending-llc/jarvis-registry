@@ -410,7 +410,7 @@ async def list_workflow_runs(
     """
     try:
         # List workflow runs
-        runs, total = await workflow_service.list_workflow_runs(
+        runs_with_nodes, total = await workflow_service.list_workflow_runs(
             workflow_id=workflow_id,
             status=status,
             page=page,
@@ -418,7 +418,7 @@ async def list_workflow_runs(
         )
 
         # Convert to response items
-        run_items = [convert_to_run_list_item(run) for run in runs]
+        run_items = [convert_to_run_list_item(run, node_runs) for run, node_runs in runs_with_nodes]
 
         # Calculate pagination metadata
         total_pages = math.ceil(total / per_page) if total > 0 else 0

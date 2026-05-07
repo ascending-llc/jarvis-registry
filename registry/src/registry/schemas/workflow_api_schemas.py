@@ -159,6 +159,7 @@ class WorkflowRunListItem(APIBaseModel):
     finishedAt: datetime | None = None
     parentRunId: str | None = None
     errorSummary: str | None = None
+    nodeRuns: list["NodeRunOutput"] = Field(default_factory=list)
 
 
 class WorkflowRunListResponse(APIBaseModel):
@@ -182,6 +183,9 @@ class NodeRunOutput(APIBaseModel):
     error: str | None = None
     startedAt: datetime | None = None
     finishedAt: datetime | None = None
+
+
+WorkflowRunListItem.model_rebuild()
 
 
 class WorkflowRunDetailResponse(APIBaseModel):
@@ -259,7 +263,7 @@ def _convert_node_to_output(node: Any) -> WorkflowNodeOutput:
     )
 
 
-def convert_to_run_list_item(run: Any) -> WorkflowRunListItem:
+def convert_to_run_list_item(run: Any, node_runs: list[Any] | None = None) -> WorkflowRunListItem:
     """Convert WorkflowRun to WorkflowRunListItem"""
     from registry_pkgs.models.workflow import WorkflowRun
 
@@ -275,6 +279,7 @@ def convert_to_run_list_item(run: Any) -> WorkflowRunListItem:
         finishedAt=run.finished_at,
         parentRunId=str(run.parent_run_id) if run.parent_run_id else None,
         errorSummary=run.error_summary,
+        nodeRuns=[_convert_node_run_to_output(node_run) for node_run in node_runs or []],
     )
 
 
