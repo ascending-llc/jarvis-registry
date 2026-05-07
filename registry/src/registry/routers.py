@@ -14,7 +14,6 @@ from .api.v1.search_routes import router as search_router
 from .api.v1.server.server_routes import router as servers_router_v1
 from .api.v1.token_routes import router as token_router
 from .api.v1.workflow.workflow_routes import router as workflow_router
-from .api.wellknown_routes import router as wellknown_router
 from .core.config import settings
 from .health.routes import router as health_router
 
