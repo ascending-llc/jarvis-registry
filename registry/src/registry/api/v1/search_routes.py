@@ -277,7 +277,7 @@ class SearchRequest(BaseModel):
 
 
 def _build_filters(include_disabled: bool, entity_types: list) -> dict[str, object]:
-    """Build vector-store filters shared by MCP and A2A collections."""
+    """Build vector-store filter dict from entity type list and disabled flag."""
     filters: dict[str, object] = {"entity_type": entity_types}
     if not include_disabled:
         filters["enabled"] = True
