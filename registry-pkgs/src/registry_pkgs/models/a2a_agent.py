@@ -242,14 +242,14 @@ class A2AAgent(Document):
         parts.append(f"Path: {self.path}")
 
         # Protocol and transport info — helps queries like "find me a streaming agent"
-        if self.card.protocolVersion:
-            parts.append(f"Protocol Version: {self.card.protocolVersion}")
-        if self.card.preferredTransport:
-            parts.append(f"Preferred Transport: {self.card.preferredTransport}")
-        if self.card.defaultInputModes:
-            parts.append(f"Input Modes: {', '.join(self.card.defaultInputModes)}")
-        if self.card.defaultOutputModes:
-            parts.append(f"Output Modes: {', '.join(self.card.defaultOutputModes)}")
+        if self.card.protocol_version:
+            parts.append(f"Protocol Version: {self.card.protocol_version}")
+        if self.card.preferred_transport:
+            parts.append(f"Preferred Transport: {self.card.preferred_transport}")
+        if self.card.default_input_modes:
+            parts.append(f"Input Modes: {', '.join(self.card.default_input_modes)}")
+        if self.card.default_output_modes:
+            parts.append(f"Output Modes: {', '.join(self.card.default_output_modes)}")
 
         # Capabilities — searchable by feature name
         if self.card.capabilities:
@@ -257,16 +257,16 @@ class A2AAgent(Document):
             cap_parts: list[str] = []
             if getattr(cap, "streaming", False):
                 cap_parts.append("streaming")
-            if getattr(cap, "pushNotifications", False):
+            if getattr(cap, "push_notifications", False):
                 cap_parts.append("push notifications")
-            if getattr(cap, "stateTransitionHistory", False):
+            if getattr(cap, "state_transition_history", False):
                 cap_parts.append("state transition history")
             if cap_parts:
                 parts.append(f"Capabilities: {', '.join(cap_parts)}")
 
         # Security scheme names — helps queries like "find me an OAuth agent"
-        if self.card.securitySchemes:
-            scheme_names = list(self.card.securitySchemes.keys())
+        if self.card.security_schemes:
+            scheme_names = list(self.card.security_schemes.keys())
             if scheme_names:
                 parts.append(f"Security Schemes: {', '.join(scheme_names)}")
 
