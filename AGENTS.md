@@ -420,24 +420,6 @@ This project is indexed by GitNexus as **jarvis-registry** (17936 symbols, 27750
 
 ## How agents reach gitnexus
 
-GitNexus is **deployed as a remote MCP server** — agents call it over MCP, they do not run it locally.
+GitNexus is **deployed as a remote MCP server** — agents call it over MCP and do not run it locally. The same tool set is reachable two ways: through jarvis-registry (recommended; uses the registry's auth) or directly to the hosted runtime with a bearer token. The exposed tools are `gitnexus_impact`, `gitnexus_query`, `gitnexus_context`, `gitnexus_detect_changes`, `gitnexus_rename`, `gitnexus_cypher`, `gitnexus_route_map`, `gitnexus_tool_map`, `gitnexus_shape_check`, `gitnexus_api_impact`, `list_repos`, plus the `gitnexus://...` resources listed above. The "Always Do" / "Never Do" rules apply regardless of transport.
 
-```text
-push to main ─► gitnexus-index.yml ─► s3://jarvis-registry-gitnexus/main/latest/
-                                                     │
-                                                     ▼
-                                       AgentCore Runtime (Dockerfile.gitnexus)
-                                       container syncs S3 at session start,
-                                       serves streamable-HTTP MCP at /mcp
-                                                     │
-                ┌────────────────────────────────────┼────────────────────────────┐
-                ▼                                                                 ▼
-   Coding agents via jarvis-registry                                  Coding agents direct to AgentCore
-   (recommended — uses the registry's auth)                           (auth-server bearer token, bypasses registry)
-```
-
-**Both paths surface the same tool set** (`gitnexus_impact`, `gitnexus_query`, `gitnexus_context`, `gitnexus_detect_changes`, `gitnexus_rename`, `gitnexus_cypher`, `gitnexus_route_map`, `gitnexus_tool_map`, `gitnexus_shape_check`, `gitnexus_api_impact`, `list_repos`, plus the `gitnexus://...` resources). The "Always Do" / "Never Do" rules above apply regardless of transport.
-
-**Pinning.** CI ([.github/workflows/gitnexus-index.yml](.github/workflows/gitnexus-index.yml)) and the AgentCore image ([docker/Dockerfile.gitnexus](docker/Dockerfile.gitnexus)) MUST install the same `gitnexus@<version>`. A mismatch segfaults the FTS/vector codepaths in `gitnexus_query` because on-disk table layouts shift between versions. Bumping the version is a single PR that touches **both** files; the workflow's cache key already keys off the version so npm + tree-sitter caches rotate cleanly.
-
-**Local fallback (rarely needed).** Two `poe` tasks exist for offline debugging when the remote server is unreachable: `uv run poe gitnexus-pull` (sync the latest CI-built index from S3 into `.gitnexus/`) and `uv run poe gitnexus-fresh` (re-run analyze against the working tree). These spawn a local stdio gitnexus and are **not** the standard path — prefer the remote MCP.
+**Version pinning.** The CI indexer and the deployed runtime MUST install the same `gitnexus@<version>`. A mismatch segfaults the FTS / vector codepaths in `gitnexus_query` because on-disk table layouts shift between versions. Bumping the version is a single PR that updates both pins together; the indexer's cache key already keys off the version so npm + tree-sitter caches rotate cleanly.

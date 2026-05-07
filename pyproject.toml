@@ -278,11 +278,3 @@ name = "version"
 positional = true
 default = ""
 
-# GitNexus index management
-[tool.poe.tasks.gitnexus-pull]
-help = "Pull the latest CI-built GitNexus index from S3 (s3://jarvis-registry-gitnexus/main/latest/)"
-shell = "aws s3 sync s3://jarvis-registry-gitnexus/main/latest/ .gitnexus/ --delete"
-
-[tool.poe.tasks.gitnexus-fresh]
-help = "Re-analyze the working tree locally with gitnexus (use when you have local edits to index)"
-shell = "npx -y gitnexus@latest analyze --embeddings --skip-agents-md"
