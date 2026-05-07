@@ -460,10 +460,7 @@ async def search_agents(
         search_request.includeDisabled,
     )
 
-    filters: dict[str, object] = {"entity_type": entity_types}
-    if not search_request.includeDisabled:
-        filters["enabled"] = True
-
+    filters = _build_filters(search_request.includeDisabled, entity_types)
     query = search_request.query.strip()
     try:
         if not query:
