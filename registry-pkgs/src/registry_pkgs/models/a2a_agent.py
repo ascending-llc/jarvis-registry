@@ -379,8 +379,6 @@ class A2AAgent(Document):
             "description": document.page_content,
             "tags": metadata.get("tags") or [],
         }
-        if metadata.get("entity_type") == A2AEntityType.SKILL:
-            result["skill_name"] = metadata.get("skill_name")
         return result
 
     def is_accessible_by_user(self, username: str, user_groups: list[str], is_admin: bool = False) -> bool:
