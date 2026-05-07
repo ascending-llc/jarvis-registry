@@ -4,7 +4,7 @@ import json
 import logging
 import secrets
 import time
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 from redis import Redis
@@ -110,6 +110,12 @@ class FlowStateManager:
 
             raise ValueError(error_msg)
 
+        if not isinstance(state_dict, dict):
+            error_msg = "state is valid base64url encoded JSON, but not a JSON object."
+            logger.error(error_msg)
+
+            raise ValueError(error_msg)
+
         if "flow_id" not in state_dict or not isinstance(state_dict["flow_id"], str):
             error_msg = "The flow_id key is not in decoded state dictionary."
             logger.error(error_msg)
@@ -126,7 +132,7 @@ class FlowStateManager:
             f"Decoded state: flow_id={state_dict['flow_id']}, token_length={len(state_dict['security_token'])}"
         )
 
-        return state_dict
+        return cast(OAuthFlowState, state_dict)
 
     def create_flow_metadata(
         self,

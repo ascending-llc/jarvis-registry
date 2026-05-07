@@ -5,6 +5,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import RedirectResponse
+from mcp.server.session import ServerSession
 
 from ....auth.dependencies import CurrentUser
 from ....auth.oauth.reconnection import OAuthReconnectionManager
@@ -268,7 +269,10 @@ async def oauth_callback(
 
                 elicitation_id = state_dict["meta"]["elicitation_id"]
 
-                session = session_store.pop(elicitation_id)
+                session: ServerSession | None = None
+
+                if state_dict["meta"]["notify_elicitation_complete"]:
+                    session = session_store.pop(elicitation_id)
 
                 if session is not None:
                     await session.send_elicit_complete(elicitation_id)
@@ -276,8 +280,12 @@ async def oauth_callback(
                     logger.info(
                         f"successfully scheduled sending elicitation/complete notification for elicitation_id {elicitation_id}"
                     )
+                elif not state_dict["meta"]["notify_elicitation_complete"]:
+                    logger.info(
+                        "MCP client connected via dynamic catch-all route. Not sending elicitation/complete notification."
+                    )
                 else:
-                    logger.info(f"could not find session object for elicitation_id {elicitation_id}")
+                    logger.warning(f"could not find session object for elicitation_id {elicitation_id}")
         except Exception:
             logger.exception("failed to send elicitation/complete notification to client.")
 

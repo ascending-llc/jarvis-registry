@@ -1,8 +1,11 @@
 """Factory for creating authentication provider instances."""
 
+# Builtin
 import logging
 
-from ..core.config import settings
+from ..core.config import AuthSettings
+from ..core.types import AllowedProvider
+from ..utils.config_loader import EntraConfig, OAuth2Config
 from .base import AuthProvider
 from .cognito import CognitoProvider
 from .entra import EntraIdProvider
@@ -13,10 +16,9 @@ logger = logging.getLogger(__name__)
 
 
 def get_auth_provider(
-    provider_type: str | None = None,
-    *,
-    settings_override=None,
-    oauth2_config: dict | None = None,
+    provider_type: AllowedProvider,
+    settings: AuthSettings,
+    oauth2_config: OAuth2Config,
 ) -> AuthProvider:
     """Factory function to get the appropriate auth provider.
 
@@ -32,17 +34,14 @@ def get_auth_provider(
     Raises:
         ValueError: If provider type is unknown or required config is missing
     """
-    resolved_settings = settings_override or settings
-    provider_type = provider_type or resolved_settings.auth_provider
-
     logger.info(f"Creating authentication provider: {provider_type}")
 
     if provider_type == "keycloak":
-        return _create_keycloak_provider(resolved_settings)
+        return _create_keycloak_provider(settings)
     elif provider_type == "cognito":
-        return _create_cognito_provider(resolved_settings)
+        return _create_cognito_provider(settings)
     elif provider_type == "entra":
-        return _create_entra_provider(resolved_settings, oauth2_config or {})
+        return _create_entra_provider(oauth2_config["providers"]["entra"])
     else:
         raise ValueError(f"Unknown auth provider: {provider_type}")
 
@@ -123,10 +122,8 @@ def _create_cognito_provider(resolved_settings) -> CognitoProvider:
     )
 
 
-def _create_entra_provider(resolved_settings, oauth2_config: dict) -> EntraIdProvider:
+def _create_entra_provider(entra_config: EntraConfig) -> EntraIdProvider:
     """Create and configure Microsoft Entra ID provider."""
-    # Load OAuth2 configuration using shared loader
-    entra_config = oauth2_config.get("providers", {}).get("entra", {})
 
     # Endpoint URLs from oauth2_providers.yml (already have environment variable substitution)
     tenant_id = entra_config.get("tenant_id")
@@ -200,16 +197,3 @@ def _create_entra_provider(resolved_settings, oauth2_config: dict) -> EntraIdPro
         email_claim=email_claim,
         name_claim=name_claim,
     )
-
-
-async def _get_provider_health_info() -> dict:
-    """Get health information for the current provider."""
-    try:
-        provider = get_auth_provider()
-        if hasattr(provider, "get_provider_info"):
-            return await provider.get_provider_info()
-        else:
-            return {"provider_type": settings.auth_provider, "status": "unknown"}
-    except Exception as e:
-        logger.error(f"Failed to get provider health info: {e}")
-        return {"provider_type": settings.auth_provider, "status": "error", "error": str(e)}
