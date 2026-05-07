@@ -276,18 +276,10 @@ class SearchRequest(BaseModel):
     include_disabled: bool = Field(default=False, description="Include disabled results")
 
 
-def _build_mcp_filters(search: SearchRequest, mcp_types: list[MCPEntityType]) -> dict[str, object]:
-    """Build vector-store filters for the MCP collection (uses 'enabled' key)."""
-    filters: dict[str, object] = {"entity_type": mcp_types}
-    if not search.include_disabled:
-        filters["enabled"] = True
-    return filters
-
-
-def _build_a2a_filters(search: SearchRequest, a2a_types: list[A2AEntityType]) -> dict[str, object]:
-    """Build vector-store filters for the A2A collection (uses 'enabled' key)."""
-    filters: dict[str, object] = {"entity_type": a2a_types}
-    if not search.include_disabled:
+def _build_filters(include_disabled: bool, entity_types: list) -> dict[str, object]:
+    """Build vector-store filters shared by MCP and A2A collections."""
+    filters: dict[str, object] = {"entity_type": entity_types}
+    if not include_disabled:
         filters["enabled"] = True
     return filters
 
@@ -298,7 +290,7 @@ async def _search_mcp_documents(
     mcp_types: list[MCPEntityType],
     mcp_server_repo: MCPServerRepository,
 ) -> list:
-    filters = _build_mcp_filters(search, mcp_types)
+    filters = _build_filters(search.include_disabled, mcp_types)
     if not query:
         return await mcp_server_repo.afilter(filters=filters, limit=search.top_n)
     return await mcp_server_repo.asearch_with_rerank(
@@ -316,7 +308,7 @@ async def _search_a2a_documents(
     a2a_types: list[A2AEntityType],
     a2a_agent_repo: A2AAgentRepository,
 ) -> list:
-    filters = _build_a2a_filters(search, a2a_types)
+    filters = _build_filters(search.include_disabled, a2a_types)
     if not query:
         return await a2a_agent_repo.afilter(filters=filters, limit=search.top_n)
     return await a2a_agent_repo.asearch_with_rerank(
@@ -345,7 +337,7 @@ async def search_entities_impl(
     Results are merged and re-sorted by relevance_score before truncation to top_n.
     Every document embeds its server/agent context so no MongoDB lookup is needed.
     """
-    query = search.query
+    query = search.query.strip()
     top_n = search.top_n
     start_time = time.perf_counter()
     success = False
@@ -481,7 +473,7 @@ async def search_agents(
                 query=query,
                 k=search_request.maxResults,
                 candidate_k=min(max(search_request.maxResults * 10, 50), 100),
-                search_type="hybrid",
+                search_type=SearchType.HYBRID,
                 filters=filters,
             )
     except RuntimeError as exc:
