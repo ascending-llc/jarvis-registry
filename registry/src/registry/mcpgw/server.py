@@ -11,7 +11,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from ..core.config import settings
 from .core.event_store import InMemoryEventStore
 from .core.types import McpAppContext
-from .tools import proxied, search
+from .tools import agent_invoke, proxied, search
 
 if TYPE_CHECKING:
     from ..container import RegistryContainer
@@ -83,10 +83,10 @@ Drop filler words, pronouns, articles, and tense. Do NOT pass the raw sentence.
     Switch to type_list=["skill"] and include agent_name in query ONLY after you
     have already chosen an agent and want to target a specific skill within it.
     Returns: path + agent_id  |  skill_name + path + agent_id  (when type_list=["skill"])
-    Execute: THIS IS A TERMINAL STEP — there is no further execution tool to call.
-             Return the agent's path and agent_id to the user or the calling system,
-             which will invoke the agent via the A2A client. Do NOT attempt to call
-             any execute_* tool with these identifiers.
+    Execute: After selecting an agent, call invoke_agent(agent_id=..., message=...) to run it.
+             For CHAIN tasks, embed the upstream MCP tool output inside the message string.
+             invoke_agent returns the agent response as a CallToolResult.
+             Do NOT pass path or agent_name to invoke_agent — only agent_id works.
 
 ════════════════════════════════════════════════════════════
 RESULT EVALUATION  (same rule for both tools)
@@ -122,12 +122,13 @@ Example 1 — ATOMIC → discover_mcp_entities, clear leader:
   → top result: {entity_type:"tool", tool_name:"github_list_issues", server_id:"...", relevance_score:0.84}
   → execute_tool(tool_name="github_list_issues", server_id=..., arguments={...})
 
-Example 2 — DELEGATE → discover_agents, clear leader:
+Example 2 — DELEGATE → discover_agents + invoke_agent:
   User: "I need a deep intelligence analysis on competitor pricing trends."
   Intent: DELEGATE (multi-step analysis, domain expertise).
   Call: discover_agents(query="deep intel competitive analysis")
-  → top result: {entity_type:"agent", agent_name:"Deep Intel Agent", path:"/deep-intel", agent_id:"..."}
-  → TERMINAL: return path="/deep-intel" and agent_id to the caller. No execute_* call needed.
+  → top result: {entity_type:"agent", agent_name:"Deep Intel Agent", path:"/deep-intel", agent_id:"abc123"}
+  → invoke_agent(agent_id="abc123", message="Analyze competitor pricing trends over the last quarter.")
+  → Present the agent's response to the user.
 
 Example 3 — AMBIGUOUS → call both, pick leader by description:
   User: "Help me with customer support for an angry customer."
@@ -163,8 +164,8 @@ Example 6 — CHAIN → MCP tool first, then A2A agent with data:
   → execute_tool(tool_name="github_list_commits", server_id=..., arguments={"since": "2026-04-06"})
   → result: [list of commits]
   Step 2: discover_agents(query="commit trend analysis intelligence")
-  → top result: {entity_type:"agent", agent_name:"Deep Intel Agent", path:"/deep-intel", agent_id:"..."}
-  → TERMINAL: return path="/deep-intel", agent_id, and pass the commit data as context to the caller.
+  → top result: {entity_type:"agent", agent_name:"Deep Intel Agent", path:"/deep-intel", agent_id:"def456"}
+  → invoke_agent(agent_id="def456", message=f"Analyze commit trends from the past 30 days:\n{commit_data}")
 
 Example 7 — SURVEY fallback (both collections):
   User: "Make a quick memo about this."
@@ -249,6 +250,8 @@ def create_mcp_app(*, container_provider: Callable[[], RegistryContainer | None]
                 oauth_service=container.oauth_service,
                 session_store=container.session_store,
                 redis_client=container.redis_client,
+                a2a_agent_service=container.a2a_agent_service,
+                acl_service=container.acl_service,
             )
 
     # Configure transport security settings from environment variables
@@ -318,4 +321,8 @@ def register_tools(mcp: FastMCP) -> None:
 
     # Register registry API tools
     for tool_name, tool_func in proxied.get_tools():
+        mcp.tool(name=tool_name)(tool_func)
+
+    # Register A2A agent invocation tool
+    for tool_name, tool_func in agent_invoke.get_tools():
         mcp.tool(name=tool_name)(tool_func)

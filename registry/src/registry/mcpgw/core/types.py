@@ -8,6 +8,8 @@ from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRep
 
 from ...core.mcp_client import MCPClientService
 from ...core.session_store import SessionStore
+from ...services.a2a_agent_service import A2AAgentService
+from ...services.access_control_service import ACLService
 from ...services.oauth.oauth_service import MCPOAuthService
 from ...services.server_service import ServerServiceV1
 
@@ -24,3 +26,5 @@ class McpAppContext:
     oauth_service: MCPOAuthService
     session_store: SessionStore
     redis_client: Redis
+    a2a_agent_service: A2AAgentService
+    acl_service: ACLService
