@@ -167,26 +167,18 @@ async def test_pause_resume_completes(queue: DirectiveQueue) -> bool:
     def_id = str(definition.id)
     runner = _make_runner(queue)
 
-    run_task = asyncio.create_task(runner.run(def_id, "e2e pause-resume test", registry_token="test", user_id=None))
-
-    # Wait for run doc to appear
-    run_doc: WorkflowRun | None = None
-    for _ in range(20):
-        await asyncio.sleep(0.3)
-        run_doc = await WorkflowRun.find_one(
-            {"workflow_definition_id": definition.id},
-            sort=[("_id", -1)],
-        )
-        if run_doc:
-            break
-
-    if not run_doc:
-        print(f"  {FAIL}  Run doc never appeared in MongoDB")
-        run_task.cancel()
-        return False
-
+    run_doc = WorkflowRun(
+        workflow_definition_id=definition.id,
+        status=WorkflowRunStatus.PENDING,
+        trigger_source="e2e",
+        initial_input={"user_text": "e2e pause-resume test"},
+    )
+    await run_doc.insert()
     run_id = str(run_doc.id)
-    print(f"  Run {run_id} started (status={run_doc.status})")
+    run_task = asyncio.create_task(
+        runner.run(def_id, "e2e pause-resume test", registry_token="test", user_id=None, existing_run_id=run_id)
+    )
+    print(f"  Run {run_id} started")
 
     svc = WorkflowControlService(directive_queue=queue)
 
@@ -224,24 +216,17 @@ async def test_pause_cancel(queue: DirectiveQueue) -> bool:
     def_id = str(definition.id)
     runner = _make_runner(queue)
 
-    run_task = asyncio.create_task(runner.run(def_id, "e2e pause-cancel test", registry_token="test", user_id=None))
-
-    run_doc: WorkflowRun | None = None
-    for _ in range(20):
-        await asyncio.sleep(0.3)
-        run_doc = await WorkflowRun.find_one(
-            {"workflow_definition_id": definition.id},
-            sort=[("_id", -1)],
-        )
-        if run_doc:
-            break
-
-    if not run_doc:
-        print(f"  {FAIL}  Run doc never appeared")
-        run_task.cancel()
-        return False
-
+    run_doc = WorkflowRun(
+        workflow_definition_id=definition.id,
+        status=WorkflowRunStatus.PENDING,
+        trigger_source="e2e",
+        initial_input={"user_text": "e2e pause-cancel test"},
+    )
+    await run_doc.insert()
     run_id = str(run_doc.id)
+    run_task = asyncio.create_task(
+        runner.run(def_id, "e2e pause-cancel test", registry_token="test", user_id=None, existing_run_id=run_id)
+    )
     print(f"  Run {run_id} started")
 
     svc = WorkflowControlService(directive_queue=queue)
@@ -273,24 +258,17 @@ async def test_cancel_mid_run(queue: DirectiveQueue) -> bool:
     def_id = str(definition.id)
     runner = _make_runner(queue)
 
-    run_task = asyncio.create_task(runner.run(def_id, "e2e cancel-mid test", registry_token="test", user_id=None))
-
-    run_doc: WorkflowRun | None = None
-    for _ in range(20):
-        await asyncio.sleep(0.3)
-        run_doc = await WorkflowRun.find_one(
-            {"workflow_definition_id": definition.id},
-            sort=[("_id", -1)],
-        )
-        if run_doc:
-            break
-
-    if not run_doc:
-        print(f"  {FAIL}  Run doc never appeared")
-        run_task.cancel()
-        return False
-
+    run_doc = WorkflowRun(
+        workflow_definition_id=definition.id,
+        status=WorkflowRunStatus.PENDING,
+        trigger_source="e2e",
+        initial_input={"user_text": "e2e cancel-mid test"},
+    )
+    await run_doc.insert()
     run_id = str(run_doc.id)
+    run_task = asyncio.create_task(
+        runner.run(def_id, "e2e cancel-mid test", registry_token="test", user_id=None, existing_run_id=run_id)
+    )
     print(f"  Run {run_id} started")
 
     svc = WorkflowControlService(directive_queue=queue)
@@ -320,12 +298,18 @@ async def test_retry_completed(queue: DirectiveQueue) -> bool:
 
     # Run to completion first
     print("  Running to completion ...")
-    run, _ = await runner.run(def_id, "e2e retry seed", registry_token="test", user_id=None)
+    seed_run = WorkflowRun(
+        workflow_definition_id=definition.id,
+        status=WorkflowRunStatus.PENDING,
+        trigger_source="e2e",
+        initial_input={"user_text": "e2e retry seed"},
+    )
+    await seed_run.insert()
+    run, _ = await runner.run(
+        def_id, "e2e retry seed", registry_token="test", user_id=None, existing_run_id=str(seed_run.id)
+    )
     run_id = str(run.id)
     _check(f"Seed run completed (status={run.status})", str(run.status) == "completed")
-
-    # Reload to get definition_snapshot (written during run)
-    await run.sync()
 
     # Retry from first node
     first_node_id = definition.nodes[0].id

@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Protocol
 
 from beanie import PydanticObjectId
 from fastapi import HTTPException
@@ -38,10 +38,21 @@ from registry_pkgs.workflows.control import DirectiveQueue
 
 logger = logging.getLogger(__name__)
 
-# Callable type for the async runner — kept as a protocol-style alias to avoid
-# importing WorkflowRunner here (that would pull in heavy agno dependencies at
-# import time, slowing down tests that only need the service).
-RunnerCallable = Callable[..., object]
+
+class _HasRun(Protocol):
+    """Structural interface for WorkflowRunner — avoids importing agno at module load time."""
+
+    async def run(
+        self,
+        definition_id: str,
+        user_text: str,
+        *,
+        registry_token: str,
+        user_id: str | None,
+        existing_run_id: str,
+        injected_outputs: dict[str, dict[str, Any]] | None = None,
+    ) -> tuple[WorkflowRun, list[NodeRun]]:
+        pass
 
 
 class WorkflowControlService:
@@ -58,7 +69,7 @@ class WorkflowControlService:
     def __init__(
         self,
         directive_queue: DirectiveQueue,
-        runner_factory: Callable[[], RunnerCallable] | None = None,
+        runner_factory: Callable[[], _HasRun] | None = None,
     ) -> None:
         self._queue = directive_queue
         self._runner_factory = runner_factory
@@ -113,12 +124,11 @@ class WorkflowControlService:
 
         runner = self._runner_factory()
         asyncio.create_task(  # fire-and-forget; HTTP response returns immediately
-            runner.run(  # type: ignore[union-attr]
+            runner.run(
                 workflow_definition_id,
                 user_text,
                 registry_token=registry_token,
                 user_id=user_id,
-                trigger_source="api",
                 existing_run_id=str(run.id),
             )
         )
@@ -150,6 +160,8 @@ class WorkflowControlService:
     async def send_resume(self, workflow_definition_id: str, run_id: str) -> WorkflowRun:
         """Resume a PAUSED workflow run."""
         run = await self._load_run(workflow_definition_id, run_id)
+        if run.pending_directive == WorkflowDirective.CANCEL:
+            raise HTTPException(status_code=400, detail="Cannot resume a run with a pending cancel directive")
         if run.pending_directive == WorkflowDirective.RESUME:
             raise HTTPException(status_code=400, detail="Run already has a pending resume directive")
         _apply(run, WorkflowDirective.RESUME)
@@ -278,12 +290,11 @@ class WorkflowControlService:
         runner = self._runner_factory()
 
         asyncio.create_task(  # fire-and-forget; HTTP response returns immediately
-            runner.run(  # type: ignore[union-attr]
+            runner.run(
                 str(parent_run.workflow_definition_id),
                 user_text,
                 registry_token=registry_token,
                 user_id=user_id,
-                trigger_source="retry",
                 existing_run_id=str(child_run.id),
                 injected_outputs=injected_outputs,
             )

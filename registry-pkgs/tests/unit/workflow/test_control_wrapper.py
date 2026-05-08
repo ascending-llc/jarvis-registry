@@ -112,6 +112,8 @@ class TestControlWrapper:
             directive_queue=queue,
         )
 
+        monkeypatch.setattr("registry_pkgs.workflows.control.wrapper.PAUSE_POLL_INTERVAL", 0.0)
+        monkeypatch.setattr("registry_pkgs.workflows.control.wrapper.MONGO_POLL_EVERY_N", 1)
         monkeypatch.setattr(
             "registry_pkgs.workflows.control.wrapper._read_mongodb_directive",
             AsyncMock(return_value=None),

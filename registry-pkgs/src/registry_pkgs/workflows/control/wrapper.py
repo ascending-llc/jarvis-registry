@@ -31,6 +31,7 @@ from datetime import UTC, datetime
 from agno.workflow import StepInput, StepOutput
 from agno.workflow.step import StepExecutor
 from beanie import PydanticObjectId
+from pydantic import BaseModel
 
 from registry_pkgs.models.enums import NodeRunStatus, WorkflowDirective, WorkflowRunStatus
 from registry_pkgs.models.workflow import NodeRun, StepConfig, WorkflowRun
@@ -38,9 +39,13 @@ from registry_pkgs.workflows.control.queue import DirectiveQueue
 
 logger = logging.getLogger(__name__)
 
-# How often (seconds) the pause-wait loop polls when the Queue times out,
-# allowing the MongoDB fallback and timeout check to run.
+# How often (seconds) the pause-wait loop polls the in-process queue.
 PAUSE_POLL_INTERVAL: float = 2.0
+
+# Read MongoDB every N queue-poll iterations (≈ every 60 s at default interval).
+# Pod restart is the primary scenario for the DB fallback; once-per-minute is
+# more than frequent enough to recover a lost directive after a crash.
+MONGO_POLL_EVERY_N: int = 30
 
 
 class WorkflowCancelledError(Exception):
@@ -166,14 +171,23 @@ async def _check_and_handle_directive(
     return None
 
 
+class _PendingDirectiveProjection(BaseModel):
+    id: PydanticObjectId
+    pending_directive: WorkflowDirective | None = None
+
+
 async def _read_mongodb_directive(run_id: str) -> WorkflowDirective | None:
     """Read ``WorkflowRun.pending_directive`` from MongoDB.
 
-    Slow-path fallback used when the Queue is empty.  Covers two scenarios:
-    * The service restarted and the Queue was lost.
-    * A directive was sent to a different replica and never reached this Queue.
+    Slow-path fallback used when the in-process Queue is empty — primarily to
+    recover a lost directive after a pod restart.  Only ``pending_directive`` is
+    projected so the full document (with definition_snapshot, outputs, etc.) is
+    never transferred over the wire.
     """
-    run = await WorkflowRun.get(PydanticObjectId(run_id))
+    run = await WorkflowRun.find_one(
+        WorkflowRun.id == PydanticObjectId(run_id),
+        projection_model=_PendingDirectiveProjection,
+    )
     return run.pending_directive if run is not None else None
 
 
@@ -191,23 +205,24 @@ async def _wait_while_paused(
     logger.info("Node %r: PAUSE directive received, waiting for RESUME or CANCEL", node_name)
 
     run = await WorkflowRun.get(PydanticObjectId(run_id))
+    if run is None:
+        raise RuntimeError(f"WorkflowRun {run_id!r} not found while entering pause — data integrity error")
+
     await _update_run_control_state(
         run_id,
         status=WorkflowRunStatus.PAUSED,
         pending_directive=None,
         paused_at=datetime.now(UTC),
     )
-    if run is None:
-        timeout_secs = 3600.0
-        paused_at = datetime.now(UTC)
-    else:
-        timeout_secs = float(run.pause_timeout_seconds)
-        paused_at = run.paused_at or datetime.now(UTC)
+    timeout_secs = float(run.pause_timeout_seconds)
+    paused_at = run.paused_at or datetime.now(UTC)
 
+    poll_count = 0
     while True:
         next_directive = await directive_queue.wait_for_directive(run_id, timeout=PAUSE_POLL_INTERVAL)
 
-        if next_directive is None:
+        poll_count += 1
+        if next_directive is None and poll_count % MONGO_POLL_EVERY_N == 0:
             next_directive = await _read_mongodb_directive(run_id)
 
         if next_directive == WorkflowDirective.RESUME:
