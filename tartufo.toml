@@ -93,4 +93,5 @@ exclude-signatures = [
     {signature = '0c61af40faec641521b0aeb98a2518900fe130db813e195db14e278f06cdf4e3', reason = '.env.example template refactor diff is not a credential'},
     {signature = 'ab6af4741f3a10119c655c25646652a8e755b2b28a74c119dd4ac1430baf217c', reason = '.env.example template refactor diff is not a credential'},
     {signature = 'a19ce20e766970f8e5ffd780a504fa01e9f431103efd289b028a038e6a4e670e', reason = '.env.example template refactor diff is not a credential'},
+    {signature = 'e6971fa12552f691a1e44085c244dd06e60bae2f172cfb7506042437fbbf01aa', reason = 'example opaque mock userId is not a credential'},
 ]

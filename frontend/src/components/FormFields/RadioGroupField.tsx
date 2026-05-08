@@ -40,7 +40,7 @@ export const RadioGroupField: React.FC<RadioGroupFieldProps> = ({
           )}
         </label>
       )}
-      <div className={`flex rounded-lg bg-[var(--jarvis-card-muted)] p-1 ${borderClass}`}>
+      <div className={`flex rounded-lg bg-[#f6f8fa] dark:bg-[var(--jarvis-card-muted)] p-1 ${borderClass}`}>
         {options.map(option => (
           <button
             key={option.value}
@@ -50,9 +50,13 @@ export const RadioGroupField: React.FC<RadioGroupFieldProps> = ({
             onClick={() => onChange(option.value)}
             className={`flex-1 py-2 text-sm font-medium rounded-md transition-all duration-200 ${
               value === option.value
-                ? 'bg-[var(--jarvis-card)] text-[var(--jarvis-text-strong)] shadow-sm'
-                : 'text-[var(--jarvis-muted)] hover:text-[var(--jarvis-text)]'
-            } ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+                ? disabled
+                  ? 'bg-[var(--jarvis-card)] text-[var(--jarvis-text)] shadow-sm cursor-not-allowed opacity-90'
+                  : 'bg-[var(--jarvis-card)] text-[var(--jarvis-text-strong)] shadow-sm'
+                : disabled
+                  ? 'text-[var(--jarvis-muted)] cursor-not-allowed opacity-50'
+                  : 'text-[var(--jarvis-muted)] hover:text-[var(--jarvis-text)]'
+            }`}
           >
             {option.label}
           </button>

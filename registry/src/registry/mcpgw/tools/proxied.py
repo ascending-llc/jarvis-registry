@@ -41,8 +41,8 @@ from ..core.types import McpAppContext
 from .types import get_meta_field
 from .utils import (
     build_authenticated_headers,
-    build_target_url,
     forward_notification,
+    get_target_url,
     parse_data_field,
     parse_elicitation_id,
 )
@@ -195,7 +195,7 @@ def _get_state_metadata(client_params: InitializeRequestParams | None) -> StateM
     """
 
     if client_params is None:
-        return {"client_branding": ClientBranding.UNRECOGNIZED}
+        return {"client_branding": ClientBranding.UNRECOGNIZED, "notify_elicitation_complete": True}
 
     # As of 2026-03-17, below are how mainstream AI agents support URL mode elicitation and how that relate to deep link.
     # VSCode: Perfect support. Its client name is "Visual Studio Code". We recognize this and provide deep link
@@ -216,13 +216,13 @@ def _get_state_metadata(client_params: InitializeRequestParams | None) -> StateM
     #   and we recognize them to provide deep link back to Cursor.
     name = client_params.clientInfo.name.strip().lower()
     if name == "visual studio code":
-        return {"client_branding": ClientBranding.VSCODE}
+        return {"client_branding": ClientBranding.VSCODE, "notify_elicitation_complete": True}
     elif name.startswith("claude-ai"):
-        return {"client_branding": ClientBranding.CLAUDE}
+        return {"client_branding": ClientBranding.CLAUDE, "notify_elicitation_complete": True}
     elif name.startswith("probe (via mcp-remote") or name.startswith("mcp-stdio-client (via mcp-remote"):
-        return {"client_branding": ClientBranding.CURSOR}
+        return {"client_branding": ClientBranding.CURSOR, "notify_elicitation_complete": True}
     else:
-        return {"client_branding": ClientBranding.UNRECOGNIZED}
+        return {"client_branding": ClientBranding.UNRECOGNIZED, "notify_elicitation_complete": True}
 
 
 def _support_url_elicitation(client_params: InitializeRequestParams | None) -> bool:
@@ -285,7 +285,7 @@ async def execute_tool_impl(
         record_server_request(server.serverName)
 
         # Build target URL using shared helper
-        target_url = build_target_url(server)
+        target_url = get_target_url(server)
 
         # Prepare base headers for downstream MCP server
         additional_headers = {

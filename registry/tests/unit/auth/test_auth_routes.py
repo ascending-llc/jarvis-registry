@@ -3,6 +3,7 @@ Unit tests for authentication routes.
 """
 
 from unittest.mock import AsyncMock, Mock, patch
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 from bson import ObjectId
@@ -38,7 +39,8 @@ class TestAuthRoutes:
             mock_settings.refresh_cookie_name = "refresh"
             mock_settings.session_max_age_seconds = 3600
             mock_settings.templates_dir = "/templates"
-            mock_settings.registry_client_url = "http://localhost:8000/"
+            mock_settings.registry_client_url = "http://localhost:8000"
+            mock_settings.registry_redirect_uri = "http://localhost:8000"
             yield mock_settings
 
     @pytest.fixture
@@ -125,34 +127,25 @@ class TestAuthRoutes:
     #         )
 
     @pytest.mark.asyncio
-    async def test_oauth2_login_redirect_success(self, mock_request, mock_settings):
+    async def test_oauth2_login_redirect_success(self, mock_settings):
         """Test successful OAuth2 login redirect."""
-        provider = "google"
+        provider = "entra"
 
-        response = await oauth2_login_redirect(provider, mock_request)
+        response = await oauth2_login_redirect(provider)
 
         assert isinstance(response, RedirectResponse)
         assert response.status_code == 302
-        # The route uses auth_server_external_url for the redirect
-        expected_url = f"{mock_settings.auth_server_external_url}/oauth2/login/{provider}?redirect_uri=http://localhost:8000/&state="
-        # The state param is dynamic, so just check the prefix
-        assert response.headers["location"].startswith(expected_url)
 
-    @pytest.mark.asyncio
-    async def test_oauth2_login_redirect_exception(self, mock_request, mock_settings):
-        """Test OAuth2 login redirect with exception."""
-        provider = "invalid"
+        result = urlparse(response.headers["location"])
 
-        with patch("registry.api.redirect_routes.logger"):
-            # Force an exception by making str() fail
-            mock_request.base_url = Mock()
-            mock_request.base_url.__str__ = Mock(side_effect=Exception("URL error"))
+        assert f"http://{result.netloc}" == mock_settings.auth_server_external_url
 
-            response = await oauth2_login_redirect(provider, mock_request)
+        assert result.path == f"/oauth2/login/{provider}"
 
-            assert isinstance(response, RedirectResponse)
-            assert response.status_code == 302
-            assert "/login?error=oauth2_redirect_failed" in response.headers["location"]
+        qs = parse_qs(result.query)
+
+        assert "state" in qs
+        assert qs["redirect_uri"][0] == mock_settings.registry_redirect_uri
 
     @pytest.fixture
     def mock_code(self):
@@ -176,19 +169,15 @@ class TestAuthRoutes:
         mock_user_service = Mock()
         mock_user_service.get_user_by_user_id = AsyncMock(return_value=mock_user)
 
+        user_claims = {
+            "sub": "someone",
+            "user_id": "12345",
+        }
+
         with (
             patch("registry.api.redirect_routes.httpx.AsyncClient") as mock_client,
-            patch(
-                "jwt.decode",
-                return_value={
-                    "user_id": mock_user.id,
-                    "sub": mock_user.username,
-                    "email": mock_user.email,
-                    "name": "Test User",
-                    "groups": [],
-                    "provider": "keycloak",
-                },
-            ),
+            patch("registry.api.redirect_routes.decrypt_value") as mock_decrypter,
+            patch("registry.api.redirect_routes.decode_jwt_unverified") as mock_decoder,
             patch(
                 "registry.api.redirect_routes.generate_token_pair",
                 return_value=("mock-access-token", "mock-refresh-token"),
@@ -196,17 +185,19 @@ class TestAuthRoutes:
         ):
             mock_client_instance = mock_client.return_value.__aenter__.return_value
             mock_client_instance.post = AsyncMock(return_value=mock_response)
+            mock_decrypter.return_value = "123"
+            mock_decoder.return_value = user_claims
 
             response = await oauth2_callback(
                 mock_request,
                 code=mock_code,
+                registry_oauth2_code_verifier="a-cookie",
                 user_service=mock_user_service,
             )
 
         assert isinstance(response, RedirectResponse)
         assert response.status_code == 302
-        # Registry client URL may or may not have trailing slash
-        assert response.headers["location"].rstrip("/") == "http://localhost:8000"
+        assert response.headers["location"] == f"{mock_settings.registry_client_url}"
 
     @pytest.mark.asyncio
     async def test_oauth2_callback_user_not_found(self, mock_request, mock_code, mock_settings):
@@ -231,10 +222,13 @@ class TestAuthRoutes:
         mock_user_service = Mock()
         with (
             patch("registry.api.redirect_routes.httpx.AsyncClient") as mock_client,
-            patch("jwt.decode", return_value=user_claims),
+            patch("registry.api.redirect_routes.decode_jwt_unverified") as mock_decoder,
+            patch("registry.api.redirect_routes.decrypt_value") as mock_decrypter,
         ):
             mock_client_instance = mock_client.return_value.__aenter__.return_value
             mock_client_instance.post = AsyncMock(return_value=mock_response)
+            mock_decoder.return_value = user_claims
+            mock_decrypter.return_value = "123"
 
             # Mock create_user to return a new user
             mock_user_service.create_user = AsyncMock(return_value=mock_user)
@@ -299,9 +293,15 @@ class TestAuthRoutes:
             mock_response = Mock()
             mock_response.status_code = 500
 
-            with patch("registry.api.redirect_routes.httpx.AsyncClient") as mock_client:
+            with (
+                patch("registry.api.redirect_routes.httpx.AsyncClient") as mock_client,
+                patch("registry.api.redirect_routes.decode_jwt_unverified") as mock_decoder,
+                patch("registry.api.redirect_routes.decrypt_value") as mock_decrypter,
+            ):
                 mock_client_instance = mock_client.return_value.__aenter__.return_value
                 mock_client_instance.post = AsyncMock(return_value=mock_response)
+                mock_decoder.return_value = {}
+                mock_decrypter.return_value = "123"
 
                 response = await oauth2_callback(
                     mock_request,

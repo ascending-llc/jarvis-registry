@@ -56,4 +56,3 @@ def register_routers(app: FastAPI) -> None:
     app.include_router(system_router)
     app.include_router(auth_provider_router, tags=["Authentication"])
     app.include_router(proxy_router, prefix="/proxy", tags=["MCP Proxy"])
-    app.include_router(wellknown_router, prefix="/.well-known", tags=["Discovery"])
