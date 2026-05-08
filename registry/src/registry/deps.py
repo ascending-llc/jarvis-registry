@@ -115,13 +115,12 @@ def get_redis_client(container: RegistryContainer = Depends(get_container)) -> R
     return container.redis_client
 
 
-<<<<<<< feature/as-1542
 def get_workflow_control_service(
     container: RegistryContainer = Depends(get_container),
 ) -> WorkflowControlService:
     return container.workflow_control_service
-=======
+
+
 def check_if_https(request: Request) -> bool:
     x_forwarded_proto = request.headers.get("x-forwarded-proto", "")
     return x_forwarded_proto == "https" or request.url.scheme == "https"
->>>>>>> main
