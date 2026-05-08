@@ -16,7 +16,6 @@ from .api.v1.token_routes import router as token_router
 from .api.v1.workflow.control_routes import router as workflow_control_router
 from .api.v1.workflow.runs_routes import collection_router as workflow_runs_collection_router
 from .api.v1.workflow.runs_routes import single_router as workflow_runs_single_router
-from .api.wellknown_routes import router as wellknown_router
 from .core.config import settings
 from .health.routes import router as health_router
 
