@@ -39,6 +39,7 @@ from .services.security_scanner import SecurityScannerService
 from .services.server_service import ServerServiceV1
 from .services.user_service import UserService
 from .services.workflow_control_service import WorkflowControlService
+from .services.workflow_shutdown import cancel_in_flight_runs
 
 if TYPE_CHECKING:
     from .core.config import Settings
@@ -261,6 +262,7 @@ class RegistryContainer:
 
     async def shutdown(self) -> None:
         """Shutdown services that hold background tasks or external resources."""
+        await cancel_in_flight_runs()
         await self.health_service.shutdown()
         await self.mcp_proxy_client.aclose()
 
