@@ -73,10 +73,14 @@ interface ServerContextType {
   federationsError: string | null;
 
   // Shared state
-  viewMode: 'servers' | 'agents' | 'external';
-  setViewMode: (mode: 'servers' | 'agents' | 'external') => void;
+  viewMode: 'servers' | 'agents' | 'workflow' | 'external';
+  setViewMode: (mode: 'servers' | 'agents' | 'workflow' | 'external') => void;
   activeFilter: string;
   setActiveFilter: (filter: string) => void;
+  searchTerm: string;
+  setSearchTerm: React.Dispatch<React.SetStateAction<string>>;
+  committedQuery: string;
+  setCommittedQuery: React.Dispatch<React.SetStateAction<string>>;
 
   // Actions
   refreshServerData: (notLoading?: boolean) => Promise<ServerInfo[]>;
@@ -107,8 +111,10 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
   const [servers, setServers] = useState<ServerInfo[]>([]);
   const [agents, setAgents] = useState<AgentItem[]>([]);
   const [federations, setFederations] = useState<Federation[]>([]);
-  const [viewMode, setViewMode] = useState<'servers' | 'agents' | 'external'>('servers');
+  const [viewMode, setViewMode] = useState<'servers' | 'agents' | 'workflow' | 'external'>('servers');
   const [activeFilter, setActiveFilter] = useState<string>('all');
+  const [searchTerm, setSearchTerm] = useState<string>('');
+  const [committedQuery, setCommittedQuery] = useState<string>('');
   const [serverLoading, setServerLoading] = useState(true);
   const [agentLoading, setAgentLoading] = useState(true);
   const [federationsLoading, setFederationsLoading] = useState(true);
@@ -379,6 +385,10 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
     setViewMode,
     activeFilter,
     setActiveFilter,
+    searchTerm,
+    setSearchTerm,
+    committedQuery,
+    setCommittedQuery,
 
     refreshServerData,
     refreshAgentData,

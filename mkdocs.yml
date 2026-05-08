@@ -122,6 +122,37 @@ nav:
     - Federation Guide: design/federation.md
     - Federation API: design/federation-api.md
     - DB Persistence: design/mcp_db_persistence_design.md
+  - Explore Agentic Jarvis:
+    - Overview: explore-agentic/index.md
+    - Pillars:
+      - Overview: explore-agentic/pillars/index.md
+      - Agentic AI: explore-agentic/pillars/agentic-ai.md
+      - Model Context Protocol: explore-agentic/pillars/mcp.md
+      - AI Governance: explore-agentic/pillars/ai-governance.md
+      - Enterprise RAG: explore-agentic/pillars/enterprise-rag.md
+    - Glossary:
+      - Overview: explore-agentic/glossary/index.md
+      - Model Context Protocol: explore-agentic/glossary/model-context-protocol.md
+      - MCP Gateway: explore-agentic/glossary/mcp-gateway.md
+      - Agentic RAG: explore-agentic/glossary/agentic-rag.md
+      - Agent Observability: explore-agentic/glossary/agent-observability.md
+      - ISO/IEC 42001:2023: explore-agentic/glossary/iso-42001.md
+      - NIST AI RMF: explore-agentic/glossary/nist-ai-rmf.md
+      - Shadow AI: explore-agentic/glossary/shadow-ai.md
+      - Agent Washing: explore-agentic/glossary/agent-washing.md
+      - Guardian Agent: explore-agentic/glossary/guardian-agent.md
+    - Comparisons:
+      - Overview: explore-agentic/comparisons/index.md
+      - Jarvis vs Moveworks: explore-agentic/comparisons/jarvis-vs-moveworks.md
+      - Jarvis vs Glean: explore-agentic/comparisons/jarvis-vs-glean.md
+      - Jarvis vs Copilot Studio: explore-agentic/comparisons/jarvis-vs-copilot-studio.md
+      - Moveworks vs Glean: explore-agentic/comparisons/moveworks-vs-glean.md
+      - MCP vs RAG: explore-agentic/comparisons/mcp-vs-rag.md
+      - Agentforce vs Copilot Studio: explore-agentic/comparisons/agentforce-vs-copilot-studio.md
+      - Agentspace vs Copilot: explore-agentic/comparisons/agentspace-vs-copilot.md
+    - Playbooks:
+      - Overview: explore-agentic/playbooks/index.md
+      - Measure AI Agent ROI: explore-agentic/playbooks/ai-agent-roi.md
   - Project:
     - Contributing: CONTRIBUTING.md
     - License: LICENSE.md

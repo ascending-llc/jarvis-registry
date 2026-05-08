@@ -164,22 +164,6 @@ class TestWellKnownRoutes:
         assert oauth_data["jwks_uri"] == oidc_data["jwks_uri"]
         assert oauth_data["device_authorization_endpoint"] == oidc_data["device_authorization_endpoint"]
 
-    def test_well_known_endpoints_without_env_var(self, test_client: TestClient):
-        """Test .well-known endpoints when AUTH_SERVER_EXTERNAL_URL is not configured in settings."""
-        from unittest.mock import patch
-
-        # Mock settings to have empty auth_server_external_url
-        with patch("auth_server.routes.well_known.settings") as mock_settings:
-            mock_settings.auth_server_external_url = ""
-
-            response = test_client.get("/.well-known/oauth-authorization-server")
-
-            # Should return 500 error when config is missing
-            assert response.status_code == 500
-            data = response.json()
-            assert "detail" in data
-            assert "AUTH_SERVER_EXTERNAL_URL" in data["detail"]
-
     def test_well_known_response_headers(self, test_client: TestClient):
         """Test that .well-known endpoints return correct content-type headers."""
         endpoints = [

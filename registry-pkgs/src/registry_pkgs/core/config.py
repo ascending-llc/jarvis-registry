@@ -90,6 +90,15 @@ class JarvisBaseSettings(BaseSettings):
         extra="ignore",
     )
 
+    # ==================== OAuth Session Settings ====================
+    # Note: This is the maximum time between initiating OAuth flow and completing the callback.
+    # For security (CSRF protection), this should not be too long.
+    # If Claude Desktop reconnection receives "session_expired", the OAuth session has expired and
+    # Claude Desktop will automatically re-initiate the OAuth flow (the user may be prompted again
+    # by the provider, but no manual restart of the flow is required).
+    oauth_session_ttl_seconds: int = 600  # 10 minutes for OAuth2 flow (default)
+    session_cookie_secure: bool = True
+
     # ==================== Signature (NOT related to JWT) ====================
     secret_key: str = ""
 
@@ -109,8 +118,14 @@ class JarvisBaseSettings(BaseSettings):
     auth_server_url: str = "http://localhost:8888"
     auth_server_external_url: str = "http://localhost:8888"
     auth_server_api_prefix: str = ""
+    # registry_url is the URL of the registry backend service.
     registry_url: str = "http://localhost:7860"
+    # registry_client_url is the URL of the frontend React app running in the Nginx container.
+    registry_client_url: str = "http://localhost:5173"
+
+    # ==================== Client ID and secret of registry as a client of auth-server ====================
     registry_app_name: str = "jarvis-registry-client"
+    registry_client_secret: str = ""
 
     # ==================== Logging ====================
     log_level: str = "INFO"
@@ -172,6 +187,18 @@ class JarvisBaseSettings(BaseSettings):
 
         return self
 
+    @model_validator(mode="after")
+    def _validate_service_urls(self) -> Self:
+        result = urlparse(self.registry_client_url)
+
+        if result.path.rstrip("/") != self.service_base_path:
+            raise ValueError(
+                "When both REGISTRY_URL and REGISTRY_CLIENT_URL exist, their path portion must match after stripping trailing slash, "
+                f"but they are '{self.registry_url}' and '{self.registry_client_url}' respectively."
+            )
+
+        return self
+
     def model_post_init(self, __context: Any) -> None:
         if not self.secret_key:
             self.secret_key = secrets.token_hex(32)
@@ -182,6 +209,12 @@ class JarvisBaseSettings(BaseSettings):
                 self.auth_server_url = f"{self.auth_server_url.rstrip('/')}{prefix}"
             if not self.auth_server_external_url.endswith(prefix):
                 self.auth_server_external_url = f"{self.auth_server_external_url.rstrip('/')}{prefix}"
+
+        if self.registry_url.endswith("/"):
+            self.registry_url = self.registry_url.rstrip("/")
+
+        if self.registry_client_url.endswith("/"):
+            self.registry_client_url = self.registry_client_url.rstrip("/")
 
     # ==================== Shared Properties ====================
 
@@ -220,6 +253,16 @@ class JarvisBaseSettings(BaseSettings):
         return load_scopes_config(self.scopes_file_config)
 
     @cached_property
+    def scopes_list(self) -> list[str]:
+        scopes: set[str] = set()
+
+        for key in self.scopes_config:
+            if key != "group_mappings":
+                scopes.add(key)
+
+        return list(scopes)
+
+    @cached_property
     def jwt_issuer(self) -> str:
         """
         Per RFC 8414 requirement on issuer:
@@ -232,7 +275,27 @@ class JarvisBaseSettings(BaseSettings):
           "issuer" must be `https://jarvis-demo.ascendingdc.com`.
         """
         result = urlparse(self.auth_server_external_url)
+        # `result.netloc` is `host:port` if `:port` exists and `host` otherwise.
         return f"{result.scheme}://{result.netloc}"
+
+    @cached_property
+    def service_base_path(self) -> str:
+        """
+        The path portion of `REGISTRY_URL`, with trailing "/" stripped.
+        When both `REGISTRY_URL` and `REGISTRY_CLIENT_URL` exist,
+        their path portion must match after stripping trailing "/".
+        """
+        result = urlparse(self.registry_url)
+
+        return result.path.rstrip("/")
+
+    @cached_property
+    def registry_success_redirect(self) -> str:
+        return self.registry_client_url
+
+    @cached_property
+    def registry_error_redirect(self) -> str:
+        return f"{self.registry_client_url.rstrip('/')}/login"
 
     def configure_logging(self, package_name: str) -> None:
         """

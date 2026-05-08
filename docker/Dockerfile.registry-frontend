@@ -12,10 +12,11 @@ RUN npm run build
 FROM nginx:1.27-bookworm AS production
 COPY --from=builder /app/frontend/build/ /usr/share/nginx/html
 
+# In PROD, we require TLS termination at an ALB, so Nginx always gets HTTP traffic only.
+# In local docker compose, everything is on HTTP anyway.
 COPY /frontend/nginx_http_only.conf /nginx_http_only.conf
-COPY /frontend/nginx_http_and_https.conf /nginx_http_and_https.conf
 
 COPY /docker/registry-entrypoint.sh /entrypoint.sh
 RUN chmod +x entrypoint.sh
-EXPOSE 80 443
+EXPOSE 80
 ENTRYPOINT ["/entrypoint.sh", "frontend"]
