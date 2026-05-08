@@ -319,7 +319,7 @@ class WorkflowService:
 
         Args:
             workflow_id: Workflow ID
-            status: Filter by run status (pending, running, completed, failed)
+            status: Filter by run status (pending, running, paused, completed, failed, cancelled)
             page: Page number
             per_page: Items per page
 

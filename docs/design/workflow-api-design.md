@@ -473,7 +473,7 @@
 **Query Parameters**:
 ```typescript
 {
-  status?: string;          // Status filter: pending | running | completed | failed
+  status?: string;          // Status filter: pending | running | paused | completed | failed | cancelled
   page?: number;            // Page number (default: 1)
   perPage?: number;         // Items per page (default: 20, max: 100)
 }
@@ -664,8 +664,10 @@ All endpoints return errors in the following format:
 
 - `pending`: Run is queued
 - `running`: Run is in progress
+- `paused`: Run is paused and waiting to resume
 - `completed`: Run completed successfully
 - `failed`: Run failed
+- `cancelled`: Run was cancelled
 
 ### NodeRunStatus
 
@@ -674,6 +676,7 @@ All endpoints return errors in the following format:
 - `completed`: Node completed successfully
 - `failed`: Node execution failed
 - `skipped`: Node was skipped
+- `cancelled`: Node execution was cancelled
 
 ### ResolvedDependencyResolution
 

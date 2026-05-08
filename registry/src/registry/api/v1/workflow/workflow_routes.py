@@ -337,7 +337,7 @@ async def trigger_workflow_run(
         user_id = user_context.get("user_id")
 
         # Schedule background execution
-        # This will update the run status as it progresses (PENDING -> RUNNING -> COMPLETED/FAILED)
+        # This updates the run status as it progresses through the workflow state machine.
         background_tasks.add_task(
             execute_workflow_run_background,
             run_id=run.id,
@@ -395,7 +395,10 @@ async def trigger_workflow_run(
 async def list_workflow_runs(
     workflow_id: str,
     user_context: CurrentUser,
-    status: Annotated[Literal["pending", "running", "completed", "failed"] | None, Query()] = None,
+    status: Annotated[
+        Literal["pending", "running", "paused", "completed", "failed", "cancelled"] | None,
+        Query(),
+    ] = None,
     page: Annotated[int, Query(ge=1)] = 1,
     per_page: Annotated[int, Query(ge=1, le=100)] = 20,
     workflow_service: WorkflowService = Depends(get_workflow_service),
@@ -404,7 +407,7 @@ async def list_workflow_runs(
     List workflow runs with optional filtering and pagination.
 
     Query Parameters:
-    - status: Filter by run status (pending, running, completed, failed)
+    - status: Filter by run status (pending, running, paused, completed, failed, cancelled)
     - page: Page number (default: 1, min: 1)
     - per_page: Items per page (default: 20, min: 1, max: 100)
     """
