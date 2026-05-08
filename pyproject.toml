@@ -278,3 +278,4 @@ help = "Schema version tag (e.g. asc0.4.5). Defaults to latest release."
 name = "version"
 positional = true
 default = ""
+
