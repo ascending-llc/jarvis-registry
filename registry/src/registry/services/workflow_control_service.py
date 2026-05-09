@@ -39,6 +39,17 @@ from registry_pkgs.workflows.control import DirectiveQueue
 logger = logging.getLogger(__name__)
 
 
+def _log_task_exception(task: asyncio.Task) -> None:
+    """Done-callback for fire-and-forget runner tasks.
+
+    Python silently discards unhandled task exceptions; this callback ensures
+    any exception that escapes the runner's own error handling is at least
+    logged so the failure is visible in application logs.
+    """
+    if not task.cancelled() and (exc := task.exception()):
+        logger.error("Background workflow task raised unhandled exception: %s", exc, exc_info=exc)
+
+
 class _HasRun(Protocol):
     """Structural interface for WorkflowRunner — avoids importing agno at module load time."""
 
@@ -123,7 +134,7 @@ class WorkflowControlService:
         logger.info("WorkflowRun %s created for definition %s", run.id, workflow_definition_id)
 
         runner = self._runner_factory()
-        asyncio.create_task(  # fire-and-forget; HTTP response returns immediately
+        task = asyncio.create_task(  # fire-and-forget; HTTP response returns immediately
             runner.run(
                 workflow_definition_id,
                 user_text,
@@ -132,6 +143,7 @@ class WorkflowControlService:
                 existing_run_id=str(run.id),
             )
         )
+        task.add_done_callback(_log_task_exception)
         return run
 
     async def send_pause(self, workflow_definition_id: str, run_id: str) -> WorkflowRun:
@@ -289,7 +301,8 @@ class WorkflowControlService:
         user_text: str = (parent_run.initial_input or {}).get("user_text", "")
         runner = self._runner_factory()
 
-        asyncio.create_task(  # fire-and-forget; HTTP response returns immediately
+        # fire-and-forget; HTTP response returns immediately
+        task = asyncio.create_task(
             runner.run(
                 str(parent_run.workflow_definition_id),
                 user_text,
@@ -299,6 +312,7 @@ class WorkflowControlService:
                 injected_outputs=injected_outputs,
             )
         )
+        task.add_done_callback(_log_task_exception)
         return child_run
 
     async def get_run_status(

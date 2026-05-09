@@ -22,8 +22,8 @@ async def cancel_in_flight_runs() -> None:
     """
     Mark in-flight WorkflowRuns and their NodeRuns as CANCELLED on pod shutdown.
 
-        Uses two bulk $set operations so shutdown completes quickly regardless of
-        how many runs are in flight.
+    Uses two bulk $set operations so shutdown completes quickly regardless of
+    how many runs are in flight.
     """
     now = datetime.now(UTC)
     active_statuses = [WorkflowRunStatus.PENDING, WorkflowRunStatus.RUNNING, WorkflowRunStatus.PAUSED]

@@ -89,8 +89,7 @@ class DirectiveQueue:
             return None
         try:
             return q.get_nowait()
-        except asyncio.QueueEmpty as exc:
-            logger.debug(f"DirectiveQueue.get_nowait() raised {exc}")
+        except asyncio.QueueEmpty:
             return None
 
     async def wait_for_directive(

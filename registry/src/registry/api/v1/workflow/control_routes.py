@@ -35,7 +35,7 @@ async def pause_run(
     """
     try:
         run = await service.send_pause(workflow_id, run_id)
-        return DirectiveResponse(run_id=str(run.id), status=run.status, message="Run paused")
+        return DirectiveResponse(run_id=str(run.id), status=run.status, message="Pause directive sent")
     except HTTPException:
         raise
     except Exception as exc:
@@ -56,7 +56,7 @@ async def resume_run(
     """
     try:
         run = await service.send_resume(workflow_id, run_id)
-        return DirectiveResponse(run_id=str(run.id), status=run.status, message="Run resumed")
+        return DirectiveResponse(run_id=str(run.id), status=run.status, message="Resume directive sent")
     except HTTPException:
         raise
     except Exception as exc:
@@ -78,7 +78,7 @@ async def cancel_run(
     """
     try:
         run = await service.send_cancel(workflow_id, run_id)
-        return DirectiveResponse(run_id=str(run.id), status=run.status, message="Run cancelled")
+        return DirectiveResponse(run_id=str(run.id), status=run.status, message="Cancel directive sent")
     except HTTPException:
         raise
     except Exception as exc:
