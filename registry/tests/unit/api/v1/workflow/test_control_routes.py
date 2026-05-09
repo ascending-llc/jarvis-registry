@@ -61,7 +61,7 @@ async def test_pause_run_success(sample_user_context, mock_service):
     mock_service.send_pause.assert_awaited_once_with("wf-1", "run-1")
     assert result.run_id == str(run.id)
     assert result.status == WorkflowRunStatus.PAUSED
-    assert result.message == "Run paused"
+    assert result.message == "Pause directive sent"
 
 
 @pytest.mark.asyncio
@@ -111,7 +111,7 @@ async def test_resume_run_success(sample_user_context, mock_service):
     mock_service.send_resume.assert_awaited_once_with("wf-1", "run-1")
     assert result.run_id == str(run.id)
     assert result.status == WorkflowRunStatus.RUNNING
-    assert result.message == "Run resumed"
+    assert result.message == "Resume directive sent"
 
 
 @pytest.mark.asyncio
@@ -162,7 +162,7 @@ async def test_cancel_run_success(sample_user_context, mock_service):
     mock_service.send_cancel.assert_awaited_once_with("wf-1", "run-1")
     assert result.run_id == str(run.id)
     assert result.status == WorkflowRunStatus.CANCELLED
-    assert result.message == "Run cancelled"
+    assert result.message == "Cancel directive sent"
 
 
 @pytest.mark.asyncio
