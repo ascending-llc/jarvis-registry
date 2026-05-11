@@ -909,9 +909,8 @@ class FederationSyncService:
             return
 
         result = await self.mcp_server_repo.sync_to_vector_db(current_server, is_delete=False)
-        if not result or result.get("failed_tools"):
-            detail = result.get("error") if result else None
-            suffix = f":{detail}" if detail else ""
+        if result.failed:
+            suffix = f":{result.error}" if result.error else ""
             raise RuntimeError(f"mcp sync failed for {current_server.serverName}{suffix}")
 
     async def _sync_a2a_vectors_for_runtime(self, federation_id, runtime_arn: str) -> None:
@@ -928,9 +927,8 @@ class FederationSyncService:
             return
 
         result = await self.a2a_agent_repo.sync_to_vector_db(current_agent, is_delete=False)
-        if not result or result.get("failed"):
-            detail = result.get("error") if result else None
-            suffix = f":{detail}" if detail else ""
+        if result.failed:
+            suffix = f":{result.error}" if result.error else ""
             raise RuntimeError(f"a2a sync failed for {current_agent.card.name}{suffix}")
 
     async def _current_mcp_runtime_arns(self, federation_id) -> list[str]:

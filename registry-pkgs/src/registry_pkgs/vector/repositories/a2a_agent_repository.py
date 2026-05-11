@@ -31,7 +31,7 @@ class A2AAgentRepository(BaseVectorSyncRepository[A2AAgent]):
         agent: A2AAgent,
         *,
         is_delete: bool = True,
-    ) -> dict:
+    ) -> VectorSyncResult:
         """Full rebuild for an A2A agent — caller must ensure content actually changed.
 
         Args:
@@ -45,7 +45,7 @@ class A2AAgentRepository(BaseVectorSyncRepository[A2AAgent]):
             if not agent_id:
                 result.failed = 1
                 result.error = "agent has no id"
-                return result.to_dict()
+                return result
 
             await self.ensure_collection()
 
@@ -66,7 +66,10 @@ class A2AAgentRepository(BaseVectorSyncRepository[A2AAgent]):
             doc_ids = await self.asave(agent)
             if doc_ids:
                 result.indexed = len(doc_ids)
-                result.version = self._extract_runtime_version(agent)
+                result.version = self._extract_runtime_version(
+                    agent.federationMetadata,
+                    fallback_keys=("runtimeVersion", "agentVersion"),
+                )
                 logger.info(
                     "Indexed %d docs for agent '%s' (agent_id=%s).",
                     result.indexed,
@@ -80,7 +83,7 @@ class A2AAgentRepository(BaseVectorSyncRepository[A2AAgent]):
             logger.error("A2A vector sync failed for agent %s: %s", getattr(agent, "id", "?"), e, exc_info=True)
             result.failed = 1
             result.error = str(e)
-        return result.to_dict()
+        return result
 
     async def delete_by_entity_id(self, entity_id: str, entity_name: str | None = None) -> int:
         """Remove all Weaviate docs for an A2A agent."""
@@ -103,11 +106,3 @@ class A2AAgentRepository(BaseVectorSyncRepository[A2AAgent]):
 
     async def delete_by_agent_id(self, agent_id: str, agent_name: str | None = None) -> int:
         return await self.delete_by_entity_id(agent_id, agent_name)
-
-    @staticmethod
-    def _extract_runtime_version(agent: A2AAgent) -> str | None:
-        """Extract runtimeVersion / agentVersion from federationMetadata for logging."""
-        runtime_version = (agent.federationMetadata or {}).get("runtimeVersion")
-        if runtime_version is None:
-            runtime_version = (agent.federationMetadata or {}).get("agentVersion")
-        return str(runtime_version) if runtime_version is not None else None

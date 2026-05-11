@@ -84,7 +84,6 @@ class SemanticSearchResponse(APIBaseModel):
     query: str
     servers: list[ServerSearchResult] = Field(default_factory=list)
     tools: list[ToolSearchResult] = Field(default_factory=list)
-    agents: list[AgentSearchResult] = Field(default_factory=list)
     totalServers: int = 0
     totalTools: int = 0
 
@@ -193,21 +192,15 @@ async def semantic_search(
                 )
             )
 
-        # Note: Legacy file-based agent search has been removed.
-        # Use the new A2A Agent Management V1 API (/api/v1/agents) instead.
-        filtered_agents: list[AgentSearchResult] = []
-
         success = True
-        total_results = len(filtered_servers) + len(filtered_tools) + len(filtered_agents)
+        total_results = len(filtered_servers) + len(filtered_tools)
 
         return SemanticSearchResponse(
             query=search_request.query.strip(),
             servers=filtered_servers,
             tools=filtered_tools,
-            agents=filtered_agents,
             totalServers=len(filtered_servers),
             totalTools=len(filtered_tools),
-            totalAgents=len(filtered_agents),
         )
     finally:
         # Record tool discovery metrics per discovered server

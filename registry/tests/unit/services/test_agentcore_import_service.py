@@ -7,6 +7,7 @@ from beanie import PydanticObjectId
 
 from registry.services.agentcore_import_service import AgentCoreImportService
 from registry_pkgs.models import ExtendedMCPServer, ResourceType
+from registry_pkgs.vector.sync_result import VectorSyncResult
 
 
 class _FakeRepo:
@@ -15,7 +16,7 @@ class _FakeRepo:
 
     async def sync_to_vector_db(self, server, is_delete=True):
         self.synced.append(server)
-        return {"indexed_tools": 1, "failed_tools": 0, "deleted": 0}
+        return VectorSyncResult(indexed=1)
 
     async def delete_by_server_id(self, server_id, server_name=None):
         self.synced.append(("deleted", server_id, server_name))
@@ -28,7 +29,7 @@ class _FakeA2ARepo:
 
     async def sync_to_vector_db(self, agent, is_delete=True):
         self.synced.append((agent, is_delete))
-        return {"indexed": 1, "failed": 0, "deleted": 0}
+        return VectorSyncResult(indexed=1)
 
     async def delete_by_agent_id(self, agent_id, agent_name=None):
         self.synced.append(("deleted", agent_id, agent_name))

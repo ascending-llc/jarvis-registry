@@ -553,6 +553,7 @@ class ExtendedMCPServer(MCPServer):
 
         # Map is_enabled to status
         status = "active" if is_enabled else "inactive"
+        config["enabled"] = is_enabled
 
         # Extract server_id if available (for updates)
         server_id = server_info.get("id") or server_info.get("_id")

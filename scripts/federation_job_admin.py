@@ -275,13 +275,9 @@ async def _retry_vector_sync(federation_id: ObjectId) -> None:
         for server in mcp_servers:
             try:
                 result = await mcp_repo.sync_to_vector_db(server, is_delete=False)
-                if not result or result.get("failed_tools"):
+                if result.failed:
                     mcp_failed += 1
-                    detail = result.get("error") if result else "sync returned no result"
-                    errors.append(f"mcp:{server.serverName}:{detail}")
-                    continue
-                if result.get("skipped"):
-                    mcp_skipped += int(result["skipped"])
+                    errors.append(f"mcp:{server.serverName}:{result.error or 'sync failed'}")
                     continue
                 mcp_indexed += 1
             except Exception as exc:
@@ -291,13 +287,9 @@ async def _retry_vector_sync(federation_id: ObjectId) -> None:
         for agent in a2a_agents:
             try:
                 result = await a2a_repo.sync_to_vector_db(agent, is_delete=False)
-                if not result or result.get("failed"):
+                if result.failed:
                     a2a_failed += 1
-                    detail = result.get("error") if result else "sync returned no result"
-                    errors.append(f"a2a:{agent.card.name}:{detail}")
-                    continue
-                if result.get("skipped"):
-                    a2a_skipped += int(result["skipped"])
+                    errors.append(f"a2a:{agent.card.name}:{result.error or 'sync failed'}")
                     continue
                 a2a_indexed += 1
             except Exception as exc:

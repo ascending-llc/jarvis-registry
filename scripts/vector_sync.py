@@ -158,7 +158,7 @@ async def _sync_one_server(server: Any, stats: SyncStats, repo: Any) -> None:
     print(f"  Syncing: {name} ({path}) [id={server_id}]")
     try:
         result = await repo.sync_to_vector_db(server, is_delete=True)
-        _record_result(stats, name, path, result, indexed_key="indexed_tools", failed_key="failed_tools")
+        _record_result(stats, name, path, result)
     except Exception as e:
         _record_exception(stats, name, path, e)
 
@@ -209,7 +209,7 @@ async def _sync_one_agent(agent: Any, stats: SyncStats, repo: Any) -> None:
     print(f"  Syncing: {name} ({path}) [id={agent_id}]")
     try:
         result = await repo.sync_to_vector_db(agent, is_delete=True)
-        _record_result(stats, name, path, result, indexed_key="indexed", failed_key="failed")
+        _record_result(stats, name, path, result)
     except Exception as e:
         _record_exception(stats, name, path, e)
 
@@ -252,20 +252,13 @@ async def sync_all_agents(
     return stats
 
 
-def _record_result(
-    stats: SyncStats,
-    name: str,
-    path: str,
-    result: dict,
-    indexed_key: str,
-    failed_key: str,
-) -> None:
-    indexed = result.get(indexed_key, 0)
-    failed = result.get(failed_key, 0)
-    error = result.get("error")
+def _record_result(stats: SyncStats, name: str, path: str, result: Any) -> None:
+    indexed = result.indexed
+    failed = result.failed
+    error = result.error
 
     if error or failed:
-        msg = f"{name}: {failed_key}={failed} error={error}"
+        msg = f"{name}: failed={failed} error={error}"
         print(f"    ✗ {msg}")
         stats.add_error(msg)
         stats.failed += 1

@@ -362,6 +362,23 @@ class A2AAgent(Document):
 
         return docs
 
+    def mutable_metadata(self) -> dict[str, Any]:
+        """Return metadata fields that can change without affecting page_content.
+
+        agent_name and path are intentionally excluded: both appear in page_content,
+        so changing either always changes vectorContentHash and triggers a full rebuild.
+        """
+        meta: dict[str, Any] = {
+            "enabled": self.isEnabled,
+            "tags": self.tags or [],
+        }
+        fed = self.federationMetadata or {}
+        for key in ("runtimeVersion", "agentVersion"):
+            value = fed.get(key)
+            if value is not None:
+                meta[key] = str(value)
+        return meta
+
     @classmethod
     def from_document(cls, document: LangChainDocument) -> dict[str, Any]:
         """Extract metadata from vector document for chat-interface discovery."""

@@ -120,12 +120,11 @@ class ExternalVectorSearchService(VectorSearchService):
 
             # Use specialized repository's sync method
             result = await self.mcp_server_repo.sync_to_vector_db(server=server, is_delete=True)
-
-            return result if result else {"indexed_tools": 0, "failed_tools": 1}
+            return result.to_dict()
 
         except Exception as e:
             logger.error(f"Failed to add/update service: {e}", exc_info=True)
-            return {"indexed_tools": 0, "failed_tools": 1}
+            return {"indexed": 0, "failed": 1, "deleted": 0, "metadata_updated": 0, "version": None, "error": str(e)}
 
     async def remove_service(self, service_path: str) -> dict[str, int] | None:
         """
@@ -322,7 +321,7 @@ class ExternalVectorSearchService(VectorSearchService):
             #     server_info=server_info,
             #     is_enabled=is_enabled
             # ))
-            return {"indexed_tools": 1, "failed_tools": 0}
+            return {"indexed": 1, "failed": 0}
 
         elif entity_type == "mcp_server":
             # Ensure entity_type and path are set
@@ -336,7 +335,7 @@ class ExternalVectorSearchService(VectorSearchService):
             #     server_info=entity_info,
             #     is_enabled=is_enabled
             # ))
-            return {"indexed_tools": 1, "failed_tools": 0}
+            return {"indexed": 1, "failed": 0}
         else:
             logger.warning(f"Unknown entity_type '{entity_type}', skipping indexing")
             return None

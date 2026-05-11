@@ -95,7 +95,7 @@ async def test_a2a_sync_rebuilds_when_called():
 
     result = await repo.sync_to_vector_db(agent, is_delete=False)
 
-    assert result["indexed"] == 1
+    assert result.indexed == 1
     repo.asave.assert_awaited_once()
 
 
@@ -113,7 +113,7 @@ async def test_mcp_sync_rebuilds_when_called():
 
     result = await repo.sync_to_vector_db(server, is_delete=False)
 
-    assert result["indexed_tools"] == 1
+    assert result.indexed == 1
     repo.asave.assert_awaited_once()
 
 
