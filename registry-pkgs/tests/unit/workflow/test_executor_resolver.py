@@ -8,7 +8,9 @@ from pydantic import HttpUrl
 
 from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.models.a2a_agent import A2AAgent, AgentConfig
+from registry_pkgs.models.enums import AgentCoreRuntimeAccessMode
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
+from registry_pkgs.models.federation import AgentCoreRuntimeAccessConfig, AgentCoreRuntimeJwtConfig
 from registry_pkgs.workflows import a2a_executor as a2a_exec
 from registry_pkgs.workflows import executor_resolver
 from registry_pkgs.workflows import mcp_executor as mcp_exec
@@ -102,7 +104,7 @@ class TestExecutorResolver:
             registry_url="https://registry.example.com",
             registry_token="token",
             jwt_config=_jwt_config(),
-            accessible_agent_ids=None,
+            user_id=None,
         )
 
         assert seen == ["alpha", "beta"]
@@ -128,6 +130,29 @@ class TestExecutorResolver:
         )
 
         assert resolved == "mcp-executor"
+
+    @pytest.mark.asyncio
+    async def test_resolve_executor_supports_builtin_echo_without_db_lookup(self, monkeypatch: pytest.MonkeyPatch):
+        mcp_find_one = AsyncMock()
+        a2a_find_one = AsyncMock()
+        monkeypatch.setattr(executor_resolver.ExtendedMCPServer, "find_one", mcp_find_one)
+        monkeypatch.setattr(executor_resolver.A2AAgent, "find_one", a2a_find_one)
+
+        resolved = await executor_resolver._resolve_executor(
+            "echo",
+            llm=SimpleNamespace(),
+            registry_url="https://registry.example.com",
+            registry_token="token",
+            jwt_config=_jwt_config(),
+            accessible_agent_ids=None,
+        )
+
+        output = await resolved(SimpleNamespace(input="hello", previous_step_content="ctx"), {"echo_count": 0})
+
+        assert output.success is True
+        assert output.content == "Context from previous step:\nctx\n\nhello"
+        mcp_find_one.assert_not_awaited()
+        a2a_find_one.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_resolve_executor_falls_back_to_a2a_agent(self, monkeypatch: pytest.MonkeyPatch):
@@ -279,6 +304,49 @@ class TestA2AExecutor:
         assert key_used == "fake-pem"
         assert kid_used == "kid-v1"
 
+    def test_make_agentcore_jwt_strips_whitespace_in_config_claims(self, monkeypatch: pytest.MonkeyPatch):
+        built_payloads: list[dict] = []
+
+        def fake_build_payload(subject, issuer, audience, expires_in_seconds, extra_claims=None):
+            built_payloads.append(
+                {
+                    "sub": subject,
+                    "iss": issuer,
+                    "aud": audience,
+                    "exp": expires_in_seconds,
+                    "extra_claims": extra_claims,
+                }
+            )
+            return {"sub": subject}
+
+        monkeypatch.setattr(a2a_exec, "build_jwt_payload", fake_build_payload)
+        monkeypatch.setattr(a2a_exec, "encode_jwt", lambda *args, **kwargs: "signed-jwt")
+
+        agent = _a2a_agent()
+        agent.config.runtimeAccess = AgentCoreRuntimeAccessConfig(
+            mode=AgentCoreRuntimeAccessMode.JWT,
+            jwt=AgentCoreRuntimeJwtConfig(
+                discoveryUrl="https://issuer.example.com/.well-known/openid-configuration",
+                audiences=[" jarvis-agentcore "],
+                allowedClients=[" Deep Intel "],
+                allowedScopes=[" workflows.read ", " workflows.write "],
+                customClaims={"agent_name": " Deep Intel "},
+            ),
+        )
+
+        token = a2a_exec._make_agentcore_jwt(agent, jwt_config=_jwt_config(), expires_in_seconds=90)
+
+        assert token == "signed-jwt"
+        payload = built_payloads[0]
+        assert payload["iss"] == "https://issuer.example.com"
+        assert payload["aud"] == "jarvis-agentcore"
+        assert payload["exp"] == 90
+        assert payload["extra_claims"] == {
+            "client_id": "Deep Intel",
+            "scope": "workflows.read workflows.write",
+            "agent_name": "Deep Intel",
+        }
+
 
 @pytest.mark.unit
 class TestHelpers:
@@ -290,3 +358,74 @@ class TestHelpers:
 
         assert prompt == "Context from previous step:\nctx\n\nhello"
         assert empty_prompt == "(no input)"
+
+
+@pytest.mark.unit
+class TestLoadAccessibleAgentIds:
+    """Tests for _load_accessible_agent_ids ACL helper."""
+
+    @pytest.mark.asyncio
+    async def test_returns_agent_ids_with_view_permission(self, monkeypatch: pytest.MonkeyPatch):
+        from beanie import PydanticObjectId
+
+        from registry_pkgs.models.enums import PermissionBits
+        from registry_pkgs.models.extended_acl_entry import ExtendedAclEntry
+
+        rid1 = PydanticObjectId()
+        rid2 = PydanticObjectId()
+        rid3 = PydanticObjectId()
+
+        entry1 = SimpleNamespace(permBits=PermissionBits.VIEW, resourceId=rid1)
+        entry2 = SimpleNamespace(permBits=PermissionBits.EDIT, resourceId=rid2)  # no VIEW
+        entry3 = SimpleNamespace(permBits=PermissionBits.VIEW, resourceId=rid3)
+
+        def fake_find(query):
+            class FakeQuery:
+                async def to_list(self):
+                    return [entry1, entry2, entry3]
+
+            return FakeQuery()
+
+        monkeypatch.setattr(ExtendedAclEntry, "find", fake_find)
+
+        result = await executor_resolver._load_accessible_agent_ids(str(PydanticObjectId()))
+        assert result == {str(rid1), str(rid3)}
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_set_when_no_entries(self, monkeypatch: pytest.MonkeyPatch):
+        from registry_pkgs.models.extended_acl_entry import ExtendedAclEntry
+
+        def fake_find(query):
+            class FakeQuery:
+                async def to_list(self):
+                    return []
+
+            return FakeQuery()
+
+        monkeypatch.setattr(ExtendedAclEntry, "find", fake_find)
+
+        result = await executor_resolver._load_accessible_agent_ids(str(PydanticObjectId()))
+        assert result == set()
+
+    @pytest.mark.asyncio
+    async def test_build_executor_registry_passes_acl_set_to_resolver(self, monkeypatch: pytest.MonkeyPatch):
+        async def fake_resolve(key: str, **kwargs):
+            return kwargs.get("accessible_agent_ids")
+
+        monkeypatch.setattr(executor_resolver, "_resolve_executor", fake_resolve)
+
+        async def fake_load_acl(user_id: str) -> set[str]:
+            return {"agent-1"}
+
+        monkeypatch.setattr(executor_resolver, "_load_accessible_agent_ids", fake_load_acl)
+
+        registry = await executor_resolver.build_executor_registry(
+            ["alpha"],
+            llm=SimpleNamespace(),
+            registry_url="https://registry.example.com",
+            registry_token="token",
+            jwt_config=_jwt_config(),
+            user_id="user-123",
+        )
+
+        assert registry == {"alpha": {"agent-1"}}

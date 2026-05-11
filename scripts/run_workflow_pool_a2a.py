@@ -40,6 +40,7 @@ from registry_pkgs.core.config import MongoConfig
 from registry_pkgs.core.jwt_utils import build_jwt_payload, encode_jwt
 from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.models.a2a_agent import A2AAgent
+from registry_pkgs.models.enums import WorkflowRunStatus
 from registry_pkgs.models.extended_acl_entry import ExtendedAclEntry
 from registry_pkgs.models.workflow import NodeRun, WorkflowDefinition, WorkflowNode, WorkflowRun
 from registry_pkgs.workflows.runner import WorkflowRunner
@@ -207,12 +208,19 @@ async def main() -> int:
         )
 
         print(f"\nRunning workflow with prompt: {args.prompt!r}\n")
+        pending_run = WorkflowRun(
+            workflow_definition_id=definition.id,
+            status=WorkflowRunStatus.PENDING,
+            trigger_source="pool-smoke",
+            initial_input={"user_text": str(args.prompt)},
+        )
+        await pending_run.insert()
         run, node_runs = await runner.run(
             str(definition.id),
             args.prompt,
             registry_token=registry_token,
-            accessible_agent_ids=None,  # script context: bypass ACL filtering
-            trigger_source="pool-smoke",
+            user_id=None,  # script context: bypass ACL filtering
+            existing_run_id=str(pending_run.id),
         )
         _print_results(run, node_runs)
 

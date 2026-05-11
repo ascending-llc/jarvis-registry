@@ -8,6 +8,7 @@ from beanie import PydanticObjectId
 from registry_pkgs.models.enums import WorkflowRunStatus
 from registry_pkgs.models.workflow import WorkflowDefinition, WorkflowNode, WorkflowRun
 from registry_pkgs.workflows import runner
+from registry_pkgs.workflows.control.wrapper import WorkflowCancelledError
 
 
 class _FieldExpr:
@@ -79,21 +80,24 @@ class TestWorkflowRunnerRun:
         r = _make_runner()
 
         with pytest.raises(ValueError, match="not found"):
-            await r.run("missing-id", "hello", registry_token="tok", accessible_agent_ids=None)
+            await r.run("missing-id", "hello", registry_token="tok", user_id=None, existing_run_id="any-id")
 
     @pytest.mark.asyncio
-    async def test_orchestrates_build_registry_create_execute_and_returns_node_runs(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
-        """run() must call _build_registry → _create_run → _execute in order."""
+    async def test_orchestrates_build_registry_execute_and_returns_node_runs(self, monkeypatch: pytest.MonkeyPatch):
+        """run() must load existing run, call _build_registry → _execute in order."""
         definition = _definition()
-        run_doc = _run()
+        run_doc = SimpleNamespace(
+            id=PydanticObjectId(),
+            status=WorkflowRunStatus.PENDING,
+            definition_snapshot=None,
+            save=AsyncMock(),
+        )
         node_runs = [SimpleNamespace(node_name="fetch")]
         fake_registry = {"tool": object()}
 
         monkeypatch.setattr(runner.WorkflowDefinition, "get", AsyncMock(return_value=definition))
+        monkeypatch.setattr(runner.WorkflowRun, "get", AsyncMock(return_value=run_doc))
         monkeypatch.setattr(runner.WorkflowRunner, "_build_registry", AsyncMock(return_value=fake_registry))
-        monkeypatch.setattr(runner.WorkflowRunner, "_create_run", AsyncMock(return_value=run_doc))
         monkeypatch.setattr(runner.WorkflowRunner, "_execute", AsyncMock())
 
         monkeypatch.setattr(runner.NodeRun, "workflow_run_id", _FieldExpr("workflow_run_id"), raising=False)
@@ -101,21 +105,20 @@ class TestWorkflowRunnerRun:
         monkeypatch.setattr(runner.NodeRun, "find", lambda *args, **kwargs: find_query)
 
         r = _make_runner()
-        accessible = {"agent-id-1"}
+        user_id = "user-1"
+        run_id = str(run_doc.id)
         actual_run, actual_nodes = await r.run(
             str(definition.id),
             "hello",
             registry_token="user-tok",
-            accessible_agent_ids=accessible,
-            trigger_source="api",
+            user_id=user_id,
+            existing_run_id=run_id,
         )
 
         assert actual_run is run_doc
         assert actual_nodes == node_runs
-        # registry_token + accessible_agent_ids are forwarded to _build_registry
-        runner.WorkflowRunner._build_registry.assert_awaited_once_with(definition, "user-tok", accessible)
-        runner.WorkflowRunner._create_run.assert_awaited_once_with(definition, "hello", "api")
-        runner.WorkflowRunner._execute.assert_awaited_once_with(run_doc, definition, "hello", fake_registry)
+        runner.WorkflowRunner._build_registry.assert_awaited_once_with(definition, "user-tok", user_id)
+        runner.WorkflowRunner._execute.assert_awaited_once_with(run_doc, definition, "hello", fake_registry, None)
 
 
 @pytest.mark.unit
@@ -143,53 +146,54 @@ class TestBuildRegistry:
             registry_url,
             registry_token,
             jwt_config,
-            accessible_agent_ids,
+            user_id,
             pool_nodes,
             selector_llm,
         ):
             captured["executor_keys"] = executor_keys
             captured["pool_nodes"] = [n.name for n in pool_nodes]
             captured["registry_token"] = registry_token
-            captured["accessible_agent_ids"] = accessible_agent_ids
+            captured["user_id"] = user_id
             return {}
 
         monkeypatch.setattr(runner, "build_executor_registry", fake_build)
 
         r = _make_runner(registry_url="http://reg")
-        await r._build_registry(definition, "my-token", {"agent-id-1"})
+        await r._build_registry(definition, "my-token", "user-1")
 
         assert captured["executor_keys"] == ["mcp-tool"]
         assert captured["pool_nodes"] == ["pool-step"]
         assert captured["registry_token"] == "my-token"
-        assert captured["accessible_agent_ids"] == {"agent-id-1"}
+        assert captured["user_id"] == "user-1"
 
 
 @pytest.mark.unit
-class TestCreateRun:
+class TestRunSetsRunningStatus:
     @pytest.mark.asyncio
-    async def test_inserts_running_workflow_run_with_snapshot(self, monkeypatch: pytest.MonkeyPatch):
-        inserted = []
-
-        class FakeWorkflowRun:
-            def __init__(self, **kwargs):
-                self.id = PydanticObjectId()
-                self.__dict__.update(kwargs)
-
-            async def insert(self):
-                inserted.append(self)
-
-        monkeypatch.setattr(runner, "WorkflowRun", FakeWorkflowRun)
-        r = _make_runner()
+    async def test_transitions_pending_run_to_running_and_stamps_snapshot(self, monkeypatch: pytest.MonkeyPatch):
+        """run() must set status=RUNNING and definition_snapshot before executing."""
         definition = _definition()
+        run_doc = SimpleNamespace(
+            id=PydanticObjectId(),
+            status=WorkflowRunStatus.PENDING,
+            definition_snapshot=None,
+            save=AsyncMock(),
+        )
 
-        run_doc = await r._create_run(definition, "hello", "script")
+        monkeypatch.setattr(runner.WorkflowDefinition, "get", AsyncMock(return_value=definition))
+        monkeypatch.setattr(runner.WorkflowRun, "get", AsyncMock(return_value=run_doc))
+        monkeypatch.setattr(runner.WorkflowRunner, "_build_registry", AsyncMock(return_value={}))
+        monkeypatch.setattr(runner.WorkflowRunner, "_execute", AsyncMock())
+        monkeypatch.setattr(runner.NodeRun, "workflow_run_id", _FieldExpr("workflow_run_id"), raising=False)
+        find_query = SimpleNamespace(to_list=AsyncMock(return_value=[]))
+        monkeypatch.setattr(runner.NodeRun, "find", lambda *args, **kwargs: find_query)
 
-        assert inserted[0] is run_doc
-        assert run_doc.workflow_definition_id == definition.id
+        r = _make_runner()
+        await r.run(str(definition.id), "hello", registry_token="tok", user_id=None, existing_run_id=str(run_doc.id))
+
         assert run_doc.status == WorkflowRunStatus.RUNNING
-        assert run_doc.trigger_source == "script"
-        assert run_doc.initial_input == {"user_text": "hello"}
         assert run_doc.definition_snapshot["name"] == definition.name
+        run_doc.save.assert_awaited_once()
 
 
 @pytest.mark.unit
@@ -233,3 +237,27 @@ class TestExecute:
         assert isinstance(run_doc.finished_at, datetime)
         assert run_doc.finished_at.tzinfo == UTC
         run_doc.save.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_marks_run_cancelled_when_workflow_is_cancelled(self, monkeypatch: pytest.MonkeyPatch):
+        workflow = SimpleNamespace(arun=AsyncMock(side_effect=WorkflowCancelledError("Workflow cancelled by user")))
+        run_doc = SimpleNamespace(
+            status=WorkflowRunStatus.RUNNING,
+            error_summary=None,
+            finished_at=None,
+            save=AsyncMock(),
+            sync=AsyncMock(),
+            id="run-1",
+        )
+
+        monkeypatch.setattr(runner, "compile_workflow", lambda *args, **kwargs: workflow)
+        r = _make_runner()
+
+        await r._execute(run_doc, _definition(), "hello", {})
+
+        assert run_doc.status == WorkflowRunStatus.CANCELLED
+        assert run_doc.error_summary == "Workflow cancelled by user"
+        assert isinstance(run_doc.finished_at, datetime)
+        assert run_doc.finished_at.tzinfo == UTC
+        run_doc.save.assert_awaited_once()
+        run_doc.sync.assert_not_called()

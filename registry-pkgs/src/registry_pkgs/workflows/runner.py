@@ -3,13 +3,13 @@
 Role in the pipeline
 --------------------
 ``WorkflowRunner`` is the outermost facade.  Callers (API handlers, scripts)
-only need to call ``runner.run()``; all internal coordination is hidden here:
+must pre-create a ``WorkflowRun`` document and pass its ID to ``run()``;
+all internal coordination is hidden here:
 
-    WorkflowRunner.run(definition_id, user_text, registry_token=...)
+    WorkflowRunner.run(definition_id, user_text, existing_run_id=..., registry_token=...)
         ├─ load WorkflowDefinition from MongoDB
-        ├─ extract executor_keys + pool_nodes from the definition tree
+        ├─ load WorkflowRun by existing_run_id → set status=RUNNING + definition_snapshot
         ├─ build_executor_registry()      → resolves MCP/A2A/pool executors
-        ├─ create + insert WorkflowRun    (status=RUNNING)
         ├─ compile_workflow()             → agno Workflow  (compiler.py)
         ├─ workflow.arun()                → executes steps, triggers WorkflowRunSyncer
         ├─ run.sync()                     → reload final status written by WorkflowRunSyncer
@@ -54,6 +54,7 @@ from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.models.enums import WorkflowRunStatus
 from registry_pkgs.models.workflow import NodeRun, WorkflowDefinition, WorkflowRun
 from registry_pkgs.workflows.compiler import StepExecutor, compile_workflow, flatten_workflow_nodes
+from registry_pkgs.workflows.control import DirectiveQueue, WorkflowCancelledError
 from registry_pkgs.workflows.executor_resolver import build_executor_registry
 
 logger = logging.getLogger(__name__)
@@ -86,6 +87,7 @@ class WorkflowRunner:
         db_name: str,
         jwt_config: JwtSigningConfig,
         selector_llm: Model | None = None,
+        directive_queue: DirectiveQueue | None = None,
     ) -> None:
         if db_client is None:
             raise ValueError("WorkflowRunner requires db_client")
@@ -98,6 +100,9 @@ class WorkflowRunner:
         self._db_client = db_client
         self._db_name = db_name
         self._jwt_config = jwt_config
+        # Optional directive queue; when provided, every step executor is wrapped
+        # with pause/cancel/retry-backoff logic via with_control().
+        self._directive_queue = directive_queue
 
     async def run(
         self,
@@ -105,40 +110,73 @@ class WorkflowRunner:
         user_text: str,
         *,
         registry_token: str,
-        accessible_agent_ids: set[str] | None,
-        trigger_source: str = "api",
+        user_id: str | None,
+        existing_run_id: str,
+        injected_outputs: dict[str, dict[str, Any]] | None = None,
     ) -> tuple[WorkflowRun, list[NodeRun]]:
         """Execute a workflow definition and return the completed run + per-node results.
 
+        Callers must pre-create a ``WorkflowRun`` document (status=PENDING) and pass
+        its ID via ``existing_run_id``.  This method transitions the run to RUNNING,
+        stamps the definition snapshot, then executes; status is always written to a
+        terminal value (COMPLETED / FAILED / CANCELLED) before returning or raising.
+
         Args:
-            definition_id:        MongoDB ObjectId string of the WorkflowDefinition.
-            user_text:            Top-level input passed as ``workflow.arun(input=...)``.
-            registry_token:       User-scoped Bearer token.  Used by the gateway to
-                                  authenticate MCP / A2A proxy calls on behalf of the
-                                  end user.  Must NOT be shared across different users.
-            accessible_agent_ids: ACL filter — set of A2AAgent ID strings the caller
-                                  is authorized to invoke.  ``None`` = unrestricted
-                                  (only safe for trusted service / script contexts;
-                                  user-facing API routes MUST pass a concrete set).
-            trigger_source:       Label stored on WorkflowRun (e.g. ``"api"``, ``"script"``).
+            definition_id:    MongoDB ObjectId string of the WorkflowDefinition.
+            user_text:        Top-level input passed as ``workflow.arun(input=...)``.
+            registry_token:   User-scoped Bearer token.  Must NOT be shared across users.
+            user_id:          User ID for ACL lookup.  ``None`` = unrestricted (scripts only).
+            existing_run_id:  ID of the pre-created ``WorkflowRun`` document to drive.
+            injected_outputs: Mapping of ``node_id → {"content": ..., "session_state": ...}``
+                              for nodes reused from a previous run (retry-from-node).
 
         Returns:
             A tuple of (WorkflowRun, list[NodeRun]) after the run completes.
 
         Raises:
-            ValueError:      If the WorkflowDefinition is not found.
-            PermissionError: If the workflow references an A2A agent the caller
-                             cannot access.
-            Exception:       Re-raises any agno execution error after marking the run FAILED.
+            ValueError:      If the WorkflowDefinition or WorkflowRun is not found.
+            PermissionError: If the workflow references an A2A agent the caller cannot access.
+            Exception:       Re-raises any execution error after marking the run FAILED.
         """
         definition = await WorkflowDefinition.get(definition_id)
         if definition is None:
             raise ValueError(f"WorkflowDefinition {definition_id!r} not found")
 
-        executor_registry = await self._build_registry(definition, registry_token, accessible_agent_ids)
+        run = await WorkflowRun.get(existing_run_id)
+        if run is None:
+            raise ValueError(f"WorkflowRun {existing_run_id!r} not found")
 
-        run = await self._create_run(definition, user_text, trigger_source)
-        await self._execute(run, definition, user_text, executor_registry)
+        run.status = WorkflowRunStatus.RUNNING
+        run.definition_snapshot = definition.model_dump(mode="json")
+        await run.save()
+
+        node_names = [n.name for n in flatten_workflow_nodes(definition.nodes) if n.executor_key or n.a2a_pool]
+        logger.info(
+            "[run=%s] ═══ workflow %r started — %d step(s): %s",
+            run.id,
+            definition.name,
+            len(node_names),
+            " → ".join(node_names),
+        )
+
+        if self._directive_queue is not None:
+            self._directive_queue.register(str(run.id))
+
+        try:
+            try:
+                executor_registry = await self._build_registry(definition, registry_token, user_id)
+            except Exception as exc:
+                run.status = WorkflowRunStatus.FAILED
+                run.error_summary = str(exc)
+                run.finished_at = datetime.now(UTC)
+                await run.save()
+                logger.error("[run=%s] ✗ failed to build executor registry: %s", run.id, exc, exc_info=True)
+                raise
+            await self._execute(run, definition, user_text, executor_registry, injected_outputs)
+        finally:
+            # Always unregister — even on failure — so the queue slot is freed.
+            if self._directive_queue is not None:
+                self._directive_queue.unregister(str(run.id))
 
         node_runs = await NodeRun.find(NodeRun.workflow_run_id == run.id).to_list()
         return run, node_runs
@@ -147,7 +185,7 @@ class WorkflowRunner:
         self,
         definition: WorkflowDefinition,
         registry_token: str,
-        accessible_agent_ids: set[str] | None,
+        user_id: str | None,
     ) -> dict[str, StepExecutor]:
         """Extract executor keys + pool nodes from the definition and resolve them.
 
@@ -176,30 +214,10 @@ class WorkflowRunner:
             registry_url=self._registry_url,
             registry_token=registry_token,
             jwt_config=self._jwt_config,
-            accessible_agent_ids=accessible_agent_ids,
+            user_id=user_id,
             pool_nodes=pool_nodes,
             selector_llm=self._selector_llm,
         )
-
-    async def _create_run(
-        self,
-        definition: WorkflowDefinition,
-        user_text: str,
-        trigger_source: str,
-    ) -> WorkflowRun:
-        """Insert a new WorkflowRun document with status RUNNING."""
-        run = WorkflowRun(
-            workflow_definition_id=definition.id,
-            status=WorkflowRunStatus.RUNNING,
-            trigger_source=trigger_source,
-            initial_input={"user_text": user_text},
-            # Snapshot the definition at run time so retry/audit always has the
-            # exact node tree that was executed, even if the definition is later edited.
-            definition_snapshot=definition.model_dump(mode="json"),
-        )
-        await run.insert()
-        logger.info("WorkflowRun id=%s created for definition %r", run.id, definition.name)
-        return run
 
     async def _execute(
         self,
@@ -207,6 +225,7 @@ class WorkflowRunner:
         definition: WorkflowDefinition,
         user_text: str,
         executor_registry: dict[str, StepExecutor],
+        injected_outputs: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         """Compile the workflow and run it via agno.
 
@@ -219,6 +238,8 @@ class WorkflowRunner:
             executor_registry=executor_registry,
             db_client=self._db_client,
             db_name=self._db_name,
+            directive_queue=self._directive_queue,
+            injected_outputs=injected_outputs,
         )
         try:
             await workflow.arun(
@@ -229,6 +250,12 @@ class WorkflowRunner:
             )
             # Reload state written by WorkflowRunSyncer so callers see the latest status.
             await run.sync()
+        except WorkflowCancelledError as exc:
+            run.status = WorkflowRunStatus.CANCELLED
+            run.error_summary = str(exc)
+            run.finished_at = datetime.now(UTC)
+            await run.save()
+            logger.info("[run=%s] ✗ workflow cancelled: %s", run.id, exc)
         except Exception as exc:
             # agno may not call upsert_session on a hard failure; write the error
             # directly so the record is never left dangling as RUNNING.
@@ -236,5 +263,5 @@ class WorkflowRunner:
             run.error_summary = str(exc)
             run.finished_at = datetime.now(UTC)
             await run.save()
-            logger.error("WorkflowRun %s failed: %s", run.id, exc, exc_info=True)
+            logger.error("[run=%s] ✗ workflow failed: %s", run.id, exc, exc_info=True)
             raise
