@@ -30,11 +30,14 @@ from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
+from beanie import PydanticObjectId
+
 from registry import settings
 from registry_pkgs.core.config import MongoConfig
 from registry_pkgs.core.jwt_utils import build_jwt_payload, encode_jwt
 from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.models.a2a_agent import A2AAgent
+from registry_pkgs.models.enums import WorkflowRunStatus
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 from registry_pkgs.models.workflow import NodeRun, WorkflowDefinition, WorkflowRun
 from registry_pkgs.workflows.a2a_executor import _get_agentcore_auth_mode, _is_agentcore_runtime, agent_base_url
@@ -183,12 +186,19 @@ async def main(definition_id: str, user_text: str, *, list_agents: bool = False)
         )
 
         print(f"Running definition {definition_id!r} with prompt: {user_text!r}\n")
+        pending_run = WorkflowRun(
+            workflow_definition_id=PydanticObjectId(definition_id),
+            status=WorkflowRunStatus.PENDING,
+            trigger_source="script",
+            initial_input={"user_text": user_text},
+        )
+        await pending_run.insert()
         run, node_runs = await runner.run(
             definition_id,
             user_text,
             registry_token=registry_token,
-            accessible_agent_ids=None,  # script context: bypass ACL filtering
-            trigger_source="script",
+            user_id=None,  # script context: bypass ACL filtering
+            existing_run_id=str(pending_run.id),
         )
         _print_status(run, node_runs)
 

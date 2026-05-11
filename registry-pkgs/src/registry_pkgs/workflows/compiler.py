@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from agno.workflow import (
     Condition,
@@ -9,6 +9,8 @@ from agno.workflow import (
     Parallel,
     Router,
     Step,
+    StepInput,
+    StepOutput,
     Workflow,
 )
 from agno.workflow.step import OnError, StepExecutor
@@ -17,6 +19,9 @@ from registry_pkgs.models.enums import WorkflowNodeType
 from registry_pkgs.models.workflow import StepConfig, WorkflowDefinition, WorkflowNode, WorkflowRun
 from registry_pkgs.workflows.persistence import WorkflowRunSyncer
 from registry_pkgs.workflows.types import POOL_KEY_PREFIX
+
+if TYPE_CHECKING:
+    from registry_pkgs.workflows.control import DirectiveQueue
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +33,8 @@ def compile_workflow(
     executor_registry: dict[str, StepExecutor],
     db_client: Any | None = None,
     db_name: str | None = None,
+    directive_queue: DirectiveQueue | None = None,
+    injected_outputs: dict[str, dict[str, Any]] | None = None,
 ) -> Workflow:
     """Compile a WorkflowDefinition + WorkflowRun into an agno Workflow.
 
@@ -39,6 +46,13 @@ def compile_workflow(
                            a WorkflowRunSyncer is attached so agno's upsert_session
                            automatically syncs run state to WorkflowRun / NodeRun.
         db_name:           MongoDB database name (required when db_client is set).
+        directive_queue:   When provided, every STEP executor is wrapped with
+                           :func:`~registry_pkgs.workflows.control.with_control`
+                           to enable pause, cancel, and retry-backoff behaviour.
+        injected_outputs:  Mapping of ``node_id → output content`` for nodes that
+                           should be skipped by replaying a cached result.  Used
+                           when retrying a run from a specific node so that
+                           previously completed nodes are not re-executed.
     """
     if (db_client is None) != (db_name is None):
         raise ValueError("compile_workflow requires db_client and db_name together")
@@ -53,14 +67,48 @@ def compile_workflow(
             db_name=db_name,
         )
 
+    _injected = injected_outputs or {}
+
+    def _make_injected_executor(data: dict[str, Any]) -> StepExecutor:
+        """Return a pass-through executor that replays *content* and *session_state*."""
+
+        async def _injected(step_input: StepInput, session_state: dict | None = None) -> StepOutput:
+            if session_state is not None:
+                state_updates = data.get("session_state")
+                if state_updates:
+                    session_state.update(state_updates)
+            return StepOutput(content=data.get("content"), success=True)
+
+        return _injected
+
     def _build(node: WorkflowNode) -> Any:
         if node.node_type == WorkflowNodeType.STEP:
             lookup_key = f"{POOL_KEY_PREFIX}{node.id}" if node.a2a_pool else node.executor_key
-            executor = executor_registry.get(lookup_key)  # type: ignore[arg-type]
-            if executor is None:
-                raise KeyError(
-                    f"executor key {lookup_key!r} not found in executor_registry "
-                    f"(registered: {list(executor_registry)})"
+
+            # Nodes whose output was produced by a previous run are replaced with
+            # a lightweight pass-through executor so they complete instantly without
+            # calling the underlying MCP / A2A service again.
+            if node.id in _injected:
+                executor: StepExecutor = _make_injected_executor(_injected[node.id])
+            else:
+                executor = executor_registry.get(lookup_key)  # type: ignore[arg-type]
+                if executor is None:
+                    raise KeyError(
+                        f"executor key {lookup_key!r} not found in executor_registry "
+                        f"(registered: {list(executor_registry)})"
+                    )
+
+            # Wrap with directive checking and retry backoff when a queue is present.
+            if directive_queue is not None:
+                from registry_pkgs.workflows.control import with_control
+
+                executor = with_control(
+                    executor,
+                    run_id=str(run.id),
+                    node_id=node.id,
+                    node_name=node.name,
+                    step_config=node.step_config,
+                    directive_queue=directive_queue,
                 )
             return Step(
                 name=node.name,
@@ -113,10 +161,18 @@ def compile_workflow(
 def step_kwargs(cfg: StepConfig | None) -> dict[str, Any]:
     """Translate a StepConfig into agno Step keyword arguments.
 
-    When ``cfg`` is None the step runs with safe production defaults:
+    When ``cfg`` is ``None`` the step runs with safe production defaults:
     no retries, fail-fast on error.
+
+    When ``on_error == "retry"`` the retry loop is fully managed by the
+    ``with_control`` wrapper, so agno receives ``max_retries=0`` and
+    ``on_error=fail`` — agno must not interfere with our backoff logic.
     """
     if cfg is None:
+        return {"max_retries": 0, "skip_on_failure": False, "on_error": OnError.fail}
+    if cfg.on_error == "retry":
+        # Retries are handled by the executor wrapper; tell agno to treat a
+        # (wrapper-level) failure as a normal step failure without extra retries.
         return {"max_retries": 0, "skip_on_failure": False, "on_error": OnError.fail}
     return {
         "max_retries": cfg.max_retries,

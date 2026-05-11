@@ -12,6 +12,7 @@ from pymongo import ASCENDING
 from registry_pkgs.models.enums import (
     NodeRunStatus,
     ResolvedDependencyResolution,
+    WorkflowDirective,
     WorkflowNodeType,
     WorkflowRunStatus,
 )
@@ -20,18 +21,30 @@ from registry_pkgs.models.enums import (
 class StepConfig(BaseModel):
     """Per-step execution controls for STEP nodes.
 
-    Fields map directly to agno ``Step`` parameters so the workflow engine
-    honours them at runtime without any extra translation layer.
-
     Attributes:
-        max_retries:  How many times to retry the step on failure (0 = no retry).
-        on_error:     What to do when the step ultimately fails after all retries.
-                      ``"fail"`` aborts the whole workflow run;
-                      ``"skip"`` records the failure and continues to the next step.
+        max_retries:          Maximum number of additional attempts after the first failure.
+                              When ``on_error="retry"`` the retry loop is managed by the
+                              executor wrapper with exponential backoff, so agno receives
+                              ``max_retries=0`` and does not interfere.  When ``on_error`` is
+                              ``"fail"`` or ``"skip"`` this value is forwarded to agno for
+                              its own step-level retry logic.
+        on_error:             Behaviour when the step ultimately fails after all attempts.
+                              ``"fail"``  – abort the whole workflow run (default).
+                              ``"skip"``  – record the failure and continue to the next step.
+                              ``"retry"`` – retry up to ``max_retries`` times with exponential
+                                            backoff before falling through to ``"fail"``
+                                            behaviour.  The retry loop is managed by the
+                                            executor wrapper, not by agno, so directives
+                                            (pause/cancel) are honoured between attempts.
+        backoff_base_seconds: Base wait time in seconds for the first retry backoff interval.
+                              Each subsequent interval doubles: base * 2^attempt.
+        backoff_max_seconds:  Upper cap for any single backoff interval (seconds).
     """
 
     max_retries: int = 0
     on_error: str = "fail"
+    backoff_base_seconds: float = 1.0
+    backoff_max_seconds: float = 60.0
 
     @field_validator("max_retries")
     @classmethod
@@ -43,9 +56,16 @@ class StepConfig(BaseModel):
     @field_validator("on_error")
     @classmethod
     def _validate_on_error(cls, value: str) -> str:
-        allowed = {"fail", "skip"}
+        allowed = {"fail", "skip", "retry"}
         if value not in allowed:
             raise ValueError(f"on_error must be one of {sorted(allowed)}, got {value!r}")
+        return value
+
+    @field_validator("backoff_base_seconds", "backoff_max_seconds")
+    @classmethod
+    def _validate_backoff(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("backoff seconds must be > 0")
         return value
 
 
@@ -201,6 +221,7 @@ class NodeRun(Document):
     attempt: int = 0
     input_snapshot: dict[str, Any] | None = None
     output_snapshot: dict[str, Any] | None = None
+    session_state_snapshot: dict[str, Any] | None = None
     error: str | None = None
     selected_a2a_key: str | None = None
     started_at: datetime | None = None
@@ -229,6 +250,16 @@ class WorkflowRun(Document):
 
     parent_run_id: PydanticObjectId | None = None
     resolved_dependencies: list[ResolvedDependency] = Field(default_factory=list)
+
+    # Directive control fields — written by the API layer, read by the executor wrapper.
+    # ``pending_directive`` is the MongoDB source of truth; the in-process asyncio.Queue
+    # is the fast path.  On service restart the Queue is lost but this field survives,
+    # allowing startup cleanup to mark orphan runs correctly.
+    pending_directive: WorkflowDirective | None = None
+    # Set when the run transitions to PAUSED; used to enforce pause_timeout_seconds.
+    paused_at: datetime | None = None
+    # How long (seconds) a paused run may wait before being automatically cancelled.
+    pause_timeout_seconds: int = 3600
 
     class Settings:
         name = "workflow_runs"

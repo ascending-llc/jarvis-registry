@@ -20,11 +20,17 @@ logger = logging.getLogger(__name__)
 _STATUS_MAP: dict[RunStatus, WorkflowRunStatus] = {
     RunStatus.completed: WorkflowRunStatus.COMPLETED,
     RunStatus.error: WorkflowRunStatus.FAILED,
-    RunStatus.cancelled: WorkflowRunStatus.FAILED,
+    RunStatus.cancelled: WorkflowRunStatus.CANCELLED,
     RunStatus.pending: WorkflowRunStatus.RUNNING,
     RunStatus.running: WorkflowRunStatus.RUNNING,
-    RunStatus.paused: WorkflowRunStatus.RUNNING,
+    RunStatus.paused: WorkflowRunStatus.PAUSED,
 }
+
+# Statuses that represent a finished run (used for finished_at stamping and
+# transaction decisions).  Must stay in sync with WorkflowRunStateMachine.TERMINAL_STATUSES.
+_TERMINAL_STATUSES: frozenset[WorkflowRunStatus] = frozenset(
+    {WorkflowRunStatus.COMPLETED, WorkflowRunStatus.FAILED, WorkflowRunStatus.CANCELLED}
+)
 
 
 class WorkflowRunSyncer(AsyncMongoDb):
@@ -85,7 +91,7 @@ class WorkflowRunSyncer(AsyncMongoDb):
         final_status = _resolve_workflow_run_status(run_output, step_outputs)
         active_session = get_current_session()
 
-        if final_status in {WorkflowRunStatus.COMPLETED, WorkflowRunStatus.FAILED}:
+        if final_status in _TERMINAL_STATUSES:
             if active_session is not None:
                 await self._write_run_and_nodes(
                     run_output,
@@ -139,7 +145,7 @@ class WorkflowRunSyncer(AsyncMongoDb):
         run = self._workflow_run
         mapped_status = _resolve_workflow_run_status(run_output, step_outputs or [])
         run.status = mapped_status
-        if mapped_status in {WorkflowRunStatus.COMPLETED, WorkflowRunStatus.FAILED}:
+        if mapped_status in _TERMINAL_STATUSES:
             if run.finished_at is None:
                 run.finished_at = datetime.now(UTC)
         else:
@@ -179,13 +185,14 @@ class WorkflowRunSyncer(AsyncMongoDb):
             )
 
         node_run.status = NodeRunStatus.COMPLETED if step_output.success else NodeRunStatus.FAILED
-        node_run.attempt += 1
+        node_run.attempt = max(node_run.attempt, 1)
         node_run.finished_at = datetime.now(UTC)
         node_run.error = step_output.error
         if step_output.content is not None:
             node_run.output_snapshot = {"content": str(step_output.content)}
 
-        if session_data:
+        if session_data is not None:
+            node_run.session_state_snapshot = dict(session_data)
             # Read the same key written by make_a2a_pool_executor so the
             # selected agent is persisted for retry reconstruction.
             selected = session_data.get(f"a2a_target_{step_name}")
@@ -193,8 +200,16 @@ class WorkflowRunSyncer(AsyncMongoDb):
                 node_run.selected_a2a_key = str(selected)
 
         await node_run.save(session=session)
+        output_preview = ""
+        if node_run.output_snapshot:
+            raw = node_run.output_snapshot.get("content", "")
+            output_preview = raw[:300] if raw else ""
         logger.debug(
-            "NodeRun %s (%s) → %s (selected_a2a=%r)", node_id, step_name, node_run.status, node_run.selected_a2a_key
+            "  NodeRun %-35s → %-10s  output=%r%s",
+            step_name,
+            node_run.status,
+            output_preview,
+            f"  error={node_run.error!r}" if node_run.error else "",
         )
 
 
@@ -214,6 +229,13 @@ def _resolve_workflow_run_status(
     step_outputs: list[StepOutput],
 ) -> WorkflowRunStatus:
     mapped_status = _STATUS_MAP.get(run_output.status, WorkflowRunStatus.FAILED)
+
+    # If agno itself marked the run as cancelled, preserve CANCELLED rather than
+    # overriding it with FAILED because a failed step triggered the cancellation.
+    if mapped_status == WorkflowRunStatus.CANCELLED:
+        return WorkflowRunStatus.CANCELLED
+
     if any(not step_output.success for step_output in step_outputs):
         return WorkflowRunStatus.FAILED
+
     return mapped_status
