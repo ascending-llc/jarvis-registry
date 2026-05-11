@@ -295,6 +295,18 @@ workflows-read:
   - action: list_runs_status
     method: GET
     endpoint: /workflows/{workflow_id}/runs/status
+  - action: list_workflows
+    method: GET
+    endpoint: /workflows
+  - action: get_workflow
+    method: GET
+    endpoint: /workflows/{workflow_id}
+  - action: list_workflow_runs
+    method: GET
+    endpoint: /workflows/{workflow_id}/runs
+  - action: get_workflow_run
+    method: GET
+    endpoint: /workflows/{workflow_id}/runs/{run_id}
 
 workflows-control:
   # Write directives to live or finished workflow runs. Requires workflows-read.
@@ -314,19 +326,6 @@ workflows-control:
     method: POST
     endpoint: /workflows/{workflow_id}/runs/{run_id}/retry
 
-workflows-read:
-  - action: list_workflows
-    method: GET
-    endpoint: /workflows
-  - action: get_workflow
-    method: GET
-    endpoint: /workflows/{workflow_id}
-  - action: list_workflow_runs
-    method: GET
-    endpoint: /workflows/{workflow_id}/runs
-  - action: get_workflow_run
-    method: GET
-    endpoint: /workflows/{workflow_id}/runs/{run_id}
 
 workflows-write:
   - action: create_workflow

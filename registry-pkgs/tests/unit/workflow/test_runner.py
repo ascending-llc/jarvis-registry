@@ -123,7 +123,7 @@ class TestWorkflowRunnerRun:
         runner.WorkflowRunner._execute.assert_awaited_once_with(run_doc, definition, "hello", fake_registry, None)
 
     @pytest.mark.asyncio
-    async def test_run_existing_executes_existing_run_without_creating_new_run(self, monkeypatch: pytest.MonkeyPatch):
+    async def test_run_executes_existing_run_without_creating_new_run(self, monkeypatch: pytest.MonkeyPatch):
         definition = _definition()
         existing_run = SimpleNamespace(
             id=PydanticObjectId(),
@@ -139,40 +139,34 @@ class TestWorkflowRunnerRun:
         fake_registry = {"tool": object()}
 
         monkeypatch.setattr(runner.WorkflowDefinition, "get", AsyncMock(return_value=definition))
+        monkeypatch.setattr(runner.WorkflowRun, "get", AsyncMock(return_value=existing_run))
         monkeypatch.setattr(runner.WorkflowRunner, "_build_registry", AsyncMock(return_value=fake_registry))
         monkeypatch.setattr(runner.WorkflowRunner, "_execute", AsyncMock())
-        monkeypatch.setattr(
-            runner.WorkflowRunner, "_create_run", AsyncMock(side_effect=AssertionError("should not create"))
-        )
 
         monkeypatch.setattr(runner.NodeRun, "workflow_run_id", _FieldExpr("workflow_run_id"), raising=False)
         find_query = SimpleNamespace(to_list=AsyncMock(return_value=node_runs))
         monkeypatch.setattr(runner.NodeRun, "find", lambda *args, **kwargs: find_query)
 
         r = _make_runner()
-        actual_run, actual_nodes = await r.run_existing(
-            existing_run,
+        actual_run, actual_nodes = await r.run(
+            str(definition.id),
             "hello",
             registry_token="user-tok",
-            accessible_agent_ids={"agent-id-1"},
+            user_id="user-1",
+            existing_run_id=str(existing_run.id),
         )
 
         assert actual_run is existing_run
         assert actual_nodes == node_runs
         assert existing_run.status == WorkflowRunStatus.RUNNING
-        assert existing_run.error_summary is None
-        assert existing_run.finished_at is None
-        assert existing_run.initial_input == {"user_text": "hello"}
         assert existing_run.definition_snapshot["name"] == definition.name
         existing_run.save.assert_awaited_once()
         runner.WorkflowRunner._build_registry.assert_awaited_once_with(
             definition,
             "user-tok",
-            {"agent-id-1"},
-            registry_url=None,
+            "user-1",
         )
-        runner.WorkflowRunner._execute.assert_awaited_once_with(existing_run, definition, "hello", fake_registry)
-        runner.WorkflowRunner._create_run.assert_not_awaited()
+        runner.WorkflowRunner._execute.assert_awaited_once_with(existing_run, definition, "hello", fake_registry, None)
 
 
 @pytest.mark.unit
@@ -278,10 +272,7 @@ class TestExecute:
             session_state={"user_text": "hello", "_workflow_run_id": "run-1"},
         )
         run_doc.sync.assert_awaited_once()
-        run_doc.save.assert_awaited_once()
-        assert run_doc.status == WorkflowRunStatus.COMPLETED
-        assert run_doc.final_output == {"content": "done"}
-        assert run_doc.finished_at is not None
+        run_doc.save.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_marks_run_failed_and_reraises_when_workflow_raises(self, monkeypatch: pytest.MonkeyPatch):

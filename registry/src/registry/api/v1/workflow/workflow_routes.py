@@ -327,12 +327,18 @@ async def trigger_workflow_run(
         registry_token = ""
         auth_header = request.headers.get("Authorization", "")
 
-        if auth_header.startswith("Bearer "):
+        header_token = auth_header.removeprefix("Bearer ").strip() if auth_header.startswith("Bearer ") else ""
+
+        if header_token:
             # Production: Extract token from Authorization header
-            registry_token = auth_header[7:]
+            registry_token = header_token
+            logger.debug(f"Extracted registry token from Authorization header (length: {len(registry_token)})")
         elif "token" in user_context:
             # Development: Use mock token from auth middleware
             registry_token = user_context["token"]
+            logger.debug(f"Using mock token from user_context (length: {len(registry_token)})")
+        else:
+            logger.warning("No registry token available - workflow execution may fail for MCP operations")
 
         user_id = user_context.get("user_id")
 

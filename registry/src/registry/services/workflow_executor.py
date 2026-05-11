@@ -63,20 +63,17 @@ async def execute_workflow_run_background(
 
                 user_text = json.dumps(run.initial_input)
 
-        # Get accessible agent IDs for ACL filtering (None = unrestricted for now)
-        # TODO: In future, get this from ACL service based on user_id
-        accessible_agent_ids = None
-
         logger.info(f"Starting execution for run {run_id_str} (workflow: {run.workflow_definition_id})")
 
         # Execute the same WorkflowRun created by the API request.
         logger.info(f"[Run {run_id_str}] Step 1: Building executor registry...")
 
-        updated_run, node_runs = await workflow_runner.run_existing(
-            run=run,
+        updated_run, node_runs = await workflow_runner.run(
+            definition_id=str(run.workflow_definition_id),
             user_text=user_text,
             registry_token=registry_token or "",
-            accessible_agent_ids=accessible_agent_ids,
+            user_id=user_id,
+            existing_run_id=run_id_str,
         )
 
         logger.info(f"[Run {run_id_str}] Execution completed: status={updated_run.status}, node_runs={len(node_runs)}")

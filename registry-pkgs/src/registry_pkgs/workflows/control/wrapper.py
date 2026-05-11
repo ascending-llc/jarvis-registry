@@ -172,7 +172,6 @@ async def _check_and_handle_directive(
 
 
 class _PendingDirectiveProjection(BaseModel):
-    id: PydanticObjectId
     pending_directive: WorkflowDirective | None = None
 
 

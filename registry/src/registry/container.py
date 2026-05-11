@@ -5,10 +5,8 @@ from functools import cached_property
 from typing import TYPE_CHECKING
 
 import httpx
-from agno.models.aws import AwsBedrock
 from redis import Redis
 
-from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.vector.client import DatabaseClient
 from registry_pkgs.vector.repositories.a2a_agent_repository import A2AAgentRepository
 from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRepository
@@ -229,6 +227,7 @@ class RegistryContainer:
                 db_client=MongoDB.get_client(),
                 db_name=MongoDB.database_name,
                 jwt_config=self.settings.jwt_signing_config,
+                directive_queue=self.directive_queue,
             )
 
             logger.info("WorkflowRunner initialized successfully")
@@ -249,24 +248,6 @@ class RegistryContainer:
         return WorkflowControlService(
             directive_queue=self.directive_queue,
             runner_factory=lambda: self.workflow_runner,
-        )
-
-    @cached_property
-    def workflow_runner(self) -> WorkflowRunner:
-        llm = AwsBedrock(
-            id=self.settings.llm_model,
-            aws_region=self.settings.aws_region,
-            aws_session_token=self.settings.aws_session_token,
-            aws_access_key_id=self.settings.aws_access_key_id,
-            aws_secret_access_key=self.settings.aws_secret_access_key,
-        )
-        return WorkflowRunner(
-            llm=llm,
-            registry_url=self.settings.registry_url,
-            db_client=MongoDB.get_client(),
-            db_name=MongoDB.database_name,
-            jwt_config=self.settings.jwt_signing_config,
-            directive_queue=self.directive_queue,
         )
 
     @cached_property
