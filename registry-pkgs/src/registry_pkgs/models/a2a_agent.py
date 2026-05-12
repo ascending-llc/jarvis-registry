@@ -57,12 +57,13 @@ Storage Structure:
 }
 """
 
+import hashlib
 import logging
 from datetime import UTC, datetime
 from typing import Any, ClassVar
 
 from a2a.types import AgentCard
-from beanie import Document, Insert, PydanticObjectId, Replace, Save, before_event
+from beanie import Document, Insert, PydanticObjectId, Replace, Save, SaveChanges, Update, before_event
 from langchain_core.documents import Document as LangChainDocument
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 from pymongo import IndexModel
@@ -172,6 +173,11 @@ class A2AAgent(Document):
     federationRefId: PydanticObjectId | None = None
     federationMetadata: dict[str, Any] | None = None
 
+    vectorContentHash: str | None = Field(
+        default=None,
+        description="SHA-256 of vectorized page_content; used to skip re-embedding when content is unchanged",
+    )
+
     # ========== Settings ==========
     class Settings:
         name = "a2a_agents"
@@ -198,6 +204,20 @@ class A2AAgent(Document):
         self.updatedAt = datetime.now(UTC)
         if not self.createdAt:
             self.createdAt = datetime.now(UTC)
+
+    @before_event(Insert, Replace, Save, SaveChanges, Update)
+    def _refresh_content_hash(self):
+        """Recompute vectorContentHash before every write.
+
+        Service layer captures the hash before .save() and compares after to decide whether to
+        call sync_to_vector_db (full rebuild) or update_entity_metadata (metadata-only patch).
+        This contract holds as long as isEnabled/status are NOT included in page_content — if
+        to_documents() ever embeds those fields, toggle paths will incorrectly trigger full syncs.
+        """
+        docs = self.to_documents()
+        contents = sorted(doc.page_content for doc in docs)
+        per_doc_hashes = [hashlib.sha256(c.encode()).hexdigest() for c in contents]
+        self.vectorContentHash = hashlib.sha256("".join(per_doc_hashes).encode()).hexdigest()
 
     # ========== Vector Search Integration ==========
     COLLECTION_NAME: ClassVar[str] = "A2a_agents"
@@ -260,8 +280,7 @@ class A2AAgent(Document):
             "agent_id": agent_id,
             "agent_name": agent_name,  # Keep key stable for backward compatibility
             "path": self.path,
-            "status": self.status,
-            "is_enabled": self.isEnabled,
+            "enabled": self.isEnabled,
             "tags": self.tags,
         }
         # Federation metadata lets vector sync target one federated A2A runtime precisely.
@@ -322,8 +341,7 @@ class A2AAgent(Document):
             "path": metadata.get("path"),
             "entity_type": metadata.get("entity_type"),
             "skill_name": metadata.get("skill_name"),
-            "status": metadata.get("status"),
-            "is_enabled": metadata.get("is_enabled"),
+            "enabled": metadata.get("enabled"),
             "content": document.page_content,
         }
 
