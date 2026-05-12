@@ -48,8 +48,8 @@ class WorkflowNodeOutput(APIBaseModel):
     name: str
     nodeType: str
     executorKey: str | None = None
-    config: dict[str, Any] = {}
-    children: list["WorkflowNodeOutput"] = []
+    config: dict[str, Any] = Field(default_factory=dict)
+    children: list["WorkflowNodeOutput"] = Field(default_factory=list)
     conditionCel: str | None = None
     loopConfig: LoopConfigInput | None = None
 
@@ -202,8 +202,8 @@ class WorkflowRunDetailResponse(APIBaseModel):
     errorSummary: str | None = None
     definitionSnapshot: dict[str, Any] | None = None
     parentRunId: str | None = None
-    resolvedDependencies: list[ResolvedDependencyInput] = []
-    nodeRuns: list[NodeRunOutput] = []
+    resolvedDependencies: list[ResolvedDependencyInput] = Field(default_factory=list)
+    nodeRuns: list[NodeRunOutput] = Field(default_factory=list)
 
 
 # ==================== Converter Functions ====================

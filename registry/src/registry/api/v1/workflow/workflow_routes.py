@@ -11,7 +11,7 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from fastapi import status as http_status
 
-from registry.auth.dependencies import CurrentUser
+from registry.auth.dependencies import CurrentUser, UserContextDict
 from registry.core.telemetry_decorators import track_registry_operation
 from registry.deps import get_workflow_runner, get_workflow_service
 from registry.schemas.errors import ErrorCode, create_error_detail
@@ -32,10 +32,47 @@ from registry.schemas.workflow_api_schemas import (
 )
 from registry.services.workflow_executor import execute_workflow_run_background
 from registry.services.workflow_service import WorkflowService
+from registry.utils.crypto_utils import generate_service_jwt
+from registry_pkgs.workflows.runner import WorkflowRunner
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _extract_bearer_token(request: Request) -> str:
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        return ""
+    return auth_header.removeprefix("Bearer ").strip()
+
+
+def _build_registry_token(
+    request: Request,
+    user_context: UserContextDict,
+) -> str:
+    header_token = _extract_bearer_token(request)
+    if header_token:
+        logger.debug("Extracted registry token from Authorization header (length: %s)", len(header_token))
+        return header_token
+
+    user_id = user_context.get("user_id")
+    if not user_id:
+        raise HTTPException(
+            status_code=http_status.HTTP_401_UNAUTHORIZED,
+            detail=create_error_detail(
+                ErrorCode.AUTHENTICATION_REQUIRED,
+                "Authenticated user context is missing user_id",
+            ),
+        )
+
+    token = generate_service_jwt(
+        user_id=user_id,
+        username=user_context.get("username"),
+        scopes=user_context.get("scopes", []),
+    )
+    logger.debug("Generated service JWT for workflow execution (length: %s)", len(token))
+    return token
 
 
 # ==================== Workflow Endpoints ====================
@@ -91,8 +128,8 @@ async def list_workflows(
     except HTTPException:
         logger.exception("HTTPException in list_workflows")
         raise
-    except Exception as e:
-        logger.error(f"Error listing workflows: {e}", exc_info=True)
+    except Exception:
+        logger.exception("Error listing workflows")
         raise HTTPException(
             status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=create_error_detail(ErrorCode.INTERNAL_ERROR, "Internal server error while listing workflows"),
@@ -134,8 +171,8 @@ async def get_workflow(
     except HTTPException:
         logger.exception("HTTPException in get_workflow")
         raise
-    except Exception as e:
-        logger.error(f"Error getting workflow {workflow_id}: {e}", exc_info=True)
+    except Exception:
+        logger.exception("Error getting workflow %s", workflow_id)
         raise HTTPException(
             status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=create_error_detail(ErrorCode.INTERNAL_ERROR, "Internal server error while getting workflow"),
@@ -181,8 +218,8 @@ async def create_workflow(
     except HTTPException:
         logger.exception("HTTPException in create_workflow")
         raise
-    except Exception as e:
-        logger.error(f"Error creating workflow: {e}", exc_info=True)
+    except Exception:
+        logger.exception("Error creating workflow")
         raise HTTPException(
             status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=create_error_detail(ErrorCode.INTERNAL_ERROR, "Internal server error while creating workflow"),
@@ -229,8 +266,8 @@ async def update_workflow(
     except HTTPException:
         logger.exception("HTTPException in update_workflow")
         raise
-    except Exception as e:
-        logger.error(f"Error updating workflow {workflow_id}: {e}", exc_info=True)
+    except Exception:
+        logger.exception("Error updating workflow %s", workflow_id)
         raise HTTPException(
             status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=create_error_detail(ErrorCode.INTERNAL_ERROR, "Internal server error while updating workflow"),
@@ -278,8 +315,8 @@ async def delete_workflow(
     except HTTPException:
         logger.exception("HTTPException in delete_workflow")
         raise
-    except Exception as e:
-        logger.error(f"Error deleting workflow {workflow_id}: {e}", exc_info=True)
+    except Exception:
+        logger.exception("Error deleting workflow %s", workflow_id)
         raise HTTPException(
             status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=create_error_detail(ErrorCode.INTERNAL_ERROR, "Internal server error while deleting workflow"),
@@ -305,7 +342,7 @@ async def trigger_workflow_run(
     user_context: CurrentUser,
     request: Request,
     workflow_service: WorkflowService = Depends(get_workflow_service),
-    workflow_runner=Depends(get_workflow_runner),
+    workflow_runner: WorkflowRunner = Depends(get_workflow_runner),
 ):
     """
     Trigger a workflow run (async execution).
@@ -322,24 +359,7 @@ async def trigger_workflow_run(
             resolved_dependencies=[dep.model_dump(by_alias=True) for dep in data.resolvedDependencies],
         )
 
-        # Get user token from Authorization header for authenticated MCP/A2A calls
-        # The token is needed by WorkflowRunner to make proxy calls on behalf of the user
-        registry_token = ""
-        auth_header = request.headers.get("Authorization", "")
-
-        header_token = auth_header.removeprefix("Bearer ").strip() if auth_header.startswith("Bearer ") else ""
-
-        if header_token:
-            # Production: Extract token from Authorization header
-            registry_token = header_token
-            logger.debug(f"Extracted registry token from Authorization header (length: {len(registry_token)})")
-        elif "token" in user_context:
-            # Development: Use mock token from auth middleware
-            registry_token = user_context["token"]
-            logger.debug(f"Using mock token from user_context (length: {len(registry_token)})")
-        else:
-            logger.warning("No registry token available - workflow execution may fail for MCP operations")
-
+        registry_token = _build_registry_token(request, user_context)
         user_id = user_context.get("user_id")
 
         # Schedule background execution
@@ -382,8 +402,8 @@ async def trigger_workflow_run(
     except HTTPException:
         logger.exception("HTTPException in trigger_workflow_run")
         raise
-    except Exception as e:
-        logger.error(f"Error triggering workflow run for {workflow_id}: {e}", exc_info=True)
+    except Exception:
+        logger.exception("Error triggering workflow run for %s", workflow_id)
         raise HTTPException(
             status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=create_error_detail(ErrorCode.INTERNAL_ERROR, "Internal server error while triggering workflow run"),
@@ -460,8 +480,8 @@ async def list_workflow_runs(
     except HTTPException:
         logger.exception("HTTPException in list_workflow_runs")
         raise
-    except Exception as e:
-        logger.error(f"Error listing workflow runs for {workflow_id}: {e}", exc_info=True)
+    except Exception:
+        logger.exception("Error listing workflow runs for %s", workflow_id)
         raise HTTPException(
             status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=create_error_detail(ErrorCode.INTERNAL_ERROR, "Internal server error while listing workflow runs"),
@@ -508,8 +528,8 @@ async def get_workflow_run(
     except HTTPException:
         logger.exception("HTTPException in get_workflow_run")
         raise
-    except Exception as e:
-        logger.error(f"Error getting workflow run {run_id}: {e}", exc_info=True)
+    except Exception:
+        logger.exception("Error getting workflow run %s", run_id)
         raise HTTPException(
             status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=create_error_detail(ErrorCode.INTERNAL_ERROR, "Internal server error while getting workflow run"),

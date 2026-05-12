@@ -5,6 +5,7 @@ This service handles all workflow-related operations using MongoDB and Beanie OD
 """
 
 import logging
+import re
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
@@ -45,7 +46,7 @@ class WorkflowService:
 
             # Free-text search
             if query:
-                search_pattern = {"$regex": query, "$options": "i"}
+                search_pattern = {"$regex": re.escape(query), "$options": "i"}
                 filters["$or"] = [
                     {"name": search_pattern},
                     {"description": search_pattern},
@@ -61,8 +62,8 @@ class WorkflowService:
             logger.info(f"Listed {len(workflows)} workflows (total: {total}, page: {page}, per_page: {per_page})")
             return workflows, total
 
-        except Exception as e:
-            logger.error(f"Error listing workflows: {e}", exc_info=True)
+        except Exception:
+            logger.exception("Error listing workflows")
             raise
 
     async def get_workflow_by_id(self, workflow_id: str) -> WorkflowDefinition:
@@ -79,7 +80,12 @@ class WorkflowService:
             ValueError: If workflow not found or invalid ID
         """
         try:
-            workflow = await WorkflowDefinition.get(PydanticObjectId(workflow_id))
+            try:
+                workflow_oid = PydanticObjectId(workflow_id)
+            except Exception as exc:
+                raise ValueError(f"Invalid workflow ID: {workflow_id}") from exc
+
+            workflow = await WorkflowDefinition.get(workflow_oid)
             if not workflow:
                 raise ValueError(f"Workflow {workflow_id} not found")
 
@@ -88,9 +94,9 @@ class WorkflowService:
 
         except ValueError:
             raise
-        except Exception as e:
-            logger.error(f"Error getting workflow {workflow_id}: {e}", exc_info=True)
-            raise ValueError(f"Invalid workflow ID: {workflow_id}")
+        except Exception:
+            logger.exception("Error getting workflow %s", workflow_id)
+            raise
 
     async def create_workflow(
         self,
@@ -130,9 +136,9 @@ class WorkflowService:
         except ValueError as e:
             logger.error(f"Validation error creating workflow: {e}")
             raise
-        except Exception as e:
-            logger.error(f"Error creating workflow: {e}", exc_info=True)
-            raise ValueError(f"Failed to create workflow: {e}")
+        except Exception:
+            logger.exception("Error creating workflow")
+            raise
 
     async def update_workflow(
         self,
@@ -183,9 +189,9 @@ class WorkflowService:
 
         except ValueError:
             raise
-        except Exception as e:
-            logger.error(f"Error updating workflow {workflow_id}: {e}", exc_info=True)
-            raise ValueError(f"Failed to update workflow: {e}")
+        except Exception:
+            logger.exception("Error updating workflow %s", workflow_id)
+            raise
 
     async def delete_workflow(self, workflow_id: str) -> bool:
         """
@@ -225,9 +231,9 @@ class WorkflowService:
 
         except ValueError:
             raise
-        except Exception as e:
-            logger.error(f"Error deleting workflow {workflow_id}: {e}", exc_info=True)
-            raise ValueError(f"Failed to delete workflow: {e}")
+        except Exception:
+            logger.exception("Error deleting workflow %s", workflow_id)
+            raise
 
     async def trigger_workflow_run(
         self,
@@ -303,9 +309,9 @@ class WorkflowService:
 
         except ValueError:
             raise
-        except Exception as e:
-            logger.error(f"Error triggering workflow run for {workflow_id}: {e}", exc_info=True)
-            raise ValueError(f"Failed to trigger workflow run: {e}")
+        except Exception:
+            logger.exception("Error triggering workflow run for %s", workflow_id)
+            raise
 
     async def list_workflow_runs(
         self,
@@ -363,9 +369,9 @@ class WorkflowService:
 
         except ValueError:
             raise
-        except Exception as e:
-            logger.error(f"Error listing workflow runs for {workflow_id}: {e}", exc_info=True)
-            raise ValueError(f"Failed to list workflow runs: {e}")
+        except Exception:
+            logger.exception("Error listing workflow runs for %s", workflow_id)
+            raise
 
     async def get_workflow_run(self, workflow_id: str, run_id: str) -> tuple[WorkflowRun, list[NodeRun]]:
         """
@@ -402,9 +408,9 @@ class WorkflowService:
 
         except ValueError:
             raise
-        except Exception as e:
-            logger.error(f"Error getting workflow run {run_id}: {e}", exc_info=True)
-            raise ValueError(f"Failed to get workflow run: {e}")
+        except Exception:
+            logger.exception("Error getting workflow run %s", run_id)
+            raise
 
     def _convert_api_node_to_model(self, api_node: Any) -> WorkflowNode:
         """

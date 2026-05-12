@@ -5,8 +5,10 @@ from functools import cached_property
 from typing import TYPE_CHECKING
 
 import httpx
+from agno.models.aws import AwsBedrock
 from redis import Redis
 
+from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.vector.client import DatabaseClient
 from registry_pkgs.vector.repositories.a2a_agent_repository import A2AAgentRepository
 from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRepository
@@ -36,17 +38,8 @@ from .services.search.base import VectorSearchService
 from .services.security_scanner import SecurityScannerService
 from .services.server_service import ServerServiceV1
 from .services.user_service import UserService
-from .services.workflow_service import WorkflowService
-
-# Import WorkflowRunner only when needed (conditional import for optional dependency)
-try:
-    from registry_pkgs.workflows.runner import WorkflowRunner
-
-    WORKFLOW_RUNNER_AVAILABLE = True
-except ImportError:
-    WORKFLOW_RUNNER_AVAILABLE = False
-    WorkflowRunner = None  # type: ignore
 from .services.workflow_control_service import WorkflowControlService
+from .services.workflow_service import WorkflowService
 from .services.workflow_shutdown import cancel_in_flight_runs
 
 if TYPE_CHECKING:
@@ -195,23 +188,10 @@ class RegistryContainer:
     def workflow_service(self) -> WorkflowService:
         return WorkflowService()
 
-    def init_workflow_runner(self) -> WorkflowRunner | None:
-        """
-        Initialize WorkflowRunner for executing workflows.
-
-        This should be called during app startup, not on first request.
-        Returns None if agno dependencies are not installed or initialization fails.
-        """
-        if not WORKFLOW_RUNNER_AVAILABLE:
-            logger.warning("WorkflowRunner not available - agno dependencies not installed")
-            return None
-
+    @cached_property
+    def workflow_runner(self) -> WorkflowRunner:
+        """Build the app-scoped WorkflowRunner used by API-triggered runs."""
         try:
-            from agno.models.aws import AwsBedrock
-
-            from registry_pkgs.database.mongodb import MongoDB
-
-            # Create LLM model for workflow execution
             llm = AwsBedrock(
                 id=self.settings.llm_model if hasattr(self.settings, "llm_model") else "us.amazon.nova-lite-v1:0",
                 aws_region=self.settings.aws_region,
@@ -220,8 +200,7 @@ class RegistryContainer:
                 aws_session_token=self.settings.aws_session_token,
             )
 
-            # Create WorkflowRunner
-            runner = WorkflowRunner(
+            return WorkflowRunner(
                 llm=llm,
                 registry_url=self.settings.registry_internal_url,
                 db_client=MongoDB.get_client(),
@@ -230,18 +209,9 @@ class RegistryContainer:
                 directive_queue=self.directive_queue,
             )
 
-            logger.info("WorkflowRunner initialized successfully")
-            return runner
-
-        except Exception as e:
-            logger.error(f"Failed to initialize WorkflowRunner: {e}", exc_info=True)
-            return None
-
-    @property
-    def workflow_runner(self) -> WorkflowRunner | None:
-        """Get WorkflowRunner instance (initialized during startup)."""
-        # This will be set by startup() method
-        return getattr(self, "_workflow_runner", None)
+        except Exception:
+            logger.exception("Failed to initialize WorkflowRunner")
+            raise
 
     @cached_property
     def workflow_control_service(self) -> WorkflowControlService:
@@ -303,11 +273,8 @@ class RegistryContainer:
         self._initialize_federation()
 
         logger.info("Initializing workflow runner...")
-        self._workflow_runner = self.init_workflow_runner()
-        if self._workflow_runner:
-            logger.info("Workflow runner initialized successfully")
-        else:
-            logger.warning("Workflow runner not available - workflow execution disabled")
+        workflow_runner = self.workflow_runner
+        logger.info("Workflow runner initialized successfully: %s", type(workflow_runner).__name__)
 
     async def shutdown(self) -> None:
         """Shutdown services that hold background tasks or external resources."""

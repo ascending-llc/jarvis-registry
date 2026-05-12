@@ -3,6 +3,7 @@ from fastapi import Depends, Request
 from redis import Redis
 
 from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRepository
+from registry_pkgs.workflows.runner import WorkflowRunner
 
 from .auth.oauth.reconnection import OAuthReconnectionManager
 from .container import RegistryContainer
@@ -131,6 +132,6 @@ def get_workflow_service(container: RegistryContainer = Depends(get_container)) 
     return container.workflow_service
 
 
-def get_workflow_runner(container: RegistryContainer = Depends(get_container)):
-    """Get WorkflowRunner instance (may be None if dependencies not available)"""
+def get_workflow_runner(container: RegistryContainer = Depends(get_container)) -> WorkflowRunner:
+    """Get WorkflowRunner instance."""
     return container.workflow_runner

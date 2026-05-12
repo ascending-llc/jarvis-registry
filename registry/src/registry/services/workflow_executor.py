@@ -5,19 +5,19 @@ This module provides functions to execute workflows asynchronously using Backgro
 """
 
 import logging
-from typing import Any
 
 from beanie import PydanticObjectId
 
 from registry_pkgs.models.enums import WorkflowRunStatus
 from registry_pkgs.models.workflow import NodeRun, WorkflowRun
+from registry_pkgs.workflows.runner import WorkflowRunner
 
 logger = logging.getLogger(__name__)
 
 
 async def execute_workflow_run_background(
     run_id: str | PydanticObjectId,
-    workflow_runner: Any,
+    workflow_runner: WorkflowRunner,
     registry_token: str | None = None,
     user_id: str | None = None,
 ) -> None:
@@ -42,14 +42,6 @@ async def execute_workflow_run_background(
         run = await WorkflowRun.get(PydanticObjectId(run_id))
         if not run:
             logger.error(f"Workflow run {run_id_str} not found")
-            return
-
-        # Check if runner is available
-        if workflow_runner is None:
-            logger.error(f"WorkflowRunner not available - cannot execute run {run_id_str}")
-            run.status = WorkflowRunStatus.FAILED
-            run.error_summary = "Workflow execution engine not available"
-            await run.save()
             return
 
         # Extract user input
@@ -79,7 +71,7 @@ async def execute_workflow_run_background(
         logger.info(f"[Run {run_id_str}] Execution completed: status={updated_run.status}, node_runs={len(node_runs)}")
 
     except Exception as e:
-        logger.error(f"Error executing workflow run {run_id_str}: {e}", exc_info=True)
+        logger.exception("Error executing workflow run %s", run_id_str)
 
         # Try to mark run as failed
         try:
@@ -92,8 +84,8 @@ async def execute_workflow_run_background(
                 run.finished_at = datetime.now(UTC)
                 await run.save()
                 logger.info(f"Marked workflow run {run_id_str} as FAILED")
-        except Exception as save_error:
-            logger.error(f"Failed to update run status: {save_error}", exc_info=True)
+        except Exception:
+            logger.exception("Failed to update run status")
 
 
 async def get_workflow_run_with_nodes(
@@ -125,6 +117,6 @@ async def get_workflow_run_with_nodes(
 
         return run, node_runs
 
-    except Exception as e:
-        logger.error(f"Error getting workflow run {run_id}: {e}", exc_info=True)
+    except Exception:
+        logger.exception("Error getting workflow run %s", run_id)
         return None, None
