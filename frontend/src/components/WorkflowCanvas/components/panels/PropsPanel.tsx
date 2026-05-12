@@ -1,5 +1,6 @@
 // @ts-nocheck
 import React, { useCallback, useRef, useState } from 'react';
+import { SelectField } from '@/components/FormFields/SelectField';
 
 /* ── Run history mock data ── */
 const RUNS = [
@@ -91,23 +92,21 @@ function RunRow({ run }) {
         </div>
       )}
       {run.actions && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 3, flexShrink: 0 }}>
+        <div className='flex flex-col gap-1 flex-shrink-0'>
           {run.actions.map(a => {
             const as = ACTION_S[a];
             return (
               <button
                 key={a}
+                className='rounded-md border px-2 py-0.5 text-[10px] font-medium cursor-pointer transition-colors'
                 style={{
                   background: 'none',
-                  border: `1px solid ${as.borderColor}`,
-                  borderRadius: 5,
+                  borderColor: as.borderColor,
                   color: as.color,
-                  cursor: 'pointer',
-                  padding: '3px 7px',
                   fontFamily: 'Inter,sans-serif',
-                  fontSize: 10,
-                  fontWeight: 500,
                 }}
+                onMouseEnter={e => { e.currentTarget.style.background = as.hoverBg; }}
+                onMouseLeave={e => { e.currentTarget.style.background = 'none'; }}
               >
                 {ACTION_LABELS[a]}
               </button>
@@ -231,6 +230,38 @@ const F = {
   hint: { fontSize: 11, color: 'var(--wf-text-4)', marginTop: 6, lineHeight: 1.45 },
 };
 
+/* ── AddButton: dashed "add" button with hover effect ── */
+function AddButton({ children, onClick }) {
+  const base = {
+    width: '100%',
+    background: 'none',
+    border: '1px dashed var(--wf-border-strong)',
+    borderRadius: 6,
+    color: 'var(--wf-text-4)',
+    fontFamily: 'Inter,sans-serif',
+    fontSize: 12,
+    padding: '6px 0',
+    cursor: 'pointer',
+    transition: 'border-color 150ms, color 150ms',
+  };
+  return (
+    <button
+      style={base}
+      onClick={onClick}
+      onMouseEnter={e => {
+        e.currentTarget.style.borderColor = 'var(--wf-purple-1)';
+        e.currentTarget.style.color = 'var(--wf-purple-3)';
+      }}
+      onMouseLeave={e => {
+        e.currentTarget.style.borderColor = 'var(--wf-border-strong)';
+        e.currentTarget.style.color = 'var(--wf-text-4)';
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
 function useBranchState(initial) {
   const [items, setItems] = useState(initial);
   const add = val => setItems(prev => [...prev, val]);
@@ -257,15 +288,17 @@ function BranchList({ items, onAdd, onRm, addLabel, prefix }) {
               </span>
             )}
             <input style={F.binp} defaultValue={item} />
-            <button style={F.brm} onClick={() => onRm(i)}>
+            <button
+              className='flex-shrink-0 rounded p-0.5 transition-colors hover:bg-[var(--wf-rtint)] hover:text-[var(--wf-red)]'
+              style={{ background: 'none', border: 'none', color: 'var(--wf-text-4)', cursor: 'pointer', fontSize: 13 }}
+              onClick={() => onRm(i)}
+            >
               ×
             </button>
           </div>
         ))}
       </div>
-      <button style={F.badd} onClick={onAdd}>
-        {addLabel}
-      </button>
+      <AddButton onClick={onAdd}>{addLabel}</AddButton>
     </>
   );
 }
@@ -467,28 +500,37 @@ function NodeProps({ node, upstreamSchema, sourceLabel, onOpenAgentPicker, onNod
               <textarea style={F.ta} defaultValue='Review and approve to proceed, or reject to cancel.' />
             </div>
             <div style={F.field}>
-              <label style={F.label}>Approver role</label>
-              <select style={F.sel}>
-                <option>Engineer</option>
-                <option>Tech Lead</option>
-                <option>Any member</option>
-              </select>
+              <SelectField
+                label='Approver role'
+                options={[
+                  { value: 'engineer', label: 'Engineer' },
+                  { value: 'tech-lead', label: 'Tech Lead' },
+                  { value: 'any', label: 'Any member' },
+                ]}
+                defaultValue='engineer'
+              />
             </div>
             <div style={F.field}>
-              <label style={F.label}>Timeout</label>
-              <select style={F.sel}>
-                <option>24 hours</option>
-                <option>4 hours</option>
-                <option>No timeout</option>
-              </select>
+              <SelectField
+                label='Timeout'
+                options={[
+                  { value: '24h', label: '24 hours' },
+                  { value: '4h', label: '4 hours' },
+                  { value: 'none', label: 'No timeout' },
+                ]}
+                defaultValue='24h'
+              />
             </div>
             <div style={F.field}>
-              <label style={F.label}>On timeout</label>
-              <select style={F.sel}>
-                <option>Auto-cancel</option>
-                <option>Escalate</option>
-                <option>Auto-approve</option>
-              </select>
+              <SelectField
+                label='On timeout'
+                options={[
+                  { value: 'cancel', label: 'Auto-cancel' },
+                  { value: 'escalate', label: 'Escalate' },
+                  { value: 'approve', label: 'Auto-approve' },
+                ]}
+                defaultValue='cancel'
+              />
             </div>
           </div>
         </div>
@@ -703,19 +745,29 @@ function NodeProps({ node, upstreamSchema, sourceLabel, onOpenAgentPicker, onNod
                   <div style={{ fontSize: 12, fontWeight: 500, color: 'var(--wf-text-1)' }}>{loopAgent.label}</div>
                   <div style={{ fontSize: 10, color: 'var(--wf-text-4)' }}>{loopAgent.desc}</div>
                 </div>
-                <button style={F.brm} onClick={() => setLoopAgent(null)}>
+                <button
+                  className='flex-shrink-0 rounded p-0.5 transition-colors hover:bg-[var(--wf-rtint)] hover:text-[var(--wf-red)]'
+                  style={{ background: 'none', border: 'none', color: 'var(--wf-text-4)', cursor: 'pointer', fontSize: 13 }}
+                  onClick={() => setLoopAgent(null)}
+                >
                   ×
                 </button>
               </div>
             ) : (
-              <button style={F.badd} onClick={() => onOpenAgentPicker(agent => setLoopAgent(agent))}>
+              <AddButton onClick={() => onOpenAgentPicker(agent => setLoopAgent(agent))}>
                 + Select agent from registry
-              </button>
+              </AddButton>
             )}
           </div>
           <div style={F.field}>
             <label style={F.label}>Max iterations</label>
-            <input style={{ ...F.inp, width: 80 }} type='number' defaultValue={node.data?.maxIterations || 5} />
+            <input
+              type='number'
+              className='[appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none'
+              style={{ ...F.inp, width: 80 }}
+              defaultValue={node.data?.maxIterations || 5}
+              min={1}
+            />
           </div>
           <div style={F.field}>
             <label style={F.label}>Continue while (CEL)</label>
@@ -779,14 +831,17 @@ function NodeProps({ node, upstreamSchema, sourceLabel, onOpenAgentPicker, onNod
                   <div style={{ fontSize: 12, fontWeight: 500, color: 'var(--wf-text-1)' }}>{a.label}</div>
                   <div style={{ fontSize: 10, color: 'var(--wf-text-4)' }}>{a.desc}</div>
                 </div>
-                <button style={F.brm} onClick={() => setPoolAgents(prev => prev.filter((_, j) => j !== i))}>
+                <button
+                  className='flex-shrink-0 rounded p-0.5 transition-colors hover:bg-[var(--wf-rtint)] hover:text-[var(--wf-red)]'
+                  style={{ background: 'none', border: 'none', color: 'var(--wf-text-4)', cursor: 'pointer', fontSize: 13 }}
+                  onClick={() => setPoolAgents(prev => prev.filter((_, j) => j !== i))}
+                >
                   ×
                 </button>
               </div>
             ))}
             {poolAgents.length < 5 && (
-              <button
-                style={F.badd}
+              <AddButton
                 onClick={() =>
                   onOpenAgentPicker(agent => {
                     setPoolAgents(prev => (prev.find(a => a.id === agent.id) ? prev : [...prev, agent]));
@@ -794,7 +849,7 @@ function NodeProps({ node, upstreamSchema, sourceLabel, onOpenAgentPicker, onNod
                 }
               >
                 + Add agent from registry
-              </button>
+              </AddButton>
             )}
           </div>
           <p style={F.hint}>The LLM selects the best-fit agent at runtime. All agents share a single output edge.</p>

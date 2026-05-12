@@ -1,24 +1,6 @@
 // @ts-nocheck
-import React, { useState } from 'react';
-
-/* ── Registry data (replace with real API calls) ── */
-const AGENTS = [
-  { id: 'diagnosis', label: 'Diagnosis Agent', desc: 'Root cause analysis' },
-  { id: 'remediation', label: 'Remediation Agent', desc: 'Executes automated fixes' },
-  { id: 'code-review', label: 'Code Review Agent', desc: 'PR diff analysis' },
-  { id: 'scorer', label: 'Scorer Agent', desc: 'Lead scoring' },
-  { id: 'classifier', label: 'Classifier Agent', desc: 'NLP categorization' },
-];
-
-const MCP_SERVERS = [
-  { id: 'cloudwatch', label: 'CloudWatch', desc: '10 tools' },
-  { id: 'slack', label: 'Slack', desc: '13 tools' },
-  { id: 'pagerduty', label: 'PagerDuty', desc: '8 tools' },
-  { id: 'atlassian', label: 'Atlassian', desc: '31 tools' },
-  { id: 'github', label: 'GitHub', desc: '13 tools' },
-  { id: 'zendesk', label: 'Zendesk', desc: '9 tools' },
-  { id: 'hubspot', label: 'HubSpot', desc: '13 tools' },
-];
+import { useMemo, useState } from 'react';
+import { useServer } from '@/contexts/ServerContext';
 
 const LOGIC_STEPS = [
   {
@@ -200,10 +182,50 @@ const S = {
   },
 };
 
+/* ── Map real status to dot color ── */
+const STATUS_COLOR = {
+  active: 'var(--wf-green)',
+  inactive: 'var(--wf-amber)',
+  error: 'var(--wf-red)',
+};
+const STATUS_LABEL = { active: 'Active', inactive: 'Inactive', error: 'Error' };
+
+/* ── Get 2-char initials from any display name ── */
+function getInitials(name) {
+  if (!name) return '??';
+  const words = name.trim().split(/[\s\-_]+/);
+  if (words.length >= 2) return (words[0][0] + words[1][0]).toUpperCase();
+  return name.slice(0, 2).toUpperCase();
+}
+
 export default function NodePicker({ onPick, onClose, agentOnly = false }) {
+  const { agents, servers, agentLoading, serverLoading } = useServer();
   const [tab, setTab] = useState(agentOnly ? 'A2A Agents' : 'All');
   const [query, setQuery] = useState('');
   const [hovered, setHovered] = useState(null);
+
+  /* ── Map real data to picker-item shape { id, label, desc, status } ── */
+  const AGENTS = useMemo(
+    () =>
+      agents.map(a => ({
+        id: a.id,
+        label: a.name,
+        desc: a.description || `${a.numSkills} skill${a.numSkills !== 1 ? 's' : ''}`,
+        status: a.status || 'active',
+      })),
+    [agents],
+  );
+
+  const MCP_SERVERS = useMemo(
+    () =>
+      servers.map(s => ({
+        id: s.id,
+        label: s.name,
+        desc: s.description || `${s.numTools ?? 0} tool${s.numTools !== 1 ? 's' : ''}`,
+        status: s.status || 'active',
+      })),
+    [servers],
+  );
 
   const q = query.toLowerCase();
   const match = item => !q || item.label.toLowerCase().includes(q) || item.desc.toLowerCase().includes(q);
@@ -216,13 +238,7 @@ export default function NodePicker({ onPick, onClose, agentOnly = false }) {
   const mcpList = showMcp ? MCP_SERVERS.filter(match) : [];
   const logicList = showLogic ? LOGIC_STEPS.filter(match) : [];
   const noResults = agentList.length === 0 && mcpList.length === 0 && logicList.length === 0;
-
-  const initials = id =>
-    id
-      .split('-')
-      .map(w => w[0].toUpperCase())
-      .join('')
-      .slice(0, 2);
+  const isLoading = (showAgents && agentLoading) || (showMcp && serverLoading);
 
   const activeTabs = agentOnly ? ['A2A Agents'] : TABS;
 
@@ -262,7 +278,15 @@ export default function NodePicker({ onPick, onClose, agentOnly = false }) {
         </div>
 
         <div style={S.list}>
-          {agentList.length > 0 && (
+          {/* ── Loading skeleton ── */}
+          {isLoading && (
+            <div style={{ textAlign: 'center', padding: '28px 0', fontSize: 12, color: 'var(--wf-text-4)' }}>
+              Loading…
+            </div>
+          )}
+
+          {/* ── A2A Agents ── */}
+          {!isLoading && agentList.length > 0 && (
             <>
               <div style={S.sec}>A2A Agents</div>
               {agentList.map(a => (
@@ -273,21 +297,22 @@ export default function NodePicker({ onPick, onClose, agentOnly = false }) {
                   onMouseLeave={() => setHovered(null)}
                   onClick={() => onPick('agent', a)}
                 >
-                  <div style={S.icon('var(--wf-purple-tint)', 'var(--wf-purple-3)')}>{initials(a.id)}</div>
+                  <div style={S.icon('var(--wf-purple-tint)', 'var(--wf-purple-3)')}>{getInitials(a.label)}</div>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={S.name()}>{a.label}</div>
                     <div style={S.key}>{a.desc}</div>
                   </div>
                   <div style={S.stat}>
-                    <div style={S.dot} />
-                    Active
+                    <div style={{ ...S.dot, background: STATUS_COLOR[a.status] || 'var(--wf-text-4)' }} />
+                    {STATUS_LABEL[a.status] || 'Unknown'}
                   </div>
                 </div>
               ))}
             </>
           )}
 
-          {mcpList.length > 0 && (
+          {/* ── MCP Servers ── */}
+          {!isLoading && mcpList.length > 0 && (
             <>
               <div style={S.sec}>MCP Servers</div>
               {mcpList.map(m => (
@@ -298,21 +323,22 @@ export default function NodePicker({ onPick, onClose, agentOnly = false }) {
                   onMouseLeave={() => setHovered(null)}
                   onClick={() => onPick('mcp', m)}
                 >
-                  <div style={S.icon('var(--wf-btint)', '#38bdf8')}>{m.id.slice(0, 2).toUpperCase()}</div>
+                  <div style={S.icon('var(--wf-btint)', 'var(--wf-blue)')}>{getInitials(m.label)}</div>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={S.name()}>{m.label}</div>
                     <div style={S.key}>{m.desc}</div>
                   </div>
                   <div style={S.stat}>
-                    <div style={S.dot} />
-                    Active
+                    <div style={{ ...S.dot, background: STATUS_COLOR[m.status] || 'var(--wf-text-4)' }} />
+                    {STATUS_LABEL[m.status] || 'Unknown'}
                   </div>
                 </div>
               ))}
             </>
           )}
 
-          {logicList.length > 0 && (
+          {/* ── Logic Steps ── */}
+          {!isLoading && logicList.length > 0 && (
             <>
               <div style={S.sec}>Logic Step</div>
               {logicList.map(l => (
@@ -333,9 +359,10 @@ export default function NodePicker({ onPick, onClose, agentOnly = false }) {
             </>
           )}
 
-          {noResults && (
-            <div style={{ textAlign: 'center', padding: '24px 0', fontSize: 12, color: 'var(--wf-text-4)' }}>
-              No results for "{query}"
+          {/* ── Empty state ── */}
+          {!isLoading && noResults && (
+            <div style={{ textAlign: 'center', padding: '28px 0', fontSize: 12, color: 'var(--wf-text-4)' }}>
+              {query ? `No results for "${query}"` : 'No items found in registry'}
             </div>
           )}
         </div>
