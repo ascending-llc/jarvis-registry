@@ -143,8 +143,8 @@ def parse_args() -> tuple[str, bool, int]:
 async def clean_collection(repo: Any, collection_name: str, label: str) -> None:
     print(f"Cleaning {label} collection ({collection_name})...")
     try:
-        deleted = await repo.adelete_by_filter(filters={"collection": collection_name})
-        print(f"  ✓ Deleted {deleted} documents\n")
+        await repo.reset_collection()
+        print("  ✓ Collection dropped and recreated\n")
     except Exception as e:
         print(f"  ✗ Error cleaning {label}: {e}")
         traceback.print_exc()

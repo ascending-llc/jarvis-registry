@@ -591,7 +591,12 @@ class A2AAgentService:
 
             logger.info(f"Toggled agent {agent.card.name} to {'enabled' if enabled else 'disabled'}")
 
-            self._schedule_vector_sync(agent, old_hash)
+            # When enabling, always force a full sync — Weaviate may be empty even if the
+            # content hash hasn't changed (e.g. after a collection reset or a previous failed sync).
+            if enabled:
+                self._schedule_vector_sync(agent, old_hash=None)
+            else:
+                self._schedule_vector_sync(agent, old_hash)
             return agent
 
         except ValueError:

@@ -1400,7 +1400,9 @@ class ServerServiceV1:
             server.lastConnected = now
             server.updatedAt = now
 
+            old_hash = server.vectorContentHash
             await server.save()
+            self._schedule_vector_sync(server, old_hash)
 
             return {
                 "server": server,
@@ -1448,7 +1450,9 @@ class ServerServiceV1:
         )
 
         server.config = config
+        old_hash = server.vectorContentHash
         await server.save()
+        self._schedule_vector_sync(server, old_hash)
 
         # Return health info
         return {

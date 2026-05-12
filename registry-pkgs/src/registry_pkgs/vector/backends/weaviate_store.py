@@ -334,6 +334,17 @@ class WeaviateStore(VectorStoreAdapter):
 
         return documents
 
+    def drop_collection(self, collection_name: str) -> None:
+        """Delete the named Weaviate collection and all its documents."""
+        try:
+            client = self._get_client()
+            client.collections.delete(collection_name)
+            self._stores.pop(collection_name, None)
+            logger.info("Dropped collection '%s'", collection_name)
+        except Exception as e:
+            logger.error("Failed to drop collection '%s': %s", collection_name, e, exc_info=True)
+            raise
+
     def list_collections(self) -> list[str]:
         """List all Weaviate collections."""
         try:
