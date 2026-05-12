@@ -16,7 +16,9 @@ const Content: React.FC<any> = ({ setSidebarOpen, sidebarOpen = true }) => {
     location.pathname === '/agent-registry' ||
     location.pathname === '/agent-edit' ||
     location.pathname === '/federation-registry' ||
-    location.pathname === '/federation-edit';
+    location.pathname === '/federation-edit' ||
+    location.pathname === '/workflow-registry' ||
+    location.pathname === '/workflow-edit';
 
   const handleGoBack = () => {
     if (window.innerWidth < 768) setSidebarOpen(false);

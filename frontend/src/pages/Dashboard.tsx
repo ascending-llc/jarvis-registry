@@ -7,8 +7,132 @@ import FederationCard from '@/components/FederationCard';
 import IconButton from '@/components/IconButton';
 import SemanticSearchResults from '@/components/SemanticSearchResults';
 import ServerCard from '@/components/ServerCard';
+import WorkflowCard, { type Workflow } from '@/components/WorkflowCard';
 import { useServer } from '@/contexts/ServerContext';
 import { useSemanticSearch } from '@/hooks/useSemanticSearch';
+
+const MOCK_WORKFLOWS: Workflow[] = [
+  {
+    id: 'wf-1',
+    name: 'Support Ticket Triage',
+    type: 'supervised',
+    description: 'Zendesk ingests support tickets, classifier agent categorises each one, responder agent drafts the reply.',
+    lastRunAt: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+    runCount: 47,
+    nodeCount: 4,
+    enabled: true,
+    status: 'active',
+    permissions: { VIEW: true, EDIT: true }
+  },
+  {
+    id: 'wf-2',
+    name: 'PR Review & Deploy',
+    type: 'supervised',
+    description: 'GitHub fetches the PR diff, code review agent annotates, approval gate waits for engineer sign-off, CI/CD deploy runs.',
+    lastRunAt: new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString(),
+    runCount: 12,
+    nodeCount: 4,
+    enabled: true,
+    status: 'active',
+    permissions: { VIEW: true, EDIT: true }
+  },
+  {
+    id: 'wf-3',
+    name: 'Incident Auto-Responder',
+    type: 'autonomous',
+    description: 'LLM receives a Slack alert, dynamically selects the best agent from a pool to diagnose and remediate, then escalates via PagerDuty.',
+    lastRunAt: new Date(Date.now() - 1 * 60 * 60 * 1000).toISOString(),
+    runCount: 31,
+    nodeCount: 3,
+    enabled: true,
+    status: 'active',
+    permissions: { VIEW: true, EDIT: true }
+  },
+  {
+    id: 'wf-4',
+    name: 'Daily Standup Summary',
+    type: 'autonomous',
+    description: "Automatically reads team slack channels, compiles yesterday's updates, and posts a summary report to confluence.",
+    lastRunAt: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
+    runCount: 156,
+    nodeCount: 5,
+    enabled: false,
+    status: 'inactive',
+    permissions: { VIEW: true, EDIT: true }
+  },
+  {
+    id: 'wf-5',
+    name: 'Customer Feedback Analysis',
+    type: 'autonomous',
+    description: 'Pulls App Store and Google Play reviews, performs sentiment analysis using a specialized LLM agent, and updates dashboard metrics.',
+    lastRunAt: new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString(),
+    runCount: 89,
+    nodeCount: 3,
+    enabled: true,
+    status: 'active',
+    permissions: { VIEW: true, EDIT: false }
+  },
+  {
+    id: 'wf-6',
+    name: 'Employee Onboarding Flow',
+    type: 'supervised',
+    description: 'Creates IT tickets, provisions SaaS accounts, sets up initial 1-on-1s, and waits for HR approval before sending the welcome email.',
+    lastRunAt: new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString(),
+    runCount: 10,
+    nodeCount: 8,
+    enabled: true,
+    status: 'active',
+    permissions: { VIEW: true, EDIT: true }
+  },
+  {
+    id: 'wf-7',
+    name: 'Database Backup & Verification',
+    type: 'autonomous',
+    description: 'Triggers RDS snapshots across environments, restores to test instances, runs data integrity checks, and destroys test instances.',
+    lastRunAt: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(),
+    runCount: 412,
+    nodeCount: 6,
+    enabled: true,
+    status: 'active',
+    permissions: { VIEW: true, EDIT: true }
+  },
+  {
+    id: 'wf-8',
+    name: 'Lead Enrichment Pipeline',
+    type: 'autonomous',
+    description: 'Monitors Salesforce for new leads, calls clearbit API via MCP, runs web scraping agent for recent news, updates CRM record.',
+    lastRunAt: new Date(Date.now() - 15 * 60 * 1000).toISOString(),
+    runCount: 1024,
+    nodeCount: 4,
+    enabled: true,
+    status: 'active',
+    permissions: { VIEW: true, EDIT: true }
+  },
+  {
+    id: 'wf-9',
+    name: 'Security Vulnerability Scanner',
+    type: 'autonomous',
+    description: 'Runs Trivy and Snyk scans on main branch, agent triages false positives using history, files Jira tickets for criticals.',
+    lastRunAt: new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString(),
+    runCount: 256,
+    nodeCount: 4,
+    enabled: true,
+    status: 'active',
+    permissions: { VIEW: true, EDIT: true }
+  },
+  {
+    id: 'wf-10',
+    name: 'Release Notes Generator',
+    type: 'supervised',
+    description: 'Extracts merged PR descriptions, agent drafts user-facing release notes, marketing reviews and edits, publishes to changelog.',
+    lastRunAt: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
+    runCount: 42,
+    nodeCount: 3,
+    enabled: false,
+    status: 'inactive',
+    permissions: { VIEW: true, EDIT: true }
+  }
+];
 
 const RefreshGlyph: React.FC<{ className?: string }> = ({ className = '' }) => (
   <svg viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='1.8' className={className} aria-hidden='true'>
@@ -42,6 +166,7 @@ const Dashboard: React.FC = () => {
   } = useServer();
 
   const [refreshing, setRefreshing] = useState(false);
+  const [workflows, setWorkflows] = useState<Workflow[]>(MOCK_WORKFLOWS);
 
   // Sync viewMode with URL tab parameter
   const urlTab = searchParams.get('tab');
@@ -146,6 +271,27 @@ const Dashboard: React.FC = () => {
     return filtered;
   }, [federations, activeFilter, searchTerm]);
 
+  // Filter workflows based on activeFilter and searchTerm
+  const filteredWorkflows = useMemo(() => {
+    let filtered = workflows;
+
+    // Apply filter first
+    if (activeFilter === 'enabled') filtered = filtered.filter(w => w.enabled);
+    else if (activeFilter === 'disabled') filtered = filtered.filter(w => !w.enabled);
+
+    // Then apply search
+    if (searchTerm) {
+      const query = searchTerm.toLowerCase();
+      filtered = filtered.filter(
+        w =>
+          w.name.toLowerCase().includes(query) ||
+          (w.description || '').toLowerCase().includes(query) ||
+          w.type.toLowerCase().includes(query),
+      );
+    }
+    return filtered;
+  }, [workflows, activeFilter, searchTerm]);
+
   useEffect(() => {
     if (searchTerm.trim().length === 0 && committedQuery.length > 0) {
       setCommittedQuery('');
@@ -172,6 +318,8 @@ const Dashboard: React.FC = () => {
       navigate('/agent-registry');
     } else if (viewMode === 'external') {
       navigate('/federation-registry');
+    } else if (viewMode === 'workflow') {
+      navigate('/workflow-registry');
     } else {
       navigate('/server-registry');
     }
@@ -267,14 +415,40 @@ const Dashboard: React.FC = () => {
         </div>
       )}
 
-      {/* Workflow Section (Placeholder) */}
+      {/* Workflow Section */}
       {viewMode === 'workflow' && (
         <div className='mb-8'>
-          <div className='rounded-2xl border border-dashed border-[color:var(--jarvis-border-strong)] bg-[var(--jarvis-card)] py-20 text-center'>
-            <div className='mb-2 text-xl font-medium text-[var(--jarvis-faint)]'>Coming soon...</div>
-            <p className='mx-auto max-w-md text-sm text-[var(--jarvis-muted)]'>
-              The Workflow feature is currently in beta and will be available in a future update.
-            </p>
+          <div className='relative'>
+            {filteredWorkflows.length === 0 ? (
+              <div className='rounded-2xl border border-[color:var(--jarvis-info-text)]/25 bg-[var(--jarvis-info-soft)] py-12 text-center'>
+                <div className='mb-2 text-lg text-[var(--jarvis-faint)]'>No workflows found</div>
+                <p className='text-sm text-[var(--jarvis-muted)]'>
+                  {searchTerm || activeFilter !== 'all'
+                    ? 'Try adjusting your search terms'
+                    : 'No workflows are registered yet'}
+                </p>
+              </div>
+            ) : (
+              <div
+                className='grid'
+                style={{
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))',
+                  gap: 'clamp(1.5rem, 1.5rem, 2.5rem)',
+                }}
+              >
+                {filteredWorkflows.map(workflow => (
+                  <WorkflowCard
+                    key={workflow.id}
+                    workflow={workflow}
+                    onToggle={(id, enabled) => {
+                      setWorkflows(prev =>
+                        prev.map(w => (w.id === id ? { ...w, enabled } : w))
+                      );
+                    }}
+                  />
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -335,38 +509,39 @@ const Dashboard: React.FC = () => {
               {viewMode === 'workflow' && 'Workflow'}
             </h2>
           </div>
-          <p className='text-sm text-[var(--jarvis-muted)] max-w-2xl'>
+          <p className='text-sm text-[var(--jarvis-muted)]'>
             {viewMode === 'servers' &&
               'Model Context Protocol servers federated and discoverable through your Jarvis registry.'}
             {viewMode === 'agents' &&
               'Agent-to-Agent protocol endpoints with auto-discovered .well-known capabilities.'}
             {viewMode === 'external' && 'Federated MCP servers and agents from AWS AgentCore and Azure AI Foundry.'}
             {viewMode === 'workflow' &&
-              'The Workflow feature is currently in beta and will be available in a future update.'}
+              'Agentic pipelines spanning your MCP servers and A2A agents. Autonomous workflows let the LLM decide; Supervised workflows follow a predefined sequence.'}
           </p>
         </div>
 
-        {viewMode !== 'workflow' && (
-          <div className='flex items-center gap-3'>
-            <IconButton
-              ariaLabel='Refresh'
-              tooltip='Refresh'
-              onClick={handleRefreshHealth}
-              disabled={refreshing}
-              spinning={refreshing}
-              className='rounded-lg h-10 w-10 flex items-center justify-center border border-[color:var(--jarvis-border)] bg-[var(--jarvis-surface)] hover:bg-[var(--jarvis-card-muted)] text-[var(--jarvis-text)] transition-colors'
-            >
-              <RefreshGlyph className='h-4 w-4' />
-            </IconButton>
+        <div className='flex items-center gap-3'>
+          <IconButton
+            ariaLabel='Refresh'
+            tooltip='Refresh'
+            onClick={handleRefreshHealth}
+            disabled={refreshing}
+            spinning={refreshing}
+            className='rounded-lg h-10 w-10 flex items-center justify-center border border-[color:var(--jarvis-border)] bg-[var(--jarvis-surface)] hover:bg-[var(--jarvis-card-muted)] text-[var(--jarvis-text)] transition-colors'
+          >
+            <RefreshGlyph className='h-4 w-4' />
+          </IconButton>
 
-            <IconButton
+          <IconButton
               ariaLabel='Register'
               tooltip={
                 viewMode === 'agents'
                   ? 'Register Agent'
                   : viewMode === 'external'
                     ? 'Register Provider'
-                    : 'Register Server'
+                    : viewMode === 'workflow'
+                      ? 'New Workflow'
+                      : 'Register Server'
               }
               onClick={handleRegister}
               variant='solid'
@@ -374,8 +549,7 @@ const Dashboard: React.FC = () => {
             >
               <PlusIcon className='h-5 w-5' />
             </IconButton>
-          </div>
-        )}
+        </div>
       </div>
 
       {/* Scrollable Content Area */}

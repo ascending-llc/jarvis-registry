@@ -1,0 +1,167 @@
+@import "@xyflow/react/dist/style.css";
+
+/* ── Canvas-scoped color tokens ───────────────────────────────────────────────
+   Light-mode values are the defaults (.workflow-canvas-root).
+   Dark-mode values override via .dark .workflow-canvas-root.
+   ────────────────────────────────────────────────────────────────────────── */
+.workflow-canvas-root {
+  /* Background layers — light */
+  --wf-bg-0: #f3f4f6;
+  --wf-bg-1: #ffffff;
+  --wf-bg-2: #f9fafb;
+  --wf-bg-3: #f1f5f9;
+
+  /* Borders — light */
+  --wf-border: rgba(15, 23, 42, 0.1);
+  --wf-border-strong: rgba(15, 23, 42, 0.18);
+
+  /* Text — light */
+  --wf-text-1: #030712;
+  --wf-text-2: #111827;
+  --wf-text-3: #4b5563;
+  --wf-text-4: #6b7280;
+
+  /* Purple / primary — slightly darker for light-mode contrast */
+  --wf-purple-1: #7c3aed;
+  --wf-purple-2: #6d28d9;
+  --wf-purple-3: #7c3aed;
+  --wf-purple-tint: rgba(124, 58, 237, 0.08);
+  --wf-purple-tint-strong: rgba(124, 58, 237, 0.16);
+
+  /* Semantic colors — darker shades for readability on light bg */
+  --wf-green: #059669;
+  --wf-gtint: rgba(5, 150, 105, 0.1);
+  --wf-red: #dc2626;
+  --wf-rtint: rgba(220, 38, 38, 0.1);
+  --wf-amber: #d97706;
+  --wf-atint: rgba(217, 119, 6, 0.1);
+  --wf-blue: #0284c7;
+  --wf-btint: rgba(2, 132, 199, 0.1);
+  --wf-teal: #0d9488;
+  --wf-ttint: rgba(13, 148, 136, 0.1);
+  --wf-pink: #db2777;
+  --wf-pktint: rgba(219, 39, 119, 0.1);
+  --wf-orange: #ea580c;
+
+  /* Transition shorthand */
+  --wf-t: 200ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ── Dark mode overrides ──────────────────────────────────────────────────── */
+.dark .workflow-canvas-root {
+  --wf-bg-0: #0b1020;
+  --wf-bg-1: #111827;
+  --wf-bg-2: #1f2937;
+  --wf-bg-3: #2a3344;
+
+  --wf-border: rgba(255, 255, 255, 0.1);
+  --wf-border-strong: rgba(255, 255, 255, 0.18);
+
+  --wf-text-1: #f3f4f6;
+  --wf-text-2: #d1d5db;
+  --wf-text-3: #9ca3af;
+  --wf-text-4: #6b7280;
+
+  --wf-purple-1: #7c3aed;
+  --wf-purple-2: #a855f7;
+  --wf-purple-3: #c084fc;
+  --wf-purple-tint: rgba(126, 34, 206, 0.15);
+  --wf-purple-tint-strong: rgba(126, 34, 206, 0.28);
+
+  --wf-green: #10b981;
+  --wf-gtint: rgba(16, 185, 129, 0.12);
+  --wf-red: #ef4444;
+  --wf-rtint: rgba(239, 68, 68, 0.12);
+  --wf-amber: #f59e0b;
+  --wf-atint: rgba(245, 158, 11, 0.15);
+  --wf-blue: #38bdf8;
+  --wf-btint: rgba(56, 189, 248, 0.12);
+  --wf-teal: #14b8a6;
+  --wf-ttint: rgba(20, 184, 166, 0.12);
+  --wf-pink: #ec4899;
+  --wf-pktint: rgba(236, 72, 153, 0.12);
+  --wf-orange: #fb923c;
+}
+
+/* ── React Flow canvas overrides ──────────────────────────────────────────── */
+.workflow-canvas-root .react-flow {
+  background: var(--wf-bg-0) !important;
+}
+.workflow-canvas-root .react-flow__background {
+  background: var(--wf-bg-0) !important;
+}
+/* Override hardcoded dot color from Background prop */
+.workflow-canvas-root .react-flow__background pattern circle {
+  fill: rgba(15, 23, 42, 0.18) !important;
+}
+.dark .workflow-canvas-root .react-flow__background pattern circle {
+  fill: rgba(42, 51, 68, 0.7) !important;
+}
+
+.workflow-canvas-root .react-flow__edge-path {
+  stroke: rgba(124, 58, 237, 0.55) !important;
+  stroke-width: 1.5px !important;
+}
+.workflow-canvas-root .react-flow__edge.selected .react-flow__edge-path {
+  stroke: var(--wf-purple-2) !important;
+}
+.workflow-canvas-root .react-flow__arrowhead polyline {
+  stroke: var(--wf-purple-1) !important;
+  fill: var(--wf-purple-1) !important;
+}
+
+.workflow-canvas-root .react-flow__handle {
+  width: 10px !important;
+  height: 10px !important;
+  background: var(--wf-bg-1) !important;
+  border: 2px solid var(--wf-border-strong) !important;
+  border-radius: 50% !important;
+  transition:
+    border-color var(--wf-t),
+    background var(--wf-t);
+}
+.workflow-canvas-root .react-flow__handle:hover,
+.workflow-canvas-root .react-flow__handle-connecting {
+  border-color: var(--wf-purple-1) !important;
+  background: var(--wf-purple-1) !important;
+}
+
+.workflow-canvas-root .react-flow__controls {
+  background: var(--wf-bg-2) !important;
+  border: 1px solid var(--wf-border) !important;
+  border-radius: 8px !important;
+  overflow: hidden;
+  box-shadow: none !important;
+}
+.workflow-canvas-root .react-flow__controls-button {
+  background: transparent !important;
+  border: none !important;
+  border-bottom: 1px solid var(--wf-border) !important;
+  color: var(--wf-text-3) !important;
+  fill: var(--wf-text-3) !important;
+  width: 30px !important;
+  height: 30px !important;
+}
+.workflow-canvas-root .react-flow__controls-button:last-child {
+  border-bottom: none !important;
+}
+.workflow-canvas-root .react-flow__controls-button:hover {
+  background: var(--wf-bg-3) !important;
+  color: var(--wf-text-1) !important;
+  fill: var(--wf-text-1) !important;
+}
+
+.workflow-canvas-root .react-flow__minimap {
+  background: var(--wf-bg-2) !important;
+  border: 1px solid var(--wf-border) !important;
+  border-radius: 8px !important;
+}
+.workflow-canvas-root .react-flow__minimap-mask {
+  fill: rgba(124, 58, 237, 0.08) !important;
+}
+.dark .workflow-canvas-root .react-flow__minimap-mask {
+  fill: rgba(124, 58, 237, 0.08) !important;
+}
+.workflow-canvas-root .react-flow__panel {
+  margin: 12px !important;
+}
