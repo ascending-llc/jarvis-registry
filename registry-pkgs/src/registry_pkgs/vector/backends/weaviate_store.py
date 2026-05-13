@@ -86,17 +86,51 @@ class WeaviateStore(VectorStoreAdapter):
             vectorizer_config = wvc.Configure.Vectorizer.none()
         return vectorizer_config
 
+    def ensure_filterable_properties(self, collection_name: str, property_names: dict[str, str] | list[str]) -> None:
+        """Add any missing properties to the collection schema so they can be filtered on.
+
+        Args:
+            collection_name: Weaviate collection name.
+            property_names: Either a dict mapping name → type (``"text"`` or ``"bool"``)
+                or a plain list of names (all treated as TEXT for backward compatibility).
+        """
+        _TYPE_MAP = {
+            "text": wvc.DataType.TEXT,
+            "bool": wvc.DataType.BOOL,
+        }
+        if isinstance(property_names, list):
+            props: dict[str, str] = dict.fromkeys(property_names, "text")
+        else:
+            props = property_names
+
+        client = self._get_client()
+        collection = client.collections.get(collection_name)
+        try:
+            config = collection.config.get()
+            existing = {getattr(p, "name", None) for p in (getattr(config, "properties", None) or [])}
+        except Exception as e:
+            logger.warning(f"Could not inspect properties for '{collection_name}': {e}")
+            return
+
+        for name, type_str in props.items():
+            if name not in existing:
+                data_type = _TYPE_MAP.get(type_str, wvc.DataType.TEXT)
+                try:
+                    collection.config.add_property(
+                        wvc.Property(name=name, data_type=data_type, skip_vectorization=True)
+                    )
+                    logger.info(f"Added missing property '{name}' ({type_str}) to collection '{collection_name}'")
+                except Exception as e:
+                    logger.warning(f"Could not add property '{name}' to '{collection_name}': {e}")
+
     def _ensure_collection_with_vectorizer(self, collection_name: str):
-        """
-        Ensure collection exists with vectorizer configuration for hybrid search.
-        """
+        """Ensure collection exists with vectorizer configuration for hybrid search."""
         client = self._get_client()
 
         if client.collections.exists(collection_name):
             logger.debug(f"Collection {collection_name} already exists")
             return
 
-        # Create collection with vectorizer configuration
         try:
             logger.info(f"Creating collection {collection_name} with vectorizer configuration...")
             client.collections.create(
@@ -108,7 +142,6 @@ class WeaviateStore(VectorStoreAdapter):
             )
             logger.info(f"Collection {collection_name} created successfully")
         except Exception as e:
-            # If creation fails, collection might already exist (race condition)
             if client.collections.exists(collection_name):
                 logger.warning(f"Collection {collection_name} was created by another process")
             else:
@@ -300,6 +333,17 @@ class WeaviateStore(VectorStoreAdapter):
                 documents.append(doc)
 
         return documents
+
+    def drop_collection(self, collection_name: str) -> None:
+        """Delete the named Weaviate collection and all its documents."""
+        try:
+            client = self._get_client()
+            client.collections.delete(collection_name)
+            self._stores.pop(collection_name, None)
+            logger.info("Dropped collection '%s'", collection_name)
+        except Exception as e:
+            logger.error("Failed to drop collection '%s': %s", collection_name, e, exc_info=True)
+            raise
 
     def list_collections(self) -> list[str]:
         """List all Weaviate collections."""

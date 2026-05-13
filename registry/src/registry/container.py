@@ -164,7 +164,7 @@ class RegistryContainer:
 
     @cached_property
     def a2a_agent_service(self) -> A2AAgentService:
-        return A2AAgentService()
+        return A2AAgentService(a2a_agent_repo=self.a2a_agent_repo)
 
     @cached_property
     def agentcore_import_service(self) -> AgentCoreImportService:

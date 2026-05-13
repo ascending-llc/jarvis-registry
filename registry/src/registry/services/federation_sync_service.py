@@ -908,7 +908,7 @@ class FederationSyncService:
         if current_server is None:
             return
 
-        result = await self.mcp_server_repo.sync_server_to_vector_db(current_server, is_delete=False)
+        result = await self.mcp_server_repo.sync_to_vector_db(current_server, is_delete=False)
         if not result or result.get("failed_tools"):
             detail = result.get("error") if result else None
             suffix = f":{detail}" if detail else ""
@@ -927,7 +927,7 @@ class FederationSyncService:
         if current_agent is None:
             return
 
-        result = await self.a2a_agent_repo.sync_agent_to_vector_db(current_agent, is_delete=False)
+        result = await self.a2a_agent_repo.sync_to_vector_db(current_agent, is_delete=False)
         if not result or result.get("failed"):
             detail = result.get("error") if result else None
             suffix = f":{detail}" if detail else ""
