@@ -81,10 +81,11 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NEW_TAG:  ${{ needs.bump-version-and-tag.outputs.new_tag }}
+          RELEASE_NOTES: ${{ steps.notes.outputs['release-notes'] }}
         run: |
           gh release create "$NEW_TAG" \
             --title "Jarvis Registry $NEW_TAG" \
-            --notes "${{ steps.notes.outputs.release-notes }}" \
+            --notes "$RELEASE_NOTES" \
             --latest
         # Publishing this release automatically fires release-changelog.yml
         # (on: release: types: [published]) → generates the MkDocs docs page.

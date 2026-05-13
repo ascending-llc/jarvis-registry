@@ -24,13 +24,9 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install dependencies
-        run: pip install PyYAML
-
       - name: Generate changelog page and update nav
         env:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
-          RELEASE_NAME: ${{ github.event.release.name }}
           RELEASE_BODY: ${{ github.event.release.body }}
           RELEASE_DATE: ${{ github.event.release.published_at }}
           RELEASE_URL: ${{ github.event.release.html_url }}

@@ -22,7 +22,6 @@ from pathlib import Path
 
 # ── Read env vars ──────────────────────────────────────────────────────────────
 tag = os.environ["RELEASE_TAG"]  # e.g. asc0.3.2
-name = os.environ.get("RELEASE_NAME") or tag  # e.g. "Jarvis Registry asc0.3.2"
 body = os.environ.get("RELEASE_BODY", "")
 published_at = os.environ.get("RELEASE_DATE", "")
 release_url = os.environ.get("RELEASE_URL", "")
@@ -61,11 +60,13 @@ first_line = next(
 # Strip markdown from description for frontmatter (remove bold, links, etc.)
 description = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", first_line)
 description = re.sub(r"[*_`]", "", description)
+# Escape for YAML double-quoted scalar: backslash and double-quote.
+description_yaml = description.replace("\\", "\\\\").replace('"', '\\"')
 
 frontmatter = f"""\
 ---
 title: "{tag_icon} Jarvis Registry {tag}"
-description: "{description}"
+description: "{description_yaml}"
 date: {date_iso}
 tags:
   - {tag_label}
@@ -125,24 +126,22 @@ if not mkdocs_path.exists():
 
 mkdocs_text = mkdocs_path.read_text(encoding="utf-8")
 
-new_nav_entry = f"  - {tag}: changelog/{slug}.md\n"
-
 changelog_section_re = re.compile(
-    r"(- Changelog:\s*\n"  # section header
-    r"(?:[ \t]+-[ \t]+Overview:.*\n))"  # Overview line
+    r"- Changelog:\s*\n"  # section header
+    r"(?P<indent>[ \t]+)-[ \t]+Overview:.*\n"  # Overview line — capture its indentation
 )
 
-if changelog_section_re.search(mkdocs_text):
-    mkdocs_text = changelog_section_re.sub(
-        r"\g<1>" + new_nav_entry,
-        mkdocs_text,
-        count=1,
-    )
+match = changelog_section_re.search(mkdocs_text)
+if match:
+    indent = match.group("indent")
+    new_nav_entry = f"{indent}- {tag}: changelog/{slug}.md\n"
+    mkdocs_text = mkdocs_text[: match.end()] + new_nav_entry + mkdocs_text[match.end() :]
     print(f"✅  Inserted nav entry for {tag} in mkdocs.yml")
 else:
-    # Changelog section doesn't exist yet — insert before "- Project:" block
+    # Changelog section doesn't exist yet — insert before "- Project:" block.
+    # Use 4-space indent to match the surrounding nav style.
     project_re = re.compile(r"(^- Project:)", re.MULTILINE)
-    changelog_block = f"- Changelog:\n  - Overview: changelog/index.md\n  {new_nav_entry}\n"
+    changelog_block = f"- Changelog:\n    - Overview: changelog/index.md\n    - {tag}: changelog/{slug}.md\n"
     if project_re.search(mkdocs_text):
         mkdocs_text = project_re.sub(changelog_block + r"\1", mkdocs_text, count=1)
         print("✅  Bootstrapped Changelog nav section in mkdocs.yml")
