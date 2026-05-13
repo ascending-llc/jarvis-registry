@@ -217,7 +217,8 @@ class A2AAgent(Document):
         """
         docs = self.to_documents()
         contents = sorted(doc.page_content for doc in docs)
-        self.vectorContentHash = hashlib.sha256("\n---\n".join(contents).encode()).hexdigest()
+        per_doc_hashes = [hashlib.sha256(c.encode()).hexdigest() for c in contents]
+        self.vectorContentHash = hashlib.sha256("".join(per_doc_hashes).encode()).hexdigest()
 
     # ========== Vector Search Integration ==========
     COLLECTION_NAME: ClassVar[str] = "A2a_agents"

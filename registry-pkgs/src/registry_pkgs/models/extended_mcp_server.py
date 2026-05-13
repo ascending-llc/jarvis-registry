@@ -173,6 +173,13 @@ class ExtendedMCPServer(MCPServer):
             IndexModel([("federationMetadata.runtimeArn", 1)], sparse=True),
         ]
 
+    @property
+    def _config_enabled(self) -> bool:
+        """Return the enabled flag from config, defaulting to False if absent or not a bool."""
+        return (
+            bool(self.config.get("enabled")) if self.config and isinstance(self.config.get("enabled"), bool) else False
+        )
+
     @before_event(Insert, Replace, Save, SaveChanges, Update)
     def _refresh_content_hash(self):
         """Recompute vectorContentHash before every write.
@@ -184,7 +191,8 @@ class ExtendedMCPServer(MCPServer):
         """
         docs = self.to_documents()
         contents = sorted(doc.page_content for doc in docs)
-        self.vectorContentHash = hashlib.sha256("\n---\n".join(contents).encode()).hexdigest()
+        per_doc_hashes = [hashlib.sha256(c.encode()).hexdigest() for c in contents]
+        self.vectorContentHash = hashlib.sha256("".join(per_doc_hashes).encode()).hexdigest()
 
     # ========== Vector Search Integration (Weaviate) ==========
     COLLECTION_NAME: ClassVar[str] = "MCP_Servers"
@@ -267,9 +275,7 @@ class ExtendedMCPServer(MCPServer):
 
     def _get_base_metadata(self, entity_type: MCPEntityType) -> dict[str, Any]:
         """Get base metadata shared by all document types."""
-        enabled = (
-            bool(self.config.get("enabled")) if self.config and isinstance(self.config.get("enabled"), bool) else False
-        )
+        enabled = self._config_enabled
 
         metadata = {
             "collection": self.COLLECTION_NAME,
@@ -300,11 +306,8 @@ class ExtendedMCPServer(MCPServer):
         (as doc prefix), so changing either always changes vectorContentHash and
         triggers a full rebuild — they never reach this path.
         """
-        enabled = (
-            bool(self.config.get("enabled")) if self.config and isinstance(self.config.get("enabled"), bool) else False
-        )
         meta: dict[str, Any] = {
-            "enabled": enabled,
+            "enabled": self._config_enabled,
             "tags": list(self.tags) if self.tags else [],
         }
         runtime_version = (self.federationMetadata or {}).get("runtimeVersion")

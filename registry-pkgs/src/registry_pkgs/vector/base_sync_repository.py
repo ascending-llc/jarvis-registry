@@ -31,6 +31,14 @@ class BaseVectorSyncRepository(Repository[T], ABC):
             self.adapter.ensure_filterable_properties(self.collection, filterable)
         return result
 
+    async def reset_collection(self) -> None:
+        """Drop the backing collection and recreate it with all required filterable properties."""
+        if not hasattr(self.adapter, "drop_collection"):
+            raise RuntimeError(f"Adapter {type(self.adapter).__name__} does not support drop_collection")
+        self.adapter.drop_collection(self.collection)
+        await self.ensure_collection()
+        logger.info("Reset collection '%s'", self.collection)
+
     async def delete_by_runtime_identity(self, federation_id: str, runtime_arn: str) -> int:
         """Delete all Weaviate docs that match a federation identity.
 
