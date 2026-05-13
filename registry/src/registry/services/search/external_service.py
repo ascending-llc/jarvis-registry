@@ -103,7 +103,7 @@ class ExternalVectorSearchService(VectorSearchService):
 
     async def add_or_update_service(
         self, service_path: str, server_info: dict[str, Any], is_enabled: bool = False
-    ) -> dict[str, int] | None:
+    ) -> dict[str, Any] | None:
         """
         Add or update server in vector database.
 

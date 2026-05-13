@@ -144,7 +144,7 @@ async def test_a2a_update_entity_metadata_patches_all_matching_docs():
     ]
     repo = _make_a2a_repo(docs)
 
-    result = await repo.update_entity_metadata("agent_id", "agent-1", {"is_enabled": False})
+    result = await repo.update_entity_metadata("agent_id", "agent-1", {"enabled": False})
 
     assert result.metadata_updated == 2
     assert result.error is None
@@ -188,7 +188,7 @@ async def test_update_entity_metadata_skips_when_adapter_lacks_update_metadata()
 
     repo = A2AAgentRepository(SimpleNamespace(adapter=_LegacyAdapter()))
 
-    result = await repo.update_entity_metadata("agent_id", "a", {"is_enabled": True})
+    result = await repo.update_entity_metadata("agent_id", "a", {"enabled": True})
 
     assert result.metadata_updated == 0
     assert result.error is None
