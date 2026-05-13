@@ -148,7 +148,7 @@ async def test_search_agents_returns_agents_and_skills():
         "relevance_score": 0.85,
         "description": "Deep intel agent",
         "tags": ["research"],
-        "is_enabled": True,
+        "enabled": True,
     }
     skill_doc = {
         "agent_id": "agent-1",
@@ -158,7 +158,7 @@ async def test_search_agents_returns_agents_and_skills():
         "skill_name": "web_search",
         "relevance_score": 0.75,
         "description": "Search the web",
-        "is_enabled": True,
+        "enabled": True,
     }
     a2a_agent_repo = MagicMock()
     a2a_agent_repo.asearch_with_rerank = AsyncMock(return_value=[agent_doc, skill_doc])
@@ -175,6 +175,7 @@ async def test_search_agents_returns_agents_and_skills():
     assert response.totalSkills == 1
     assert response.agents[0].agentName == "deep-intel"
     assert response.agents[0].tags == ["research"]
+    assert response.agents[0].isEnabled is True
     assert response.skills[0].skillName == "web_search"
 
 

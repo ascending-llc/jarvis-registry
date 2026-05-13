@@ -355,8 +355,11 @@ async def search_entities_impl(
             results.extend(mcp_results)
 
         if a2a_types and a2a_agent_repo is not None:
-            a2a_results = await _search_a2a_documents(search, query, a2a_types, a2a_agent_repo)
-            results.extend(a2a_results)
+            try:
+                a2a_results = await _search_a2a_documents(search, query, a2a_types, a2a_agent_repo)
+                results.extend(a2a_results)
+            except RuntimeError as exc:
+                logger.warning("A2A vector search unavailable, skipping A2A results: %s", exc)
 
         # Re-sort merged results by relevance_score (desc) and cap at top_n
         if len(results) > top_n:
