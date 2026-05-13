@@ -61,17 +61,34 @@ def make_mcp_executor(
         description=description,
     )
 
+    def _raise_if_agent_failed(response: Any) -> None:
+        status = getattr(response, "status", None)
+        status_value = getattr(status, "value", status)
+        if str(status_value).lower() in {"error", "failed", "cancelled"}:
+            content = getattr(response, "content", None)
+            raise RuntimeError(str(content or f"Agent returned status {status_value}"))
+
+        content = getattr(response, "content", None)
+        if isinstance(content, str) and "unable to locate credentials" in content.lower():
+            raise RuntimeError(content)
+
     async def executor(step_input: StepInput, session_state: dict[str, Any] | None = None) -> StepOutput:
         prompt = build_prompt(step_input)
         logger.debug("  → calling MCP server %r  url=%s  prompt=%r", mcp_server.serverName, proxy_url, prompt[:120])
         try:
+            await mcp_tools.connect(force=not mcp_tools.initialized)
+            if not mcp_tools.initialized:
+                raise RuntimeError(f"Failed to initialize MCP toolkit at {proxy_url}")
+
             response = await agent.arun(prompt)
+            _raise_if_agent_failed(response)
             content = response.content or ""
             logger.debug("  ← MCP server %r responded: %r", mcp_server.serverName, content[:200])
             return StepOutput(content=content)
+
         except Exception as exc:
             logger.exception("MCP executor %r failed", mcp_server.serverName)
-            return StepOutput(content=str(exc), success=False, error=str(exc))
+            raise RuntimeError(f"MCP executor {mcp_server.serverName!r} failed: {exc}") from exc
 
     executor.__name__ = f"{mcp_server.serverName}_mcp_executor"
     return executor
