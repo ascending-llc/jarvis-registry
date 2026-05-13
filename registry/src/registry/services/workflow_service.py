@@ -214,14 +214,13 @@ class WorkflowService:
             runs = await WorkflowRun.find(WorkflowRun.workflow_definition_id == workflow.id).to_list()
             run_ids = [run.id for run in runs]
 
-            # Delete all node runs for these workflow runs
+            # Delete all node runs for these workflow runs and the workflow runs themselves
             if run_ids:
                 await NodeRun.find({"workflow_run_id": {"$in": run_ids}}).delete()
                 logger.info(f"Deleted node runs for {len(run_ids)} workflow runs")
 
-            # Delete all workflow runs
-            await WorkflowRun.find(WorkflowRun.workflow_definition_id == workflow.id).delete()
-            logger.info(f"Deleted {len(runs)} workflow runs for workflow {workflow_id}")
+                await WorkflowRun.find({"_id": {"$in": run_ids}}).delete()
+                logger.info(f"Deleted {len(run_ids)} workflow runs and their node runs for workflow {workflow_id}")
 
             # Delete the workflow
             await workflow.delete()
@@ -422,7 +421,7 @@ class WorkflowService:
         Returns:
             WorkflowNode model instance
         """
-        from registry_pkgs.models.workflow import LoopConfig
+        from registry_pkgs.models.workflow import LoopConfig, StepConfig
 
         # Generate ID if not provided
         node_id = api_node.id if api_node.id else str(uuid4())
@@ -435,6 +434,16 @@ class WorkflowService:
                 end_condition_cel=api_node.loopConfig.endConditionCel,
             )
 
+        # Convert step config if provided
+        step_config = None
+        if api_node.stepConfig:
+            step_config = StepConfig(
+                max_retries=api_node.stepConfig.maxRetries,
+                on_error=api_node.stepConfig.onError,
+                backoff_base_seconds=api_node.stepConfig.backoffBaseSeconds,
+                backoff_max_seconds=api_node.stepConfig.backoffMaxSeconds,
+            )
+
         # Recursively convert children
         children = [self._convert_api_node_to_model(child) for child in api_node.children]
 
@@ -443,6 +452,8 @@ class WorkflowService:
             name=api_node.name,
             node_type=api_node.nodeType,
             executor_key=api_node.executorKey,
+            a2a_pool=api_node.a2aPool,
+            step_config=step_config,
             config=api_node.config,
             children=children,
             condition_cel=api_node.conditionCel,

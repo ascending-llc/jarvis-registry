@@ -193,7 +193,7 @@ class RegistryContainer:
         """Build the app-scoped WorkflowRunner used by API-triggered runs."""
         try:
             llm = AwsBedrock(
-                id=self.settings.llm_model if hasattr(self.settings, "llm_model") else "us.amazon.nova-lite-v1:0",
+                id=self.settings.aws_workflow_llm_model,
                 aws_region=self.settings.aws_region,
                 aws_access_key_id=self.settings.aws_access_key_id,
                 aws_secret_access_key=self.settings.aws_secret_access_key,

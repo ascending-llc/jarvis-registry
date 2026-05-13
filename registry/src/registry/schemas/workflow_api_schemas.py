@@ -17,6 +17,15 @@ from .case_conversion import APIBaseModel
 # ==================== Nested Models ====================
 
 
+class StepConfigInput(APIBaseModel):
+    """Input/Output schema for step configuration"""
+
+    maxRetries: int = Field(default=0, ge=0, description="Maximum number of retries (min: 0)")
+    onError: str = Field(default="fail", description="Error handling strategy: fail, skip, or retry")
+    backoffBaseSeconds: float = Field(default=1.0, gt=0, description="Base wait time for first retry (seconds)")
+    backoffMaxSeconds: float = Field(default=60.0, gt=0, description="Maximum wait time for any retry (seconds)")
+
+
 class LoopConfigInput(APIBaseModel):
     """Input/Output schema for loop configuration"""
 
@@ -31,6 +40,8 @@ class WorkflowNodeInput(APIBaseModel):
     name: str = Field(description="Node name")
     nodeType: str = Field(description="Node type: step, parallel, loop, condition, router")
     executorKey: str | None = Field(None, description="MCP tool name or A2A agent name (required for step nodes)")
+    a2aPool: list[str] = Field(default_factory=list, description="A2A agent pool (max 5 agents)")
+    stepConfig: StepConfigInput | None = Field(None, description="Step-level retry and error handling configuration")
     config: dict[str, Any] = Field(default_factory=dict, description="Node configuration")
     children: list["WorkflowNodeInput"] = Field(default_factory=list, description="Child nodes for container nodes")
     conditionCel: str | None = Field(None, description="CEL expression for condition/router nodes")
@@ -48,6 +59,8 @@ class WorkflowNodeOutput(APIBaseModel):
     name: str
     nodeType: str
     executorKey: str | None = None
+    a2aPool: list[str] = Field(default_factory=list)
+    stepConfig: StepConfigInput | None = None
     config: dict[str, Any] = Field(default_factory=dict)
     children: list["WorkflowNodeOutput"] = Field(default_factory=list)
     conditionCel: str | None = None
@@ -250,6 +263,17 @@ def _convert_node_to_output(node: Any) -> WorkflowNodeOutput:
         name=node.name,
         nodeType=node.node_type.value if hasattr(node.node_type, "value") else node.node_type,
         executorKey=node.executor_key,
+        a2aPool=node.a2a_pool,
+        stepConfig=(
+            StepConfigInput(
+                maxRetries=node.step_config.max_retries,
+                onError=node.step_config.on_error,
+                backoffBaseSeconds=node.step_config.backoff_base_seconds,
+                backoffMaxSeconds=node.step_config.backoff_max_seconds,
+            )
+            if node.step_config
+            else None
+        ),
         config=node.config,
         children=[_convert_node_to_output(child) for child in node.children],
         conditionCel=node.condition_cel,

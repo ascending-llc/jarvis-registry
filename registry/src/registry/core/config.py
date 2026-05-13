@@ -117,6 +117,7 @@ class Settings(JarvisBaseSettings):
     # ==================== AWS ====================
     aws_region: str = "us-east-1"
     embedding_model: str = "amazon.titan-embed-text-v2:0"
+    aws_workflow_llm_model: str = "amazon.nova-2-lite-v1:0"
     aws_access_key_id: str | None = None
     aws_secret_access_key: str | None = None
     aws_session_token: str | None = None

@@ -66,6 +66,13 @@
       "name": "Validate Customer Data",
       "nodeType": "step",
       "executorKey": "data-validator",
+      "a2aPool": [],
+      "stepConfig": {
+        "maxRetries": 3,
+        "onError": "retry",
+        "backoffBaseSeconds": 2.0,
+        "backoffMaxSeconds": 30.0
+      },
       "config": {
         "validationRules": ["email", "phone"]
       },
@@ -78,6 +85,8 @@
       "name": "Parallel Processing",
       "nodeType": "parallel",
       "executorKey": null,
+      "a2aPool": [],
+      "stepConfig": null,
       "config": {},
       "children": [
         {
@@ -85,6 +94,8 @@
           "name": "Send Welcome Email",
           "nodeType": "step",
           "executorKey": "email-sender",
+          "a2aPool": [],
+          "stepConfig": null,
           "config": {
             "template": "welcome"
           },
@@ -96,7 +107,14 @@
           "id": "node-2-2",
           "name": "Create User Account",
           "nodeType": "step",
-          "executorKey": "account-creator",
+          "executorKey": null,
+          "a2aPool": ["account-creator-v1", "account-creator-v2"],
+          "stepConfig": {
+            "maxRetries": 5,
+            "onError": "retry",
+            "backoffBaseSeconds": 1.0,
+            "backoffMaxSeconds": 60.0
+          },
           "config": {},
           "children": [],
           "conditionCel": null,
@@ -133,6 +151,12 @@
       "name": "Validate Customer Email",
       "nodeType": "step",
       "executorKey": "mcp-email-validator",
+      "stepConfig": {
+        "maxRetries": 3,
+        "onError": "retry",
+        "backoffBaseSeconds": 2.0,
+        "backoffMaxSeconds": 30.0
+      },
       "config": {
         "validationRules": ["format", "domain", "mx_record"],
         "allowedDomains": ["company.com", "partner.com"]
@@ -151,6 +175,10 @@
               "name": "Send Welcome Email",
               "nodeType": "step",
               "executorKey": "mcp-email-sender",
+              "stepConfig": {
+                "maxRetries": 2,
+                "onError": "skip"
+              },
               "config": {
                 "template": "enterprise_welcome",
                 "fromAddress": "onboarding@company.com"
@@ -159,7 +187,17 @@
             {
               "name": "Create Premium Account",
               "nodeType": "step",
-              "executorKey": "a2a-account-manager",
+              "a2aPool": [
+                "account-manager-v1",
+                "account-manager-v2",
+                "account-manager-fallback"
+              ],
+              "stepConfig": {
+                "maxRetries": 5,
+                "onError": "retry",
+                "backoffBaseSeconds": 1.0,
+                "backoffMaxSeconds": 60.0
+              },
               "config": {
                 "accountType": "premium",
                 "features": ["sso", "api_access", "priority_support"]
@@ -207,7 +245,13 @@
   - `id` (optional, string): Node ID (auto-generated if not provided)
   - `name` (required, string): Node name
   - `nodeType` (required, string): Node type (`step`, `parallel`, `loop`, `condition`, `router`)
-  - `executorKey` (required for `step` nodes, string): MCP tool name or A2A agent name
+  - `executorKey` (optional for `step` nodes, string): MCP tool name or A2A agent name (required if `a2aPool` is not provided)
+  - `a2aPool` (optional for `step` nodes, array): A2A agent pool (max 5 agents, alternative to `executorKey`)
+  - `stepConfig` (optional for `step` nodes, object): Step-level retry and error handling configuration
+    - `maxRetries` (optional, number): Maximum number of retries (default: 0, min: 0)
+    - `onError` (optional, string): Error handling strategy: `fail`, `skip`, or `retry` (default: `fail`)
+    - `backoffBaseSeconds` (optional, number): Base wait time for first retry in seconds (default: 1.0, must be > 0)
+    - `backoffMaxSeconds` (optional, number): Maximum wait time for any retry in seconds (default: 60.0, must be > 0)
   - `config` (optional, object): Node configuration
   - `children` (optional, array): Child nodes for container nodes
   - `conditionCel` (optional, string): CEL expression for condition/router nodes
@@ -216,7 +260,7 @@
     - `endConditionCel` (optional, string): CEL expression for loop termination
 
 **Validation Rules**:
-- `step` nodes must have `executorKey` and no children
+- `step` nodes must have either `executorKey` or `a2aPool` (but not both) and no children
 - `parallel` nodes must have at least 2 children and no `executorKey`
 - `condition` nodes must have 1-2 children and `conditionCel`
 - `loop` nodes must have `loopConfig` and at least 1 child
@@ -643,11 +687,24 @@ All endpoints return errors in the following format:
   id: string;                    // Node ID (UUID)
   name: string;                  // Node name
   nodeType: string;              // step | parallel | loop | condition | router
-  executorKey?: string;          // Required for step nodes only
+  executorKey?: string;          // MCP tool name or A2A agent name (required for step nodes if a2aPool is not provided)
+  a2aPool?: string[];            // A2A agent pool (max 5 agents, alternative to executorKey for step nodes)
+  stepConfig?: StepConfig;       // Step-level retry and error handling configuration
   config: object;                // Node configuration
   children: WorkflowNode[];      // Child nodes for container nodes
   conditionCel?: string;         // CEL expression for condition/router
   loopConfig?: LoopConfig;       // Loop configuration for loop nodes
+}
+```
+
+### StepConfig
+
+```typescript
+{
+  maxRetries: number;            // Maximum number of retries (default: 0, min: 0)
+  onError: string;               // Error handling: fail | skip | retry (default: fail)
+  backoffBaseSeconds: number;    // Base wait time for first retry (default: 1.0, must be > 0)
+  backoffMaxSeconds: number;     // Maximum wait time for any retry (default: 60.0, must be > 0)
 }
 ```
 
