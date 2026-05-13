@@ -21,18 +21,18 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 # ── Read env vars ──────────────────────────────────────────────────────────────
-tag           = os.environ["RELEASE_TAG"]               # e.g. asc0.3.2
-name          = os.environ.get("RELEASE_NAME") or tag   # e.g. "Jarvis Registry asc0.3.2"
-body          = os.environ.get("RELEASE_BODY", "")
-published_at  = os.environ.get("RELEASE_DATE", "")
-release_url   = os.environ.get("RELEASE_URL", "")
+tag = os.environ["RELEASE_TAG"]  # e.g. asc0.3.2
+name = os.environ.get("RELEASE_NAME") or tag  # e.g. "Jarvis Registry asc0.3.2"
+body = os.environ.get("RELEASE_BODY", "")
+published_at = os.environ.get("RELEASE_DATE", "")
+release_url = os.environ.get("RELEASE_URL", "")
 is_prerelease = os.environ.get("PRERELEASE", "false").lower() == "true"
 
 # Parse date → YYYY-MM-DD
 try:
     date_obj = datetime.fromisoformat(published_at.replace("Z", "+00:00"))
-    date_str = date_obj.strftime("%B %d, %Y")   # e.g. "May 07, 2026"
-    date_iso = date_obj.strftime("%Y-%m-%d")     # for frontmatter
+    date_str = date_obj.strftime("%B %d, %Y")  # e.g. "May 07, 2026"
+    date_iso = date_obj.strftime("%Y-%m-%d")  # for frontmatter
 except Exception:
     date_str = datetime.now(UTC).strftime("%B %d, %Y")
     date_iso = datetime.now(UTC).strftime("%Y-%m-%d")
@@ -40,10 +40,10 @@ except Exception:
 # Tag label and icon
 if is_prerelease:
     tag_label = "Pre-release"
-    tag_icon  = "🔖"
+    tag_icon = "🔖"
 else:
     tag_label = "Release"
-    tag_icon  = "🚀"
+    tag_icon = "🚀"
 
 slug = tag  # e.g. asc0.3.2  →  changelog/asc0.3.2.md
 
@@ -128,7 +128,7 @@ mkdocs_text = mkdocs_path.read_text(encoding="utf-8")
 new_nav_entry = f"  - {tag}: changelog/{slug}.md\n"
 
 changelog_section_re = re.compile(
-    r"(- Changelog:\s*\n"               # section header
+    r"(- Changelog:\s*\n"  # section header
     r"(?:[ \t]+-[ \t]+Overview:.*\n))"  # Overview line
 )
 
@@ -142,12 +142,7 @@ if changelog_section_re.search(mkdocs_text):
 else:
     # Changelog section doesn't exist yet — insert before "- Project:" block
     project_re = re.compile(r"(^- Project:)", re.MULTILINE)
-    changelog_block = (
-        "- Changelog:\n"
-        "  - Overview: changelog/index.md\n"
-        f"  {new_nav_entry}"
-        "\n"
-    )
+    changelog_block = f"- Changelog:\n  - Overview: changelog/index.md\n  {new_nav_entry}\n"
     if project_re.search(mkdocs_text):
         mkdocs_text = project_re.sub(changelog_block + r"\1", mkdocs_text, count=1)
         print("✅  Bootstrapped Changelog nav section in mkdocs.yml")
