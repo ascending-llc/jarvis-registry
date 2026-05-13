@@ -75,10 +75,7 @@ jobs:
           base-ref: ${{ needs.bump-version-and-tag.outputs.prev_tag }}
           head-ref: ${{ needs.bump-version-and-tag.outputs.new_tag }}
         env:
-          # Fine-grained PAT with Copilot access — add once to repo secrets.
-          # Settings → Secrets → Actions → New repository secret → COPILOT_GITHUB_TOKEN
-          # Token needs: copilot:read (or Models access under your Copilot subscription)
-          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.GH_COPILOT_KEY }}
 
       - name: Create GitHub Release
         env:
