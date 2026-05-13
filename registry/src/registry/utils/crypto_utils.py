@@ -118,7 +118,7 @@ def generate_service_jwt(
 
         # Add optional scopes
         if scopes:
-            extra_claims["scopes"] = scopes
+            extra_claims["scope"] = " ".join(scopes)
 
         # Build JWT payload using centralized helper
         payload = build_jwt_payload(

@@ -14,8 +14,7 @@ from .api.v1.search_routes import router as search_router
 from .api.v1.server.server_routes import router as servers_router_v1
 from .api.v1.token_routes import router as token_router
 from .api.v1.workflow.control_routes import router as workflow_control_router
-from .api.v1.workflow.runs_routes import collection_router as workflow_runs_collection_router
-from .api.v1.workflow.runs_routes import single_router as workflow_runs_single_router
+from .api.v1.workflow.workflow_routes import router as workflow_router
 from .core.config import settings
 from .health.routes import router as health_router
 
@@ -26,6 +25,7 @@ def register_routers(app: FastAPI) -> None:
     app.include_router(token_router, prefix=f"/api/{settings.api_version}", tags=["Server Management"])
     app.include_router(servers_router_v1, prefix=f"/api/{settings.api_version}", tags=["Server Management V1"])
     app.include_router(a2a_agent_router, prefix=f"/api/{settings.api_version}", tags=["A2A Agent Management V1"])
+    app.include_router(workflow_router, prefix=f"/api/{settings.api_version}", tags=["Workflow Management V1"])
     app.include_router(management_router, prefix="/api")
     app.include_router(search_router, prefix=f"/api/{settings.api_version}", tags=["Semantic Search"])
     app.include_router(health_router, prefix="/api/health", tags=["Health Monitoring"])
@@ -36,16 +36,6 @@ def register_routers(app: FastAPI) -> None:
         federation_router,
         prefix=f"/api/{settings.api_version}",
         tags=["Federation Management"],
-    )
-    app.include_router(
-        workflow_runs_collection_router,
-        prefix=f"/api/{settings.api_version}",
-        tags=["Workflow Control"],
-    )
-    app.include_router(
-        workflow_runs_single_router,
-        prefix=f"/api/{settings.api_version}",
-        tags=["Workflow Control"],
     )
     app.include_router(
         workflow_control_router,

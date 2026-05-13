@@ -31,6 +31,9 @@ class Settings(JarvisBaseSettings):
     session_max_age_seconds: int = 60 * 60 * 8
     session_cookie_domain: str | None = None
 
+    # ==================== Service URLs ====================
+    registry_internal_url: str = "http://localhost:7860"
+
     # ==================== Headers ====================
     auth_egress_header: str = "Authorization"
     internal_auth_header: str = "X-Jarvis-Auth"
@@ -114,6 +117,7 @@ class Settings(JarvisBaseSettings):
     # ==================== AWS ====================
     aws_region: str = "us-east-1"
     embedding_model: str = "amazon.titan-embed-text-v2:0"
+    aws_workflow_llm_model: str = "amazon.nova-2-lite-v1:0"
     aws_access_key_id: str | None = None
     aws_secret_access_key: str | None = None
     aws_session_token: str | None = None

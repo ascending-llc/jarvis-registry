@@ -39,6 +39,7 @@ from .services.security_scanner import SecurityScannerService
 from .services.server_service import ServerServiceV1
 from .services.user_service import UserService
 from .services.workflow_control_service import WorkflowControlService
+from .services.workflow_service import WorkflowService
 from .services.workflow_shutdown import cancel_in_flight_runs
 
 if TYPE_CHECKING:
@@ -184,28 +185,39 @@ class RegistryContainer:
         return AgentScannerService()
 
     @cached_property
+    def workflow_service(self) -> WorkflowService:
+        return WorkflowService()
+
+    @cached_property
+    def workflow_runner(self) -> WorkflowRunner:
+        """Build the app-scoped WorkflowRunner used by API-triggered runs."""
+        try:
+            llm = AwsBedrock(
+                id=self.settings.aws_workflow_llm_model,
+                aws_region=self.settings.aws_region,
+                aws_access_key_id=self.settings.aws_access_key_id,
+                aws_secret_access_key=self.settings.aws_secret_access_key,
+                aws_session_token=self.settings.aws_session_token,
+            )
+
+            return WorkflowRunner(
+                llm=llm,
+                registry_url=self.settings.registry_internal_url,
+                db_client=MongoDB.get_client(),
+                db_name=MongoDB.database_name,
+                jwt_config=self.settings.jwt_signing_config,
+                directive_queue=self.directive_queue,
+            )
+
+        except Exception:
+            logger.exception("Failed to initialize WorkflowRunner")
+            raise
+
+    @cached_property
     def workflow_control_service(self) -> WorkflowControlService:
         return WorkflowControlService(
             directive_queue=self.directive_queue,
             runner_factory=lambda: self.workflow_runner,
-        )
-
-    @cached_property
-    def workflow_runner(self) -> WorkflowRunner:
-        llm = AwsBedrock(
-            id=self.settings.llm_model,
-            aws_region=self.settings.aws_region,
-            aws_session_token=self.settings.aws_session_token,
-            aws_access_key_id=self.settings.aws_access_key_id,
-            aws_secret_access_key=self.settings.aws_secret_access_key,
-        )
-        return WorkflowRunner(
-            llm=llm,
-            registry_url=self.settings.registry_url,
-            db_client=MongoDB.get_client(),
-            db_name=MongoDB.database_name,
-            jwt_config=self.settings.jwt_signing_config,
-            directive_queue=self.directive_queue,
         )
 
     @cached_property
@@ -259,6 +271,10 @@ class RegistryContainer:
 
         logger.info("Initializing federation service...")
         self._initialize_federation()
+
+        logger.info("Initializing workflow runner...")
+        workflow_runner = self.workflow_runner
+        logger.info("Workflow runner initialized successfully: %s", type(workflow_runner).__name__)
 
     async def shutdown(self) -> None:
         """Shutdown services that hold background tasks or external resources."""
