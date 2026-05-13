@@ -1,4 +1,5 @@
 name: Bump tag version and build & push Docker image
+
 on:
   workflow_dispatch:
     inputs:
@@ -16,51 +17,87 @@ on:
         required: false
         default: false
         type: boolean
+
 permissions:
   id-token: write
   contents: write
   packages: write
+
 jobs:
   bump-version-and-tag:
     runs-on: ubuntu-22.04
     outputs:
-      new_tag: ${{ steps.tag.outputs.new_tag }}
+      new_tag:     ${{ steps.tag.outputs.new_tag }}
       new_version: ${{ steps.tag.outputs.tag }}
+      prev_tag:    ${{ steps.get_version.outputs.latest_tag }}
     steps:
-    - name: Checkout Code
-      uses: actions/checkout@v6
-      with:
-        fetch-depth: 0
-    - name: Get current version from latest tag
-      id: get_version
-      run: |
-        # Get the latest tag (assumes semantic versioning with 'asc' prefix)
-        LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "asc0.0.0")
+      - name: Checkout Code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
-        # Remove 'asc' prefix if present
-        CURRENT_VERSION=${LATEST_TAG#asc}
+      - name: Get current version from latest tag
+        id: get_version
+        run: |
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "asc0.0.0")
+          CURRENT_VERSION=${LATEST_TAG#asc}
+          echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+          echo "latest_tag=$LATEST_TAG" >> $GITHUB_OUTPUT
+          echo "📋 Current version: $CURRENT_VERSION"
+          echo "📋 Latest tag: $LATEST_TAG"
 
-        echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
-        echo "latest_tag=$LATEST_TAG" >> $GITHUB_OUTPUT
-        echo "📋 Current version: $CURRENT_VERSION"
-        echo "📋 Latest tag: $LATEST_TAG"
+      - name: version-tag
+        id: tag
+        uses: anothrNick/github-tag-action@master
+        env:
+          VERBOSE: true
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GIT_API_TAGGING: false
+          TAG_PREFIX: 'asc'
+          DRY_RUN: ${{ inputs.dry_run }}
+          DEFAULT_BUMP: ${{ inputs.version_type }}
 
-    - name: version-tag
-      id: tag
-      uses: anothrNick/github-tag-action@master
-      env:
-        VERBOSE: true
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        GIT_API_TAGGING: false # uses git cli
-        TAG_PREFIX: 'asc'
-        DRY_RUN: ${{ inputs.dry_run }}
-        DEFAULT_BUMP: ${{inputs.version_type}}
+  # ── AI-generated GitHub Release via github/copilot-release-notes ─────────────
+  create-release:
+    runs-on: ubuntu-22.04
+    needs: bump-version-and-tag
+    if: ${{ inputs.dry_run == false }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Generate release notes with Copilot
+        id: notes
+        uses: github/copilot-release-notes@v1
+        with:
+          base-ref: ${{ needs.bump-version-and-tag.outputs.prev_tag }}
+          head-ref: ${{ needs.bump-version-and-tag.outputs.new_tag }}
+        env:
+          # Fine-grained PAT with Copilot access — add once to repo secrets.
+          # Settings → Secrets → Actions → New repository secret → COPILOT_GITHUB_TOKEN
+          # Token needs: copilot:read (or Models access under your Copilot subscription)
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEW_TAG:  ${{ needs.bump-version-and-tag.outputs.new_tag }}
+        run: |
+          gh release create "$NEW_TAG" \
+            --title "Jarvis Registry $NEW_TAG" \
+            --notes "${{ steps.notes.outputs.release-notes }}" \
+            --latest
+        # Publishing this release automatically fires release-changelog.yml
+        # (on: release: types: [published]) → generates the MkDocs docs page.
+  # ─────────────────────────────────────────────────────────────────────────────
 
   build-images:
     uses: ./.github/workflows/build-images-reusable.yaml
     needs: bump-version-and-tag
     with:
-      git_ref: ${{ needs.bump-version-and-tag.outputs.new_tag }}
+      git_ref:     ${{ needs.bump-version-and-tag.outputs.new_tag }}
       version_tag: ${{ needs.bump-version-and-tag.outputs.new_tag }}
     secrets:
       JARVIS_RELEASE_ACCESS_TOKEN: ${{ secrets.JARVIS_RELEASE_ACCESS_TOKEN }}

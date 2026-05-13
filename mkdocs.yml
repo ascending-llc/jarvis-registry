@@ -153,6 +153,9 @@ nav:
     - Playbooks:
       - Overview: explore-agentic/playbooks/index.md
       - Measure AI Agent ROI: explore-agentic/playbooks/ai-agent-roi.md
+  - Changelog:
+    - Overview: changelog/index.md
+    - asc0.2.12: changelog/asc0.2.12.md
   - Project:
     - Contributing: CONTRIBUTING.md
     - License: LICENSE.md
