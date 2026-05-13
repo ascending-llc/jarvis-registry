@@ -31,7 +31,7 @@ class MCPServerRepository(BaseVectorSyncRepository[ExtendedMCPServer]):
         server: ExtendedMCPServer,
         *,
         is_delete: bool = True,
-    ) -> VectorSyncResult:
+    ) -> dict:
         """Full rebuild for an MCP server — caller must ensure content actually changed.
 
         Args:
@@ -45,7 +45,7 @@ class MCPServerRepository(BaseVectorSyncRepository[ExtendedMCPServer]):
             if not server_id:
                 result.failed = 1
                 result.error = "server has no id"
-                return result
+                return result.to_dict_mcp()
 
             await self.ensure_collection()
 
@@ -70,12 +70,12 @@ class MCPServerRepository(BaseVectorSyncRepository[ExtendedMCPServer]):
                     server.serverName,
                     server_id,
                 )
-                return result
+                return result.to_dict_mcp()
 
             doc_ids = await self.asave(server)
             if doc_ids:
                 result.indexed = len(doc_ids)
-                result.version = self._extract_runtime_version(server.federationMetadata)
+                result.version = self._extract_runtime_version(server)
                 logger.info(
                     "Indexed %d docs for server '%s' (server_id=%s).",
                     result.indexed,
@@ -91,7 +91,7 @@ class MCPServerRepository(BaseVectorSyncRepository[ExtendedMCPServer]):
             result.failed = 1
             result.error = str(e)
 
-        return result
+        return result.to_dict_mcp()
 
     async def delete_by_entity_id(self, entity_id: str, entity_name: str | None = None) -> int:
         """Remove all Weaviate docs for an MCP server."""
@@ -122,3 +122,8 @@ class MCPServerRepository(BaseVectorSyncRepository[ExtendedMCPServer]):
         except Exception as e:
             logger.error("Get by server_id failed: %s", e)
             return None
+
+    @staticmethod
+    def _extract_runtime_version(server: ExtendedMCPServer) -> str | None:
+        runtime_version = (server.federationMetadata or {}).get("runtimeVersion")
+        return str(runtime_version) if runtime_version is not None else None

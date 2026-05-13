@@ -95,7 +95,7 @@ async def test_a2a_sync_rebuilds_when_called():
 
     result = await repo.sync_to_vector_db(agent, is_delete=False)
 
-    assert result.indexed == 1
+    assert result["indexed"] == 1
     repo.asave.assert_awaited_once()
 
 
@@ -113,7 +113,7 @@ async def test_mcp_sync_rebuilds_when_called():
 
     result = await repo.sync_to_vector_db(server, is_delete=False)
 
-    assert result.indexed == 1
+    assert result["indexed_tools"] == 1
     repo.asave.assert_awaited_once()
 
 
@@ -199,7 +199,7 @@ async def test_mcp_delete_by_server_id_returns_count():
     """delete_by_server_id returns the total number of docs removed across all entity types."""
     from registry_pkgs.models.enums import MCPEntityType
 
-    # Create one doc per MCP entity_type so each loop iteration removes one
+    # Create one doc per entity_type so each loop iteration removes one
     docs = [
         Document(page_content="t", metadata={"server_id": "srv-1", "entity_type": et.value}, id=f"id-{et.value}")
         for et in MCPEntityType

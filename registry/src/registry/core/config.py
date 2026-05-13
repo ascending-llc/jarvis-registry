@@ -29,11 +29,7 @@ class Settings(JarvisBaseSettings):
     session_cookie_name: str = "jarvis_registry_session"
     refresh_cookie_name: str = "jarvis_registry_refresh"
     session_max_age_seconds: int = 60 * 60 * 8
-    session_cookie_secure: bool = True
     session_cookie_domain: str | None = None
-
-    # ==================== Service URLs ====================
-    registry_client_url: str = "http://localhost:5173"
 
     # ==================== Headers ====================
     auth_egress_header: str = "Authorization"
@@ -191,6 +187,10 @@ class Settings(JarvisBaseSettings):
             raise ValueError(f"CREDS_KEY must be a valid hex string, but it is {self.creds_key}") from exc
 
         return self
+
+    @cached_property
+    def registry_redirect_uri(self) -> str:
+        return f"{self.registry_url.rstrip('/')}/redirect"
 
     @cached_property
     def encryption_key(self) -> bytes:

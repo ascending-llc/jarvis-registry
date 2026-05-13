@@ -321,7 +321,7 @@ class ExternalVectorSearchService(VectorSearchService):
             #     server_info=server_info,
             #     is_enabled=is_enabled
             # ))
-            return {"indexed": 1, "failed": 0}
+            return {"indexed_tools": 1, "failed_tools": 0}
 
         elif entity_type == "mcp_server":
             # Ensure entity_type and path are set
@@ -335,7 +335,7 @@ class ExternalVectorSearchService(VectorSearchService):
             #     server_info=entity_info,
             #     is_enabled=is_enabled
             # ))
-            return {"indexed": 1, "failed": 0}
+            return {"indexed_tools": 1, "failed_tools": 0}
         else:
             logger.warning(f"Unknown entity_type '{entity_type}', skipping indexing")
             return None

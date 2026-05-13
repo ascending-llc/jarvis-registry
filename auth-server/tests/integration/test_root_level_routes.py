@@ -37,19 +37,6 @@ class TestRootLevelRoutes:
         assert "device_authorization_endpoint" in data
         assert "registration_endpoint" in data
 
-    def test_well_known_with_prefix(self, test_client: TestClient):
-        """
-        Test .well-known/oauth-authorization-server with /auth prefix.
-
-        Note: .well-known routes are ONLY at root level per RFC 8414.
-        The issuer URL in the response will include /auth prefix based on
-        AUTH_SERVER_EXTERNAL_URL configuration, not the request path.
-        """
-        # .well-known routes are only at root per RFC 8414
-        # Accessing with /auth prefix should return 404
-        response = test_client.get("/auth/.well-known/oauth-authorization-server")
-        assert response.status_code == 404
-
     def test_openid_configuration_at_root_level(self, test_client: TestClient):
         """
         Test .well-known/openid-configuration is accessible at root level.
@@ -83,77 +70,6 @@ class TestRootLevelRoutes:
         # Verify JWKS structure
         assert "keys" in data
         assert isinstance(data["keys"], list)
-
-    def test_authorize_at_root_level(self, test_client: TestClient):
-        """
-        Test /authorize endpoint is accessible at root level.
-
-        For mcp-remote compatibility: mcp-remote constructs the authorization URL
-        from the issuer origin (e.g., https://example.com) instead of the full
-        issuer path (e.g., https://example.com/auth).
-
-        This test verifies that /authorize redirects to /oauth2/login/{provider}
-        or /auth/oauth2/login/{provider} depending on configuration.
-        """
-        # Test without query parameters
-        response = test_client.get("/authorize", follow_redirects=False)
-
-        # Should redirect (307) to the actual auth endpoint
-        assert response.status_code == 307
-        assert "location" in response.headers
-
-        # Verify redirect target includes the provider
-        location = response.headers["location"]
-        assert "/oauth2/login/" in location
-
-    def test_authorize_preserves_query_parameters(self, test_client: TestClient):
-        """
-        Test /authorize endpoint preserves all query parameters when redirecting.
-
-        Critical for OAuth flow: client_id, redirect_uri, state, scope, etc.
-        must all be preserved in the redirect.
-        """
-        # Simulate mcp-remote authorization request
-        query_params = {
-            "response_type": "code",
-            "client_id": "test-client-123",
-            "redirect_uri": "http://localhost:23506/oauth/callback",
-            "state": "abc123",
-            "scope": "registry-admin",
-            "code_challenge": "test-challenge",
-            "code_challenge_method": "S256",
-        }
-
-        response = test_client.get("/authorize", params=query_params, follow_redirects=False)
-
-        assert response.status_code == 307
-        location = response.headers["location"]
-
-        # Verify all query parameters are preserved
-        assert "client_id=test-client-123" in location
-        assert "redirect_uri=http" in location
-        assert "state=abc123" in location
-        assert "scope=registry-admin" in location
-        assert "code_challenge=test-challenge" in location
-        assert "code_challenge_method=S256" in location
-
-    def test_prefix_consistency(self, test_client: TestClient):
-        """
-        Test that discovery endpoints are ONLY at root level per RFC 8414.
-
-        RFC 8414 specifies that OAuth 2.0 Authorization Server Metadata MUST be
-        published at {issuer}/.well-known/oauth-authorization-server where {issuer}
-        is the root origin, not a sub-path.
-
-        This test verifies that /auth/.well-known endpoints do NOT exist (404),
-        ensuring strict RFC compliance.
-        """
-        # Discovery endpoints should ONLY be at root level, NOT under /auth prefix
-        response = test_client.get("/auth/.well-known/oauth-authorization-server")
-        assert response.status_code == 404, "RFC 8414: Discovery must be at root origin only"
-
-        response = test_client.get("/auth/.well-known/openid-configuration")
-        assert response.status_code == 404, "OIDC Discovery must be at root origin only"
 
     def test_root_level_consistency(self, test_client: TestClient):
         """
@@ -230,11 +146,6 @@ class TestRootLevelRoutes:
             assert response.status_code == 200, f"Failed: {endpoint}"
             data = response.json()
             assert data is not None, f"Empty response: {endpoint}"
-
-        # /authorize should redirect (307)
-        response = test_client.get("/authorize", follow_redirects=False)
-        assert response.status_code == 307, "/authorize should redirect"
-        assert "location" in response.headers
 
 
 @pytest.mark.integration

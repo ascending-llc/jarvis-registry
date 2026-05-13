@@ -63,6 +63,7 @@ dev = [
   "mkdocs-material>=9.0.0",
   "mkdocs-git-revision-date-localized-plugin>=1.2.0",
   "mkdocs-minify-plugin>=0.8.0",
+  "types-authlib>=1.6.10.20260414",
 ]
 
 [tool.ruff]
@@ -277,3 +278,4 @@ help = "Schema version tag (e.g. asc0.4.5). Defaults to latest release."
 name = "version"
 positional = true
 default = ""
+

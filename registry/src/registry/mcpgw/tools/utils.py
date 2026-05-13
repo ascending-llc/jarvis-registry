@@ -253,36 +253,29 @@ async def build_authenticated_headers(
         raise InternalServerException("internal server error when building OAuth token on behalf of user")
 
 
-def build_target_url(server: ExtendedMCPServer, remaining_path: str = "") -> str:
+def get_target_url(server: ExtendedMCPServer) -> str:
     """
-    Build complete target URL for proxying to MCP server.
+    Get target MCP server URL for proxying to MCP server.
     Consolidates URL building logic used across all proxy endpoints.
 
     Args:
         server: MCP server document
-        remaining_path: Optional path to append after server base URL
 
     Returns:
-        Complete target URL
+        Target MCP server URL
 
     Raises:
         InternalServerException: If server URL is not configured.
     """
     config = server.config or {}
-    base_url = config.get("url")
+    url = config.get("url")
 
-    if not base_url:
+    if url is None:
+        logger.error(f"Server URL is not configured for server '{server.serverName}'.")
+
         raise InternalServerException("Server URL not configured")
 
-    # If no remaining path, return base URL as-is
-    if not remaining_path:
-        return base_url
-
-    # Ensure base URL has trailing slash before appending path
-    if not base_url.endswith("/"):
-        base_url += "/"
-
-    return base_url + remaining_path
+    return url
 
 
 def parse_elicitation_id(auth_url: str) -> str | None:

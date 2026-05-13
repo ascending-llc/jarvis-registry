@@ -152,7 +152,7 @@ class BaseVectorSyncRepository(Repository[T], ABC):
         return None
 
     @abstractmethod
-    async def sync_to_vector_db(self, entity: Any, *, is_delete: bool = True) -> VectorSyncResult:
+    async def sync_to_vector_db(self, entity: Any, *, is_delete: bool = True) -> dict:
         """Full rebuild — call only when content has changed.
 
         Args:

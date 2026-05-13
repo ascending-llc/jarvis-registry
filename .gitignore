@@ -183,6 +183,9 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 .idea/
 
+# Pycharm run configurations
+.run/
+
 # IDE specific
 /.vscode
 /.claude
@@ -359,3 +362,4 @@ image-manifest.json
 # Artifacts produced by Playwright for frontend test
 /.playwright-cli
 /.playwright
+.gitnexus

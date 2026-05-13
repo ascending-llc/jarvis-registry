@@ -16,10 +16,6 @@ from registry_pkgs.telemetry import setup_metrics
 from .container import AuthContainer
 from .core.config import settings
 
-# Import provider factory
-# Import root-level authorize endpoint
-from .routes.authorize import router as authorize_router
-
 # Import consolidated OAuth routes (device flow + auth code PKCE)
 from .routes.oauth_flow import router as oauth_flow_router
 
@@ -117,7 +113,6 @@ app.add_middleware(
 # Include .well-known routes at root level (for mcp-remote RFC 8414 compliance)
 # mcp-remote strips path when building /.well-known/oauth-authorization-server URL /authorize
 app.include_router(well_known_router, prefix="", tags=["well-known-root"])
-app.include_router(authorize_router, prefix="", tags=["authorize-root"])
 
 # Include consolidated OAuth routes with prefix
 app.include_router(oauth_flow_router, prefix=api_prefix)

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import httpx
 from fastapi import Depends, Request
 from redis import Redis
@@ -26,6 +24,7 @@ from .services.oauth.token_service import TokenService
 from .services.search.base import VectorSearchService
 from .services.server_service import ServerServiceV1
 from .services.user_service import UserService
+from .services.workflow_control_service import WorkflowControlService
 
 
 def get_container(request: Request) -> RegistryContainer:
@@ -119,3 +118,14 @@ def get_federation_sync_service(container: RegistryContainer = Depends(get_conta
 def get_redis_client(container: RegistryContainer = Depends(get_container)) -> Redis:
     """Get Redis client for caching."""
     return container.redis_client
+
+
+def get_workflow_control_service(
+    container: RegistryContainer = Depends(get_container),
+) -> WorkflowControlService:
+    return container.workflow_control_service
+
+
+def check_if_https(request: Request) -> bool:
+    x_forwarded_proto = request.headers.get("x-forwarded-proto", "")
+    return x_forwarded_proto == "https" or request.url.scheme == "https"

@@ -2,19 +2,27 @@ import base64
 import json
 import logging
 import secrets
-import urllib.parse
 from typing import Annotated
+from urllib.parse import quote, urlencode
 
 import httpx
+from authlib.oauth2.rfc7636 import create_s256_code_challenge
 from fastapi import APIRouter, Cookie, Depends, Request, status
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 
+from registry_pkgs.core.jwt_utils import decode_jwt_unverified
 from registry_pkgs.core.scopes import map_groups_to_scopes
 
 from ..core.config import settings
-from ..deps import get_user_service
+from ..deps import check_if_https, get_user_service
 from ..services.user_service import UserService
-from ..utils.crypto_utils import generate_access_token, generate_token_pair, verify_refresh_token
+from ..utils.crypto_utils import (
+    decrypt_value,
+    encrypt_value,
+    generate_access_token,
+    generate_token_pair,
+    verify_refresh_token,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,23 +50,39 @@ async def get_oauth2_providers():
 
 # OAuth2 login redirect avoid /auth/ route collision with auth server
 @router.get("/redirect/{provider}")
-async def oauth2_login_redirect(provider: str, request: Request):
+async def oauth2_login_redirect(provider: str, is_https: bool = Depends(check_if_https)):
     """Redirect to auth server for OAuth2 login"""
     try:
-        # Build redirect URL to auth server - use external URL for browser redirects
-        registry_client_url = settings.registry_client_url
+        # Registry backend receives `code` from auth-server, and calls the /token endpoint of auth-server.
+        # Therefore the redirect URI should be a route on Registry backend.
+        registry_url = settings.registry_url
         auth_external_url = settings.auth_server_external_url
-        state_data = {"nonce": secrets.token_urlsafe(24), "resource": registry_client_url}
+        state_data = {"nonce": secrets.token_urlsafe(24)}
         client_state = base64.urlsafe_b64encode(json.dumps(state_data).encode()).decode().rstrip("=")
-        auth_url = (
-            f"{auth_external_url}/oauth2/login/{provider}?redirect_uri={registry_client_url}&state={client_state}"
-        )
-        logger.info(
-            f"request.base_url: {request.base_url}, registry_url: {registry_client_url}, auth_external_url: {auth_external_url}, auth_url: {auth_url}"
-        )
+        code_verifier = secrets.token_urlsafe(32)
+        code_challenge = create_s256_code_challenge(code_verifier)
+        auth_params = {
+            "response_type": "code",
+            "client_id": settings.registry_app_name,
+            "redirect_uri": settings.registry_redirect_uri,
+            "state": client_state,
+            "code_challenge": code_challenge,
+            "code_challenge_method": "S256",
+            "resource": registry_url,
+        }
+        auth_url = f"{auth_external_url}/oauth2/login/{provider}?{urlencode(auth_params)}"
+        logger.info(f"registry_url: {registry_url}, auth_external_url: {auth_external_url}, auth_url: {auth_url}")
         logger.info(f"Redirecting to OAuth2 login for provider {provider}: {auth_url}")
-        return RedirectResponse(url=auth_url, status_code=302)
-
+        resp = RedirectResponse(url=auth_url, status_code=302)
+        resp.set_cookie(
+            key="registry_oauth2_code_verifier",
+            value=encrypt_value(code_verifier),
+            max_age=settings.oauth_session_ttl_seconds,
+            httponly=True,
+            secure=settings.session_cookie_secure and is_https,
+            samesite="lax",
+        )
+        return resp
     except Exception as e:
         logger.error(f"Error redirecting to OAuth2 login for {provider}: {e}")
         return RedirectResponse(url="/login?error=oauth2_redirect_failed", status_code=302)
@@ -70,7 +94,9 @@ async def oauth2_callback(
     code: str | None = None,
     error: str | None = None,
     details: str | None = None,
+    registry_oauth2_code_verifier: str | None = Cookie(None),
     user_service: UserService = Depends(get_user_service),
+    is_https: bool = Depends(check_if_https),
 ):
     """Handle OAuth2 callback from auth server
     This endpoint receives an authorization code and exchanges it for a JWT access token.
@@ -88,7 +114,7 @@ async def oauth2_callback(
                 error_message = "OAuth2 authentication failed"
 
             return RedirectResponse(
-                url=f"{settings.registry_client_url}/login?error={urllib.parse.quote(error_message)}", status_code=302
+                url=f"{settings.registry_client_url}/login?error={quote(error_message)}", status_code=302
             )
 
         if not code:
@@ -97,19 +123,32 @@ async def oauth2_callback(
                 url=f"{settings.registry_client_url}/login?error=oauth2_missing_code", status_code=302
             )
 
+        if registry_oauth2_code_verifier is None:
+            return RedirectResponse(
+                url=f"{settings.registry_client_url}/login?error=oauth2_missing_code_verifier", status_code=302
+            )
+
+        try:
+            code_verifier = decrypt_value(registry_oauth2_code_verifier)
+        except Exception:
+            logger.exception("failed to decrypt registry_oauth2_code_verifier cookie.")
+
+            return RedirectResponse(
+                url=f"{settings.registry_client_url}/login?error=oauth2_missing_code_verifier", status_code=302
+            )
+
         # Exchange authorization code for JWT access token (standard OAuth2 flow)
         try:
             async with httpx.AsyncClient() as client:
-                auth_server_url = settings.auth_server_url.rstrip("/")
-                registry_redirect_uri = f"{settings.registry_url}/redirect"
-
                 response = await client.post(
-                    f"{auth_server_url}/oauth2/token",
+                    f"{settings.auth_server_url}/oauth2/token",
                     data={
                         "grant_type": "authorization_code",
                         "code": code,
+                        "redirect_uri": settings.registry_redirect_uri,
                         "client_id": settings.registry_app_name,
-                        "redirect_uri": registry_redirect_uri,
+                        "client_secret": settings.registry_client_secret,
+                        "code_verifier": code_verifier,
                     },
                     timeout=10.0,
                 )
@@ -129,9 +168,6 @@ async def oauth2_callback(
                         url=f"{settings.registry_client_url}/login?error=oauth2_invalid_response", status_code=302
                     )
 
-                # Decode JWT to extract user information (no signature verification for internal use)
-                from registry_pkgs.core.jwt_utils import decode_jwt_unverified
-
                 user_claims = decode_jwt_unverified(access_token)
 
                 logger.info(f"OAuth2 callback exchanged code for JWT token: {user_claims.get('sub')}")
@@ -139,8 +175,9 @@ async def oauth2_callback(
         except httpx.TimeoutException:
             logger.error("Timeout exchanging authorization code with auth server")
             return RedirectResponse(url=f"{settings.registry_client_url}/login?error=oauth2_timeout", status_code=302)
-        except Exception as e:
-            logger.error(f"Failed to exchange authorization code for token: {e}")
+        except Exception:
+            logger.exception("Failed to exchange authorization code for token")
+
             return RedirectResponse(
                 url=f"{settings.registry_client_url}/login?error=oauth2_exchange_error", status_code=302
             )
@@ -167,7 +204,7 @@ async def oauth2_callback(
             "scopes": user_claims.get("scope", []),
             "role": user_obj.role,
             "auth_method": "oauth2",
-            "provider": user_claims.get("provider", "unknown"),
+            "provider": user_claims.get("auth_provider", "unknown"),
             "idp_id": user_claims.get("idp_id"),
             "iat": user_claims.get("iat"),
             "exp": user_claims.get("exp"),
@@ -176,15 +213,16 @@ async def oauth2_callback(
         # Generate JWT access and refresh tokens, honoring OAuth token timing
         access_token, refresh_token = generate_token_pair(user_info=user_info)
 
-        response = RedirectResponse(url=settings.registry_client_url.rstrip("/"), status_code=302)
+        resp = RedirectResponse(url=settings.registry_client_url.rstrip("/"), status_code=302)
+
+        # Delete ephemeral cookie that holds PKCE code_verifier.
+        resp.delete_cookie("registry_oauth2_code_verifier")
 
         # Determine cookie security settings
-        x_forwarded_proto = request.headers.get("x-forwarded-proto", "")
-        is_https = x_forwarded_proto == "https" or request.url.scheme == "https"
         cookie_secure = settings.session_cookie_secure and is_https
 
         # Set access token cookie (1 day)
-        response.set_cookie(
+        resp.set_cookie(
             key=settings.session_cookie_name,  # jarvis_registry_session
             value=access_token,
             max_age=86400,  # 1 day in seconds
@@ -195,7 +233,7 @@ async def oauth2_callback(
         )
 
         # Set refresh token cookie (7 days)
-        response.set_cookie(
+        resp.set_cookie(
             key=settings.refresh_cookie_name,
             value=refresh_token,
             max_age=604800,  # 7 days in seconds
@@ -206,10 +244,10 @@ async def oauth2_callback(
         )
 
         # Clean up temporary cookies
-        response.delete_cookie("oauth2_temp_session")
+        resp.delete_cookie("oauth2_temp_session")
 
         logger.info(f"OAuth2 login successful for user {user_obj.username}, JWT tokens set in httpOnly cookies")
-        return response
+        return resp
 
     except Exception as e:
         logger.error(f"Error in OAuth2 callback: {e}")
@@ -218,67 +256,20 @@ async def oauth2_callback(
         )
 
 
-async def logout_handler(
-    request: Request, session: Annotated[str | None, Cookie(alias=settings.session_cookie_name)] = None
-):
-    """Shared logout logic for GET and POST requests"""
-    try:
-        # Check if user was logged in via OAuth2
-        provider = None
-        if session:
-            try:
-                from registry_pkgs.core.jwt_utils import decode_jwt_unverified
-
-                # Peek at claims to check auth method — no verification needed for logout routing
-                claims = decode_jwt_unverified(session)
-
-                if claims.get("auth_method") == "oauth2":
-                    provider = claims.get("provider")
-                    logger.info(f"User was authenticated via OAuth2 provider: {provider}")
-
-            except Exception as e:
-                logger.debug(f"Could not decode JWT for logout: {e}")
-
-        # Clear all authentication cookies
-        response = RedirectResponse(url=f"{settings.registry_client_url}/login", status_code=status.HTTP_303_SEE_OTHER)
-        response.delete_cookie(settings.session_cookie_name, path="/")
-        response.delete_cookie(settings.refresh_cookie_name, path="/")
-
-        # If user was logged in via OAuth2, redirect to provider logout
-        if provider:
-            auth_external_url = settings.auth_server_external_url
-            redirect_uri = f"{settings.registry_client_url}/logout"
-
-            logout_url = f"{auth_external_url}/oauth2/logout/{provider}?redirect_uri={redirect_uri}"
-            logger.info(f"Redirecting to {provider} logout: {logout_url}")
-            response = RedirectResponse(url=logout_url, status_code=status.HTTP_303_SEE_OTHER)
-            response.delete_cookie(settings.session_cookie_name, path="/")
-            response.delete_cookie(settings.refresh_cookie_name, path="/")
-
-        logger.info("User logged out, JWT cookies cleared")
-        return response
-
-    except Exception as e:
-        logger.error(f"Error during logout: {e}")
-        # Fallback to simple logout
-        response = RedirectResponse(url=f"{settings.registry_client_url}/login", status_code=status.HTTP_303_SEE_OTHER)
-        response.delete_cookie(settings.session_cookie_name, path="/")
-        response.delete_cookie(settings.refresh_cookie_name, path="/")
-        return response
-
-
 @router.post("/redirect/logout")
-async def logout_post(
-    request: Request, session: Annotated[str | None, Cookie(alias=settings.session_cookie_name)] = None
-):
-    """Handle logout via POST request (for forms)"""
-    return await logout_handler(request, session)
+async def logout_post():
+    response = Response(status_code=status.HTTP_204_NO_CONTENT)
+    response.delete_cookie(settings.session_cookie_name, path="/")
+    response.delete_cookie(settings.refresh_cookie_name, path="/")
+
+    return response
 
 
 @router.post("/redirect/refresh")
 async def refresh_token(
     request: Request,
     refresh: Annotated[str | None, Cookie(alias="jarvis_registry_refresh")] = None,
+    is_https: bool = Depends(check_if_https),
 ):
     """
     Refresh access token using refresh token from cookie.
@@ -353,8 +344,6 @@ async def refresh_token(
             )
 
             # Determine cookie security settings
-            x_forwarded_proto = request.headers.get("x-forwarded-proto", "")
-            is_https = x_forwarded_proto == "https" or request.url.scheme == "https"
             cookie_secure = settings.session_cookie_secure and is_https
 
             # Create response with new access token
