@@ -406,12 +406,18 @@ async def device_token(request: Request, user_service: UserService = Depends(get
 
         auth_code_data["used"] = True
         user_info = auth_code_data["user_info"]
-        user_groups = user_info.get("groups", [])
-        user_scopes = (
-            map_groups_to_scopes(user_groups, settings.scopes_file_config)
-            if user_groups
-            else user_info.get("scopes", [])
-        )
+
+        # Use resolved scope from authorization code (negotiated in callback)
+        # Fall back to computing from groups for backward compatibility with old codes
+        resolved_scopes = auth_code_data.get("resolved_scope")
+        if resolved_scopes is None:
+            logger.info("No resolved_scope in auth code, computing from groups (backward compatibility)")
+            user_groups = user_info.get("groups", [])
+            resolved_scopes = (
+                map_groups_to_scopes(user_groups, settings.scopes_file_config)
+                if user_groups
+                else user_info.get("scopes", [])
+            )
 
         # Resolve user_id from MongoDB
         user_id = await user_service.resolve_user_id(user_info)
@@ -427,7 +433,7 @@ async def device_token(request: Request, user_service: UserService = Depends(get
                 "idp_id": user_info.get("idp_id"),
                 "user_id": user_id,
                 "client_id": client_id,
-                "scope": " ".join(user_scopes) if isinstance(user_scopes, list) else user_scopes,
+                "scope": " ".join(resolved_scopes) if isinstance(resolved_scopes, list) else resolved_scopes,
                 "groups": user_info.get("groups", []),
                 "token_use": "access",
                 "auth_provider": settings.auth_provider,
@@ -511,12 +517,30 @@ async def device_token(request: Request, user_service: UserService = Depends(get
         )
 
         access_token = encode_jwt(token_payload, PRIVATE_KEY, kid=JWT_SELF_SIGNED_KID)
+
+        # Refresh token rotation: generate new refresh token and delete old one
+        new_refresh_token = secrets.token_urlsafe(32)
+        new_refresh_expires_at = now + 1209600  # Extend by 14 days
+
+        # Store new refresh token with extended expiry
+        refresh_tokens_storage[new_refresh_token] = {
+            "client_id": client_id,
+            "user_info": user_info,
+            "scope": rt_data.get("scope", ""),
+            "expires_at": new_refresh_expires_at,
+        }
+
+        # Delete old refresh token to prevent reuse
+        del refresh_tokens_storage[refresh_token]
+
+        logger.info(f"Rotated refresh token for user: {user_info['username']}")
+
         return DeviceTokenResponse(
             access_token=access_token,
             token_type="Bearer",
             expires_in=3600,
             scope=rt_data.get("scope", ""),
-            refresh_token=refresh_token,
+            refresh_token=new_refresh_token,
         )
 
     return oauth_error_response("unsupported_grant_type", f"grant_type '{grant_type}' is not supported")
@@ -548,6 +572,7 @@ async def oauth2_login(
     redirect_uri: str | None = None,
     resource: str | None = None,
     state: str | None = None,
+    scope: str | None = None,
     oauth2_config: OAuth2Config = Depends(get_oauth2_config),
     signer: URLSafeTimedSerializer = Depends(get_signer),
     is_https: bool = Depends(check_if_https),
@@ -592,6 +617,8 @@ async def oauth2_login(
         }
         if resource:
             session_data["resource"] = resource
+        if scope:
+            session_data["requested_scope"] = scope
 
         temp_session = signer.dumps(session_data)
 
@@ -727,6 +754,48 @@ async def oauth2_callback(
         # Always use OAuth client flow (both external clients and registry)
         client_redirect_uri = session_data["client_redirect_uri"]
 
+        # Resolve scope: intersection of requested scope and user's default scope
+        user_groups = mapped_user.get("groups", [])
+        default_user_scopes = (
+            map_groups_to_scopes(user_groups, settings.scopes_file_config)
+            if user_groups
+            else mapped_user.get("scopes", [])
+        )
+
+        requested_scope_str = session_data.get("requested_scope")
+        if requested_scope_str:
+            # Client requested specific scopes, compute intersection
+            requested_scopes = requested_scope_str.split()
+            resolved_scopes = [s for s in requested_scopes if s in default_user_scopes]
+
+            if not resolved_scopes:
+                # Intersection is empty, return error
+                error_params = {
+                    "error": "invalid_scope",
+                    "error_description": "Requested scopes are not available for this user",
+                }
+                client_state = session_data.get("client_state")
+                if client_state:
+                    error_params["state"] = client_state
+
+                redirect_url = f"{client_redirect_uri}?{urlencode(error_params)}"
+                logger.warning(
+                    f"Scope negotiation failed for user {mapped_user['username']}: "
+                    f"requested={requested_scopes}, available={default_user_scopes}"
+                )
+                response = RedirectResponse(url=redirect_url, status_code=302)
+                response.delete_cookie("oauth2_temp_session")
+                return response
+
+            logger.info(
+                f"Scope negotiation successful: requested={requested_scopes}, "
+                f"available={default_user_scopes}, resolved={resolved_scopes}"
+            )
+        else:
+            # Client did not request specific scopes, use default user scopes
+            resolved_scopes = default_user_scopes
+            logger.info(f"No scope requested, using default user scopes: {resolved_scopes}")
+
         # Generate authorization code for OAuth client flow
         cleanup_expired_authorization_codes()
 
@@ -745,6 +814,7 @@ async def oauth2_callback(
             "redirect_uri": client_redirect_uri,
             "resource": session_data.get("resource"),
             "created_at": current_time,
+            "resolved_scope": resolved_scopes,
         }
 
         redirect_params = {"code": authorization_code}
