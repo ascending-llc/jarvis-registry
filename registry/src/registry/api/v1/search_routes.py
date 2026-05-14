@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 EntityType = Literal["mcp_server", "tool", "a2a_agent"]
-SearchEntityType = MCPEntityType | A2AEntityType
+type SearchEntityType = MCPEntityType | A2AEntityType
 
 
 class MatchingToolResult(APIBaseModel):
@@ -259,7 +259,7 @@ class SearchRequest(BaseModel):
     query: str = Field(default="", min_length=0, max_length=512, description="Natural language query")
     top_n: int = Field(1, description="Number of results to return")
     search_type: SearchType = Field(default=SearchType.HYBRID, description="Type of search to perform")
-    type_list: list[SearchEntityType] | None = Field(
+    type_list: list[SearchEntityType] = Field(
         default_factory=lambda: list(MCPEntityType),
         description=(
             "Entity types to search. MCP supports 'tool', 'resource', 'prompt'. "
@@ -337,7 +337,7 @@ async def search_entities_impl(
     results_count = 0
     search_results: list = []
 
-    all_types = search.type_list or (list(MCPEntityType) + list(A2AEntityType))
+    all_types = search.type_list
     mcp_types: list[MCPEntityType] = [t for t in all_types if isinstance(t, MCPEntityType)]
     a2a_types: list[A2AEntityType] = [t for t in all_types if isinstance(t, A2AEntityType)]
 
