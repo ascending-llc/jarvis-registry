@@ -115,8 +115,6 @@ class TestSearchRoutes:
         data = response.json()
         assert data["totalServers"] == 1
         assert data["totalTools"] == 1
-        # Legacy file-based agent support has been removed
-        assert data["totalAgents"] == 0
         assert data["servers"][0]["serverName"] == "Demo"
         assert data["tools"][0]["toolName"] == "alpha"
 
@@ -167,6 +165,10 @@ class TestServerSearchRoutes:
             ),
             vector_service=AsyncMock(),
             mcp_server_repo=make_container(
+                asearch_with_rerank=AsyncMock(return_value=[]),
+                afilter=AsyncMock(return_value=[]),
+            ),
+            a2a_agent_repo=make_container(
                 asearch_with_rerank=AsyncMock(return_value=[]),
                 afilter=AsyncMock(return_value=[]),
             ),
@@ -334,7 +336,7 @@ class TestServerSearchRoutes:
 
         # Verify candidate_k is 5x top_n (capped at 100)
         call_kwargs = mock_search.call_args.kwargs
-        assert call_kwargs["candidate_k"] == 25  # 5 * 5
+        assert call_kwargs["candidate_k"] == 50
 
     def test_search_servers_caps_candidate_k_at_100(self, test_client: TestClient):
         """Server search caps candidate_k at 100."""

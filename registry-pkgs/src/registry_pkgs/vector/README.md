@@ -156,8 +156,7 @@ class VectorSyncResult:
     error: str | None = None
 ```
 
-- `.to_dict()` — A2A format (`indexed`, `failed`, ...)
-- `.to_dict_mcp()` — MCP format (`indexed_tools`, `failed_tools`, ...)
+- `.to_dict()` — Serialized result format (`indexed`, `failed`, `deleted`, `metadata_updated`, `version`, `error`)
 
 ---
 

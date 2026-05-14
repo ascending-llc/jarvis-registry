@@ -2,6 +2,7 @@ import httpx
 from fastapi import Depends, Request
 from redis import Redis
 
+from registry_pkgs.vector.repositories.a2a_agent_repository import A2AAgentRepository
 from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRepository
 from registry_pkgs.workflows.runner import WorkflowRunner
 
@@ -38,6 +39,10 @@ def get_vector_service(container: RegistryContainer = Depends(get_container)) ->
 
 def get_mcp_server_repo(container: RegistryContainer = Depends(get_container)) -> MCPServerRepository:
     return container.mcp_server_repo
+
+
+def get_a2a_agent_repo(container: RegistryContainer = Depends(get_container)) -> A2AAgentRepository:
+    return container.a2a_agent_repo
 
 
 def get_session_store(container: RegistryContainer = Depends(get_container)) -> SessionStore:

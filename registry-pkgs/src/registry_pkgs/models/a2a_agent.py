@@ -68,6 +68,7 @@ from langchain_core.documents import Document as LangChainDocument
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 from pymongo import IndexModel
 
+from .enums import A2AEntityType
 from .federation import AgentCoreRuntimeAccessConfig
 
 logger = logging.getLogger(__name__)
@@ -223,41 +224,63 @@ class A2AAgent(Document):
     COLLECTION_NAME: ClassVar[str] = "A2a_agents"
 
     def to_searchable_text(self) -> str:
-        """
-        Generate searchable text for vector embedding.
+        """Generate searchable text for vector embedding.
 
-        Returns:
-            Combined text representation of agent for embedding
+        Includes all natural-language and structured fields from the AgentCard
+        so that semantic discovery covers capabilities, transport, I/O modes,
+        security scheme names, and skill details — not just title/description.
         """
-        # Backward compatibility: if config is None, use card data
         title = self.config.title if self.config else self.card.name
-        description = self.config.description if self.config else self.card.description
-        transport = self.config.type if self.config else "unknown"
+        # Prefer the registry-provided description; fall back to the card description.
+        description = (self.config.description if self.config else None) or self.card.description or ""
+        # Include card name only when it differs from the display title (e.g. slug vs human name).
+        card_name = self.card.name
+        parts = [f"Title: {title}"]
+        if card_name and card_name != title:
+            parts.append(f"Name: {card_name}")
+        if description:
+            parts.append(f"Description: {description}")
+        parts.append(f"Path: {self.path}")
 
-        parts = [
-            f"Title: {title}",
-            f"Card Name: {self.card.name}",
-            f"Description: {description}",
-            f"Card Description: {self.card.description}",
-            f"Path: {self.path}",
-            f"Transport: {transport}",
-        ]
+        # Protocol and transport info — helps queries like "find me a streaming agent"
+        if self.card.protocol_version:
+            parts.append(f"Protocol Version: {self.card.protocol_version}")
+        if self.card.preferred_transport:
+            parts.append(f"Preferred Transport: {self.card.preferred_transport}")
+        if self.card.default_input_modes:
+            parts.append(f"Input Modes: {', '.join(self.card.default_input_modes)}")
+        if self.card.default_output_modes:
+            parts.append(f"Output Modes: {', '.join(self.card.default_output_modes)}")
 
-        # Add skill information
+        # Capabilities — searchable by feature name
+        if self.card.capabilities:
+            cap = self.card.capabilities
+            cap_parts: list[str] = []
+            if getattr(cap, "streaming", False):
+                cap_parts.append("streaming")
+            if getattr(cap, "push_notifications", False):
+                cap_parts.append("push notifications")
+            if getattr(cap, "state_transition_history", False):
+                cap_parts.append("state transition history")
+            if cap_parts:
+                parts.append(f"Capabilities: {', '.join(cap_parts)}")
+
+        # Security scheme names — helps queries like "find me an OAuth agent"
+        if self.card.security_schemes:
+            scheme_names = list(self.card.security_schemes.keys())
+            if scheme_names:
+                parts.append(f"Security Schemes: {', '.join(scheme_names)}")
+
         if self.card.skills:
             skills_text = "\n".join(
-                [
-                    f"Skill {i + 1}: {skill.name} - {skill.description} (Tags: {', '.join(skill.tags or [])})"
-                    for i, skill in enumerate(self.card.skills)
-                ]
+                f"Skill {i + 1}: {skill.name} - {skill.description} (Tags: {', '.join(skill.tags or [])})"
+                for i, skill in enumerate(self.card.skills)
             )
             parts.append(f"Skills:\n{skills_text}")
 
-        # Add tags
         if self.tags:
             parts.append(f"Tags: {', '.join(self.tags)}")
 
-        # Add provider info
         if self.card.provider:
             parts.append(f"Provider: {self.card.provider.organization}")
 
@@ -299,7 +322,7 @@ class A2AAgent(Document):
                 page_content=self.to_searchable_text(),
                 metadata={
                     **base_metadata,
-                    "entity_type": "agent",
+                    "entity_type": A2AEntityType.AGENT,
                 },
             )
         ]
@@ -308,20 +331,31 @@ class A2AAgent(Document):
             skill_name = getattr(skill, "name", "") or ""
             skill_desc = getattr(skill, "description", "") or ""
             skill_tags = getattr(skill, "tags", None) or []
+            skill_input_modes = getattr(skill, "input_modes", None) or []
+            skill_output_modes = getattr(skill, "output_modes", None) or []
+            skill_examples = getattr(skill, "examples", None) or []
             # Backward compatibility: if config is None, use card data
             agent_display_name = self.config.title if self.config else self.card.name
-            content = (
-                f"Agent: {agent_display_name}\n"
-                f"Skill: {skill_name}\n"
-                f"Description: {skill_desc}\n"
-                f"Tags: {', '.join(skill_tags)}"
-            )
+            skill_parts = [
+                f"Agent: {agent_display_name}",
+                f"Skill: {skill_name}",
+            ]
+            if skill_desc:
+                skill_parts.append(f"Description: {skill_desc}")
+            if skill_tags:
+                skill_parts.append(f"Tags: {', '.join(skill_tags)}")
+            if skill_input_modes:
+                skill_parts.append(f"Input Modes: {', '.join(skill_input_modes)}")
+            if skill_output_modes:
+                skill_parts.append(f"Output Modes: {', '.join(skill_output_modes)}")
+            if skill_examples:
+                skill_parts.append(f"Examples: {' | '.join(skill_examples[:3])}")
             docs.append(
                 LangChainDocument(
-                    page_content=content,
+                    page_content="\n".join(skill_parts),
                     metadata={
                         **base_metadata,
-                        "entity_type": "skill",
+                        "entity_type": A2AEntityType.SKILL,
                         "skill_name": skill_name,
                     },
                 )
@@ -329,13 +363,29 @@ class A2AAgent(Document):
 
         return docs
 
+    def mutable_metadata(self) -> dict[str, Any]:
+        """Return metadata fields that can change without affecting page_content.
+
+        agent_name and path are intentionally excluded: both appear in page_content,
+        so changing either always changes vectorContentHash and triggers a full rebuild.
+        """
+        meta: dict[str, Any] = {
+            "enabled": self.isEnabled,
+            "tags": self.tags or [],
+        }
+        fed = self.federationMetadata or {}
+        for key in ("runtimeVersion", "agentVersion"):
+            value = fed.get(key)
+            if value is not None:
+                meta[key] = str(value)
+        return meta
+
     @classmethod
     def from_document(cls, document: LangChainDocument) -> dict[str, Any]:
-        """
-        Extract minimal metadata from vector document.
-        """
+        """Extract metadata from vector document for chat-interface discovery."""
         metadata = document.metadata or {}
-        return {
+        raw_score = metadata.get("relevance_score")
+        result: dict[str, Any] = {
             "agent_id": metadata.get("agent_id"),
             "agent_name": metadata.get("agent_name"),
             "path": metadata.get("path"),
@@ -343,7 +393,11 @@ class A2AAgent(Document):
             "skill_name": metadata.get("skill_name"),
             "enabled": metadata.get("enabled"),
             "content": document.page_content,
+            "relevance_score": round(float(raw_score), 3) if raw_score is not None else None,
+            "description": document.page_content,
+            "tags": metadata.get("tags") or [],
         }
+        return result
 
     def is_accessible_by_user(self, username: str, user_groups: list[str], is_admin: bool = False) -> bool:
         """

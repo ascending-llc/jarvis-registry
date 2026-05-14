@@ -144,7 +144,7 @@ async def test_a2a_update_entity_metadata_patches_all_matching_docs():
     ]
     repo = _make_a2a_repo(docs)
 
-    result = await repo.update_entity_metadata("agent_id", "agent-1", {"is_enabled": False})
+    result = await repo.update_entity_metadata("agent_id", "agent-1", {"enabled": False})
 
     assert result.metadata_updated == 2
     assert result.error is None
@@ -188,7 +188,7 @@ async def test_update_entity_metadata_skips_when_adapter_lacks_update_metadata()
 
     repo = A2AAgentRepository(SimpleNamespace(adapter=_LegacyAdapter()))
 
-    result = await repo.update_entity_metadata("agent_id", "a", {"is_enabled": True})
+    result = await repo.update_entity_metadata("agent_id", "a", {"enabled": True})
 
     assert result.metadata_updated == 0
     assert result.error is None
@@ -197,19 +197,19 @@ async def test_update_entity_metadata_skips_when_adapter_lacks_update_metadata()
 @pytest.mark.asyncio
 async def test_mcp_delete_by_server_id_returns_count():
     """delete_by_server_id returns the total number of docs removed across all entity types."""
-    from registry_pkgs.models.enums import ServerEntityType
+    from registry_pkgs.models.enums import MCPEntityType
 
     # Create one doc per entity_type so each loop iteration removes one
     docs = [
         Document(page_content="t", metadata={"server_id": "srv-1", "entity_type": et.value}, id=f"id-{et.value}")
-        for et in ServerEntityType
+        for et in MCPEntityType
     ]
     repo = _make_mcp_repo(docs)
 
     count = await repo.delete_by_server_id("srv-1", "demo-server")
 
-    assert count == len(list(ServerEntityType))
-    assert repo.adapter.deleted_ids == [f"id-{et.value}" for et in ServerEntityType]
+    assert count == len(list(MCPEntityType))
+    assert repo.adapter.deleted_ids == [f"id-{et.value}" for et in MCPEntityType]
 
 
 @pytest.mark.asyncio

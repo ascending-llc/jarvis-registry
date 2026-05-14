@@ -103,7 +103,7 @@ class ExternalVectorSearchService(VectorSearchService):
 
     async def add_or_update_service(
         self, service_path: str, server_info: dict[str, Any], is_enabled: bool = False
-    ) -> dict[str, int] | None:
+    ) -> dict[str, Any] | None:
         """
         Add or update server in vector database.
 
@@ -120,12 +120,11 @@ class ExternalVectorSearchService(VectorSearchService):
 
             # Use specialized repository's sync method
             result = await self.mcp_server_repo.sync_to_vector_db(server=server, is_delete=True)
-
-            return result if result else {"indexed_tools": 0, "failed_tools": 1}
+            return result.to_dict()
 
         except Exception as e:
             logger.error(f"Failed to add/update service: {e}", exc_info=True)
-            return {"indexed_tools": 0, "failed_tools": 1}
+            return {"indexed": 0, "failed": 1, "deleted": 0, "metadata_updated": 0, "version": None, "error": str(e)}
 
     async def remove_service(self, service_path: str) -> dict[str, int] | None:
         """

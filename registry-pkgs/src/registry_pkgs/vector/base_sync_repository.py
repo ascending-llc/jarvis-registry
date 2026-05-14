@@ -12,6 +12,8 @@ T = TypeVar("T", bound=VectorStorable)
 
 logger = logging.getLogger(__name__)
 
+_MAX_METADATA_DOCS = 10_000
+
 
 class BaseVectorSyncRepository(Repository[T], ABC):
     """Shared sync infrastructure for A2A and MCP vector repositories.
@@ -86,7 +88,7 @@ class BaseVectorSyncRepository(Repository[T], ABC):
 
             existing_docs = self.adapter.filter_by_metadata(
                 filters={entity_id_field: entity_id},
-                limit=10000,
+                limit=_MAX_METADATA_DOCS,
                 collection_name=self.collection,
             )
             if not existing_docs:
@@ -133,6 +135,21 @@ class BaseVectorSyncRepository(Repository[T], ABC):
             )
             result.error = str(e)
         return result
+
+    @staticmethod
+    def _extract_runtime_version(
+        federation_metadata: dict | None,
+        fallback_keys: tuple[str, ...] = ("runtimeVersion",),
+    ) -> str | None:
+        """Extract a runtime/agent version string from federationMetadata.
+
+        Tries each key in *fallback_keys* in order and returns the first non-None value.
+        """
+        for key in fallback_keys:
+            value = (federation_metadata or {}).get(key)
+            if value is not None:
+                return str(value)
+        return None
 
     @abstractmethod
     async def sync_to_vector_db(self, entity: Any, *, is_delete: bool = True) -> dict:
