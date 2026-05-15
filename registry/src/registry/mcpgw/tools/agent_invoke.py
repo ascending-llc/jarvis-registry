@@ -63,8 +63,12 @@ def _convert_artifacts(result: A2ACallResult) -> list[EmbeddedResource | TextCon
                         ),
                     )
                 )
+            else:
+                logger.warning("Skipping unsupported A2A FilePart payload type: %s", type(f).__name__)
         elif isinstance(root, DataPart):
             items.append(TextContent(type="text", text=json.dumps(root.data, default=str)))
+        else:
+            logger.warning("Skipping unsupported A2A artifact root type: %s", type(root).__name__)
     return items
 
 
