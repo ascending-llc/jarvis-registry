@@ -1,7 +1,7 @@
 <div align="center">
 <img src="img/jarvis_vertical_logo_w_text_light_bkg.svg" alt="Jarvis Registry Logo" width="2000" height="480" style="width:100%;height:auto;">
 
-**Connect any AI copilot or autonomous agent to your enterprise tools — through a single, secure MCP gateway with built-in identity, access control, and full observability.**
+**Connect any AI copilot or autonomous agent to your enterprise tools — through a single, secure gateway with protocol-compliant MCP and A2A support, built-in identity governance, and full observability.**
 
 </div>
 
@@ -32,14 +32,14 @@ Whether you are plugging your favorite AI copilot (Claude, OpenAI, or Jarvis Cha
 
 | Capability | Description |
 |---|---|
-| **Gateway & Reverse Proxy** | Single authenticated entry point for all AI clients and agents using MCP/Agent over SSE or Streamable HTTP |
-| **AI Copilot Integration** | Connect Cursor, Claude Desktop, GitHub Copilot, VS Code, and any MCP-compatible copilot to enterprise tools |
-| **A2A Agent Workflow** | Register and manage autonomous agents; orchestrator agents coordinate worker agents through the same secure gateway |
-| **Identity & Access Management** | OAuth 2.0/OIDC with Keycloak, Amazon Cognito, and Microsoft Entra ID — no custom auth code needed |
-| **Fine-Grained Access Control** | ACL engine enforces scope-based, role-based permissions down to the individual tool level |
-| **Skill & Context-Based Discovery** | Semantic search over skills, descriptions, and tags so agents and copilots find the right MCP server or A2A agent at runtime |
-| **Service Registry** | Centralized catalog of all registered MCP servers, tools, and agent capabilities |
-| **Audit & Observability** | Full request logging, OpenTelemetry tracing, and Prometheus metrics |
+| [**Gateway & Proxy**](FEATURES.md#1-gateway-proxy) | Single authenticated entry point for all AI clients and agents — supports MCP transports (SSE, Streamable HTTP) and A2A agent transports (JSON-RPC 2.0 over HTTP, HTTP+JSON); routing, rate limiting, and policy enforcement flow directly from the Registry |
+| [**Registry**](FEATURES.md#2-registry) | Compliance enforcement layer for MCP servers and A2A agents — validates AgentCard schema, MCP tool declarations, and transport compliance (JSON-RPC 2.0, HTTP+JSON); tracks A2A spec version per agent and stores custom discovery paths and auth prerequisites; the single source of truth the gateway derives every invocation decision from |
+| [**AI Copilot Integration**](FEATURES.md#1-gateway-proxy) | Connect Cursor, Claude Desktop, GitHub Copilot, VS Code, and any MCP-compatible copilot to enterprise tools |
+| [**Skill & Context-Based Discovery**](FEATURES.md#4-skill-context-based-discovery) | Semantic search over skills, descriptions, and tags so agents and copilots find the right MCP server or A2A agent at runtime |
+| [**A2A Agent Workflow**](FEATURES.md#5-a2a-agent-workflow-orchestration) | Register and manage autonomous agents; orchestrator agents coordinate worker agents through the same secure gateway |
+| [**Identity & Access Management**](FEATURES.md#3-identity-access-management) | Governance enforcement layer that sits above your IdP (Keycloak, Cognito, Entra ID, Okta) — manages per-agent OAuth 2.0/OIDC auth prerequisites, Client Credentials (M2M) flows, and RBAC mappings, then propagates the enforced policy to the gateway |
+| [**Fine-Grained Access Control**](FEATURES.md#3-identity-access-management) | ACL engine enforces scope-based, role-based permissions down to the individual tool level |
+| [**Audit & Observability**](FEATURES.md#6-observability-with-opentelemetry) | Full request logging, OpenTelemetry tracing, and Prometheus metrics |
 
 ---
 
@@ -77,7 +77,7 @@ flowchart LR
     end
 
     Copilot -->|"MCP / SSE / Streamable HTTP"| Discovery
-    A2AAgent -->|"A2A Protocol"| Discovery
+    A2AAgent -->|"A2A / JSON-RPC 2.0 / HTTP+JSON"| Discovery
 
     Discovery --> Workflow
     Discovery --> Security

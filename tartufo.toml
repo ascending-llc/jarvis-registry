@@ -9,6 +9,7 @@ exclude-path-patterns = [
     {path-pattern = 'tartufo\.toml$', reason = 'Tartufo config file'},
     {path-pattern = '.*\.svg$', reason = 'SVG assets are static images and can trigger entropy false positives'},
     {path-pattern = 'docs/llms\.txt$', reason = 'llms.txt is a plain-text LLM index file with no credentials'},
+    {path-pattern = 'docs/design/.*', reason = 'API design documents contain example IDs and placeholder values, not real credentials'},
     {path-pattern = '^\.env\.example$', reason = 'sample env template with placeholder values'},
 ]
 

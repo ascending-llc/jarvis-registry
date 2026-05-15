@@ -4,6 +4,7 @@ from redis import Redis
 
 from registry_pkgs.vector.repositories.a2a_agent_repository import A2AAgentRepository
 from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRepository
+from registry_pkgs.workflows.runner import WorkflowRunner
 
 from .auth.oauth.reconnection import OAuthReconnectionManager
 from .container import RegistryContainer
@@ -25,6 +26,7 @@ from .services.search.base import VectorSearchService
 from .services.server_service import ServerServiceV1
 from .services.user_service import UserService
 from .services.workflow_control_service import WorkflowControlService
+from .services.workflow_service import WorkflowService
 
 
 def get_container(request: Request) -> RegistryContainer:
@@ -129,3 +131,12 @@ def get_workflow_control_service(
 def check_if_https(request: Request) -> bool:
     x_forwarded_proto = request.headers.get("x-forwarded-proto", "")
     return x_forwarded_proto == "https" or request.url.scheme == "https"
+
+
+def get_workflow_service(container: RegistryContainer = Depends(get_container)) -> WorkflowService:
+    return container.workflow_service
+
+
+def get_workflow_runner(container: RegistryContainer = Depends(get_container)) -> WorkflowRunner:
+    """Get WorkflowRunner instance."""
+    return container.workflow_runner
