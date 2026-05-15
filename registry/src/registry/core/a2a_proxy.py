@@ -10,7 +10,7 @@ class AuthServerJwtAuth(Auth):
         super().__init__()
 
         self._ttl_seconds = expires_in_seconds
-        self._leeway: int = 300
+        self._leeway: int = 60  # Try to refresh JWT 1 min before expiration.
 
         self._sign_jwt()
 
@@ -37,7 +37,7 @@ class A2AProxyClientRegistry:
 
         self._dict: dict[str, AsyncClient] = {}
 
-    def get(self, agent_slug: str, *, agentcore_jwt: bool = True) -> AsyncClient:
+    def get(self, agent_slug: str, *, agentcore_jwt: bool = False) -> AsyncClient:
         if agent_slug in self._dict:
             return self._dict[agent_slug]
 

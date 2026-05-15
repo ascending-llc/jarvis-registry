@@ -364,6 +364,12 @@ async def _forward_a2a(
     agent_slug: str,
     is_jsonrpc: bool = False,
 ) -> Response:
+    """
+    For AgentCore Runtime agent with JWT inbound auth, AuthServerJwtAuth transparently swap our JWT into the Authorization header.
+    **For other agents, we simply pass the Authorization header through.** We might change this when the use case of A2A
+    is more clear in the future. As things stand now, non-AgentCore agents should be rare.
+    """
+
     headers = dict(request.headers)
     headers.pop("host", None)
 
@@ -371,12 +377,10 @@ async def _forward_a2a(
     params = request.query_params
 
     try:
+        # Use 5 min timeout when forwarding GET stream.
+        # NOTE: This applies to one read operation, i.e. one async loop in the `backend_response.aiter_bytes()` below.
         stream_context = proxy_client.stream(
-            request.method,
-            target_url,
-            headers=headers,
-            content=body,
-            params=params,
+            request.method, target_url, headers=headers, content=body, params=params, timeout=httpx.Timeout(300)
         )
         backend_response = await stream_context.__aenter__()
 
@@ -491,7 +495,7 @@ async def jsonrpc_proxy(
                 required_permission="VIEW",
             )
         except HTTPException:
-            return _jsonrpc_a2a_error_response(-32603, f"Access denied to A2A agent '{agent_slug}'")
+            return _jsonrpc_a2a_error_response(-32001, f"Access denied to A2A agent '{agent_slug}'")
 
         if not agent.isEnabled:
             return _jsonrpc_a2a_error_response(-32004, f"A2A agent '{agent_slug}' is disabled")
