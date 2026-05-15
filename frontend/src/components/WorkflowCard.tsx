@@ -5,72 +5,71 @@ import {
   QueueListIcon,
 } from '@heroicons/react/24/outline';
 import type React from 'react';
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import IconButton from '@/components/IconButton';
+import { useGlobal } from '@/contexts/GlobalContext';
+import { useServer } from '@/contexts/ServerContext';
+import SERVICES from '@/services';
+import type { WorkflowItem } from '@/services/workflow/type';
 import UTILS from '@/utils';
 
-/**
- * Temporary interface for Workflow.
- * You should ideally move this to a types file (e.g., src/services/workflow/type.ts)
- */
-export interface Workflow {
-  id: string;
-  name: string;
-  type: 'autonomous' | 'supervised';
-  description: string;
-  lastRunAt?: string;
-  runCount: number;
-  nodeCount: number;
-  enabled: boolean;
-  status?: 'active' | 'inactive' | 'error';
-  permissions?: {
-    VIEW?: boolean;
-    EDIT?: boolean;
-  };
-}
+export type { WorkflowItem as Workflow };
 
 interface WorkflowCardProps {
-  workflow: Workflow;
-  onToggle?: (id: string, enabled: boolean) => void;
-  onEdit?: (workflow: Workflow) => void;
+  workflow: WorkflowItem;
+  onEdit?: (workflow: WorkflowItem) => void;
 }
 
-const WorkflowCard: React.FC<WorkflowCardProps> = ({
-  workflow,
-  onToggle,
-  onEdit,
-}) => {
+const WorkflowCard: React.FC<WorkflowCardProps> = ({ workflow, onEdit }) => {
   const navigate = useNavigate();
+  const { showToast } = useGlobal();
+  const { handleWorkflowUpdate, refreshWorkflowData } = useServer();
+  const [loading, setLoading] = useState(false);
   const canEdit = !!workflow.permissions?.EDIT;
+
+  const encodedName = encodeURIComponent(workflow.name);
 
   const handleEditClick = (e: React.MouseEvent) => {
     e.stopPropagation();
     if (onEdit) {
       onEdit(workflow);
     } else {
-      navigate(`/workflow-edit?id=${workflow.id}`);
+      navigate(`/workflow-edit?id=${workflow.id}&name=${encodedName}`);
     }
   };
 
   const handleViewClick = () => {
-    if (workflow.permissions?.VIEW) {
-      navigate(`/workflow-edit?id=${workflow.id}&isReadOnly=true`);
-    }
+    navigate(`/workflow-edit?id=${workflow.id}&name=${encodedName}&isReadOnly=true`);
   };
 
-  const handleToggle = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleToggle = async (e: React.ChangeEvent<HTMLInputElement>) => {
     e.stopPropagation();
     if (!canEdit) return;
-    onToggle?.(workflow.id, e.target.checked);
+    const enabled = e.target.checked;
+    try {
+      setLoading(true);
+      await SERVICES.WORKFLOW.toggleWorkflowState(workflow.id, { enabled });
+      handleWorkflowUpdate(workflow.id, { enabled });
+      showToast(`Workflow ${enabled ? 'enabled' : 'disabled'} successfully!`, 'success');
+      await refreshWorkflowData(true);
+    } catch (error: any) {
+      const errorMessage = error?.detail?.message || (typeof error?.detail === 'string' ? error.detail : '');
+      showToast(errorMessage || 'Failed to toggle workflow', 'error');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const isAutonomous = workflow.type === 'autonomous';
 
   return (
-    <div
-      className='group relative flex h-full flex-col rounded-2xl border border-[color:var(--jarvis-border)] bg-[var(--jarvis-card)] shadow-sm transition-all duration-300 hover:-translate-y-1 hover:border-[color:var(--jarvis-border-strong)] hover:shadow-xl'
-    >
-
+    <div className='group relative flex h-full flex-col rounded-2xl border border-[color:var(--jarvis-border)] bg-[var(--jarvis-card)] shadow-sm transition-all duration-300 hover:-translate-y-1 hover:border-[color:var(--jarvis-border-strong)] hover:shadow-xl'>
+      {loading && (
+        <div className='absolute inset-0 z-10 flex items-center justify-center rounded-2xl bg-[var(--jarvis-overlay)] backdrop-blur-sm'>
+          <div className='h-8 w-8 animate-spin rounded-full border-b-2 border-[var(--jarvis-spinner)]' />
+        </div>
+      )}
 
       <div className='p-4 pb-3'>
         {/* Header */}
@@ -89,17 +88,15 @@ const WorkflowCard: React.FC<WorkflowCardProps> = ({
           </div>
 
           <div className='flex flex-shrink-0 gap-0.5'>
-            {canEdit && (
-              <IconButton
-                ariaLabel='Edit workflow'
-                tooltip='Edit'
-                onClick={handleEditClick}
-                size='card'
-                className='text-[var(--jarvis-icon)] hover:bg-[var(--jarvis-primary-soft)] hover:text-[var(--jarvis-icon-hover)]'
-              >
-                <PencilSquareIcon className='h-3.5 w-3.5' />
-              </IconButton>
-            )}
+            <IconButton
+              ariaLabel='Edit workflow'
+              tooltip='Edit'
+              onClick={handleEditClick}
+              size='card'
+              className='text-[var(--jarvis-icon)] hover:bg-[var(--jarvis-primary-soft)] hover:text-[var(--jarvis-icon-hover)]'
+            >
+              <PencilSquareIcon className='h-3.5 w-3.5' />
+            </IconButton>
           </div>
         </div>
 
@@ -132,16 +129,12 @@ const WorkflowCard: React.FC<WorkflowCardProps> = ({
           </div>
           <div className='flex items-center gap-1.5'>
             <ChartBarIcon className='h-[13px] w-[13px] text-[var(--jarvis-muted)]' />
-            <span className='text-[12.5px] font-semibold text-[var(--jarvis-text)]'>
-              {workflow.runCount}
-            </span>
+            <span className='text-[12.5px] font-semibold text-[var(--jarvis-text)]'>{workflow.runCount}</span>
             <span className='text-[11px] text-[var(--jarvis-muted)]'>runs</span>
           </div>
           <div className='flex items-center gap-1.5'>
             <QueueListIcon className='h-[13px] w-[13px] text-[var(--jarvis-muted)]' />
-            <span className='text-[12.5px] font-semibold text-[var(--jarvis-text)]'>
-              {workflow.nodeCount}
-            </span>
+            <span className='text-[12.5px] font-semibold text-[var(--jarvis-text)]'>{workflow.nodeCount}</span>
             <span className='text-[11px] text-[var(--jarvis-muted)]'>nodes</span>
           </div>
         </div>
@@ -162,34 +155,30 @@ const WorkflowCard: React.FC<WorkflowCardProps> = ({
           </span>
         </div>
 
-        <div className='flex items-center gap-2'>
-          <label
-            className={`relative inline-flex items-center ${
-              canEdit ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'
+        <label
+          className={`relative inline-flex items-center ${canEdit ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'}`}
+          title={canEdit ? 'Toggle workflow status' : 'No edit permission'}
+          onClick={e => e.stopPropagation()}
+        >
+          <input
+            type='checkbox'
+            checked={workflow.enabled}
+            onChange={handleToggle}
+            disabled={!canEdit || loading}
+            className='peer sr-only'
+          />
+          <div
+            className={`relative h-4 w-7 rounded-full transition-colors duration-200 ease-in-out ${
+              workflow.enabled ? 'bg-[var(--jarvis-primary)]' : 'bg-[var(--jarvis-faint)]'
             }`}
-            title={canEdit ? 'Toggle workflow status' : 'No edit permission'}
-            onClick={(e) => e.stopPropagation()}
           >
-            <input
-              type='checkbox'
-              checked={workflow.enabled}
-              onChange={handleToggle}
-              disabled={!canEdit}
-              className='peer sr-only'
-            />
             <div
-              className={`relative h-4 w-7 rounded-full transition-colors duration-200 ease-in-out ${
-                workflow.enabled ? 'bg-[var(--jarvis-primary)]' : 'bg-[var(--jarvis-faint)]'
+              className={`absolute left-0 top-0.5 h-3 w-3 rounded-full bg-white transition-transform duration-200 ease-in-out ${
+                workflow.enabled ? 'translate-x-3.5' : 'translate-x-0.5'
               }`}
-            >
-              <div
-                className={`absolute left-0 top-0.5 h-3 w-3 rounded-full bg-white transition-transform duration-200 ease-in-out ${
-                  workflow.enabled ? 'translate-x-3.5' : 'translate-x-0.5'
-                }`}
-              />
-            </div>
-          </label>
-        </div>
+            />
+          </div>
+        </label>
       </div>
     </div>
   );
