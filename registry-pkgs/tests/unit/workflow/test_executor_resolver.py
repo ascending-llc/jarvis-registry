@@ -85,7 +85,6 @@ class TestExecutorResolver:
         """Patch Beanie field expressions used in find_one() calls."""
         monkeypatch.setattr(executor_resolver.ExtendedMCPServer, "serverName", _FieldExpr("serverName"), raising=False)
         monkeypatch.setattr(executor_resolver.A2AAgent, "path", _FieldExpr("path"), raising=False)
-        # Both MCP and A2A enabled checks use raw dicts — no field patch needed
 
     @pytest.mark.asyncio
     async def test_build_executor_registry_deduplicates_keys(self, monkeypatch: pytest.MonkeyPatch):
