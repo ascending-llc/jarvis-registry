@@ -211,7 +211,7 @@ class A2AAgent(Document):
         Currently uniqueness of `slug` is entirely left on the index.
         """
         if isinstance(data, dict) and data.get("slug") is None:
-            data["slug"] = data["path"].lstrip("/").replace("/", "-")
+            data["slug"] = data["path"].strip("/").replace("/", "-")
         return data
 
     # ========== Lifecycle Hooks ==========

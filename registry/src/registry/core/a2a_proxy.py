@@ -23,8 +23,6 @@ class AuthServerJwtAuth(Auth):
         return datetime.now(UTC) > self._jwt_expires_at
 
     def auth_flow(self, request):
-        # This is called every time the external library makes a request
-
         if self._jwt_expired():
             self._sign_jwt()
 
