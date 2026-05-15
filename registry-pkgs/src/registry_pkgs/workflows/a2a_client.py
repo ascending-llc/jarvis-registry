@@ -191,9 +191,13 @@ def _make_grpc_channel_factory(base_url: str) -> Callable[[str], grpc.aio.Channe
     secure = urlparse(base_url).scheme.lower() in {"https", "grpcs"}
 
     def _factory(target: str) -> grpc.aio.Channel:
+        # The SDK passes the full card URL (e.g. "http://host:9001/"); gRPC targets
+        # must be bare "host:port" — strip scheme and path before connecting.
+        parsed = urlparse(target)
+        grpc_target = parsed.netloc or target
         if secure:
-            return grpc.aio.secure_channel(target, grpc.ssl_channel_credentials())
-        return grpc.aio.insecure_channel(target)
+            return grpc.aio.secure_channel(grpc_target, grpc.ssl_channel_credentials())
+        return grpc.aio.insecure_channel(grpc_target)
 
     return _factory
 
@@ -255,7 +259,13 @@ async def call_a2a(
     """
     agent_name = agent.config.title if agent.config else agent.card.name
     transport_type = (agent.config.type if agent.config else TRANSPORT_JSONRPC).lower()
-    base_url = str(agent.config.url if agent.config and agent.config.url else agent.card.url).rstrip("/")
+    # gRPC agents are registered via a companion HTTP card endpoint (different port),
+    # so config.url may point to that HTTP port rather than the actual gRPC endpoint.
+    # card.url is always the authoritative gRPC target, so use it for gRPC transport.
+    if transport_type == TRANSPORT_GRPC and agent.card and agent.card.url:
+        base_url = str(agent.card.url).rstrip("/")
+    else:
+        base_url = str(agent.config.url if agent.config and agent.config.url else agent.card.url).rstrip("/")
 
     logger.debug(
         "→ calling A2A agent %r  transport=%s  url=%s  prompt=%r",
