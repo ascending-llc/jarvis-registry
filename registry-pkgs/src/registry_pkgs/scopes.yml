@@ -31,6 +31,7 @@ group_mappings:
     - acl-read
     - acl-write
     - mcp-proxy-ops
+    - a2a-proxy-ops
     - workflows-read
     - workflows-control
   jarvis-registry-power-user:
@@ -49,6 +50,7 @@ group_mappings:
     - acl-read
     - acl-write
     - mcp-proxy-ops
+    - a2a-proxy-ops
     - workflows-read
     - workflows-control
   jarvis-registry-user:
@@ -63,6 +65,7 @@ group_mappings:
     - user-read
     - acl-read
     - mcp-proxy-ops
+    - a2a-proxy-ops
     - workflows-read
     - workflows-control
   jarvis-registry-read-only:
@@ -285,7 +288,12 @@ mcp-proxy-ops:
     endpoint: /proxy/mcpgw/mcp
   - action: proxy_to_mcp_servers
     method: GET,POST
-    endpoint: /proxy/{path}
+    endpoint: /proxy/server/{path}
+
+a2a-proxy-ops:
+  - action: proxy_to_a2a
+    method: GET,POST,PUT,DELETE
+    endpoint: /proxy/a2a/{path}
 
 workflows-read:
   # Read-only access to workflow run status. Granted to all roles including read-only.
