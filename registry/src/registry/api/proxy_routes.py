@@ -94,6 +94,29 @@ def _extract_request_id(request_dict: dict[str, Any]) -> str | int | None:
         return None
 
 
+# Hop-by-hop headers must never be forwarded to clients (RFC 2616 §13.5.1).
+# Content-Length is excluded because Starlette recalculates it from the response body.
+# Date is excluded to avoid duplicate-header warnings when the upstream also sets it.
+_HOP_BY_HOP_HEADERS = frozenset(
+    [
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailers",
+        "transfer-encoding",
+        "upgrade",
+        "content-length",
+        "date",
+    ]
+)
+
+
+def _sanitize_proxy_response_headers(headers: httpx.Headers) -> dict[str, str]:
+    return {k: v for k, v in headers.items() if k.lower() not in _HOP_BY_HOP_HEADERS}
+
+
 def _build_jsonrpc_error_result(request_id: str | int | None, error_text: str) -> dict[str, Any]:
     """Build JSON-RPC result response with isError=true."""
     return {
@@ -408,7 +431,7 @@ async def _forward_a2a(
                 return Response(
                     content=content_bytes,
                     status_code=backend_response.status_code,
-                    headers=dict(backend_response.headers),
+                    headers=_sanitize_proxy_response_headers(backend_response.headers),
                     media_type=backend_content_type or "application/json",
                 )
 
