@@ -55,3 +55,11 @@ class A2AProxyClientRegistry:
         self._dict[agent_slug] = client
 
         return client
+
+    async def close(self) -> None:
+        clients = list(self._dict.values())
+
+        self._dict.clear()
+
+        for client in clients:
+            await client.aclose()

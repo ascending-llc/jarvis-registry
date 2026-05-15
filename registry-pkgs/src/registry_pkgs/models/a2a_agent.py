@@ -10,7 +10,7 @@ Storage Structure:
 
   # Registry-specific Fields
   "path": "/deep-intel",  # Registry path (not part of SDK AgentCard)
-  "slug": "deep-intel",  # leading /'s removed; otherw converted to dashes
+  "slug": "deep-intel",  # leading and trailing /'s removed; other converted to dashes
 
   # A2A Protocol Card (validated by SDK - ORIGINAL DATA, DO NOT MODIFY)
   "card": {

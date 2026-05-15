@@ -366,10 +366,9 @@ async def _forward_a2a(
 ) -> Response:
     headers = dict(request.headers)
     headers.pop("host", None)
-    headers.pop("authorization", None)
 
     body = await request.body()
-    params = dict(request.query_params)
+    params = request.query_params
 
     try:
         stream_context = proxy_client.stream(
@@ -444,17 +443,12 @@ async def _forward_a2a(
                 await stream_context.__aexit__(None, None, None)
 
     except httpx.TimeoutException:
-        logger.error(f"A2A proxy timeout for agent [{agent_slug}] \u2192 {target_url}")
+        logger.error(f"A2A proxy timeout for agent [{agent_slug}] {target_url}")
         if is_jsonrpc:
             return _jsonrpc_a2a_error_response(-32603, "Gateway timeout communicating with agent")
         return JSONResponse(status_code=504, content={"error": "Gateway timeout communicating with agent"})
-    except httpx.HTTPStatusError as e:
-        logger.error(f"A2A proxy HTTP error for agent [{agent_slug}]: {e}")
-        if is_jsonrpc:
-            return _jsonrpc_a2a_error_response(-32603, f"Agent returned HTTP error: {e.response.status_code}")
-        return JSONResponse(status_code=502, content={"error": f"Agent returned HTTP error: {e.response.status_code}"})
     except Exception as e:
-        logger.error(f"A2A proxy error for agent [{agent_slug}] \u2192 {target_url}: {e}", exc_info=True)
+        logger.error(f"A2A proxy error for agent [{agent_slug}] {target_url}: {e}", exc_info=True)
         if is_jsonrpc:
             return _jsonrpc_a2a_error_response(-32603, "Failed to communicate with agent")
         return JSONResponse(status_code=502, content={"error": "Failed to communicate with agent"})
@@ -473,7 +467,7 @@ def _is_agentcore_jwt(
 
 
 # Route 1: JSON-RPC binding — bare base path, POST only
-@router.post("/proxy/a2a/{agent_slug}")
+@router.post("/a2a/{agent_slug}")
 async def jsonrpc_proxy(
     request: Request,
     agent_slug: str,
@@ -525,7 +519,7 @@ async def jsonrpc_proxy(
         agentcore_jwt = _is_agentcore_jwt(agent.config, agent.federationMetadata)
         proxy_client = proxy_client_registry.get(agent_slug, agentcore_jwt=agentcore_jwt)
 
-        logger.info(f"A2A JSON-RPC proxy: agent={agent_slug} agentcore={agentcore_jwt} \u2192 {base_url}")
+        logger.info(f"A2A JSON-RPC proxy: agent={agent_slug} agentcore={agentcore_jwt} {base_url}")
 
         return await _forward_a2a(request, base_url, proxy_client, agent_slug, is_jsonrpc=True)
     except Exception:
@@ -534,7 +528,7 @@ async def jsonrpc_proxy(
 
 
 # Route 2: HTTP+JSON binding — all paths with at least one segment
-@router.route("/proxy/a2a/{agent_slug}/{http_json_path:path}", methods=["GET", "POST", "DELETE", "PUT"])
+@router.route("/a2a/{agent_slug}/{http_json_path:path}", methods=["GET", "POST", "DELETE", "PUT"])
 async def http_json_proxy(
     request: Request,
     agent_slug: str,
@@ -590,7 +584,7 @@ async def http_json_proxy(
         target_url = base_url.rstrip("/") + "/" + http_json_path
 
         logger.info(
-            f"A2A HTTP+JSON proxy: agent={agent_slug} path=/{http_json_path} agentcore={agentcore_jwt} \u2192 {target_url}"
+            f"A2A HTTP+JSON proxy: agent={agent_slug} path=/{http_json_path} agentcore={agentcore_jwt} {target_url}"
         )
 
         return await _forward_a2a(request, target_url, proxy_client, agent_slug)

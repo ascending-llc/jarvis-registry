@@ -286,6 +286,7 @@ class RegistryContainer:
         await cancel_in_flight_runs()
         await self.health_service.shutdown()
         await self.mcp_proxy_client.aclose()
+        await self.a2a_proxy_client_registry.close()
 
     def _initialize_federation(self) -> None:
         """Run optional federation sync on startup without failing the whole application."""
