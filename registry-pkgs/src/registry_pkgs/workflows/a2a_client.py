@@ -181,9 +181,14 @@ def _create_message(text: str) -> Message:
 
 
 def _make_grpc_channel_factory(base_url: str) -> Callable[[str], grpc.aio.Channel]:
-    """Return a gRPC channel factory that selects TLS mode from the agent URL scheme."""
-    scheme = urlparse(base_url).scheme.lower()
-    secure = scheme in {"https", "grpcs"}
+    """Return a gRPC channel factory sized for the agent's TLS requirement.
+
+    TLS is inferred from the card URL scheme (https/grpcs → TLS, http → plaintext).
+    This assumes the card URL scheme correctly reflects the transport security of the
+    gRPC endpoint — callers that point at a TLS-terminated endpoint via http:// must
+    pass a pre-built secure factory instead of relying on this helper.
+    """
+    secure = urlparse(base_url).scheme.lower() in {"https", "grpcs"}
 
     def _factory(target: str) -> grpc.aio.Channel:
         if secure:

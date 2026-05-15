@@ -7,7 +7,7 @@ from urllib.parse import quote, unquote
 from beanie import PydanticObjectId
 
 from registry_pkgs.models import A2AAgent, ExtendedMCPServer
-from registry_pkgs.models.a2a_agent import TRANSPORT_GRPC, TRANSPORT_HTTP_JSON, TRANSPORT_JSONRPC, AgentConfig
+from registry_pkgs.models.a2a_agent import TRANSPORT_JSONRPC, AgentConfig
 
 from .agentcore_clients import AgentCoreClientProvider
 from .agentcore_runtime_auth import AgentCoreRuntimeAuthService
@@ -413,16 +413,6 @@ class AgentCoreFederationClient:
     def _extract_runtime_protocol(self, runtime_detail: dict[str, Any]) -> str:
         config = runtime_detail.get("protocolConfiguration") or {}
         return str(config.get("serverProtocol", "")).upper()
-
-    @staticmethod
-    def _preferred_transport_to_config_type(preferred_transport: str) -> str:
-        """Map AgentCard preferredTransport value to registry config.type."""
-        mapping = {
-            "HTTP+JSON": TRANSPORT_HTTP_JSON,
-            "GRPC": TRANSPORT_GRPC,
-            "JSONRPC": TRANSPORT_JSONRPC,
-        }
-        return mapping.get(preferred_transport.upper(), TRANSPORT_JSONRPC)
 
     @staticmethod
     def extract_region_from_arn(arn: str) -> str:
