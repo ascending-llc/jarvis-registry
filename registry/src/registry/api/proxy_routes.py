@@ -4,31 +4,29 @@ Dynamic MCP server proxy routes.
 
 import json
 import logging
-from collections.abc import AsyncGenerator
 from typing import Any
-from urllib.parse import urlparse
 from uuid import uuid4
 
 import httpx
-from a2a.client.transports.jsonrpc import JsonRpcTransport
-from a2a.client.transports.rest import RestTransport
-from a2a.types import MessageSendParams
 from beanie import PydanticObjectId
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from redis import Redis
 from starlette.routing import get_route_path
 
 from registry_pkgs.models import ResourceType
-from registry_pkgs.models.a2a_agent import TRANSPORT_GRPC, TRANSPORT_HTTP_JSON, TRANSPORT_JSONRPC
+from registry_pkgs.models.a2a_agent import AgentConfig
+from registry_pkgs.models.enums import AgentCoreRuntimeAccessMode, FederationProviderType
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 
 from ..auth.dependencies import CurrentUser, UserContextDict
 from ..auth.oauth.types import ClientBranding
+from ..core.a2a_proxy import A2AProxyClientRegistry
 from ..core.config import settings
 from ..core.exceptions import InternalServerException, UrlElicitationRequiredException
 from ..deps import (
     get_a2a_agent_service,
+    get_a2a_proxy_client_registry,
     get_acl_service,
     get_mcp_proxy_client,
     get_oauth_service,
@@ -40,14 +38,6 @@ from ..services.a2a_agent_service import A2AAgentService
 from ..services.access_control_service import ACLService
 from ..services.oauth.oauth_service import MCPOAuthService
 from ..services.server_service import ServerServiceV1
-
-try:
-    import grpc
-    from a2a.client.transports.grpc import GrpcTransport
-
-    _grpc_available = True
-except ImportError:
-    _grpc_available = False
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +92,31 @@ def _extract_request_id(request_dict: dict[str, Any]) -> str | int | None:
         logger.exception("failed to extract MCP request ID")
 
         return None
+
+
+# Hop-by-hop headers defined by RFC 2616 §13.5.1 that proxies MUST strip.
+# Date is also excluded to avoid duplicate-header warnings when upstream sets it too.
+# Content-Length is intentionally absent — it is popped explicitly at each forward branch
+# because the correct treatment differs: buffered (Response) branches let Starlette
+# recalculate it from the actual de-chunked bytes; streaming (StreamingResponse) branches
+# must not set it at all because the total length is indeterminate.
+_HOP_BY_HOP_HEADERS = frozenset(
+    [
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailers",
+        "transfer-encoding",
+        "upgrade",
+        "date",
+    ]
+)
+
+
+def _sanitize_hop_by_hop_headers(headers: httpx.Headers) -> dict[str, str]:
+    return {k: v for k, v in headers.items() if k.lower() not in _HOP_BY_HOP_HEADERS}
 
 
 def _build_jsonrpc_error_result(request_id: str | int | None, error_text: str) -> dict[str, Any]:
@@ -259,7 +274,10 @@ async def proxy_to_mcp_server(
                             f"Backend error response ({backend_response.status_code}): [binary content, {len(content_bytes)} bytes]"
                         )
 
-                response_headers = dict(backend_response.headers)
+                response_headers = _sanitize_hop_by_hop_headers(backend_response.headers)
+                # Starlette recalculates Content-Length from the buffered body; the upstream's
+                # value may be stale or wrong (e.g. when upstream mis-reports under chunked encoding).
+                response_headers.pop("content-length", None)
                 return Response(
                     content=content_bytes,
                     status_code=backend_response.status_code,
@@ -269,12 +287,14 @@ async def proxy_to_mcp_server(
 
             logger.info("Streaming SSE from backend")
 
-            response_headers = dict(backend_response.headers)
+            response_headers = _sanitize_hop_by_hop_headers(backend_response.headers)
+            # Content-Length cannot be set for a stream of indeterminate length.
+            response_headers.pop("content-length", None)
             response_headers.update(
                 {
                     "Cache-Control": "no-cache",
                     "X-Accel-Buffering": "no",
-                    "Connection": "keep-alive",
+                    "Connection": "keep-alive",  # hop-by-hop header re-added intentionally for the outbound leg
                     "Content-Type": backend_content_type or "text/event-stream",
                 }
             )
@@ -358,208 +378,258 @@ async def clear_session_endpoint(request: Request, server_id: str, user_context:
     )
 
 
-@router.post("/a2a/{agent_path:path}")
-async def a2a_agent_proxy(
+def _jsonrpc_a2a_error_response(code: int, message: str) -> JSONResponse:
+    """Return a A2A-spec-compliant JSON-RPC error response (HTTP 200)."""
+    return JSONResponse(
+        status_code=200,
+        content=_build_jsonrpc_error(None, code, message),
+    )
+
+
+async def _forward_a2a(
     request: Request,
-    agent_path: str,
-    user_context: CurrentUser,
-    a2a_agent_service: A2AAgentService = Depends(get_a2a_agent_service),
-    acl_service: ACLService = Depends(get_acl_service),
-    proxy_client: httpx.AsyncClient = Depends(get_mcp_proxy_client),
-):
+    target_url: str,
+    proxy_client: httpx.AsyncClient,
+    agent_slug: str,
+    is_jsonrpc: bool = False,
+) -> Response:
     """
-    Proxy POST requests to A2A agents via the registry.
-
-    Route: POST /proxy/a2a/{agent_path}
-
-    Dispatches to the correct A2A transport based on agent config.type:
-      - jsonrpc  → JsonRpcTransport  (A2A JSON-RPC over HTTP)
-      - grpc     → GrpcTransport     (A2A over gRPC)
-      - http_json → RestTransport    (A2A HTTP+JSON / REST)
-
-    Request body must be a valid MessageSendParams JSON object.
-    If the Accept header includes 'text/event-stream', the response will
-    be streamed as Server-Sent Events; otherwise a single JSON response
-    is returned.
-
-    The agent_path format is: {agent_identifier}/{remaining_path}
-    Example: aws-research/v1/message:send
-      - agent_identifier: aws-research (used to query agent from registry)
-      - remaining_path: /v1/message:send (forwarded to agent's base URL)
+    For AgentCore Runtime agent with JWT inbound auth, AuthServerJwtAuth transparently swap our JWT into the Authorization header.
+    **For other agents, we simply pass the Authorization header through.** We might change this when the use case of A2A
+    is more clear in the future. As things stand now, non-AgentCore agents should be rare.
     """
-    # Split agent_path into identifier and remaining path
-    # Example: "aws-research/v1/message:send" -> agent_registry_path="/aws-research", remaining="/v1/message:send"
-    path_parts = agent_path.split("/", 1)
-    agent_registry_path = f"/{path_parts[0]}"
-    remaining_path = f"/{path_parts[1]}" if len(path_parts) > 1 else ""
 
-    user_id = user_context.get("user_id")
+    headers = dict(request.headers)
+    headers.pop("host", None)
 
-    # Resolve agent by registry path
-    agent = await a2a_agent_service.get_agent_by_path(agent_registry_path)
-    if agent is None:
-        return JSONResponse(
-            status_code=404,
-            content={"error": f"A2A agent with path '{agent_registry_path}' not found"},
-        )
-
-    # ACL: require VIEW permission
-    await acl_service.check_user_permission(
-        user_id=PydanticObjectId(user_id),
-        resource_type=ResourceType.REMOTE_AGENT.value,
-        resource_id=agent.id,
-        required_permission="VIEW",
-    )
-
-    # Agent must be enabled
-    if not agent.isEnabled:
-        return JSONResponse(
-            status_code=403,
-            content={"error": f"A2A agent '{agent_registry_path}' is disabled"},
-        )
-
-    # Parse MessageSendParams from request body
-    try:
-        body_bytes = await request.body()
-        params = MessageSendParams.model_validate_json(body_bytes)
-    except Exception as e:
-        return JSONResponse(
-            status_code=400,
-            content={"error": f"Invalid request body: {e}"},
-        )
-
-    transport_type = (agent.config.type if agent.config else TRANSPORT_JSONRPC).lower()
-
-    # Use user-provided URL from config for runtime operations
-    if agent.config and agent.config.url:
-        base_url = str(agent.config.url)
-        logger.debug(f"Using config.url for agent {agent_registry_path}: {base_url}")
-    else:
-        # Fallback to card.url for backward compatibility with old data
-        base_url = str(agent.card.url)
-        logger.warning(
-            f"Agent {agent_registry_path} missing config.url, falling back to card.url: {base_url}. "  # nosec B608 - this is not a SQL query.
-            "This may fail if card.url is not accessible. Please update the agent to set config.url."
-        )
-
-    # For A2A SDK transports, use base_url directly without appending remaining_path
-    # because the transport classes (RestTransport, JsonRpcTransport, etc.) will
-    # automatically append the standard A2A endpoint paths (e.g., /v1/message:send)
-    # when calling their internal methods.
-    # If we pre-append remaining_path here, it will be duplicated.
-    agent_card = agent.card.model_copy(deep=True)
-    agent_card.url = base_url.rstrip("/")
-
-    accept_header = request.headers.get("accept", "")
-    is_streaming = "text/event-stream" in accept_header
-
-    logger.info(
-        f"A2A proxy: {agent_registry_path}{remaining_path} transport={transport_type} streaming={is_streaming} → {base_url}"
-    )
+    body = await request.body()
+    params = request.query_params
 
     try:
-        if transport_type == TRANSPORT_JSONRPC:
-            transport = JsonRpcTransport(httpx_client=proxy_client, agent_card=agent_card)
-            if is_streaming:
-                return await _stream_a2a_response(transport.send_message_streaming(params))
-            result = await transport.send_message(params)
-            return JSONResponse(content=result.model_dump(mode="json", exclude_none=True))
+        # Use 5 min timeout when forwarding GET stream.
+        # NOTE: This applies to one read operation, i.e. one async loop in the `backend_response.aiter_bytes()` below.
+        stream_context = proxy_client.stream(
+            request.method, target_url, headers=headers, content=body, params=params, timeout=httpx.Timeout(300)
+        )
+        backend_response = await stream_context.__aenter__()
 
-        elif transport_type == TRANSPORT_HTTP_JSON:
-            transport = RestTransport(httpx_client=proxy_client, agent_card=agent_card)
-            if is_streaming:
-                return await _stream_a2a_response(transport.send_message_streaming(params))
-            result = await transport.send_message(params)
-            return JSONResponse(content=result.model_dump(mode="json", exclude_none=True))
+        backend_content_type = backend_response.headers.get("content-type", "")
+        is_stream = "text/event-stream" in backend_content_type
 
-        elif transport_type == TRANSPORT_GRPC:
-            if not _grpc_available:
-                return JSONResponse(
-                    status_code=501,
-                    content={
-                        "error": "gRPC transport is not available. Please ensure grpcio is installed (requires a2a-sdk[grpc] extra)"
-                    },
-                )
-            parsed = urlparse(base_url)
-            if not parsed.hostname:
-                return JSONResponse(
-                    status_code=400,
-                    content={"error": f"Invalid gRPC agent URL: '{base_url}'"},
-                )
-
-            scheme = parsed.scheme.lower()
-            if parsed.port is not None:
-                grpc_port = parsed.port
-            elif scheme in {"https", "grpcs"}:
-                grpc_port = 443
-            elif scheme == "http":
-                grpc_port = 80
-            else:
-                grpc_port = 50051
-
-            grpc_target = f"{parsed.hostname}:{grpc_port}"
-
-            if scheme in {"https", "grpcs"}:
-                channel = grpc.aio.secure_channel(grpc_target, grpc.ssl_channel_credentials())
-            else:
-                channel = grpc.aio.insecure_channel(grpc_target)
-
-            try:
-                transport = GrpcTransport(channel=channel, agent_card=agent_card)
-                if is_streaming:
-                    return await _stream_a2a_response(transport.send_message_streaming(params))
-                result = await transport.send_message(params)
-                return JSONResponse(content=result.model_dump(mode="json", exclude_none=True))
-            finally:
-                await channel.close()
-
-        else:
-            return JSONResponse(
-                status_code=400,
-                content={
-                    "error": f"Unsupported transport type: '{transport_type}'. Must be one of: jsonrpc, grpc, http_json"
-                },
+        try:
+            logger.debug(
+                f"A2A backend [{agent_slug}]: status={backend_response.status_code}, content-type={backend_content_type}"
             )
 
+            if not is_stream:
+                content_bytes = await backend_response.aread()
+
+                if backend_response.status_code >= 400:
+                    try:
+                        error_body = content_bytes.decode("utf-8")
+                        logger.error(f"A2A backend [{agent_slug}] error ({backend_response.status_code}): {error_body}")
+                    except Exception:
+                        logger.error(
+                            f"A2A backend [{agent_slug}] error ({backend_response.status_code}): "
+                            f"[binary, {len(content_bytes)} bytes]"
+                        )
+
+                response_headers = _sanitize_hop_by_hop_headers(backend_response.headers)
+                # Starlette recalculates Content-Length from the buffered body; the upstream's
+                # value may be stale or wrong (e.g. AgentCore adds Transfer-Encoding: chunked
+                # to complete JSON responses, causing the reported Content-Length to be unreliable).
+                response_headers.pop("content-length", None)
+                return Response(
+                    content=content_bytes,
+                    status_code=backend_response.status_code,
+                    headers=response_headers,
+                    media_type=backend_content_type or "application/json",
+                )
+
+            logger.info(f"Streaming SSE from A2A agent [{agent_slug}]")
+
+            response_headers = _sanitize_hop_by_hop_headers(backend_response.headers)
+            # Content-Length cannot be set for a stream of indeterminate length.
+            response_headers.pop("content-length", None)
+            response_headers.update(
+                {
+                    "Cache-Control": "no-cache",
+                    "X-Accel-Buffering": "no",
+                    "Connection": "keep-alive",  # hop-by-hop header re-added intentionally for the outbound leg
+                    "Content-Type": backend_content_type or "text/event-stream",
+                }
+            )
+
+            async def stream_sse():
+                try:
+                    async for chunk in backend_response.aiter_bytes():
+                        yield chunk
+                except Exception:
+                    logger.exception(f"A2A SSE streaming error [{agent_slug}]")
+                    raise
+                finally:
+                    await stream_context.__aexit__(None, None, None)
+
+            return StreamingResponse(
+                stream_sse(),
+                status_code=backend_response.status_code,
+                media_type=backend_content_type or "text/event-stream",
+                headers=response_headers,
+            )
+
+        finally:
+            if not is_stream:
+                await stream_context.__aexit__(None, None, None)
+
     except httpx.TimeoutException:
-        logger.error(f"A2A proxy timeout for agent {agent_registry_path}{remaining_path}")
+        logger.error(f"A2A proxy timeout for agent [{agent_slug}] {target_url}")
+        if is_jsonrpc:
+            return _jsonrpc_a2a_error_response(-32603, "Gateway timeout communicating with agent")
         return JSONResponse(status_code=504, content={"error": "Gateway timeout communicating with agent"})
-    except httpx.HTTPStatusError as e:
-        logger.error(f"A2A proxy HTTP error for agent {agent_registry_path}{remaining_path}: {e}")
-        return JSONResponse(status_code=502, content={"error": f"Agent returned HTTP error: {e.response.status_code}"})
     except Exception as e:
-        logger.error(f"A2A proxy error for agent {agent_registry_path}{remaining_path}: {e}", exc_info=True)
+        logger.error(f"A2A proxy error for agent [{agent_slug}] {target_url}: {e}", exc_info=True)
+        if is_jsonrpc:
+            return _jsonrpc_a2a_error_response(-32603, "Failed to communicate with agent")
         return JSONResponse(status_code=502, content={"error": "Failed to communicate with agent"})
 
 
-async def _stream_a2a_response(event_generator: AsyncGenerator[Any, None]) -> StreamingResponse:
-    """Wrap an A2A async generator into an SSE StreamingResponse.
-
-    Args:
-        event_generator: Async generator yielding A2A SDK event objects with model_dump() method
-
-    Returns:
-        StreamingResponse configured for Server-Sent Events
-    """
-
-    async def _sse_body():
-        try:
-            async for event in event_generator:
-                data = event.model_dump(mode="json", exclude_none=True)
-                yield f"data: {json.dumps(data)}\n\n"
-        except Exception:
-            logger.exception("A2A SSE streaming error")
-            raise
-
-    return StreamingResponse(
-        _sse_body(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-            "Connection": "keep-alive",
-        },
+def _is_agentcore_jwt(
+    agent_config: AgentConfig | None,
+    federation_metadata: dict[str, Any] | None,
+) -> bool:
+    fed = federation_metadata or {}
+    return (
+        agent_config is not None
+        and agent_config.runtimeAccess is not None
+        and fed.get("providerType") == FederationProviderType.AWS_AGENTCORE
     )
+
+
+# Route 1: JSON-RPC binding — bare base path, POST only
+@router.post("/a2a/{agent_slug}")
+async def jsonrpc_proxy(
+    request: Request,
+    agent_slug: str,
+    user_context: CurrentUser,
+    a2a_agent_service: A2AAgentService = Depends(get_a2a_agent_service),
+    acl_service: ACLService = Depends(get_acl_service),
+    proxy_client_registry: A2AProxyClientRegistry = Depends(get_a2a_proxy_client_registry),
+):
+    try:
+        user_id = user_context.get("user_id")
+
+        agent = await a2a_agent_service.get_agent_by_slug(agent_slug)
+        if agent is None:
+            return _jsonrpc_a2a_error_response(-32603, f"A2A agent with slug '{agent_slug}' not found")
+
+        try:
+            await acl_service.check_user_permission(
+                user_id=PydanticObjectId(user_id),
+                resource_type=ResourceType.REMOTE_AGENT.value,
+                resource_id=agent.id,
+                required_permission="VIEW",
+            )
+        except HTTPException:
+            return _jsonrpc_a2a_error_response(-32001, f"Access denied to A2A agent '{agent_slug}'")
+
+        if not agent.isEnabled:
+            return _jsonrpc_a2a_error_response(-32004, f"A2A agent '{agent_slug}' is disabled")
+
+        if (
+            agent.config
+            and agent.config.runtimeAccess
+            and agent.config.runtimeAccess.mode == AgentCoreRuntimeAccessMode.IAM
+        ):
+            return _jsonrpc_a2a_error_response(
+                -32004,
+                f"A2A agent '{agent_slug}' uses IAM inbound auth which is not supported by this gateway",
+            )
+
+        if agent.config and agent.config.url:
+            base_url = str(agent.config.url)
+            logger.debug(f"Using config.url for agent {agent_slug}: {base_url}")
+        else:
+            base_url = str(agent.card.url)
+            logger.warning(
+                f"Agent {agent_slug} missing config.url, falling back to card.url: {base_url}. "  # nosec B608
+                "This may fail if card.url is not accessible. Please update the agent to set config.url."
+            )
+
+        agentcore_jwt = _is_agentcore_jwt(agent.config, agent.federationMetadata)
+        proxy_client = proxy_client_registry.get(agent_slug, agentcore_jwt=agentcore_jwt)
+
+        logger.info(f"A2A JSON-RPC proxy: agent={agent_slug} agentcore={agentcore_jwt} {base_url}")
+
+        return await _forward_a2a(request, base_url, proxy_client, agent_slug, is_jsonrpc=True)
+    except Exception:
+        logger.exception(f"Unexpected error in jsonrpc_proxy for agent [{agent_slug}]")
+        return _jsonrpc_a2a_error_response(-32603, "Internal server error")
+
+
+# Route 2: HTTP+JSON binding — all paths with at least one segment
+@router.route("/a2a/{agent_slug}/{http_json_path:path}", methods=["GET", "POST", "DELETE", "PUT"])
+async def http_json_proxy(
+    request: Request,
+    agent_slug: str,
+    http_json_path: str,
+    user_context: CurrentUser,
+    a2a_agent_service: A2AAgentService = Depends(get_a2a_agent_service),
+    acl_service: ACLService = Depends(get_acl_service),
+    proxy_client_registry: A2AProxyClientRegistry = Depends(get_a2a_proxy_client_registry),
+):
+    try:
+        user_id = user_context.get("user_id")
+
+        agent = await a2a_agent_service.get_agent_by_slug(agent_slug)
+        if agent is None:
+            return JSONResponse(status_code=404, content={"error": f"A2A agent with slug '{agent_slug}' not found"})
+
+        try:
+            await acl_service.check_user_permission(
+                user_id=PydanticObjectId(user_id),
+                resource_type=ResourceType.REMOTE_AGENT.value,
+                resource_id=agent.id,
+                required_permission="VIEW",
+            )
+        except HTTPException:
+            return JSONResponse(status_code=403, content={"error": f"Access denied to A2A agent '{agent_slug}'"})
+
+        if not agent.isEnabled:
+            return JSONResponse(status_code=403, content={"error": f"A2A agent '{agent_slug}' is disabled"})
+
+        if (
+            agent.config
+            and agent.config.runtimeAccess
+            and agent.config.runtimeAccess.mode == AgentCoreRuntimeAccessMode.IAM
+        ):
+            return JSONResponse(
+                status_code=501,
+                content={"error": f"A2A agent '{agent_slug}' uses IAM inbound auth which is not supported"},
+            )
+
+        if agent.config and agent.config.url:
+            base_url = str(agent.config.url)
+            logger.debug(f"Using config.url for agent {agent_slug}: {base_url}")
+        else:
+            base_url = str(agent.card.url)
+            logger.warning(
+                f"Agent {agent_slug} missing config.url, falling back to card.url: {base_url}. "  # nosec B608
+                "This may fail if card.url is not accessible. Please update the agent to set config.url."
+            )
+
+        agentcore_jwt = _is_agentcore_jwt(agent.config, agent.federationMetadata)
+        proxy_client = proxy_client_registry.get(agent_slug, agentcore_jwt=agentcore_jwt)
+
+        target_url = base_url.rstrip("/") + "/" + http_json_path
+
+        logger.info(
+            f"A2A HTTP+JSON proxy: agent={agent_slug} path=/{http_json_path} agentcore={agentcore_jwt} {target_url}"
+        )
+
+        return await _forward_a2a(request, target_url, proxy_client, agent_slug)
+    except Exception:
+        logger.exception(f"Unexpected error in http_json_proxy for agent [{agent_slug}]")
+        return JSONResponse(status_code=500, content={"error": "Internal server error"})
 
 
 @router.post("/server/{full_path:path}")
@@ -812,12 +882,14 @@ async def dynamic_mcp_get_proxy(
 
         logger.info("Streaming SSE from backend")
 
-        response_headers = dict(backend_response.headers)
+        response_headers = _sanitize_hop_by_hop_headers(backend_response.headers)
+        # Content-Length cannot be set for a stream of indeterminate length.
+        response_headers.pop("content-length", None)
         response_headers.update(
             {
                 "Cache-Control": "no-cache",
                 "X-Accel-Buffering": "no",
-                "Connection": "keep-alive",
+                "Connection": "keep-alive",  # hop-by-hop header re-added intentionally for the outbound leg
             }
         )
 

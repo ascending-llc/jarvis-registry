@@ -10,6 +10,7 @@ Storage Structure:
 
   # Registry-specific Fields
   "path": "/deep-intel",  # Registry path (not part of SDK AgentCard)
+  "slug": "deep-intel",  # leading and trailing /'s removed; other converted to dashes
 
   # A2A Protocol Card (validated by SDK - ORIGINAL DATA, DO NOT MODIFY)
   "card": {
@@ -65,7 +66,7 @@ from typing import Any, ClassVar
 from a2a.types import AgentCard
 from beanie import Document, Insert, PydanticObjectId, Replace, Save, SaveChanges, Update, before_event
 from langchain_core.documents import Document as LangChainDocument
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
 from pymongo import IndexModel
 
 from .enums import A2AEntityType
@@ -147,6 +148,7 @@ class A2AAgent(Document):
 
     # ========== Registry-specific Fields ==========
     path: str = Field(..., description="Registry path (e.g., /deep-intel)")
+    slug: str = Field(..., description="slug that appears in /proxy/a2a/{agent_slug} for direct A2A invocation")
 
     # ========== A2A Protocol Card (SDK - ORIGINAL DATA) ==========
     card: AgentCard = Field(description="A2A protocol-compliant agent card (validated by SDK, unmodified)")
@@ -188,6 +190,7 @@ class A2AAgent(Document):
         # Indexes for efficient queries
         indexes = [
             IndexModel([("path", 1)], unique=True),
+            IndexModel([("slug", 1)], unique=True),
             "tags",
             "isEnabled",
             "status",
@@ -197,6 +200,19 @@ class A2AAgent(Document):
             IndexModel([("federationRefId", 1)]),
             IndexModel([("federationMetadata.runtimeArn", 1)], sparse=True),
         ]
+
+    # ========== Field Derivation ==========
+    @model_validator(mode="before")
+    @classmethod
+    def _derive_slug(cls, data: Any) -> Any:
+        """
+        Generating slug from path. Slug is used in the A2A "direct access route" `/proxy/a2a/{agent_slug}`
+        and the custom server card route `/proxy/a2a/{agent_slug}/agent-card.json`.
+        Currently uniqueness of `slug` is entirely left on the index.
+        """
+        if isinstance(data, dict) and data.get("slug") is None:
+            data["slug"] = data["path"].strip("/").replace("/", "-")
+        return data
 
     # ========== Lifecycle Hooks ==========
     @before_event(Insert, Replace, Save)

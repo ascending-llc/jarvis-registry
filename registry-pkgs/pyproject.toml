@@ -28,10 +28,6 @@ dependencies = [
     "weaviate-client>=4.18.1",
     "flashrank>=0.2.10",
     "async-lru>=2.0.5",
-    # gRPC and protocols
-    "protobuf>=5.29.5",
-    "grpcio>=1.76.0",
-
     # Workflow runtime
     "agno>=2.5.17",
     "cel-python>=0.1.5",
