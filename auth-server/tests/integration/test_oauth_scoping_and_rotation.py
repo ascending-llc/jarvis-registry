@@ -15,7 +15,8 @@ from authlib.oauth2.rfc7636 import create_s256_code_challenge
 from fastapi.testclient import TestClient
 
 from auth_server.core.state import authorization_codes_storage, refresh_tokens_storage
-from auth_server.deps import get_user_service
+from auth_server.deps import get_auth_provider, get_oauth2_config, get_signer, get_user_service
+from auth_server.routes.oauth_flow import REFRESH_TOKEN_EXPIRY_SECONDS
 from auth_server.server import app
 from registry_pkgs.core.jwt_utils import decode_jwt_unverified
 
@@ -157,34 +158,260 @@ class TestAccessTokenScoping:
         assert "servers-write" not in jwt_payload["scope"]
         assert "agents-write" not in jwt_payload["scope"]
 
+    @patch("auth_server.routes.oauth_flow.decode_jwt_unverified")
     @patch("auth_server.routes.oauth_flow.map_groups_to_scopes")
+    @patch("auth_server.routes.oauth_flow.get_user_info")
+    @patch("auth_server.routes.oauth_flow.exchange_code_for_token")
     def test_scope_negotiation_in_callback_success(
-        self, mock_map_groups, test_client_with_user_service: TestClient, clear_device_storage
+        self,
+        mock_exchange,
+        mock_get_user_info,
+        mock_map_groups,
+        mock_decode_jwt,
+        clear_device_storage,
+        mock_user_service,
     ):
-        """Test scope negotiation during OAuth callback (simulated)."""
-        # This tests the logic in /oauth2/callback/{provider}
+        """Test scope negotiation by calling actual /oauth2/callback route with proper mocks."""
+        from itsdangerous import URLSafeTimedSerializer
+
+        # Setup: user has these default scopes
         default_scopes = ["servers-read", "agents-read", "servers-write"]
+        mock_map_groups.return_value = default_scopes
+
+        # Client requests only a subset
         requested_scopes_str = "servers-read agents-read"
-        expected_resolved = ["servers-read", "agents-read"]
 
-        # Simulate the callback logic
-        requested_scopes = requested_scopes_str.split()
-        resolved_scopes = [s for s in requested_scopes if s in default_scopes]
+        # Mock OAuth provider token exchange
+        mock_exchange.return_value = {
+            "access_token": "provider_access_token",
+            "id_token": "provider_id_token",
+        }
 
-        assert resolved_scopes == expected_resolved
-        assert "servers-write" not in resolved_scopes
+        # Mock JWT decode to return valid claims (prevents DecodeError)
+        mock_decode_jwt.return_value = {
+            "sub": "user123",
+            "preferred_username": "testuser",
+            "email": "test@example.com",
+            "name": "Test User",
+            "groups": ["jarvis-registry-admin"],
+        }
 
-    def test_scope_negotiation_empty_intersection_logic(self):
-        """Test that empty intersection is detected correctly."""
+        # Mock user info (fallback path, not used if JWT decode works)
+        mock_get_user_info.return_value = {
+            "sub": "user123",
+            "preferred_username": "testuser",
+            "email": "test@example.com",
+            "name": "Test User",
+            "groups": ["jarvis-registry-admin"],
+        }
+
+        oauth2_config = {
+            "providers": {
+                "keycloak": {
+                    "enabled": True,
+                    "client_id": "test-client",
+                    "client_secret": "test-secret",
+                    "token_url": "http://keycloak/token",
+                    "user_info_url": "http://keycloak/userinfo",
+                    "username_claim": "preferred_username",
+                    "email_claim": "email",
+                    "name_claim": "name",
+                    "groups_claim": "groups",
+                }
+            }
+        }
+
+        with patch("auth_server.routes.oauth_flow.settings") as mock_settings:
+            mock_settings.auth_server_external_url = "http://localhost:8888"
+            mock_settings.oauth_session_ttl_seconds = 600
+            mock_settings.secret_key = "test-secret-key"
+
+            test_signer = URLSafeTimedSerializer("test-secret-key")
+
+            app.dependency_overrides = {}
+            app.dependency_overrides[get_oauth2_config] = lambda: oauth2_config
+            app.dependency_overrides[get_user_service] = lambda: mock_user_service
+            app.dependency_overrides[get_signer] = lambda: test_signer
+            app.dependency_overrides[get_auth_provider] = lambda: MagicMock()
+
+            test_client = TestClient(app)
+
+            # Create signed session with requested_scope
+            session_data = {
+                "state": "test_state",
+                "client_state": "client_state_123",
+                "provider": "keycloak",
+                "redirect_uri": "https://example.com/callback",
+                "client_id": "test-client",
+                "client_redirect_uri": "https://example.com/callback",
+                "code_challenge": TEST_CODE_CHALLENGE,
+                "code_challenge_method": "S256",
+                "requested_scope": requested_scopes_str,
+            }
+            oauth2_temp_session = test_signer.dumps(session_data)
+
+            # Call the actual callback route
+            response = test_client.get(
+                f"{API_PREFIX}/oauth2/callback/keycloak",
+                params={"code": "auth_code_123", "state": "test_state"},
+                cookies={"oauth2_temp_session": oauth2_temp_session},
+                follow_redirects=False,
+            )
+
+            # Should redirect with authorization code
+            assert response.status_code == 302
+            redirect_url = response.headers["location"]
+            assert redirect_url.startswith("https://example.com/callback?code=")
+            assert "state=client_state_123" in redirect_url
+
+            # Extract authorization code from redirect
+            from urllib.parse import parse_qs, urlparse
+
+            parsed = urlparse(redirect_url)
+            query_params = parse_qs(parsed.query)
+            auth_code = query_params["code"][0]
+            assert query_params["state"][0] == "client_state_123"
+
+            # Verify resolved_scope is stored correctly in authorization_codes_storage
+            assert auth_code in authorization_codes_storage
+            auth_code_data = authorization_codes_storage[auth_code]
+            resolved_scope = auth_code_data["resolved_scope"]
+
+            # Should be intersection: requested ∩ default
+            assert resolved_scope == ["servers-read", "agents-read"]
+            assert "servers-write" not in resolved_scope
+
+            # Cleanup
+            app.dependency_overrides = {}
+
+    @patch("auth_server.routes.oauth_flow.decode_jwt_unverified")
+    @patch("auth_server.routes.oauth_flow.map_groups_to_scopes")
+    @patch("auth_server.routes.oauth_flow.get_user_info")
+    @patch("auth_server.routes.oauth_flow.exchange_code_for_token")
+    def test_scope_negotiation_empty_intersection_returns_error(
+        self,
+        mock_exchange,
+        mock_get_user_info,
+        mock_map_groups,
+        mock_decode_jwt,
+        clear_device_storage,
+        mock_user_service,
+    ):
+        """Test that empty scope intersection redirects with invalid_scope error."""
+        from itsdangerous import URLSafeTimedSerializer
+
+        # User only has these scopes
         default_scopes = ["servers-read", "agents-read"]
+        mock_map_groups.return_value = default_scopes
+
+        # Client requests completely different scopes
         requested_scopes_str = "admin-access system-ops"
 
-        # Simulate intersection
-        requested_scopes = requested_scopes_str.split()
-        resolved_scopes = [s for s in requested_scopes if s in default_scopes]
+        # Mock OAuth provider token exchange
+        mock_exchange.return_value = {
+            "access_token": "provider_access_token",
+            "id_token": "provider_id_token",
+        }
 
-        # Should be empty
-        assert len(resolved_scopes) == 0
+        # Mock JWT decode to return valid claims (prevents DecodeError)
+        mock_decode_jwt.return_value = {
+            "sub": "user456",
+            "preferred_username": "basicuser",
+            "email": "basic@example.com",
+            "name": "Basic User",
+            "groups": ["basic-user"],
+        }
+
+        # Mock user info (fallback path)
+        mock_get_user_info.return_value = {
+            "sub": "user456",
+            "preferred_username": "basicuser",
+            "email": "basic@example.com",
+            "name": "Basic User",
+            "groups": ["basic-user"],
+        }
+
+        oauth2_config = {
+            "providers": {
+                "keycloak": {
+                    "enabled": True,
+                    "client_id": "test-client",
+                    "client_secret": "test-secret",
+                    "token_url": "http://keycloak/token",
+                    "user_info_url": "http://keycloak/userinfo",
+                    "username_claim": "preferred_username",
+                    "email_claim": "email",
+                    "name_claim": "name",
+                    "groups_claim": "groups",
+                }
+            }
+        }
+
+        with patch("auth_server.routes.oauth_flow.settings") as mock_settings:
+            mock_settings.auth_server_external_url = "http://localhost:8888"
+            mock_settings.oauth_session_ttl_seconds = 600
+            mock_settings.secret_key = "test-secret-key"
+
+            test_signer = URLSafeTimedSerializer("test-secret-key")
+
+            app.dependency_overrides = {}
+            app.dependency_overrides[get_oauth2_config] = lambda: oauth2_config
+            app.dependency_overrides[get_user_service] = lambda: mock_user_service
+            app.dependency_overrides[get_signer] = lambda: test_signer
+            app.dependency_overrides[get_auth_provider] = lambda: MagicMock()
+
+            test_client = TestClient(app)
+
+            # Create signed session with requested_scope
+            session_data = {
+                "state": "test_state",
+                "client_state": "client_state_456",
+                "provider": "keycloak",
+                "redirect_uri": "https://example.com/callback",
+                "client_id": "test-client",
+                "client_redirect_uri": "https://example.com/callback",
+                "code_challenge": TEST_CODE_CHALLENGE,
+                "code_challenge_method": "S256",
+                "requested_scope": requested_scopes_str,
+            }
+            oauth2_temp_session = test_signer.dumps(session_data)
+
+            # Call the actual callback route
+            response = test_client.get(
+                f"{API_PREFIX}/oauth2/callback/keycloak",
+                params={"code": "auth_code_456", "state": "test_state"},
+                cookies={"oauth2_temp_session": oauth2_temp_session},
+                follow_redirects=False,
+            )
+
+            # Should redirect with error
+            assert response.status_code == 302
+            redirect_url = response.headers["location"]
+
+            # Verify redirect contains invalid_scope error
+            from urllib.parse import parse_qs, urlparse
+
+            parsed = urlparse(redirect_url)
+            assert parsed.scheme == "https"
+            assert parsed.netloc == "example.com"
+            assert parsed.path == "/callback"
+            query_params = parse_qs(parsed.query)
+
+            # Verify error parameters
+            assert "error" in query_params
+            assert query_params["error"][0] == "invalid_scope"
+            assert "error_description" in query_params
+            assert "Requested scopes are not available" in query_params["error_description"][0]
+
+            # Verify state parameter is echoed back
+            assert "state" in query_params
+            assert query_params["state"][0] == "client_state_456"
+
+            # Verify NO authorization code was created
+            assert len(authorization_codes_storage) == 0
+
+            # Cleanup
+            app.dependency_overrides = {}
 
     @patch("auth_server.routes.oauth_flow.map_groups_to_scopes")
     def test_backward_compatibility_without_resolved_scope(
@@ -249,7 +476,7 @@ class TestRefreshTokenRotation:
             "client_id": client_id,
             "user_info": user_info,
             "scope": "servers-read agents-read",
-            "expires_at": current_time + 1209600,  # 14 days
+            "expires_at": current_time + REFRESH_TOKEN_EXPIRY_SECONDS,
         }
 
         # Use refresh token to get new access token
@@ -305,7 +532,7 @@ class TestRefreshTokenRotation:
             "client_id": client_id,
             "user_info": user_info,
             "scope": "servers-read",
-            "expires_at": current_time + 1209600,
+            "expires_at": current_time + REFRESH_TOKEN_EXPIRY_SECONDS,
         }
 
         # First use: should succeed
@@ -352,7 +579,7 @@ class TestRefreshTokenRotation:
             "client_id": client_id,
             "user_info": user_info,
             "scope": "servers-read",
-            "expires_at": current_time + 1209600,
+            "expires_at": current_time + REFRESH_TOKEN_EXPIRY_SECONDS,
         }
 
         # First rotation
@@ -406,7 +633,7 @@ class TestRefreshTokenRotation:
             "client_id": client_id,
             "user_info": user_info,
             "scope": original_scope,
-            "expires_at": current_time + 1209600,
+            "expires_at": current_time + REFRESH_TOKEN_EXPIRY_SECONDS,
         }
 
         # Use refresh token
@@ -492,7 +719,7 @@ class TestRefreshTokenRotation:
             "client_id": "client-1",
             "user_info": {"username": "test_user", "email": "test@example.com", "groups": []},
             "scope": "servers-read",
-            "expires_at": current_time + 1209600,
+            "expires_at": current_time + REFRESH_TOKEN_EXPIRY_SECONDS,
         }
 
         # Try to use with client-2

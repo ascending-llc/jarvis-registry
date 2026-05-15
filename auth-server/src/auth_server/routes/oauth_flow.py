@@ -56,6 +56,9 @@ JWT_ISSUER = settings.jwt_issuer
 JWT_AUDIENCE = settings.jwt_audience
 JWT_SELF_SIGNED_KID = settings.jwt_self_signed_kid
 
+# Refresh token expiry (14 days in seconds)
+REFRESH_TOKEN_EXPIRY_SECONDS = 1209600
+
 
 def oauth_error_response(error: str, error_description: str | None = None, status_code: int = 400) -> JSONResponse:
     content = {"error": error}
@@ -442,7 +445,7 @@ async def device_token(request: Request, user_service: UserService = Depends(get
         access_token = encode_jwt(token_payload, PRIVATE_KEY, kid=JWT_SELF_SIGNED_KID)
 
         rt = secrets.token_urlsafe(32)
-        refresh_expires_at = current_time + 1209600
+        refresh_expires_at = current_time + REFRESH_TOKEN_EXPIRY_SECONDS
         refresh_tokens_storage[rt] = {
             "client_id": client_id,
             "user_info": user_info,
@@ -492,7 +495,7 @@ async def device_token(request: Request, user_service: UserService = Depends(get
             return oauth_error_response("invalid_client", "client_id mismatch")
         now = int(time.time())
         if now > rt_data.get("expires_at", 0):
-            del refresh_tokens_storage[refresh_token]
+            refresh_tokens_storage.pop(refresh_token, None)
             return oauth_error_response("invalid_grant", "refresh token expired")
 
         user_info = rt_data["user_info"]
@@ -520,7 +523,7 @@ async def device_token(request: Request, user_service: UserService = Depends(get
 
         # Refresh token rotation: generate new refresh token and delete old one
         new_refresh_token = secrets.token_urlsafe(32)
-        new_refresh_expires_at = now + 1209600  # Extend by 14 days
+        new_refresh_expires_at = now + REFRESH_TOKEN_EXPIRY_SECONDS
 
         # Store new refresh token with extended expiry
         refresh_tokens_storage[new_refresh_token] = {
@@ -530,8 +533,14 @@ async def device_token(request: Request, user_service: UserService = Depends(get
             "expires_at": new_refresh_expires_at,
         }
 
-        # Delete old refresh token to prevent reuse
-        del refresh_tokens_storage[refresh_token]
+        # Atomically remove old refresh token to prevent reuse and handle concurrent requests
+        old_token_data = refresh_tokens_storage.pop(refresh_token, None)
+        if old_token_data is None:
+            # Token was already consumed by another concurrent request
+            logger.warning(
+                f"Refresh token already consumed (concurrent use detected) for user: {user_info['username']}"
+            )
+            return oauth_error_response("invalid_grant", "refresh token already used")
 
         logger.info(f"Rotated refresh token for user: {user_info['username']}")
 
