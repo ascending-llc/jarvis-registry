@@ -324,4 +324,8 @@
          <loc>https://jarvisregistry.com/features/registry-endpoint/</loc>
          <lastmod>2026-05-15</lastmod>
     </url>
+    <url>
+         <loc>https://jarvisregistry.com/tech-references/proxy-correctness/</loc>
+         <lastmod>2026-05-15</lastmod>
+    </url>
 </urlset>
