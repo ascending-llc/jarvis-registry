@@ -12,7 +12,7 @@ import httpx
 from registry.core.config import settings
 from registry.core.mcp_client import MCPServerData, get_tools_and_capabilities_from_server
 from registry_pkgs.models import A2AAgent, ExtendedMCPServer
-from registry_pkgs.models.a2a_agent import AgentConfig
+from registry_pkgs.models.a2a_agent import TRANSPORT_GRPC, TRANSPORT_HTTP_JSON, TRANSPORT_JSONRPC, AgentConfig
 from registry_pkgs.models.federation import AgentCoreRuntimeAccessConfig, Federation
 
 from .agentcore_clients import AgentCoreClientProvider
@@ -216,6 +216,14 @@ class AgentCoreRuntimeInvoker:
         )
 
         agent.card = refreshed.card
+        if agent.config:
+            _transport_map = {
+                "HTTP+JSON": TRANSPORT_HTTP_JSON,
+                "GRPC": TRANSPORT_GRPC,
+                "JSONRPC": TRANSPORT_JSONRPC,
+            }
+            preferred = str(getattr(agent.card, "preferred_transport", None) or "JSONRPC").upper()
+            agent.config.type = _transport_map.get(preferred, TRANSPORT_JSONRPC)
         if agent.wellKnown:
             agent.wellKnown.lastSyncStatus = "success"
             agent.wellKnown.syncError = None
