@@ -1,238 +1,31 @@
 from __future__ import annotations
 
 import logging
-import uuid
 from typing import Any
-from urllib.parse import urlparse
 
-import httpx
-from a2a.client import ClientConfig, ClientFactory
-from a2a.client.card_resolver import A2ACardResolver
-from a2a.types import Message, Part, Role, Task, TextPart
 from agno.agent import Agent
 from agno.models.base import Model
 from agno.workflow import StepInput, StepOutput
 from agno.workflow.step import StepExecutor
 
 from registry_pkgs.core.config import JwtSigningConfig
-from registry_pkgs.core.jwt_utils import build_jwt_payload, encode_jwt
 from registry_pkgs.models.a2a_agent import A2AAgent
-from registry_pkgs.models.enums import FederationProviderType
+from registry_pkgs.workflows.a2a_client import (
+    call_a2a,
+    raise_if_iam_unsupported,
+)
 from registry_pkgs.workflows.helpers import build_prompt
 
 logger = logging.getLogger(__name__)
 
-_A2A_JWT_TTL_SECONDS = 300
-_A2A_HTTP_TIMEOUT = 300
-
-_AGENTCORE_IAM_UNSUPPORTED_MSG = (
-    "IAM-authenticated AgentCore A2A runtime is not supported for direct workflow execution. "
-    "Please configure JWT auth on the AgentCore runtime (or use a proxy path that handles SigV4)."
-)
-
-
-def _normalize_claim_value(value: Any) -> Any:
-    """Normalize JWT claim values sourced from user/federation config."""
-    if isinstance(value, str):
-        return value.strip()
-    if isinstance(value, list):
-        return [_normalize_claim_value(item) for item in value]
-    if isinstance(value, tuple):
-        return tuple(_normalize_claim_value(item) for item in value)
-    if isinstance(value, dict):
-        return {key: _normalize_claim_value(item) for key, item in value.items()}
-    return value
-
-
-def _is_agentcore_runtime(agent: A2AAgent) -> bool:
-    """Return True when the agent is a federated AWS Bedrock AgentCore runtime."""
-    meta = agent.federationMetadata or {}
-    return meta.get("providerType") == FederationProviderType.AWS_AGENTCORE
-
-
-def _get_agentcore_auth_mode(agent: A2AAgent) -> str:
-    """Detect AgentCore data-plane auth mode from agent config or metadata.
-
-    Prefers the explicit ``agent.config.runtimeAccess.mode`` value.
-    Falls back to inspecting ``federationMetadata.authorizerConfiguration``.
-    """
-    if agent.config and agent.config.runtimeAccess:
-        mode = agent.config.runtimeAccess.mode
-        return str(mode.value if hasattr(mode, "value") else mode).upper()
-
-    meta = agent.federationMetadata or {}
-    config = meta.get("authorizerConfiguration") or {}
-    if not isinstance(config, dict) or not config:
-        return "IAM"
-
-    authorizer_type = str(config.get("authorizerType") or config.get("type") or "").strip().upper()
-    if authorizer_type in ("JWT", "OAUTH"):
-        return "JWT"
-
-    for key in ("customJWTAuthorizerConfiguration", "jwtAuthorizerConfiguration"):
-        candidate = config.get(key)
-        if isinstance(candidate, dict) and any(v not in (None, "", [], {}, ()) for v in candidate.values()):
-            return "JWT"
-
-    return "IAM"
-
-
-def make_agent_jwt(
-    *,
-    agent_url: str,
-    jwt_config: JwtSigningConfig,
-    expires_in_seconds: int = _A2A_JWT_TTL_SECONDS,
-) -> str:
-    """Sign a short-lived JWT for direct service-to-agent authentication.
-
-    Claims:
-    - ``sub``: ``"jarvis-workflow"`` — identifies the calling service.
-    - ``iss``: ``jwt_config.jwt_issuer`` — the registry's public issuer URL.
-    - ``aud``: ``agent_url`` — RFC 8707 resource indicator (target agent's base URL).
-    - ``exp``: ``now + expires_in_seconds``.
-    """
-    payload = build_jwt_payload(
-        subject="jarvis-workflow",
-        issuer=jwt_config.jwt_issuer,
-        audience=agent_url,
-        expires_in_seconds=expires_in_seconds,
-    )
-    return encode_jwt(payload, jwt_config.jwt_private_key, kid=jwt_config.jwt_self_signed_kid)
-
-
-def _make_agentcore_jwt(
-    agent: A2AAgent,
-    *,
-    jwt_config: JwtSigningConfig,
-    expires_in_seconds: int = _A2A_JWT_TTL_SECONDS,
-) -> str:
-    """Sign a JWT for an AWS Bedrock AgentCore runtime (JWT auth mode only).
-
-    Uses the agent's own ``runtimeAccess.jwt`` configuration when present,
-    otherwise falls back to the values supplied via ``jwt_config``.
-    """
-    runtime_jwt = None
-    if agent.config and agent.config.runtimeAccess and agent.config.runtimeAccess.jwt:
-        runtime_jwt = agent.config.runtimeAccess.jwt
-
-    extra_claims: dict[str, Any] = {}
-    issuer = jwt_config.jwt_issuer
-    audience = jwt_config.jwt_audience
-
-    if runtime_jwt:
-        if runtime_jwt.allowedClients:
-            extra_claims["client_id"] = _normalize_claim_value(runtime_jwt.allowedClients[0])
-        if runtime_jwt.allowedScopes:
-            cleaned_scopes = [
-                scope for scope in (_normalize_claim_value(scope) for scope in runtime_jwt.allowedScopes) if scope
-            ]
-            if cleaned_scopes:
-                extra_claims["scope"] = " ".join(cleaned_scopes)
-        if runtime_jwt.customClaims:
-            extra_claims.update(_normalize_claim_value(runtime_jwt.customClaims))
-        if runtime_jwt.discoveryUrl:
-            parsed = urlparse(runtime_jwt.discoveryUrl)
-            issuer = f"{parsed.scheme}://{parsed.netloc}"
-        if runtime_jwt.audiences:
-            audience = _normalize_claim_value(runtime_jwt.audiences[0])
-
-    payload = build_jwt_payload(
-        subject="jarvis-workflow",
-        issuer=issuer,
-        audience=audience,
-        expires_in_seconds=expires_in_seconds,
-        extra_claims=extra_claims or None,
-    )
-    return encode_jwt(payload, jwt_config.jwt_private_key, kid=jwt_config.jwt_self_signed_kid)
-
-
-def _raise_if_iam_unsupported(agent: A2AAgent) -> None:
-    """Guard: AgentCore IAM-auth runtimes are not supported for direct workflow execution."""
-    if _is_agentcore_runtime(agent) and _get_agentcore_auth_mode(agent) == "IAM":
-        raise NotImplementedError(_AGENTCORE_IAM_UNSUPPORTED_MSG)
-
-
-def _build_headers(agent: A2AAgent, *, jwt_config: JwtSigningConfig) -> dict[str, str]:
-    """Per-call HTTP headers for an A2A invocation.
-
-    AgentCore runtimes need an extra ``X-Amzn-Bedrock-AgentCore-Runtime-Session-Id``
-    header and a JWT with custom claims; standard A2A agents need only a Bearer JWT.
-    """
-    if _is_agentcore_runtime(agent):
-        return {
-            "Authorization": f"Bearer {_make_agentcore_jwt(agent, jwt_config=jwt_config)}",
-            "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": str(uuid.uuid4()),
-        }
-    token = make_agent_jwt(agent_url=str(agent.card.url).rstrip("/"), jwt_config=jwt_config)
-    return {"Authorization": f"Bearer {token}"}
-
-
-def _create_message(text: str) -> Message:
-    """Build an A2A user Message with a single TextPart."""
-    return Message(
-        kind="message",
-        role=Role.user,
-        parts=[Part(TextPart(kind="text", text=text))],
-        message_id=uuid.uuid4().hex,
-    )
-
-
-def _extract_text(event: Any) -> str:
-    """Extract concatenated text from a ``Message`` or ``(Task, update_event)`` tuple.
-
-    Skips non-text parts (``FilePart`` / ``DataPart``).  Falls back to ``str(event)``
-    for unrecognized event shapes.
-    """
-    parts: list[Part] = []
-    if isinstance(event, Message):
-        parts = event.parts
-    elif isinstance(event, tuple) and len(event) == 2 and isinstance(event[0], Task):
-        for artifact in event[0].artifacts or []:
-            parts.extend(artifact.parts or [])
-    else:
-        return str(event)
-
-    return "".join(p.root.text for p in parts if isinstance(p.root, TextPart))
-
-
-async def _call_a2a(agent: A2AAgent, text: str, *, jwt_config: JwtSigningConfig) -> StepOutput:
-    """Invoke an A2A agent (standard or AgentCore) via the official ``a2a-sdk``."""
-    agent_name = agent.config.title if agent.config else agent.card.name
-    agent_url = agent.card.url if agent.card else "unknown"
-
-    logger.debug("  → calling A2A agent %r  url=%s  prompt=%r", agent_name, agent_url, text[:120])
-
-    try:
-        async with httpx.AsyncClient(timeout=_A2A_HTTP_TIMEOUT) as httpx_client:
-            headers = _build_headers(agent, jwt_config=jwt_config)
-            httpx_client.headers.update(headers)
-
-            resolver = A2ACardResolver(httpx_client=httpx_client, base_url=agent.card.url)
-            agent_card = await resolver.get_agent_card()
-            config = ClientConfig(
-                httpx_client=httpx_client,
-                streaming=False,
-            )
-            client = ClientFactory(config).create(agent_card)
-            async for event in client.send_message(_create_message(text)):
-                output = _extract_text(event)
-                logger.debug("  ← A2A agent %r responded: %r", agent_name, output[:200])
-                return StepOutput(content=output)
-        logger.warning("  ← A2A agent %r returned no events", agent_name)
-        return StepOutput(content="", success=False, error="A2A agent returned no events")
-    except Exception as exc:
-        logger.exception("A2A executor %r failed", agent_name)
-        return StepOutput(content=str(exc), success=False, error=str(exc))
-
 
 def make_a2a_executor(agent: A2AAgent, *, jwt_config: JwtSigningConfig) -> StepExecutor:
-    """
-    Wrap an A2A agent as a workflow executor via a direct call to the agent URL.
-    """
+    """Wrap an A2A agent as a workflow StepExecutor via a direct A2A call."""
 
     async def executor(step_input: StepInput, session_state: dict[str, Any] | None = None) -> StepOutput:
-        _raise_if_iam_unsupported(agent)
-        return await _call_a2a(agent, build_prompt(step_input), jwt_config=jwt_config)
+        raise_if_iam_unsupported(agent)
+        result = await call_a2a(agent, build_prompt(step_input), jwt_config=jwt_config)
+        return StepOutput(content=result.text, success=result.success, error=result.error)
 
     executor.__name__ = f"{agent.path.lstrip('/')}_a2a_executor"
     return executor
@@ -246,7 +39,7 @@ def make_a2a_pool_executor(
     jwt_config: JwtSigningConfig,
     accessible_agent_ids: set[str] | None,
 ) -> StepExecutor:
-    """Build an executor that picks the best A2A agent from a pool at runtime.
+    """Build a StepExecutor that picks the best A2A agent from a pool at runtime.
 
     Selection is performed by an LLM on first call, then cached in
     ``session_state`` so retries reuse the same agent without re-running the
@@ -323,8 +116,9 @@ def make_a2a_pool_executor(
                     error=f"pool retry failed: agent {selected_path!r} not in accessible set",
                 )
 
-        _raise_if_iam_unsupported(selected_agent)
-        return await _call_a2a(selected_agent, task, jwt_config=jwt_config)
+        raise_if_iam_unsupported(selected_agent)
+        result = await call_a2a(selected_agent, task, jwt_config=jwt_config)
+        return StepOutput(content=result.text, success=result.success, error=result.error)
 
     executor.__name__ = f"{node_name}_pool_executor"
     return executor

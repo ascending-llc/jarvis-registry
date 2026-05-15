@@ -155,8 +155,8 @@ def get_tools() -> list[tuple[str, Callable]]:
         - skill_name (entity_type='skill'): the specific skill to target
 
         Execution:
-        - Delegate the task to the agent at <path> using the A2A protocol (agent_id=<agent_id>).
-        - If entity_type='skill', target skill_name=<skill_name> within that agent.
+        - call execute_agent(agent_id=<agent_id>, message=<full task description>).
+        - If entity_type='skill', include the skill_name in the message to target that capability.
 
         Evaluating results: read each result's description to confirm the agent's
         domain matches the user's task — do not rely on the score alone. If the top

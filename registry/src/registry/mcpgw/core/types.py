@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from httpx import AsyncClient
 from redis import Redis
 
+from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.vector.repositories.a2a_agent_repository import A2AAgentRepository
 from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRepository
 
@@ -24,3 +25,4 @@ class McpAppContext:
     oauth_service: MCPOAuthService
     session_store: SessionStore
     redis_client: Redis
+    jwt_signing_config: JwtSigningConfig
