@@ -94,9 +94,12 @@ def _extract_request_id(request_dict: dict[str, Any]) -> str | int | None:
         return None
 
 
-# Hop-by-hop headers must never be forwarded to clients (RFC 2616 §13.5.1).
-# Content-Length is excluded because Starlette recalculates it from the response body.
-# Date is excluded to avoid duplicate-header warnings when the upstream also sets it.
+# Hop-by-hop headers defined by RFC 2616 §13.5.1 that proxies MUST strip.
+# Date is also excluded to avoid duplicate-header warnings when upstream sets it too.
+# Content-Length is intentionally absent — it is popped explicitly at each forward branch
+# because the correct treatment differs: buffered (Response) branches let Starlette
+# recalculate it from the actual de-chunked bytes; streaming (StreamingResponse) branches
+# must not set it at all because the total length is indeterminate.
 _HOP_BY_HOP_HEADERS = frozenset(
     [
         "connection",
@@ -107,13 +110,12 @@ _HOP_BY_HOP_HEADERS = frozenset(
         "trailers",
         "transfer-encoding",
         "upgrade",
-        "content-length",
         "date",
     ]
 )
 
 
-def _sanitize_proxy_response_headers(headers: httpx.Headers) -> dict[str, str]:
+def _sanitize_hop_by_hop_headers(headers: httpx.Headers) -> dict[str, str]:
     return {k: v for k, v in headers.items() if k.lower() not in _HOP_BY_HOP_HEADERS}
 
 
@@ -272,7 +274,10 @@ async def proxy_to_mcp_server(
                             f"Backend error response ({backend_response.status_code}): [binary content, {len(content_bytes)} bytes]"
                         )
 
-                response_headers = dict(backend_response.headers)
+                response_headers = _sanitize_hop_by_hop_headers(backend_response.headers)
+                # Starlette recalculates Content-Length from the buffered body; the upstream's
+                # value may be stale or wrong (e.g. when upstream mis-reports under chunked encoding).
+                response_headers.pop("content-length", None)
                 return Response(
                     content=content_bytes,
                     status_code=backend_response.status_code,
@@ -282,13 +287,14 @@ async def proxy_to_mcp_server(
 
             logger.info("Streaming SSE from backend")
 
-            response_headers = dict(backend_response.headers)
+            response_headers = _sanitize_hop_by_hop_headers(backend_response.headers)
+            # Content-Length cannot be set for a stream of indeterminate length.
             response_headers.pop("content-length", None)
             response_headers.update(
                 {
                     "Cache-Control": "no-cache",
                     "X-Accel-Buffering": "no",
-                    "Connection": "keep-alive",
+                    "Connection": "keep-alive",  # hop-by-hop header re-added intentionally for the outbound leg
                     "Content-Type": backend_content_type or "text/event-stream",
                 }
             )
@@ -428,22 +434,28 @@ async def _forward_a2a(
                             f"[binary, {len(content_bytes)} bytes]"
                         )
 
+                response_headers = _sanitize_hop_by_hop_headers(backend_response.headers)
+                # Starlette recalculates Content-Length from the buffered body; the upstream's
+                # value may be stale or wrong (e.g. AgentCore adds Transfer-Encoding: chunked
+                # to complete JSON responses, causing the reported Content-Length to be unreliable).
+                response_headers.pop("content-length", None)
                 return Response(
                     content=content_bytes,
                     status_code=backend_response.status_code,
-                    headers=_sanitize_proxy_response_headers(backend_response.headers),
+                    headers=response_headers,
                     media_type=backend_content_type or "application/json",
                 )
 
             logger.info(f"Streaming SSE from A2A agent [{agent_slug}]")
 
-            response_headers = dict(backend_response.headers)
+            response_headers = _sanitize_hop_by_hop_headers(backend_response.headers)
+            # Content-Length cannot be set for a stream of indeterminate length.
             response_headers.pop("content-length", None)
             response_headers.update(
                 {
                     "Cache-Control": "no-cache",
                     "X-Accel-Buffering": "no",
-                    "Connection": "keep-alive",
+                    "Connection": "keep-alive",  # hop-by-hop header re-added intentionally for the outbound leg
                     "Content-Type": backend_content_type or "text/event-stream",
                 }
             )
@@ -870,12 +882,14 @@ async def dynamic_mcp_get_proxy(
 
         logger.info("Streaming SSE from backend")
 
-        response_headers = dict(backend_response.headers)
+        response_headers = _sanitize_hop_by_hop_headers(backend_response.headers)
+        # Content-Length cannot be set for a stream of indeterminate length.
+        response_headers.pop("content-length", None)
         response_headers.update(
             {
                 "Cache-Control": "no-cache",
                 "X-Accel-Buffering": "no",
-                "Connection": "keep-alive",
+                "Connection": "keep-alive",  # hop-by-hop header re-added intentionally for the outbound leg
             }
         )
 
