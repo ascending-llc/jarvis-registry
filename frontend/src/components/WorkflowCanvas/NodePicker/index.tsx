@@ -133,7 +133,7 @@ const NodePicker: React.FC<NodePickerProps> = ({ onPick, onClose, agentOnly = fa
       onClick={onClose}
     >
       <div
-        className='animate-pin bg-[var(--jarvis-card-muted)] border border-[var(--jarvis-border-strong)] rounded-[14px] w-[500px] max-h-[560px] flex flex-col shadow-[0_32px_80px_-16px_rgba(0,0,0,.8)]'
+        className='animate-pin bg-[var(--jarvis-card)] border border-[var(--jarvis-border-strong)] rounded-[14px] w-[500px] max-h-[560px] flex flex-col shadow-[0_32px_80px_-16px_rgba(0,0,0,.8)]'
         onClick={e => e.stopPropagation()}
       >
         {/* Header */}

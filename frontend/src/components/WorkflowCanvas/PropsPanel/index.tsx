@@ -11,9 +11,21 @@ const MIN_W = 200;
 const MAX_W = 480;
 const DEFAULT_W = 264;
 
+const PropertiesEmptyState: React.FC = () => (
+  <div className='flex flex-col items-center justify-center min-h-[200px] gap-2.5 p-7'>
+    <div className='w-10 h-10 rounded-lg bg-[var(--jarvis-card-muted)] border border-[var(--jarvis-border)] flex items-center justify-center'>
+      <svg fill='none' stroke='currentColor' viewBox='0 0 24 24' width='17' height='17'>
+        <path strokeLinecap='round' strokeLinejoin='round' strokeWidth='1.5' d='M4 5h16M4 12h10M4 19h6' />
+      </svg>
+    </div>
+    <p className='text-xs text-[var(--jarvis-subtle)] text-center leading-relaxed'>Click a node to edit its properties</p>
+  </div>
+);
+
 /** PropsPanel - collapsible + draggable width properties panel. */
 const PropsPanel: React.FC<PropsPanelProps> = ({
   workflowId,
+  refreshRunHistoryKey,
   selectedNode,
   nodes = [],
   edges = [],
@@ -77,59 +89,8 @@ const PropsPanel: React.FC<PropsPanelProps> = ({
   );
 
   const panelW = collapsed ? 0 : width;
-
-  if (!selectedNode) {
-    return (
-      <div className='flex shrink-0 relative h-full'>
-        {collapsed && (
-          <button
-            onClick={() => setCollapsed(false)}
-            title='Expand panel'
-            className='absolute right-0 top-0 w-9 h-[42px] z-50 flex items-center justify-center bg-[var(--jarvis-card)] border-b border-l border-[var(--jarvis-border)] text-[var(--jarvis-subtle)] hover:text-[var(--jarvis-text-strong)] rounded-bl-md cursor-pointer shadow-sm transition-colors duration-200'
-          >
-            <svg width='14' height='14' fill='none' stroke='currentColor' viewBox='0 0 24 24'>
-              <path strokeLinecap='round' strokeLinejoin='round' strokeWidth='2' d='M15 19l-7-7 7-7' />
-            </svg>
-          </button>
-        )}
-        <div
-          className='bg-[var(--jarvis-card)] border-l border-[var(--jarvis-border)] flex flex-col overflow-hidden shrink-0 h-full transition-all duration-200 ease-out'
-          style={{ width: panelW }}
-        >
-          {!collapsed && (
-            <div className='flex items-center border-b border-[var(--jarvis-border)] shrink-0'>
-              <button
-                onClick={() => setCollapsed(true)}
-                title='Collapse panel'
-                className='w-9 h-[42px] flex items-center justify-center bg-none border-none text-[var(--jarvis-subtle)] hover:text-[var(--jarvis-text-strong)] cursor-pointer shrink-0 transition-colors duration-200'
-              >
-                <svg width='14' height='14' fill='none' stroke='currentColor' viewBox='0 0 24 24'>
-                  <path strokeLinecap='round' strokeLinejoin='round' strokeWidth='2' d='M9 5l7 7-7 7' />
-                </svg>
-              </button>
-            </div>
-          )}
-          {!collapsed && (
-            <div className='flex-1 overflow-y-auto'>
-              <div className='flex flex-col items-center justify-center h-full gap-2.5 p-7'>
-                <div className='w-10 h-10 rounded-lg bg-[var(--jarvis-card-muted)] border border-[var(--jarvis-border)] flex items-center justify-center'>
-                  <svg fill='none' stroke='currentColor' viewBox='0 0 24 24' width='17' height='17'>
-                    <path strokeLinecap='round' strokeLinejoin='round' strokeWidth='1.5' d='M4 5h16M4 12h10M4 19h6' />
-                  </svg>
-                </div>
-                <p className='text-xs text-[var(--jarvis-subtle)] text-center leading-relaxed'>
-                  Click any node to view its properties and run history
-                </p>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-    );
-  }
-
-  const t = selectedNode.type;
-  const nodeData = selectedNode.data as NodeData | undefined;
+  const nodeData = selectedNode?.data as NodeData | undefined;
+  const nodeType = selectedNode?.type;
 
   return (
     <div className='flex shrink-0 relative h-full'>
@@ -142,6 +103,7 @@ const PropsPanel: React.FC<PropsPanelProps> = ({
 
       {collapsed && (
         <button
+          type='button'
           onClick={() => setCollapsed(false)}
           title='Expand panel'
           className='absolute right-0 top-0 w-9 h-[42px] z-50 flex items-center justify-center bg-[var(--jarvis-card)] border-b border-l border-[var(--jarvis-border)] text-[var(--jarvis-subtle)] hover:text-[var(--jarvis-text-strong)] rounded-bl-md cursor-pointer shadow-sm transition-colors duration-200'
@@ -159,6 +121,7 @@ const PropsPanel: React.FC<PropsPanelProps> = ({
         {!collapsed && (
           <div className='flex items-center border-b border-[var(--jarvis-border)] shrink-0'>
             <button
+              type='button'
               onClick={() => setCollapsed(true)}
               title='Collapse panel'
               className='w-9 h-[42px] flex items-center justify-center bg-none border-none text-[var(--jarvis-subtle)] hover:text-[var(--jarvis-text-strong)] cursor-pointer shrink-0 transition-colors duration-200'
@@ -169,6 +132,7 @@ const PropsPanel: React.FC<PropsPanelProps> = ({
             </button>
 
             <button
+              type='button'
               className='flex-1 px-1.5 py-2.5 text-center font-sans text-[11.5px] font-medium cursor-pointer bg-none border-none transition-all duration-200'
               style={{
                 color: tab === 'props' ? 'var(--jarvis-primary-text)' : 'var(--jarvis-subtle)',
@@ -179,6 +143,7 @@ const PropsPanel: React.FC<PropsPanelProps> = ({
               Properties
             </button>
             <button
+              type='button'
               className='flex-1 px-1.5 py-2.5 text-center font-sans text-[11.5px] font-medium cursor-pointer bg-none border-none transition-all duration-200'
               style={{
                 color: tab === 'hist' ? 'var(--jarvis-primary-text)' : 'var(--jarvis-subtle)',
@@ -195,58 +160,60 @@ const PropsPanel: React.FC<PropsPanelProps> = ({
           <div className='flex-1 overflow-y-auto'>
             <style>{`@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}`}</style>
 
-            {tab === 'props' && (
-              <>
-                <div className='px-4 py-3 border-b border-[var(--jarvis-border)]'>
-                  <div className='font-mono text-[10px] font-bold tracking-wide uppercase text-[var(--jarvis-subtle)] mb-2'>
-                    Node
+            {tab === 'props' &&
+              (selectedNode ? (
+                <>
+                  <div className='px-4 py-3 border-b border-[var(--jarvis-border)]'>
+                    <div className='font-mono text-[10px] font-bold tracking-wide uppercase text-[var(--jarvis-subtle)] mb-2'>
+                      Node
+                    </div>
+                    <div className='mb-2'>
+                      <label className='block text-xs text-[var(--jarvis-muted)] mb-1'>Title</label>
+                      <input
+                        className='w-full bg-[var(--jarvis-card-muted)] border border-[var(--jarvis-border)] rounded-md text-[var(--jarvis-text-strong)] font-sans text-xs px-2 py-1.5 outline-none focus:ring-2 focus:ring-[var(--jarvis-primary)]'
+                        value={nodeData?.label || ''}
+                        onChange={e => onNodeDataChange?.(selectedNode.id, { label: e.target.value })}
+                      />
+                    </div>
                   </div>
-                  <div className='mb-2'>
-                    <label className='block text-xs text-[var(--jarvis-muted)] mb-1'>Title</label>
-                    <input
-                      className='w-full bg-[var(--jarvis-card-muted)] border border-[var(--jarvis-border)] rounded-md text-[var(--jarvis-text-strong)] font-sans text-xs px-2 py-1.5 outline-none focus:ring-2 focus:ring-[var(--jarvis-primary)]'
-                      value={nodeData?.label || ''}
-                      onChange={e => onNodeDataChange?.(selectedNode.id, { label: e.target.value })}
+
+                  {['gate', 'cond', 'router', 'loop'].includes(nodeType ?? '') && (
+                    <LogicProps
+                      node={selectedNode as Node<NodeData>}
+                      nodes={nodes}
+                      edges={edges}
+                      upstreamSchema={upstreamSchema}
+                      sourceLabel={sourceLabel}
+                      onNodeDataChange={onNodeDataChange}
                     />
-                  </div>
-                </div>
+                  )}
+                  {nodeType === 'parallel' && (
+                    <ParallelProps
+                      node={selectedNode as Node<NodeData>}
+                      onNodeDataChange={onNodeDataChange}
+                      onParallelBranchesChange={onParallelBranchesChange}
+                    />
+                  )}
+                  {nodeType === 'pool' && (
+                    <PoolProps
+                      node={selectedNode as Node<NodeData>}
+                      onNodeDataChange={onNodeDataChange}
+                      onOpenAgentPicker={onOpenAgentPicker}
+                    />
+                  )}
+                </>
+              ) : (
+                <PropertiesEmptyState />
+              ))}
 
-                {['gate', 'cond', 'router', 'loop'].includes(t ?? '') && (
-                  <LogicProps
-                    node={selectedNode as Node<NodeData>}
-                    nodes={nodes}
-                    edges={edges}
-                    upstreamSchema={upstreamSchema}
-                    sourceLabel={sourceLabel}
-                    onNodeDataChange={onNodeDataChange}
-                  />
-                )}
-                {t === 'parallel' && (
-                  <ParallelProps
-                    node={selectedNode as Node<NodeData>}
-                    onNodeDataChange={onNodeDataChange}
-                    onParallelBranchesChange={onParallelBranchesChange}
-                  />
-                )}
-                {t === 'pool' && (
-                  <PoolProps node={selectedNode as Node<NodeData>} onNodeDataChange={onNodeDataChange} onOpenAgentPicker={onOpenAgentPicker} />
-                )}
-              </>
-            )}
-
-            {tab === 'hist' && (
-              <RunHistory
-                workflowId={workflowId}
-                selectedNodeId={selectedNode.id}
-                selectedNodeLabel={nodeData?.label}
-              />
-            )}
+            {tab === 'hist' && <RunHistory workflowId={workflowId} refreshRunHistoryKey={refreshRunHistoryKey} />}
           </div>
         )}
 
         {!collapsed && selectedNode && (
           <div className='px-4 py-3 border-t border-[var(--jarvis-border)] shrink-0'>
             <button
+              type='button'
               onClick={() => onDeleteNode?.(selectedNode.id)}
               className='w-full inline-flex items-center justify-center gap-2 px-4 py-2 border border-[var(--jarvis-border)] rounded-md shadow-sm text-sm font-medium text-[var(--jarvis-danger-text)] bg-[var(--jarvis-card)] hover:bg-[var(--jarvis-danger-soft)] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[var(--jarvis-danger)] transition-colors'
             >

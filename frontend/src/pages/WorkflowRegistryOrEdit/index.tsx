@@ -4,7 +4,7 @@ import type React from 'react';
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import WorkflowCanvas from '@/components/WorkflowCanvas';
-import { apiNodesToCanvas, canvasToApiNodes } from '@/components/WorkflowCanvas/convert';
+import { apiNodesToCanvas, canvasToApiNodes, validateApiNodes } from '@/components/WorkflowCanvas/convert';
 import type { WorkflowCanvasRef } from '@/components/WorkflowCanvas/types';
 import { useGlobal } from '@/contexts/GlobalContext';
 import { useServer } from '@/contexts/ServerContext';
@@ -28,6 +28,7 @@ const WorkflowRegistryOrEdit: React.FC = () => {
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [saving, setSaving] = useState(false);
   const [triggering, setTriggering] = useState(false);
+  const [runHistoryRefresh, setRunHistoryRefresh] = useState(0);
 
   // Editable title — seeded from URL param immediately, then overwritten when detail loads
   const [titleValue, setTitleValue] = useState(searchParams.get('name') ?? 'New Workflow');
@@ -105,16 +106,9 @@ const WorkflowRegistryOrEdit: React.FC = () => {
       showToast('Add at least one node before saving', 'error');
       return;
     }
-    // Validate step nodes have a non-empty executor key or agent pool
-    const invalidSteps = apiNodes.flatMap(function collect(n): typeof apiNodes {
-      const children = n.children ?? [];
-      if (n.nodeType === 'step' && !n.executorKey && (!n.a2aPool || n.a2aPool.length === 0)) {
-        return [n, ...children.flatMap(collect)];
-      }
-      return children.flatMap(collect);
-    });
-    if (invalidSteps.length > 0) {
-      showToast(`Node "${invalidSteps[0].name}" requires an executor key or agent pool`, 'error');
+    const validationError = validateApiNodes(apiNodes);
+    if (validationError) {
+      showToast(validationError, 'error');
       return;
     }
     setSaving(true);
@@ -146,6 +140,7 @@ const WorkflowRegistryOrEdit: React.FC = () => {
     setTriggering(true);
     try {
       await SERVICES.WORKFLOW.triggerWorkflowRun(id, {});
+      setRunHistoryRefresh(k => k + 1);
       showToast('Workflow run triggered!', 'success');
     } catch (error: any) {
       const msg = error?.detail?.message || (typeof error?.detail === 'string' ? error.detail : '');
@@ -239,6 +234,7 @@ const WorkflowRegistryOrEdit: React.FC = () => {
             key={id ?? 'new'}
             ref={canvasRef}
             workflowId={id ?? undefined}
+            refreshRunHistoryKey={runHistoryRefresh}
             initialNodes={initialNodes}
             initialEdges={initialEdges}
             onSave={handleSave}

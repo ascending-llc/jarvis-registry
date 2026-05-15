@@ -134,6 +134,53 @@ const buildSequence = (
   return result;
 };
 
+/** Walk API tree and return first validation error message, or null if valid. */
+export const validateApiNodes = (apiNodes: ApiWorkflowNode[]): string | null => {
+  const visit = (node: ApiWorkflowNode): string | null => {
+    const children = node.children ?? [];
+
+    if (node.nodeType === 'step') {
+      if (children.length > 0) return `Step node "${node.name}" must not have children`;
+      if (!node.executorKey && (!node.a2aPool || node.a2aPool.length === 0)) {
+        return `Node "${node.name}" requires an executor key or agent pool`;
+      }
+    }
+
+    if (node.nodeType === 'condition') {
+      if (children.length === 0) {
+        return `Condition node "${node.name}" requires at least one branch with a step node`;
+      }
+      if (children.length > 2) {
+        return `Condition node "${node.name}" supports at most 2 branches`;
+      }
+    }
+
+    if (node.nodeType === 'parallel' && children.length < 2) {
+      return `Parallel node "${node.name}" requires at least 2 branches with step nodes`;
+    }
+
+    if (node.nodeType === 'loop' && children.length < 1) {
+      return `Loop node "${node.name}" requires at least one branch with a step node`;
+    }
+
+    if (node.nodeType === 'router' && children.length < 2) {
+      return `Router node "${node.name}" requires at least 2 branches with step nodes`;
+    }
+
+    for (const child of children) {
+      const err = visit(child);
+      if (err) return err;
+    }
+    return null;
+  };
+
+  for (const root of apiNodes) {
+    const err = visit(root);
+    if (err) return err;
+  }
+  return null;
+};
+
 /**
  * Convert ReactFlow nodes + edges → API `WorkflowNode[]` payload.
  * "add" placeholder nodes are excluded; branching nodes carry their branches in `children`.

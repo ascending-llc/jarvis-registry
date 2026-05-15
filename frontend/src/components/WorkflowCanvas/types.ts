@@ -8,6 +8,7 @@ export interface WorkflowCanvasRef {
 /** WorkflowCanvas 主组件 Props */
 export interface WorkflowCanvasProps {
   workflowId?: string;
+  refreshRunHistoryKey?: number;
   initialNodes?: Node[];
   initialEdges?: Edge[];
   onSave?: (nodes: Node[], edges: Edge[]) => void;
@@ -35,6 +36,7 @@ export type WorkflowNode = Node<NodeData>;
 /** PropsPanel Props */
 export interface PropsPanelProps {
   workflowId?: string;
+  refreshRunHistoryKey?: number;
   selectedNode: Node | null;
   nodes: Node[];
   edges: Edge[];

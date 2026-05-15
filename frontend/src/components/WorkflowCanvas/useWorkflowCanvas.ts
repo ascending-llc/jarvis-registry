@@ -1,7 +1,7 @@
 import type { Connection, Edge, Node } from '@xyflow/react';
 import { addEdge, useEdgesState, useNodesState } from '@xyflow/react';
 import type React from 'react';
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ADD_NODE_MARGIN_X, BRANCH_SPACING, DASHED_EDGE, EDGE_CONFIG, NODE_WIDTH } from './constants';
 import { getInitialElements } from './fixtures';
 import { estimateNodeHeight, getLayoutedElements } from './layout';
@@ -41,6 +41,32 @@ export const useWorkflowCanvas = (initialNodes?: Node[], initialEdges?: Edge[]) 
 
   const nodeIdRef = useRef(0);
   const edgeIdRef = useRef(0);
+
+  /** Keep counters ahead of existing canvas ids so new nodes never reuse n1, n2, … */
+  const syncIdCounters = useCallback((currentNodes: Node[], currentEdges: Edge[]) => {
+    let maxNode = nodeIdRef.current;
+    for (const n of currentNodes) {
+      const m = /^n(\d+)$/.exec(n.id);
+      if (m) maxNode = Math.max(maxNode, Number.parseInt(m[1], 10));
+      const addM = /^addn(\d+)_/.exec(n.id);
+      if (addM) maxNode = Math.max(maxNode, Number.parseInt(addM[1], 10));
+    }
+    nodeIdRef.current = maxNode;
+
+    let maxEdge = edgeIdRef.current;
+    for (const e of currentEdges) {
+      const m = /^e(\d+)$/.exec(e.id);
+      if (m) maxEdge = Math.max(maxEdge, Number.parseInt(m[1], 10));
+    }
+    edgeIdRef.current = maxEdge;
+  }, []);
+
+  useEffect(() => {
+    const seedNodes = (initialNodes as WorkflowNode[] | undefined) ?? mockNodes;
+    const seedEdges = initialEdges ?? mockEdges;
+    syncIdCounters(seedNodes, seedEdges);
+  }, [initialNodes, initialEdges, mockNodes, mockEdges, syncIdCounters]);
+
   const generateNodeId = () => `n${++nodeIdRef.current}`;
   const generateEdgeId = () => `e${++edgeIdRef.current}`;
 
@@ -147,6 +173,8 @@ export const useWorkflowCanvas = (initialNodes?: Node[], initialEdges?: Edge[]) 
       const N = nextBranches.length;
       const handleOffsetY = (i: number): number => (i - (N - 1) / 2) * BRANCH_SPACING;
 
+      syncIdCounters(nodes, edges);
+
       if (nextBranches.length > prevBranches.length) {
         const newIdx = N - 1;
         const addId = `addp_${nodeId}_b${newIdx}_${Date.now()}`;
@@ -240,7 +268,7 @@ export const useWorkflowCanvas = (initialNodes?: Node[], initialEdges?: Edge[]) 
         setSelected(prev => (prev?.id === nodeId ? { ...prev, data: { ...prev.data, branches: nextBranches } } : prev));
       }
     },
-    [nodes, edges, setNodes, setEdges],
+    [nodes, edges, setNodes, setEdges, syncIdCounters],
   );
 
   const onPick = useCallback(
@@ -248,6 +276,8 @@ export const useWorkflowCanvas = (initialNodes?: Node[], initialEdges?: Edge[]) 
       setPickerOpen(false);
       const addNode = nodes.find(n => n.id === pendingAdd);
       if (!addNode) return;
+
+      syncIdCounters(nodes, edges);
 
       const nodeType = CATEGORY_TYPE[category](item);
       const newId = generateNodeId();
@@ -325,7 +355,7 @@ export const useWorkflowCanvas = (initialNodes?: Node[], initialEdges?: Edge[]) 
       setSelected(newNode);
       setPendingAdd(null);
     },
-    [pendingAdd, nodes, edges, setNodes, setEdges],
+    [pendingAdd, nodes, edges, setNodes, setEdges, syncIdCounters],
   );
 
   const onOpenAgentPicker = useCallback((cb: (agent: AgentInfo) => void) => {

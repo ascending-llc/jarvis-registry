@@ -40,7 +40,7 @@ const LIGHT_COLORS: Record<string, string> = {
 };
 
 const WorkflowCanvas = forwardRef<WorkflowCanvasRef, WorkflowCanvasProps>(
-  ({ workflowId, initialNodes, initialEdges, onSave }, ref) => {
+  ({ workflowId, refreshRunHistoryKey, initialNodes, initialEdges, onSave }, ref) => {
     const { theme } = useTheme();
     const isDark = theme === 'dark';
 
@@ -99,6 +99,7 @@ const WorkflowCanvas = forwardRef<WorkflowCanvasRef, WorkflowCanvasProps>(
 
           <PropsPanel
             workflowId={workflowId}
+            refreshRunHistoryKey={refreshRunHistoryKey}
             selectedNode={workflow.selectedNode}
             nodes={workflow.nodes}
             edges={workflow.edges}
