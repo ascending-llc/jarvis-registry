@@ -7,7 +7,6 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlparse
 
-import grpc
 from a2a.client import ClientConfig, ClientFactory
 from a2a.client.middleware import ClientCallContext
 from a2a.types import (
@@ -23,7 +22,7 @@ from a2a.types import (
 
 from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.core.jwt_utils import build_jwt_payload, encode_jwt
-from registry_pkgs.models.a2a_agent import TRANSPORT_GRPC, TRANSPORT_HTTP_JSON, TRANSPORT_JSONRPC, A2AAgent
+from registry_pkgs.models.a2a_agent import TRANSPORT_HTTP_JSON, TRANSPORT_JSONRPC, A2AAgent
 from registry_pkgs.models.enums import FederationProviderType
 
 logger = logging.getLogger(__name__)
@@ -39,7 +38,6 @@ _AGENTCORE_IAM_UNSUPPORTED_MSG = (
 _PROTOCOL_MAP: dict[str, TransportProtocol] = {
     TRANSPORT_JSONRPC: TransportProtocol.jsonrpc,
     TRANSPORT_HTTP_JSON: TransportProtocol.http_json,
-    TRANSPORT_GRPC: TransportProtocol.grpc,
 }
 
 
@@ -180,28 +178,6 @@ def _create_message(text: str) -> Message:
     )
 
 
-def _make_grpc_channel_factory(base_url: str) -> Callable[[str], grpc.aio.Channel]:
-    """Return a gRPC channel factory sized for the agent's TLS requirement.
-
-    TLS is inferred from the card URL scheme (https/grpcs → TLS, http → plaintext).
-    This assumes the card URL scheme correctly reflects the transport security of the
-    gRPC endpoint — callers that point at a TLS-terminated endpoint via http:// must
-    pass a pre-built secure factory instead of relying on this helper.
-    """
-    secure = urlparse(base_url).scheme.lower() in {"https", "grpcs"}
-
-    def _factory(target: str) -> grpc.aio.Channel:
-        # The SDK passes the full card URL (e.g. "http://host:9001/"); gRPC targets
-        # must be bare "host:port" — strip scheme and path before connecting.
-        parsed = urlparse(target)
-        grpc_target = parsed.netloc or target
-        if secure:
-            return grpc.aio.secure_channel(grpc_target, grpc.ssl_channel_credentials())
-        return grpc.aio.insecure_channel(grpc_target)
-
-    return _factory
-
-
 def _extract_event(
     event: tuple[Task, TaskStatusUpdateEvent | TaskArtifactUpdateEvent | None] | Message,
 ) -> tuple[str, list[Part]]:
@@ -242,7 +218,7 @@ async def call_a2a(
 ) -> A2ACallResult:
     """Invoke an A2A agent via the a2a-sdk ClientFactory.
 
-    Transport (jsonrpc / http_json / grpc) is selected from agent.config.type.
+    Transport (jsonrpc / http_json) is selected from agent.config.type.
     ClientFactory manages its own httpx client internally; auth headers and
     timeout are injected per-call via ClientCallContext. Events are streamed
     and on_chunk is called for each text chunk received.
@@ -259,13 +235,15 @@ async def call_a2a(
     """
     agent_name = agent.config.title if agent.config else agent.card.name
     transport_type = (agent.config.type if agent.config else TRANSPORT_JSONRPC).lower()
-    # gRPC agents are registered via a companion HTTP card endpoint (different port),
-    # so config.url may point to that HTTP port rather than the actual gRPC endpoint.
-    # card.url is always the authoritative gRPC target, so use it for gRPC transport.
-    if transport_type == TRANSPORT_GRPC and agent.card and agent.card.url:
-        base_url = str(agent.card.url).rstrip("/")
-    else:
-        base_url = str(agent.config.url if agent.config and agent.config.url else agent.card.url).rstrip("/")
+
+    if transport_type not in _PROTOCOL_MAP:
+        return A2ACallResult(
+            text="",
+            success=False,
+            error=f"Unsupported transport type '{transport_type}' for agent {agent_name!r}. Supported: {sorted(_PROTOCOL_MAP)}",
+        )
+
+    base_url = str(agent.config.url if agent.config and agent.config.url else agent.card.url).rstrip("/")
 
     logger.debug(
         "→ calling A2A agent %r  transport=%s  url=%s  prompt=%r",
@@ -297,7 +275,6 @@ async def call_a2a(
         config = ClientConfig(
             supported_transports=[protocol],
             use_client_preference=True,
-            grpc_channel_factory=(_make_grpc_channel_factory(base_url) if transport_type == TRANSPORT_GRPC else None),
         )
         client = ClientFactory(config).create(agent_card)
 

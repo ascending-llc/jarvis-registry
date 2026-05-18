@@ -6,7 +6,6 @@ import json
 import logging
 from collections.abc import AsyncGenerator
 from typing import Any
-from urllib.parse import urlparse
 from uuid import uuid4
 
 import httpx
@@ -20,7 +19,7 @@ from redis import Redis
 from starlette.routing import get_route_path
 
 from registry_pkgs.models import ResourceType
-from registry_pkgs.models.a2a_agent import TRANSPORT_GRPC, TRANSPORT_HTTP_JSON, TRANSPORT_JSONRPC
+from registry_pkgs.models.a2a_agent import TRANSPORT_HTTP_JSON, TRANSPORT_JSONRPC
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 
 from ..auth.dependencies import CurrentUser, UserContextDict
@@ -40,14 +39,6 @@ from ..services.a2a_agent_service import A2AAgentService
 from ..services.access_control_service import ACLService
 from ..services.oauth.oauth_service import MCPOAuthService
 from ..services.server_service import ServerServiceV1
-
-try:
-    import grpc
-    from a2a.client.transports.grpc import GrpcTransport
-
-    _grpc_available = True
-except ImportError:
-    _grpc_available = False
 
 logger = logging.getLogger(__name__)
 
@@ -373,9 +364,8 @@ async def a2a_agent_proxy(
     Route: POST /proxy/a2a/{agent_path}
 
     Dispatches to the correct A2A transport based on agent config.type:
-      - jsonrpc  → JsonRpcTransport  (A2A JSON-RPC over HTTP)
-      - grpc     → GrpcTransport     (A2A over gRPC)
-      - http_json → RestTransport    (A2A HTTP+JSON / REST)
+      - jsonrpc   → JsonRpcTransport  (A2A JSON-RPC over HTTP)
+      - http_json → RestTransport     (A2A HTTP+JSON / REST)
 
     Request body must be a valid MessageSendParams JSON object.
     If the Accept header includes 'text/event-stream', the response will
@@ -471,47 +461,6 @@ async def a2a_agent_proxy(
                 return await _stream_a2a_response(transport.send_message_streaming(params))
             result = await transport.send_message(params)
             return JSONResponse(content=result.model_dump(mode="json", exclude_none=True))
-
-        elif transport_type == TRANSPORT_GRPC:
-            if not _grpc_available:
-                return JSONResponse(
-                    status_code=501,
-                    content={
-                        "error": "gRPC transport is not available. Please ensure grpcio is installed (requires a2a-sdk[grpc] extra)"
-                    },
-                )
-            parsed = urlparse(base_url)
-            if not parsed.hostname:
-                return JSONResponse(
-                    status_code=400,
-                    content={"error": f"Invalid gRPC agent URL: '{base_url}'"},
-                )
-
-            scheme = parsed.scheme.lower()
-            if parsed.port is not None:
-                grpc_port = parsed.port
-            elif scheme in {"https", "grpcs"}:
-                grpc_port = 443
-            elif scheme == "http":
-                grpc_port = 80
-            else:
-                grpc_port = 50051
-
-            grpc_target = f"{parsed.hostname}:{grpc_port}"
-
-            if scheme in {"https", "grpcs"}:
-                channel = grpc.aio.secure_channel(grpc_target, grpc.ssl_channel_credentials())
-            else:
-                channel = grpc.aio.insecure_channel(grpc_target)
-
-            try:
-                transport = GrpcTransport(channel=channel, agent_card=agent_card)
-                if is_streaming:
-                    return await _stream_a2a_response(transport.send_message_streaming(params))
-                result = await transport.send_message(params)
-                return JSONResponse(content=result.model_dump(mode="json", exclude_none=True))
-            finally:
-                await channel.close()
 
         else:
             return JSONResponse(

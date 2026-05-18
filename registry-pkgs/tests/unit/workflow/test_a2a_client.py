@@ -316,27 +316,3 @@ async def test_call_a2a_uses_http_json_protocol_for_rest_transport():
     assert result.text == "rest response"
     assert len(captured_configs) == 1
     assert TransportProtocol.http_json in captured_configs[0].supported_transports
-
-
-@pytest.mark.asyncio
-async def test_call_a2a_uses_grpc_channel_factory_for_grpc_transport():
-    """ClientConfig must have grpc_channel_factory set for grpc agents."""
-    agent = _make_agent(transport="grpc")
-    mock_factory, _ = _mock_client([_msg_event("grpc response")])
-
-    captured_configs: list[ClientConfig] = []
-
-    def capturing_factory(config: ClientConfig) -> MagicMock:
-        captured_configs.append(config)
-        return mock_factory
-
-    with (
-        patch("registry_pkgs.workflows.a2a_client.build_headers", return_value={}),
-        patch("registry_pkgs.workflows.a2a_client.ClientFactory", side_effect=capturing_factory),
-    ):
-        result = await call_a2a(agent, "test", jwt_config=_jwt_config())
-
-    assert result.text == "grpc response"
-    assert len(captured_configs) == 1
-    assert captured_configs[0].grpc_channel_factory is not None
-    assert TransportProtocol.grpc in captured_configs[0].supported_transports

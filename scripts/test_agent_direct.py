@@ -145,7 +145,7 @@ if __name__ == "__main__":
     parser.add_argument("--list", action="store_true", help="List all active agents and exit")
     parser.add_argument(
         "--transport",
-        choices=["jsonrpc", "http_json", "grpc"],
+        choices=["jsonrpc", "http_json"],
         help="Override the agent's configured transport protocol",
     )
     parser.add_argument("message", nargs=argparse.REMAINDER, help="Message to send to the agent")
