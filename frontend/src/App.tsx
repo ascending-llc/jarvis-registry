@@ -13,6 +13,7 @@ import Login from './pages/Login';
 import OAuthCallback from './pages/OAuthCallback';
 import ServerRegistryOrEdit from './pages/ServerRegistryOrEdit';
 import TokenGeneration from './pages/TokenGeneration';
+import WorkflowRegistryOrEdit from './pages/WorkflowRegistryOrEdit';
 
 function App() {
   return (
@@ -97,6 +98,26 @@ function App() {
                     <ProtectedRoute>
                       <Layout>
                         <FederationRegistryOrEdit />
+                      </Layout>
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path='/workflow-registry'
+                  element={
+                    <ProtectedRoute>
+                      <Layout>
+                        <WorkflowRegistryOrEdit />
+                      </Layout>
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path='/workflow-edit'
+                  element={
+                    <ProtectedRoute>
+                      <Layout>
+                        <WorkflowRegistryOrEdit />
                       </Layout>
                     </ProtectedRoute>
                   }

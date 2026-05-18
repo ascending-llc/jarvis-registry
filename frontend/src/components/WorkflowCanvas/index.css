@@ -1,0 +1,117 @@
+@import "@xyflow/react/dist/style.css";
+
+/* ── React Flow canvas overrides ──────────────────────────────────────────── */
+.workflow-canvas-root .react-flow {
+  background: var(--jarvis-bg) !important;
+}
+.workflow-canvas-root .react-flow__background {
+  background: var(--jarvis-bg) !important;
+}
+/* Override hardcoded dot color from Background prop */
+.workflow-canvas-root .react-flow__background pattern circle {
+  fill: rgba(15, 23, 42, 0.18) !important;
+}
+.dark .workflow-canvas-root .react-flow__background pattern circle {
+  fill: rgba(42, 51, 68, 0.7) !important;
+}
+
+.workflow-canvas-root .react-flow__edge-path {
+  stroke: rgba(124, 58, 237, 0.55) !important;
+  stroke-width: 1.5px !important;
+}
+.workflow-canvas-root .react-flow__edge.selected .react-flow__edge-path {
+  stroke: var(--jarvis-primary-hover) !important;
+}
+.workflow-canvas-root .react-flow__arrowhead polyline {
+  stroke: var(--jarvis-primary) !important;
+  fill: var(--jarvis-primary) !important;
+}
+
+.workflow-canvas-root .react-flow__handle {
+  width: 10px !important;
+  height: 10px !important;
+  background: var(--jarvis-card) !important;
+  border: 2px solid var(--jarvis-border-strong) !important;
+  border-radius: 50% !important;
+  transition:
+    border-color 200ms cubic-bezier(0.4, 0, 0.2, 1),
+    background 200ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.workflow-canvas-root .react-flow__handle:hover,
+.workflow-canvas-root .react-flow__handle-connecting {
+  border-color: var(--jarvis-primary) !important;
+  background: var(--jarvis-primary) !important;
+}
+
+.workflow-canvas-root .react-flow__controls {
+  background: var(--jarvis-card-muted) !important;
+  border: 1px solid var(--jarvis-border) !important;
+  border-radius: 8px !important;
+  overflow: hidden;
+  box-shadow: none !important;
+}
+.workflow-canvas-root .react-flow__controls-button {
+  background: transparent !important;
+  border: none !important;
+  border-bottom: 1px solid var(--jarvis-border) !important;
+  color: var(--jarvis-muted) !important;
+  fill: var(--jarvis-muted) !important;
+  width: 30px !important;
+  height: 30px !important;
+}
+.workflow-canvas-root .react-flow__controls-button:last-child {
+  border-bottom: none !important;
+}
+.workflow-canvas-root .react-flow__controls-button:hover {
+  background: var(--jarvis-surface) !important;
+  color: var(--jarvis-text-strong) !important;
+  fill: var(--jarvis-text-strong) !important;
+}
+
+.workflow-canvas-root .react-flow__minimap {
+  background: var(--jarvis-card-muted) !important;
+  border: 1px solid var(--jarvis-border) !important;
+  border-radius: 8px !important;
+}
+.workflow-canvas-root .react-flow__minimap-mask {
+  fill: rgba(124, 58, 237, 0.08) !important;
+}
+.dark .workflow-canvas-root .react-flow__minimap-mask {
+  fill: rgba(124, 58, 237, 0.08) !important;
+}
+.workflow-canvas-root .react-flow__panel {
+  margin: 12px !important;
+}
+
+/* NodePicker modal animation */
+@keyframes pin {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+.animate-pin {
+  animation: pin 0.18s cubic-bezier(0.34, 1.3, 0.64, 1) forwards;
+}
+
+/* Action button hover states for RunHistory */
+.action-btn {
+  background: none;
+  transition: background-color 200ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.action-btn--pause:hover {
+  background: var(--jarvis-warning-soft);
+}
+.action-btn--cancel:hover {
+  background: var(--jarvis-danger-soft);
+}
+.action-btn--resume:hover {
+  background: var(--jarvis-success-soft);
+}
+.action-btn--retry:hover {
+  background: var(--jarvis-blue-soft);
+}

@@ -6,6 +6,7 @@ import type { Agent, AgentItem } from '@/services/agent/type';
 import type { Federation } from '@/services/federation/type';
 import { ServerConnection } from '@/services/mcp/type';
 import type { PermissionType, Server } from '@/services/server/type';
+import type { WorkflowItem } from '@/services/workflow/type';
 
 export interface ServerInfo {
   id: string;
@@ -50,6 +51,13 @@ export interface FederationListStats {
   withIssues: number;
 }
 
+interface WorkflowStats {
+  total: number;
+  enabled: number;
+  disabled: number;
+  withIssues: number;
+}
+
 interface ServerContextType {
   // Server state
   servers: ServerInfo[];
@@ -72,6 +80,13 @@ interface ServerContextType {
   federationsLoading: boolean;
   federationsError: string | null;
 
+  // Workflow state
+  workflows: WorkflowItem[];
+  setWorkflows: React.Dispatch<React.SetStateAction<WorkflowItem[]>>;
+  workflowStats: WorkflowStats;
+  workflowLoading: boolean;
+  workflowError: string | null;
+
   // Shared state
   viewMode: 'servers' | 'agents' | 'workflow' | 'external';
   setViewMode: (mode: 'servers' | 'agents' | 'workflow' | 'external') => void;
@@ -86,9 +101,11 @@ interface ServerContextType {
   refreshServerData: (notLoading?: boolean) => Promise<ServerInfo[]>;
   refreshAgentData: (notLoading?: boolean) => Promise<void>;
   refreshFederationData: (notLoading?: boolean) => Promise<void>;
+  refreshWorkflowData: (notLoading?: boolean) => Promise<void>;
   handleServerUpdate: (id: string, updates: Partial<ServerInfo>) => void;
   handleAgentUpdate: (id: string, updates: Partial<AgentItem>) => void;
   handleFederationUpdate: (id: string, updates: Partial<Federation>) => void;
+  handleWorkflowUpdate: (id: string, updates: Partial<WorkflowItem>) => void;
   getServerStatusByPolling: (serverId: string, callback?: (state: ServerConnection | undefined) => void) => void;
   cancelPolling: (serverId?: string) => void;
 }
@@ -111,6 +128,7 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
   const [servers, setServers] = useState<ServerInfo[]>([]);
   const [agents, setAgents] = useState<AgentItem[]>([]);
   const [federations, setFederations] = useState<Federation[]>([]);
+  const [workflows, setWorkflows] = useState<WorkflowItem[]>([]);
   const [viewMode, setViewMode] = useState<'servers' | 'agents' | 'workflow' | 'external'>('servers');
   const [activeFilter, setActiveFilter] = useState<string>('all');
   const [searchTerm, setSearchTerm] = useState<string>('');
@@ -118,9 +136,11 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
   const [serverLoading, setServerLoading] = useState(true);
   const [agentLoading, setAgentLoading] = useState(true);
   const [federationsLoading, setFederationsLoading] = useState(true);
+  const [workflowLoading, setWorkflowLoading] = useState(true);
   const [serverError, setServerError] = useState<string | null>(null);
   const [agentError, setAgentError] = useState<string | null>(null);
   const [federationsError, setFederationsError] = useState<string | null>(null);
+  const [workflowError, setWorkflowError] = useState<string | null>(null);
   const timeoutRef = useRef<Record<string, NodeJS.Timeout>>({});
 
   // Calculate server stats
@@ -143,6 +163,17 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
       withIssues: agents.filter(a => a.status === 'inactive' || a.status === 'error').length,
     }),
     [agents],
+  );
+
+  // Calculate workflow stats
+  const workflowStats = useMemo<WorkflowStats>(
+    () => ({
+      total: workflows.length,
+      enabled: workflows.filter(w => w.enabled).length,
+      disabled: workflows.filter(w => !w.enabled).length,
+      withIssues: workflows.filter(w => w.status === 'inactive' || w.status === 'error').length,
+    }),
+    [workflows],
   );
 
   // Calculate federation stats
@@ -261,6 +292,45 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
     setFederations(prev => prev.map(fed => (fed.id === id ? { ...fed, ...updates } : fed)));
   };
 
+  const handleWorkflowUpdate = (id: string, updates: Partial<WorkflowItem>) => {
+    setWorkflows(prev => prev.map(w => (w.id === id ? { ...w, ...updates } : w)));
+  };
+
+  const refreshWorkflowData = useCallback(async (notLoading?: boolean) => {
+    try {
+      if (!notLoading) setWorkflowLoading(true);
+      setWorkflowError(null);
+      const result = await SERVICES.WORKFLOW.getWorkflowsList({});
+      const workflowsList = result?.workflows || [];
+      const transformedWorkflows: WorkflowItem[] = workflowsList.map((w: any) => ({
+        // API-provided fields (camelCase, per Workflow type in services/workflow/type.ts)
+        id: w.id,
+        name: w.name || 'Unnamed Workflow',
+        description: w.description || '',
+        nodeCount: w.numNodes ?? 0,
+        createdAt: w.createdAt || '',
+        updatedAt: w.updatedAt || '',
+        // Fields not yet returned by API — default values until backend adds support
+        type: w.type || 'supervised',
+        enabled: w.enabled ?? true,
+        status: w.status || 'active',
+        lastRunAt: w.lastRunAt,
+        runCount: w.runCount ?? 0,
+        permissions: w.permissions || { VIEW: true, EDIT: true },
+      }));
+      setWorkflows(transformedWorkflows);
+    } catch (error: any) {
+      const msg =
+        error?.message ||
+        error?.detail?.message ||
+        (typeof error?.detail === 'string' ? error.detail : null) ||
+        'Failed to fetch workflows';
+      setWorkflowError(msg);
+    } finally {
+      setWorkflowLoading(false);
+    }
+  }, []);
+
   const refreshFederationData = useCallback(async (notLoading?: boolean) => {
     try {
       if (!notLoading) setFederationsLoading(true);
@@ -280,6 +350,7 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
       setServerLoading(false);
       setAgentLoading(false);
       setFederationsLoading(false);
+      setWorkflowLoading(false);
       return () => {
         Object.values(timeoutRef.current).forEach(timeout => {
           clearTimeout(timeout);
@@ -290,13 +361,14 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
     refreshServerData();
     refreshAgentData();
     refreshFederationData();
+    refreshWorkflowData();
     return () => {
       Object.values(timeoutRef.current).forEach(timeout => {
         clearTimeout(timeout);
       });
       timeoutRef.current = {};
     };
-  }, [refreshAgentData, refreshServerData]);
+  }, [refreshAgentData, refreshServerData, refreshWorkflowData]);
 
   const getServerStatusById = useCallback(async (serverId: string): Promise<ServerConnection | undefined> => {
     try {
@@ -381,6 +453,12 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
     federationsLoading,
     federationsError,
 
+    workflows,
+    setWorkflows,
+    workflowStats,
+    workflowLoading,
+    workflowError,
+
     viewMode,
     setViewMode,
     activeFilter,
@@ -393,9 +471,11 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
     refreshServerData,
     refreshAgentData,
     refreshFederationData,
+    refreshWorkflowData,
     handleServerUpdate,
     handleAgentUpdate,
     handleFederationUpdate,
+    handleWorkflowUpdate,
     getServerStatusByPolling,
     cancelPolling,
   };
