@@ -521,6 +521,23 @@ async def device_token(request: Request, user_service: UserService = Depends(get
 
         access_token = encode_jwt(token_payload, PRIVATE_KEY, kid=JWT_SELF_SIGNED_KID)
 
+        # Atomically remove old refresh token to prevent reuse and handle concurrent requests
+        # IMPORTANT: popping of the old token must be BEFORE storing a new token.
+        # Consider what happens if storing new token is before popping old:
+        # - Request A hit the `await` on Line 504. Suspended. Request B hit the `await` on Line 504. Suspended.
+        # - Request A re-activates first. Request A stores new token T1.
+        # - Request A pops old token. Succeed and return.
+        # - Request B stores new token T2. Request B pop old token. Old token is gone and request B returns an error.
+        # The problem is that nobody will ever reclaim T2.
+        # If we pop then store, it ensures that a concurrent loser exits before writing the new token, preventing orphans.
+        old_token_data = refresh_tokens_storage.pop(refresh_token, None)
+        if old_token_data is None:
+            # Token was already consumed by another concurrent request
+            logger.warning(
+                f"Refresh token already consumed (concurrent use detected) for user: {user_info['username']}"
+            )
+            return oauth_error_response("invalid_grant", "refresh token already used")
+
         # Refresh token rotation: generate new refresh token and delete old one
         new_refresh_token = secrets.token_urlsafe(32)
         new_refresh_expires_at = now + REFRESH_TOKEN_EXPIRY_SECONDS
@@ -532,15 +549,6 @@ async def device_token(request: Request, user_service: UserService = Depends(get
             "scope": rt_data.get("scope", ""),
             "expires_at": new_refresh_expires_at,
         }
-
-        # Atomically remove old refresh token to prevent reuse and handle concurrent requests
-        old_token_data = refresh_tokens_storage.pop(refresh_token, None)
-        if old_token_data is None:
-            # Token was already consumed by another concurrent request
-            logger.warning(
-                f"Refresh token already consumed (concurrent use detected) for user: {user_info['username']}"
-            )
-            return oauth_error_response("invalid_grant", "refresh token already used")
 
         logger.info(f"Rotated refresh token for user: {user_info['username']}")
 
