@@ -150,7 +150,7 @@ def _a2a_agent_summary(agent: A2AAgent) -> str:
 async def _active_executor_keys() -> tuple[list[str], list[str], list[A2AAgent]]:
     mcp_servers = await ExtendedMCPServer.find({"config.enabled": True}).to_list()
     a2a_agents = await A2AAgent.find({"isEnabled": True}).to_list()
-    mcp_keys = sorted(server.serverName for server in mcp_servers if server.config.get("enabled") is True)
+    mcp_keys = sorted(server.serverName for server in mcp_servers)
     a2a_keys = sorted(agent.path.lstrip("/") for agent in a2a_agents)
     return mcp_keys, a2a_keys, a2a_agents
 
