@@ -17,6 +17,7 @@ from registry_pkgs.workflows.runner import WorkflowRunner
 
 from .auth.oauth.flow_state_manager import FlowStateManager
 from .auth.oauth.reconnection import OAuthReconnectionManager
+from .core.a2a_proxy import A2AProxyClientRegistry
 from .core.mcp_client import MCPClientService
 from .core.session_store import SessionStore
 from .health.service import HealthMonitoringService
@@ -248,6 +249,10 @@ class RegistryContainer:
             user_service=self.user_service,
         )
 
+    @cached_property
+    def a2a_proxy_client_registry(self) -> A2AProxyClientRegistry:
+        return A2AProxyClientRegistry(jwt_expires_in_seconds=3600)
+
     async def startup(self) -> None:
         """Warm services that need async initialization before the app can serve traffic."""
         logger.info("Initializing services via registry container...")
@@ -281,6 +286,7 @@ class RegistryContainer:
         await cancel_in_flight_runs()
         await self.health_service.shutdown()
         await self.mcp_proxy_client.aclose()
+        await self.a2a_proxy_client_registry.close()
 
     def _initialize_federation(self) -> None:
         """Run optional federation sync on startup without failing the whole application."""

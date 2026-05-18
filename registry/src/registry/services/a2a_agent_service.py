@@ -322,6 +322,18 @@ class A2AAgentService:
         """
         return await A2AAgent.find_one({"path": path})
 
+    async def get_agent_by_slug(self, slug: str) -> A2AAgent | None:
+        """
+        Get agent by slug.
+
+        Args:
+            slug: Agent slug used in proxy routes (e.g., deep-intel)
+
+        Returns:
+            Agent document, or None if not found
+        """
+        return await A2AAgent.find_one({"slug": slug})
+
     async def create_agent(self, data: AgentCreateRequest, user_id: str) -> A2AAgent:
         """
         Create a new agent. Automatically fetches agent card from provided URL.
