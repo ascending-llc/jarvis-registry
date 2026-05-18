@@ -11,7 +11,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from ..core.config import settings
 from .core.event_store import InMemoryEventStore
 from .core.types import McpAppContext
-from .tools import proxied, search
+from .tools import agent_invoke, proxied, search
 
 if TYPE_CHECKING:
     from ..container import RegistryContainer
@@ -83,10 +83,9 @@ Drop filler words, pronouns, articles, and tense. Do NOT pass the raw sentence.
     Switch to type_list=["skill"] and include agent_name in query ONLY after you
     have already chosen an agent and want to target a specific skill within it.
     Returns: path + agent_id  |  skill_name + path + agent_id  (when type_list=["skill"])
-    Execute: THIS IS A TERMINAL STEP — there is no further execution tool to call.
-             Return the agent's path and agent_id to the user or the calling system,
-             which will invoke the agent via the A2A client. Do NOT attempt to call
-             any execute_* tool with these identifiers.
+    Execute: call execute_agent(agent_id=<agent_id>, message=<full task description>)
+             The agent runs autonomously and returns its response.
+             Partial results are streamed as log notifications during execution.
 
 ════════════════════════════════════════════════════════════
 RESULT EVALUATION  (same rule for both tools)
@@ -122,24 +121,26 @@ Example 1 — ATOMIC → discover_mcp_entities, clear leader:
   → top result: {entity_type:"tool", tool_name:"github_list_issues", server_id:"...", relevance_score:0.84}
   → execute_tool(tool_name="github_list_issues", server_id=..., arguments={...})
 
-Example 2 — DELEGATE → discover_agents, clear leader:
+Example 2 — DELEGATE → discover_agents → execute_agent:
   User: "I need a deep intelligence analysis on competitor pricing trends."
   Intent: DELEGATE (multi-step analysis, domain expertise).
   Call: discover_agents(query="deep intel competitive analysis")
-  → top result: {entity_type:"agent", agent_name:"Deep Intel Agent", path:"/deep-intel", agent_id:"..."}
-  → TERMINAL: return path="/deep-intel" and agent_id to the caller. No execute_* call needed.
+  → top result: {entity_type:"agent", agent_name:"Deep Intel Agent", path:"/deep-intel", agent_id:"abc123"}
+  → execute_agent(agent_id="abc123", message="Perform a deep intelligence analysis on competitor pricing trends.")
+  → Return the agent's response to the user.
 
-Example 3 — AMBIGUOUS → call both, pick leader by description:
+Example 3 — AMBIGUOUS → call both, pick leader by description → execute_agent:
   User: "Help me with customer support for an angry customer."
   Intent: AMBIGUOUS (could be a tool or a specialized agent).
   Call A: discover_mcp_entities(query="customer support")
   Call B: discover_agents(query="customer support")
   → B returns {entity_type:"agent", description:"Autonomous customer support agent — handles complaints,
-               refunds, and escalations end-to-end", path:"/support-agent"}
+               refunds, and escalations end-to-end", agent_id:"def456", path:"/support-agent"}
   → A returns {entity_type:"tool", description:"Send a support ticket via Zendesk API"}
   → Scores are NOT comparable across collections. Read descriptions instead:
     B's description matches "handle an angry customer" far better than A's single-ticket tool.
-  → TERMINAL: return path="/support-agent" to the caller.
+  → execute_agent(agent_id="def456", message="Handle this customer support situation: <user context>")
+  → Return the agent's response to the user.
 
 Example 4 — ATOMIC, clustered within same server:
   User: "Do something with Slack."
@@ -163,8 +164,9 @@ Example 6 — CHAIN → MCP tool first, then A2A agent with data:
   → execute_tool(tool_name="github_list_commits", server_id=..., arguments={"since": "2026-04-06"})
   → result: [list of commits]
   Step 2: discover_agents(query="commit trend analysis intelligence")
-  → top result: {entity_type:"agent", agent_name:"Deep Intel Agent", path:"/deep-intel", agent_id:"..."}
-  → TERMINAL: return path="/deep-intel", agent_id, and pass the commit data as context to the caller.
+  → top result: {entity_type:"agent", agent_name:"Deep Intel Agent", path:"/deep-intel", agent_id:"ghi789"}
+  → execute_agent(agent_id="ghi789", message="Analyze the following GitHub commits for trends:\n<commits>")
+  → Return the agent's analysis to the user.
 
 Example 7 — SURVEY fallback (both collections):
   User: "Make a quick memo about this."
@@ -206,6 +208,19 @@ If execute_tool / read_resource / execute_prompt returns isError=True:
 
   2. NEVER retry with the same stale server_id after receiving "no server" error.
   3. NEVER retry more than 2 times total per user request — surface the failure instead.
+
+If execute_agent returns isError=True:
+
+  1. READ the error message:
+       "Invalid agent_id format" or "not found" → the agent_id is stale or wrong.
+           → call discover_agents() again with the SAME query; use the NEW agent_id.
+       "Agent invocation failed" → the agent is unavailable or returned an error.
+           → retry once with the same agent_id.
+           → if still failing, try the next-ranked agent from discover_agents results.
+           → if all candidates fail, tell the user the capability is currently unavailable.
+
+  2. NEVER retry with a stale agent_id after a "not found" error.
+  3. NEVER retry more than 2 times per user request — surface the failure instead.
 
 ════════════════════════════════════════════════════════════
 HARD RULES
@@ -249,6 +264,7 @@ def create_mcp_app(*, container_provider: Callable[[], RegistryContainer | None]
                 oauth_service=container.oauth_service,
                 session_store=container.session_store,
                 redis_client=container.redis_client,
+                jwt_signing_config=settings.jwt_signing_config,
             )
 
     # Configure transport security settings from environment variables
@@ -314,6 +330,10 @@ def register_tools(mcp: FastMCP) -> None:
     """
     # Register entity discovery tools
     for tool_name, tool_func in search.get_tools():
+        mcp.tool(name=tool_name)(tool_func)
+
+    # Register A2A agent invocation tool
+    for tool_name, tool_func in agent_invoke.get_tools():
         mcp.tool(name=tool_name)(tool_func)
 
     # Register registry API tools

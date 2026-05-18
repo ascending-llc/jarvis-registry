@@ -7,7 +7,7 @@ from urllib.parse import quote, unquote
 from beanie import PydanticObjectId
 
 from registry_pkgs.models import A2AAgent, ExtendedMCPServer
-from registry_pkgs.models.a2a_agent import AgentConfig
+from registry_pkgs.models.a2a_agent import TRANSPORT_JSONRPC, AgentConfig
 
 from .agentcore_clients import AgentCoreClientProvider
 from .agentcore_runtime_auth import AgentCoreRuntimeAuthService
@@ -310,7 +310,7 @@ class AgentCoreFederationClient:
             config=AgentConfig(
                 title=runtime_name,
                 description=runtime_detail.get("description", f"AgentCore runtime {runtime_name}"),
-                type="jsonrpc",  # Note: need check
+                type=TRANSPORT_JSONRPC,
                 runtimeAccess=runtime_access,
             ),
             isEnabled=status == "READY",

@@ -11,8 +11,7 @@ from registry_pkgs.models.a2a_agent import A2AAgent, AgentConfig
 from registry_pkgs.models.enums import AgentCoreRuntimeAccessMode
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 from registry_pkgs.models.federation import AgentCoreRuntimeAccessConfig, AgentCoreRuntimeJwtConfig
-from registry_pkgs.workflows import a2a_executor as a2a_exec
-from registry_pkgs.workflows import executor_resolver
+from registry_pkgs.workflows import a2a_client, executor_resolver
 from registry_pkgs.workflows import mcp_executor as mcp_exec
 from registry_pkgs.workflows.helpers import build_prompt
 
@@ -349,10 +348,10 @@ class TestA2AExecutor:
             encoded_calls.append((payload, key, kid))
             return "signed-jwt"
 
-        monkeypatch.setattr(a2a_exec, "build_jwt_payload", fake_build_payload)
-        monkeypatch.setattr(a2a_exec, "encode_jwt", fake_encode)
+        monkeypatch.setattr(a2a_client, "build_jwt_payload", fake_build_payload)
+        monkeypatch.setattr(a2a_client, "encode_jwt", fake_encode)
 
-        token = a2a_exec.make_agent_jwt(
+        token = a2a_client.make_agent_jwt(
             agent_url="https://agent.example.com",
             jwt_config=_jwt_config(),
             expires_in_seconds=120,
@@ -382,8 +381,8 @@ class TestA2AExecutor:
             )
             return {"sub": subject}
 
-        monkeypatch.setattr(a2a_exec, "build_jwt_payload", fake_build_payload)
-        monkeypatch.setattr(a2a_exec, "encode_jwt", lambda *args, **kwargs: "signed-jwt")
+        monkeypatch.setattr(a2a_client, "build_jwt_payload", fake_build_payload)
+        monkeypatch.setattr(a2a_client, "encode_jwt", lambda *args, **kwargs: "signed-jwt")
 
         agent = _a2a_agent()
         agent.config.runtimeAccess = AgentCoreRuntimeAccessConfig(
@@ -397,7 +396,7 @@ class TestA2AExecutor:
             ),
         )
 
-        token = a2a_exec._make_agentcore_jwt(agent, jwt_config=_jwt_config(), expires_in_seconds=90)
+        token = a2a_client._make_agentcore_jwt(agent, jwt_config=_jwt_config(), expires_in_seconds=90)
 
         assert token == "signed-jwt"
         payload = built_payloads[0]

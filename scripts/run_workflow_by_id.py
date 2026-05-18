@@ -40,7 +40,7 @@ from registry_pkgs.models.a2a_agent import A2AAgent
 from registry_pkgs.models.enums import WorkflowRunStatus
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 from registry_pkgs.models.workflow import NodeRun, WorkflowDefinition, WorkflowRun
-from registry_pkgs.workflows.a2a_executor import _get_agentcore_auth_mode, _is_agentcore_runtime, agent_base_url
+from registry_pkgs.workflows.a2a_client import agent_base_url, get_agentcore_auth_mode, is_agentcore_runtime
 from registry_pkgs.workflows.runner import WorkflowRunner
 
 logging.basicConfig(
@@ -120,8 +120,8 @@ async def _print_definition_agents(definition_id: str) -> None:
         if agent is not None:
             base_url = agent_base_url(agent)
             provider = (agent.federationMetadata or {}).get("providerType", "—")
-            if _is_agentcore_runtime(agent):
-                auth_mode = _get_agentcore_auth_mode(agent)
+            if is_agentcore_runtime(agent):
+                auth_mode = get_agentcore_auth_mode(agent)
                 print(f"  {key:<30} A2A     → {base_url}")
                 print(f"                                provider={provider}  auth={auth_mode}")
             else:
@@ -142,8 +142,8 @@ async def _list_all_agents() -> None:
     for a in agents:
         base_url = agent_base_url(a)
         provider = (a.federationMetadata or {}).get("providerType", "—")
-        if _is_agentcore_runtime(a):
-            auth_mode = _get_agentcore_auth_mode(a)
+        if is_agentcore_runtime(a):
+            auth_mode = get_agentcore_auth_mode(a)
             print(f"  {a.path:<35} {a.config.type:<10} → {base_url}")
             print(f"                                      provider={provider}  auth={auth_mode}")
         else:
