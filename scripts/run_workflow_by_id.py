@@ -104,7 +104,7 @@ async def _print_definition_agents(definition_id: str) -> None:
         # Try MCP server first
         mcp = await ExtendedMCPServer.find_one(
             ExtendedMCPServer.serverName == key,
-            ExtendedMCPServer.status == "active",
+            {"config.enabled": True},
         )
         if mcp is not None:
             url = mcp.config.get("url") if mcp.config else None
@@ -115,7 +115,7 @@ async def _print_definition_agents(definition_id: str) -> None:
         path = f"/{key}" if not key.startswith("/") else key
         agent = await A2AAgent.find_one(
             A2AAgent.path == path,
-            A2AAgent.status == "active",
+            {"isEnabled": True},
         )
         if agent is not None:
             base_url = agent_base_url(agent)
@@ -132,13 +132,13 @@ async def _print_definition_agents(definition_id: str) -> None:
 
 
 async def _list_all_agents() -> None:
-    """List every active A2A agent (mirrors scripts/get_url.py)."""
-    agents = await A2AAgent.find({"status": "active"}).to_list()
+    """List every enabled A2A agent (mirrors scripts/get_url.py)."""
+    agents = await A2AAgent.find({"isEnabled": True}).to_list()
     if not agents:
-        print("No active A2A agents found.")
+        print("No enabled A2A agents found.")
         return
 
-    print("── Active A2A agents ────────────────────────────────────")
+    print("── Enabled A2A agents ──────────────────────────────────")
     for a in agents:
         base_url = agent_base_url(a)
         provider = (a.federationMetadata or {}).get("providerType", "—")
