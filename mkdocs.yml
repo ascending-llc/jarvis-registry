@@ -122,6 +122,7 @@ nav:
     - Federation Guide: design/federation.md
     - Federation API: design/federation-api.md
     - DB Persistence: design/mcp_db_persistence_design.md
+  - FAQ: faq.md
   - Explore Agentic Jarvis:
     - Overview: explore-agentic/index.md
     - Pillars:
