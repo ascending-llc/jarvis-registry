@@ -246,7 +246,7 @@ class ServerDetailResponse(APIBaseModel):
     prompts: list[dict[str, Any]] | None = Field(None, description="List of available prompts")
     initDuration: int | None = Field(None, description="Initialization duration in ms")
     author: str | None = Field(None, description="Author user ID")
-    status: str
+    status: str = Field(default="active", description="Operational state: active, inactive, error")
     path: str | None = Field(None, description="API path for this server")
     tags: list[str] = Field(default_factory=list)
     numTools: int = Field(0, description="Number of tools")
