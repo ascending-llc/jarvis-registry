@@ -691,17 +691,17 @@ async def get_server_tools(
     "/servers/{server_id}/refresh",
     response_model=ServerDetailResponse,
     response_model_by_alias=True,  # Use camelCase in API responses
-    summary="Refresh Server Health",
-    description="Refresh server health status and check connectivity",
+    summary="Refresh Server Capabilities",
+    description="Refresh server capabilities (prompts, resources, tools) and sync to vector database",
 )
-@track_registry_operation("refresh", resource_type="health")
-async def refresh_server_health(
+@track_registry_operation("refresh", resource_type="capabilities")
+async def refresh_server_capabilities(
     server_id: str,
     user_context: dict = Depends(get_user_context),
     acl_service: ACLService = Depends(get_acl_service),
     server_service: ServerServiceV1 = Depends(get_server_service),
 ):
-    """Refresh server health status. Updates tools if server becomes active."""
+    """Refresh server capabilities by fetching latest prompts, resources, and tools from the MCP server."""
     try:
         user_id = user_context.get("user_id")
 
@@ -712,22 +712,22 @@ async def refresh_server_health(
             required_permission="VIEW",
         )
 
-        health_info = await server_service.refresh_server_health(
+        capabilities_info = await server_service.refresh_server_capabilities(
             server_id=server_id,
             user_id=user_id,
         )
 
-        # Check if health check failed
-        if health_info["status"] == "unhealthy":
+        # Check if capabilities refresh failed
+        if capabilities_info["status"] == "failed":
             raise HTTPException(
                 status_code=http_status.HTTP_400_BAD_REQUEST,
                 detail={
-                    "error": "health_check_failed",
-                    "message": health_info.get("status_message", "Failed to retrieve tools from server"),
+                    "error": "capabilities_refresh_failed",
+                    "message": capabilities_info.get("status_message", "Failed to retrieve capabilities from server"),
                 },
             )
 
-        server = health_info["server"]
+        server = capabilities_info["server"]
 
         return convert_to_detail(server, acl_permission=permissions)
 
@@ -748,8 +748,8 @@ async def refresh_server_health(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error refreshing health for server {server_id}: {e}", exc_info=True)
+        logger.error(f"Error refreshing capabilities for server {server_id}: {e}", exc_info=True)
         raise HTTPException(
             status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Internal server error while refreshing server health",
+            detail="Internal server error while refreshing server capabilities",
         )

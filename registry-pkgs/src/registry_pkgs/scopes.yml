@@ -133,6 +133,9 @@ agents-write:
   - action: toggle_agent
     method: POST
     endpoint: /agents/{agent_id}/toggle
+  - action: refresh_agent_capabilities
+    method: POST
+    endpoint: /agents/{agent_id}/refresh
   - action: sync_wellknown
     method: POST
     endpoint: /agents/{agent_id}/wellknown
