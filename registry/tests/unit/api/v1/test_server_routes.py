@@ -96,3 +96,154 @@ async def test_create_server_route_creates_acl_entry(
         assert call_args.kwargs["resource_type"] == ResourceType.MCPSERVER
         assert call_args.kwargs["resource_id"] == mock_created_server.id
         assert call_args.kwargs["perm_bits"] == RoleBits.OWNER
+
+
+# ==================== refresh_server_capabilities endpoint tests ====================
+
+
+@pytest.mark.asyncio
+async def test_refresh_server_capabilities_success(sample_user_context):
+    """Test successful server capabilities refresh"""
+
+    from registry.api.v1.server.server_routes import refresh_server_capabilities
+    from registry.schemas.acl_schema import ResourcePermissions
+
+    server_id = str(PydanticObjectId())
+    mock_server = MagicMock()
+    mock_server.id = PydanticObjectId(server_id)
+    mock_server.serverName = "test-server"
+
+    mock_acl_service = MagicMock()
+    mock_acl_service.check_user_permission = AsyncMock(
+        return_value=ResourcePermissions(VIEW=True, EDIT=True, DELETE=True, SHARE=True)
+    )
+
+    mock_server_service = MagicMock()
+    mock_server_service.refresh_server_capabilities = AsyncMock(
+        return_value={
+            "server": mock_server,
+            "status": "success",
+            "status_message": "Capabilities refreshed successfully",
+            "last_checked": "2026-01-01T00:00:00Z",
+            "response_time_ms": None,
+        }
+    )
+
+    with patch(
+        "registry.api.v1.server.server_routes.convert_to_detail",
+        return_value={"id": server_id, "serverName": "test-server"},
+    ):
+        result = await refresh_server_capabilities(
+            server_id=server_id,
+            user_context=sample_user_context,
+            acl_service=mock_acl_service,
+            server_service=mock_server_service,
+        )
+
+        # Verify ACL check was called with EDIT permission
+        mock_acl_service.check_user_permission.assert_awaited_once()
+        call_args = mock_acl_service.check_user_permission.call_args
+        assert call_args.kwargs["required_permission"] == "EDIT"
+
+        # Verify service was called
+        mock_server_service.refresh_server_capabilities.assert_awaited_once_with(
+            server_id=server_id,
+            user_id=sample_user_context["user_id"],
+        )
+
+        # Verify response
+        assert result["id"] == server_id
+
+
+@pytest.mark.asyncio
+async def test_refresh_server_capabilities_failed():
+    """Test failed server capabilities refresh returns HTTP 400"""
+    from fastapi import HTTPException
+
+    from registry.api.v1.server.server_routes import refresh_server_capabilities
+
+    server_id = str(PydanticObjectId())
+    user_context = {"user_id": str(PydanticObjectId())}
+
+    mock_acl_service = MagicMock()
+    mock_acl_service.check_user_permission = AsyncMock(return_value=MagicMock())
+
+    mock_server_service = MagicMock()
+    mock_server_service.refresh_server_capabilities = AsyncMock(
+        return_value={
+            "status": "failed",
+            "status_message": "Failed to connect to server",
+        }
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await refresh_server_capabilities(
+            server_id=server_id,
+            user_context=user_context,
+            acl_service=mock_acl_service,
+            server_service=mock_server_service,
+        )
+
+    # Verify HTTP 400 error
+    assert exc_info.value.status_code == 400
+    assert "capabilities_refresh_failed" in str(exc_info.value.detail)
+
+
+@pytest.mark.asyncio
+async def test_refresh_server_capabilities_permission_denied():
+    """Test refresh endpoint requires EDIT permission"""
+    from fastapi import HTTPException
+
+    from registry.api.v1.server.server_routes import refresh_server_capabilities
+
+    server_id = str(PydanticObjectId())
+    user_context = {"user_id": str(PydanticObjectId())}
+
+    mock_acl_service = MagicMock()
+    # Simulate permission denied
+    mock_acl_service.check_user_permission = AsyncMock(side_effect=HTTPException(status_code=403, detail="Forbidden"))
+
+    mock_server_service = MagicMock()
+
+    with pytest.raises(HTTPException) as exc_info:
+        await refresh_server_capabilities(
+            server_id=server_id,
+            user_context=user_context,
+            acl_service=mock_acl_service,
+            server_service=mock_server_service,
+        )
+
+    # Verify permission check raised 403
+    assert exc_info.value.status_code == 403
+
+    # Verify service was never called (permission check failed first)
+    mock_server_service.refresh_server_capabilities.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_refresh_server_capabilities_server_not_found():
+    """Test refresh endpoint returns 404 when server not found"""
+    from fastapi import HTTPException
+
+    from registry.api.v1.server.server_routes import refresh_server_capabilities
+
+    server_id = str(PydanticObjectId())
+    user_context = {"user_id": str(PydanticObjectId())}
+
+    mock_acl_service = MagicMock()
+    mock_acl_service.check_user_permission = AsyncMock(return_value=MagicMock())
+
+    mock_server_service = MagicMock()
+    mock_server_service.refresh_server_capabilities = AsyncMock(side_effect=ValueError("Server not found"))
+
+    with pytest.raises(HTTPException) as exc_info:
+        await refresh_server_capabilities(
+            server_id=server_id,
+            user_context=user_context,
+            acl_service=mock_acl_service,
+            server_service=mock_server_service,
+        )
+
+    # Verify 404 error
+    assert exc_info.value.status_code == 404
+    assert "not_found" in str(exc_info.value.detail)

@@ -158,3 +158,205 @@ async def test_create_agent_uses_injected_services(sample_user_context):
     assert result.config.title == "Test Agent"
     assert result.config.description == "Agent description"
     assert result.config.type == "jsonrpc"
+
+
+# ==================== refresh_agent_capabilities endpoint tests ====================
+
+
+@pytest.mark.asyncio
+async def test_refresh_agent_capabilities_success(sample_user_context):
+    """测试成功刷新 agent 能力"""
+
+    from registry.api.v1.a2a.agent_routes import refresh_agent_capabilities
+    from registry.schemas.acl_schema import ResourcePermissions
+
+    agent_id = str(PydanticObjectId())
+    mock_agent = _build_agent(PydanticObjectId(agent_id))
+
+    mock_acl_service = MagicMock()
+    mock_acl_service.check_user_permission = AsyncMock(
+        return_value=ResourcePermissions(VIEW=True, EDIT=True, DELETE=True, SHARE=True)
+    )
+
+    mock_a2a_agent_service = MagicMock()
+    mock_a2a_agent_service.refresh_agent_capabilities = AsyncMock(return_value=mock_agent)
+
+    result = await refresh_agent_capabilities(
+        agent_id=agent_id,
+        user_context=sample_user_context,
+        acl_service=mock_acl_service,
+        a2a_agent_service=mock_a2a_agent_service,
+    )
+
+    # 验证 ACL 检查使用了 EDIT 权限
+    mock_acl_service.check_user_permission.assert_awaited_once()
+    call_args = mock_acl_service.check_user_permission.call_args
+    assert call_args.kwargs["required_permission"] == "EDIT"
+
+    # 验证服务被调用
+    mock_a2a_agent_service.refresh_agent_capabilities.assert_awaited_once_with(agent_id=agent_id)
+
+    # 验证响应
+    assert result.name == "Test Agent"
+
+
+@pytest.mark.asyncio
+async def test_refresh_agent_capabilities_not_found():
+    """测试 agent 不存在时返回 404"""
+    from fastapi import HTTPException
+
+    from registry.api.v1.a2a.agent_routes import refresh_agent_capabilities
+
+    agent_id = str(PydanticObjectId())
+    user_context = {"user_id": str(PydanticObjectId())}
+
+    mock_acl_service = MagicMock()
+    mock_acl_service.check_user_permission = AsyncMock(return_value=MagicMock())
+
+    mock_a2a_agent_service = MagicMock()
+    mock_a2a_agent_service.refresh_agent_capabilities = AsyncMock(side_effect=ValueError("Agent not found"))
+
+    with pytest.raises(HTTPException) as exc_info:
+        await refresh_agent_capabilities(
+            agent_id=agent_id,
+            user_context=user_context,
+            acl_service=mock_acl_service,
+            a2a_agent_service=mock_a2a_agent_service,
+        )
+
+    # 验证 404 错误
+    assert exc_info.value.status_code == 404
+    assert "resource_not_found" in str(exc_info.value.detail)
+
+
+@pytest.mark.asyncio
+async def test_refresh_agent_capabilities_transport_error():
+    """测试网络/传输错误时返回 503"""
+    from fastapi import HTTPException
+
+    from registry.api.v1.a2a.agent_routes import refresh_agent_capabilities
+    from registry.core.exceptions import A2AAgentCardTransportException
+
+    agent_id = str(PydanticObjectId())
+    user_context = {"user_id": str(PydanticObjectId())}
+
+    mock_acl_service = MagicMock()
+    mock_acl_service.check_user_permission = AsyncMock(return_value=MagicMock())
+
+    mock_a2a_agent_service = MagicMock()
+    mock_a2a_agent_service.refresh_agent_capabilities = AsyncMock(
+        side_effect=A2AAgentCardTransportException("Connection timeout")
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await refresh_agent_capabilities(
+            agent_id=agent_id,
+            user_context=user_context,
+            acl_service=mock_acl_service,
+            a2a_agent_service=mock_a2a_agent_service,
+        )
+
+    # 验证 503 错误
+    assert exc_info.value.status_code == 503
+    assert "service_unavailable" in str(exc_info.value.detail)
+
+
+@pytest.mark.asyncio
+async def test_refresh_agent_capabilities_upstream_error():
+    """测试上游服务错误时返回 502"""
+    from fastapi import HTTPException
+
+    from registry.api.v1.a2a.agent_routes import refresh_agent_capabilities
+    from registry.core.exceptions import A2AAgentCardUpstreamException
+
+    agent_id = str(PydanticObjectId())
+    user_context = {"user_id": str(PydanticObjectId())}
+
+    mock_acl_service = MagicMock()
+    mock_acl_service.check_user_permission = AsyncMock(return_value=MagicMock())
+
+    mock_a2a_agent_service = MagicMock()
+    mock_a2a_agent_service.refresh_agent_capabilities = AsyncMock(
+        side_effect=A2AAgentCardUpstreamException("Upstream returned 500")
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await refresh_agent_capabilities(
+            agent_id=agent_id,
+            user_context=user_context,
+            acl_service=mock_acl_service,
+            a2a_agent_service=mock_a2a_agent_service,
+        )
+
+    # 验证 502 错误
+    assert exc_info.value.status_code == 502
+    assert "external_service_error" in str(exc_info.value.detail)
+
+
+@pytest.mark.asyncio
+async def test_refresh_agent_capabilities_invalid_request():
+    """测试无效请求（agent 未启用）时返回 400"""
+    from fastapi import HTTPException
+
+    from registry.api.v1.a2a.agent_routes import refresh_agent_capabilities
+
+    agent_id = str(PydanticObjectId())
+    user_context = {"user_id": str(PydanticObjectId())}
+
+    mock_acl_service = MagicMock()
+    mock_acl_service.check_user_permission = AsyncMock(return_value=MagicMock())
+
+    mock_a2a_agent_service = MagicMock()
+    mock_a2a_agent_service.refresh_agent_capabilities = AsyncMock(
+        side_effect=ValueError("Well-known sync is not enabled for this agent")
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await refresh_agent_capabilities(
+            agent_id=agent_id,
+            user_context=user_context,
+            acl_service=mock_acl_service,
+            a2a_agent_service=mock_a2a_agent_service,
+        )
+
+    # 验证 400 错误，使用正确的错误码
+    assert exc_info.value.status_code == 400
+    assert "invalid_request" in str(exc_info.value.detail)
+
+
+@pytest.mark.asyncio
+async def test_refresh_agent_capabilities_permission_denied():
+    """测试刷新端点需要 EDIT 权限"""
+    from fastapi import HTTPException
+
+    from registry.api.v1.a2a.agent_routes import refresh_agent_capabilities
+    from registry.schemas.errors import ErrorCode, create_error_detail
+
+    agent_id = str(PydanticObjectId())
+    user_context = {"user_id": str(PydanticObjectId())}
+
+    mock_acl_service = MagicMock()
+    # 模拟权限拒绝 - 使用标准错误格式
+    mock_acl_service.check_user_permission = AsyncMock(
+        side_effect=HTTPException(
+            status_code=403, detail=create_error_detail(ErrorCode.INSUFFICIENT_PERMISSIONS, "Forbidden")
+        )
+    )
+
+    mock_a2a_agent_service = MagicMock()
+
+    with pytest.raises(HTTPException) as exc_info:
+        await refresh_agent_capabilities(
+            agent_id=agent_id,
+            user_context=user_context,
+            acl_service=mock_acl_service,
+            a2a_agent_service=mock_a2a_agent_service,
+        )
+
+    # 验证权限检查抛出 403
+    # 注意：由于路由的通用异常处理器，HTTPException 会被重新抛出
+    # 如果是 403，应该能正确传递
+    assert exc_info.value.status_code == 403
+
+    # 验证服务从未被调用（权限检查先失败）
+    mock_a2a_agent_service.refresh_agent_capabilities.assert_not_called()

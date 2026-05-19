@@ -639,8 +639,11 @@ async def refresh_agent_capabilities(
         # Other errors
         raise HTTPException(
             status_code=http_status.HTTP_400_BAD_REQUEST,
-            detail=create_error_detail(ErrorCode.EXTERNAL_SERVICE_ERROR, error_msg),
+            detail=create_error_detail(ErrorCode.INVALID_REQUEST, error_msg),
         )
+    except HTTPException:
+        # Re-raise HTTPException as-is (e.g., from ACL permission checks)
+        raise
     except Exception as e:
         logger.error(f"Error refreshing capabilities for agent {agent_id}: {e}", exc_info=True)
         raise HTTPException(

@@ -709,7 +709,7 @@ async def refresh_server_capabilities(
             user_id=PydanticObjectId(user_id),
             resource_type=ResourceType.MCPSERVER.value,
             resource_id=PydanticObjectId(server_id),
-            required_permission="VIEW",
+            required_permission="EDIT",
         )
 
         capabilities_info = await server_service.refresh_server_capabilities(

@@ -637,15 +637,11 @@ class A2AAgentService:
             A2AAgentCardUpstreamException: If upstream returns non-404 errors
             A2AAgentCardParseException: If agent card cannot be parsed/validated
         """
-        # Reuse the sync_wellknown implementation
-        await self.sync_wellknown(agent_id)
+        # Reuse the sync_wellknown implementation - it now returns the updated agent
+        result = await self.sync_wellknown(agent_id)
 
-        # Return the updated agent document
-        agent = await A2AAgent.get(PydanticObjectId(agent_id))
-        if not agent:
-            raise ValueError(f"Agent not found: {agent_id}")
-
-        return agent
+        # Return the updated agent document from sync result (avoids redundant DB query)
+        return result["agent"]
 
     async def sync_wellknown(self, agent_id: str) -> dict[str, Any]:
         """
@@ -732,6 +728,7 @@ class A2AAgentService:
                 "synced_at": agent.wellKnown.lastSyncAt,
                 "version": updated_card.version,
                 "changes": changes if changes else ["No changes detected"],
+                "agent": agent,  # Include updated agent to avoid redundant DB query
             }
 
         except A2AAgentCardTransportException as e:
