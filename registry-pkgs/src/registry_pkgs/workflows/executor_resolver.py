@@ -173,7 +173,7 @@ async def _resolve_executor(
 
     mcp_server = await ExtendedMCPServer.find_one(
         ExtendedMCPServer.serverName == key,
-        ExtendedMCPServer.status == "active",
+        {"config.enabled": True},
     )
     if mcp_server is not None:
         logger.debug("executor_key %r → MCP server %r", key, mcp_server.serverName)
@@ -182,7 +182,7 @@ async def _resolve_executor(
     path = f"/{key}" if not key.startswith("/") else key
     a2a_agent = await A2AAgent.find_one(
         A2AAgent.path == path,
-        A2AAgent.status == "active",
+        {"isEnabled": True},
     )
     if a2a_agent is not None:
         if accessible_agent_ids is not None and str(a2a_agent.id) not in accessible_agent_ids:
@@ -194,6 +194,6 @@ async def _resolve_executor(
 
     raise KeyError(
         f"executor_key {key!r} not resolved: "
-        f"no active MCP server with serverName={key!r} "
-        f"or A2A agent with path={path!r}"
+        f"no enabled MCP server with serverName={key!r} "
+        f"or enabled A2A agent with path={path!r}"
     )

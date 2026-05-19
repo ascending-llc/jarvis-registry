@@ -103,7 +103,7 @@ def make_a2a_pool_executor(
         if selected_path is None:
             paths = [f"/{k.lstrip('/')}" for k in pool_keys]
             agents = await A2AAgent.find(
-                {"path": {"$in": paths}, "status": "active"},
+                {"path": {"$in": paths}, "isEnabled": True},
             ).to_list()
 
             if accessible_agent_ids is not None:
@@ -111,9 +111,9 @@ def make_a2a_pool_executor(
 
             if not agents:
                 return StepOutput(
-                    content=f"No accessible active A2A agents for pool {pool_keys!r}",
+                    content=f"No accessible enabled A2A agents for pool {pool_keys!r}",
                     success=False,
-                    error="pool resolution failed: no accessible active agents",
+                    error="pool resolution failed: no accessible enabled agents",
                 )
 
             selected_agent = await _select_agent_with_llm(agents, task, selector_agent)
@@ -124,12 +124,12 @@ def make_a2a_pool_executor(
             state[cache_key] = selected_path
             logger.info("pool %r → selected agent %r", node_name, selected_path)
         else:
-            selected_agent = await A2AAgent.find_one({"path": selected_path, "status": "active"})
+            selected_agent = await A2AAgent.find_one({"path": selected_path, "isEnabled": True})
             if selected_agent is None:
                 return StepOutput(
-                    content=f"Selected agent {selected_path!r} is no longer active",
+                    content=f"Selected agent {selected_path!r} is no longer enabled",
                     success=False,
-                    error=f"pool retry failed: agent {selected_path!r} not found or inactive",
+                    error=f"pool retry failed: agent {selected_path!r} not found or disabled",
                 )
             if accessible_agent_ids is not None and str(selected_agent.id) not in accessible_agent_ids:
                 return StepOutput(

@@ -83,9 +83,7 @@ class TestExecutorResolver:
     def _patch_beanie_filters(monkeypatch: pytest.MonkeyPatch) -> None:
         """Patch Beanie field expressions used in find_one() calls."""
         monkeypatch.setattr(executor_resolver.ExtendedMCPServer, "serverName", _FieldExpr("serverName"), raising=False)
-        monkeypatch.setattr(executor_resolver.ExtendedMCPServer, "status", _FieldExpr("status"), raising=False)
         monkeypatch.setattr(executor_resolver.A2AAgent, "path", _FieldExpr("path"), raising=False)
-        monkeypatch.setattr(executor_resolver.A2AAgent, "status", _FieldExpr("status"), raising=False)
 
     @pytest.mark.asyncio
     async def test_build_executor_registry_deduplicates_keys(self, monkeypatch: pytest.MonkeyPatch):
@@ -524,3 +522,75 @@ class TestLoadAccessibleAgentIds:
         )
 
         assert registry == {"alpha": {"agent-1"}}
+
+
+@pytest.mark.unit
+class TestA2APoolExecutorQueries:
+    """Ensure make_a2a_pool_executor queries use isEnabled, not status."""
+
+    @pytest.mark.asyncio
+    async def test_pool_initial_selection_queries_by_is_enabled(self, monkeypatch: pytest.MonkeyPatch):
+        """Initial pool query must filter on isEnabled=True, not status='active'."""
+        captured_queries: list = []
+
+        async def fake_to_list():
+            return []
+
+        class FakeFind:
+            def __init__(self, query):
+                captured_queries.append(query)
+
+            def to_list(self):
+                return fake_to_list()
+
+        # Patch Agent so make_a2a_pool_executor doesn't validate the model arg
+        monkeypatch.setattr(a2a_exec, "Agent", lambda **kwargs: SimpleNamespace())
+        monkeypatch.setattr(a2a_exec.A2AAgent, "find", FakeFind)
+
+        executor = a2a_exec.make_a2a_pool_executor(
+            node_name="test-pool",
+            pool_keys=["agent-a", "agent-b"],
+            selector_llm=SimpleNamespace(),
+            jwt_config=_jwt_config(),
+            accessible_agent_ids=None,
+        )
+
+        result = await executor(SimpleNamespace(input="hello", previous_step_content=None), {})
+
+        assert result.success is False  # no agents found → pool resolution failed
+        assert len(captured_queries) == 1, "expected exactly one find() call"
+        query = captured_queries[0]
+        assert "status" not in query, f"status filter found in pool query: {query}"
+        assert query.get("isEnabled") is True, f"isEnabled=True not in pool query: {query}"
+
+    @pytest.mark.asyncio
+    async def test_pool_retry_path_queries_by_is_enabled(self, monkeypatch: pytest.MonkeyPatch):
+        """Retry path (selected_path already cached) must filter on isEnabled=True."""
+        captured_args: list = []
+
+        async def fake_find_one(*args, **kwargs):
+            captured_args.extend(args)
+            return None  # agent gone → triggers error StepOutput
+
+        # Patch Agent so make_a2a_pool_executor doesn't validate the model arg
+        monkeypatch.setattr(a2a_exec, "Agent", lambda **kwargs: SimpleNamespace())
+        monkeypatch.setattr(a2a_exec.A2AAgent, "find_one", fake_find_one)
+
+        executor = a2a_exec.make_a2a_pool_executor(
+            node_name="retry-pool",
+            pool_keys=["agent-a"],
+            selector_llm=SimpleNamespace(),
+            jwt_config=_jwt_config(),
+            accessible_agent_ids=None,
+        )
+
+        # Pre-fill cache to simulate retry path
+        state = {"a2a_target_retry-pool": "/agent-a"}
+        result = await executor(SimpleNamespace(input="hello", previous_step_content=None), state)
+
+        assert result.success is False
+        assert "not found or disabled" in result.error
+        assert len(captured_args) >= 1
+        args_str = str(captured_args)
+        assert "status" not in args_str, f"status filter found in retry query: {captured_args}"
+        assert "isEnabled" in args_str, f"isEnabled not in retry query: {captured_args}"
