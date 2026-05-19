@@ -1,5 +1,5 @@
 ---
-alwaysApply: true
+applyTo: "**"
 ---
 
 # Jarvis Registry MCP Gateway
