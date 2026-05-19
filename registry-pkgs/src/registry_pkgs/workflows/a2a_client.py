@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 import uuid
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
 
+import httpx
 from a2a.client import ClientConfig, ClientFactory
+from a2a.client.base_client import BaseClient
 from a2a.client.middleware import ClientCallContext
 from a2a.types import (
     Message,
@@ -15,10 +19,13 @@ from a2a.types import (
     Role,
     Task,
     TaskArtifactUpdateEvent,
-    TaskStatusUpdateEvent,
+    TaskQueryParams,
+    TaskState,
     TextPart,
     TransportProtocol,
 )
+from a2a.utils.artifact import get_artifact_text
+from a2a.utils.message import get_message_text
 
 from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.core.jwt_utils import build_jwt_payload, encode_jwt
@@ -29,6 +36,8 @@ logger = logging.getLogger(__name__)
 
 _A2A_JWT_TTL_SECONDS = 300
 _A2A_HTTP_TIMEOUT = 300
+
+_IN_PROGRESS_STATES: frozenset[TaskState] = frozenset({TaskState.submitted, TaskState.working})
 
 _AGENTCORE_IAM_UNSUPPORTED_MSG = (
     "IAM-authenticated AgentCore A2A runtime is not supported for direct invocation. "
@@ -43,12 +52,46 @@ _PROTOCOL_MAP: dict[str, TransportProtocol] = {
 
 @dataclass
 class A2ACallResult:
-    """Result from a call_a2a invocation."""
+    """
+        Result of a call_a2a invocation.
 
-    text: str
-    artifacts: list[Part] = field(default_factory=list)
+    message: parts[] Part(RootModel[TextPart | FilePart | DataPart])
+    task: list[Artifact] Artifact list[Part]
+    """
+
+    message: Message | None = None
+    task: Task | None = None
     success: bool = True
     error: str | None = None
+
+    @property
+    def task_state(self) -> TaskState | None:
+        return self.task.status.state if self.task else None
+
+    def render_text(self) -> str:
+        """Flatten the agent response to a single string for non-MCP consumers.
+
+        Order matches the a2a-samples host_agent pattern:
+          1. `task.status.message` (agent's status commentary), if present
+          2. Each `task.artifact` rendered as `[<name>]\\n<text>`
+        Blocks join with blank lines. Files and structured data are omitted —
+        callers needing them should inspect `message`/`task` directly.
+        """
+        if self.message is not None:
+            return get_message_text(self.message)
+        if self.task is None:
+            return ""
+        blocks: list[str] = []
+        if self.task.status.message is not None:
+            status_text = get_message_text(self.task.status.message)
+            if status_text:
+                blocks.append(status_text)
+        for a in self.task.artifacts or []:
+            text = get_artifact_text(a, delimiter="")
+            if not text:
+                continue
+            blocks.append(f"[{a.name}]\n{text}" if a.name else text)
+        return "\n\n".join(blocks)
 
 
 def _normalize_claim_value(value: Any) -> Any:
@@ -178,35 +221,164 @@ def _create_message(text: str) -> Message:
     )
 
 
-def _extract_event(
-    event: tuple[Task, TaskStatusUpdateEvent | TaskArtifactUpdateEvent | None] | Message,
-) -> tuple[str, list[Part]]:
-    """Extract text and artifact parts from a Client.send_message() event.
+async def _maybe_emit_chunk(
+    on_chunk: Callable[[str], Awaitable[None]] | None,
+    text: str,
+) -> None:
+    if not text or on_chunk is None:
+        return
+    try:
+        await on_chunk(text)
+    except Exception as e:
+        logger.warning("on_chunk callback failed:%s, continuing accumulation", e, exc_info=True)
 
-    Events yielded by the high-level Client are either:
-    - Message: direct agent response — extract text/artifact parts directly.
-    - tuple[Task, update]: task-mode response — only TaskArtifactUpdateEvent
-      carries new content; TaskStatusUpdateEvent and None are status signals only.
+
+async def _consume_stream(
+    client: BaseClient,
+    message: Message,
+    *,
+    context: ClientCallContext,
+    on_chunk: Callable[[str], Awaitable[None]] | None,
+) -> Message | Task | None:
+    """Drain client.send_message events. Returns the first Message reply,
+    the last seen Task, or None if no events were produced.
+
+    Modeled after a2a-samples `RemoteAgentConnections.send_message`. The SDK
+    aggregates streaming artifacts onto the yielded Task via ClientTaskManager,
+    so `latest_task.artifacts` at the end already reflects the merged state —
+    no manual merge needed here.
     """
-    raw_parts: list[Part] = []
-
-    if isinstance(event, Message):
-        raw_parts = event.parts or []
-    elif isinstance(event, tuple):
-        _, update = event
+    latest_task: Task | None = None
+    async for event in client.send_message(message, context=context):
+        if isinstance(event, Message):
+            await _maybe_emit_chunk(on_chunk, get_message_text(event))
+            return event
+        task, update = event
+        latest_task = task
         if isinstance(update, TaskArtifactUpdateEvent):
-            raw_parts = update.artifact.parts or []
-        # TaskStatusUpdateEvent / None → no content, skip
+            # Streaming delta: TextParts inside one artifact are token-level
+            # fragments — concatenate with no delimiter.
+            await _maybe_emit_chunk(on_chunk, get_artifact_text(update.artifact, delimiter=""))
+    return latest_task
 
-    text_chunks: list[str] = []
-    artifact_parts: list[Part] = []
-    for part in raw_parts:
-        if isinstance(part.root, TextPart):
-            text_chunks.append(part.root.text)
-        else:
-            artifact_parts.append(part)
 
-    return "".join(text_chunks), artifact_parts
+async def _poll_until_terminal(
+    client: BaseClient,
+    task_id: str,
+    *,
+    context: ClientCallContext,
+) -> Task:
+    """Poll `client.get_task` until the task leaves the in-progress states.
+
+    `blocking=True` is only a hint; servers may ignore it and return a
+    `submitted`/`working` Task immediately. Caller-side polling is the
+    documented workaround (see a2a-send-message-1.md, Bug 2). Returns the
+    final Task. Raises TimeoutError if the 60s budget is exceeded.
+    """
+    # Exponential backoff capped at 8s; total budget 60s.
+    back_offs = (0.5, 1.0, 2.0, 4.0, 8.0)
+    deadline = time.monotonic() + 60.0
+    delay_iter = iter(back_offs)
+    while True:
+        try:
+            delay = next(delay_iter)
+        except StopIteration:
+            delay = back_offs[-1]
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(f"polling timed out after 60s for task {task_id!r}")
+        await asyncio.sleep(min(delay, remaining))
+
+        task = await client.get_task(TaskQueryParams(id=task_id), context=context)
+        if task.status.state not in _IN_PROGRESS_STATES:
+            return task
+
+
+def _result_from_task(task: Task) -> A2ACallResult:
+    """Build A2ACallResult from a non-pollable Task.
+
+    Per the A2A spec, both `task.artifacts` and `task.status.message` carry
+    content (status.message is the agent's lifecycle commentary; artifacts
+    are the deliverables). Either counts toward "has content".
+
+    `success=True` requires `state==completed` AND content present. Other
+    shapes return success=False while still surfacing the Task so callers
+    can inspect what came back; the error message distinguishes interrupted
+    (awaiting input/auth) from terminal-but-not-completed failures.
+    """
+    state = task.status.state
+    has_content = bool(task.artifacts) or task.status.message is not None
+
+    if not has_content:
+        return A2ACallResult(
+            task=task,
+            success=False,
+            error=f"A2A agent returned no content (task_state={state.value})",
+        )
+
+    if state == TaskState.completed:
+        return A2ACallResult(task=task, success=True)
+
+    if state == TaskState.input_required:
+        return A2ACallResult(
+            task=task,
+            success=False,
+            error=f"agent paused awaiting additional user input (task_state={state.value}); start a new conversation to provide it",
+        )
+    if state == TaskState.auth_required:
+        return A2ACallResult(
+            task=task,
+            success=False,
+            error=f"agent paused awaiting authentication (task_state={state.value}); start a new conversation to provide it",
+        )
+
+    # Remaining: failed / canceled / rejected / unknown.
+    return A2ACallResult(
+        task=task,
+        success=False,
+        error=f"task terminated in non-completed state: {state.value}",
+    )
+
+
+async def _call_with_open_client(
+    client: BaseClient,
+    agent_name: str,
+    text: str,
+    context: ClientCallContext,
+    on_chunk: Callable[[str], Awaitable[None]] | None,
+) -> A2ACallResult:
+    """Run the three-phase consume/poll/build pipeline against an already-open client."""
+    # 1. drain the event stream.
+    outcome = await _consume_stream(client, _create_message(text), context=context, on_chunk=on_chunk)
+
+    if isinstance(outcome, Message):
+        logger.debug("← A2A agent %r responded with Message", agent_name)
+        return A2ACallResult(message=outcome, success=True)
+    if outcome is None:
+        logger.warning("← A2A agent %r returned no events", agent_name)
+        return A2ACallResult(success=False, error="A2A agent returned no events")
+
+    task = outcome
+
+    # 2. — poll if the agent is still working
+    if task.status.state in _IN_PROGRESS_STATES:
+        logger.debug("polling task %r from state=%s", task.id, task.status.state.value)
+        try:
+            task = await _poll_until_terminal(client, task.id, context=context)
+        except TimeoutError as exc:
+            logger.warning("polling timed out: %s", exc)
+            return A2ACallResult(task=task, success=False, error=str(exc))
+
+    # 3. classify the final Task
+    result = _result_from_task(task)
+    logger.debug(
+        "← A2A agent %r finished (state=%s, success=%s)",
+        agent_name,
+        task.status.state.value,
+        result.success,
+    )
+    return result
 
 
 async def call_a2a(
@@ -215,30 +387,31 @@ async def call_a2a(
     *,
     jwt_config: JwtSigningConfig,
     on_chunk: Callable[[str], Awaitable[None]] | None = None,
+    httpx_client: httpx.AsyncClient | None = None,
 ) -> A2ACallResult:
     """Invoke an A2A agent via the a2a-sdk ClientFactory.
 
     Transport (jsonrpc / http_json) is selected from agent.config.type.
-    ClientFactory manages its own httpx client internally; auth headers and
-    timeout are injected per-call via ClientCallContext. Events are streamed
-    and on_chunk is called for each text chunk received.
+    Auth headers and timeout are injected per-call via ClientCallContext.
 
     Args:
-        agent:      A2AAgent document from MongoDB.
-        text:       User message / task description to send.
-        jwt_config: JWT signing config for service-to-agent auth.
-        on_chunk:   Optional async callback invoked for each text chunk received.
-                    Use this to send MCP log notifications for real-time streaming.
+        agent:        A2AAgent document from MongoDB.
+        text:         User message / task description to send.
+        jwt_config:   JWT signing config for service-to-agent auth.
+        on_chunk:     Optional async callback invoked for each text chunk
+                      received. Use this to send MCP log notifications for
+                      real-time streaming.
+        httpx_client: Optional shared httpx client.
 
     Returns:
-        A2ACallResult with accumulated text, artifacts, success flag, and error.
+        A2ACallResult. `success=True` requires content present AND (for the
+        Task path) `task.status.state == completed`.
     """
     agent_name = agent.config.title if agent.config else agent.card.name
     transport_type = (agent.config.type if agent.config else TRANSPORT_JSONRPC).lower()
 
     if transport_type not in _PROTOCOL_MAP:
         return A2ACallResult(
-            text="",
             success=False,
             error=f"Unsupported transport type '{transport_type}' for agent {agent_name!r}. Supported: {sorted(_PROTOCOL_MAP)}",
         )
@@ -255,13 +428,8 @@ async def call_a2a(
 
     agent_card = agent.card.model_copy(deep=True)
     agent_card.url = base_url  # type: ignore[assignment]
-
     protocol = _PROTOCOL_MAP.get(transport_type, TransportProtocol.jsonrpc)
-    text_chunks: list[str] = []
-    artifact_parts: list[Part] = []
 
-    # Auth headers and timeout are injected per-call via ClientCallContext so that
-    # ClientFactory manages its own httpx client internally (no per-call client creation).
     context = ClientCallContext(
         state={
             "http_kwargs": {
@@ -274,34 +442,16 @@ async def call_a2a(
     try:
         config = ClientConfig(
             supported_transports=[protocol],
-            use_client_preference=True,
+            httpx_client=httpx_client,
         )
-        client = ClientFactory(config).create(agent_card)
 
-        async for event in client.send_message(_create_message(text), context=context):
-            chunk_text, parts = _extract_event(event)
-            if chunk_text:
-                text_chunks.append(chunk_text)
-                if on_chunk is not None:
-                    try:
-                        await on_chunk(chunk_text)
-                    except Exception as e:
-                        logger.warning("on_chunk callback failed:%s, continuing accumulation", e, exc_info=True)
-            artifact_parts.extend(parts)
-
-        full_text = "".join(text_chunks)
-        if not full_text and not artifact_parts:
-            logger.warning("← A2A agent %r returned no content", agent_name)
-            return A2ACallResult(text="", success=False, error="A2A agent returned no content")
-
-        logger.debug(
-            "← A2A agent %r responded (%d chars, %d artifacts)",
-            agent_name,
-            len(full_text),
-            len(artifact_parts),
-        )
-        return A2ACallResult(text=full_text, artifacts=artifact_parts, success=True)
+        # ClientFactory.create() is annotated -> Client, but always returns BaseClient in a2a-sdk==0.3.24.
+        client: BaseClient = ClientFactory(config).create(agent_card)  # type: ignore[assignment]
+        if httpx_client is None:
+            async with client:
+                return await _call_with_open_client(client, agent_name, text, context, on_chunk)
+        return await _call_with_open_client(client, agent_name, text, context, on_chunk)
 
     except Exception as exc:
         logger.exception("A2A call to %r failed", agent_name)
-        return A2ACallResult(text="", success=False, error=str(exc))
+        return A2ACallResult(success=False, error=str(exc))
