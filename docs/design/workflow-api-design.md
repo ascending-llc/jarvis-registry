@@ -28,7 +28,7 @@
 {
   "workflows": [
     {
-      "id": "507f1f77bcf86cd799439011",
+      "id": "wf-demo-id",
       "name": "Customer Onboarding Workflow",
       "description": "Automated workflow for new customer onboarding",
       "numNodes": 5,
@@ -55,9 +55,14 @@
 **Endpoint**: `GET /api/v1/workflows/{workflow_id}`
 
 **Response**: `200 OK`
+
+Every node in the response always carries the full set of optional container fields
+(`children`, `trueSteps`, `falseSteps`, `choices`) populated as empty lists when the
+node type does not use them. This lets clients access any field without null checks.
+
 ```json
 {
-  "id": "507f1f77bcf86cd799439011",
+  "id": "wf-demo-id",
   "name": "Customer Onboarding Workflow",
   "description": "Automated workflow for new customer onboarding",
   "nodes": [
@@ -77,6 +82,9 @@
         "validationRules": ["email", "phone"]
       },
       "children": [],
+      "trueSteps": [],
+      "falseSteps": [],
+      "choices": [],
       "conditionCel": null,
       "loopConfig": null
     },
@@ -100,6 +108,9 @@
             "template": "welcome"
           },
           "children": [],
+          "trueSteps": [],
+          "falseSteps": [],
+          "choices": [],
           "conditionCel": null,
           "loopConfig": null
         },
@@ -117,11 +128,64 @@
           },
           "config": {},
           "children": [],
+          "trueSteps": [],
+          "falseSteps": [],
+          "choices": [],
           "conditionCel": null,
           "loopConfig": null
         }
       ],
+      "trueSteps": [],
+      "falseSteps": [],
+      "choices": [],
       "conditionCel": null,
+      "loopConfig": null
+    },
+    {
+      "id": "node-3",
+      "name": "Route by Customer Type",
+      "nodeType": "condition",
+      "executorKey": null,
+      "a2aPool": [],
+      "stepConfig": null,
+      "config": {},
+      "children": [],
+      "trueSteps": [
+        {
+          "id": "node-3-t1",
+          "name": "Enterprise Provisioning",
+          "nodeType": "step",
+          "executorKey": "mcp-enterprise-provisioner",
+          "a2aPool": [],
+          "stepConfig": null,
+          "config": {},
+          "children": [],
+          "trueSteps": [],
+          "falseSteps": [],
+          "choices": [],
+          "conditionCel": null,
+          "loopConfig": null
+        }
+      ],
+      "falseSteps": [
+        {
+          "id": "node-3-f1",
+          "name": "Standard Provisioning",
+          "nodeType": "step",
+          "executorKey": "mcp-standard-provisioner",
+          "a2aPool": [],
+          "stepConfig": null,
+          "config": {},
+          "children": [],
+          "trueSteps": [],
+          "falseSteps": [],
+          "choices": [],
+          "conditionCel": null,
+          "loopConfig": null
+        }
+      ],
+      "choices": [],
+      "conditionCel": "input.customerType == 'enterprise'",
       "loopConfig": null
     }
   ],
@@ -166,7 +230,7 @@
       "name": "Check Customer Type",
       "nodeType": "condition",
       "conditionCel": "input.customerType == 'enterprise'",
-      "children": [
+      "trueSteps": [
         {
           "name": "Enterprise Onboarding Path",
           "nodeType": "parallel",
@@ -213,7 +277,9 @@
               }
             }
           ]
-        },
+        }
+      ],
+      "falseSteps": [
         {
           "name": "Standard Onboarding",
           "nodeType": "step",
@@ -253,23 +319,32 @@
     - `backoffBaseSeconds` (optional, number): Base wait time for first retry in seconds (default: 1.0, must be > 0)
     - `backoffMaxSeconds` (optional, number): Maximum wait time for any retry in seconds (default: 60.0, must be > 0)
   - `config` (optional, object): Node configuration
-  - `children` (optional, array): Child nodes for container nodes
+  - `children` (optional, array): Child nodes — used by `parallel` and `loop` nodes only
+  - `trueSteps` (optional, array): Steps executed when CONDITION evaluator is true (CONDITION nodes, ≥ 1 required)
+  - `falseSteps` (optional, array): Steps executed when CONDITION evaluator is false (CONDITION nodes, optional)
+  - `choices` (optional, array): Named choices for ROUTER nodes (≥ 2 required); each entry is a `RouterChoice` object
+    - `name` (required, string): Choice name — must match the value returned by the router's `conditionCel` selector
+    - `steps` (required, array): One or more `WorkflowNode` steps executed sequentially when this choice is selected
   - `conditionCel` (optional, string): CEL expression for condition/router nodes
+    - Condition: returns bool; available variables: `input`, `previous_step_content`, `previous_step_outputs`, `additional_data`, `session_state`
+    - Router: returns a choice name string; additional variable: `step_choices` (list of all choice names)
   - `loopConfig` (optional, object): Loop configuration
     - `maxIterations` (required, number): Maximum iterations (min: 1)
     - `endConditionCel` (optional, string): CEL expression for loop termination
 
 **Validation Rules**:
-- `step` nodes must have either `executorKey` or `a2aPool` (but not both) and no children
-- `parallel` nodes must have at least 2 children and no `executorKey`
-- `condition` nodes must have 1-2 children and `conditionCel`
-- `loop` nodes must have `loopConfig` and at least 1 child
-- `router` nodes must have at least 2 children with unique names and `conditionCel`
+- `step` nodes must have either `executorKey` or `a2aPool` (but not both) and no `children` / `trueSteps` / `falseSteps` / `choices`
+- `parallel` nodes must have at least 2 `children` and no `executorKey` / `trueSteps` / `falseSteps` / `choices`
+- `condition` nodes must have non-empty `trueSteps` (optional `falseSteps`) and `conditionCel`; `children` and `choices` are forbidden
+- `loop` nodes must have `loopConfig` and at least 1 child; `trueSteps` / `falseSteps` / `choices` are forbidden
+- `router` nodes must have at least 2 `choices` with unique names and `conditionCel`; `children` and `trueSteps` / `falseSteps` are forbidden
+- Each `RouterChoice` must have a non-empty `steps` list
+- `condition` and `router` nodes must not define `stepConfig` (it is meaningful only for `step` nodes)
 
 **Response**: `201 Created`
 ```json
 {
-  "id": "507f1f77bcf86cd799439011",
+  "id": "wf-demo-id",
   "name": "Customer Onboarding Workflow",
   "description": "Automated workflow for new customer onboarding",
   "nodes": [...],
@@ -317,61 +392,76 @@
       "name": "Route by Customer Type",
       "nodeType": "router",
       "conditionCel": "input.customerType",
-      "children": [
+      "choices": [
         {
           "name": "enterprise",
-          "nodeType": "parallel",
-          "children": [
+          "steps": [
             {
-              "name": "Send Enterprise Welcome Email",
-              "nodeType": "step",
-              "executorKey": "mcp-email-sender",
-              "config": {
-                "template": "enterprise_welcome_v2",
-                "fromAddress": "onboarding@company.com",
-                "cc": ["sales@company.com"]
-              }
-            },
-            {
-              "name": "Create Premium Account",
-              "nodeType": "step",
-              "executorKey": "a2a-account-manager",
-              "config": {
-                "accountType": "premium",
-                "features": ["sso", "api_access", "priority_support", "custom_branding"],
-                "slaLevel": "gold"
-              }
-            },
-            {
-              "name": "Assign Account Manager",
-              "nodeType": "step",
-              "executorKey": "mcp-crm-integration",
-              "config": {
-                "action": "assign_account_manager",
-                "tier": "enterprise"
-              }
+              "name": "Enterprise Onboarding",
+              "nodeType": "parallel",
+              "children": [
+                {
+                  "name": "Send Enterprise Welcome Email",
+                  "nodeType": "step",
+                  "executorKey": "mcp-email-sender",
+                  "config": {
+                    "template": "enterprise_welcome_v2",
+                    "fromAddress": "onboarding@company.com",
+                    "cc": ["sales@company.com"]
+                  }
+                },
+                {
+                  "name": "Create Premium Account",
+                  "nodeType": "step",
+                  "executorKey": "a2a-account-manager",
+                  "config": {
+                    "accountType": "premium",
+                    "features": ["sso", "api_access", "priority_support", "custom_branding"],
+                    "slaLevel": "gold"
+                  }
+                },
+                {
+                  "name": "Assign Account Manager",
+                  "nodeType": "step",
+                  "executorKey": "mcp-crm-integration",
+                  "config": {
+                    "action": "assign_account_manager",
+                    "tier": "enterprise"
+                  }
+                }
+              ]
             }
           ]
         },
         {
           "name": "business",
-          "nodeType": "step",
-          "executorKey": "a2a-business-onboarding-agent",
-          "config": {
-            "accountType": "business",
-            "trialDays": 30,
-            "features": ["api_access", "priority_support"]
-          }
+          "steps": [
+            {
+              "name": "Business Onboarding",
+              "nodeType": "step",
+              "executorKey": "a2a-business-onboarding-agent",
+              "config": {
+                "accountType": "business",
+                "trialDays": 30,
+                "features": ["api_access", "priority_support"]
+              }
+            }
+          ]
         },
         {
           "name": "standard",
-          "nodeType": "step",
-          "executorKey": "a2a-standard-onboarding-agent",
-          "config": {
-            "accountType": "standard",
-            "trialDays": 14,
-            "features": ["basic_support"]
-          }
+          "steps": [
+            {
+              "name": "Standard Onboarding",
+              "nodeType": "step",
+              "executorKey": "a2a-standard-onboarding-agent",
+              "config": {
+                "accountType": "standard",
+                "trialDays": 14,
+                "features": ["basic_support"]
+              }
+            }
+          ]
         }
       ]
     },
@@ -398,7 +488,7 @@
 **Response**: `200 OK`
 ```json
 {
-  "id": "507f1f77bcf86cd799439011",
+  "id": "wf-demo-id",
   "name": "Updated Workflow Name",
   "description": "Updated description",
   "nodes": [...],
@@ -460,7 +550,7 @@
     "companyName": "Acme Corporation",
     "industry": "technology"
   },
-  "parentRunId": "507f1f77bcf86cd799439020",
+  "parentRunId": "run-demo-id",
   "resolvedDependencies": [
     {
       "nodeId": "67a3f2e8c4b1d5a6f7e8d9c0",
@@ -492,8 +582,8 @@
 **Response**: `202 Accepted`
 ```json
 {
-  "runId": "507f1f77bcf86cd799439020",
-  "workflowDefinitionId": "507f1f77bcf86cd799439011",
+  "runId": "run-demo-id",
+  "workflowDefinitionId": "wf-demo-id",
   "status": "pending",
   "triggerSource": "manual",
   "startedAt": "2024-01-25T10:00:00Z",
@@ -528,8 +618,8 @@
 {
   "runs": [
     {
-      "id": "507f1f77bcf86cd799439020",
-      "workflowDefinitionId": "507f1f77bcf86cd799439011",
+      "id": "run-demo-id",
+      "workflowDefinitionId": "wf-demo-id",
       "status": "completed",
       "triggerSource": "manual",
       "startedAt": "2024-01-25T10:00:00Z",
@@ -538,8 +628,8 @@
       "errorSummary": null,
       "nodeRuns": [
         {
-          "id": "507f1f77bcf86cd799439030",
-          "workflowRunId": "507f1f77bcf86cd799439020",
+          "id": "node-run-demo-id",
+          "workflowRunId": "run-demo-id",
           "nodeId": "node-1",
           "nodeName": "Validate Customer Data",
           "status": "completed",
@@ -555,8 +645,8 @@
       ]
     },
     {
-      "id": "507f1f77bcf86cd799439021",
-      "workflowDefinitionId": "507f1f77bcf86cd799439011",
+      "id": "run-demo-id-2",
+      "workflowDefinitionId": "wf-demo-id",
       "status": "failed",
       "triggerSource": "api",
       "startedAt": "2024-01-25T11:00:00Z",
@@ -565,8 +655,8 @@
       "errorSummary": "Node 'Validate Customer Data' failed: Invalid email format",
       "nodeRuns": [
         {
-          "id": "507f1f77bcf86cd799439031",
-          "workflowRunId": "507f1f77bcf86cd799439021",
+          "id": "node-run-demo-id-2",
+          "workflowRunId": "run-demo-id-2",
           "nodeId": "node-1",
           "nodeName": "Validate Customer Data",
           "status": "failed",
@@ -603,8 +693,8 @@
 **Response**: `200 OK`
 ```json
 {
-  "id": "507f1f77bcf86cd799439020",
-  "workflowDefinitionId": "507f1f77bcf86cd799439011",
+  "id": "run-demo-id",
+  "workflowDefinitionId": "wf-demo-id",
   "status": "completed",
   "triggerSource": "manual",
   "startedAt": "2024-01-25T10:00:00Z",
@@ -627,8 +717,8 @@
   "resolvedDependencies": [],
   "nodeRuns": [
     {
-      "id": "507f1f77bcf86cd799439030",
-      "workflowRunId": "507f1f77bcf86cd799439020",
+      "id": "node-run-demo-id",
+      "workflowRunId": "run-demo-id",
       "nodeId": "node-1",
       "nodeName": "Validate Customer Data",
       "status": "completed",
@@ -689,11 +779,23 @@ All endpoints return errors in the following format:
   nodeType: string;              // step | parallel | loop | condition | router
   executorKey?: string;          // MCP tool name or A2A agent name (required for step nodes if a2aPool is not provided)
   a2aPool?: string[];            // A2A agent pool (max 5 agents, alternative to executorKey for step nodes)
-  stepConfig?: StepConfig;       // Step-level retry and error handling configuration
+  stepConfig?: StepConfig;       // Step-level retry and error handling configuration (step nodes only)
   config: object;                // Node configuration
-  children: WorkflowNode[];      // Child nodes for container nodes
-  conditionCel?: string;         // CEL expression for condition/router
+  children: WorkflowNode[];      // Child nodes for parallel and loop nodes only
+  trueSteps: WorkflowNode[];     // Sequential steps for the true branch of a condition node (≥ 1 required)
+  falseSteps: WorkflowNode[];    // Sequential steps for the false branch of a condition node (optional)
+  choices: RouterChoice[];       // Named choices for router nodes (≥ 2 required)
+  conditionCel?: string;         // CEL expression for condition/router nodes
   loopConfig?: LoopConfig;       // Loop configuration for loop nodes
+}
+```
+
+### RouterChoice
+
+```typescript
+{
+  name: string;                  // Choice name — must match what the router's conditionCel selector returns
+  steps: WorkflowNode[];         // Sequential steps to execute when this choice is selected (≥ 1 required)
 }
 ```
 
@@ -716,6 +818,83 @@ All endpoints return errors in the following format:
   endConditionCel?: string;      // CEL expression for loop termination
 }
 ```
+
+---
+
+## Tree-Shaped Workflow Example (Multi-Step Branches)
+
+Both `condition` and `router` nodes support sequential multi-step branches. The
+canonical motivating example — node A followed by a CONDITION B that runs
+`C → E → G` on the true branch and `D → F → H` on the false branch — is expressed
+as:
+
+```json
+{
+  "name": "Tree-Shaped Workflow",
+  "nodes": [
+    {
+      "name": "A",
+      "nodeType": "step",
+      "executorKey": "tool-a"
+    },
+    {
+      "name": "B",
+      "nodeType": "condition",
+      "conditionCel": "input.routeToTrue == true",
+      "trueSteps": [
+        { "name": "C", "nodeType": "step", "executorKey": "tool-c" },
+        { "name": "E", "nodeType": "step", "executorKey": "tool-e" },
+        { "name": "G", "nodeType": "step", "executorKey": "tool-g" }
+      ],
+      "falseSteps": [
+        { "name": "D", "nodeType": "step", "executorKey": "tool-d" },
+        { "name": "F", "nodeType": "step", "executorKey": "tool-f" },
+        { "name": "H", "nodeType": "step", "executorKey": "tool-h" }
+      ]
+    }
+  ]
+}
+```
+
+Routers follow the same pattern with named multi-step choices:
+
+```json
+{
+  "name": "Multi-Step Router",
+  "nodes": [
+    {
+      "name": "research-router",
+      "nodeType": "router",
+      "conditionCel": "input.strategy",
+      "choices": [
+        {
+          "name": "tech",
+          "steps": [
+            { "name": "hn-research",  "nodeType": "step", "executorKey": "hackernews-agent" },
+            { "name": "deep-dive",    "nodeType": "step", "executorKey": "analysis-agent" }
+          ]
+        },
+        {
+          "name": "general",
+          "steps": [
+            { "name": "web-research", "nodeType": "step", "executorKey": "web-agent" }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+Notes on the selector semantics:
+
+- The router's `conditionCel` must return a string that matches one of the choice
+  names (e.g. `"tech"` or `"general"` above).
+- Each `RouterChoice` is compiled into a named agno `Steps` container regardless of
+  whether it has one or many inner steps, so the selector contract does not change
+  when a choice grows from one step to several.
+
+---
 
 ### WorkflowRunStatus
 

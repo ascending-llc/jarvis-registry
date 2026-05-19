@@ -1,6 +1,12 @@
 from datetime import UTC, datetime
 
-from registry.schemas.workflow_api_schemas import WorkflowNodeOutput, WorkflowRunDetailResponse
+from registry.schemas.workflow_api_schemas import (
+    RouterChoiceInput,
+    RouterChoiceOutput,
+    WorkflowNodeInput,
+    WorkflowNodeOutput,
+    WorkflowRunDetailResponse,
+)
 
 
 def test_workflow_node_output_uses_independent_container_defaults():
@@ -12,6 +18,99 @@ def test_workflow_node_output_uses_independent_container_defaults():
 
     assert second.config == {}
     assert second.children == []
+
+
+def test_workflow_node_output_branch_fields_have_independent_defaults():
+    """Guards against mutable-default-argument bugs on trueSteps/falseSteps/choices."""
+    first = WorkflowNodeOutput(id="n1", name="First", nodeType="condition")
+    second = WorkflowNodeOutput(id="n2", name="Second", nodeType="condition")
+
+    first.trueSteps.append(WorkflowNodeOutput(id="t1", name="T1", nodeType="step"))
+    first.falseSteps.append(WorkflowNodeOutput(id="f1", name="F1", nodeType="step"))
+    first.choices.append(
+        RouterChoiceOutput(
+            name="c1",
+            steps=[WorkflowNodeOutput(id="s1", name="S1", nodeType="step")],
+        )
+    )
+
+    assert second.trueSteps == []
+    assert second.falseSteps == []
+    assert second.choices == []
+
+
+def test_workflow_node_input_branch_fields_have_independent_defaults():
+    first = WorkflowNodeInput(name="First", nodeType="condition")
+    second = WorkflowNodeInput(name="Second", nodeType="condition")
+
+    first.trueSteps.append(WorkflowNodeInput(name="T1", nodeType="step", executorKey="t"))
+    first.falseSteps.append(WorkflowNodeInput(name="F1", nodeType="step", executorKey="f"))
+    first.choices.append(
+        RouterChoiceInput(
+            name="c1",
+            steps=[WorkflowNodeInput(name="S1", nodeType="step", executorKey="s")],
+        )
+    )
+
+    assert second.trueSteps == []
+    assert second.falseSteps == []
+    assert second.choices == []
+
+
+def test_router_choice_input_round_trip_with_multi_step():
+    """RouterChoiceInput should accept and round-trip a multi-step pipeline."""
+    choice = RouterChoiceInput(
+        name="tech-path",
+        steps=[
+            WorkflowNodeInput(name="hn-research", nodeType="step", executorKey="hackernews-agent"),
+            WorkflowNodeInput(name="deep-dive", nodeType="step", executorKey="analysis-agent"),
+        ],
+    )
+    assert choice.name == "tech-path"
+    assert [s.name for s in choice.steps] == ["hn-research", "deep-dive"]
+
+
+def test_workflow_node_input_accepts_condition_with_multi_step_branches():
+    """The API-level schema must accept the AS-1606 motivating example shape."""
+    condition = WorkflowNodeInput(
+        name="B",
+        nodeType="condition",
+        conditionCel="input.routeToTrue == true",
+        trueSteps=[
+            WorkflowNodeInput(name="C", nodeType="step", executorKey="tool-c"),
+            WorkflowNodeInput(name="E", nodeType="step", executorKey="tool-e"),
+            WorkflowNodeInput(name="G", nodeType="step", executorKey="tool-g"),
+        ],
+        falseSteps=[
+            WorkflowNodeInput(name="D", nodeType="step", executorKey="tool-d"),
+        ],
+    )
+    assert [s.name for s in condition.trueSteps] == ["C", "E", "G"]
+    assert [s.name for s in condition.falseSteps] == ["D"]
+
+
+def test_workflow_node_input_accepts_router_with_named_choices():
+    router = WorkflowNodeInput(
+        name="rt",
+        nodeType="router",
+        conditionCel="input.strategy",
+        choices=[
+            RouterChoiceInput(
+                name="tech",
+                steps=[
+                    WorkflowNodeInput(name="hn", nodeType="step", executorKey="hn-tool"),
+                    WorkflowNodeInput(name="deep", nodeType="step", executorKey="deep-tool"),
+                ],
+            ),
+            RouterChoiceInput(
+                name="general",
+                steps=[WorkflowNodeInput(name="web", nodeType="step", executorKey="web-tool")],
+            ),
+        ],
+    )
+    assert [c.name for c in router.choices] == ["tech", "general"]
+    assert [s.name for s in router.choices[0].steps] == ["hn", "deep"]
+    assert [s.name for s in router.choices[1].steps] == ["web"]
 
 
 def test_workflow_run_detail_response_uses_independent_list_defaults():
