@@ -84,6 +84,26 @@ class LoopConfig(BaseModel):
         return value
 
 
+class RouterChoice(BaseModel):
+    """A single named choice in a ROUTER node, containing one or more steps.
+
+    The choice ``name`` is what the router's ``selector`` CEL expression must return
+    to dispatch into this branch. ``steps`` is the sequential pipeline executed when
+    the choice is selected; multi-step choices are compiled into an agno ``Steps``
+    container, single-step choices are compiled directly.
+    """
+
+    name: str
+    steps: list[WorkflowNode] = Field(default_factory=list)
+
+    @field_validator("steps")
+    @classmethod
+    def _validate_steps_not_empty(cls, value: list[WorkflowNode]) -> list[WorkflowNode]:
+        if not value:
+            raise ValueError("router choice requires at least one step")
+        return value
+
+
 class WorkflowNode(BaseModel):
     """Definition of a single node in a workflow graph."""
 
@@ -98,14 +118,21 @@ class WorkflowNode(BaseModel):
     step_config: StepConfig | None = None
     config: dict[str, Any] = Field(default_factory=dict)
 
-    # Child nodes for container nodes (parallel / loop / condition / router)
+    # Child nodes used by PARALLEL and LOOP container nodes.
     children: list[WorkflowNode] = Field(default_factory=list)
-    # Node Branch
+
+    # CONDITION-only: sequential branches.
+    true_steps: list[WorkflowNode] = Field(default_factory=list)
+    false_steps: list[WorkflowNode] = Field(default_factory=list)
+
+    # ROUTER-only: named choices.
+    choices: list[RouterChoice] = Field(default_factory=list)
+
     # CEL expression used by condition / router nodes.
     # Condition: returns bool; available variables: input, previous_step_content,
     #            previous_step_outputs, additional_data, session_state
-    # Router:    returns a step name string; additional variable:
-    #            step_choices (list of all child step names)
+    # Router:    returns a choice name string; additional variable:
+    #            step_choices (list of all choice names)
     condition_cel: str | None = None
     loop_config: LoopConfig | None = None
 
@@ -127,18 +154,23 @@ class WorkflowNode(BaseModel):
                 raise ValueError("step node must not define both executor_key and a2a_pool")
             if self.children:
                 raise ValueError("step node must not have children")
+            if self.true_steps or self.false_steps:
+                raise ValueError("step node must not define true_steps/false_steps")
+            if self.choices:
+                raise ValueError("step node must not define choices")
             if self.condition_cel is not None:
                 raise ValueError("step node must not define condition_cel")
             if self.loop_config is not None:
                 raise ValueError("step node must not define loop_config")
             return self
 
-        if not self.children:
-            raise ValueError(f"{self.node_type} node requires children")
-
         if self.node_type == WorkflowNodeType.PARALLEL:
             if len(self.children) < 2:
                 raise ValueError("parallel node requires at least 2 children")
+            if self.true_steps or self.false_steps:
+                raise ValueError("parallel node must not define true_steps/false_steps")
+            if self.choices:
+                raise ValueError("parallel node must not define choices")
             if self.condition_cel is not None:
                 raise ValueError("parallel node must not define condition_cel")
             if self.loop_config is not None:
@@ -150,15 +182,27 @@ class WorkflowNode(BaseModel):
         if self.node_type == WorkflowNodeType.CONDITION:
             if not self.condition_cel:
                 raise ValueError("condition node requires condition_cel")
-            if len(self.children) not in (1, 2):
-                raise ValueError("condition node requires 1 or 2 children")
+            if not self.true_steps:
+                raise ValueError("condition node requires at least one true_steps entry")
+            if self.children:
+                raise ValueError("condition node must not use children; use true_steps/false_steps")
+            if self.choices:
+                raise ValueError("condition node must not define choices")
             if self.loop_config is not None:
                 raise ValueError("condition node must not define loop_config")
+            if self.step_config is not None:
+                raise ValueError("condition node must not define step_config")
             return self
 
         if self.node_type == WorkflowNodeType.LOOP:
+            if not self.children:
+                raise ValueError("loop node requires children")
             if self.loop_config is None:
                 raise ValueError("loop node requires loop_config")
+            if self.true_steps or self.false_steps:
+                raise ValueError("loop node must not define true_steps/false_steps")
+            if self.choices:
+                raise ValueError("loop node must not define choices")
             if self.condition_cel is not None:
                 raise ValueError("loop node must not define condition_cel")
             if self.step_config is not None:
@@ -168,17 +212,24 @@ class WorkflowNode(BaseModel):
         if self.node_type == WorkflowNodeType.ROUTER:
             if not self.condition_cel:
                 raise ValueError("router node requires condition_cel")
-            if len(self.children) < 2:
-                raise ValueError("router node requires at least 2 children")
+            if len(self.choices) < 2:
+                raise ValueError("router node requires at least 2 choices")
+            if self.children:
+                raise ValueError("router node must not use children; use choices")
+            if self.true_steps or self.false_steps:
+                raise ValueError("router node must not define true_steps/false_steps")
             if self.loop_config is not None:
                 raise ValueError("router node must not define loop_config")
-            duplicate_names = [name for name, count in Counter(c.name for c in self.children).items() if count > 1]
+            if self.step_config is not None:
+                raise ValueError("router node must not define step_config")
+            duplicate_names = [name for name, count in Counter(c.name for c in self.choices).items() if count > 1]
             if duplicate_names:
-                raise ValueError("router node children must have unique names: " + ", ".join(sorted(duplicate_names)))
+                raise ValueError("router choices must have unique names: " + ", ".join(sorted(duplicate_names)))
             return self
         raise ValueError(f"Unhandled node_type: {self.node_type!r}")
 
 
+RouterChoice.model_rebuild()
 WorkflowNode.model_rebuild()
 
 
