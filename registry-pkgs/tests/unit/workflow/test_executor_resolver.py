@@ -12,6 +12,7 @@ from registry_pkgs.models.enums import AgentCoreRuntimeAccessMode
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 from registry_pkgs.models.federation import AgentCoreRuntimeAccessConfig, AgentCoreRuntimeJwtConfig
 from registry_pkgs.workflows import a2a_client, executor_resolver
+from registry_pkgs.workflows import a2a_executor as a2a_exec
 from registry_pkgs.workflows import mcp_executor as mcp_exec
 from registry_pkgs.workflows.helpers import build_prompt
 
