@@ -6,7 +6,10 @@ import uuid
 from collections.abc import Callable
 from typing import Annotated
 
-from a2a.types import DataPart, FilePart, FileWithBytes, FileWithUri
+from a2a.types import Artifact, FileWithBytes, FileWithUri, Message, Task
+from a2a.utils.artifact import get_artifact_text
+from a2a.utils.message import get_message_text
+from a2a.utils.parts import get_data_parts, get_file_parts
 from beanie import PydanticObjectId
 from mcp.server.fastmcp import Context
 from mcp.server.session import ServerSession
@@ -19,9 +22,11 @@ from mcp.types import (
 )
 from pydantic import AnyUrl, Field
 
+from registry_pkgs.models import ResourceType
 from registry_pkgs.models.a2a_agent import A2AAgent
 from registry_pkgs.workflows.a2a_client import A2ACallResult, call_a2a, raise_if_iam_unsupported
 
+from ...services.access_control_service import ACLService
 from ..core.types import McpAppContext
 
 logger = logging.getLogger(__name__)
@@ -29,47 +34,137 @@ logger = logging.getLogger(__name__)
 _AGENT_INVOKE_LOGGER = "execute_agent"
 
 
-def _convert_artifacts(result: A2ACallResult) -> list[EmbeddedResource | TextContent]:
-    """Convert A2A artifact parts to MCP content items.
+def _file_to_resource(f: FileWithBytes | FileWithUri) -> EmbeddedResource | None:
+    """Convert one A2A file payload to an MCP EmbeddedResource. None for unsupported."""
+    if isinstance(f, FileWithBytes):
+        return EmbeddedResource(
+            type="resource",
+            resource=BlobResourceContents(
+                uri=AnyUrl(f"urn:a2a:file:{uuid.uuid4().hex}"),
+                blob=f.bytes,  # already base64-encoded by the a2a SDK
+                mimeType=f.mime_type or "application/octet-stream",
+            ),
+        )
+    if isinstance(f, FileWithUri):
+        return EmbeddedResource(
+            type="resource",
+            resource=TextResourceContents(
+                uri=AnyUrl(str(f.uri)),
+                mimeType=f.mime_type,
+                text=str(f.uri),
+            ),
+        )
+    logger.warning("Skipping unsupported A2A file payload type: %s", type(f).__name__)
+    return None
 
-    FilePart with bytes  → EmbeddedResource(BlobResourceContents) — base64-encoded blob
-    FilePart with URI    → EmbeddedResource(TextResourceContents)  — URI reference
-    DataPart             → TextContent with JSON-serialised payload
-    """
-    items: list[EmbeddedResource | TextContent] = []
-    for part in result.artifacts:
-        root = part.root
-        if isinstance(root, FilePart):
-            f = root.file
-            if isinstance(f, FileWithBytes):
-                items.append(
-                    EmbeddedResource(
-                        type="resource",
-                        resource=BlobResourceContents(
-                            uri=AnyUrl(f"urn:a2a:file:{uuid.uuid4().hex}"),
-                            blob=f.bytes,  # already base64-encoded by the a2a SDK
-                            mimeType=f.mime_type or "application/octet-stream",
-                        ),
-                    )
-                )
-            elif isinstance(f, FileWithUri):
-                items.append(
-                    EmbeddedResource(
-                        type="resource",
-                        resource=TextResourceContents(
-                            uri=AnyUrl(str(f.uri)),
-                            mimeType=f.mime_type,
-                            text=str(f.uri),
-                        ),
-                    )
-                )
-            else:
-                logger.warning("Skipping unsupported A2A FilePart payload type: %s", type(f).__name__)
-        elif isinstance(root, DataPart):
-            items.append(TextContent(type="text", text=json.dumps(root.data, default=str)))
-        else:
-            logger.warning("Skipping unsupported A2A artifact root type: %s", type(root).__name__)
+
+def _render_artifact(artifact: Artifact) -> list[TextContent | EmbeddedResource]:
+    """Render one artifact as text (with `[<name>]` label) + files + data."""
+    items: list[TextContent | EmbeddedResource] = []
+    text = get_artifact_text(artifact, delimiter="")
+    if text:
+        labelled = f"[{artifact.name}]\n{text}" if artifact.name else text
+        items.append(TextContent(type="text", text=labelled))
+    for f in get_file_parts(artifact.parts or []):
+        resource = _file_to_resource(f)
+        if resource is not None:
+            items.append(resource)
+    for payload in get_data_parts(artifact.parts or []):
+        items.append(TextContent(type="text", text=json.dumps(payload, default=str)))
     return items
+
+
+def _render_message(message: Message) -> list[TextContent | EmbeddedResource]:
+    """Render a Message reply as text + files + data (no label — single block)."""
+    items: list[TextContent | EmbeddedResource] = []
+    text = get_message_text(message)
+    if text:
+        items.append(TextContent(type="text", text=text))
+    parts = message.parts or []
+    for f in get_file_parts(parts):
+        resource = _file_to_resource(f)
+        if resource is not None:
+            items.append(resource)
+    for payload in get_data_parts(parts):
+        items.append(TextContent(type="text", text=json.dumps(payload, default=str)))
+    return items
+
+
+def _render_task(task: Task) -> list[TextContent | EmbeddedResource]:
+    """Render a Task's content. Per the A2A spec, both `task.status.message`
+    and `task.artifacts` carry content — surface both in that order
+    (matches a2a-samples host_agent.py)."""
+    items: list[TextContent | EmbeddedResource] = []
+    if task.status.message is not None:
+        items.extend(_render_message(task.status.message))
+    for artifact in task.artifacts or []:
+        items.extend(_render_artifact(artifact))
+    return items
+
+
+def _convert_response(result: A2ACallResult) -> list[TextContent | EmbeddedResource]:
+    """Render the successful A2ACallResult into MCP content items."""
+    if result.message is not None:
+        return _render_message(result.message)
+    if result.task is not None:
+        return _render_task(result.task)
+    return []
+
+
+def _error_result(text: str) -> CallToolResult:
+    """Wrap an error message in an MCP CallToolResult with isError=True."""
+    return CallToolResult(isError=True, content=[TextContent(type="text", text=text)])
+
+
+def _extract_authenticated_user_id(ctx: Context[ServerSession, McpAppContext]) -> str | None:
+    """Pull user_id from the gateway auth context attached to the request.
+
+    Returns None if the request lacks a user context (unauthenticated). The
+    caller is responsible for failing closed.
+    """
+    try:
+        user_context = ctx.request_context.request.state.user  # type: ignore[union-attr]
+    except AttributeError:
+        return None
+    if not user_context:
+        return None
+    return user_context.get("user_id")
+
+
+async def _user_can_view_agent(
+    acl_service: ACLService,
+    user_id: str,
+    agent_id: PydanticObjectId,
+) -> bool:
+    """Return True iff the user holds a VIEW ACL entry for this remote agent.
+
+    Mirrors executor_resolver._resolve_executor's ACL gate so direct mcpgw
+    invocations enforce the same access rules as workflow steps.
+    """
+    accessible = await acl_service.get_accessible_resource_ids(
+        user_id=PydanticObjectId(user_id),
+        resource_type=ResourceType.REMOTE_AGENT.value,
+    )
+    return str(agent_id) in accessible
+
+
+async def _resolve_active_agent(agent_id: str) -> tuple[A2AAgent | None, CallToolResult | None]:
+    """
+    Parse `agent_id` and load the active A2AAgent.
+    """
+    try:
+        oid = PydanticObjectId(agent_id)
+    except Exception as e:
+        logger.warning("execute_agent: invalid agent_id format %r, e: %s", agent_id, e)
+        return None, _error_result(f"Invalid agent_id format: {agent_id!r}. Use the agent_id from discover_agents.")
+
+    agent = await A2AAgent.find_one(A2AAgent.id == oid, A2AAgent.status == "active")
+    if agent is None:
+        logger.warning("execute_agent: agent not found or inactive agent_id=%s", agent_id)
+        return None, _error_result(
+            f"Agent {agent_id!r} not found or no longer active. Run discover_agents to get a fresh agent_id."
+        )
+    return agent, None
 
 
 async def execute_agent_impl(
@@ -77,64 +172,63 @@ async def execute_agent_impl(
     message: str,
     ctx: Context[ServerSession, McpAppContext],
 ) -> CallToolResult:
-    """Invoke an A2A agent and return its response."""
-    try:
-        oid = PydanticObjectId(agent_id)
-    except Exception as e:
-        logger.warning("execute_agent: invalid agent_id format %r, e: %s", agent_id, e)
-        return CallToolResult(
-            isError=True,
-            content=[
-                TextContent(
-                    type="text", text=f"Invalid agent_id format: {agent_id!r}. Use the agent_id from discover_agents."
-                )
-            ],
-        )
+    """
+    Invoke an A2A agent and return its response.
+    """
+    # 1. Resolve agent
+    agent, error = await _resolve_active_agent(agent_id)
+    if error:
+        return error
 
-    agent: A2AAgent | None = await A2AAgent.find_one(A2AAgent.id == oid, A2AAgent.status == "active")
-    if agent is None:
-        logger.warning("execute_agent: agent not found or inactive agent_id=%s", agent_id)
-        return CallToolResult(
-            isError=True,
-            content=[
-                TextContent(
-                    type="text",
-                    text=f"Agent {agent_id!r} not found or no longer active. Run discover_agents to get a fresh agent_id.",
-                )
-            ],
-        )
+    # 2. AuthN — fail closed when user context is absent
+    user_id = _extract_authenticated_user_id(ctx)
+    if not user_id:
+        logger.warning("execute_agent: missing authenticated user_id; rejecting agent_id=%s", agent_id)
+        return _error_result("Authentication required: missing user context.")
 
+    # 3. AuthZ — same VIEW-permission rule as workflow A2A executors
+    lifespan = ctx.request_context.lifespan_context
+    if not await _user_can_view_agent(lifespan.acl_service, user_id, agent.id):
+        logger.warning(
+            "execute_agent: user_id=%s denied access to agent_id=%s path=%s",
+            user_id,
+            agent_id,
+            agent.path,
+        )
+        return _error_result(f"Access denied: agent {agent_id!r} is not in your accessible set.")
+
+    # 4. Transport capability
     try:
         raise_if_iam_unsupported(agent)
     except NotImplementedError as exc:
         logger.warning("execute_agent: IAM auth not supported agent_id=%s path=%s", agent_id, agent.path)
-        return CallToolResult(
-            isError=True,
-            content=[TextContent(type="text", text=str(exc))],
-        )
+        return _error_result(str(exc))
 
-    jwt_config = ctx.request_context.lifespan_context.jwt_signing_config
-
+    # 5. Invoke
     async def on_chunk(chunk: str) -> None:
         await ctx.log("info", chunk, logger_name=_AGENT_INVOKE_LOGGER)
 
     logger.info("execute_agent: invoking agent_id=%s path=%s", agent_id, agent.path)
-    result = await call_a2a(agent, message, jwt_config=jwt_config, on_chunk=on_chunk)
-
+    result = await call_a2a(
+        agent,
+        message,
+        jwt_config=lifespan.jwt_signing_config,
+        on_chunk=on_chunk,
+        httpx_client=lifespan.a2a_httpx_client,
+    )
     if not result.success:
         logger.warning("execute_agent: agent_id=%s failed: %s", agent_id, result.error)
-        return CallToolResult(
-            isError=True,
-            content=[TextContent(type="text", text=f"Agent invocation failed: {result.error}")],
-        )
+        return _error_result(f"Agent invocation failed: {result.error}")
 
-    content: list[TextContent | EmbeddedResource] = []
-    if result.text:
-        content.append(TextContent(type="text", text=result.text))
-    content.extend(_convert_artifacts(result))
-
-    logger.info("execute_agent: agent_id=%s responded (%d chars)", agent_id, len(result.text))
-    return CallToolResult(content=content)
+    # 6. Render
+    artifact_count = len(result.task.artifacts) if result.task and result.task.artifacts else 0
+    logger.info(
+        "execute_agent: agent_id=%s responded (artifacts=%d, message=%s)",
+        agent_id,
+        artifact_count,
+        result.message is not None,
+    )
+    return CallToolResult(content=_convert_response(result))
 
 
 def get_tools() -> list[tuple[str, Callable]]:
@@ -167,7 +261,6 @@ def get_tools() -> list[tuple[str, Callable]]:
         The agent runs autonomously and returns its final result.
 
         Streaming: partial responses are sent as MCP log notifications during execution.
-        The final CallToolResult contains the complete response.
 
         Error handling:
         - Invalid or unknown agent_id → isError=True with a retry hint; call discover_agents again.

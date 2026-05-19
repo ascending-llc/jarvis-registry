@@ -257,6 +257,7 @@ def create_mcp_app(*, container_provider: Callable[[], RegistryContainer | None]
         ) as proxy_client:
             yield McpAppContext(
                 proxy_client=proxy_client,
+                a2a_httpx_client=container.a2a_httpx_client,
                 server_service=container.server_service,
                 mcp_server_repo=container.mcp_server_repo,
                 a2a_agent_repo=container.a2a_agent_repo,
@@ -265,6 +266,7 @@ def create_mcp_app(*, container_provider: Callable[[], RegistryContainer | None]
                 session_store=container.session_store,
                 redis_client=container.redis_client,
                 jwt_signing_config=settings.jwt_signing_config,
+                acl_service=container.acl_service,
             )
 
     # Configure transport security settings from environment variables

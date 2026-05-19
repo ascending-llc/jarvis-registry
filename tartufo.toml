@@ -95,4 +95,5 @@ exclude-signatures = [
     {signature = 'a19ce20e766970f8e5ffd780a504fa01e9f431103efd289b028a038e6a4e670e', reason = '.env.example template refactor diff is not a credential'},
     {signature = 'e6971fa12552f691a1e44085c244dd06e60bae2f172cfb7506042437fbbf01aa', reason = 'example opaque mock userId is not a credential'},
     {signature = '94a3fac4bece9b36ae5421b8f57e4e191c6d1bc7be9125aa4eda5609a480f4be', reason = 'OAuth scoping/rotation integration test uses PKCE fixtures and mocked tokens, not real credentials'},
+    {signature = '825ab751e8abc35b71f1a33d63fe5fa85ca647463334cf1f02051afe1536c582', reason = 'execute_agent ACL unit test uses a synthetic MongoDB ObjectId and mock base64 file blobs, not real credentials'},
 ]
