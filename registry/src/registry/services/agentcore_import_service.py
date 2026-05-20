@@ -10,7 +10,7 @@ from registry.services.federation.agentcore_discovery import AgentCoreFederation
 from registry.services.federation.agentcore_runtime import AgentCoreRuntimeInvoker
 from registry_pkgs.database.decorators import get_current_session, use_transaction
 from registry_pkgs.models import A2AAgent, ExtendedMCPServer, PrincipalType, ResourceType
-from registry_pkgs.models.enums import PermissionBits, RoleBits
+from registry_pkgs.models.enums import FederationProviderType, PermissionBits, RoleBits
 from registry_pkgs.vector.repositories.a2a_agent_repository import A2AAgentRepository
 from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRepository
 
@@ -642,7 +642,7 @@ class AgentCoreImportService:
             runtime_arn = self.extract_runtime_arn(server.federationMetadata)
             if not runtime_arn:
                 continue
-            if (server.federationMetadata or {}).get("sourceType") != "runtime":
+            if (server.federationMetadata or {}).get("providerType") != FederationProviderType.AWS_AGENTCORE:
                 continue
             if runtime_arn not in all_discovered_runtime_arns:
                 stale_mcp.append(server)
@@ -654,7 +654,7 @@ class AgentCoreImportService:
             runtime_arn = self.extract_runtime_arn(agent.federationMetadata)
             if not runtime_arn:
                 continue
-            if (agent.federationMetadata or {}).get("sourceType") != "runtime":
+            if (agent.federationMetadata or {}).get("providerType") != FederationProviderType.AWS_AGENTCORE:
                 continue
             if runtime_arn not in all_discovered_runtime_arns:
                 stale_a2a.append(agent)
