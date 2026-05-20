@@ -36,7 +36,13 @@ from registry import settings
 from registry_pkgs.core.config import MongoConfig
 from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.models.a2a_agent import A2AAgent
-from registry_pkgs.workflows.a2a_client import agent_base_url, call_a2a, get_agentcore_auth_mode, is_agentcore_runtime
+from registry_pkgs.workflows.a2a_client import (
+    agent_base_url,
+    call_a2a,
+    get_agentcore_auth_mode,
+    is_agentcore_runtime,
+    raise_if_iam_unsupported,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -106,6 +112,15 @@ async def main(path: str, message: str, *, list_agents: bool = False, transport:
         print(f"  transport : {effective_transport}{override_note}")
         print(f"  message   : {message!r}\n")
 
+        # Mirror the prod guard (mcpgw + workflow path) so IAM-only AgentCore
+        # agents fail with a clear error before any network call instead of
+        # surfacing a confusing 403 from the AWS endpoint.
+        try:
+            raise_if_iam_unsupported(agent)
+        except NotImplementedError as exc:
+            print(f"ERROR: {exc}")
+            return 1
+
         chunks_received: list[str] = []
 
         async def on_chunk(chunk: str) -> None:
@@ -115,6 +130,10 @@ async def main(path: str, message: str, *, list_agents: bool = False, transport:
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(connect=30.0, read=None, write=60.0, pool=30.0),
             follow_redirects=False,
+            # Bypass shell HTTP(S)_PROXY env so a local fixture (127.0.0.1) is never
+            # routed through a proxy — otherwise a downed local server surfaces as a
+            # confusing 502 from the proxy instead of connection refused.
+            trust_env=False,
         ) as a2a_httpx:
             result = await call_a2a(
                 agent,
