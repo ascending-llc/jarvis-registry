@@ -261,6 +261,7 @@ def create_mcp_app(*, container_provider: Callable[[], RegistryContainer | None]
                 server_service=container.server_service,
                 mcp_server_repo=container.mcp_server_repo,
                 a2a_agent_repo=container.a2a_agent_repo,
+                search_service=container.search_service,
                 mcp_client_service=container.mcp_client_service,
                 oauth_service=container.oauth_service,
                 session_store=container.session_store,

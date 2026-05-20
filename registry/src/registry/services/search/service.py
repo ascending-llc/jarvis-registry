@@ -1,0 +1,276 @@
+"""Search service: all vector-search logic for MCP and A2A entities.
+
+This service is the single home for discovery logic shared by:
+- the HTTP ``POST /search`` route (structured servers/tools/agents/skills), and
+- the mcpgw ``discover_mcp_entities`` / ``discover_agents`` tools (flat results).
+
+It is intentionally decoupled from the API layer: route handlers and MCP tools
+inject it and map its plain-dict results onto their own response shapes.
+"""
+
+import logging
+import time
+
+from pydantic import BaseModel, Field
+
+from registry_pkgs.models.enums import A2AEntityType, MCPEntityType
+from registry_pkgs.vector.enum.enums import SearchType
+from registry_pkgs.vector.repositories.a2a_agent_repository import A2AAgentRepository
+from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRepository
+
+from ...auth.dependencies import CurrentUser
+from ...utils.otel_metrics import record_tool_discovery
+from .base import VectorSearchService
+
+logger = logging.getLogger(__name__)
+
+type SearchEntityType = MCPEntityType | A2AEntityType
+
+_MCP_SEMANTIC_TYPES = ("mcp_server", "tool")
+_A2A_SEMANTIC_TYPES: dict[str, A2AEntityType] = {
+    "a2a_agent": A2AEntityType.AGENT,
+    "skill": A2AEntityType.SKILL,
+}
+_DEFAULT_SEMANTIC_TYPES = (*_MCP_SEMANTIC_TYPES, *_A2A_SEMANTIC_TYPES.keys())
+
+
+class SearchRequest(BaseModel):
+    """Flat discovery request used by the mcpgw tools."""
+
+    query: str = Field(default="", min_length=0, max_length=512, description="Natural language query")
+    top_n: int = Field(1, description="Number of results to return")
+    search_type: SearchType = Field(default=SearchType.HYBRID, description="Type of search to perform")
+    type_list: list[SearchEntityType] = Field(
+        default_factory=lambda: list(MCPEntityType),
+        description=(
+            "Entity types to search. MCP supports 'tool', 'resource', 'prompt'. "
+            "A2A supports 'agent', 'skill'. Default: all MCP entity types."
+        ),
+    )
+    include_disabled: bool = Field(default=False, description="Include disabled results")
+
+
+def _build_filters(include_disabled: bool, entity_types: list) -> dict[str, object]:
+    """Build a vector-store filter dict from an entity-type list and the disabled flag."""
+    filters: dict[str, object] = {"entity_type": entity_types}
+    if not include_disabled:
+        filters["enabled"] = True
+    return filters
+
+
+def _candidate_k(top_n: int) -> int:
+    """Re-ranking candidate pool: 10x requested, floored at 50, capped at 100."""
+    return min(max(top_n * 10, 50), 100)
+
+
+class SearchService:
+    """Encapsulates vector search across MCP servers/tools and A2A agents/skills."""
+
+    def __init__(
+        self,
+        *,
+        vector_service: VectorSearchService,
+        mcp_server_repo: MCPServerRepository,
+        a2a_agent_repo: A2AAgentRepository,
+    ) -> None:
+        self.vector_service = vector_service
+        self.mcp_server_repo = mcp_server_repo
+        self.a2a_agent_repo = a2a_agent_repo
+
+    async def search_entities(self, search: SearchRequest, user_context: CurrentUser) -> dict[str, object]:
+        """Run discovery against the correct Weaviate collection per entity type.
+
+        - tool/resource/prompt -> MCP_Servers collection (mcp_server_repo)
+        - agent/skill          -> A2a_agents collection (a2a_agent_repo)
+
+        Results are merged and re-sorted by relevance_score before truncation to
+        ``top_n``. Every document embeds its server/agent context, so no MongoDB
+        lookup is required.
+        """
+        query = search.query.strip()
+        top_n = search.top_n
+        start_time = time.perf_counter()
+        success = False
+        results_count = 0
+        search_results: list = []
+
+        all_types = search.type_list
+        mcp_types: list[MCPEntityType] = [t for t in all_types if isinstance(t, MCPEntityType)]
+        a2a_types: list[A2AEntityType] = [t for t in all_types if isinstance(t, A2AEntityType)]
+
+        logger.info(
+            f"Entity search from user '{user_context.get('username', 'unknown')}': "
+            f"query='{query}', top_n={top_n}, search_type={search.search_type}, "
+            f"mcp_types={mcp_types}, a2a_types={a2a_types}"
+        )
+
+        try:
+            results: list = []
+
+            if mcp_types:
+                results.extend(await self._search_mcp_documents(search, query, mcp_types))
+
+            if a2a_types:
+                try:
+                    results.extend(await self._search_a2a_documents(search, query, a2a_types))
+                except RuntimeError as exc:
+                    logger.warning("A2A vector search unavailable, skipping A2A results: %s", exc)
+
+            # Re-sort merged results by relevance_score (desc) and cap at top_n
+            if len(results) > top_n:
+                results.sort(key=lambda r: r.get("relevance_score") or 0.0, reverse=True)
+                results = results[:top_n]
+
+            search_results = results
+            logger.info(f"Found {len(search_results)} results (mcp={len(mcp_types) > 0}, a2a={len(a2a_types) > 0})")
+
+            success = True
+            results_count = len(search_results)
+
+            return {
+                "query": query,
+                "type_list": search.type_list,
+                "total": len(search_results),
+                "results": search_results,
+            }
+        finally:
+            duration = time.perf_counter() - start_time
+            try:
+                self._record_discovery(search_results, success, duration, str(search.search_type.value), results_count)
+            except Exception as e:
+                logger.warning(f"Failed to record tool discovery metric: {e}")
+
+    async def _search_mcp_documents(self, search: SearchRequest, query: str, mcp_types: list[MCPEntityType]) -> list:
+        filters = _build_filters(search.include_disabled, mcp_types)
+        if not query:
+            return await self.mcp_server_repo.afilter(filters=filters, limit=search.top_n)
+        return await self.mcp_server_repo.asearch_with_rerank(
+            query=query,
+            k=search.top_n,
+            candidate_k=_candidate_k(search.top_n),
+            search_type=search.search_type,
+            filters=filters,
+        )
+
+    async def _search_a2a_documents(self, search: SearchRequest, query: str, a2a_types: list[A2AEntityType]) -> list:
+        filters = _build_filters(search.include_disabled, a2a_types)
+        if not query:
+            return await self.a2a_agent_repo.afilter(filters=filters, limit=search.top_n)
+        return await self.a2a_agent_repo.asearch_with_rerank(
+            query=query,
+            k=search.top_n,
+            candidate_k=_candidate_k(search.top_n),
+            search_type=search.search_type,
+            filters=filters,
+        )
+
+    @staticmethod
+    def _record_discovery(
+        items: list,
+        success: bool,
+        duration: float,
+        transport_type: str,
+        tools_count: int,
+    ) -> None:
+        """Emit a tool-discovery metric per discovered server, or "registry" if none.
+
+        Shared by both the flat and structured search paths. ``items`` are raw
+        result dicts; any with a ``server_name`` are used as the metric source.
+        """
+        discovered_names = {item["server_name"] for item in items if isinstance(item, dict) and item.get("server_name")}
+        for name in discovered_names or {"registry"}:
+            record_tool_discovery(
+                server_name=name,
+                success=success,
+                duration_seconds=duration,
+                transport_type=transport_type,
+                tools_count=tools_count,
+            )
+
+    async def semantic_search(
+        self,
+        query: str,
+        entity_types: list[str] | None = None,
+        max_results: int = 10,
+        include_disabled: bool = False,
+    ) -> dict[str, list]:
+        """Structured search returning MCP servers/tools and A2A agents/skills.
+
+        MCP results come from ``vector_service.search_mixed`` (unchanged behaviour);
+        A2A results come from ``a2a_agent_repo`` and are split by entity type. An A2A
+        vector outage degrades gracefully (empty agents/skills) so the MCP half of
+        the response is still returned.
+        """
+        requested = entity_types or list(_DEFAULT_SEMANTIC_TYPES)
+        mcp_types = [t for t in requested if t in _MCP_SEMANTIC_TYPES]
+        a2a_types = [_A2A_SEMANTIC_TYPES[t] for t in requested if t in _A2A_SEMANTIC_TYPES]
+
+        start_time = time.perf_counter()
+        success = False
+        servers: list = []
+        tools: list = []
+        agents: list = []
+        skills: list = []
+
+        logger.info(
+            "Semantic search: query='%s', mcp_types=%s, a2a_types=%s, max=%s",
+            query,
+            mcp_types,
+            [t.value for t in a2a_types],
+            max_results,
+        )
+
+        try:
+            if mcp_types:
+                mcp_results = await self.vector_service.search_mixed(
+                    query=query,
+                    entity_types=mcp_types,
+                    max_results=max_results,
+                )
+                servers = mcp_results.get("servers", [])
+                tools = mcp_results.get("tools", [])
+
+            if a2a_types:
+                agents, skills = await self._search_a2a_for_semantic(query, a2a_types, max_results, include_disabled)
+
+            success = True
+            return {"servers": servers, "tools": tools, "agents": agents, "skills": skills}
+        finally:
+            duration = time.perf_counter() - start_time
+            total = len(servers) + len(tools) + len(agents) + len(skills)
+            try:
+                self._record_discovery([*servers, *tools], success, duration, "semantic", total)
+            except Exception as e:
+                logger.warning(f"Failed to record tool discovery metric: {e}")
+
+    async def _search_a2a_for_semantic(
+        self,
+        query: str,
+        a2a_types: list[A2AEntityType],
+        max_results: int,
+        include_disabled: bool,
+    ) -> tuple[list, list]:
+        filters = _build_filters(include_disabled, a2a_types)
+        # query is guaranteed non-empty here: semantic_search's only caller is the
+        # /search route, whose request enforces min_length=1.
+        try:
+            docs = await self.a2a_agent_repo.asearch_with_rerank(
+                query=query,
+                k=max_results,
+                candidate_k=_candidate_k(max_results),
+                search_type=SearchType.HYBRID,
+                filters=filters,
+            )
+        except RuntimeError as exc:
+            logger.warning("A2A vector search unavailable, skipping A2A results: %s", exc)
+            return [], []
+
+        agents: list = []
+        skills: list = []
+        for doc in docs:
+            entity_type = doc.get("entity_type")
+            if entity_type == A2AEntityType.AGENT:
+                agents.append(doc)
+            elif entity_type == A2AEntityType.SKILL:
+                skills.append(doc)
+        return agents, skills

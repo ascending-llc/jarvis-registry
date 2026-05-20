@@ -8,9 +8,9 @@ from pydantic import Field
 
 from registry_pkgs.models.enums import A2AEntityType, MCPEntityType
 
-from ...api.v1.search_routes import SearchRequest, search_entities_impl
 from ...auth.dependencies import UserContextDict
 from ...core.exceptions import InternalServerException
+from ...services.search.service import SearchRequest
 from ..core.types import McpAppContext
 
 logger = logging.getLogger(__name__)
@@ -36,12 +36,7 @@ async def _run_search(
         search_request = SearchRequest.model_validate(payload)
         user_context: UserContextDict = ctx.request_context.request.state.user  # type: ignore[union-attr]
         lifespan_context = ctx.request_context.lifespan_context
-        result = await search_entities_impl(
-            search_request,
-            user_context,
-            mcp_server_repo=lifespan_context.mcp_server_repo,
-            a2a_agent_repo=lifespan_context.a2a_agent_repo,
-        )
+        result = await lifespan_context.search_service.search_entities(search_request, user_context)
         entities = result.get("results", [])
         logger.info("✅ Found %d result(s) for query='%s'", len(entities), query)
         return entities

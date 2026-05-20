@@ -11,6 +11,7 @@ from ...core.mcp_client import MCPClientService
 from ...core.session_store import SessionStore
 from ...services.access_control_service import ACLService
 from ...services.oauth.oauth_service import MCPOAuthService
+from ...services.search.service import SearchService
 from ...services.server_service import ServerServiceV1
 
 
@@ -23,6 +24,7 @@ class McpAppContext:
     server_service: ServerServiceV1
     mcp_server_repo: MCPServerRepository
     a2a_agent_repo: A2AAgentRepository
+    search_service: SearchService
     mcp_client_service: MCPClientService
     oauth_service: MCPOAuthService
     session_store: SessionStore
