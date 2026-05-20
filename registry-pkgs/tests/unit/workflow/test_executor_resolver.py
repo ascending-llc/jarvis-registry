@@ -11,8 +11,8 @@ from registry_pkgs.models.a2a_agent import A2AAgent, AgentConfig
 from registry_pkgs.models.enums import AgentCoreRuntimeAccessMode
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 from registry_pkgs.models.federation import AgentCoreRuntimeAccessConfig, AgentCoreRuntimeJwtConfig
+from registry_pkgs.workflows import a2a_client, executor_resolver
 from registry_pkgs.workflows import a2a_executor as a2a_exec
-from registry_pkgs.workflows import executor_resolver
 from registry_pkgs.workflows import mcp_executor as mcp_exec
 from registry_pkgs.workflows.helpers import build_prompt
 
@@ -159,7 +159,7 @@ class TestExecutorResolver:
         monkeypatch.setattr(executor_resolver.A2AAgent, "find_one", AsyncMock(return_value=_a2a_agent("/deep-intel")))
         captured_agents: list = []
 
-        def fake_make_a2a_executor(agent, *, jwt_config):
+        def fake_make_a2a_executor(agent, *, jwt_config, httpx_client=None):
             captured_agents.append(agent)
             return "a2a-executor"
 
@@ -347,10 +347,10 @@ class TestA2AExecutor:
             encoded_calls.append((payload, key, kid))
             return "signed-jwt"
 
-        monkeypatch.setattr(a2a_exec, "build_jwt_payload", fake_build_payload)
-        monkeypatch.setattr(a2a_exec, "encode_jwt", fake_encode)
+        monkeypatch.setattr(a2a_client, "build_jwt_payload", fake_build_payload)
+        monkeypatch.setattr(a2a_client, "encode_jwt", fake_encode)
 
-        token = a2a_exec.make_agent_jwt(
+        token = a2a_client.make_agent_jwt(
             agent_url="https://agent.example.com",
             jwt_config=_jwt_config(),
             expires_in_seconds=120,
@@ -380,8 +380,8 @@ class TestA2AExecutor:
             )
             return {"sub": subject}
 
-        monkeypatch.setattr(a2a_exec, "build_jwt_payload", fake_build_payload)
-        monkeypatch.setattr(a2a_exec, "encode_jwt", lambda *args, **kwargs: "signed-jwt")
+        monkeypatch.setattr(a2a_client, "build_jwt_payload", fake_build_payload)
+        monkeypatch.setattr(a2a_client, "encode_jwt", lambda *args, **kwargs: "signed-jwt")
 
         agent = _a2a_agent()
         agent.config.runtimeAccess = AgentCoreRuntimeAccessConfig(
@@ -395,7 +395,7 @@ class TestA2AExecutor:
             ),
         )
 
-        token = a2a_exec._make_agentcore_jwt(agent, jwt_config=_jwt_config(), expires_in_seconds=90)
+        token = a2a_client._make_agentcore_jwt(agent, jwt_config=_jwt_config(), expires_in_seconds=90)
 
         assert token == "signed-jwt"
         payload = built_payloads[0]
@@ -407,6 +407,39 @@ class TestA2AExecutor:
             "scope": "workflows.read workflows.write",
             "agent_name": "Deep Intel",
         }
+
+    @pytest.mark.asyncio
+    async def test_make_a2a_executor_passes_httpx_client_to_call_a2a(self):
+        """The closure returned by make_a2a_executor must forward its captured
+        httpx_client to call_a2a so the workflow step reuses the shared pool."""
+        from unittest.mock import patch
+
+        import httpx
+
+        from registry_pkgs.workflows.a2a_client import A2ACallResult
+        from registry_pkgs.workflows.a2a_executor import make_a2a_executor
+
+        agent = _a2a_agent()
+        shared = httpx.AsyncClient()
+        try:
+            executor = make_a2a_executor(
+                agent,
+                jwt_config=_jwt_config(),
+                httpx_client=shared,
+            )
+            captured_kwargs: dict = {}
+
+            async def fake_call_a2a(agent_obj, text, **kwargs):
+                captured_kwargs.update(kwargs)
+                return A2ACallResult(success=True)
+
+            step_input = SimpleNamespace(previous_step_content=None, input="hello")
+            with patch("registry_pkgs.workflows.a2a_executor.call_a2a", side_effect=fake_call_a2a):
+                await executor(step_input)
+
+            assert captured_kwargs.get("httpx_client") is shared
+        finally:
+            await shared.aclose()
 
 
 @pytest.mark.unit

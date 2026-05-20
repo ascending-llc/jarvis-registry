@@ -197,6 +197,7 @@ class TestBuildRegistry:
             user_id,
             pool_nodes,
             selector_llm,
+            a2a_httpx_client=None,
         ):
             captured["executor_keys"] = executor_keys
             captured["pool_nodes"] = [n.name for n in pool_nodes]

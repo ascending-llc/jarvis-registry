@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 
+import httpx
 from agno.models.base import Model
 from agno.workflow import StepInput, StepOutput
 from agno.workflow.step import StepExecutor
@@ -86,22 +87,28 @@ async def build_executor_registry(
     user_id: str | None,
     pool_nodes: list[WorkflowNode] | None = None,
     selector_llm: Model | None = None,
+    a2a_httpx_client: httpx.AsyncClient | None = None,
 ) -> dict[str, StepExecutor]:
     """Resolve each executor key to an MCP server or A2A agent executor.
 
     Args:
-        executor_keys:   All ``executor_key`` values referenced by a WorkflowDefinition.
-                         Duplicates are resolved only once.
-        llm:             agno-compatible Model used by MCP-server executors.
-        registry_url:    Base URL of the Jarvis Registry (MCP proxy calls only).
-        registry_token:  User-scoped Bearer token for the MCP gateway proxy.
-                         **Not used for A2A executors** — those self-sign a JWT.
-        jwt_config:      JWT signing config used by A2A executors to mint
-                         short-lived service-to-agent tokens.
-        user_id:         User ID for ACL lookup. ``None`` = unrestricted
-                         (only safe for trusted service / script contexts).
-        pool_nodes:      STEP nodes that use ``a2a_pool`` instead of ``executor_key``.
-        selector_llm:    Model used only for A2A pool selection; falls back to ``llm``.
+        executor_keys:    All ``executor_key`` values referenced by a WorkflowDefinition.
+                          Duplicates are resolved only once.
+        llm:              agno-compatible Model used by MCP-server executors.
+        registry_url:     Base URL of the Jarvis Registry (MCP proxy calls only).
+        registry_token:   User-scoped Bearer token for the MCP gateway proxy.
+                          **Not used for A2A executors** — those self-sign a JWT.
+        jwt_config:       JWT signing config used by A2A executors to mint
+                          short-lived service-to-agent tokens.
+        user_id:          User ID for ACL lookup. ``None`` = unrestricted
+                          (only safe for trusted service / script contexts).
+        pool_nodes:       STEP nodes that use ``a2a_pool`` instead of ``executor_key``.
+        selector_llm:     Model used only for A2A pool selection; falls back to ``llm``.
+        a2a_httpx_client: Optional shared httpx client passed to A2A
+                          executors. When None, each A2A call builds its
+                          own pool (slower but isolated). Production code
+                          should always pass a long-lived client owned by
+                          the app container.
 
     Returns:
         dict mapping each ``executor_key`` / pool synthetic-key → ``StepExecutor``.
@@ -124,6 +131,7 @@ async def build_executor_registry(
             registry_token=registry_token,
             jwt_config=jwt_config,
             accessible_agent_ids=accessible_agent_ids,
+            a2a_httpx_client=a2a_httpx_client,
         )
 
     _selector = selector_llm or llm
@@ -135,6 +143,7 @@ async def build_executor_registry(
             selector_llm=_selector,
             jwt_config=jwt_config,
             accessible_agent_ids=accessible_agent_ids,
+            httpx_client=a2a_httpx_client,
         )
         logger.debug("pool executor registered: %r → %s", node.name, synthetic_key)
 
@@ -149,6 +158,7 @@ async def _resolve_executor(
     registry_token: str,
     jwt_config: JwtSigningConfig,
     accessible_agent_ids: set[str] | None,
+    a2a_httpx_client: httpx.AsyncClient | None = None,
 ) -> StepExecutor:
     """Resolve a single executor key to its MCP or A2A executor.
 
@@ -180,7 +190,7 @@ async def _resolve_executor(
                 f"executor_key {key!r} → A2A agent {path!r}: user lacks access (agent_id={a2a_agent.id})"
             )
         logger.debug("executor_key %r → A2A agent %r (direct)", key, a2a_agent.path)
-        return make_a2a_executor(a2a_agent, jwt_config=jwt_config)
+        return make_a2a_executor(a2a_agent, jwt_config=jwt_config, httpx_client=a2a_httpx_client)
 
     raise KeyError(
         f"executor_key {key!r} not resolved: "

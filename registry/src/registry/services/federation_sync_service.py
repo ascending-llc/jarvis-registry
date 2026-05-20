@@ -638,7 +638,13 @@ class FederationSyncService:
                         f"(owned by federation {path_conflict.federationRefId or 'unknown'})"
                     )
                     continue
-                if not self._runtime_metadata_changed(existing.federationMetadata, item.federationMetadata):
+                transport_changed = getattr(getattr(item, "config", None), "type", None) != getattr(
+                    getattr(existing, "config", None), "type", None
+                )
+                if (
+                    not self._runtime_metadata_changed(existing.federationMetadata, item.federationMetadata)
+                    and not transport_changed
+                ):
                     apply_summary.unchangedAgents += 1
                 else:
                     apply_summary.updatedAgents += 1
@@ -725,6 +731,8 @@ class FederationSyncService:
             existing.isEnabled = item.isEnabled
             existing.wellKnown = item.wellKnown
             existing.federationMetadata = item.federationMetadata
+            if item.config and existing.config:
+                existing.config.type = item.config.type
             await existing.save(session=session)
             mutation_result.changed_a2a_runtime_arns.add(remote_id)
             await self._grant_owner(user_id, ResourceType.REMOTE_AGENT, existing.id)
