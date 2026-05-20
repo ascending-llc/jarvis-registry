@@ -7,6 +7,7 @@ from beanie import PydanticObjectId
 
 from registry.services.agentcore_import_service import AgentCoreImportService
 from registry_pkgs.models import ExtendedMCPServer, ResourceType
+from registry_pkgs.models.enums import FederationProviderType
 
 
 class _FakeRepo:
@@ -69,9 +70,9 @@ class _FakeServer:
         self.numTools = 0
         self.author = PydanticObjectId()
         self.federationMetadata = {
-            "sourceType": "gateway_target",
             "runtimeArn": federation_id,
             "runtimeVersion": "1",
+            "providerType": FederationProviderType.AWS_AGENTCORE,
         }
         self.createdAt = datetime.now(UTC)
         self.updatedAt = datetime.now(UTC)
@@ -291,7 +292,7 @@ class TestAgentCoreImportService:
             status="active",
             isEnabled=True,
             wellKnown=None,
-            federationMetadata={"sourceType": "runtime", "runtimeArn": "fed-a2a-new"},
+            federationMetadata={"providerType": FederationProviderType.AWS_AGENTCORE, "runtimeArn": "fed-a2a-new"},
             createdAt=datetime.now(UTC),
             updatedAt=datetime.now(UTC),
             author=None,
@@ -319,7 +320,11 @@ class TestAgentCoreImportService:
             status="inactive",
             isEnabled=False,
             wellKnown=None,
-            federationMetadata={"sourceType": "runtime", "runtimeArn": "fed-a2a-upd", "runtimeVersion": "1"},
+            federationMetadata={
+                "providerType": FederationProviderType.AWS_AGENTCORE,
+                "runtimeArn": "fed-a2a-upd",
+                "runtimeVersion": "1",
+            },
             save=AsyncMock(),
         )
         new_data = SimpleNamespace(
@@ -329,7 +334,11 @@ class TestAgentCoreImportService:
             status="active",
             isEnabled=True,
             wellKnown=None,
-            federationMetadata={"sourceType": "runtime", "runtimeArn": "fed-a2a-upd", "runtimeVersion": "2"},
+            federationMetadata={
+                "providerType": FederationProviderType.AWS_AGENTCORE,
+                "runtimeArn": "fed-a2a-upd",
+                "runtimeVersion": "2",
+            },
         )
 
         changes = await service._update_a2a_agent(existing=existing, new_data=new_data)
@@ -343,11 +352,17 @@ class TestAgentCoreImportService:
     async def test_collects_stale_entities(self, service, monkeypatch):
         stale_server = _FakeServer(name="stale-mcp", federation_id="arn:runtime:stale")
         stale_server.id = PydanticObjectId()
-        stale_server.federationMetadata = {"sourceType": "runtime", "runtimeArn": "arn:runtime:stale"}
+        stale_server.federationMetadata = {
+            "providerType": FederationProviderType.AWS_AGENTCORE,
+            "runtimeArn": "arn:runtime:stale",
+        }
         stale_agent = SimpleNamespace(
             id=PydanticObjectId(),
             card=SimpleNamespace(name="stale-a2a"),
-            federationMetadata={"sourceType": "runtime", "runtimeArn": "arn:runtime:stale2"},
+            federationMetadata={
+                "providerType": FederationProviderType.AWS_AGENTCORE,
+                "runtimeArn": "arn:runtime:stale2",
+            },
         )
 
         find_mock_mcp = SimpleNamespace(to_list=self._async_return([stale_server]))
@@ -391,9 +406,15 @@ class TestAgentCoreImportService:
         assert service._detect_changes(existing, discovered_new) == ["runtimeVersion: 1 -> 2"]
 
     async def test_detect_a2a_changes_only_uses_runtime_version(self, service):
-        existing = SimpleNamespace(federationMetadata={"sourceType": "runtime", "runtimeVersion": "3"})
-        discovered_same = SimpleNamespace(federationMetadata={"sourceType": "runtime", "runtimeVersion": "3"})
-        discovered_new = SimpleNamespace(federationMetadata={"sourceType": "runtime", "runtimeVersion": "4"})
+        existing = SimpleNamespace(
+            federationMetadata={"providerType": FederationProviderType.AWS_AGENTCORE, "runtimeVersion": "3"}
+        )
+        discovered_same = SimpleNamespace(
+            federationMetadata={"providerType": FederationProviderType.AWS_AGENTCORE, "runtimeVersion": "3"}
+        )
+        discovered_new = SimpleNamespace(
+            federationMetadata={"providerType": FederationProviderType.AWS_AGENTCORE, "runtimeVersion": "4"}
+        )
 
         assert service._detect_a2a_changes(existing, discovered_same) == []
         assert service._detect_a2a_changes(existing, discovered_new) == ["runtimeVersion: 3 -> 4"]
@@ -414,10 +435,23 @@ class TestAgentCoreImportService:
         assert service.detect_runtime_version_change(existing, new_data) == ["runtimeVersion: 2 -> 3"]
 
     async def test_detect_runtime_version_change_handles_missing_version(self, service):
-        assert service.detect_runtime_version_change({"sourceType": "runtime"}, {"sourceType": "runtime"}) == []
-        assert service.detect_runtime_version_change({"sourceType": "runtime"}, {"runtimeVersion": "1"}) == [
-            "runtimeVersion: None -> 1"
-        ]
+        assert (
+            service.detect_runtime_version_change(
+                {
+                    "providerType": FederationProviderType.AWS_AGENTCORE,
+                },
+                {
+                    "providerType": FederationProviderType.AWS_AGENTCORE,
+                },
+            )
+            == []
+        )
+        assert service.detect_runtime_version_change(
+            {
+                "providerType": FederationProviderType.AWS_AGENTCORE,
+            },
+            {"runtimeVersion": "1"},
+        ) == ["runtimeVersion: None -> 1"]
 
     @staticmethod
     def _async_return(value):
