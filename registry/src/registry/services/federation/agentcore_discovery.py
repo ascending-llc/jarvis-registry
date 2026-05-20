@@ -285,7 +285,7 @@ class AgentCoreFederationClient:
             "capabilities": {"streaming": True},
             "skills": [],
             "securitySchemes": {},
-            "preferredTransport": "HTTP+JSON",
+            "preferredTransport": "JSONRPC",
             "defaultInputModes": ["text/plain"],
             "defaultOutputModes": ["application/json"],
         }
