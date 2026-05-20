@@ -89,8 +89,8 @@ class RouterChoice(BaseModel):
 
     The choice ``name`` is what the router's ``selector`` CEL expression must return
     to dispatch into this branch. ``steps`` is the sequential pipeline executed when
-    the choice is selected; multi-step choices are compiled into an agno ``Steps``
-    container, single-step choices are compiled directly.
+    the choice is selected; choices are compiled into an agno ``Steps`` container
+    regardless of whether they contain one step or many.
     """
 
     name: str
