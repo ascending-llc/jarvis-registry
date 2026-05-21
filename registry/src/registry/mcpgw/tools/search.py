@@ -58,7 +58,7 @@ async def _run_search(
 
 def get_tools() -> list[tuple[str, Callable]]:
 
-    async def discover_mcp_entities(
+    async def discover_servers(
         ctx: Context[ServerSession, McpAppContext],
         query: Annotated[
             str,
@@ -166,6 +166,6 @@ def get_tools() -> list[tuple[str, Callable]]:
         return await _run_search(ctx, query, top_n, "hybrid", type_list)
 
     return [
-        ("discover_mcp_entities", discover_mcp_entities),
+        ("discover_servers", discover_servers),
         ("discover_agents", discover_agents),
     ]
