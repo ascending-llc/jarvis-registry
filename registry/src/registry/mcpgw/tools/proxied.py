@@ -635,7 +635,7 @@ def get_tools() -> list[tuple[str, Callable]]:
             str,
             Field(
                 description=(
-                    "The canonical downstream MCP tool name from a discover_mcp_entities result. "
+                    "The canonical downstream MCP tool name from a discover_servers result. "
                     "Use the exact `tool_name` value returned by discovery. "
                     "Do not transform casing, do not derive from wrapper names, and do not use aliases."
                 )
@@ -656,14 +656,14 @@ def get_tools() -> list[tuple[str, Callable]]:
             str,
             Field(
                 description=(
-                    "The `server_id` from the SAME discover_mcp_entities result as `tool_name`. "
+                    "The `server_id` from the SAME discover_servers result as `tool_name`. "
                     "Always pair the exact `tool_name` and `server_id` from the same entity result."
                 )
             ),
         ],
     ) -> CallToolResult:
         """
-        🚀 AUTO-USE: Execute one downstream MCP tool returned by discover_mcp_entities.
+        🚀 AUTO-USE: Execute one downstream MCP tool returned by discover_servers.
         Use this only with a discovery result whose `entity_type` is `tool`.
 
         IMPORTANT:
@@ -843,7 +843,7 @@ def get_tools() -> list[tuple[str, Callable]]:
         **Examples:**
 
         Example 1 — code review:
-          # discover_mcp_entities(query="code review template", type_list=["prompt"])
+          # discover_servers(query="code review template", type_list=["prompt"])
           # → {"prompt_name": "code_reviewer", "server_id": "abc123",
           #    "description": "... Required: language (programming language) | Optional: focus (review area) ..."}
           execute_prompt(
@@ -853,7 +853,7 @@ def get_tools() -> list[tuple[str, Callable]]:
           )
 
         Example 2 — research assistant:
-          # discover_mcp_entities(query="research assistant", type_list=["prompt"])
+          # discover_servers(query="research assistant", type_list=["prompt"])
           # → {"prompt_name": "research_assistant", "server_id": "def456",
           #    "description": "... Required: topic (research topic) | Optional: depth (detail level) ..."}
           execute_prompt(
