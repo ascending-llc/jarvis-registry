@@ -33,6 +33,23 @@ class LoopConfigInput(APIBaseModel):
     endConditionCel: str | None = Field(None, description="CEL expression for loop termination")
 
 
+class RouterChoiceInput(APIBaseModel):
+    """Input schema for a single named choice in a ROUTER node."""
+
+    name: str = Field(description="Choice name (referenced by selector CEL via step_choices)")
+    steps: list["WorkflowNodeInput"] = Field(
+        default_factory=list,
+        description="Steps to execute for this choice (at least 1 required)",
+    )
+
+
+class RouterChoiceOutput(APIBaseModel):
+    """Output schema for a single named choice in a ROUTER node."""
+
+    name: str
+    steps: list["WorkflowNodeOutput"] = Field(default_factory=list)
+
+
 class WorkflowNodeInput(APIBaseModel):
     """Input schema for workflow node (recursive structure)"""
 
@@ -43,12 +60,28 @@ class WorkflowNodeInput(APIBaseModel):
     a2aPool: list[str] = Field(default_factory=list, description="A2A agent pool (max 5 agents)")
     stepConfig: StepConfigInput | None = Field(None, description="Step-level retry and error handling configuration")
     config: dict[str, Any] = Field(default_factory=dict, description="Node configuration")
-    children: list["WorkflowNodeInput"] = Field(default_factory=list, description="Child nodes for container nodes")
+    children: list["WorkflowNodeInput"] = Field(
+        default_factory=list,
+        description="Child nodes for PARALLEL and LOOP nodes",
+    )
+    trueSteps: list["WorkflowNodeInput"] = Field(
+        default_factory=list,
+        description="Steps executed when CONDITION evaluator is true (at least 1 required for CONDITION nodes)",
+    )
+    falseSteps: list["WorkflowNodeInput"] = Field(
+        default_factory=list,
+        description="Steps executed when CONDITION evaluator is false (optional for CONDITION nodes)",
+    )
+    choices: list[RouterChoiceInput] = Field(
+        default_factory=list,
+        description="Named choices for ROUTER nodes (at least 2 required)",
+    )
     conditionCel: str | None = Field(None, description="CEL expression for condition/router nodes")
     loopConfig: LoopConfigInput | None = Field(None, description="Loop configuration for loop nodes")
 
 
-# Enable recursive model
+# Enable recursive models
+RouterChoiceInput.model_rebuild()
 WorkflowNodeInput.model_rebuild()
 
 
@@ -63,11 +96,15 @@ class WorkflowNodeOutput(APIBaseModel):
     stepConfig: StepConfigInput | None = None
     config: dict[str, Any] = Field(default_factory=dict)
     children: list["WorkflowNodeOutput"] = Field(default_factory=list)
+    trueSteps: list["WorkflowNodeOutput"] = Field(default_factory=list)
+    falseSteps: list["WorkflowNodeOutput"] = Field(default_factory=list)
+    choices: list[RouterChoiceOutput] = Field(default_factory=list)
     conditionCel: str | None = None
     loopConfig: LoopConfigInput | None = None
 
 
-# Enable recursive model
+# Enable recursive models
+RouterChoiceOutput.model_rebuild()
 WorkflowNodeOutput.model_rebuild()
 
 
@@ -276,6 +313,15 @@ def _convert_node_to_output(node: Any) -> WorkflowNodeOutput:
         ),
         config=node.config,
         children=[_convert_node_to_output(child) for child in node.children],
+        trueSteps=[_convert_node_to_output(child) for child in node.true_steps],
+        falseSteps=[_convert_node_to_output(child) for child in node.false_steps],
+        choices=[
+            RouterChoiceOutput(
+                name=choice.name,
+                steps=[_convert_node_to_output(s) for s in choice.steps],
+            )
+            for choice in node.choices
+        ],
         conditionCel=node.condition_cel,
         loopConfig=(
             LoopConfigInput(

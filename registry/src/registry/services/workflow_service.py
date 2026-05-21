@@ -421,7 +421,7 @@ class WorkflowService:
         Returns:
             WorkflowNode model instance
         """
-        from registry_pkgs.models.workflow import LoopConfig, StepConfig
+        from registry_pkgs.models.workflow import LoopConfig, RouterChoice, StepConfig
 
         # Generate ID if not provided
         node_id = api_node.id if api_node.id else str(uuid4())
@@ -444,8 +444,16 @@ class WorkflowService:
                 backoff_max_seconds=api_node.stepConfig.backoffMaxSeconds,
             )
 
-        # Recursively convert children
         children = [self._convert_api_node_to_model(child) for child in api_node.children]
+        true_steps = [self._convert_api_node_to_model(child) for child in api_node.trueSteps]
+        false_steps = [self._convert_api_node_to_model(child) for child in api_node.falseSteps]
+        choices = [
+            RouterChoice(
+                name=choice.name,
+                steps=[self._convert_api_node_to_model(s) for s in choice.steps],
+            )
+            for choice in api_node.choices
+        ]
 
         return WorkflowNode(
             id=node_id,
@@ -456,6 +464,9 @@ class WorkflowService:
             step_config=step_config,
             config=api_node.config,
             children=children,
+            true_steps=true_steps,
+            false_steps=false_steps,
+            choices=choices,
             condition_cel=api_node.conditionCel,
             loop_config=loop_config,
         )
