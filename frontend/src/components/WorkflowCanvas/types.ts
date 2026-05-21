@@ -1,50 +1,94 @@
 import type { Edge, Node } from '@xyflow/react';
+import type { Workflow } from '@/services/workflow/type';
+
+export type PanelMode = 'node' | 'workflow';
 
 export interface WorkflowCanvasRef {
   save: () => void;
   getElements: () => { nodes: Node[]; edges: Edge[] };
+  clearSelection: () => void;
+  /** Toggle panel: expand if collapsed, collapse if expanded and workflow mode */
+  togglePanel: () => void;
 }
 
-/** WorkflowCanvas 主组件 Props */
+/** WorkflowCanvas main component Props */
 export interface WorkflowCanvasProps {
   workflowId?: string;
+  workflow?: Workflow | null;
   refreshRunHistoryKey?: number;
   initialNodes?: Node[];
   initialEdges?: Edge[];
+  panelMode: PanelMode;
+  isReadOnly: boolean;
+  isNewWorkflow: boolean;
+  onPanelModeChange: (mode: PanelMode) => void;
+  onDeleteWorkflow: () => void;
+  onWorkflowChange: (patch: Partial<Pick<Workflow, 'name' | 'description' | 'type'>>) => void;
   onSave?: (nodes: Node[], edges: Edge[]) => void;
+  onChange?: () => void;
 }
 
-/** 节点数据类型 */
-export interface NodeData extends Record<string, unknown> {
+/** Base node data */
+export interface BaseNodeData extends Record<string, unknown> {
   label: string;
   description?: string;
-  branches?: string[];
-  cases?: string[];
-  expression?: string;
-  exitCondition?: string;
-  maxIterations?: number;
-  routeBy?: string;
-  timeout?: string;
-  defaultCase?: string;
-  agents?: AgentInfo[];
   onAdd?: () => void;
 }
+
+/** Specific node data types */
+export interface GateNodeData extends BaseNodeData {
+  reviewerPrompt?: string;
+  role?: string;
+  timeout?: string;
+  onTimeout?: string;
+}
+
+export interface CondNodeData extends BaseNodeData {
+  expression?: string;
+}
+
+export interface RouterNodeData extends BaseNodeData {
+  routeBy?: string;
+  cases?: string[];
+  defaultCase?: string;
+}
+
+export interface LoopNodeData extends BaseNodeData {
+  agents?: AgentInfo[];
+  maxIterations?: number;
+  exitCondition?: string;
+}
+
+export interface ParallelNodeData extends BaseNodeData {
+  branches?: string[];
+}
+
+export interface PoolNodeData extends BaseNodeData {
+  agents?: AgentInfo[];
+}
+
+export interface AgentNodeData extends BaseNodeData {}
+export interface McpNodeData extends BaseNodeData {}
+
+/** Union type of workflow node data */
+export type NodeData =
+  | GateNodeData
+  | CondNodeData
+  | RouterNodeData
+  | LoopNodeData
+  | ParallelNodeData
+  | PoolNodeData
+  | AgentNodeData
+  | McpNodeData;
 
 /** Workflow node type for ReactFlow. */
 export type WorkflowNode = Node<NodeData>;
 
 /** PropsPanel Props */
 export interface PropsPanelProps {
-  workflowId?: string;
-  refreshRunHistoryKey?: number;
-  selectedNode: Node | null;
-  nodes: Node[];
-  edges: Edge[];
-  agentSchemas: Record<string, { output: SchemaField[] }>;
-  onOpenAgentPicker: (callback: (agent: AgentInfo) => void) => void;
-  onNodeDataChange: (nodeId: string, patch: Partial<NodeData>) => void;
-  onParallelBranchesChange: (nodeId: string, prev: string[], next: string[]) => void;
-  onDeleteNode: (nodeId: string) => void;
+  panelMode: PanelMode;
+  isReadOnly: boolean;
+  isNewWorkflow: boolean;
   collapsed: boolean;
   onCollapsedChange: (collapsed: boolean | ((prev: boolean) => boolean)) => void;
 }
@@ -58,7 +102,7 @@ export interface NodePickerProps {
   onTabChange?: (tab: string) => void;
 }
 
-/** Schema 字段类型（用于 CEL Context Reference） */
+/** Schema field type (used for CEL Context Reference) */
 export interface SchemaField {
   name: string;
   desc: string;
@@ -66,7 +110,7 @@ export interface SchemaField {
   enum?: string[];
 }
 
-/** Picker 选中项类型 */
+/** Picker selected item type */
 export interface PickerItem {
   id: string;
   label: string;
@@ -74,14 +118,14 @@ export interface PickerItem {
   status?: 'active' | 'inactive' | 'error';
 }
 
-/** Agent 信息类型 */
+/** Agent info type */
 export interface AgentInfo {
   id: string;
   label: string;
   desc: string;
 }
 
-/** Logic Step 类型 */
+/** Logic Step type */
 export interface LogicStep {
   id: string;
   label: string;
@@ -90,30 +134,6 @@ export interface LogicStep {
   color: string;
   accent: string;
   iconStyle?: React.CSSProperties;
-}
-
-/** LogicProps Props（Gate/Cond/Router/Loop 共享） */
-export interface LogicPropsProps {
-  node: Node<NodeData>;
-  nodes: Node[];
-  edges: Edge[];
-  upstreamSchema: SchemaField[] | null;
-  sourceLabel: string | null;
-  onNodeDataChange: (nodeId: string, patch: Partial<NodeData>) => void;
-}
-
-/** ParallelProps Props */
-export interface ParallelPropsProps {
-  node: Node<NodeData>;
-  onNodeDataChange: (nodeId: string, patch: Partial<NodeData>) => void;
-  onParallelBranchesChange: (nodeId: string, prev: string[], next: string[]) => void;
-}
-
-/** PoolProps Props */
-export interface PoolPropsProps {
-  node: Node<NodeData>;
-  onNodeDataChange: (nodeId: string, patch: Partial<NodeData>) => void;
-  onOpenAgentPicker: (callback: (agent: AgentInfo) => void) => void;
 }
 
 /** Run history entry */

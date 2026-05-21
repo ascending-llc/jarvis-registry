@@ -1,156 +1,6 @@
 import type React from 'react';
-import { useEffect, useState } from 'react';
-import SERVICES from '@/services';
-import type { NodeRun, WorkflowRun } from '@/services/workflow/type';
-import type { RunEntry } from '../types';
-
-// ─── helpers ──────────────────────────────────────────────────────────────────
-
-const STATUS_MAP: Record<string, RunEntry['status']> = {
-  running: 'live',
-  pending: 'live',
-  paused: 'paused',
-  completed: 'ok',
-  failed: 'fail',
-  cancelled: 'fail',
-};
-
-const ACTIONS_BY_STATUS: Record<string, RunEntry['actions']> = {
-  running: ['pause', 'cancel'],
-  pending: ['cancel'],
-  paused: ['resume', 'cancel'],
-  completed: [],
-  failed: ['retry'],
-  cancelled: ['retry'],
-};
-
-const NODE_STATUS_MAP: Record<string, RunEntry['status']> = {
-  running: 'live',
-  pending: 'live',
-  completed: 'ok',
-  failed: 'fail',
-  skipped: 'fail',
-  cancelled: 'fail',
-};
-
-/** Normalize list/detail payloads (camelCase or snake_case). */
-const normalizeWorkflowRun = (raw: Record<string, unknown>): WorkflowRun => {
-  const nodeRunsRaw = (raw.nodeRuns ?? raw.node_runs) as Record<string, unknown>[] | undefined;
-  const nodeRuns: NodeRun[] | undefined = nodeRunsRaw?.map(nr => ({
-    id: String(nr.id ?? ''),
-    workflowRunId: String(nr.workflowRunId ?? nr.workflow_run_id ?? ''),
-    nodeId: String(nr.nodeId ?? nr.node_id ?? ''),
-    nodeName: String(nr.nodeName ?? nr.node_name ?? ''),
-    status: (nr.status ?? 'pending') as NodeRun['status'],
-    attempt: Number(nr.attempt ?? 0),
-    inputSnapshot: (nr.inputSnapshot ?? nr.input_snapshot) as NodeRun['inputSnapshot'],
-    outputSnapshot: (nr.outputSnapshot ?? nr.output_snapshot) as NodeRun['outputSnapshot'],
-    error: (nr.error as string | null) ?? null,
-    startedAt: (nr.startedAt ?? nr.started_at) as string | undefined,
-    finishedAt: (nr.finishedAt ?? nr.finished_at) as string | undefined,
-  }));
-
-  return {
-    id: String(raw.id ?? ''),
-    workflowDefinitionId: String(raw.workflowDefinitionId ?? raw.workflow_definition_id ?? ''),
-    status: (raw.status ?? 'pending') as WorkflowRun['status'],
-    triggerSource: (raw.triggerSource ?? raw.trigger_source) as string | undefined,
-    startedAt: String(raw.startedAt ?? raw.started_at ?? ''),
-    finishedAt: (raw.finishedAt ?? raw.finished_at) as string | undefined,
-    parentRunId: (raw.parentRunId ?? raw.parent_run_id) as string | null | undefined,
-    errorSummary: (raw.errorSummary ?? raw.error_summary) as string | null | undefined,
-    nodeRuns,
-  };
-};
-
-const normalizeRunsList = (result: unknown): WorkflowRun[] => {
-  if (!result || typeof result !== 'object') return [];
-  const obj = result as Record<string, unknown>;
-  const list = obj.runs ?? obj.data;
-  if (!Array.isArray(list)) return [];
-  return list.map(item => normalizeWorkflowRun(item as Record<string, unknown>));
-};
-
-const formatDuration = (startedAt: string, finishedAt?: string): string | undefined => {
-  if (!finishedAt || !startedAt) return undefined;
-  const ms = new Date(finishedAt).getTime() - new Date(startedAt).getTime();
-  if (ms < 0) return undefined;
-  const secs = Math.floor(ms / 1000);
-  const m = Math.floor(secs / 60);
-  const s = secs % 60;
-  return m > 0 ? `${m}m ${s}s` : `${s}s`;
-};
-
-const formatTime = (iso: string): string => {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '—';
-  const now = new Date();
-  const hhmm = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
-  if (d.toDateString() === now.toDateString()) return `Today ${hhmm}`;
-  const yesterday = new Date(now);
-  yesterday.setDate(now.getDate() - 1);
-  if (d.toDateString() === yesterday.toDateString()) return `Yesterday ${hhmm}`;
-  return `${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} ${hhmm}`;
-};
-
-const workflowRunToEntry = (run: WorkflowRun): RunEntry => ({
-  id: run.id.slice(-8),
-  status: STATUS_MAP[run.status] ?? 'fail',
-  time: formatTime(run.startedAt),
-  dur: formatDuration(run.startedAt, run.finishedAt),
-  err: run.errorSummary ?? undefined,
-  actions: ACTIONS_BY_STATUS[run.status] ?? [],
-});
-
-const nodeRunToEntry = (run: WorkflowRun, nodeRun: NodeRun): RunEntry => ({
-  id: run.id.slice(-8),
-  status: NODE_STATUS_MAP[nodeRun.status] ?? 'fail',
-  time: `${formatTime(run.startedAt)} · attempt ${nodeRun.attempt}`,
-  dur: formatDuration(nodeRun.startedAt ?? run.startedAt, nodeRun.finishedAt),
-  err: nodeRun.error ?? run.errorSummary ?? undefined,
-  actions: nodeRun.status === 'failed' ? ['retry'] : [],
-});
-
-const matchesSelectedNode = (
-  nodeRun: NodeRun,
-  selectedNodeId: string,
-  selectedNodeLabel?: string,
-): boolean => {
-  if (nodeRun.nodeId === selectedNodeId) return true;
-  if (selectedNodeLabel && nodeRun.nodeName === selectedNodeLabel) return true;
-  return false;
-};
-
-/** List endpoint may omit nodeRuns — fetch detail for runs missing them (cap for perf). */
-const enrichRunsWithNodeRuns = async (workflowId: string, runs: WorkflowRun[]): Promise<WorkflowRun[]> => {
-  const needsDetail = runs.filter(r => !r.nodeRuns?.length).slice(0, 10);
-  if (needsDetail.length === 0) return runs;
-
-  const detailById = new Map<string, WorkflowRun>();
-  await Promise.all(
-    needsDetail.map(async run => {
-      try {
-        const detail = await SERVICES.WORKFLOW.getWorkflowRunDetail(workflowId, run.id);
-        detailById.set(run.id, normalizeWorkflowRun(detail as unknown as Record<string, unknown>));
-      } catch {
-        detailById.set(run.id, run);
-      }
-    }),
-  );
-
-  return runs.map(r => detailById.get(r.id) ?? r);
-};
-
-const buildNodeRunEntries = (
-  runs: WorkflowRun[],
-  selectedNodeId: string,
-  selectedNodeLabel?: string,
-): RunEntry[] =>
-  runs.flatMap(run => {
-    const nodeRun = (run.nodeRuns ?? []).find(nr => matchesSelectedNode(nr, selectedNodeId, selectedNodeLabel));
-    return nodeRun ? [nodeRunToEntry(run, nodeRun)] : [];
-  });
+import type { PanelMode, RunEntry } from '../types';
+import { useRunHistory } from './hooks/useRunHistory';
 
 // ─── visual config ────────────────────────────────────────────────────────────
 
@@ -215,79 +65,21 @@ const RunRow: React.FC<{ run: RunEntry }> = ({ run }) => (
   </div>
 );
 
-
 interface RunHistoryProps {
-  workflowId?: string;
-  refreshRunHistoryKey?: number;
-  selectedNodeId?: string;
-  selectedNodeLabel?: string;
+  panelMode: PanelMode;
 }
 
-const RunHistory: React.FC<RunHistoryProps> = ({
-  workflowId,
-  refreshRunHistoryKey = 0,
-  selectedNodeId,
-  selectedNodeLabel,
-}) => {
-  const [runs, setRuns] = useState<RunEntry[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [showAllWorkflowRuns, setShowAllWorkflowRuns] = useState(false);
+const RunHistory: React.FC<RunHistoryProps> = ({ panelMode }) => {
+  const { runs, loading, error, showAllWorkflowRuns, workflowId, selectedNodeId, selectedNodeLabel } = useRunHistory({
+    panelMode,
+  });
 
-  useEffect(() => {
-    if (!workflowId) {
-      setRuns([]);
-      return;
-    }
-
-    let cancelled = false;
-
-    const fetchRuns = async () => {
-      setLoading(true);
-      setError(null);
-      setShowAllWorkflowRuns(false);
-      try {
-        const result = await SERVICES.WORKFLOW.getWorkflowRunsList(workflowId, { perPage: 20 });
-        if (cancelled) return;
-
-        const rawRuns = normalizeRunsList(result);
-        const enriched = await enrichRunsWithNodeRuns(workflowId, rawRuns);
-
-        let entries: RunEntry[];
-        if (selectedNodeId) {
-          entries = buildNodeRunEntries(enriched, selectedNodeId, selectedNodeLabel);
-          if (entries.length === 0 && enriched.length > 0) {
-            entries = enriched.map(workflowRunToEntry);
-            setShowAllWorkflowRuns(true);
-          }
-        } else {
-          entries = enriched.map(workflowRunToEntry);
-        }
-
-        setRuns(entries);
-      } catch (err: unknown) {
-        if (!cancelled) {
-          const e = err as { message?: string; detail?: { message?: string } | string };
-          const msg =
-            e?.message ||
-            (typeof e?.detail === 'object' ? e.detail?.message : undefined) ||
-            (typeof e?.detail === 'string' ? e.detail : undefined) ||
-            'Failed to load run history';
-          setError(msg);
-          setRuns([]);
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    };
-
-    fetchRuns();
-    return () => {
-      cancelled = true;
-    };
-  }, [workflowId, selectedNodeId, selectedNodeLabel, refreshRunHistoryKey]);
-
-  const heading = selectedNodeLabel ? `${selectedNodeLabel} — run history` : 'Run history';
+  const heading =
+    panelMode === 'workflow'
+      ? 'Workflow — run history'
+      : selectedNodeLabel
+        ? `${selectedNodeLabel} — run history`
+        : 'Run history';
 
   return (
     <div className='px-4 py-3'>
@@ -302,9 +94,11 @@ const RunHistory: React.FC<RunHistoryProps> = ({
         </div>
       ) : error ? (
         <p className='text-xs text-[var(--jarvis-danger-text)] text-center py-6'>{error}</p>
+      ) : panelMode === 'node' && !selectedNodeId ? (
+        <p className='text-xs text-[var(--jarvis-subtle)] text-center py-6'>Click a node to view its run history</p>
       ) : runs.length === 0 ? (
         <p className='text-xs text-[var(--jarvis-subtle)] text-center py-6'>
-          {selectedNodeId ? 'No runs for this node yet' : 'No runs yet'}
+          {panelMode === 'workflow' ? 'No runs yet' : 'No runs for this node yet'}
         </p>
       ) : (
         <>

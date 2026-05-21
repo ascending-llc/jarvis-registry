@@ -70,8 +70,6 @@ export const AGENT_SCHEMAS: Record<string, { output: SchemaField[] }> = {
 
 /** Empty canvas: a single "Add next node" placeholder. */
 export const getInitialElements = (): { nodes: WorkflowNode[]; edges: Edge[] } => {
-  const nodes: WorkflowNode[] = [
-    { id: 'add0', type: 'add', position: { x: 0, y: 0 }, data: { label: '' } },
-  ];
+  const nodes: WorkflowNode[] = [{ id: 'add0', type: 'add', position: { x: 0, y: 0 }, data: { label: '' } }];
   return getLayoutedElements(nodes, []);
 };

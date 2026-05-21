@@ -1,10 +1,13 @@
+import type { Node } from '@xyflow/react';
 import type React from 'react';
-import type { AgentInfo, NodeData, PoolPropsProps } from '../types';
-import { AddButton } from './shared';
+import type { AgentInfo, PoolNodeData } from '../../types';
+import { AddButton } from '../shared';
+import { useWorkflowPanel } from '../WorkflowPanelContext';
 
-/** PoolProps - handles Agent Pool node configuration (up to 5 delegate agents). */
-const PoolProps: React.FC<PoolPropsProps> = ({ node, onNodeDataChange, onOpenAgentPicker }) => {
-  const nodeData = node.data as NodeData | undefined;
+/** PoolNodeProperties - handles Agent Pool node configuration (up to 5 delegate agents). */
+export const PoolNodeProperties: React.FC<{ node: Node<PoolNodeData> }> = ({ node }) => {
+  const { onNodeDataChange, onOpenAgentPicker } = useWorkflowPanel();
+  const nodeData = node.data as PoolNodeData;
   const poolAgents = nodeData?.agents ?? [];
 
   const onDataChange = (agents: AgentInfo[]) => {
@@ -62,5 +65,4 @@ const PoolProps: React.FC<PoolPropsProps> = ({ node, onNodeDataChange, onOpenAge
   );
 };
 
-export { PoolProps };
-export default PoolProps;
+export default PoolNodeProperties;

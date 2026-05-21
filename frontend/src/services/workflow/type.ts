@@ -55,6 +55,7 @@ export interface Workflow {
   id: string;
   name: string;
   description?: string;
+  type?: 'autonomous' | 'supervised';
   numNodes?: number;
   nodes?: WorkflowNode[];
   createdAt: string;
@@ -77,6 +78,7 @@ export type GetWorkflowDetailResponse = Workflow;
 export interface CreateWorkflowRequest {
   name: string;
   description?: string;
+  type?: 'autonomous' | 'supervised';
   nodes: WorkflowNode[];
 }
 

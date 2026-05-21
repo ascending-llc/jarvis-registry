@@ -71,7 +71,9 @@ service.interceptors.response.use(
                   skipTokenBarrier: true,
                   __isRefresh: true,
                 } as RequestConfig);
-              } catch (_error) {}
+              } catch (_error) {
+                // ignore logout error
+              }
               if (typeof window !== 'undefined') {
                 window.location.href = `${getBasePath()}/login`;
               }

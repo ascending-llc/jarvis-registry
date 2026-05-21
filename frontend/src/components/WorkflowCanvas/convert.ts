@@ -56,20 +56,23 @@ const mapNodeToApi = (node: Node<NodeData>, children: ApiWorkflowNode[] | null):
   if ((node.type === 'mcp' || node.type === 'agent') && data.label) {
     apiNode.executorKey = data.label;
   }
-  if (node.type === 'pool') apiNode.a2aPool = (data.agents ?? []).map((a: AgentInfo) => a.id);
-  if (node.type === 'cond') apiNode.conditionCel = data.expression ?? null;
+  if (node.type === 'pool')
+    apiNode.a2aPool = (data as import('./types').PoolNodeData).agents?.map((a: AgentInfo) => a.id) ?? [];
+  if (node.type === 'cond') apiNode.conditionCel = (data as import('./types').CondNodeData).expression ?? null;
   if (node.type === 'loop') {
+    const loopData = data as import('./types').LoopNodeData;
     apiNode.loopConfig = {
-      maxIterations: data.maxIterations ?? 10,
-      endConditionCel: data.exitCondition,
+      maxIterations: loopData.maxIterations ?? 10,
+      endConditionCel: loopData.exitCondition,
     };
   }
   if (node.type === 'router') {
+    const routerData = data as import('./types').RouterNodeData;
     apiNode.config = {
       ...apiNode.config,
-      routeBy: data.routeBy,
-      defaultCase: data.defaultCase,
-      cases: data.cases ?? [],
+      routeBy: routerData.routeBy,
+      defaultCase: routerData.defaultCase,
+      cases: routerData.cases ?? [],
     };
   }
 
@@ -219,27 +222,34 @@ const apiNodeToCanvas = (w: ApiWorkflowNode): CanvasNode => {
   // Restore original canvas type if stored; fall back to API-type mapping
   const canvasType: string = (w.config?.canvasType as string | undefined) ?? API_TO_CANVAS_TYPE[w.nodeType] ?? 'agent';
 
-  const data: NodeData = {
+  const data = {
     label: w.name,
     description: (w.config?.description as string | undefined) ?? '',
-  };
+  } as NodeData;
 
-  if (w.conditionCel) data.expression = w.conditionCel;
+  if (w.conditionCel) (data as import('./types').CondNodeData).expression = w.conditionCel;
   if (w.loopConfig) {
-    data.maxIterations = w.loopConfig.maxIterations;
-    data.exitCondition = w.loopConfig.endConditionCel;
+    const loopData = data as import('./types').LoopNodeData;
+    loopData.maxIterations = w.loopConfig.maxIterations;
+    loopData.exitCondition = w.loopConfig.endConditionCel;
   }
-  if (w.config?.routeBy) data.routeBy = w.config.routeBy as string;
-  if (w.config?.defaultCase) data.defaultCase = w.config.defaultCase as string;
-  if (w.config?.cases) data.cases = w.config.cases as string[];
-  if (w.a2aPool) data.agents = w.a2aPool.map(id => ({ id, label: id, desc: '' }) satisfies AgentInfo);
+  if (w.config?.routeBy) (data as import('./types').RouterNodeData).routeBy = w.config.routeBy as string;
+  if (w.config?.defaultCase) (data as import('./types').RouterNodeData).defaultCase = w.config.defaultCase as string;
+  if (w.config?.cases) (data as import('./types').RouterNodeData).cases = w.config.cases as string[];
+  if (w.a2aPool)
+    (data as import('./types').PoolNodeData).agents = w.a2aPool.map(
+      id => ({ id, label: id, desc: '' }) satisfies AgentInfo,
+    );
 
   // Restore branch/case labels for parallel & router handles
   if (canvasType === 'parallel') {
-    data.branches = (w.children ?? []).map((c, i) => c.name || `Branch ${String.fromCharCode(65 + i)}`);
+    (data as import('./types').ParallelNodeData).branches = (w.children ?? []).map(
+      (c, i) => c.name || `Branch ${String.fromCharCode(65 + i)}`,
+    );
   }
   if (canvasType === 'router') {
-    data.cases = (w.config?.cases as string[] | undefined) ?? (w.children ?? []).map((_, i) => `case-${i}`);
+    (data as import('./types').RouterNodeData).cases =
+      (w.config?.cases as string[] | undefined) ?? (w.children ?? []).map((_, i) => `case-${i}`);
   }
 
   return {
@@ -281,14 +291,32 @@ const processApiSequence = (
 
     if (BRANCHING_TYPES.has(canvasNode.type ?? '')) {
       // Determine source handles for each branch
-      const handles: string[] =
-        canvasNode.type === 'cond'
-          ? ['true', 'false']
-          : canvasNode.type === 'parallel'
-            ? (canvasNode.data.branches ?? []).map((_: string, i: number) => `branch-${i}`)
-            : canvasNode.type === 'router'
-              ? (canvasNode.data.cases ?? []).map((_: string, i: number) => `case-${i}`)
-              : children.map((_, i) => `branch-${i}`);
+      const type = canvasNode.type;
+      let outHandles = [{ sourceHandle: 'true', label: 'true' }];
+      if (type === 'parallel') {
+        const d = canvasNode.data as import('./types').ParallelNodeData;
+        outHandles = (d.branches || ['Branch A', 'Branch B']).map((_, i) => ({
+          sourceHandle: `branch-${i}`,
+          label: `branch-${i}`,
+        }));
+      } else if (type === 'router') {
+        const d = canvasNode.data as import('./types').RouterNodeData;
+        const cases = d.cases || ['critical', 'normal'];
+        outHandles = [
+          ...cases.map((_, i) => ({ sourceHandle: `case-${i}`, label: `case-${i}` })),
+          { sourceHandle: 'default', label: 'default' },
+        ];
+      } else if (type === 'loop') {
+        outHandles = [
+          { sourceHandle: 'loop', label: 'loop' },
+          { sourceHandle: 'done', label: 'done' },
+        ];
+      } else if (type === 'cond') {
+        outHandles = [
+          { sourceHandle: 'true', label: 'true' },
+          { sourceHandle: 'false', label: 'false' },
+        ];
+      }
 
       for (let i = 0; i < children.length; i++) {
         const branchChild = apiNodeToCanvas(children[i]);
@@ -297,7 +325,7 @@ const processApiSequence = (
           id: nextEdgeId(),
           source: canvasNode.id,
           target: branchChild.id,
-          sourceHandle: handles[i] ?? `branch-${i}`,
+          sourceHandle: outHandles[i]?.sourceHandle ?? `branch-${i}`,
           ...EDGE_CONFIG,
         });
         // Terminate each branch with an 'add' placeholder

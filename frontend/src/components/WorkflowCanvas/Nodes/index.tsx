@@ -1,6 +1,5 @@
-import type { NodeProps } from '@xyflow/react';
+import type { Node, NodeProps } from '@xyflow/react';
 import { Handle, Position } from '@xyflow/react';
-import type { WorkflowNode } from '../types';
 
 import './index.css';
 
@@ -26,7 +25,7 @@ const Header: React.FC<HeaderProps> = ({ iconClass, iconLabel, title, dotClass }
 };
 
 /** MCP Server node. */
-export const McpNode: React.FC<NodeProps<WorkflowNode>> = ({ data, selected }) => {
+export const McpNode: React.FC<NodeProps<Node<import('../types').McpNodeData>>> = ({ data, selected }) => {
   return (
     <div className={`node-wrap mcp ${selected ? 'selected' : ''}`}>
       <Handle type='target' position={Position.Left} />
@@ -38,7 +37,7 @@ export const McpNode: React.FC<NodeProps<WorkflowNode>> = ({ data, selected }) =
 };
 
 /** A2A Agent node. */
-export const AgentNode: React.FC<NodeProps<WorkflowNode>> = ({ data, selected }) => {
+export const AgentNode: React.FC<NodeProps<Node<import('../types').AgentNodeData>>> = ({ data, selected }) => {
   return (
     <div className={`node-wrap agent ${selected ? 'selected' : ''}`}>
       <Handle type='target' position={Position.Left} />
@@ -50,7 +49,7 @@ export const AgentNode: React.FC<NodeProps<WorkflowNode>> = ({ data, selected })
 };
 
 /** Approval Gate (HITL) node. */
-export const GateNode: React.FC<NodeProps<WorkflowNode>> = ({ data, selected }) => {
+export const GateNode: React.FC<NodeProps<Node<import('../types').GateNodeData>>> = ({ data, selected }) => {
   return (
     <div className={`node-wrap gate ${selected ? 'selected' : ''}`}>
       <Handle type='target' position={Position.Left} />
@@ -66,7 +65,7 @@ export const GateNode: React.FC<NodeProps<WorkflowNode>> = ({ data, selected }) 
 };
 
 /** Conditional (if / else) node with two source handles spread vertically. */
-export const CondNode: React.FC<NodeProps<WorkflowNode>> = ({ data, selected }) => {
+export const CondNode: React.FC<NodeProps<Node<import('../types').CondNodeData>>> = ({ data, selected }) => {
   return (
     <div className={`node-wrap cond ${selected ? 'selected' : ''}`} style={{ minHeight: HANDLE_SPACING_PX + 60 }}>
       <Handle type='target' position={Position.Left} />
@@ -112,7 +111,7 @@ export const CondNode: React.FC<NodeProps<WorkflowNode>> = ({ data, selected }) 
 };
 
 /** Parallel (fan-out) node with one source handle per branch. */
-export const ParallelNode: React.FC<NodeProps<WorkflowNode>> = ({ data, selected }) => {
+export const ParallelNode: React.FC<NodeProps<Node<import('../types').ParallelNodeData>>> = ({ data, selected }) => {
   const branches = Array.isArray(data.branches) ? data.branches : ['Branch A', 'Branch B'];
   const N = branches.length;
   const minHeight = Math.max(80, (N - 1) * HANDLE_SPACING_PX + 60);
@@ -147,7 +146,7 @@ export const ParallelNode: React.FC<NodeProps<WorkflowNode>> = ({ data, selected
 };
 
 /** Router (switch / case) node. */
-export const RouterNode: React.FC<NodeProps<WorkflowNode>> = ({ data, selected }) => {
+export const RouterNode: React.FC<NodeProps<Node<import('../types').RouterNodeData>>> = ({ data, selected }) => {
   const cases = Array.isArray(data.cases) ? data.cases : ['critical', 'normal'];
   const N = cases.length;
   const minHeight = Math.max(80, (N - 1) * HANDLE_SPACING_PX + 60);
@@ -186,7 +185,7 @@ export const RouterNode: React.FC<NodeProps<WorkflowNode>> = ({ data, selected }
 };
 
 /** Loop node with back-edge handle. */
-export const LoopNode: React.FC<NodeProps<WorkflowNode>> = ({ data, selected }) => {
+export const LoopNode: React.FC<NodeProps<Node<import('../types').LoopNodeData>>> = ({ data, selected }) => {
   return (
     <div className={`node-wrap loop ${selected ? 'selected' : ''}`}>
       <Handle type='target' position={Position.Left} />
@@ -229,7 +228,7 @@ export const LoopNode: React.FC<NodeProps<WorkflowNode>> = ({ data, selected }) 
 };
 
 /** Agent Pool node. */
-export const PoolNode: React.FC<NodeProps<WorkflowNode>> = ({ data, selected }) => {
+export const PoolNode: React.FC<NodeProps<Node<import('../types').PoolNodeData>>> = ({ data, selected }) => {
   const agents = Array.isArray(data.agents) ? data.agents : [];
   const remaining = 5 - agents.length;
   return (
@@ -240,7 +239,7 @@ export const PoolNode: React.FC<NodeProps<WorkflowNode>> = ({ data, selected }) 
       <div className='node-footer'>
         {agents.map((a, i) => (
           <span key={i} className='node-badge purple font-mono'>
-            {a}
+            {typeof a === 'string' ? a : a?.label}
           </span>
         ))}
         {remaining > 0 && <span className='node-hint font-mono'>+ add up to {remaining}</span>}
@@ -251,7 +250,7 @@ export const PoolNode: React.FC<NodeProps<WorkflowNode>> = ({ data, selected }) 
 };
 
 /** Add-node placeholder for inserting new nodes. */
-export const AddNode: React.FC<NodeProps<WorkflowNode>> = ({ data }) => {
+export const AddNode: React.FC<NodeProps<Node<import('../types').BaseNodeData>>> = ({ data }) => {
   return (
     <>
       <Handle type='target' position={Position.Left} />

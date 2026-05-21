@@ -1,24 +1,18 @@
 import { ArrowLeftIcon } from '@heroicons/react/24/outline';
 import type React from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 
 import NavMenu from './NavMenu';
 import UserProfileMenu from './UserProfileMenu';
 
-const Content: React.FC<any> = ({ setSidebarOpen, sidebarOpen = true }) => {
-  const location = useLocation();
-  const navigate = useNavigate();
+interface ContentProps {
+  setSidebarOpen: (open: boolean) => void;
+  sidebarOpen?: boolean;
+  isSubPage?: boolean;
+}
 
-  const isSubPage =
-    location.pathname === '/generate-token' ||
-    location.pathname === '/server-registry' ||
-    location.pathname === '/server-edit' ||
-    location.pathname === '/agent-registry' ||
-    location.pathname === '/agent-edit' ||
-    location.pathname === '/federation-registry' ||
-    location.pathname === '/federation-edit' ||
-    location.pathname === '/workflow-registry' ||
-    location.pathname === '/workflow-edit';
+const Content: React.FC<ContentProps> = ({ setSidebarOpen, sidebarOpen = true, isSubPage = false }) => {
+  const navigate = useNavigate();
 
   const handleGoBack = () => {
     if (window.innerWidth < 768) setSidebarOpen(false);
@@ -29,7 +23,7 @@ const Content: React.FC<any> = ({ setSidebarOpen, sidebarOpen = true }) => {
     <div className='flex h-full flex-col overflow-x-hidden'>
       {isSubPage ? (
         /* Sub-page: show only Back button */
-        <div className='flex-1 overflow-y-auto space-y-6 px-3 py-4'>
+        <div className='flex-1 overflow-y-auto space-y-6 px-3 py-3'>
           <div className='space-y-2 mb-6'>
             <button
               onClick={handleGoBack}

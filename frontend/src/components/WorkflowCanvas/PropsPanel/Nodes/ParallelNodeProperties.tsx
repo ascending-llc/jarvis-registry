@@ -1,12 +1,15 @@
+import type { Node } from '@xyflow/react';
 import type React from 'react';
-import type { NodeData, ParallelPropsProps } from '../types';
-import { BranchList } from './shared';
+import type { ParallelNodeData } from '../../types';
+import { BranchList } from '../shared';
+import { useWorkflowPanel } from '../WorkflowPanelContext';
 
-/** ParallelProps - handles Parallel node configuration with unlimited branches. */
-const ParallelProps: React.FC<ParallelPropsProps> = ({ node, onNodeDataChange, onParallelBranchesChange }) => {
-  const nodeData = node.data as NodeData | undefined;
+/** ParallelNodeProperties - handles Parallel node configuration with unlimited branches. */
+export const ParallelNodeProperties: React.FC<{ node: Node<ParallelNodeData> }> = ({ node }) => {
+  const { onNodeDataChange, onParallelBranchesChange } = useWorkflowPanel();
+  const nodeData = node.data as ParallelNodeData;
 
-  const parBranches = Array.isArray(nodeData?.branches) ? (nodeData?.branches as string[]) : ['Branch A', 'Branch B'];
+  const parBranches = Array.isArray(nodeData?.branches) ? nodeData.branches : ['Branch A', 'Branch B'];
 
   const addPar = (val: string) => {
     const next = [...parBranches, val];
@@ -47,5 +50,4 @@ const ParallelProps: React.FC<ParallelPropsProps> = ({ node, onNodeDataChange, o
   );
 };
 
-export { ParallelProps };
-export default ParallelProps;
+export default ParallelNodeProperties;
