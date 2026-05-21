@@ -13,10 +13,12 @@ from registry.core.config import settings
 from registry.core.mcp_client import MCPServerData, get_tools_and_capabilities_from_server
 from registry_pkgs.models import A2AAgent, ExtendedMCPServer
 from registry_pkgs.models.a2a_agent import (
+    TRANSPORT_JSONRPC,
     AgentConfig,
     preferred_transport_to_config_type,
 )
 from registry_pkgs.models.federation import AgentCoreRuntimeAccessConfig, Federation
+from registry_pkgs.workflows.a2a_client import is_agentcore_runtime
 
 from .agentcore_clients import AgentCoreClientProvider
 from .agentcore_runtime_auth import AgentCoreRuntimeAuthService
@@ -220,8 +222,11 @@ class AgentCoreRuntimeInvoker:
 
         agent.card = refreshed.card
         if agent.config:
-            preferred = str(getattr(agent.card, "preferred_transport", None) or "JSONRPC").upper()
-            agent.config.type = preferred_transport_to_config_type(preferred)
+            if is_agentcore_runtime(agent):
+                agent.config.type = TRANSPORT_JSONRPC
+            else:
+                preferred = str(getattr(agent.card, "preferred_transport", None) or "JSONRPC").upper()
+                agent.config.type = preferred_transport_to_config_type(preferred)
         if agent.wellKnown:
             agent.wellKnown.lastSyncStatus = "success"
             agent.wellKnown.syncError = None

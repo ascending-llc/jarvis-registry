@@ -8,6 +8,7 @@ from beanie import PydanticObjectId
 from pydantic import ValidationError
 
 from registry_pkgs.models.a2a_agent import A2AAgent
+from registry_pkgs.models.enums import FederationProviderType
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 
 
@@ -264,7 +265,7 @@ class TestExtendedMCPServerStructure:
             path="/agentcore/mcp/versioned-server",
             status="active",
             federationId="arn:aws:bedrock-agentcore:us-east-1:1:runtime/versioned",
-            federationMetadata={"sourceType": "runtime", "runtimeVersion": "7"},
+            federationMetadata={"providerType": FederationProviderType.AWS_AGENTCORE, "runtimeVersion": "7"},
         )
 
         docs = server.to_documents()
@@ -440,7 +441,7 @@ class TestExtendedMCPServerStructure:
             status="active",
             isEnabled=True,
             author=PydanticObjectId(),
-            federationMetadata={"sourceType": "runtime", "runtimeVersion": "11"},
+            federationMetadata={"providerType": FederationProviderType.AWS_AGENTCORE, "runtimeVersion": "11"},
         )
 
         docs = agent.to_documents()

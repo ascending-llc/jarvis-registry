@@ -8,7 +8,7 @@ from beanie import PydanticObjectId
 
 from registry_pkgs.models import A2AAgent, ExtendedMCPServer
 from registry_pkgs.models.a2a_agent import TRANSPORT_JSONRPC, AgentConfig
-
+from registry_pkgs.models.enums import FederationProviderType
 from .agentcore_clients import AgentCoreClientProvider
 from .agentcore_runtime_auth import AgentCoreRuntimeAuthService
 
@@ -285,7 +285,7 @@ class AgentCoreFederationClient:
             "capabilities": {"streaming": True},
             "skills": [],
             "securitySchemes": {},
-            "preferredTransport": "HTTP+JSON",
+            "preferredTransport": "JSONRPC",
             "defaultInputModes": ["text/plain"],
             "defaultOutputModes": ["application/json"],
         }
@@ -319,7 +319,7 @@ class AgentCoreFederationClient:
             registeredBy="agentcore-federation",
             registeredAt=datetime.now(UTC),
             federationMetadata={
-                "sourceType": "runtime",
+                "providerType": FederationProviderType.AWS_AGENTCORE,
                 "runtimeArn": runtime_arn,
                 "runtimeId": runtime_id,
                 "runtimeVersion": runtime_version,
@@ -385,7 +385,7 @@ class AgentCoreFederationClient:
             },
             "author": author_id or PydanticObjectId(),
             "federationMetadata": {
-                "sourceType": "runtime",
+                "providerType": FederationProviderType.AWS_AGENTCORE,
                 "runtimeArn": runtime_arn,
                 "runtimeId": runtime_id,
                 "runtimeName": runtime_name,
