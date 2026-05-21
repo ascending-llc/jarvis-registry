@@ -48,6 +48,7 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
+import httpx
 from agno.models.base import Model
 
 from registry_pkgs.core.config import JwtSigningConfig
@@ -88,6 +89,7 @@ class WorkflowRunner:
         jwt_config: JwtSigningConfig,
         selector_llm: Model | None = None,
         directive_queue: DirectiveQueue | None = None,
+        a2a_httpx_client: httpx.AsyncClient | None = None,
     ) -> None:
         if db_client is None:
             raise ValueError("WorkflowRunner requires db_client")
@@ -103,6 +105,7 @@ class WorkflowRunner:
         # Optional directive queue; when provided, every step executor is wrapped
         # with pause/cancel/retry-backoff logic via with_control().
         self._directive_queue = directive_queue
+        self._a2a_httpx_client = a2a_httpx_client
 
     async def run(
         self,
@@ -217,6 +220,7 @@ class WorkflowRunner:
             user_id=user_id,
             pool_nodes=pool_nodes,
             selector_llm=self._selector_llm,
+            a2a_httpx_client=self._a2a_httpx_client,
         )
 
     async def _execute(

@@ -11,6 +11,7 @@ from agno.workflow import (
     Step,
     StepInput,
     StepOutput,
+    Steps,
     Workflow,
 )
 from agno.workflow.step import OnError, StepExecutor
@@ -120,12 +121,12 @@ def compile_workflow(
             return Parallel(*[_build(c) for c in node.children], name=node.name)
 
         if node.node_type == WorkflowNodeType.CONDITION:
-            true_branch = _build(node.children[0])
-            false_branch = _build(node.children[1]) if len(node.children) > 1 else None
+            true_branch = [_build(c) for c in node.true_steps]
+            false_branch = [_build(c) for c in node.false_steps] or None
             return Condition(
-                steps=[true_branch],
+                steps=true_branch,
                 evaluator=node.condition_cel,
-                else_steps=[false_branch] if false_branch is not None else None,
+                else_steps=false_branch,
                 name=node.name,
             )
 
@@ -139,8 +140,11 @@ def compile_workflow(
             )
 
         if node.node_type == WorkflowNodeType.ROUTER:
+            compiled_choices = [
+                Steps(name=choice.name, steps=[_build(s) for s in choice.steps]) for choice in node.choices
+            ]
             return Router(
-                choices=[_build(c) for c in node.children],
+                choices=compiled_choices,
                 selector=node.condition_cel,
                 name=node.name,
             )
@@ -182,10 +186,22 @@ def step_kwargs(cfg: StepConfig | None) -> dict[str, Any]:
 
 
 def flatten_workflow_nodes(nodes: list[WorkflowNode]) -> list[WorkflowNode]:
-    """Recursively collect every node in the tree (including nested children)."""
+    """Recursively collect every WorkflowNode in the tree.
+
+    Covers all container shapes: ``children`` (PARALLEL / LOOP),
+    ``true_steps`` / ``false_steps`` (CONDITION), and ``choices[*].steps``
+    (ROUTER). ``RouterChoice`` itself is not a ``WorkflowNode`` and is not
+    included; only the inner step nodes are.
+    """
     result: list[WorkflowNode] = []
     for node in nodes:
         result.append(node)
         if node.children:
             result.extend(flatten_workflow_nodes(node.children))
+        if node.true_steps:
+            result.extend(flatten_workflow_nodes(node.true_steps))
+        if node.false_steps:
+            result.extend(flatten_workflow_nodes(node.false_steps))
+        for choice in node.choices:
+            result.extend(flatten_workflow_nodes(choice.steps))
     return result

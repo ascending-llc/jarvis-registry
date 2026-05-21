@@ -88,6 +88,16 @@ TRANSPORT_GRPC = "grpc"
 TRANSPORT_HTTP_JSON = "http_json"
 VALID_TRANSPORT_TYPES: set[str] = {TRANSPORT_JSONRPC, TRANSPORT_GRPC, TRANSPORT_HTTP_JSON}
 
+_A2A_PREFERRED_TRANSPORT_MAP: dict[str, str] = {
+    "HTTP+JSON": TRANSPORT_HTTP_JSON,
+    "JSONRPC": TRANSPORT_JSONRPC,
+}
+
+
+def preferred_transport_to_config_type(preferred_transport: str) -> str:
+    """Map AgentCard preferredTransport to registry config.type."""
+    return _A2A_PREFERRED_TRANSPORT_MAP.get(preferred_transport.upper(), TRANSPORT_JSONRPC)
+
 
 # ========== Registry-Specific Models ==========
 
@@ -542,4 +552,5 @@ __all__ = [
     "TRANSPORT_GRPC",
     "TRANSPORT_HTTP_JSON",
     "VALID_TRANSPORT_TYPES",
+    "preferred_transport_to_config_type",
 ]

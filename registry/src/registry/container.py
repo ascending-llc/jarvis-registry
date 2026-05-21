@@ -208,6 +208,7 @@ class RegistryContainer:
                 db_name=MongoDB.database_name,
                 jwt_config=self.settings.jwt_signing_config,
                 directive_queue=self.directive_queue,
+                a2a_httpx_client=self.a2a_httpx_client,
             )
 
         except Exception:
@@ -227,6 +228,24 @@ class RegistryContainer:
         return httpx.AsyncClient(
             timeout=httpx.Timeout(30.0, read=60.0),
             follow_redirects=True,
+            limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
+        )
+
+    @cached_property
+    def a2a_httpx_client(self) -> httpx.AsyncClient:
+        """Shared httpx client for A2A agent invocations.
+
+        Reused by:
+          - mcpgw `execute_agent` tool (via McpAppContext)
+          - workflow A2A executors (via WorkflowRunner)
+
+        Settings mirror `mcp_proxy_client` but A2A streaming responses can
+        be long-running, so we keep an open read timeout. Closed on
+        container shutdown.
+        """
+        return httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=30.0, read=None, write=60.0, pool=30.0),
+            follow_redirects=False,
             limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
         )
 
@@ -286,6 +305,7 @@ class RegistryContainer:
         await cancel_in_flight_runs()
         await self.health_service.shutdown()
         await self.mcp_proxy_client.aclose()
+        await self.a2a_httpx_client.aclose()
         await self.a2a_proxy_client_registry.close()
 
     def _initialize_federation(self) -> None:
