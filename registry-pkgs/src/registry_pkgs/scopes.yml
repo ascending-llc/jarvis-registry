@@ -16,9 +16,9 @@
 group_mappings:
   jarvis-registry-admin:
     - servers-read
+    - servers-write
     - agents-read
     - agents-write
-    - server-write
     - federations-read
     - federations-write
     - federations-share
@@ -36,9 +36,9 @@ group_mappings:
     - workflows-control
   jarvis-registry-power-user:
     - servers-read
+    - servers-write
     - agents-read
     - agents-write
-    - server-write
     - federations-read
     - federations-write
     - federations-share
@@ -55,9 +55,9 @@ group_mappings:
     - workflows-control
   jarvis-registry-user:
     - servers-read
+    - servers-write
     - agents-read
     - agents-write
-    - server-write
     - federations-read
     - federations-write
     - workflows-read
@@ -90,7 +90,21 @@ servers-read:
   - action: get_server_tools
     method: GET
     endpoint: /servers/{server_id}/tools
-  - action: refresh_server_health
+
+servers-write:
+  - action: register_service
+    method: POST
+    endpoint: /servers
+  - action: modify_service
+    method: PATCH
+    endpoint: /servers/{server_id}
+  - action: delete_service
+    method: DELETE
+    endpoint: /servers/{server_id}
+  - action: toggle_service
+    method: POST
+    endpoint: /servers/{server_id}/toggle
+  - action: refresh_server_capabilities
     method: POST
     endpoint: /servers/{server_id}/refresh
 
@@ -139,20 +153,6 @@ agents-write:
   - action: sync_wellknown
     method: POST
     endpoint: /agents/{agent_id}/wellknown
-
-server-write:
-  - action: register_service
-    method: POST
-    endpoint: /servers
-  - action: modify_service
-    method: PATCH
-    endpoint: /servers/{server_id}
-  - action: delete_service
-    method: DELETE
-    endpoint: /servers/{server_id}
-  - action: toggle_service
-    method: POST
-    endpoint: /servers/{server_id}/toggle
 
 federations-read:
   # Federation read scopes only allow access to federation read endpoints.
