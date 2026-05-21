@@ -165,7 +165,7 @@ async def test_create_agent_uses_injected_services(sample_user_context):
 
 @pytest.mark.asyncio
 async def test_refresh_agent_capabilities_success(sample_user_context):
-    """测试成功刷新 agent 能力"""
+    """Test successful agent capabilities refresh."""
 
     from registry.api.v1.a2a.agent_routes import refresh_agent_capabilities
     from registry.schemas.acl_schema import ResourcePermissions
@@ -188,21 +188,21 @@ async def test_refresh_agent_capabilities_success(sample_user_context):
         a2a_agent_service=mock_a2a_agent_service,
     )
 
-    # 验证 ACL 检查使用了 EDIT 权限
+    # Verify ACL check used EDIT permission
     mock_acl_service.check_user_permission.assert_awaited_once()
     call_args = mock_acl_service.check_user_permission.call_args
     assert call_args.kwargs["required_permission"] == "EDIT"
 
-    # 验证服务被调用
+    # Verify service was called
     mock_a2a_agent_service.refresh_agent_capabilities.assert_awaited_once_with(agent_id=agent_id)
 
-    # 验证响应
+    # Verify response
     assert result.name == "Test Agent"
 
 
 @pytest.mark.asyncio
 async def test_refresh_agent_capabilities_not_found():
-    """测试 agent 不存在时返回 404"""
+    """Test 404 response when agent is not found."""
     from fastapi import HTTPException
 
     from registry.api.v1.a2a.agent_routes import refresh_agent_capabilities
@@ -224,14 +224,14 @@ async def test_refresh_agent_capabilities_not_found():
             a2a_agent_service=mock_a2a_agent_service,
         )
 
-    # 验证 404 错误
+    # Verify 404 error
     assert exc_info.value.status_code == 404
     assert "resource_not_found" in str(exc_info.value.detail)
 
 
 @pytest.mark.asyncio
 async def test_refresh_agent_capabilities_transport_error():
-    """测试网络/传输错误时返回 503"""
+    """Test 503 response on network/transport error."""
     from fastapi import HTTPException
 
     from registry.api.v1.a2a.agent_routes import refresh_agent_capabilities
@@ -256,14 +256,14 @@ async def test_refresh_agent_capabilities_transport_error():
             a2a_agent_service=mock_a2a_agent_service,
         )
 
-    # 验证 503 错误
+    # Verify 503 error
     assert exc_info.value.status_code == 503
     assert "service_unavailable" in str(exc_info.value.detail)
 
 
 @pytest.mark.asyncio
 async def test_refresh_agent_capabilities_upstream_error():
-    """测试上游服务错误时返回 502"""
+    """Test 502 response on upstream service error."""
     from fastapi import HTTPException
 
     from registry.api.v1.a2a.agent_routes import refresh_agent_capabilities
@@ -288,14 +288,14 @@ async def test_refresh_agent_capabilities_upstream_error():
             a2a_agent_service=mock_a2a_agent_service,
         )
 
-    # 验证 502 错误
+    # Verify 502 error
     assert exc_info.value.status_code == 502
     assert "external_service_error" in str(exc_info.value.detail)
 
 
 @pytest.mark.asyncio
 async def test_refresh_agent_capabilities_invalid_request():
-    """测试无效请求（agent 未启用）时返回 400"""
+    """Test 400 response on invalid request (agent well-known not enabled)."""
     from fastapi import HTTPException
 
     from registry.api.v1.a2a.agent_routes import refresh_agent_capabilities
@@ -319,14 +319,14 @@ async def test_refresh_agent_capabilities_invalid_request():
             a2a_agent_service=mock_a2a_agent_service,
         )
 
-    # 验证 400 错误，使用正确的错误码
+    # Verify 400 error with correct error code
     assert exc_info.value.status_code == 400
     assert "invalid_request" in str(exc_info.value.detail)
 
 
 @pytest.mark.asyncio
 async def test_refresh_agent_capabilities_permission_denied():
-    """测试刷新端点需要 EDIT 权限"""
+    """Test that the refresh endpoint requires EDIT permission."""
     from fastapi import HTTPException
 
     from registry.api.v1.a2a.agent_routes import refresh_agent_capabilities
@@ -336,7 +336,7 @@ async def test_refresh_agent_capabilities_permission_denied():
     user_context = {"user_id": str(PydanticObjectId())}
 
     mock_acl_service = MagicMock()
-    # 模拟权限拒绝 - 使用标准错误格式
+    # Simulate permission denied using standard error format
     mock_acl_service.check_user_permission = AsyncMock(
         side_effect=HTTPException(
             status_code=403, detail=create_error_detail(ErrorCode.INSUFFICIENT_PERMISSIONS, "Forbidden")
@@ -353,10 +353,8 @@ async def test_refresh_agent_capabilities_permission_denied():
             a2a_agent_service=mock_a2a_agent_service,
         )
 
-    # 验证权限检查抛出 403
-    # 注意：由于路由的通用异常处理器，HTTPException 会被重新抛出
-    # 如果是 403，应该能正确传递
+    # Verify 403 is propagated (HTTPException is re-raised as-is by the route handler)
     assert exc_info.value.status_code == 403
 
-    # 验证服务从未被调用（权限检查先失败）
+    # Verify service was never called (permission check failed first)
     mock_a2a_agent_service.refresh_agent_capabilities.assert_not_called()
