@@ -1403,9 +1403,7 @@ class ServerServiceV1:
             # Do NOT update lastConnected on failure - only update on success
             server.updatedAt = now
 
-            old_hash = server.vectorContentHash
             await server.save()
-            self._schedule_vector_sync(server, old_hash)
 
             return {
                 "server": server,
@@ -1444,13 +1442,13 @@ class ServerServiceV1:
 
             # Update numTools at root level
             server.numTools = len(tool_functions)
-            logger.info(f"Updated {len(tool_functions)} tools for {server.serverName} during health refresh")
+            logger.info(f"Updated {len(tool_functions)} tools for {server.serverName} during capabilities refresh")
 
         # Store resources and prompts
         config["resources"] = resource_list or []
         config["prompts"] = prompt_list or []
         logger.info(
-            f"Updated {len(resource_list or [])} resources and {len(prompt_list or [])} prompts for {server.serverName} during health refresh"
+            f"Updated {len(resource_list or [])} resources and {len(prompt_list or [])} prompts for {server.serverName} during capabilities refresh"
         )
 
         server.config = config
