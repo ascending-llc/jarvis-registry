@@ -119,10 +119,12 @@ class WorkflowService:
             nodes = [self._convert_api_node_to_model(node) for node in data.nodes]
 
             # Create workflow definition
+            # Always set enabled to False during creation (regardless of frontend input)
             workflow = WorkflowDefinition(
                 name=data.name,
                 description=data.description,
                 nodes=nodes,
+                enabled=False,
                 created_at=datetime.now(UTC),
                 updated_at=datetime.now(UTC),
             )
@@ -130,7 +132,7 @@ class WorkflowService:
             # Save to database (this will trigger Pydantic validation)
             await workflow.insert()
 
-            logger.info(f"Created workflow {workflow.id}: {workflow.name}")
+            logger.info(f"Created workflow {workflow.id}: {workflow.name} (enabled: False)")
             return workflow
 
         except ValueError as e:
@@ -173,6 +175,9 @@ class WorkflowService:
 
             if data.nodes is not None:
                 update_data["nodes"] = [self._convert_api_node_to_model(node) for node in data.nodes]
+
+            if data.enabled is not None:
+                update_data["enabled"] = data.enabled
 
             # Always update the timestamp
             update_data["updated_at"] = datetime.now(UTC)
@@ -234,6 +239,44 @@ class WorkflowService:
             logger.exception("Error deleting workflow %s", workflow_id)
             raise
 
+    async def toggle_workflow_status(
+        self,
+        workflow_id: str,
+        enabled: bool,
+    ) -> WorkflowDefinition:
+        """
+        Toggle workflow enabled/disabled status.
+
+        Args:
+            workflow_id: Workflow ID
+            enabled: Enable (True) or disable (False)
+
+        Returns:
+            Updated WorkflowDefinition document
+
+        Raises:
+            ValueError: If workflow not found
+        """
+        try:
+            # Get existing workflow
+            workflow = await self.get_workflow_by_id(workflow_id)
+
+            # Update enabled field
+            workflow.enabled = enabled
+            workflow.updated_at = datetime.now(UTC)
+
+            # Save to database
+            await workflow.save()
+
+            logger.info(f"Toggled workflow {workflow.name} (ID: {workflow.id}) enabled to {enabled}")
+            return workflow
+
+        except ValueError:
+            raise
+        except Exception:
+            logger.exception("Error toggling workflow %s", workflow_id)
+            raise
+
     async def trigger_workflow_run(
         self,
         workflow_id: str,
@@ -264,6 +307,12 @@ class WorkflowService:
         try:
             # Get existing workflow
             workflow = await self.get_workflow_by_id(workflow_id)
+
+            # Check if workflow is enabled
+            if not workflow.enabled:
+                raise ValueError(
+                    f"Workflow '{workflow.name}' is disabled. Please enable the workflow before triggering a run."
+                )
 
             # Convert resolved_dependencies if provided
             from registry_pkgs.models.workflow import ResolvedDependency

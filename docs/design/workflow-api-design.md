@@ -32,6 +32,7 @@
       "name": "Customer Onboarding Workflow",
       "description": "Automated workflow for new customer onboarding",
       "numNodes": 5,
+      "enabled": false,
       "createdAt": "2024-01-15T10:30:00Z",
       "updatedAt": "2024-01-20T15:45:00Z"
     }
@@ -189,6 +190,7 @@ node type does not use them. This lets clients access any field without null che
       "loopConfig": null
     }
   ],
+  "enabled": false,
   "createdAt": "2024-01-15T10:30:00Z",
   "updatedAt": "2024-01-20T15:45:00Z"
 }
@@ -348,10 +350,17 @@ node type does not use them. This lets clients access any field without null che
   "name": "Customer Onboarding Workflow",
   "description": "Automated workflow for new customer onboarding",
   "nodes": [...],
+  "enabled": false,
   "createdAt": "2024-01-15T10:30:00Z",
   "updatedAt": "2024-01-15T10:30:00Z"
 }
 ```
+
+**Important Notes**:
+- **Workflows are always created with `enabled: false`** for safety (similar to server registration)
+- The `enabled` field cannot be set during creation - it is automatically set to `false`
+- After creating a workflow, you must explicitly enable it using the Toggle Workflow endpoint (`POST /workflows/{id}/toggle`) before it can be triggered
+- This two-step process (create → enable) ensures workflows are reviewed and verified before execution
 
 **Error**:
 - `400` Validation error (invalid node structure, duplicate node names in router, etc.)
@@ -484,6 +493,7 @@ node type does not use them. This lets clients access any field without null che
 - `name` (string): Update workflow name
 - `description` (string): Update workflow description
 - `nodes` (array): Update workflow nodes (follows same structure and validation as create)
+- `enabled` (boolean): Update workflow enabled status
 
 **Response**: `200 OK`
 ```json
@@ -492,6 +502,7 @@ node type does not use them. This lets clients access any field without null che
   "name": "Updated Workflow Name",
   "description": "Updated description",
   "nodes": [...],
+  "enabled": false,
   "createdAt": "2024-01-15T10:30:00Z",
   "updatedAt": "2024-01-20T15:45:00Z"
 }
@@ -519,7 +530,55 @@ node type does not use them. This lets clients access any field without null che
 
 ---
 
-### 6. Trigger Workflow Run
+### 6. Toggle Workflow Status
+
+**Endpoint**: `POST /api/v1/workflows/{workflow_id}/toggle`
+
+**Description**: Enable or disable a workflow.
+
+**Business Rules**:
+- Workflows are created with `enabled: false` by default for safety
+- **Disabled workflows cannot be triggered** - you must enable them first using this endpoint
+- Disabling a workflow does not affect already running workflow runs
+- Similar to server toggle endpoint behavior
+
+**Use Cases**:
+- Enable workflow after creation and verification
+- Temporarily disable a workflow for maintenance or debugging
+- Prevent workflow execution without deleting the workflow definition
+- Control workflow availability in production environments
+
+**Request Body**:
+```json
+{
+  "enabled": true
+}
+```
+
+**Request Fields**:
+- `enabled` (required, boolean): `true` to enable the workflow, `false` to disable it
+
+**Response**: `200 OK`
+```json
+{
+  "id": "wf-demo-id",
+  "name": "Customer Onboarding Workflow",
+  "description": "Automated workflow for new customer onboarding",
+  "nodes": [...],
+  "enabled": true,
+  "createdAt": "2024-01-15T10:30:00Z",
+  "updatedAt": "2024-01-20T15:45:00Z"
+}
+```
+
+**Error**:
+- `400` Invalid workflow ID or validation error
+- `404` Workflow not found
+- `500` Internal server error
+
+---
+
+### 7. Trigger Workflow Run
 
 **Endpoint**: `POST /api/v1/workflows/{workflow_id}/runs`
 
@@ -592,15 +651,18 @@ node type does not use them. This lets clients access any field without null che
 ```
 
 **Error**:
-- `400` Invalid workflow ID or invalid request body
+- `400` Invalid workflow ID, invalid request body, or **workflow is disabled** (must enable workflow first using toggle endpoint)
 - `404` Workflow not found
 - `500` Internal server error
 
-**Note**: Run executes asynchronously, returns 202 immediately
+**Important Notes**:
+- Run executes asynchronously, returns 202 immediately
+- **Workflow must be enabled before triggering** - disabled workflows will return a 400 error with message "Workflow is disabled. Please enable the workflow before triggering a run."
+- Use the Toggle Workflow endpoint (`POST /workflows/{id}/toggle`) to enable the workflow before triggering
 
 ---
 
-### 7. List Workflow Runs
+### 8. List Workflow Runs
 
 **Endpoint**: `GET /api/v1/workflows/{workflow_id}/runs`
 
@@ -686,7 +748,7 @@ node type does not use them. This lets clients access any field without null che
 
 ---
 
-### 8. Get Workflow Run Detail
+### 9. Get Workflow Run Detail
 
 **Endpoint**: `GET /api/v1/workflows/{workflow_id}/runs/{run_id}`
 

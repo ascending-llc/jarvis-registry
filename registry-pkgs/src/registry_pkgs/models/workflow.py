@@ -245,6 +245,7 @@ class WorkflowDefinition(Document):
     name: str
     description: str | None = None
     nodes: list[WorkflowNode] = Field(default_factory=list)
+    enabled: bool = Field(default=False, description="Whether the workflow is enabled")
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 

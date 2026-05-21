@@ -142,6 +142,7 @@ class WorkflowUpdateRequest(APIBaseModel):
     name: str | None = Field(None, description="Update workflow name")
     description: str | None = Field(None, description="Update workflow description")
     nodes: list[WorkflowNodeInput] | None = Field(None, description="Update workflow nodes")
+    enabled: bool | None = Field(None, description="Update workflow enabled status")
 
 
 class WorkflowRunTriggerRequest(APIBaseModel):
@@ -155,6 +156,12 @@ class WorkflowRunTriggerRequest(APIBaseModel):
     )
 
 
+class WorkflowToggleRequest(APIBaseModel):
+    """Request schema for toggling workflow status"""
+
+    enabled: bool = Field(..., description="Enable or disable the workflow")
+
+
 # ==================== Response Schemas ====================
 
 
@@ -165,6 +172,7 @@ class WorkflowListItem(APIBaseModel):
     name: str
     description: str | None = None
     numNodes: int
+    enabled: bool = Field(default=False, description="Whether the workflow is enabled")
     createdAt: datetime
     updatedAt: datetime
 
@@ -176,6 +184,7 @@ class WorkflowDetailResponse(APIBaseModel):
     name: str
     description: str | None = None
     nodes: list[WorkflowNodeOutput]
+    enabled: bool = Field(default=False, description="Whether the workflow is enabled")
     createdAt: datetime
     updatedAt: datetime
 
@@ -271,6 +280,7 @@ def convert_to_list_item(workflow: Any) -> WorkflowListItem:
         name=workflow.name,
         description=workflow.description,
         numNodes=len(workflow.nodes),
+        enabled=workflow.enabled if hasattr(workflow, "enabled") else False,
         createdAt=workflow.created_at,
         updatedAt=workflow.updated_at,
     )
@@ -288,6 +298,7 @@ def convert_to_detail(workflow: Any) -> WorkflowDetailResponse:
         name=workflow.name,
         description=workflow.description,
         nodes=[_convert_node_to_output(node) for node in workflow.nodes],
+        enabled=workflow.enabled if hasattr(workflow, "enabled") else False,
         createdAt=workflow.created_at,
         updatedAt=workflow.updated_at,
     )
