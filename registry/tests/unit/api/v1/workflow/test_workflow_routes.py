@@ -13,6 +13,10 @@ def _request_with_headers(headers: dict[str, str]) -> Request:
     return request
 
 
+def _canvas() -> dict[str, dict[str, float]]:
+    return {"viewport": {"x": 0, "y": 0, "zoom": 1}}
+
+
 def test_build_registry_token_prefers_authorization_header(monkeypatch: pytest.MonkeyPatch):
     generate_service_jwt = MagicMock(return_value="generated-token")
     monkeypatch.setattr(workflow_routes, "generate_service_jwt", generate_service_jwt)
@@ -83,6 +87,7 @@ def test_workflow_create_request_deserializes_motivating_example_from_json():
     (trueSteps/falseSteps) survive the HTTP-body deserialization layer intact."""
     json_body = {
         "name": "Tree-Shaped Workflow",
+        "canvas": _canvas(),
         "nodes": [
             {"name": "A", "nodeType": "step", "executorKey": "tool-a"},
             {
@@ -117,6 +122,7 @@ def test_workflow_create_request_deserializes_motivating_example_from_json():
 def test_workflow_create_request_deserializes_router_with_named_choices_from_json():
     json_body = {
         "name": "Router Workflow",
+        "canvas": _canvas(),
         "nodes": [
             {
                 "name": "research-router",
@@ -158,6 +164,7 @@ async def test_create_workflow_route_forwards_condition_request_to_service():
     request = WorkflowCreateRequest.model_validate(
         {
             "name": "Demo",
+            "canvas": _canvas(),
             "nodes": [
                 {
                     "name": "B",
@@ -173,12 +180,13 @@ async def test_create_workflow_route_forwards_condition_request_to_service():
     # Fake WorkflowDefinition stand-in for convert_to_detail
     from datetime import UTC, datetime
 
-    from registry_pkgs.models.workflow import WorkflowDefinition, WorkflowNode
+    from registry_pkgs.models.workflow import WorkflowCanvas, WorkflowDefinition, WorkflowNode
 
     fake_workflow = WorkflowDefinition.model_construct(
         id="wf-demo-id",
         name="Demo",
         description=None,
+        canvas=WorkflowCanvas.model_validate(_canvas()),
         nodes=[
             WorkflowNode(
                 name="B",

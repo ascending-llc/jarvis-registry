@@ -66,11 +66,15 @@ node type does not use them. This lets clients access any field without null che
   "id": "wf-demo-id",
   "name": "Customer Onboarding Workflow",
   "description": "Automated workflow for new customer onboarding",
+  "canvas": {
+    "viewport": { "x": 0, "y": 0, "zoom": 1 }
+  },
   "nodes": [
     {
       "id": "node-1",
       "name": "Validate Customer Data",
       "nodeType": "step",
+      "position": { "x": 80, "y": 220 },
       "executorKey": "data-validator",
       "a2aPool": [],
       "stepConfig": {
@@ -102,6 +106,7 @@ node type does not use them. This lets clients access any field without null che
           "id": "node-2-1",
           "name": "Send Welcome Email",
           "nodeType": "step",
+          "position": { "x": 360, "y": 160 },
           "executorKey": "email-sender",
           "a2aPool": [],
           "stepConfig": null,
@@ -119,6 +124,7 @@ node type does not use them. This lets clients access any field without null che
           "id": "node-2-2",
           "name": "Create User Account",
           "nodeType": "step",
+          "position": { "x": 360, "y": 300 },
           "executorKey": null,
           "a2aPool": ["account-creator-v1", "account-creator-v2"],
           "stepConfig": {
@@ -146,6 +152,7 @@ node type does not use them. This lets clients access any field without null che
       "id": "node-3",
       "name": "Route by Customer Type",
       "nodeType": "condition",
+      "position": { "x": 640, "y": 220 },
       "executorKey": null,
       "a2aPool": [],
       "stepConfig": null,
@@ -156,6 +163,7 @@ node type does not use them. This lets clients access any field without null che
           "id": "node-3-t1",
           "name": "Enterprise Provisioning",
           "nodeType": "step",
+          "position": { "x": 920, "y": 160 },
           "executorKey": "mcp-enterprise-provisioner",
           "a2aPool": [],
           "stepConfig": null,
@@ -173,6 +181,7 @@ node type does not use them. This lets clients access any field without null che
           "id": "node-3-f1",
           "name": "Standard Provisioning",
           "nodeType": "step",
+          "position": { "x": 920, "y": 300 },
           "executorKey": "mcp-standard-provisioner",
           "a2aPool": [],
           "stepConfig": null,
@@ -212,10 +221,14 @@ node type does not use them. This lets clients access any field without null che
 {
   "name": "Customer Onboarding Workflow",
   "description": "Automated workflow for new customer onboarding with email validation, parallel processing, and conditional routing",
+  "canvas": {
+    "viewport": { "x": 0, "y": 0, "zoom": 1 }
+  },
   "nodes": [
     {
       "name": "Validate Customer Email",
       "nodeType": "step",
+      "position": { "x": 80, "y": 220 },
       "executorKey": "mcp-email-validator",
       "stepConfig": {
         "maxRetries": 3,
@@ -231,15 +244,18 @@ node type does not use them. This lets clients access any field without null che
     {
       "name": "Check Customer Type",
       "nodeType": "condition",
+      "position": { "x": 360, "y": 220 },
       "conditionCel": "input.customerType == 'enterprise'",
       "trueSteps": [
         {
           "name": "Enterprise Onboarding Path",
           "nodeType": "parallel",
+          "position": { "x": 640, "y": 160 },
           "children": [
             {
               "name": "Send Welcome Email",
               "nodeType": "step",
+              "position": { "x": 920, "y": 120 },
               "executorKey": "mcp-email-sender",
               "stepConfig": {
                 "maxRetries": 2,
@@ -309,10 +325,18 @@ node type does not use them. This lets clients access any field without null che
 **Request Fields**:
 - `name` (required, string): Workflow name
 - `description` (optional, string): Workflow description
+- `canvas` (required, object): Frontend canvas metadata
+  - `viewport` (required, object): Canvas viewport state
+    - `x` (optional, number): Viewport x offset (default: 0)
+    - `y` (optional, number): Viewport y offset (default: 0)
+    - `zoom` (optional, number): Viewport zoom level (default: 1, must be > 0)
 - `nodes` (required, array): At least one root node required
   - `id` (optional, string): Node ID (auto-generated if not provided)
   - `name` (required, string): Node name
   - `nodeType` (required, string): Node type (`step`, `parallel`, `loop`, `condition`, `router`)
+  - `position` (optional, object): Node position on the frontend canvas
+    - `x` (optional, number): Node x coordinate (default: 0)
+    - `y` (optional, number): Node y coordinate (default: 0)
   - `executorKey` (optional for `step` nodes, string): MCP tool name or A2A agent name (required if `a2aPool` is not provided)
   - `a2aPool` (optional for `step` nodes, array): A2A agent pool (max 5 agents, alternative to `executorKey`)
   - `stepConfig` (optional for `step` nodes, object): Step-level retry and error handling configuration
@@ -349,6 +373,9 @@ node type does not use them. This lets clients access any field without null che
   "id": "wf-demo-id",
   "name": "Customer Onboarding Workflow",
   "description": "Automated workflow for new customer onboarding",
+  "canvas": {
+    "viewport": { "x": 0, "y": 0, "zoom": 1 }
+  },
   "nodes": [...],
   "enabled": false,
   "createdAt": "2024-01-15T10:30:00Z",
@@ -377,10 +404,14 @@ node type does not use them. This lets clients access any field without null che
 {
   "name": "Customer Onboarding Workflow v2",
   "description": "Updated workflow with phone verification and improved enterprise features",
+  "canvas": {
+    "viewport": { "x": -120, "y": 40, "zoom": 0.8 }
+  },
   "nodes": [
     {
       "name": "Validate Customer Email",
       "nodeType": "step",
+      "position": { "x": 80, "y": 220 },
       "executorKey": "mcp-email-validator",
       "config": {
         "validationRules": ["format", "domain", "mx_record", "disposable_check"],
@@ -492,6 +523,7 @@ node type does not use them. This lets clients access any field without null che
 **Request Fields** (all optional):
 - `name` (string): Update workflow name
 - `description` (string): Update workflow description
+- `canvas` (object): Update frontend canvas metadata
 - `nodes` (array): Update workflow nodes (follows same structure and validation as create)
 - `enabled` (boolean): Update workflow enabled status
 
@@ -501,6 +533,9 @@ node type does not use them. This lets clients access any field without null che
   "id": "wf-demo-id",
   "name": "Updated Workflow Name",
   "description": "Updated description",
+  "canvas": {
+    "viewport": { "x": -120, "y": 40, "zoom": 0.8 }
+  },
   "nodes": [...],
   "enabled": false,
   "createdAt": "2024-01-15T10:30:00Z",
@@ -564,6 +599,9 @@ node type does not use them. This lets clients access any field without null che
   "id": "wf-demo-id",
   "name": "Customer Onboarding Workflow",
   "description": "Automated workflow for new customer onboarding",
+  "canvas": {
+    "viewport": { "x": 0, "y": 0, "zoom": 1 }
+  },
   "nodes": [...],
   "enabled": true,
   "createdAt": "2024-01-15T10:30:00Z",
@@ -773,6 +811,9 @@ node type does not use them. This lets clients access any field without null che
   "definitionSnapshot": {
     "name": "Customer Onboarding Workflow",
     "description": "Automated workflow for new customer onboarding",
+    "canvas": {
+      "viewport": { "x": 0, "y": 0, "zoom": 1 }
+    },
     "nodes": [...]
   },
   "parentRunId": null,
@@ -832,6 +873,18 @@ All endpoints return errors in the following format:
 
 ## Data Models
 
+### WorkflowCanvas
+
+```typescript
+{
+  viewport: {
+    x: number;                    // Canvas viewport x offset
+    y: number;                    // Canvas viewport y offset
+    zoom: number;                 // Canvas viewport zoom level
+  };
+}
+```
+
 ### WorkflowNode
 
 ```typescript
@@ -839,6 +892,10 @@ All endpoints return errors in the following format:
   id: string;                    // Node ID (UUID)
   name: string;                  // Node name
   nodeType: string;              // step | parallel | loop | condition | router
+  position: {
+    x: number;                   // Node x coordinate on the canvas
+    y: number;                   // Node y coordinate on the canvas
+  };
   executorKey?: string;          // MCP tool name or A2A agent name (required for step nodes if a2aPool is not provided)
   a2aPool?: string[];            // A2A agent pool (max 5 agents, alternative to executorKey for step nodes)
   stepConfig?: StepConfig;       // Step-level retry and error handling configuration (step nodes only)

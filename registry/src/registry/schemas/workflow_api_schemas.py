@@ -17,6 +17,27 @@ from .case_conversion import APIBaseModel
 # ==================== Nested Models ====================
 
 
+class ViewportInput(APIBaseModel):
+    """Input/Output schema for workflow canvas viewport."""
+
+    x: float = Field(default=0, description="Canvas viewport x offset")
+    y: float = Field(default=0, description="Canvas viewport y offset")
+    zoom: float = Field(default=1, gt=0, description="Canvas viewport zoom level")
+
+
+class CanvasInput(APIBaseModel):
+    """Input/Output schema for workflow canvas metadata."""
+
+    viewport: ViewportInput = Field(description="Canvas viewport state")
+
+
+class NodePositionInput(APIBaseModel):
+    """Input/Output schema for workflow node canvas position."""
+
+    x: float = Field(default=0, description="Node x position on the canvas")
+    y: float = Field(default=0, description="Node y position on the canvas")
+
+
 class StepConfigInput(APIBaseModel):
     """Input/Output schema for step configuration"""
 
@@ -60,6 +81,7 @@ class WorkflowNodeInput(APIBaseModel):
     a2aPool: list[str] = Field(default_factory=list, description="A2A agent pool (max 5 agents)")
     stepConfig: StepConfigInput | None = Field(None, description="Step-level retry and error handling configuration")
     config: dict[str, Any] = Field(default_factory=dict, description="Node configuration")
+    position: NodePositionInput = Field(default_factory=NodePositionInput, description="Node position on the canvas")
     children: list["WorkflowNodeInput"] = Field(
         default_factory=list,
         description="Child nodes for PARALLEL and LOOP nodes",
@@ -95,6 +117,7 @@ class WorkflowNodeOutput(APIBaseModel):
     a2aPool: list[str] = Field(default_factory=list)
     stepConfig: StepConfigInput | None = None
     config: dict[str, Any] = Field(default_factory=dict)
+    position: NodePositionInput = Field(default_factory=NodePositionInput)
     children: list["WorkflowNodeOutput"] = Field(default_factory=list)
     trueSteps: list["WorkflowNodeOutput"] = Field(default_factory=list)
     falseSteps: list["WorkflowNodeOutput"] = Field(default_factory=list)
@@ -133,6 +156,7 @@ class WorkflowCreateRequest(APIBaseModel):
 
     name: str = Field(description="Workflow name")
     description: str | None = Field(None, description="Workflow description")
+    canvas: CanvasInput = Field(description="Workflow canvas metadata")
     nodes: list[WorkflowNodeInput] = Field(description="At least one root node required")
 
 
@@ -141,6 +165,7 @@ class WorkflowUpdateRequest(APIBaseModel):
 
     name: str | None = Field(None, description="Update workflow name")
     description: str | None = Field(None, description="Update workflow description")
+    canvas: CanvasInput | None = Field(None, description="Update workflow canvas metadata")
     nodes: list[WorkflowNodeInput] | None = Field(None, description="Update workflow nodes")
     enabled: bool | None = Field(None, description="Update workflow enabled status")
 
@@ -183,6 +208,7 @@ class WorkflowDetailResponse(APIBaseModel):
     id: str
     name: str
     description: str | None = None
+    canvas: CanvasInput
     nodes: list[WorkflowNodeOutput]
     enabled: bool = Field(default=False, description="Whether the workflow is enabled")
     createdAt: datetime
@@ -297,10 +323,22 @@ def convert_to_detail(workflow: Any) -> WorkflowDetailResponse:
         id=str(workflow.id),
         name=workflow.name,
         description=workflow.description,
+        canvas=_convert_canvas_to_output(workflow.canvas),
         nodes=[_convert_node_to_output(node) for node in workflow.nodes],
         enabled=workflow.enabled if hasattr(workflow, "enabled") else False,
         createdAt=workflow.created_at,
         updatedAt=workflow.updated_at,
+    )
+
+
+def _convert_canvas_to_output(canvas: Any) -> CanvasInput:
+    """Convert WorkflowCanvas to CanvasInput."""
+    return CanvasInput(
+        viewport=ViewportInput(
+            x=canvas.viewport.x,
+            y=canvas.viewport.y,
+            zoom=canvas.viewport.zoom,
+        ),
     )
 
 
@@ -323,6 +361,7 @@ def _convert_node_to_output(node: Any) -> WorkflowNodeOutput:
             else None
         ),
         config=node.config,
+        position=NodePositionInput(x=node.position.x, y=node.position.y),
         children=[_convert_node_to_output(child) for child in node.children],
         trueSteps=[_convert_node_to_output(child) for child in node.true_steps],
         falseSteps=[_convert_node_to_output(child) for child in node.false_steps],

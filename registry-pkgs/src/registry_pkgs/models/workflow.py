@@ -84,6 +84,27 @@ class LoopConfig(BaseModel):
         return value
 
 
+class WorkflowViewport(BaseModel):
+    """Viewport state for the workflow canvas."""
+
+    x: float = 0
+    y: float = 0
+    zoom: float = 1
+
+
+class WorkflowCanvas(BaseModel):
+    """Canvas metadata for rendering a workflow in the frontend."""
+
+    viewport: WorkflowViewport = Field(default_factory=WorkflowViewport)
+
+
+class WorkflowNodePosition(BaseModel):
+    """Node position on the workflow canvas."""
+
+    x: float = 0
+    y: float = 0
+
+
 class RouterChoice(BaseModel):
     """A single named choice in a ROUTER node, containing one or more steps.
 
@@ -117,6 +138,7 @@ class WorkflowNode(BaseModel):
     # Per-step retry and error-handling policy (STEP nodes only).
     step_config: StepConfig | None = None
     config: dict[str, Any] = Field(default_factory=dict)
+    position: WorkflowNodePosition = Field(default_factory=WorkflowNodePosition)
 
     # Child nodes used by PARALLEL and LOOP container nodes.
     children: list[WorkflowNode] = Field(default_factory=list)
@@ -244,6 +266,7 @@ class ResolvedDependency(BaseModel):
 class WorkflowDefinition(Document):
     name: str
     description: str | None = None
+    canvas: WorkflowCanvas = Field(default_factory=WorkflowCanvas)
     nodes: list[WorkflowNode] = Field(default_factory=list)
     enabled: bool = Field(default=False, description="Whether the workflow is enabled")
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

@@ -13,7 +13,7 @@ from uuid import uuid4
 from beanie import PydanticObjectId
 
 from registry_pkgs.models.enums import WorkflowRunStatus
-from registry_pkgs.models.workflow import NodeRun, WorkflowDefinition, WorkflowNode, WorkflowRun
+from registry_pkgs.models.workflow import NodeRun, WorkflowCanvas, WorkflowDefinition, WorkflowNode, WorkflowRun
 
 from ..schemas.workflow_api_schemas import WorkflowCreateRequest, WorkflowUpdateRequest
 
@@ -123,6 +123,7 @@ class WorkflowService:
             workflow = WorkflowDefinition(
                 name=data.name,
                 description=data.description,
+                canvas=self._convert_api_canvas_to_model(data.canvas),
                 nodes=nodes,
                 enabled=False,
                 created_at=datetime.now(UTC),
@@ -172,6 +173,9 @@ class WorkflowService:
 
             if data.description is not None:
                 update_data["description"] = data.description
+
+            if data.canvas is not None:
+                update_data["canvas"] = self._convert_api_canvas_to_model(data.canvas)
 
             if data.nodes is not None:
                 update_data["nodes"] = [self._convert_api_node_to_model(node) for node in data.nodes]
@@ -460,6 +464,16 @@ class WorkflowService:
             logger.exception("Error getting workflow run %s", run_id)
             raise
 
+    def _convert_api_canvas_to_model(self, api_canvas: Any) -> WorkflowCanvas:
+        """Convert API canvas input to model WorkflowCanvas."""
+        return WorkflowCanvas(
+            viewport={
+                "x": api_canvas.viewport.x,
+                "y": api_canvas.viewport.y,
+                "zoom": api_canvas.viewport.zoom,
+            },
+        )
+
     def _convert_api_node_to_model(self, api_node: Any) -> WorkflowNode:
         """
         Convert API node input to model WorkflowNode (recursive).
@@ -470,7 +484,7 @@ class WorkflowService:
         Returns:
             WorkflowNode model instance
         """
-        from registry_pkgs.models.workflow import LoopConfig, RouterChoice, StepConfig
+        from registry_pkgs.models.workflow import LoopConfig, RouterChoice, StepConfig, WorkflowNodePosition
 
         # Generate ID if not provided
         node_id = api_node.id if api_node.id else str(uuid4())
@@ -512,6 +526,7 @@ class WorkflowService:
             a2a_pool=api_node.a2aPool,
             step_config=step_config,
             config=api_node.config,
+            position=WorkflowNodePosition(x=api_node.position.x, y=api_node.position.y),
             children=children,
             true_steps=true_steps,
             false_steps=false_steps,

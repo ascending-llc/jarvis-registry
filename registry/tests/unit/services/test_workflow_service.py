@@ -61,6 +61,7 @@ async def test_create_workflow_does_not_convert_unexpected_errors_to_value_error
 
     request = WorkflowCreateRequest(
         name="Demo workflow",
+        canvas={"viewport": {"x": 0, "y": 0, "zoom": 1}},
         nodes=[WorkflowNodeInput(name="Fetch", nodeType="step", executorKey="tool")],
     )
 
