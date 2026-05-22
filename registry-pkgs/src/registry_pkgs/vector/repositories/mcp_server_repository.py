@@ -72,9 +72,27 @@ class MCPServerRepository(BaseVectorSyncRepository[ExtendedMCPServer]):
                 )
                 return result.to_dict_mcp()
 
+            expected = len(docs)
             doc_ids = await self.asave(server)
-            if doc_ids:
-                result.indexed = len(doc_ids)
+            if not doc_ids:
+                result.failed = expected
+                result.error = "asave returned no doc_ids"
+                logger.error("asave returned no doc_ids for server '%s' (server_id=%s).", server.serverName, server_id)
+                return result.to_dict_mcp()
+            try:
+                landed_docs = await self.afilter(filters={"server_id": server_id}, limit=expected + 1)
+                actual = len(landed_docs)
+            except Exception as e:
+                logger.warning(
+                    "Post-insert verification failed for server '%s' (server_id=%s): %s — falling back to doc_ids count",
+                    server.serverName,
+                    server_id,
+                    e,
+                )
+                actual = len(doc_ids)
+
+            if actual >= expected:
+                result.indexed = actual
                 result.version = self._extract_runtime_version(server)
                 logger.info(
                     "Indexed %d docs for server '%s' (server_id=%s).",
@@ -83,8 +101,19 @@ class MCPServerRepository(BaseVectorSyncRepository[ExtendedMCPServer]):
                     server_id,
                 )
             else:
-                result.failed = 1
-                logger.error("asave returned no doc_ids for server '%s' (server_id=%s).", server.serverName, server_id)
+                result.indexed = actual
+                result.failed = expected - actual
+                result.error = (
+                    f"only {actual}/{expected} docs landed in Weaviate "
+                    "(check langchain-weaviate ERROR logs for batch insert failures)"
+                )
+                logger.error(
+                    "Vector sync partial failure for server '%s' (server_id=%s): %d/%d docs inserted",
+                    server.serverName,
+                    server_id,
+                    actual,
+                    expected,
+                )
 
         except Exception as e:
             logger.error("MCP vector sync failed for server %s: %s", getattr(server, "id", "?"), e, exc_info=True)

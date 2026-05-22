@@ -307,11 +307,11 @@ async def run() -> int:
     target, clean_mode, batch_size = parse_args()
 
     env_path = Path(".env")
-    if not env_path.exists():
-        print(f"Error: .env not found at {env_path.resolve()}")
-        return 1
-
-    settings = Settings(_env_file=str(env_path))
+    if env_path.exists():
+        settings = Settings(_env_file=str(env_path))
+    else:
+        print(f"No .env at {env_path.resolve()} — loading config from environment variables.")
+        settings = Settings()
 
     db_client = None
     redis_client = None
