@@ -12,6 +12,7 @@ from typing import Any
 
 from pydantic import Field
 
+from .acl_schema import ResourcePermissions
 from .case_conversion import APIBaseModel
 
 # ==================== Nested Models ====================
@@ -78,6 +79,12 @@ class WorkflowNodeInput(APIBaseModel):
     )
     conditionCel: str | None = Field(None, description="CEL expression for condition/router nodes")
     loopConfig: LoopConfigInput | None = Field(None, description="Loop configuration for loop nodes")
+    requireApproval: bool = Field(
+        default=False, description="STEP only: hold the run for user approval before executing this node"
+    )
+    approvalTimeoutSeconds: int | None = Field(
+        None, gt=0, description="STEP only: seconds to wait for approval before treating it as a rejection"
+    )
 
 
 # Enable recursive models
@@ -101,6 +108,8 @@ class WorkflowNodeOutput(APIBaseModel):
     choices: list[RouterChoiceOutput] = Field(default_factory=list)
     conditionCel: str | None = None
     loopConfig: LoopConfigInput | None = None
+    requireApproval: bool = False
+    approvalTimeoutSeconds: int | None = None
 
 
 # Enable recursive models
@@ -153,6 +162,9 @@ class WorkflowRunTriggerRequest(APIBaseModel):
     resolvedDependencies: list[ResolvedDependencyInput] = Field(
         default_factory=list, description="Dependency resolution for retry"
     )
+    version: int | None = Field(
+        None, description="Workflow version to run; defaults to the latest version when omitted"
+    )
 
 
 # ==================== Response Schemas ====================
@@ -165,8 +177,10 @@ class WorkflowListItem(APIBaseModel):
     name: str
     description: str | None = None
     numNodes: int
+    version: int = 1
     createdAt: datetime
     updatedAt: datetime
+    aclPermission: ResourcePermissions | None = None
 
 
 class WorkflowDetailResponse(APIBaseModel):
@@ -176,8 +190,10 @@ class WorkflowDetailResponse(APIBaseModel):
     name: str
     description: str | None = None
     nodes: list[WorkflowNodeOutput]
+    version: int = 1
     createdAt: datetime
     updatedAt: datetime
+    aclPermission: ResourcePermissions | None = None
 
 
 class WorkflowListResponse(APIBaseModel):
@@ -185,6 +201,20 @@ class WorkflowListResponse(APIBaseModel):
 
     workflows: list[WorkflowListItem]
     pagination: PaginationMetadata
+
+
+class WorkflowVersionItem(APIBaseModel):
+    """Response schema for a single workflow version entry"""
+
+    version: int
+    createdAt: datetime
+    checksum: str
+
+
+class WorkflowVersionListResponse(APIBaseModel):
+    """Response schema for workflow version history"""
+
+    versions: list[WorkflowVersionItem]
 
 
 class WorkflowRunTriggerResponse(APIBaseModel):
@@ -259,7 +289,7 @@ class WorkflowRunDetailResponse(APIBaseModel):
 # ==================== Converter Functions ====================
 
 
-def convert_to_list_item(workflow: Any) -> WorkflowListItem:
+def convert_to_list_item(workflow: Any, acl_permission: ResourcePermissions | None = None) -> WorkflowListItem:
     """Convert WorkflowDefinition to WorkflowListItem"""
     from registry_pkgs.models.workflow import WorkflowDefinition
 
@@ -271,12 +301,14 @@ def convert_to_list_item(workflow: Any) -> WorkflowListItem:
         name=workflow.name,
         description=workflow.description,
         numNodes=len(workflow.nodes),
+        version=getattr(workflow, "version", 1),
         createdAt=workflow.created_at,
         updatedAt=workflow.updated_at,
+        aclPermission=acl_permission,
     )
 
 
-def convert_to_detail(workflow: Any) -> WorkflowDetailResponse:
+def convert_to_detail(workflow: Any, acl_permission: ResourcePermissions | None = None) -> WorkflowDetailResponse:
     """Convert WorkflowDefinition to WorkflowDetailResponse"""
     from registry_pkgs.models.workflow import WorkflowDefinition
 
@@ -288,8 +320,10 @@ def convert_to_detail(workflow: Any) -> WorkflowDetailResponse:
         name=workflow.name,
         description=workflow.description,
         nodes=[_convert_node_to_output(node) for node in workflow.nodes],
+        version=getattr(workflow, "version", 1),
         createdAt=workflow.created_at,
         updatedAt=workflow.updated_at,
+        aclPermission=acl_permission,
     )
 
 
@@ -330,6 +364,8 @@ def _convert_node_to_output(node: Any) -> WorkflowNodeOutput:
             if node.loop_config
             else None
         ),
+        requireApproval=node.require_approval,
+        approvalTimeoutSeconds=node.approval_timeout_seconds,
     )
 
 

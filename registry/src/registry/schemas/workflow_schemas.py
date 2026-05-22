@@ -43,6 +43,17 @@ class RetryRequest(BaseModel):
     from_node_id: str = Field(..., description="Node ID to restart execution from")
 
 
+class ApproveRequest(BaseModel):
+    """Request body for the approval endpoint.
+
+    Attributes:
+        approved: ``True`` approves the gate and resumes execution; ``False``
+                  rejects it, failing the node per its ``on_error`` policy.
+    """
+
+    approved: bool = Field(..., description="True to approve and continue; False to reject")
+
+
 class DirectiveResponse(BaseModel):
     """Unified response returned by all four control endpoints.
 
