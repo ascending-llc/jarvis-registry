@@ -70,20 +70,21 @@ class A2AAgentRepository(BaseVectorSyncRepository[A2AAgent]):
                 result.error = "asave returned no doc_ids"
                 logger.error("asave returned no doc_ids for agent '%s' (agent_id=%s).", agent.card.name, agent_id)
                 return result.to_dict()
+            verified = False
             try:
-                landed_docs = await self.afilter(filters={"agent_id": agent_id}, limit=expected + 1)
-                actual = len(landed_docs)
+                landed_docs = await self.afilter(filters={"agent_id": agent_id}, limit=expected)
+                verified = len(landed_docs) >= expected
             except Exception as e:
                 logger.warning(
-                    "Post-insert verification failed for agent '%s' (agent_id=%s): %s — falling back to doc_ids count",
+                    "Post-insert verification failed for agent '%s' (agent_id=%s): %s — trusting asave return value",
                     agent.card.name,
                     agent_id,
                     e,
                 )
-                actual = len(doc_ids)
+                verified = True
 
-            if actual >= expected:
-                result.indexed = actual
+            if verified:
+                result.indexed = len(doc_ids)
                 result.version = self._extract_runtime_version(agent)
                 logger.info(
                     "Indexed %d docs for agent '%s' (agent_id=%s).",
@@ -92,17 +93,16 @@ class A2AAgentRepository(BaseVectorSyncRepository[A2AAgent]):
                     agent_id,
                 )
             else:
-                result.indexed = actual
-                result.failed = expected - actual
+                result.indexed = 0
+                result.failed = expected
                 result.error = (
-                    f"only {actual}/{expected} docs landed in Weaviate "
-                    "(check langchain-weaviate ERROR logs for batch insert failures)"
+                    f"asave returned {len(doc_ids)} UUIDs but fewer than {expected} docs are queryable "
+                    "in Weaviate (check langchain-weaviate ERROR logs for batch insert failures)"
                 )
                 logger.error(
-                    "Vector sync partial failure for agent '%s' (agent_id=%s): %d/%d docs inserted",
+                    "Vector sync verification failed for agent '%s' (agent_id=%s): expected %d docs",
                     agent.card.name,
                     agent_id,
-                    actual,
                     expected,
                 )
         except Exception as e:
