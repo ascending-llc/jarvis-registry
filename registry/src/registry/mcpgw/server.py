@@ -31,7 +31,7 @@ Read the user's request and classify it into ONE of:
   ATOMIC   — a single, stateless operation that returns a result immediately.
              Signals: fetch, get, search, send, create, list, run, check, read.
              Examples: "list my GitHub issues", "send a Slack message", "query the DB".
-             → call discover_mcp_entities()
+             → call discover_servers()
 
   DELEGATE — a complex, multi-step task requiring reasoning, domain expertise,
              or coordination across many operations.
@@ -49,7 +49,7 @@ Read the user's request and classify it into ONE of:
              Examples: "pull the last 30 days of GitHub commits and have the intel
              agent summarize trends", "search the web for competitor pricing then
              produce a deep analysis report".
-             → Step 1: call discover_mcp_entities() and execute the tool.
+             → Step 1: call discover_servers() and execute the tool.
              → Step 2: call discover_agents() and delegate with the tool output as context.
              Do NOT collapse a CHAIN into a single DELEGATE — the agent needs real data,
              not a fabricated summary.
@@ -68,7 +68,7 @@ STAGE 2 — TARGETED DISCOVERY
 Formulate a CONCISE keyword query — core nouns/verbs + domain terms.
 Drop filler words, pronouns, articles, and tense. Do NOT pass the raw sentence.
 
-  discover_mcp_entities(query, top_n=3)
+  discover_servers(query, top_n=3)
     Default type_list=["tool"] — covers the vast majority of ATOMIC tasks.
     Add type_list=["resource"] only when the user explicitly needs data files or feeds.
     Add type_list=["prompt"] only when the user explicitly needs a prompt template.
@@ -114,10 +114,10 @@ Use your semantic judgment instead:
 EXAMPLES
 ════════════════════════════════════════════════════════════
 
-Example 1 — ATOMIC → discover_mcp_entities, clear leader:
+Example 1 — ATOMIC → discover_servers, clear leader:
   User: "Can you list the open issues in my GitHub repo?"
   Intent: ATOMIC (fetch/list).
-  Call: discover_mcp_entities(query="github list issues")
+  Call: discover_servers(query="github list issues")
   → top result: {entity_type:"tool", tool_name:"github_list_issues", server_id:"...", relevance_score:0.84}
   → execute_tool(tool_name="github_list_issues", server_id=..., arguments={...})
 
@@ -132,7 +132,7 @@ Example 2 — DELEGATE → discover_agents → execute_agent:
 Example 3 — AMBIGUOUS → call both, pick leader by description → execute_agent:
   User: "Help me with customer support for an angry customer."
   Intent: AMBIGUOUS (could be a tool or a specialized agent).
-  Call A: discover_mcp_entities(query="customer support")
+  Call A: discover_servers(query="customer support")
   Call B: discover_agents(query="customer support")
   → B returns {entity_type:"agent", description:"Autonomous customer support agent — handles complaints,
                refunds, and escalations end-to-end", agent_id:"def456", path:"/support-agent"}
@@ -144,7 +144,7 @@ Example 3 — AMBIGUOUS → call both, pick leader by description → execute_ag
 
 Example 4 — ATOMIC, clustered within same server:
   User: "Do something with Slack."
-  Call: discover_mcp_entities(query="slack")
+  Call: discover_servers(query="slack")
   → [{score:0.51, server_name:"slack-mcp", tool_name:"slack_post"},
      {score:0.48, server_name:"slack-mcp", tool_name:"slack_list_channels"}]
   → Same server, clustered → ask user which Slack operation.
@@ -152,14 +152,14 @@ Example 4 — ATOMIC, clustered within same server:
 Example 5 — ATOMIC, prompt entity (explicit type_list required):
   User: "Please summarize yesterday's meeting notes."
   Intent: ATOMIC (summarize = one prompt call).
-  Call: discover_mcp_entities(query="summarize meeting notes", type_list=["prompt"])
+  Call: discover_servers(query="summarize meeting notes", type_list=["prompt"])
   → top result: {entity_type:"prompt", prompt_name:"summarize_notes", relevance_score:0.73}
   → execute_prompt(server_id=..., prompt_name="summarize_notes", arguments={...})
 
 Example 6 — CHAIN → MCP tool first, then A2A agent with data:
   User: "Pull the last 30 days of GitHub commits and have the intel agent analyze the trends."
   Intent: CHAIN (fetch data → delegate analysis).
-  Step 1: discover_mcp_entities(query="github list commits since date")
+  Step 1: discover_servers(query="github list commits since date")
   → top result: {entity_type:"tool", tool_name:"github_list_commits", server_id:"...", input_schema:{...}}
   → execute_tool(tool_name="github_list_commits", server_id=..., arguments={"since": "2026-04-06"})
   → result: [list of commits]
@@ -170,13 +170,13 @@ Example 6 — CHAIN → MCP tool first, then A2A agent with data:
 
 Example 7 — SURVEY fallback (both collections):
   User: "Make a quick memo about this."
-  Call 1: discover_mcp_entities(query="create memo") → empty.
-  Call 2: discover_mcp_entities(query="note")        → empty.
-  Call 3: discover_mcp_entities(query="", top_n=20)  → catalog of all MCP capabilities.
+  Call 1: discover_servers(query="create memo") → empty.
+  Call 2: discover_servers(query="note")        → empty.
+  Call 3: discover_servers(query="", top_n=20)  → catalog of all MCP capabilities.
   Call 4: discover_agents(query="", top_n=20)        → catalog of all A2A agents.
   → Survey returns flat results — mentally group by server_name / agent_name to find clusters.
   → Spot "notes-mcp / create_note" in Call 3.
-  → Retry: discover_mcp_entities(query="notes-mcp create note", top_n=3) to get exact identifiers.
+  → Retry: discover_servers(query="notes-mcp create note", top_n=3) to get exact identifiers.
   → Execute using the returned tool_name and server_id.
 
 ════════════════════════════════════════════════════════════
@@ -185,7 +185,7 @@ WHEN NOTHING MATCHES
 
 1. Refine: synonyms, the exact domain term the user used.
 2. Broaden: drop qualifiers, use the core noun/verb alone.
-3. Survey: call discover_mcp_entities(query="", top_n=20) and
+3. Survey: call discover_servers(query="", top_n=20) and
            discover_agents(query="", top_n=20) to see all registered capabilities.
 4. Retry: add a spotted server_name or agent_name to the query.
 5. Give up: tell the user plainly the gateway has no matching capability.
@@ -199,11 +199,11 @@ If execute_tool / read_resource / execute_prompt returns isError=True:
 
   1. READ the error message — it is the primary signal.
        "no server with given server_id"  → the server was removed or ID is stale.
-           → call discover_mcp_entities() again with the SAME query; use the NEW result.
+           → call discover_servers() again with the SAME query; use the NEW result.
        "OAuth re-authorization required" → surface the auth URL to the user immediately.
            Do NOT retry discovery; the server is known, only the token is expired.
        Any other error → the downstream server is unavailable or returned a bad response.
-           → refine the query and call discover_mcp_entities() once more (max 2 retries).
+           → refine the query and call discover_servers() once more (max 2 retries).
            → if still failing, tell the user the tool is currently unavailable.
 
   2. NEVER retry with the same stale server_id after receiving "no server" error.

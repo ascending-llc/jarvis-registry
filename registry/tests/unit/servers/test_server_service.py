@@ -5,7 +5,7 @@ Unit tests for server service.
 import json
 from pathlib import Path
 from typing import Any
-from unittest.mock import Mock, mock_open, patch
+from unittest.mock import AsyncMock, Mock, mock_open, patch
 
 import pytest
 
@@ -847,6 +847,186 @@ class TestBuildCompleteHeaders:
 
             assert headers["X-Trace-Id"] == "trace-123"
             assert headers["Accept"] == "application/json, application/xml"
+
+
+@pytest.mark.unit
+@pytest.mark.servers
+@pytest.mark.asyncio
+class TestRefreshServerCapabilities:
+    """Test suite for refresh_server_capabilities service method."""
+
+    @pytest.fixture
+    def mock_server(self):
+        """Create a mock MCP server document."""
+        from datetime import UTC, datetime
+
+        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
+
+        server = Mock(spec=ExtendedMCPServer)
+        server.id = Mock()
+        server.serverName = "test-server"
+        server.config = {"title": "Test Server"}
+        server.lastError = None
+        server.errorMessage = None
+        server.lastConnected = None
+        server.updatedAt = datetime.now(UTC)
+        server.vectorContentHash = "old-hash"
+        server.numTools = 0
+        server.save = AsyncMock()
+        return server
+
+    @pytest.fixture
+    def server_service(self):
+        """Create a ServerServiceV1 instance with mocked dependencies."""
+        from unittest.mock import Mock
+
+        from registry.services.server_service import ServerServiceV1
+
+        # Mock 所有必需的依赖
+        mock_user_service = Mock()
+        mock_token_service = Mock()
+        mock_oauth_service = Mock()
+        mock_mcp_server_repo = Mock()
+
+        service = ServerServiceV1(
+            user_service=mock_user_service,
+            token_service=mock_token_service,
+            oauth_service=mock_oauth_service,
+            mcp_server_repo=mock_mcp_server_repo,
+        )
+        return service
+
+    async def test_refresh_server_capabilities_success(self, server_service, mock_server):
+        """测试成功获取服务器能力"""
+        from unittest.mock import patch
+
+        # Mock get_server_by_id
+        with patch.object(server_service, "get_server_by_id", return_value=mock_server):
+            # Mock retrieve_tools_and_capabilities_from_server - 成功返回
+            mock_tools = [{"name": "tool1"}, {"name": "tool2"}]
+            mock_resources = [{"uri": "file://test.txt"}]
+            mock_prompts = [{"name": "prompt1"}]
+            mock_capabilities = {"sampling": {}}
+
+            with patch.object(
+                server_service,
+                "retrieve_tools_and_capabilities_from_server",
+                return_value=(mock_tools, mock_resources, mock_prompts, mock_capabilities, None),
+            ):
+                # Mock _schedule_vector_sync
+                with patch.object(server_service, "_schedule_vector_sync"):
+                    result = await server_service.refresh_server_capabilities(server_id="test-id", user_id="user-123")
+
+                    # 验证返回结果
+                    assert result["status"] == "success"
+                    assert result["server"] == mock_server
+                    assert "Successfully refreshed capabilities" in result["status_message"]
+                    assert result["last_checked"] is not None
+                    assert result["response_time_ms"] is None
+
+                    # 验证 lastConnected 被设置
+                    assert mock_server.lastConnected is not None
+
+                    # 验证 lastError 和 errorMessage 被清除
+                    assert mock_server.lastError is None
+                    assert mock_server.errorMessage is None
+
+                    # 验证 save 被调用
+                    mock_server.save.assert_called_once()
+
+    async def test_refresh_server_capabilities_mcp_unreachable(self, server_service, mock_server):
+        """测试 MCP 服务器不可达时的失败路径"""
+        from unittest.mock import patch
+
+        # 保存初始的 lastConnected 值
+        initial_last_connected = mock_server.lastConnected
+
+        # Mock get_server_by_id
+        with patch.object(server_service, "get_server_by_id", return_value=mock_server):
+            # Mock retrieve_tools_and_capabilities_from_server - 失败返回
+            error_message = "Connection timeout: Failed to connect to MCP server"
+
+            with patch.object(
+                server_service,
+                "retrieve_tools_and_capabilities_from_server",
+                return_value=(None, None, None, None, error_message),
+            ):
+                # Mock _schedule_vector_sync
+                with patch.object(server_service, "_schedule_vector_sync"):
+                    result = await server_service.refresh_server_capabilities(server_id="test-id", user_id="user-123")
+
+                    # 验证返回结果
+                    assert result["status"] == "failed"
+                    assert result["server"] == mock_server
+                    assert error_message in result["status_message"]
+                    assert result["last_checked"] is not None
+
+                    # 验证 lastConnected 不被更新（保持初始值）
+                    assert mock_server.lastConnected == initial_last_connected
+
+                    # 验证 lastError 被设置
+                    assert mock_server.lastError is not None
+
+                    # 验证 errorMessage 被设置
+                    assert mock_server.errorMessage == error_message
+
+                    # 验证 save 被调用
+                    mock_server.save.assert_called_once()
+
+    async def test_refresh_server_capabilities_invalid_server_id(self, server_service):
+        """测试无效的 server_id 抛出 ValueError"""
+        from unittest.mock import patch
+
+        # Mock get_server_by_id 返回 None
+        with patch.object(server_service, "get_server_by_id", return_value=None):
+            with pytest.raises(ValueError, match="Server not found"):
+                await server_service.refresh_server_capabilities(server_id="invalid-id", user_id="user-123")
+
+    async def test_refresh_server_capabilities_triggers_weaviate_sync(self, server_service, mock_server):
+        """测试成功刷新时触发 Weaviate 同步"""
+        from unittest.mock import patch
+
+        # Mock get_server_by_id
+        with patch.object(server_service, "get_server_by_id", return_value=mock_server):
+            # Mock retrieve_tools_and_capabilities_from_server - 成功返回
+            mock_tools = [{"name": "tool1"}]
+
+            with patch.object(
+                server_service,
+                "retrieve_tools_and_capabilities_from_server",
+                return_value=(mock_tools, [], [], {}, None),
+            ):
+                # Mock _schedule_vector_sync 并验证调用
+                with patch.object(server_service, "_schedule_vector_sync") as mock_sync:
+                    await server_service.refresh_server_capabilities(server_id="test-id", user_id="user-123")
+
+                    # 验证 Weaviate 同步被触发
+                    mock_sync.assert_called_once_with(mock_server, "old-hash")
+
+    async def test_refresh_server_capabilities_updates_tool_count(self, server_service, mock_server):
+        """测试刷新时更新工具数量"""
+        from unittest.mock import patch
+
+        # Mock get_server_by_id
+        with patch.object(server_service, "get_server_by_id", return_value=mock_server):
+            # Mock retrieve_tools_and_capabilities_from_server - 返回3个工具
+            mock_tools = [{"name": "tool1"}, {"name": "tool2"}, {"name": "tool3"}]
+
+            with patch.object(
+                server_service,
+                "retrieve_tools_and_capabilities_from_server",
+                return_value=(mock_tools, [], [], {}, None),
+            ):
+                # Mock _schedule_vector_sync
+                with patch.object(server_service, "_schedule_vector_sync"):
+                    await server_service.refresh_server_capabilities(server_id="test-id", user_id="user-123")
+
+                    # 验证 numTools 被更新
+                    assert mock_server.numTools == 3
+
+                    # 验证工具信息在 config 中
+                    assert "toolFunctions" in mock_server.config
+                    assert len(mock_server.config["toolFunctions"]) == 3
 
     @pytest.mark.asyncio
     async def test_custom_header_with_list_values(self):

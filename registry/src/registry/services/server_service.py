@@ -1350,25 +1350,28 @@ class ServerServiceV1:
             user_id=user_id,
         )
 
-    async def refresh_server_health(
+    async def refresh_server_capabilities(
         self,
         server_id: str,
         user_id: str | None = None,
     ) -> dict[str, Any]:
         """
-        Refresh server health status.
+        Refresh server capabilities (prompts, resources, tools).
 
-        Uses the same strict validation as registration:
-        - Retrieves tools and capabilities from the server
-        - If capabilities cannot be retrieved, server is considered unhealthy
-        - This serves as a comprehensive sanity check
+        Fetches the latest capabilities from the MCP server and updates MongoDB.
+        Automatically triggers sync to Weaviate vector database.
 
         Args:
             server_id: Server document ID
-            user_id: Current user's ID (kept for compatibility but not used)
+            user_id: Current user's ID (required for OAuth servers)
 
         Returns:
-            Health information dictionary
+            Capabilities refresh result dictionary with keys:
+            - server: Updated server document
+            - status: "success" or "failed"
+            - status_message: Human-readable status message
+            - last_checked: Timestamp of the refresh attempt
+            - response_time_ms: Response time (always None for MCP connections)
 
         Raises:
             ValueError: If server not found
@@ -1391,35 +1394,34 @@ class ServerServiceV1:
         ) = await self.retrieve_tools_and_capabilities_from_server(server, user_id)
 
         if tool_list is None or capabilities is None:
-            # Health check failed - cannot retrieve capabilities
-            logger.error(f"Health check failed for {server.serverName}: {tool_error}")
+            # Capabilities refresh failed
+            logger.error(f"Capabilities refresh failed for {server.serverName}: {tool_error}")
 
-            server.status = "error"
+            # Do NOT update server.status (status is no longer used for enabled/disabled logic)
             server.lastError = now
             server.errorMessage = tool_error or "Failed to retrieve capabilities"
-            server.lastConnected = now
+            # Do NOT update lastConnected on failure - only update on success
             server.updatedAt = now
 
-            old_hash = server.vectorContentHash
             await server.save()
-            self._schedule_vector_sync(server, old_hash)
 
             return {
                 "server": server,
-                "status": "unhealthy",
+                "status": "failed",
                 "status_message": tool_error or "Failed to retrieve capabilities",
                 "last_checked": now,
                 "response_time_ms": None,
             }
 
-        # Health check passed - capabilities retrieved successfully
+        # Capabilities refresh succeeded
         logger.info(
-            f"Health check passed for {server.serverName}: retrieved {len(tool_list)} tools, {len(resource_list or [])} resources, {len(prompt_list or [])} prompts, and capabilities"
+            f"Capabilities refresh succeeded for {server.serverName}: retrieved {len(tool_list)} tools, {len(resource_list or [])} resources, {len(prompt_list or [])} prompts, and capabilities"
         )
 
-        server.status = "active"
+        # Do NOT update server.status (status is no longer used for enabled/disabled logic)
         server.lastError = None
         server.errorMessage = None
+        # ONLY update lastConnected on success
         server.lastConnected = now
         server.updatedAt = now
 
@@ -1440,13 +1442,13 @@ class ServerServiceV1:
 
             # Update numTools at root level
             server.numTools = len(tool_functions)
-            logger.info(f"Updated {len(tool_functions)} tools for {server.serverName} during health refresh")
+            logger.info(f"Updated {len(tool_functions)} tools for {server.serverName} during capabilities refresh")
 
         # Store resources and prompts
         config["resources"] = resource_list or []
         config["prompts"] = prompt_list or []
         logger.info(
-            f"Updated {len(resource_list or [])} resources and {len(prompt_list or [])} prompts for {server.serverName} during health refresh"
+            f"Updated {len(resource_list or [])} resources and {len(prompt_list or [])} prompts for {server.serverName} during capabilities refresh"
         )
 
         server.config = config
@@ -1454,11 +1456,11 @@ class ServerServiceV1:
         await server.save()
         self._schedule_vector_sync(server, old_hash)
 
-        # Return health info
+        # Return capabilities refresh result
         return {
             "server": server,
-            "status": "healthy",
-            "status_message": f"healthy (retrieved {len(tool_list)} tools, {len(resource_list or [])} resources, {len(prompt_list or [])} prompts)",
+            "status": "success",
+            "status_message": f"Successfully refreshed capabilities (retrieved {len(tool_list)} tools, {len(resource_list or [])} resources, {len(prompt_list or [])} prompts)",
             "last_checked": now,
             "response_time_ms": None,  # We don't track response time for MCP connections
         }

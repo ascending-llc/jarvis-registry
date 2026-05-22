@@ -20,6 +20,13 @@ class MCPServerRepository(BaseVectorSyncRepository[ExtendedMCPServer]):
         "runtimeArn": "text",
         "path": "text",
         "enabled": "bool",
+        # Declared as TEXT explicitly: input_schema holds a JSON-encoded tool parameter
+        # schema. Storing it as text bypasses Weaviate's nested-property validation
+        # (which rejects reserved keys like `id`/`vector` and non-GraphQL names like
+        # `$ref` that JSON Schema bodies routinely contain). Old collections where this
+        # property was auto-inferred as `object` must be dropped + recreated
+        # (`vector_sync.py --target mcp --clean`) for new inserts to succeed.
+        "input_schema": "text",
     }
 
     def __init__(self, db_client: DatabaseClient):
@@ -72,8 +79,27 @@ class MCPServerRepository(BaseVectorSyncRepository[ExtendedMCPServer]):
                 )
                 return result.to_dict_mcp()
 
+            expected = len(docs)
             doc_ids = await self.asave(server)
-            if doc_ids:
+            if not doc_ids:
+                result.failed = expected
+                result.error = "asave returned no doc_ids"
+                logger.error("asave returned no doc_ids for server '%s' (server_id=%s).", server.serverName, server_id)
+                return result.to_dict_mcp()
+            verified = False
+            try:
+                landed_docs = await self.afilter(filters={"server_id": server_id}, limit=expected)
+                verified = len(landed_docs) >= expected
+            except Exception as e:
+                logger.warning(
+                    "Post-insert verification failed for server '%s' (server_id=%s): %s — trusting asave return value",
+                    server.serverName,
+                    server_id,
+                    e,
+                )
+                verified = True
+
+            if verified:
                 result.indexed = len(doc_ids)
                 result.version = self._extract_runtime_version(server)
                 logger.info(
@@ -83,8 +109,18 @@ class MCPServerRepository(BaseVectorSyncRepository[ExtendedMCPServer]):
                     server_id,
                 )
             else:
-                result.failed = 1
-                logger.error("asave returned no doc_ids for server '%s' (server_id=%s).", server.serverName, server_id)
+                result.indexed = 0
+                result.failed = expected
+                result.error = (
+                    f"asave returned {len(doc_ids)} UUIDs but fewer than {expected} docs are queryable "
+                    "in Weaviate (check langchain-weaviate ERROR logs for batch insert failures)"
+                )
+                logger.error(
+                    "Vector sync verification failed for server '%s' (server_id=%s): expected %d docs",
+                    server.serverName,
+                    server_id,
+                    expected,
+                )
 
         except Exception as e:
             logger.error("MCP vector sync failed for server %s: %s", getattr(server, "id", "?"), e, exc_info=True)

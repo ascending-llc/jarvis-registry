@@ -46,6 +46,7 @@ Key Principle:
 """
 
 import hashlib
+import json
 import logging
 from datetime import datetime
 from typing import Any, ClassVar
@@ -61,6 +62,23 @@ from ..models.enums import MCPEntityType
 from ._generated import MCPServer
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_input_schema(raw: Any) -> dict | None:
+    """
+    Decode the JSON-stringified input_schema stored in Weaviate metadata.
+    """
+    if raw is None or raw == "":
+        return None
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            logger.warning("input_schema is not valid JSON, returning None")
+            return None
+    return None
 
 
 class ExtendedMCPServer(MCPServer):
@@ -248,10 +266,14 @@ class ExtendedMCPServer(MCPServer):
         metadata = self._get_base_metadata(MCPEntityType.TOOL)
         metadata["tool_name"] = downstream_tool_name
         # Store the full parameter schema so LLMs can execute without a separate lookup.
+        # Serialize as JSON string: Weaviate rejects nested property names that collide with
+        # reserved keys (`id`, `vector`) or that aren't valid GraphQL identifiers (e.g. `$ref`),
+        # which JSON-Schema bodies frequently contain. A string column has no such restriction
+        # and preserves the schema verbatim for the LLM (parsed back to dict on read).
         func = tool_data.get("function", {}) if isinstance(tool_data, dict) else {}
         input_schema = func.get("parameters")
         if input_schema:
-            metadata["input_schema"] = input_schema
+            metadata["input_schema"] = json.dumps(input_schema, default=str)
 
         return self._split_if_needed(content, metadata, chunking_config)
 
@@ -512,7 +534,7 @@ class ExtendedMCPServer(MCPServer):
         entity_type = metadata.get("entity_type")
         if entity_type == MCPEntityType.TOOL:
             result["tool_name"] = metadata.get("tool_name")
-            result["input_schema"] = metadata.get("input_schema")
+            result["input_schema"] = _parse_input_schema(metadata.get("input_schema"))
         elif entity_type == MCPEntityType.RESOURCE:
             result["resource_name"] = metadata.get("resource_name")
             result["resource_uri"] = metadata.get("resource_uri")

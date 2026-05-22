@@ -812,7 +812,7 @@ Response 200:
 - Different from `tool_functions` OpenAI format stored in the database
 ```
 
-**8. Refresh Server Health**
+**8. Refresh Server Capabilities**
 ```http
 POST /api/v1/servers/{server_id}/refresh
 Authorization: Bearer <token>
@@ -820,22 +820,33 @@ Authorization: Bearer <token>
 Response 200:
 {
   "id": "674e1a2b3c4d5e6f7a8b9c0d",
-  "server_name": "github",
+  "serverName": "github",
   "path": "/mcp/github",
   "status": "active",
-  "last_connected": "2026-01-04T16:20:00Z",
-  "last_error": null,
-  "error_message": null,
-  "num_tools": 4,
+  "lastConnected": "2026-01-04T16:20:00Z",
+  "lastError": null,
+  "errorMessage": null,
+  "numTools": 4,
   "capabilities": "{\"experimental\":{},\"prompts\":{\"listChanged\":true},\"resources\":{\"subscribe\":false,\"listChanged\":true}}",
   "tools": "tavily_search, tavily_extract, tavily_crawl, tavily_map",
-  "init_duration": 168,
-  "updated_at": "2026-01-04T16:20:00Z"
+  "initDuration": 168,
+  "updatedAt": "2026-01-04T16:20:00Z"
+}
+
+Response 400 (Refresh Failed):
+{
+  "error": "capabilities_refresh_failed",
+  "message": "Failed to retrieve capabilities from server: Connection timeout"
 }
 
 **Note:**
-- Uses `ServerDetailResponse` schema with snake_case fields
-- Health refresh reconnects to the MCP server and updates tools/capabilities if they changed
+- Uses `ServerDetailResponse` schema with camelCase fields (via `response_model_by_alias=True`)
+- This endpoint refreshes server capabilities (prompts, resources, tools) by fetching them from the MCP server
+- Successfully retrieved data is saved to MongoDB and automatically synced to Weaviate vector database
+- The `status` field in the server document is NOT updated by this endpoint (it's deprecated for capability tracking)
+- The `lastConnected` field is ONLY updated when the refresh succeeds (not updated on failure)
+- Returns the full server detail response on success, or an error response on failure
+- Frontend can show a success/error alert based on the HTTP status code (200 = success, 400 = failed)
 ```
 
 #### Token Management Endpoints

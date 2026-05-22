@@ -540,7 +540,115 @@ The `wellKnown` object contains sync status only (no URL):
 
 ---
 
-### 9. Sync Well-Known
+### 9. Refresh Agent Capabilities
+
+**Endpoint**: `POST /api/v1/agents/{agent_id}/refresh`
+
+**Description**: Refresh agent capabilities (skills) by fetching the latest agent card from the agent's `.well-known/agent-card.json` endpoint. This provides a consistent API experience with MCP server refresh (`/servers/{id}/refresh`).
+
+**Request Body**: None
+
+**Response**: `200 OK`
+```json
+{
+  "id": "507f1f77bcf86cd799439011",
+  "path": "/code-reviewer",
+  "name": "Code Review Agent",
+  "description": "AI-powered code review assistant",
+  "url": "https://example.com/agents/code-reviewer",
+  "version": "1.1.0",
+  "protocolVersion": "1.0",
+  "capabilities": {
+    "streaming": true,
+    "pushNotifications": false
+  },
+  "numSkills": 3,
+  "skills": [
+    {
+      "id": "code-analysis",
+      "name": "Code Analysis",
+      "description": "Analyze code quality",
+      "tags": ["analysis", "quality"],
+      "inputModes": ["text/plain"],
+      "outputModes": ["application/json"]
+    },
+    {
+      "id": "bug-detection",
+      "name": "Bug Detection",
+      "description": "Detect potential bugs",
+      "tags": ["bugs", "detection"],
+      "inputModes": ["text/plain"],
+      "outputModes": ["application/json"]
+    },
+    {
+      "id": "security-scan",
+      "name": "Security Scan",
+      "description": "Scan for security vulnerabilities",
+      "tags": ["security", "vulnerabilities"],
+      "inputModes": ["text/plain"],
+      "outputModes": ["application/json"]
+    }
+  ],
+  "securitySchemes": {...},
+  "preferredTransport": "HTTP+JSON",
+  "defaultInputModes": ["text/plain"],
+  "defaultOutputModes": ["application/json"],
+  "provider": {...},
+  "tags": ["code", "review"],
+  "status": "active",
+  "enabled": true,
+  "config": {
+    "title": "Code Review Agent",
+    "description": "AI-powered code review assistant",
+    "url": "https://example.com/agents/code-reviewer",
+    "type": "jsonrpc"
+  },
+  "permissions": {
+    "VIEW": true,
+    "EDIT": true,
+    "DELETE": true,
+    "SHARE": true
+  },
+  "author": "507f1f77bcf86cd799439012",
+  "wellKnown": {
+    "enabled": true,
+    "lastSyncAt": "2024-01-20T15:45:00Z",
+    "lastSyncStatus": "success",
+    "lastSyncVersion": "1.1.0"
+  },
+  "createdAt": "2024-01-15T10:30:00Z",
+  "updatedAt": "2024-01-20T15:45:00Z"
+}
+```
+
+**Features**:
+- Fetches latest agent card from well-known endpoint using A2A SDK
+- Updates agent capabilities (skills, version, etc.) in MongoDB
+- Automatically syncs to Weaviate vector database
+- Updates `wellKnown.lastSyncAt` and `wellKnown.lastSyncStatus`
+- Returns full agent detail response (consistent with MCP server refresh API)
+
+**Use Cases**:
+- Manual capability refresh: User clicks refresh button to get latest skills
+- Periodic updates: Scheduled refresh to keep agent capabilities up-to-date
+- Post-deployment sync: Refresh after agent is updated on the remote server
+- Frontend integration: Display last refresh time and refresh button on agent card
+
+**Error Responses**:
+- `400 Bad Request`: Well-known sync not enabled or not configured
+- `404 Not Found`: Agent not found or agent card not found at well-known endpoint
+- `502 Bad Gateway`: Upstream errors or parse errors from remote agent
+- `503 Service Unavailable`: Network/transport errors accessing remote agent
+
+**Permission**: Requires EDIT permission
+
+**Comparison with `/wellknown` endpoint**:
+- `/refresh`: Returns full `AgentDetailResponse` (consistent with server refresh)
+- `/wellknown`: Returns detailed `WellKnownSyncResponse` with change tracking
+
+---
+
+### 10. Sync Well-Known
 
 **Endpoint**: `POST /api/v1/agents/{agent_id}/wellknown`
 
@@ -564,7 +672,7 @@ The `wellKnown` object contains sync status only (no URL):
 
 ---
 
-### 10. Get Agent Card (Well-Known)
+### 11. Get Agent Card (Well-Known)
 
 **Endpoint**: `GET /api/v1/agents/.well-known/agent-cards?url={agent_url}`
 

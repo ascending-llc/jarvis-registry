@@ -62,8 +62,28 @@ class A2AAgentRepository(BaseVectorSyncRepository[A2AAgent]):
                         agent_id,
                     )
 
+            docs = agent.to_documents()
+            expected = len(docs) if docs else 0
             doc_ids = await self.asave(agent)
-            if doc_ids:
+            if not doc_ids:
+                result.failed = max(expected, 1)
+                result.error = "asave returned no doc_ids"
+                logger.error("asave returned no doc_ids for agent '%s' (agent_id=%s).", agent.card.name, agent_id)
+                return result.to_dict()
+            verified = False
+            try:
+                landed_docs = await self.afilter(filters={"agent_id": agent_id}, limit=expected)
+                verified = len(landed_docs) >= expected
+            except Exception as e:
+                logger.warning(
+                    "Post-insert verification failed for agent '%s' (agent_id=%s): %s — trusting asave return value",
+                    agent.card.name,
+                    agent_id,
+                    e,
+                )
+                verified = True
+
+            if verified:
                 result.indexed = len(doc_ids)
                 result.version = self._extract_runtime_version(agent)
                 logger.info(
@@ -73,8 +93,18 @@ class A2AAgentRepository(BaseVectorSyncRepository[A2AAgent]):
                     agent_id,
                 )
             else:
-                result.failed = 1
-                logger.error("asave returned no doc_ids for agent '%s' (agent_id=%s).", agent.card.name, agent_id)
+                result.indexed = 0
+                result.failed = expected
+                result.error = (
+                    f"asave returned {len(doc_ids)} UUIDs but fewer than {expected} docs are queryable "
+                    "in Weaviate (check langchain-weaviate ERROR logs for batch insert failures)"
+                )
+                logger.error(
+                    "Vector sync verification failed for agent '%s' (agent_id=%s): expected %d docs",
+                    agent.card.name,
+                    agent_id,
+                    expected,
+                )
         except Exception as e:
             logger.error("A2A vector sync failed for agent %s: %s", getattr(agent, "id", "?"), e, exc_info=True)
             result.failed = 1
