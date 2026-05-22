@@ -34,6 +34,7 @@ group_mappings:
     - a2a-proxy-ops
     - workflows-read
     - workflows-control
+    - workflows-share
   jarvis-registry-power-user:
     - servers-read
     - agents-read
@@ -53,6 +54,7 @@ group_mappings:
     - a2a-proxy-ops
     - workflows-read
     - workflows-control
+    - workflows-share
   jarvis-registry-user:
     - servers-read
     - agents-read
@@ -315,6 +317,9 @@ workflows-read:
   - action: get_workflow_run
     method: GET
     endpoint: /workflows/{workflow_id}/runs/{run_id}
+  - action: list_workflow_versions
+    method: GET
+    endpoint: /workflows/{workflow_id}/versions
 
 workflows-control:
   # Write directives to live or finished workflow runs. Requires workflows-read.
@@ -333,6 +338,9 @@ workflows-control:
   - action: retry_workflow
     method: POST
     endpoint: /workflows/{workflow_id}/runs/{run_id}/retry
+  - action: approve_workflow_run
+    method: POST
+    endpoint: /workflows/{workflow_id}/runs/{run_id}/approve
 
 
 workflows-write:
@@ -345,6 +353,8 @@ workflows-write:
   - action: delete_workflow
     method: DELETE
     endpoint: /workflows/{workflow_id}
-  - action: trigger_workflow_run
-    method: POST
-    endpoint: /workflows/{workflow_id}/runs
+
+workflows-share:
+  - action: share_workflow
+    method: PUT
+    endpoint: /permissions/workflow/{resource_id}

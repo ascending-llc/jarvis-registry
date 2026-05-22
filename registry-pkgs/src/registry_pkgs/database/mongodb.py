@@ -25,6 +25,7 @@ from ..models import (
     User,
     WorkflowDefinition,
     WorkflowRun,
+    WorkflowVersion,
 )
 
 
@@ -133,6 +134,7 @@ class MongoDB:
                     WorkflowDefinition,
                     WorkflowRun,
                     NodeRun,
+                    WorkflowVersion,
                 ],
             )
         except Exception:

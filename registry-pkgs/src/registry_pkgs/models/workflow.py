@@ -118,6 +118,11 @@ class WorkflowNode(BaseModel):
     step_config: StepConfig | None = None
     config: dict[str, Any] = Field(default_factory=dict)
 
+    # Approval gate (STEP nodes only): when True the run holds at this node until a
+    # user APPROVE/REJECT directive is received (or the timeout elapses → treated as reject).
+    require_approval: bool = False
+    approval_timeout_seconds: int | None = None
+
     # Child nodes used by PARALLEL and LOOP container nodes.
     children: list[WorkflowNode] = Field(default_factory=list)
 
@@ -143,8 +148,22 @@ class WorkflowNode(BaseModel):
             raise ValueError("a2a_pool must contain at most 5 agents")
         return value
 
+    @field_validator("approval_timeout_seconds")
+    @classmethod
+    def _validate_approval_timeout(cls, value: int | None) -> int | None:
+        if value is not None and value <= 0:
+            raise ValueError("approval_timeout_seconds must be > 0")
+        return value
+
     @model_validator(mode="after")
     def _validate_shape(self) -> WorkflowNode:
+        # Approval gates are only supported on step nodes.
+        if self.node_type != WorkflowNodeType.STEP:
+            if self.require_approval:
+                raise ValueError("require_approval is only supported on step nodes")
+            if self.approval_timeout_seconds is not None:
+                raise ValueError("approval_timeout_seconds is only supported on step nodes")
+
         if self.node_type == WorkflowNodeType.STEP:
             has_key = bool(self.executor_key)
             has_pool = bool(self.a2a_pool)
@@ -245,6 +264,7 @@ class WorkflowDefinition(Document):
     name: str
     description: str | None = None
     nodes: list[WorkflowNode] = Field(default_factory=list)
+    version: int = 1
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
@@ -259,6 +279,26 @@ class WorkflowDefinition(Document):
         name = "workflow_definitions"
         indexes = [
             [("name", ASCENDING)],
+        ]
+
+
+class WorkflowVersion(Document):
+    """Historical snapshot of a WorkflowDefinition at a specific version.
+
+    Written on each PUT before the definition is overwritten, so prior versions
+    remain available for deterministic replay and audit.
+    """
+
+    workflow_id: PydanticObjectId
+    version: int
+    definition: dict[str, Any]
+    checksum: str
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    class Settings:
+        name = "workflow_versions"
+        indexes = [
+            [("workflow_id", ASCENDING), ("version", ASCENDING)],
         ]
 
 
@@ -290,6 +330,8 @@ class WorkflowRun(Document):
     """Top-level record for a single execution of a WorkflowDefinition."""
 
     workflow_definition_id: PydanticObjectId
+    # Version of the definition this run executed against (snapshot in definition_snapshot).
+    workflow_version: int | None = None
     status: WorkflowRunStatus = WorkflowRunStatus.PENDING
     trigger_source: str | None = None
     started_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

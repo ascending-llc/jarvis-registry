@@ -266,6 +266,7 @@ class WorkflowRunStatus(StrEnum):
     PENDING = "pending"
     RUNNING = "running"
     PAUSED = "paused"
+    AWAITING_APPROVAL = "awaiting_approval"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
@@ -274,6 +275,7 @@ class WorkflowRunStatus(StrEnum):
 class NodeRunStatus(StrEnum):
     PENDING = "pending"
     RUNNING = "running"
+    AWAITING_APPROVAL = "awaiting_approval"
     COMPLETED = "completed"
     FAILED = "failed"
     SKIPPED = "skipped"
@@ -292,6 +294,8 @@ class WorkflowDirective(StrEnum):
     RESUME = "resume"
     CANCEL = "cancel"
     RETRY = "retry"
+    APPROVE = "approve"
+    REJECT = "reject"
 
 
 class WorkflowRunStateMachine:
@@ -308,7 +312,9 @@ class WorkflowRunStateMachine:
     )
 
     # Statuses that represent an in-flight execution (can receive pause/cancel).
-    ACTIVE_STATUSES: frozenset[WorkflowRunStatus] = frozenset({WorkflowRunStatus.RUNNING, WorkflowRunStatus.PAUSED})
+    ACTIVE_STATUSES: frozenset[WorkflowRunStatus] = frozenset(
+        {WorkflowRunStatus.RUNNING, WorkflowRunStatus.PAUSED, WorkflowRunStatus.AWAITING_APPROVAL}
+    )
 
     @staticmethod
     def apply_directive(current: WorkflowRunStatus, directive: WorkflowDirective) -> WorkflowRunStatus:
@@ -352,6 +358,14 @@ class WorkflowRunStateMachine:
             if current in {WorkflowRunStatus.COMPLETED, WorkflowRunStatus.FAILED}:
                 return current
             raise ValueError(f"Cannot retry a run in status '{current}'")
+
+        if directive in {WorkflowDirective.APPROVE, WorkflowDirective.REJECT}:
+            # Approval directives are only valid while a node is holding for approval.
+            # On APPROVE the run resumes; on REJECT it also returns to RUNNING and the
+            # executor applies the node's on_error policy (fail/skip).
+            if current == WorkflowRunStatus.AWAITING_APPROVAL:
+                return WorkflowRunStatus.RUNNING
+            raise ValueError(f"Cannot {directive} a run in status '{current}'")
 
         raise ValueError(f"Unknown directive: '{directive}'")
 
