@@ -18,6 +18,7 @@ class ExtendedResourceType(StrEnum):
     MCPSERVER = "mcpServer"
     REMOTE_AGENT = "remoteAgent"
     FEDERATION = "federation"
+    WORKFLOW = "workflow"
 
 
 class ExtendedAclEntry(AclEntry):
