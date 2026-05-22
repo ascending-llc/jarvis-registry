@@ -564,6 +564,97 @@ async def get_agent_skills(
 
 
 @router.post(
+    "/agents/{agent_id}/refresh",
+    response_model=AgentDetailResponse,
+    response_model_by_alias=True,
+    summary="Refresh Agent Capabilities",
+    description="Refresh agent capabilities (skills) from .well-known/agent-card.json endpoint and sync to vector database",
+)
+@track_registry_operation("refresh", resource_type="agent")
+async def refresh_agent_capabilities(
+    agent_id: str,
+    user_context: CurrentUser,
+    acl_service: ACLService = Depends(get_acl_service),
+    a2a_agent_service: A2AAgentService = Depends(get_a2a_agent_service),
+):
+    """
+    Refresh agent capabilities by fetching latest agent card from well-known endpoint.
+
+    This endpoint provides a consistent API experience with MCP server refresh:
+    - Fetches latest agent card (including skills) from the agent's well-known endpoint
+    - Updates MongoDB with new capabilities
+    - Automatically syncs to Weaviate vector database
+    - Returns the full agent detail response (not just sync status)
+    """
+    try:
+        user_id = user_context.get("user_id")
+
+        # Check EDIT permission and get permissions for response
+        permissions = await acl_service.check_user_permission(
+            user_id=PydanticObjectId(user_id),
+            resource_type=ResourceType.REMOTE_AGENT.value,
+            resource_id=PydanticObjectId(agent_id),
+            required_permission="EDIT",
+        )
+
+        # Refresh agent capabilities using the service method
+        agent = await a2a_agent_service.refresh_agent_capabilities(agent_id=agent_id)
+
+        return convert_to_detail(agent, acl_permission=permissions)
+
+    except A2AAgentCardNotFoundException as e:
+        error_msg = str(e)
+        raise HTTPException(
+            status_code=http_status.HTTP_404_NOT_FOUND,
+            detail=create_error_detail(ErrorCode.RESOURCE_NOT_FOUND, error_msg),
+        )
+    except A2AAgentCardTransportException as e:
+        error_msg = str(e)
+        raise HTTPException(
+            status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=create_error_detail(ErrorCode.SERVICE_UNAVAILABLE, error_msg),
+        )
+    except (A2AAgentCardUpstreamException, A2AAgentCardParseException) as e:
+        error_msg = str(e)
+        raise HTTPException(
+            status_code=http_status.HTTP_502_BAD_GATEWAY,
+            detail=create_error_detail(ErrorCode.EXTERNAL_SERVICE_ERROR, error_msg),
+        )
+    except ValueError as e:
+        error_msg = str(e)
+
+        # Check error types
+        if "not found" in error_msg.lower():
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail=create_error_detail(ErrorCode.RESOURCE_NOT_FOUND, error_msg),
+            )
+
+        if "not enabled" in error_msg.lower() or "not configured" in error_msg.lower():
+            raise HTTPException(
+                status_code=http_status.HTTP_400_BAD_REQUEST,
+                detail=create_error_detail(ErrorCode.INVALID_REQUEST, error_msg),
+            )
+
+        # Other errors
+        raise HTTPException(
+            status_code=http_status.HTTP_400_BAD_REQUEST,
+            detail=create_error_detail(ErrorCode.INVALID_REQUEST, error_msg),
+        )
+    except HTTPException:
+        # Re-raise HTTPException as-is (e.g., from ACL permission checks)
+        raise
+    except Exception as e:
+        logger.error(f"Error refreshing capabilities for agent {agent_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=create_error_detail(
+                ErrorCode.INTERNAL_ERROR, "Internal server error while refreshing agent capabilities"
+            ),
+        )
+
+
+@router.post(
     "/agents/{agent_id}/wellknown",
     response_model=WellKnownSyncResponse,
     summary="Sync Well-Known",

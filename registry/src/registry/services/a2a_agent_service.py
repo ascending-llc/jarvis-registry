@@ -617,6 +617,32 @@ class A2AAgentService:
             logger.error(f"Error toggling agent {agent_id}: {e}", exc_info=True)
             raise ValueError(f"Failed to toggle agent: {str(e)}")
 
+    async def refresh_agent_capabilities(self, agent_id: str) -> A2AAgent:
+        """
+        Refresh agent capabilities by fetching latest agent card from well-known endpoint.
+
+        This method provides the same functionality as sync_wellknown but returns
+        the updated agent document directly (for consistent API with MCP server refresh).
+
+        Args:
+            agent_id: Agent ID
+
+        Returns:
+            Updated agent document with refreshed capabilities
+
+        Raises:
+            ValueError: If agent not found, well-known not enabled, or sync fails
+            A2AAgentCardNotFoundException: If agent card not found at well-known endpoint
+            A2AAgentCardTransportException: If network/transport errors occur
+            A2AAgentCardUpstreamException: If upstream returns non-404 errors
+            A2AAgentCardParseException: If agent card cannot be parsed/validated
+        """
+        # Reuse the sync_wellknown implementation - it now returns the updated agent
+        result = await self.sync_wellknown(agent_id)
+
+        # Return the updated agent document from sync result (avoids redundant DB query)
+        return result["agent"]
+
     async def sync_wellknown(self, agent_id: str) -> dict[str, Any]:
         """
         Sync agent configuration from .well-known/agent-card.json endpoint using SDK.
@@ -702,6 +728,7 @@ class A2AAgentService:
                 "synced_at": agent.wellKnown.lastSyncAt,
                 "version": updated_card.version,
                 "changes": changes if changes else ["No changes detected"],
+                "agent": agent,  # Include updated agent to avoid redundant DB query
             }
 
         except A2AAgentCardTransportException as e:

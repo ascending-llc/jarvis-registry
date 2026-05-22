@@ -191,7 +191,7 @@ class TestWellKnownRoutes:
             "servers-read",
             "agents-read",
             "agents-write",
-            "server-write",
+            "servers-write",  # 更新：从 server-write（单数）改为 servers-write（复数）
             "servers-share",
             "agents-share",
             "system-ops",
