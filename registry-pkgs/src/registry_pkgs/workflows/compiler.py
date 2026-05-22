@@ -110,6 +110,8 @@ def compile_workflow(
                     node_name=node.name,
                     step_config=node.step_config,
                     directive_queue=directive_queue,
+                    require_approval=node.require_approval,
+                    approval_timeout_seconds=node.approval_timeout_seconds,
                 )
             return Step(
                 name=node.name,
