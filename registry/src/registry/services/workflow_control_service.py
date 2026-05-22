@@ -183,6 +183,26 @@ class WorkflowControlService:
         logger.info("WorkflowRun %s resume requested", run_id)
         return run
 
+    async def send_approve(self, workflow_definition_id: str, run_id: str) -> WorkflowRun:
+        """Approve a run that is holding at an approval gate (AWAITING_APPROVAL → RUNNING)."""
+        run = await self._load_run(workflow_definition_id, run_id)
+        _apply(run, WorkflowDirective.APPROVE)  # raises 400 if not AWAITING_APPROVAL
+        run.pending_directive = WorkflowDirective.APPROVE
+        await run.save()
+        self._queue.put(run_id, WorkflowDirective.APPROVE)
+        logger.info("WorkflowRun %s approval granted", run_id)
+        return run
+
+    async def send_reject(self, workflow_definition_id: str, run_id: str) -> WorkflowRun:
+        """Reject a run holding at an approval gate; the node fails per its on_error policy."""
+        run = await self._load_run(workflow_definition_id, run_id)
+        _apply(run, WorkflowDirective.REJECT)  # raises 400 if not AWAITING_APPROVAL
+        run.pending_directive = WorkflowDirective.REJECT
+        await run.save()
+        self._queue.put(run_id, WorkflowDirective.REJECT)
+        logger.info("WorkflowRun %s approval rejected", run_id)
+        return run
+
     async def send_cancel(self, workflow_definition_id: str, run_id: str) -> WorkflowRun:
         """Cancel a RUNNING or PAUSED workflow run.
 
@@ -283,6 +303,9 @@ class WorkflowControlService:
 
         child_run = WorkflowRun(
             workflow_definition_id=parent_run.workflow_definition_id,
+            # Inherit the parent's version so the retry replays the same definition
+            # snapshot deterministically and reports a consistent workflow_version.
+            workflow_version=parent_run.workflow_version,
             status=WorkflowRunStatus.PENDING,
             trigger_source="retry",
             initial_input=parent_run.initial_input,

@@ -191,3 +191,179 @@ def test_convert_api_node_preserves_explicit_id():
     api_node = WorkflowNodeInput(id="custom-id", name="x", nodeType="step", executorKey="tool")
     model = WorkflowService()._convert_api_node_to_model(api_node)
     assert model.id == "custom-id"
+
+
+# ---------------------------------------------------------------------------
+# Versioning
+# ---------------------------------------------------------------------------
+class _FakeWorkflow:
+    """Stand-in for a loaded WorkflowDefinition supporting version + save."""
+
+    def __init__(self, version: int = 1):
+        from datetime import UTC, datetime
+
+        from beanie import PydanticObjectId
+
+        self.id = PydanticObjectId()
+        self.name = "old-name"
+        self.description = None
+        self.version = version
+        self.updated_at = datetime.now(UTC)
+        self.saved = False
+
+    def model_dump(self, mode: str | None = None):
+        return {"name": self.name, "version": self.version}
+
+    def model_dump_json(self):
+        return f'{{"name": "{self.name}", "version": {self.version}}}'
+
+    async def save(self):
+        self.saved = True
+
+
+@pytest.mark.asyncio
+async def test_update_workflow_bumps_version_and_snapshots_history(monkeypatch: pytest.MonkeyPatch):
+    from registry.schemas.workflow_api_schemas import WorkflowUpdateRequest
+
+    fake_wf = _FakeWorkflow(version=4)
+
+    async def fake_get(self, workflow_id):
+        return fake_wf
+
+    monkeypatch.setattr(WorkflowService, "get_workflow_by_id", fake_get)
+
+    inserted: list[dict] = []
+
+    class _FakeWorkflowVersion:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        async def insert(self):
+            inserted.append(self.kwargs)
+
+    monkeypatch.setattr(workflow_service, "WorkflowVersion", _FakeWorkflowVersion)
+
+    result = await WorkflowService().update_workflow(
+        workflow_id=str(fake_wf.id),
+        data=WorkflowUpdateRequest(name="new-name"),
+    )
+
+    # Version bumped on the live document
+    assert result.version == 5
+    assert result.name == "new-name"
+    assert fake_wf.saved is True
+
+    # Prior version (4) archived into history with a checksum
+    assert len(inserted) == 1
+    assert inserted[0]["version"] == 4
+    assert inserted[0]["workflow_id"] == fake_wf.id
+    assert isinstance(inserted[0]["checksum"], str) and len(inserted[0]["checksum"]) == 64
+
+
+@pytest.mark.asyncio
+async def test_update_workflow_invalid_nodes_writes_nothing(monkeypatch: pytest.MonkeyPatch):
+    """A model-validation failure mid-update must not bump the version, save the
+    document, or leave an orphan version-history row."""
+    from registry.schemas.workflow_api_schemas import WorkflowNodeInput, WorkflowUpdateRequest
+
+    fake_wf = _FakeWorkflow(version=4)
+
+    async def fake_get(self, workflow_id):
+        return fake_wf
+
+    monkeypatch.setattr(WorkflowService, "get_workflow_by_id", fake_get)
+
+    inserted: list[dict] = []
+
+    class _FakeWorkflowVersion:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        async def insert(self):
+            inserted.append(self.kwargs)
+
+    monkeypatch.setattr(workflow_service, "WorkflowVersion", _FakeWorkflowVersion)
+
+    # A parallel node with no children fails WorkflowNode shape validation during conversion.
+    bad_update = WorkflowUpdateRequest(nodes=[WorkflowNodeInput(name="p", nodeType="parallel")])
+
+    with pytest.raises(ValueError, match="parallel node requires at least 2 children"):
+        await WorkflowService().update_workflow(workflow_id=str(fake_wf.id), data=bad_update)
+
+    # No history row written, version not bumped, document not saved.
+    assert inserted == []
+    assert fake_wf.version == 4
+    assert fake_wf.saved is False
+
+
+@pytest.mark.asyncio
+async def test_list_versions_includes_history_and_current(monkeypatch: pytest.MonkeyPatch):
+    fake_wf = _FakeWorkflow(version=3)
+
+    async def fake_get(self, workflow_id):
+        return fake_wf
+
+    monkeypatch.setattr(WorkflowService, "get_workflow_by_id", fake_get)
+
+    from datetime import UTC, datetime
+    from types import SimpleNamespace
+
+    history = [
+        SimpleNamespace(version=1, created_at=datetime.now(UTC), checksum="c1"),
+        SimpleNamespace(version=2, created_at=datetime.now(UTC), checksum="c2"),
+    ]
+
+    class _Query:
+        def sort(self, *_a, **_k):
+            return self
+
+        async def to_list(self):
+            return history
+
+    monkeypatch.setattr(workflow_service.WorkflowVersion, "find", lambda *_a, **_k: _Query())
+
+    versions = await WorkflowService().list_versions(str(fake_wf.id))
+
+    assert [v["version"] for v in versions] == [1, 2, 3]  # history + current
+    assert versions[-1]["version"] == 3  # current appended last
+
+
+@pytest.mark.asyncio
+async def test_trigger_run_resolves_requested_historical_version(monkeypatch: pytest.MonkeyPatch):
+    from types import SimpleNamespace
+
+    fake_wf = _FakeWorkflow(version=3)
+
+    async def fake_get(self, workflow_id):
+        return fake_wf
+
+    monkeypatch.setattr(WorkflowService, "get_workflow_by_id", fake_get)
+
+    historical = SimpleNamespace(version=2, definition={"snapshot": "v2"})
+
+    async def fake_find_one(*_a, **_k):
+        return historical
+
+    monkeypatch.setattr(workflow_service.WorkflowVersion, "find_one", fake_find_one)
+
+    captured: dict = {}
+
+    class _FakeRun:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            from beanie import PydanticObjectId
+
+            self.id = PydanticObjectId()
+            self.status = kwargs.get("status")
+            self.trigger_source = kwargs.get("trigger_source")
+            self.workflow_definition_id = kwargs.get("workflow_definition_id")
+
+        async def insert(self):
+            return None
+
+    monkeypatch.setattr(workflow_service, "WorkflowRun", _FakeRun)
+
+    await WorkflowService().trigger_workflow_run(workflow_id=str(fake_wf.id), version=2)
+
+    assert captured["workflow_version"] == 2
+    assert captured["definition_snapshot"] == {"snapshot": "v2"}
