@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, Field
+
+from registry_pkgs.models.enums import RequirementResolution
 
 
 class TriggerRunRequest(BaseModel):
@@ -43,15 +46,33 @@ class RetryRequest(BaseModel):
     from_node_id: str = Field(..., description="Node ID to restart execution from")
 
 
-class ApproveRequest(BaseModel):
-    """Request body for the approval endpoint.
+class ResolveRequirementRequest(BaseModel):
+    """Request body for ``POST /approve``.
 
-    Attributes:
-        approved: ``True`` approves the gate and resumes execution; ``False``
-                  rejects it, failing the node per its ``on_error`` policy.
+    Carries a decision aligned 1:1 with agno's
+    ``StepRequirement.{confirm, reject, edit, set_user_input, set_selected_choices}``
+    methods.
     """
 
-    approved: bool = Field(..., description="True to approve and continue; False to reject")
+    stepId: str = Field(..., description="The pending requirement's step_id (from GET /runs/{id})")
+    resolution: RequirementResolution = Field(..., description="confirm / reject / edit / user_input / route_select")
+    feedback: str | None = Field(None, description="Optional reject feedback (passed to agno's on_reject=retry agent)")
+    editedOutput: Any | None = Field(None, description="EDIT resolution only — replaces the original step_output")
+    userInput: dict[str, Any] | None = Field(
+        None, description="USER_INPUT resolution only — values matching user_input_schema"
+    )
+    selectedChoices: list[str] | None = Field(
+        None, description="ROUTE_SELECT resolution only — chosen router choice name(s)"
+    )
+
+
+class ResolveRequirementResponse(BaseModel):
+    """Response for ``POST /approve``."""
+
+    runId: str = Field(..., description="The WorkflowRun ID")
+    status: str = Field(..., description="Run status after the decision was applied")
+    resolvedStepId: str = Field(..., description="The step_id of the requirement just resolved")
+    message: str = Field(..., description="Human-readable summary")
 
 
 class DirectiveResponse(BaseModel):
@@ -67,9 +88,6 @@ class DirectiveResponse(BaseModel):
     run_id: str
     status: str
     message: str
-
-
-# ── Status query responses ────────────────────────────────────────────────────
 
 
 class NodeRunSummary(BaseModel):
