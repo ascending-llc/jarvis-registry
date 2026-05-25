@@ -247,7 +247,9 @@ class WorkflowControlService:
         target = _find_pending_requirement(run, step_id)
         _validate_resolution_compatibility(target, resolution)
 
-        update_fields = _build_resolution_update(resolution, feedback, edited_output, user_input, selected_choices)
+        update_fields = _build_resolution_update(
+            target, resolution, feedback, edited_output, user_input, selected_choices
+        )
         await _atomic_write_decision(run, step_id, update_fields)
 
         logger.info("WorkflowRun %s requirement %s resolved as %s", run_id, step_id, resolution.value)
@@ -306,6 +308,7 @@ class WorkflowControlService:
         if new_status == run.status:
             return run
 
+        run.status = new_status
         run.pending_directive = WorkflowDirective.CANCEL
         await run.save()
         self._queue.put(run_id, WorkflowDirective.CANCEL)
@@ -647,6 +650,7 @@ def _validate_resolution_compatibility(
 
 
 def _build_resolution_update(
+    target: dict[str, Any],
     resolution: RequirementResolution,
     feedback: str | None,
     edited_output: Any | None,
@@ -683,7 +687,20 @@ def _build_resolution_update(
                 detail="USER_INPUT resolution requires non-null user_input",
             )
         # confirmed=True signals agno to proceed; user_input is consumed by the executor.
-        return {"confirmed": True, "user_input": user_input}
+        update = {"confirmed": True, "user_input": user_input}
+        # agno's StepRequirement.needs_user_input checks schema field values,
+        # so we must mirror the user_input dict back into the schema entries.
+        schema = target.get("user_input_schema")
+        if schema:
+            updated_schema = []
+            for field in schema:
+                field_copy = dict(field)
+                field_name = field_copy.get("name")
+                if field_name in user_input:
+                    field_copy["value"] = user_input[field_name]
+                updated_schema.append(field_copy)
+            update["user_input_schema"] = updated_schema
+        return update
 
     if resolution == RequirementResolution.ROUTE_SELECT:
         if not selected_choices:
