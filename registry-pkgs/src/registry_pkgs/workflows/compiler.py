@@ -15,9 +15,31 @@ from agno.workflow import (
     Workflow,
 )
 from agno.workflow.step import OnError, StepExecutor
+from agno.workflow.types import HumanReview
 
-from registry_pkgs.models.enums import WorkflowNodeType
-from registry_pkgs.models.workflow import StepConfig, WorkflowDefinition, WorkflowNode, WorkflowRun
+from registry_pkgs.models.enums import OnRejectPolicy, OnTimeoutPolicy, WorkflowNodeType
+from registry_pkgs.models.workflow import (
+    HumanReviewSpec,
+    StepConfig,
+    WorkflowDefinition,
+    WorkflowNode,
+    WorkflowRun,
+)
+
+# Anti-corruption layer: our enum values are the stable API/DB contract; agno's
+# internal string values are an implementation detail we translate at the boundary.
+# In particular agno spells ELSE_BRANCH as "else", not "else_branch".
+_ON_REJECT_TO_AGNO: dict[OnRejectPolicy, str] = {
+    OnRejectPolicy.SKIP: "skip",
+    OnRejectPolicy.CANCEL: "cancel",
+    OnRejectPolicy.RETRY: "retry",
+    OnRejectPolicy.ELSE_BRANCH: "else",
+}
+_ON_TIMEOUT_TO_AGNO: dict[OnTimeoutPolicy, str] = {
+    OnTimeoutPolicy.APPROVE: "approve",
+    OnTimeoutPolicy.SKIP: "skip",
+    OnTimeoutPolicy.CANCEL: "cancel",
+}
 from registry_pkgs.workflows.persistence import WorkflowRunSyncer
 from registry_pkgs.workflows.types import POOL_KEY_PREFIX
 
@@ -25,6 +47,32 @@ if TYPE_CHECKING:
     from registry_pkgs.workflows.control import DirectiveQueue
 
 logger = logging.getLogger(__name__)
+
+
+def _to_agno_human_review(spec: HumanReviewSpec | None) -> HumanReview | None:
+    """Translate our ``HumanReviewSpec`` into agno ``HumanReview``.
+
+    Returns ``None`` when no HITL is configured so we don't pass an empty
+    HumanReview into agno (which would still be a no-op but produces noisier
+    serialized state).
+    """
+    if not spec:
+        return None
+    schema = [f.model_dump() for f in spec.user_input_schema] if spec.user_input_schema else None
+    return HumanReview(
+        requires_confirmation=spec.requires_confirmation,
+        confirmation_message=spec.confirmation_message,
+        requires_user_input=spec.requires_user_input,
+        user_input_message=spec.user_input_message,
+        user_input_schema=schema,
+        requires_output_review=spec.requires_output_review,
+        output_review_message=spec.output_review_message,
+        requires_iteration_review=spec.requires_iteration_review,
+        iteration_review_message=spec.iteration_review_message,
+        on_reject=_ON_REJECT_TO_AGNO[spec.on_reject],
+        timeout=spec.timeout_seconds,
+        on_timeout=_ON_TIMEOUT_TO_AGNO[spec.on_timeout],
+    )
 
 
 def compile_workflow(
@@ -83,6 +131,8 @@ def compile_workflow(
         return _injected
 
     def _build(node: WorkflowNode) -> Any:
+
+        human_review = _to_agno_human_review(node.human_review)
         if node.node_type == WorkflowNodeType.STEP:
             lookup_key = f"{POOL_KEY_PREFIX}{node.id}" if node.a2a_pool else node.executor_key
 
@@ -110,16 +160,16 @@ def compile_workflow(
                     node_name=node.name,
                     step_config=node.step_config,
                     directive_queue=directive_queue,
-                    require_approval=node.require_approval,
-                    approval_timeout_seconds=node.approval_timeout_seconds,
                 )
             return Step(
                 name=node.name,
                 executor=executor,
+                human_review=human_review,
                 **step_kwargs(node.step_config),
             )
 
         if node.node_type == WorkflowNodeType.PARALLEL:
+            # agno's Parallel does not accept human_review (model layer enforces this too).
             return Parallel(*[_build(c) for c in node.children], name=node.name)
 
         if node.node_type == WorkflowNodeType.CONDITION:
@@ -130,6 +180,7 @@ def compile_workflow(
                 evaluator=node.condition_cel,
                 else_steps=false_branch,
                 name=node.name,
+                human_review=human_review,
             )
 
         if node.node_type == WorkflowNodeType.LOOP:
@@ -139,6 +190,7 @@ def compile_workflow(
                 name=node.name,
                 max_iterations=node.loop_config.max_iterations,  # type: ignore[union-attr]
                 end_condition=end_cond,
+                human_review=human_review,
             )
 
         if node.node_type == WorkflowNodeType.ROUTER:
@@ -149,6 +201,7 @@ def compile_workflow(
                 choices=compiled_choices,
                 selector=node.condition_cel,
                 name=node.name,
+                human_review=human_review,
             )
 
         raise ValueError(f"Unknown node_type: {node.node_type!r}")

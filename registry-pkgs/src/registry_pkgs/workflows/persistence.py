@@ -221,6 +221,8 @@ def _flatten_step_results(results: list[Any]) -> list[StepOutput]:
             flat.extend(_flatten_step_results(item))
         elif isinstance(item, StepOutput):
             flat.append(item)
+            if item.steps:
+                flat.extend(_flatten_step_results(item.steps))
     return flat
 
 

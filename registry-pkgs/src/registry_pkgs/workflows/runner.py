@@ -305,9 +305,12 @@ class WorkflowRunner:
                 db_name=self._db_name,
                 directive_queue=self._directive_queue,
             )
+            # agno needs its own internal run_id (the UUID it generated inside
+            # ``arun``), not our WorkflowRun ObjectId.
+            agno_run_id = run.agno_run_id or existing_run_id
             try:
                 result = await workflow.acontinue_run(
-                    run_id=existing_run_id,
+                    run_id=agno_run_id,
                     session_id=existing_run_id,
                     step_requirements=requirements,
                 )
@@ -390,6 +393,12 @@ class WorkflowRunner:
                     )
             run.status = WorkflowRunStatus.AWAITING_APPROVAL
             run.pending_requirements = serialized
+            # Capture agno's internal run_id so ``continue_run`` can locate the
+            # persisted RunOutput in agno_workflow_sessions on resume.  We use
+            # str() because agno generates UUID strings.
+            agno_id = getattr(result, "run_id", None)
+            if agno_id:
+                run.agno_run_id = str(agno_id)
             await run.save()
             logger.info(
                 "[run=%s] ⏸ HITL pause — %d requirement(s) awaiting decision",

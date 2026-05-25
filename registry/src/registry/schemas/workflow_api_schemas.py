@@ -499,6 +499,77 @@ def _convert_node_to_output(node: Any) -> WorkflowNodeOutput:
     )
 
 
+def _convert_node_to_input(node: Any) -> WorkflowNodeInput:
+    """Convert WorkflowNode to WorkflowNodeInput (recursive)."""
+    return WorkflowNodeInput(
+        id=node.id,
+        name=node.name,
+        nodeType=node.node_type.value if hasattr(node.node_type, "value") else node.node_type,
+        executorKey=node.executor_key,
+        a2aPool=node.a2a_pool,
+        stepConfig=(
+            StepConfigInput(
+                maxRetries=node.step_config.max_retries,
+                onError=node.step_config.on_error,
+                backoffBaseSeconds=node.step_config.backoff_base_seconds,
+                backoffMaxSeconds=node.step_config.backoff_max_seconds,
+            )
+            if node.step_config
+            else None
+        ),
+        config=node.config,
+        children=[_convert_node_to_input(child) for child in node.children],
+        trueSteps=[_convert_node_to_input(child) for child in node.true_steps],
+        falseSteps=[_convert_node_to_input(child) for child in node.false_steps],
+        choices=[
+            RouterChoiceInput(
+                name=choice.name,
+                steps=[_convert_node_to_input(s) for s in choice.steps],
+            )
+            for choice in node.choices
+        ],
+        conditionCel=node.condition_cel,
+        loopConfig=(
+            LoopConfigInput(
+                maxIterations=node.loop_config.max_iterations, endConditionCel=node.loop_config.end_condition_cel
+            )
+            if node.loop_config
+            else None
+        ),
+        humanReview=(
+            HumanReviewInput(
+                requiresConfirmation=node.human_review.requires_confirmation,
+                confirmationMessage=node.human_review.confirmation_message,
+                requiresUserInput=node.human_review.requires_user_input,
+                userInputMessage=node.human_review.user_input_message,
+                userInputSchema=(
+                    [
+                        UserInputFieldSchema(
+                            name=f.name,
+                            fieldType=f.field_type,
+                            description=f.description,
+                            required=f.required,
+                            defaultValue=f.default_value,
+                        )
+                        for f in node.human_review.user_input_schema
+                    ]
+                    if node.human_review.user_input_schema
+                    else None
+                ),
+                requiresOutputReview=node.human_review.requires_output_review,
+                outputReviewMessage=node.human_review.output_review_message,
+                requiresIterationReview=node.human_review.requires_iteration_review,
+                iterationReviewMessage=node.human_review.iteration_review_message,
+                onReject=node.human_review.on_reject,
+                timeoutSeconds=node.human_review.timeout_seconds,
+                onTimeout=node.human_review.on_timeout,
+            )
+            if node.human_review
+            else None
+        ),
+    )
+
+
 def convert_to_run_list_item(run: Any, node_runs: list[Any] | None = None) -> WorkflowRunListItem:
     """Convert WorkflowRun to WorkflowRunListItem"""
     from registry_pkgs.models.workflow import WorkflowRun

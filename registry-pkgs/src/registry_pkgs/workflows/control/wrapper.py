@@ -1,5 +1,4 @@
-"""
-Executor wrapper that injects directive checking and retry backoff into every step.
+"""Executor wrapper that injects directive checking and retry backoff into every step.
 
 ``with_control`` wraps any StepExecutor and adds:
 
@@ -19,6 +18,13 @@ Executor wrapper that injects directive checking and retry backoff into every st
 
 4. **Attempt persistence** — ``NodeRun.attempt`` is incremented and written to
    MongoDB at the start of each attempt so the UI always reflects the latest try.
+
+Node-level HITL (confirmation / user_input / output_review / iteration review)
+is handled by agno's native ``HumanReview`` configuration — agno's execution
+loop detects and pauses on its own, and we surface the pause via
+``WorkflowRunner._handle_run_output`` writing ``WorkflowRun.pending_requirements``.
+This wrapper covers what agno does not: ad-hoc pause/resume, exponential-backoff
+retry, and per-attempt persistence.
 """
 
 from __future__ import annotations
@@ -31,11 +37,11 @@ from datetime import UTC, datetime
 from agno.workflow import StepInput, StepOutput
 from agno.workflow.step import StepExecutor
 from beanie import PydanticObjectId
-from pydantic import BaseModel
 
 from registry_pkgs.models.enums import NodeRunStatus, WorkflowDirective, WorkflowRunStatus
 from registry_pkgs.models.workflow import NodeRun, StepConfig, WorkflowRun
 from registry_pkgs.workflows.control.queue import DirectiveQueue
+from registry_pkgs.workflows.hitl import PendingDirectiveProjection
 
 logger = logging.getLogger(__name__)
 
@@ -60,8 +66,6 @@ def with_control(
     node_name: str,
     step_config: StepConfig | None,
     directive_queue: DirectiveQueue,
-    require_approval: bool = False,
-    approval_timeout_seconds: int | None = None,
 ) -> StepExecutor:
     """Wrap *executor* with directive checking and retry-backoff logic.
 
@@ -73,10 +77,6 @@ def with_control(
         step_config:     Per-step retry / error-handling policy, or ``None`` for
                          the safe production default (no retry, fail-fast).
         directive_queue: The shared in-process DirectiveQueue.
-        require_approval: When True, hold the run at this node until a user
-                         APPROVE/REJECT directive arrives (or the timeout elapses).
-        approval_timeout_seconds: Seconds to wait for approval before treating it
-                         as a rejection; falls back to ``WorkflowRun.pause_timeout_seconds``.
 
     Returns:
         A new async callable with the same signature as *executor*.
@@ -91,21 +91,6 @@ def with_control(
         backoff_cap = 60.0
 
     async def wrapped(step_input: StepInput, session_state: dict | None = None) -> StepOutput:
-        # Approval gate — evaluated once before any execution attempt.
-        if require_approval:
-            decision = await _wait_for_approval(
-                run_id=run_id,
-                node_id=node_id,
-                node_name=node_name,
-                directive_queue=directive_queue,
-                approval_timeout_seconds=approval_timeout_seconds,
-            )
-            if decision == "cancelled":
-                raise WorkflowCancelledError("Workflow cancelled by user")
-            if decision == "rejected":
-                await _mark_node_failed(run_id, node_id, node_name, "Rejected at approval gate")
-                return StepOutput(content="", success=False, error="Rejected at approval gate")
-
         for attempt in range(max_attempts):
             # 1. Check for a pending directive before starting the attempt
             cancel_reason = await _check_and_handle_directive(
@@ -192,10 +177,6 @@ async def _check_and_handle_directive(
     return None
 
 
-class _PendingDirectiveProjection(BaseModel):
-    pending_directive: WorkflowDirective | None = None
-
-
 async def _read_mongodb_directive(run_id: str) -> WorkflowDirective | None:
     """Read ``WorkflowRun.pending_directive`` from MongoDB.
 
@@ -203,10 +184,13 @@ async def _read_mongodb_directive(run_id: str) -> WorkflowDirective | None:
     recover a lost directive after a pod restart.  Only ``pending_directive`` is
     projected so the full document (with definition_snapshot, outputs, etc.) is
     never transferred over the wire.
+
+    The projection model is shared with ``MongoBackedCancellationManager`` via
+    ``registry_pkgs.workflows.hitl.projections`` so both consumers stay in sync.
     """
     run = await WorkflowRun.find_one(
         WorkflowRun.id == PydanticObjectId(run_id),
-        projection_model=_PendingDirectiveProjection,
+        projection_model=PendingDirectiveProjection,
     )
     return run.pending_directive if run is not None else None
 
@@ -269,126 +253,6 @@ async def _wait_while_paused(
                 timeout_secs,
             )
             return f"Workflow cancelled after pause timeout ({int(timeout_secs)}s)"
-
-
-async def _wait_for_approval(
-    *,
-    run_id: str,
-    node_id: str,
-    node_name: str,
-    directive_queue: DirectiveQueue,
-    approval_timeout_seconds: int | None,
-) -> str:
-    """Hold the run at an approval gate until APPROVE/REJECT/CANCEL or timeout.
-
-    Returns one of ``"approved"``, ``"rejected"`` (also on timeout), or
-    ``"cancelled"``.  Mirrors the pause-wait loop but with approval semantics.
-    """
-    logger.info("Node %r: require_approval — holding for user APPROVE/REJECT", node_name)
-
-    run = await WorkflowRun.get(PydanticObjectId(run_id))
-    if run is None:
-        raise RuntimeError(f"WorkflowRun {run_id!r} not found while entering approval — data integrity error")
-
-    await _update_run_control_state(
-        run_id,
-        status=WorkflowRunStatus.AWAITING_APPROVAL,
-        pending_directive=None,
-        paused_at=datetime.now(UTC),
-    )
-    await _mark_node_status(run_id, node_id, node_name, NodeRunStatus.AWAITING_APPROVAL)
-
-    timeout_secs = float(
-        approval_timeout_seconds if approval_timeout_seconds is not None else run.pause_timeout_seconds
-    )
-    waiting_since = datetime.now(UTC)
-
-    poll_count = 0
-    while True:
-        next_directive = await directive_queue.wait_for_directive(run_id, timeout=PAUSE_POLL_INTERVAL)
-
-        poll_count += 1
-        if next_directive is None and poll_count % MONGO_POLL_EVERY_N == 0:
-            next_directive = await _read_mongodb_directive(run_id)
-
-        if next_directive == WorkflowDirective.APPROVE:
-            await _update_run_control_state(
-                run_id, status=WorkflowRunStatus.RUNNING, pending_directive=None, paused_at=None
-            )
-            logger.info("Node %r: APPROVE received, continuing execution", node_name)
-            return "approved"
-
-        if next_directive == WorkflowDirective.REJECT:
-            await _update_run_control_state(
-                run_id, status=WorkflowRunStatus.RUNNING, pending_directive=None, paused_at=None
-            )
-            logger.info("Node %r: REJECT received, failing node via on_error policy", node_name)
-            return "rejected"
-
-        if next_directive == WorkflowDirective.CANCEL:
-            await _update_run_control_state(run_id, pending_directive=None)
-            logger.info("Node %r: CANCEL received while awaiting approval, aborting", node_name)
-            return "cancelled"
-
-        elapsed = (datetime.now(UTC) - waiting_since).total_seconds()
-        if elapsed >= timeout_secs:
-            await _update_run_control_state(
-                run_id, status=WorkflowRunStatus.RUNNING, pending_directive=None, paused_at=None
-            )
-            logger.warning(
-                "Node %r: approval timeout (%.0fs) exceeded, treating as rejection",
-                node_name,
-                timeout_secs,
-            )
-            return "rejected"
-
-
-async def _mark_node_status(
-    run_id: str,
-    node_id: str,
-    node_name: str,
-    status: NodeRunStatus,
-) -> None:
-    """Upsert a NodeRun and set its status (used to surface awaiting_approval)."""
-    run_oid = PydanticObjectId(run_id)
-    node_run = await NodeRun.find_one(
-        NodeRun.workflow_run_id == run_oid,
-        NodeRun.node_id == node_id,
-    )
-    if node_run is None:
-        node_run = NodeRun(
-            workflow_run_id=run_oid,
-            node_id=node_id,
-            node_name=node_name,
-            started_at=datetime.now(UTC),
-        )
-    node_run.status = status
-    await node_run.save()
-
-
-async def _mark_node_failed(
-    run_id: str,
-    node_id: str,
-    node_name: str,
-    error: str,
-) -> None:
-    """Upsert a NodeRun as FAILED with an error message (used on approval rejection)."""
-    run_oid = PydanticObjectId(run_id)
-    node_run = await NodeRun.find_one(
-        NodeRun.workflow_run_id == run_oid,
-        NodeRun.node_id == node_id,
-    )
-    if node_run is None:
-        node_run = NodeRun(
-            workflow_run_id=run_oid,
-            node_id=node_id,
-            node_name=node_name,
-            started_at=datetime.now(UTC),
-        )
-    node_run.status = NodeRunStatus.FAILED
-    node_run.error = error
-    node_run.finished_at = datetime.now(UTC)
-    await node_run.save()
 
 
 async def _record_attempt_start(

@@ -458,6 +458,9 @@ class WorkflowRun(Document):
     # is the fast path.  On service restart the Queue is lost but this field survives,
     # allowing startup cleanup to mark orphan runs correctly.
     pending_directive: WorkflowDirective | None = None
+
+    # agno generates its own internal run_id (UUID) inside ``workflow.arun``;
+    agno_run_id: str | None = None
     # Set when the run transitions to PAUSED; used to enforce pause_timeout_seconds.
     paused_at: datetime | None = None
     # How long (seconds) a paused run may wait before being automatically cancelled.
