@@ -359,6 +359,58 @@ class ACLService:
             logger.error(f"Error fetching permissions for user {user_id} on {resource_type}/{resource_id}: {e}")
             return ResourcePermissions()
 
+    async def get_user_permissions_for_resources(
+        self,
+        user_id: PydanticObjectId,
+        resource_type: str,
+        resource_ids: list[PydanticObjectId],
+    ) -> dict[PydanticObjectId, ResourcePermissions]:
+        """Batch variant of ``get_user_permissions_for_resource``.
+
+        Single ``$in`` MongoDB query covers every requested ``resource_id``,
+        eliminating N+1 round-trips when callers (e.g. list endpoints) need
+        per-resource permissions for many resources at once.
+
+        Missing resources are returned with an empty ``ResourcePermissions``
+        (mirrors the single-resource fallback) so callers can index without
+        ``KeyError`` checks.
+        """
+        result: dict[PydanticObjectId, ResourcePermissions] = {rid: ResourcePermissions() for rid in resource_ids}
+        if not resource_ids:
+            return result
+        try:
+            acl_entries = (
+                await ExtendedAclEntry.find(
+                    {
+                        "resourceType": resource_type,
+                        "resourceId": {"$in": resource_ids},
+                        "$or": [
+                            {"principalType": PrincipalType.USER.value, "principalId": user_id},
+                            {"principalType": PrincipalType.PUBLIC.value, "principalId": None},
+                        ],
+                    }
+                )
+                .sort([("permBits", -1)])
+                .to_list()
+            )
+        except Exception as e:
+            logger.error(f"Error batch-fetching permissions for user {user_id} on {resource_type}: {e}")
+            return result
+
+        # Entries are sorted by permBits desc → the first one we see per
+        # resource is the winner (matches single-resource precedence).
+        for entry in acl_entries:
+            rid = entry.resourceId
+            if rid in result and not any((result[rid].VIEW, result[rid].EDIT, result[rid].DELETE, result[rid].SHARE)):
+                bits = int(entry.permBits)
+                result[rid] = ResourcePermissions(
+                    VIEW=bool(bits & PermissionBits.VIEW),
+                    EDIT=bool(bits & PermissionBits.EDIT),
+                    DELETE=bool(bits & PermissionBits.DELETE),
+                    SHARE=bool(bits & PermissionBits.SHARE),
+                )
+        return result
+
     async def check_user_permission(
         self,
         user_id: PydanticObjectId,
