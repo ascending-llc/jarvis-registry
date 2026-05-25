@@ -11,9 +11,8 @@ from registry_pkgs.models.enums import (
     FederationProviderType,
     FederationSyncStatus,
     FederationTriggerType,
-    RoleBits,
 )
-from registry_pkgs.models.extended_acl_entry import ExtendedResourceType
+from registry_pkgs.models.extended_acl_entry import ExtendedAclEntry, ExtendedResourceType
 from registry_pkgs.models.federation import (
     Federation,
     FederationLastSync,
@@ -60,9 +59,11 @@ class FederationSyncPlan:
     mcp_creates: list[tuple[Any, str]] = field(default_factory=list)
     mcp_updates: list[tuple[Any, Any, str]] = field(default_factory=list)
     mcp_deletes: list[tuple[Any, str | None]] = field(default_factory=list)
+    mcp_unchanged_acl_targets: list[Any] = field(default_factory=list)
     a2a_creates: list[tuple[Any, str]] = field(default_factory=list)
     a2a_updates: list[tuple[Any, Any, str]] = field(default_factory=list)
     a2a_deletes: list[tuple[Any, str | None]] = field(default_factory=list)
+    a2a_unchanged_acl_targets: list[Any] = field(default_factory=list)
 
 
 @dataclass
@@ -550,6 +551,7 @@ class FederationSyncService:
             else:
                 if not self._runtime_metadata_changed(existing.federationMetadata, item.federationMetadata):
                     apply_summary.unchangedMcpServers += 1
+                    sync_plan.mcp_unchanged_acl_targets.append(existing.id)
                 else:
                     apply_summary.updatedMcpServers += 1
                     sync_plan.mcp_updates.append((existing, item, remote_id))
@@ -646,6 +648,7 @@ class FederationSyncService:
                     and not transport_changed
                 ):
                     apply_summary.unchangedAgents += 1
+                    sync_plan.a2a_unchanged_acl_targets.append(existing.id)
                 else:
                     apply_summary.updatedAgents += 1
                     sync_plan.a2a_updates.append((existing, item, remote_id))
@@ -683,6 +686,24 @@ class FederationSyncService:
         session = get_current_session()
         mutation_result = FederationSyncMutationResult(summary=sync_plan.summary)
 
+        # Query Federation ACL entries once for batch inheritance
+        federation_acl_entries, acl_query_success = await self._get_federation_acl_entries(sync_plan.federation_id)
+
+        if not acl_query_success:
+            logger.error(
+                "Failed to query Federation ACL entries, skipping ACL inheritance for federation %s",
+                sync_plan.federation_id,
+            )
+
+        # Track all resources that need ACL inheritance
+        resources_for_acl_inheritance: list[tuple[str, Any]] = []
+        resources_for_acl_inheritance.extend(
+            (ResourceType.MCPSERVER, resource_id) for resource_id in sync_plan.mcp_unchanged_acl_targets
+        )
+        resources_for_acl_inheritance.extend(
+            (ResourceType.REMOTE_AGENT, resource_id) for resource_id in sync_plan.a2a_unchanged_acl_targets
+        )
+
         # Deletes run first so that unique-indexed fields (serverName, path) are freed
         # before new docs with the same name/path are inserted.
         for stale, stale_runtime_arn in sync_plan.mcp_deletes:
@@ -701,7 +722,7 @@ class FederationSyncService:
             server.federationMetadata["providerType"] = _enum_value(sync_plan.provider_type)
             await server.insert(session=session)
             mutation_result.changed_mcp_runtime_arns.add(remote_id)
-            await self._grant_owner(user_id, ResourceType.MCPSERVER, server.id)
+            resources_for_acl_inheritance.append((ResourceType.MCPSERVER, server.id))
 
         for agent, remote_id in sync_plan.a2a_creates:
             agent.federationRefId = sync_plan.federation_id
@@ -709,7 +730,7 @@ class FederationSyncService:
             agent.federationMetadata["providerType"] = _enum_value(sync_plan.provider_type)
             await agent.insert(session=session)
             mutation_result.changed_a2a_runtime_arns.add(remote_id)
-            await self._grant_owner(user_id, ResourceType.REMOTE_AGENT, agent.id)
+            resources_for_acl_inheritance.append((ResourceType.REMOTE_AGENT, agent.id))
 
         for existing, item, remote_id in sync_plan.mcp_updates:
             existing.serverName = item.serverName
@@ -721,7 +742,7 @@ class FederationSyncService:
             existing.federationMetadata = item.federationMetadata
             await existing.save(session=session)
             mutation_result.changed_mcp_runtime_arns.add(remote_id)
-            await self._grant_owner(user_id, ResourceType.MCPSERVER, existing.id)
+            resources_for_acl_inheritance.append((ResourceType.MCPSERVER, existing.id))
 
         for existing, item, remote_id in sync_plan.a2a_updates:
             existing.path = item.path
@@ -735,36 +756,191 @@ class FederationSyncService:
                 existing.config.type = item.config.type
             await existing.save(session=session)
             mutation_result.changed_a2a_runtime_arns.add(remote_id)
-            await self._grant_owner(user_id, ResourceType.REMOTE_AGENT, existing.id)
+            resources_for_acl_inheritance.append((ResourceType.REMOTE_AGENT, existing.id))
+
+        # Batch inherit Federation ACL to all synced resources
+        if acl_query_success and federation_acl_entries and resources_for_acl_inheritance:
+            await self._batch_inherit_federation_acl(
+                federation_acl_entries=federation_acl_entries,
+                resources=resources_for_acl_inheritance,
+            )
+        elif acl_query_success and not federation_acl_entries and resources_for_acl_inheritance:
+            logger.info(
+                "No ACL entries found on Federation %s, skipping ACL inheritance for %d resources",
+                sync_plan.federation_id,
+                len(resources_for_acl_inheritance),
+            )
 
         return mutation_result
 
-    async def _grant_owner(self, user_id: str | None, resource_type: ResourceType, resource_id: Any) -> None:
-        """Grant OWNER ACL to the syncing user for a federation-imported resource.
-
-        No-op when user_id is absent (e.g. system/scheduled syncs).
-        Idempotent: acl_service.grant_permission uses upsert internally,
-        so calling this on an UPDATE safely adds the new syncer as a co-owner
-        without affecting existing owners.
+    async def _get_federation_acl_entries(self, federation_id: Any) -> tuple[list[ExtendedAclEntry], bool]:
         """
-        if not user_id:
-            return
+        Get all ACL entries for a Federation (query once, use multiple times).
+
+        Returns:
+            Tuple of (entries, query_success):
+                - entries: List of ExtendedAclEntry for the Federation, excluding PUBLIC entries
+                - query_success: True if query succeeded, False if query failed
+        """
         try:
-            await self.acl_service.grant_permission(
-                principal_type=PrincipalType.USER,
-                principal_id=user_id,
-                resource_type=resource_type,
-                resource_id=resource_id,
-                perm_bits=RoleBits.OWNER,
-            )
+            entries = await ExtendedAclEntry.find(
+                {
+                    "resourceType": ExtendedResourceType.FEDERATION,
+                    "resourceId": federation_id,
+                    "principalType": {"$ne": PrincipalType.PUBLIC.value},
+                    "principalId": {"$ne": None},
+                }
+            ).to_list()
+
+            logger.debug("Found %d ACL entries for federation %s", len(entries), federation_id)
+            return entries, True
         except Exception as e:
             logger.exception(
-                "Failed to grant OWNER ACL for user=%s resource_type=%s resource_id=%s e=%s",
-                user_id,
-                resource_type,
-                resource_id,
+                "Failed to query Federation ACL entries: federation_id=%s error=%s",
+                federation_id,
                 str(e),
             )
+            return [], False
+
+    async def _batch_inherit_federation_acl(
+        self,
+        federation_acl_entries: list[ExtendedAclEntry],
+        resources: list[tuple[str, Any]],
+    ) -> None:
+        """
+        Batch inherit Federation ACL to multiple resources using INSERT-only logic.
+
+        This method is optimized for performance:
+        1. Query Federation ACL once (passed as parameter)
+        2. Batch query existing ACL entries for all resources (with resourceType filter)
+        3. Compute INSERT operations with principalId validation
+        4. Batch insert new ACL entries in chunks (500 per batch)
+
+        INSERT-only semantics:
+        - For each user in Federation ACL, check if they have ACL on the resource
+        - If NOT exists → INSERT new ACL entry with same permission
+        - If EXISTS → DO NOTHING (keep existing permission, never UPDATE)
+        - Users not in Federation ACL are not affected
+
+        Args:
+            federation_acl_entries: Pre-fetched Federation ACL entries (excluding PUBLIC)
+            resources: List of (resource_type, resource_id) tuples
+        """
+        if not federation_acl_entries or not resources:
+            return
+
+        # Initialize statistics
+        stats = {
+            "federation_acl_count": len(federation_acl_entries),
+            "resource_count": len(resources),
+            "existing_acl_count": 0,
+            "new_acl_count": 0,
+            "skipped_count": 0,
+            "invalid_principal_count": 0,
+            "inserted_count": 0,
+        }
+
+        try:
+            session = get_current_session()
+
+            # Step 1: Batch query existing ACL entries for all resources with resourceType filter
+            resource_filters = [
+                {"resourceType": resource_type, "resourceId": resource_id} for resource_type, resource_id in resources
+            ]
+            existing_acl_entries = await ExtendedAclEntry.find(
+                {"$or": resource_filters} if len(resource_filters) > 1 else resource_filters[0], session=session
+            ).to_list()
+
+            stats["existing_acl_count"] = len(existing_acl_entries)
+
+            # Build index: (resource_type, resource_id, principal_type, principal_id) -> exists
+            existing_acl_index: set[tuple[str, str, str, str]] = {
+                (entry.resourceType, str(entry.resourceId), entry.principalType, str(entry.principalId))
+                for entry in existing_acl_entries
+            }
+
+            # Step 2: Compute new ACL entries to INSERT
+            now = datetime.now(UTC)
+            new_acl_entries: list[ExtendedAclEntry] = []
+
+            for resource_type, resource_id in resources:
+                for fed_entry in federation_acl_entries:
+                    # Validate principalId
+                    if not fed_entry.principalId:
+                        stats["invalid_principal_count"] += 1
+                        logger.warning(
+                            "Skipping ACL entry with null principalId: type=%s resource=%s/%s",
+                            fed_entry.principalType,
+                            resource_type,
+                            resource_id,
+                        )
+                        continue
+
+                    # Check if this principal already has ACL on this resource
+                    acl_key = (resource_type, str(resource_id), fed_entry.principalType, str(fed_entry.principalId))
+
+                    if acl_key in existing_acl_index:
+                        # INSERT-only: skip if ACL already exists
+                        stats["skipped_count"] += 1
+                        continue
+
+                    # Create new ACL entry to INSERT
+                    new_entry = ExtendedAclEntry(
+                        principalType=fed_entry.principalType,
+                        principalId=fed_entry.principalId,
+                        resourceType=resource_type,
+                        resourceId=resource_id,
+                        roleId=fed_entry.roleId,
+                        permBits=fed_entry.permBits,
+                        grantedAt=now,
+                        createdAt=now,
+                        updatedAt=now,
+                    )
+                    new_acl_entries.append(new_entry)
+
+            stats["new_acl_count"] = len(new_acl_entries)
+
+            # Step 3: Batch insert new ACL entries in chunks
+            if new_acl_entries:
+                BATCH_SIZE = 500
+                for i in range(0, len(new_acl_entries), BATCH_SIZE):
+                    batch = new_acl_entries[i : i + BATCH_SIZE]
+                    try:
+                        await ExtendedAclEntry.insert_many(batch, session=session, ordered=False)
+                        stats["inserted_count"] += len(batch)
+                    except Exception as batch_error:
+                        raise RuntimeError(
+                            f"ACL inheritance batch insert failed for entries {i}-{i + len(batch)}: {batch_error}"
+                        ) from batch_error
+
+                logger.info(
+                    "ACL inheritance completed: federation_acl=%d resources=%d existing_acl=%d "
+                    "new_acl=%d skipped=%d invalid_principal=%d inserted=%d",
+                    stats["federation_acl_count"],
+                    stats["resource_count"],
+                    stats["existing_acl_count"],
+                    stats["new_acl_count"],
+                    stats["skipped_count"],
+                    stats["invalid_principal_count"],
+                    stats["inserted_count"],
+                )
+            else:
+                logger.debug(
+                    "No new ACL entries to inherit: federation_acl=%d resources=%d existing_acl=%d skipped=%d",
+                    stats["federation_acl_count"],
+                    stats["resource_count"],
+                    stats["existing_acl_count"],
+                    stats["skipped_count"],
+                )
+
+        except Exception as e:
+            logger.exception(
+                "Failed to batch inherit Federation ACL: resources_count=%d error=%s stats=%s",
+                len(resources),
+                str(e),
+                stats,
+            )
+            raise RuntimeError(f"ACL inheritance failed for {len(resources)} synced resources: {e}") from e
 
     async def _sync_vector_index_after_commit(
         self,
