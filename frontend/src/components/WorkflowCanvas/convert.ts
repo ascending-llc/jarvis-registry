@@ -38,7 +38,7 @@ const sortEdgesByHandle = (edges: Edge[]): Edge[] =>
     return ia - ib;
   });
 
-const mapNodeToApi = (node: Node<NodeData>, children: ApiWorkflowNode[] | null): ApiWorkflowNode => {
+const mapNodeToApi = (node: Node<NodeData>, branchData: { [handle: string]: ApiWorkflowNode[] } | null): ApiWorkflowNode => {
   const data = node.data;
   const nodeType = CANVAS_TO_API_NODE_TYPE[node.type ?? ''] ?? 'step';
 
@@ -46,13 +46,31 @@ const mapNodeToApi = (node: Node<NodeData>, children: ApiWorkflowNode[] | null):
     id: node.id,
     name: data.label || node.id,
     nodeType,
+    position: { x: Math.round(node.position?.x ?? 0), y: Math.round(node.position?.y ?? 0) },
     // Store canvasType for round-trip fidelity (mcp vs agent distinction)
     config: { description: data.description ?? '', canvasType: node.type },
   };
 
-  if (children !== null) apiNode.children = children;
+  if (branchData) {
+    if (nodeType === 'condition') {
+      apiNode.trueSteps = branchData['true'] ?? [];
+      apiNode.falseSteps = branchData['false'] ?? [];
+    } else if (nodeType === 'router') {
+      const routerData = data as import('./types').RouterNodeData;
+      const cases = routerData.cases ?? [];
+      apiNode.choices = cases.map((c, i) => ({
+        name: c,
+        steps: branchData[`case-${i}`] ?? []
+      }));
+      if (branchData['default']?.length) {
+         apiNode.choices.push({ name: 'default', steps: branchData['default'] });
+      }
+    } else {
+      const keys = Object.keys(branchData).sort((a,b) => a.localeCompare(b));
+      apiNode.children = keys.map(k => branchData[k][0]).filter(Boolean);
+    }
+  }
 
-  // Only include executorKey when non-empty — backend rejects null with no a2aPool
   if ((node.type === 'mcp' || node.type === 'agent') && data.label) {
     apiNode.executorKey = data.label;
   }
@@ -68,35 +86,27 @@ const mapNodeToApi = (node: Node<NodeData>, children: ApiWorkflowNode[] | null):
   }
   if (node.type === 'router') {
     const routerData = data as import('./types').RouterNodeData;
+    apiNode.conditionCel = routerData.routeBy ?? null; // Router requires conditionCel
     apiNode.config = {
       ...apiNode.config,
-      routeBy: routerData.routeBy,
+      routeBy: routerData.routeBy, // Keep in config for frontend symmetry just in case
       defaultCase: routerData.defaultCase,
       cases: routerData.cases ?? [],
     };
   }
-
-  return apiNode;
-};
-
-const buildBranchHead = (
-  nodeId: string,
-  nodeMap: Map<string, Node<NodeData>>,
-  edgesFromNode: Map<string, Edge[]>,
-  addNodeIds: Set<string>,
-): ApiWorkflowNode | null => {
-  const node = nodeMap.get(nodeId);
-  if (!node || addNodeIds.has(nodeId)) return null;
-
-  if (BRANCHING_TYPES.has(node.type ?? '')) {
-    const outEdges = sortEdgesByHandle((edgesFromNode.get(nodeId) ?? []).filter(e => !addNodeIds.has(e.target)));
-    const children = outEdges
-      .map(e => buildBranchHead(e.target, nodeMap, edgesFromNode, addNodeIds))
-      .filter((n): n is ApiWorkflowNode => n !== null);
-    return mapNodeToApi(node, children);
+  if (node.type === 'gate') {
+    const gateData = data as import('./types').GateNodeData;
+    apiNode.executorKey = 'sys.approval'; // Satisfy backend Pydantic validation
+    apiNode.config = {
+      ...apiNode.config,
+      reviewerPrompt: gateData.reviewerPrompt,
+      role: gateData.role,
+      timeout: gateData.timeout,
+      onTimeout: gateData.onTimeout,
+    };
   }
 
-  return mapNodeToApi(node, null);
+  return apiNode;
 };
 
 const buildSequence = (
@@ -121,11 +131,14 @@ const buildSequence = (
 
     if (BRANCHING_TYPES.has(node.type ?? '')) {
       const sortedEdges = sortEdgesByHandle(outEdges);
-      const children = sortedEdges
-        .map(e => buildBranchHead(e.target, nodeMap, edgesFromNode, addNodeIds))
-        .filter((n): n is ApiWorkflowNode => n !== null);
+      const branchData: { [handle: string]: ApiWorkflowNode[] } = {};
+      
+      for (const e of sortedEdges) {
+        const handle = e.sourceHandle || 'default';
+        branchData[handle] = buildSequence(e.target, nodeMap, edgesFromNode, addNodeIds, new Set(visited));
+      }
 
-      result.push(mapNodeToApi(node, children));
+      result.push(mapNodeToApi(node, branchData));
       currentId = null;
     } else {
       result.push(mapNodeToApi(node, null));
@@ -141,33 +154,49 @@ const buildSequence = (
 export const validateApiNodes = (apiNodes: ApiWorkflowNode[]): string | null => {
   const visit = (node: ApiWorkflowNode): string | null => {
     const children = node.children ?? [];
+    const trueSteps = node.trueSteps ?? [];
+    const falseSteps = node.falseSteps ?? [];
+    const choices = node.choices ?? [];
 
     if (node.nodeType === 'step') {
-      if (children.length > 0) return `Step node "${node.name}" must not have children`;
-      if (!node.executorKey && (!node.a2aPool || node.a2aPool.length === 0)) {
+      if (children.length > 0 || trueSteps.length > 0 || falseSteps.length > 0 || choices.length > 0) 
+        return `Step node "${node.name}" must not have nested branches`;
+      if (node.config?.canvasType !== 'gate' && !node.executorKey && (!node.a2aPool || node.a2aPool.length === 0)) {
         return `Node "${node.name}" requires an executor key or agent pool`;
       }
     }
 
     if (node.nodeType === 'condition') {
-      if (children.length === 0) {
-        return `Condition node "${node.name}" requires at least one branch with a step node`;
+      if (trueSteps.length === 0) {
+        return `Condition node "${node.name}" requires at least one node in the true branch`;
       }
-      if (children.length > 2) {
-        return `Condition node "${node.name}" supports at most 2 branches`;
+      for (const child of [...trueSteps, ...falseSteps]) {
+        const err = visit(child);
+        if (err) return err;
       }
+      return null;
+    }
+
+    if (node.nodeType === 'router') {
+      if (choices.length < 2) {
+        return `Router node "${node.name}" requires at least 2 choices`;
+      }
+      for (const choice of choices) {
+        if (choice.steps.length === 0) return `Router choice "${choice.name}" in node "${node.name}" requires at least one node`;
+        for (const child of choice.steps) {
+          const err = visit(child);
+          if (err) return err;
+        }
+      }
+      return null;
     }
 
     if (node.nodeType === 'parallel' && children.length < 2) {
-      return `Parallel node "${node.name}" requires at least 2 branches with step nodes`;
+      return `Parallel node "${node.name}" requires at least 2 branches`;
     }
 
     if (node.nodeType === 'loop' && children.length < 1) {
-      return `Loop node "${node.name}" requires at least one branch with a step node`;
-    }
-
-    if (node.nodeType === 'router' && children.length < 2) {
-      return `Router node "${node.name}" requires at least 2 branches with step nodes`;
+      return `Loop node "${node.name}" requires at least one branch`;
     }
 
     for (const child of children) {
@@ -227,7 +256,14 @@ const apiNodeToCanvas = (w: ApiWorkflowNode): CanvasNode => {
     description: (w.config?.description as string | undefined) ?? '',
   } as NodeData;
 
-  if (w.conditionCel) (data as import('./types').CondNodeData).expression = w.conditionCel;
+  if (canvasType === 'cond' && w.conditionCel) {
+    (data as import('./types').CondNodeData).expression = w.conditionCel;
+  }
+  if (canvasType === 'router' && w.conditionCel) {
+    (data as import('./types').RouterNodeData).routeBy = w.conditionCel;
+  } else if (w.config?.routeBy) {
+    (data as import('./types').RouterNodeData).routeBy = w.config.routeBy as string;
+  }
   if (w.loopConfig) {
     const loopData = data as import('./types').LoopNodeData;
     loopData.maxIterations = w.loopConfig.maxIterations;
@@ -255,7 +291,7 @@ const apiNodeToCanvas = (w: ApiWorkflowNode): CanvasNode => {
   return {
     id: w.id ?? `n_${Date.now()}_${Math.random()}`,
     type: canvasType,
-    position: { x: 0, y: 0 },
+    position: w.position ? { x: w.position.x ?? 0, y: w.position.y ?? 0 } : { x: 0, y: 0 },
     data,
   };
 };
@@ -287,51 +323,63 @@ const processApiSequence = (
       });
     }
 
-    const children = apiNode.children ?? [];
-
     if (BRANCHING_TYPES.has(canvasNode.type ?? '')) {
-      // Determine source handles for each branch
       const type = canvasNode.type;
-      let outHandles = [{ sourceHandle: 'true', label: 'true' }];
-      if (type === 'parallel') {
-        const d = canvasNode.data as import('./types').ParallelNodeData;
-        outHandles = (d.branches || ['Branch A', 'Branch B']).map((_, i) => ({
-          sourceHandle: `branch-${i}`,
-          label: `branch-${i}`,
-        }));
+      
+      let branches: { handle: string; sequence: ApiWorkflowNode[] }[] = [];
+      
+      if (type === 'cond') {
+        const tSteps = apiNode.trueSteps?.length ? apiNode.trueSteps : (apiNode.children?.[0] ? [apiNode.children[0]] : []);
+        const fSteps = apiNode.falseSteps?.length ? apiNode.falseSteps : (apiNode.children?.[1] ? [apiNode.children[1]] : []);
+        if (tSteps.length > 0) branches.push({ handle: 'true', sequence: tSteps });
+        if (fSteps.length > 0) branches.push({ handle: 'false', sequence: fSteps });
       } else if (type === 'router') {
-        const d = canvasNode.data as import('./types').RouterNodeData;
-        const cases = d.cases || ['critical', 'normal'];
-        outHandles = [
-          ...cases.map((_, i) => ({ sourceHandle: `case-${i}`, label: `case-${i}` })),
-          { sourceHandle: 'default', label: 'default' },
-        ];
+        let cases = apiNode.choices ?? [];
+        if (cases.length === 0 && apiNode.children?.length) {
+           // fallback to children
+           const routerCases = (apiNode.config?.cases as string[]) ?? [];
+           cases = apiNode.children.map((c, i) => {
+             const name = routerCases[i] ?? (i === apiNode.children!.length - 1 ? 'default' : `case-${i}`);
+             return { name, steps: [c] };
+           });
+        }
+        const routerCases = (apiNode.config?.cases as string[]) ?? [];
+        cases.forEach(choice => {
+          let handle = 'default';
+          const idx = routerCases.indexOf(choice.name);
+          if (idx >= 0) handle = `case-${idx}`;
+          if (choice.name === 'default') handle = 'default';
+          
+          if (choice.steps.length > 0) {
+            branches.push({ handle, sequence: choice.steps });
+          }
+        });
+      } else if (type === 'parallel') {
+        const children = apiNode.children ?? [];
+        children.forEach((child, i) => {
+          branches.push({ handle: `branch-${i}`, sequence: [child] });
+        });
       } else if (type === 'loop') {
-        outHandles = [
-          { sourceHandle: 'loop', label: 'loop' },
-          { sourceHandle: 'done', label: 'done' },
-        ];
-      } else if (type === 'cond') {
-        outHandles = [
-          { sourceHandle: 'true', label: 'true' },
-          { sourceHandle: 'false', label: 'false' },
-        ];
+        const children = apiNode.children ?? [];
+        if (children.length > 0) {
+          branches.push({ handle: 'loop', sequence: children });
+        }
       }
 
-      for (let i = 0; i < children.length; i++) {
-        const branchChild = apiNodeToCanvas(children[i]);
-        result.nodes.push(branchChild);
-        result.edges.push({
-          id: nextEdgeId(),
-          source: canvasNode.id,
-          target: branchChild.id,
-          sourceHandle: outHandles[i]?.sourceHandle ?? `branch-${i}`,
-          ...EDGE_CONFIG,
-        });
-        // Terminate each branch with an 'add' placeholder
+      for (const branch of branches) {
+        const branchLastId = processApiSequence(branch.sequence, canvasNode.id, branch.handle, result);
+        
+        const finalBranchNodeId = branchLastId ?? canvasNode.id;
+        const finalNode = result.nodes.find(n => n.id === finalBranchNodeId) || canvasNode;
+        
         const addId = nextAddId();
-        result.nodes.push({ id: addId, type: 'add', position: { x: 0, y: 0 }, data: { label: '' } });
-        result.edges.push({ id: nextEdgeId(), source: branchChild.id, target: addId, ...DASHED_EDGE });
+        result.nodes.push({ 
+          id: addId, 
+          type: 'add', 
+          position: { x: (finalNode.position?.x ?? 0) + 300, y: finalNode.position?.y ?? 0 }, 
+          data: { label: '' } 
+        });
+        result.edges.push({ id: nextEdgeId(), source: finalNode.id, target: addId, ...DASHED_EDGE });
       }
 
       lastStepId = null;
@@ -365,10 +413,21 @@ export const apiNodesToCanvas = (apiNodes: ApiWorkflowNode[]): { nodes: CanvasNo
 
   // Trailing 'add' node after the last step in the linear chain
   if (lastStepId !== null) {
+    const lastNode = result.nodes.find(n => n.id === lastStepId);
     const addId = nextAddId();
-    result.nodes.push({ id: addId, type: 'add', position: { x: 0, y: 0 }, data: { label: '' } });
+    result.nodes.push({ 
+      id: addId, 
+      type: 'add', 
+      position: { x: (lastNode?.position.x ?? 0) + 300, y: lastNode?.position.y ?? 0 }, 
+      data: { label: '' } 
+    });
     result.edges.push({ id: nextEdgeId(), source: lastStepId, target: addId, ...DASHED_EDGE });
   }
 
-  return getLayoutedElements(result.nodes, result.edges);
+  // If any node has a saved position (e.g. from backend), we should not overwrite with Dagre auto-layout.
+  // Note: we check if the first non-add node has a position set to something other than 0,0.
+  // A more robust check is to just see if the backend provided any `position` object at all on the first node.
+  const hasSavedPositions = apiNodes.length > 0 && !!apiNodes[0].position;
+
+  return hasSavedPositions ? result : getLayoutedElements(result.nodes, result.edges);
 };

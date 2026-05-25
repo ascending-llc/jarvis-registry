@@ -15,6 +15,7 @@ export interface WorkflowPanelContextValue {
   onOpenAgentPicker: (callback: (agent: AgentInfo) => void) => void;
   onNodeDataChange: (nodeId: string, patch: Partial<NodeData>) => void;
   onParallelBranchesChange: (nodeId: string, prev: string[], next: string[]) => void;
+  onRouterCasesChange: (nodeId: string, prev: string[], next: string[]) => void;
   onDeleteNode: (nodeId: string) => void;
   onDeleteWorkflow: () => void;
   onWorkflowChange: (patch: Partial<Pick<Workflow, 'name' | 'description' | 'type'>>) => void;

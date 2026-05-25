@@ -24,7 +24,7 @@ export interface WorkflowCanvasProps {
   onPanelModeChange: (mode: PanelMode) => void;
   onDeleteWorkflow: () => void;
   onWorkflowChange: (patch: Partial<Pick<Workflow, 'name' | 'description' | 'type'>>) => void;
-  onSave?: (nodes: Node[], edges: Edge[]) => void;
+  onSave?: (nodes: Node[], edges: Edge[], viewport: { x: number; y: number; zoom: number }) => void;
   onChange?: () => void;
 }
 

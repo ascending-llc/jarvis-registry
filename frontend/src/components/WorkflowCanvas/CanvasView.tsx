@@ -37,9 +37,11 @@ import type { useWorkflowCanvas } from './hooks/useWorkflowCanvas';
 
 interface CanvasViewProps {
   canvas: ReturnType<typeof useWorkflowCanvas>;
+  defaultViewport?: { x?: number; y?: number; zoom?: number };
+  isReadOnly?: boolean;
 }
 
-export const CanvasView: React.FC<CanvasViewProps> = ({ canvas }) => {
+export const CanvasView: React.FC<CanvasViewProps> = ({ canvas, defaultViewport, isReadOnly }) => {
   const { theme } = useTheme();
   const isDark = theme === 'dark';
 
@@ -52,21 +54,49 @@ export const CanvasView: React.FC<CanvasViewProps> = ({ canvas }) => {
     [isDark],
   );
 
+  // ── ReadOnly Mode Filters ──────────────────────────────────────────────────
+  const displayNodes = isReadOnly ? canvas.nodesWithHandlers.filter(n => n.type !== 'add') : canvas.nodesWithHandlers;
+  const displayEdges = isReadOnly
+    ? canvas.edges.filter(e => {
+        const sourceIsAdd = canvas.nodesWithHandlers.find(n => n.id === e.source)?.type === 'add';
+        const targetIsAdd = canvas.nodesWithHandlers.find(n => n.id === e.target)?.type === 'add';
+        return !sourceIsAdd && !targetIsAdd;
+      })
+    : canvas.edges;
+
+  const handleNodesChange: typeof canvas.onNodesChange = useCallback(
+    changes => {
+      if (isReadOnly) {
+        // Strip out 'remove' actions (e.g., from Backspace) if read-only
+        const safeChanges = changes.filter(c => c.type !== 'remove');
+        if (safeChanges.length > 0) canvas.onNodesChange(safeChanges);
+      } else {
+        canvas.onNodesChange(changes);
+      }
+    },
+    [isReadOnly, canvas.onNodesChange],
+  );
+
   return (
     <div className='flex-1'>
       <ReactFlow
-        nodes={canvas.nodesWithHandlers}
-        edges={canvas.edges}
-        onNodesChange={canvas.onNodesChange}
-        onEdgesChange={canvas.onEdgesChange}
-        onConnect={canvas.onConnect}
+        nodes={displayNodes}
+        edges={displayEdges}
+        onNodesChange={handleNodesChange}
+        onEdgesChange={isReadOnly ? undefined : canvas.onEdgesChange}
+        onConnect={isReadOnly ? undefined : canvas.onConnect}
         onNodeClick={canvas.onNodeClick}
         onPaneClick={canvas.onPaneClick}
         nodeTypes={nodeTypes}
         defaultEdgeOptions={EDGE_CONFIG}
         isValidConnection={canvas.isValidConnection}
-        fitView
-        fitViewOptions={{ padding: 0.1, minZoom: 0.1, maxZoom: 1 }}
+        defaultViewport={defaultViewport ? { x: defaultViewport.x ?? 0, y: defaultViewport.y ?? 0, zoom: defaultViewport.zoom ?? 1 } : undefined}
+        fitView={!defaultViewport}
+        fitViewOptions={!defaultViewport ? { padding: 0.1, minZoom: 0.1, maxZoom: 1 } : undefined}
+        nodesDraggable={!isReadOnly}
+        nodesConnectable={!isReadOnly}
+        elementsSelectable={true}
+        edgesFocusable={!isReadOnly}
       >
         <Background
           variant={BackgroundVariant.Dots}

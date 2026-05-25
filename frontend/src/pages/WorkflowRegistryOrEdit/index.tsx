@@ -103,12 +103,13 @@ const WorkflowRegistryOrEdit: React.FC = () => {
   }, [isEditMode, workflow]);
 
   // ── Actions: Save ────────────────────────────────────────────────────────────
-  const handleSave = async (nodes: Node[], edges: Edge[]) => {
+  const handleSave = async (nodes: Node[], edges: Edge[], viewport: { x: number; y: number; zoom: number }) => {
     const apiNodes = canvasToApiNodes(nodes as unknown as Parameters<typeof canvasToApiNodes>[0], edges);
     if (apiNodes.length === 0) {
       showToast('Add at least one node before saving', 'error');
       return;
     }
+
     const validationError = validateApiNodes(apiNodes);
     if (validationError) {
       showToast(validationError, 'error');
@@ -116,12 +117,14 @@ const WorkflowRegistryOrEdit: React.FC = () => {
     }
 
     setMutatingAction('saving');
+
     try {
       if (isEditMode && id) {
         const updated = await SERVICES.WORKFLOW.updateWorkflow(id, {
           name: workflow?.name,
           description: workflow?.description,
           nodes: apiNodes,
+          canvas: { viewport },
         });
         handleWorkflowUpdate(id, { nodeCount: updated.numNodes ?? apiNodes.length, name: workflow?.name });
         setHasChanges(false);
@@ -132,6 +135,7 @@ const WorkflowRegistryOrEdit: React.FC = () => {
           description: workflow?.description?.trim() || undefined,
           type: workflow?.type ?? 'supervised',
           nodes: apiNodes,
+          canvas: { viewport },
         });
         setHasChanges(false);
         await refreshWorkflowData();

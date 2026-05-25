@@ -11,7 +11,7 @@ interface Props {
 }
 
 export const RouterNodeProperties: React.FC<Props> = ({ node }) => {
-  const { nodes, edges, agentSchemas, onNodeDataChange } = useWorkflowPanel();
+  const { nodes, edges, agentSchemas, onNodeDataChange, onRouterCasesChange } = useWorkflowPanel();
   const { upstreamSchema, sourceLabel } = useUpstreamSchema(node, nodes, edges, agentSchemas);
 
   const nodeData = node.data;
@@ -35,9 +35,9 @@ export const RouterNodeProperties: React.FC<Props> = ({ node }) => {
         <div className='text-xs text-[var(--jarvis-muted)] mb-1'>Cases</div>
         <BranchList
           items={routerCases}
-          onAdd={() => onNodeDataChange(node.id, { cases: [...routerCases, ''] })}
+          onAdd={() => onRouterCasesChange(node.id, routerCases, [...routerCases, ''])}
           onRm={i =>
-            routerCases.length > 1 && onNodeDataChange(node.id, { cases: routerCases.filter((_, j) => j !== i) })
+            routerCases.length > 1 && onRouterCasesChange(node.id, routerCases, routerCases.filter((_, j) => j !== i))
           }
           onChange={(i, val) => {
             const next = [...routerCases];

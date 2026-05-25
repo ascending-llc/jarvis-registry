@@ -38,6 +38,11 @@ export interface LoopConfig {
   endConditionCel?: string;
 }
 
+export interface RouterChoice {
+  name: string;
+  steps: WorkflowNode[];
+}
+
 export interface WorkflowNode {
   id?: string;
   name: string;
@@ -47,8 +52,12 @@ export interface WorkflowNode {
   stepConfig?: StepConfig | null;
   config: Record<string, any>;
   children?: WorkflowNode[];
+  trueSteps?: WorkflowNode[];
+  falseSteps?: WorkflowNode[];
+  choices?: RouterChoice[];
   conditionCel?: string | null;
   loopConfig?: LoopConfig | null;
+  position?: { x?: number; y?: number };
 }
 
 export interface Workflow {
@@ -58,6 +67,7 @@ export interface Workflow {
   type?: 'autonomous' | 'supervised';
   numNodes?: number;
   nodes?: WorkflowNode[];
+  canvas?: { viewport: { x?: number; y?: number; zoom?: number } };
   createdAt: string;
   updatedAt: string;
 }
@@ -80,6 +90,7 @@ export interface CreateWorkflowRequest {
   description?: string;
   type?: 'autonomous' | 'supervised';
   nodes: WorkflowNode[];
+  canvas: { viewport: { x?: number; y?: number; zoom?: number } };
 }
 
 export type CreateWorkflowResponse = Workflow;
@@ -88,6 +99,7 @@ export interface UpdateWorkflowRequest {
   name?: string;
   description?: string;
   nodes?: WorkflowNode[];
+  canvas?: { viewport: { x?: number; y?: number; zoom?: number } };
 }
 
 export interface ToggleWorkflowStateRequest {

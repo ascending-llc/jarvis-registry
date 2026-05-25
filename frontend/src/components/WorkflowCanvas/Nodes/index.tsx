@@ -1,5 +1,6 @@
 import type { Node, NodeProps } from '@xyflow/react';
-import { Handle, Position } from '@xyflow/react';
+import { Handle, Position, useUpdateNodeInternals } from '@xyflow/react';
+import { useEffect } from 'react';
 
 import './index.css';
 
@@ -111,8 +112,14 @@ export const CondNode: React.FC<NodeProps<Node<import('../types').CondNodeData>>
 };
 
 /** Parallel (fan-out) node with one source handle per branch. */
-export const ParallelNode: React.FC<NodeProps<Node<import('../types').ParallelNodeData>>> = ({ data, selected }) => {
+export const ParallelNode: React.FC<NodeProps<Node<import('../types').ParallelNodeData>>> = ({ id, data, selected }) => {
   const branches = Array.isArray(data.branches) ? data.branches : ['Branch A', 'Branch B'];
+  const updateNodeInternals = useUpdateNodeInternals();
+
+  useEffect(() => {
+    updateNodeInternals(id);
+  }, [branches.length, id, updateNodeInternals]);
+
   const N = branches.length;
   const minHeight = Math.max(80, (N - 1) * HANDLE_SPACING_PX + 60);
   return (
@@ -146,8 +153,14 @@ export const ParallelNode: React.FC<NodeProps<Node<import('../types').ParallelNo
 };
 
 /** Router (switch / case) node. */
-export const RouterNode: React.FC<NodeProps<Node<import('../types').RouterNodeData>>> = ({ data, selected }) => {
+export const RouterNode: React.FC<NodeProps<Node<import('../types').RouterNodeData>>> = ({ id, data, selected }) => {
   const cases = Array.isArray(data.cases) ? data.cases : ['critical', 'normal'];
+  const updateNodeInternals = useUpdateNodeInternals();
+
+  useEffect(() => {
+    updateNodeInternals(id);
+  }, [cases.length, id, updateNodeInternals]);
+
   const N = cases.length;
   const minHeight = Math.max(80, (N - 1) * HANDLE_SPACING_PX + 60);
   return (

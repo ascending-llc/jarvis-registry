@@ -81,8 +81,14 @@ export const useCanvasMutations = ({
     [setNodes, setEdges, setSelected, setPanelCollapsed, onChange],
   );
 
-  const onParallelBranchesChange = useCallback(
-    (nodeId: string, prevBranches: string[], nextBranches: string[]) => {
+  const onDynamicBranchesChange = useCallback(
+    (
+      nodeId: string,
+      prevBranches: string[],
+      nextBranches: string[],
+      options: { dataKey: 'branches' | 'cases'; handlePrefix: string },
+    ) => {
+      const { dataKey, handlePrefix } = options;
       if (prevBranches === nextBranches) return;
       const N = nextBranches.length;
       const handleOffsetY = (i: number): number => (i - (N - 1) / 2) * BRANCH_SPACING;
@@ -101,13 +107,13 @@ export const useCanvasMutations = ({
 
         const nextNodes = nodes
           .map(n => {
-            if (n.id === nodeId) return { ...n, data: { ...n.data, branches: nextBranches } };
+            if (n.id === nodeId) return { ...n, data: { ...n.data, [dataKey]: nextBranches } };
             if (n.type === 'add') {
               const e = edges.find(
-                e => e.source === nodeId && e.target === n.id && e.sourceHandle?.startsWith('branch-'),
+                e => e.source === nodeId && e.target === n.id && e.sourceHandle?.startsWith(`${handlePrefix}-`),
               );
               if (!e || !e.sourceHandle) return n;
-              const idx = parseInt(e.sourceHandle.slice(7), 10);
+              const idx = parseInt(e.sourceHandle.split('-')[1], 10);
               return { ...n, position: { x: px + NODE_WIDTH + ADD_NODE_MARGIN_X, y: py + handleOffsetY(idx) } };
             }
             return n;
@@ -123,13 +129,12 @@ export const useCanvasMutations = ({
 
         const nextEdges = [
           ...edges,
-          { id: generateEdgeId(), source: nodeId, target: addId, sourceHandle: `branch-${newIdx}`, ...DASHED_EDGE },
+          { id: generateEdgeId(), source: nodeId, target: addId, sourceHandle: `${handlePrefix}-${newIdx}`, ...DASHED_EDGE },
         ];
 
-        const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(nextNodes, nextEdges);
-        setNodes(layoutedNodes);
-        setEdges(layoutedEdges);
-        setSelected(prev => (prev?.id === nodeId ? { ...prev, data: { ...prev.data, branches: nextBranches } } : prev));
+        setNodes(nextNodes as WorkflowNode[]);
+        setEdges(nextEdges);
+        setSelected(prev => (prev?.id === nodeId ? { ...prev, data: { ...prev.data, [dataKey]: nextBranches } } : prev));
       } else if (nextBranches.length < prevBranches.length) {
         let removedIdx = prevBranches.length - 1;
         for (let i = 0; i < nextBranches.length; i++) {
@@ -139,7 +144,7 @@ export const useCanvasMutations = ({
           }
         }
 
-        const removedEdge = edges.find(e => e.source === nodeId && e.sourceHandle === `branch-${removedIdx}`);
+        const removedEdge = edges.find(e => e.source === nodeId && e.sourceHandle === `${handlePrefix}-${removedIdx}`);
         const removedAddId =
           removedEdge && nodes.find(n => n.id === removedEdge.target)?.type === 'add' ? removedEdge.target : null;
 
@@ -151,13 +156,13 @@ export const useCanvasMutations = ({
         const nextNodes = nodes
           .filter(n => n.id !== removedAddId)
           .map(n => {
-            if (n.id === nodeId) return { ...n, data: { ...n.data, branches: nextBranches } };
+            if (n.id === nodeId) return { ...n, data: { ...n.data, [dataKey]: nextBranches } };
             if (n.type === 'add') {
               const e = edges.find(
-                e => e.source === nodeId && e.target === n.id && e.sourceHandle?.startsWith('branch-'),
+                e => e.source === nodeId && e.target === n.id && e.sourceHandle?.startsWith(`${handlePrefix}-`),
               );
               if (!e || !e.sourceHandle) return n;
-              const oldIdx = parseInt(e.sourceHandle.slice(7), 10);
+              const oldIdx = parseInt(e.sourceHandle.split('-')[1], 10);
               const newHandleIdx = oldIdx > removedIdx ? oldIdx - 1 : oldIdx;
               return {
                 ...n,
@@ -168,22 +173,36 @@ export const useCanvasMutations = ({
           });
 
         const nextEdges = edges
-          .filter(e => !(e.source === nodeId && e.sourceHandle === `branch-${removedIdx}`))
+          .filter(e => !(e.source === nodeId && e.sourceHandle === `${handlePrefix}-${removedIdx}`))
           .map(e => {
-            if (e.source === nodeId && e.sourceHandle?.startsWith('branch-')) {
-              const idx = parseInt(e.sourceHandle.slice(7), 10);
-              if (idx > removedIdx) return { ...e, sourceHandle: `branch-${idx - 1}` };
+            if (e.source === nodeId && e.sourceHandle?.startsWith(`${handlePrefix}-`)) {
+              const idx = parseInt(e.sourceHandle.split('-')[1], 10);
+              if (idx > removedIdx) return { ...e, sourceHandle: `${handlePrefix}-${idx - 1}` };
             }
             return e;
           });
 
-        const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(nextNodes, nextEdges);
-        setNodes(layoutedNodes);
-        setEdges(layoutedEdges);
-        setSelected(prev => (prev?.id === nodeId ? { ...prev, data: { ...prev.data, branches: nextBranches } } : prev));
+        const safeNodes = nextNodes as WorkflowNode[];
+        setNodes(safeNodes);
+        setEdges(nextEdges);
+        setSelected(prev => (prev?.id === nodeId ? { ...prev, data: { ...prev.data, [dataKey]: nextBranches } } : prev));
       }
     },
     [nodes, edges, setNodes, setEdges, setSelected, syncIdCounters, generateEdgeId, onChange],
+  );
+
+  const onParallelBranchesChange = useCallback(
+    (nodeId: string, prevBranches: string[], nextBranches: string[]) => {
+      onDynamicBranchesChange(nodeId, prevBranches, nextBranches, { dataKey: 'branches', handlePrefix: 'branch' });
+    },
+    [onDynamicBranchesChange],
+  );
+
+  const onRouterCasesChange = useCallback(
+    (nodeId: string, prevCases: string[], nextCases: string[]) => {
+      onDynamicBranchesChange(nodeId, prevCases, nextCases, { dataKey: 'cases', handlePrefix: 'case' });
+    },
+    [onDynamicBranchesChange],
   );
 
   const onPick = useCallback(
@@ -262,12 +281,8 @@ export const useCanvasMutations = ({
         ];
       })();
 
-      const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(
-        nextNodes as WorkflowNode[],
-        nextEdges,
-      );
-      setNodes(layoutedNodes);
-      setEdges(layoutedEdges);
+      setNodes(nextNodes as WorkflowNode[]);
+      setEdges(nextEdges);
 
       setSelected(newNode);
     },
@@ -278,6 +293,7 @@ export const useCanvasMutations = ({
     onNodeDataChange,
     onDeleteNode,
     onParallelBranchesChange,
+    onRouterCasesChange,
     onPick,
   };
 };

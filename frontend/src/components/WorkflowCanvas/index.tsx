@@ -1,4 +1,4 @@
-import { ReactFlowProvider } from '@xyflow/react';
+import { ReactFlowProvider, useReactFlow } from '@xyflow/react';
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { CanvasView } from './CanvasView';
 import { AGENT_SCHEMAS } from './fixtures';
@@ -38,6 +38,7 @@ const WorkflowCanvasInner = forwardRef<WorkflowCanvasRef, WorkflowCanvasProps>(
     const agentPickerCb = useRef<((agent: AgentInfo) => void) | null>(null);
 
     const handleOpenNodePicker = (nodeId: string) => {
+      if (isReadOnly) return;
       setPendingAdd(nodeId);
       setPickerOpen(true);
     };
@@ -56,8 +57,10 @@ const WorkflowCanvasInner = forwardRef<WorkflowCanvasRef, WorkflowCanvasProps>(
       }
     }, [canvas.selectedNode, canvas.panelCollapsed, panelMode, onPanelModeChange]);
 
+    const reactFlow = useReactFlow();
+
     useImperativeHandle(ref, () => ({
-      save: () => onSave?.(canvas.nodes, canvas.edges),
+      save: () => onSave?.(canvas.nodes, canvas.edges, reactFlow.getViewport()),
       getElements: () => ({ nodes: canvas.nodes, edges: canvas.edges }),
       clearSelection: canvas.clearSelection,
       togglePanel: () => {
@@ -85,7 +88,7 @@ const WorkflowCanvasInner = forwardRef<WorkflowCanvasRef, WorkflowCanvasProps>(
     return (
       <div className='workflow-canvas-root h-full w-full flex flex-col overflow-hidden'>
         <div className='flex-1 flex overflow-hidden'>
-          <CanvasView canvas={canvas} />
+          <CanvasView canvas={canvas} defaultViewport={workflowData?.canvas?.viewport} isReadOnly={isReadOnly} />
 
           <WorkflowPanelProvider
             workflowId={workflowId}
@@ -98,6 +101,7 @@ const WorkflowCanvasInner = forwardRef<WorkflowCanvasRef, WorkflowCanvasProps>(
             onOpenAgentPicker={onOpenAgentPicker}
             onNodeDataChange={canvas.onNodeDataChange}
             onParallelBranchesChange={canvas.onParallelBranchesChange}
+            onRouterCasesChange={canvas.onRouterCasesChange}
             onDeleteNode={canvas.onDeleteNode}
             onDeleteWorkflow={onDeleteWorkflow}
             onWorkflowChange={onWorkflowChange}

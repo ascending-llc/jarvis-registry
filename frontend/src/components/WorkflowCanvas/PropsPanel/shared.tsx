@@ -1,4 +1,4 @@
-import type React from 'react';
+import React, { useEffect, useState } from 'react';
 
 export interface AddButtonProps {
   children: React.ReactNode;
@@ -35,10 +35,10 @@ export const BranchList: React.FC<BranchListProps> = ({ items, onAdd, onRm, onCh
             className='flex items-center gap-1.5 bg-[var(--jarvis-card-muted)] border border-[var(--jarvis-border)] rounded-md px-2 py-1.5 mb-1'
           >
             {prefix && <span className='font-mono text-[10px] text-[var(--jarvis-subtle)] shrink-0'>{prefix}</span>}
-            <input
+            <LocalStateInput
               className='font-mono text-[11px] text-[var(--jarvis-text)] flex-1 bg-transparent border-none outline-none'
               value={item}
-              onChange={e => onChange?.(i, e.target.value)}
+              onChange={val => onChange?.(i, val)}
             />
             <button
               className='shrink-0 rounded p-0.5 transition-colors hover:bg-[var(--jarvis-danger-soft)] hover:text-[var(--jarvis-danger-text)] bg-none border-none text-[var(--jarvis-subtle)] cursor-pointer text-[13px]'
@@ -51,5 +51,33 @@ export const BranchList: React.FC<BranchListProps> = ({ items, onAdd, onRm, onCh
       </div>
       <AddButton onClick={onAdd}>{addLabel}</AddButton>
     </>
+  );
+};
+
+export interface LocalStateInputProps extends Omit<React.InputHTMLAttributes<HTMLInputElement>, 'onChange'> {
+  value: string;
+  onChange: (val: string) => void;
+}
+
+export const LocalStateInput: React.FC<LocalStateInputProps> = ({ value, onChange, ...props }) => {
+  const [localValue, setLocalValue] = useState(value);
+
+  // Sync with upstream value if it changes externally
+  useEffect(() => {
+    setLocalValue(value);
+  }, [value]);
+
+  return (
+    <input
+      {...props}
+      value={localValue}
+      onChange={e => setLocalValue(e.target.value)}
+      onBlur={() => onChange(localValue)}
+      onKeyDown={e => {
+        if (e.key === 'Enter') {
+          e.currentTarget.blur(); // Trigger onBlur and thus onChange
+        }
+      }}
+    />
   );
 };
