@@ -18,7 +18,7 @@ from registry_pkgs.vector.enum.enums import SearchType
 from registry_pkgs.vector.repositories.a2a_agent_repository import A2AAgentRepository
 from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRepository
 
-from ...auth.dependencies import CurrentUser
+from ...auth.dependencies import UserContextDict
 from ...utils.otel_metrics import record_tool_discovery
 from .base import VectorSearchService
 
@@ -77,7 +77,7 @@ class SearchService:
         self.mcp_server_repo = mcp_server_repo
         self.a2a_agent_repo = a2a_agent_repo
 
-    async def search_entities(self, search: SearchRequest, user_context: CurrentUser) -> dict[str, object]:
+    async def search_entities(self, search: SearchRequest, user_context: UserContextDict) -> dict[str, object]:
         """Run discovery against the correct Weaviate collection per entity type.
 
         - tool/resource/prompt -> MCP_Servers collection (mcp_server_repo)
@@ -117,9 +117,8 @@ class SearchService:
                     logger.warning("A2A vector search unavailable, skipping A2A results: %s", exc)
 
             # Re-sort merged results by relevance_score (desc) and cap at top_n
-            if len(results) > top_n:
-                results.sort(key=lambda r: r.get("relevance_score") or 0.0, reverse=True)
-                results = results[:top_n]
+            results.sort(key=lambda r: r.get("relevance_score") or 0.0, reverse=True)
+            results = results[:top_n]
 
             search_results = results
             logger.info(f"Found {len(search_results)} results (mcp={len(mcp_types) > 0}, a2a={len(a2a_types) > 0})")
@@ -201,6 +200,7 @@ class SearchService:
         vector outage degrades gracefully (empty agents/skills) so the MCP half of
         the response is still returned.
         """
+        query = query.strip()
         requested = entity_types or list(_DEFAULT_SEMANTIC_TYPES)
         mcp_types = [t for t in requested if t in _MCP_SEMANTIC_TYPES]
         a2a_types = [_A2A_SEMANTIC_TYPES[t] for t in requested if t in _A2A_SEMANTIC_TYPES]
@@ -237,9 +237,10 @@ class SearchService:
             return {"servers": servers, "tools": tools, "agents": agents, "skills": skills}
         finally:
             duration = time.perf_counter() - start_time
-            total = len(servers) + len(tools) + len(agents) + len(skills)
+            mcp_total = len(servers) + len(tools)
             try:
-                self._record_discovery([*servers, *tools], success, duration, "semantic", total)
+                if mcp_types:
+                    self._record_discovery([*servers, *tools], success, duration, "semantic", mcp_total)
             except Exception as e:
                 logger.warning(f"Failed to record tool discovery metric: {e}")
 
@@ -251,8 +252,8 @@ class SearchService:
         include_disabled: bool,
     ) -> tuple[list, list]:
         filters = _build_filters(include_disabled, a2a_types)
-        # query is guaranteed non-empty here: semantic_search's only caller is the
-        # /search route, whose request enforces min_length=1.
+        # query is stripped by semantic_search; the /search route also enforces
+        # min_length=1, so callers should never reach here with an empty query.
         try:
             docs = await self.a2a_agent_repo.asearch_with_rerank(
                 query=query,
