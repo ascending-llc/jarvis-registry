@@ -91,7 +91,6 @@ class SearchService:
         top_n = search.top_n
         start_time = time.perf_counter()
         success = False
-        results_count = 0
         search_results: list = []
 
         all_types = search.type_list
@@ -124,7 +123,6 @@ class SearchService:
             logger.info(f"Found {len(search_results)} results (mcp={len(mcp_types) > 0}, a2a={len(a2a_types) > 0})")
 
             success = True
-            results_count = len(search_results)
 
             return {
                 "query": query,
@@ -135,7 +133,9 @@ class SearchService:
         finally:
             duration = time.perf_counter() - start_time
             try:
-                self._record_discovery(search_results, success, duration, str(search.search_type.value), results_count)
+                if mcp_types:
+                    mcp_items = [r for r in search_results if isinstance(r.get("entity_type"), MCPEntityType)]
+                    self._record_discovery(mcp_items, success, duration, str(search.search_type.value), len(mcp_items))
             except Exception as e:
                 logger.warning(f"Failed to record tool discovery metric: {e}")
 
