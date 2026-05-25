@@ -288,14 +288,59 @@ class ResolvedDependencyResolution(StrEnum):
 
 
 class WorkflowDirective(StrEnum):
-    """User-issued directives that can be sent to a live or finished workflow run."""
+    """User-issued runtime directives for a live workflow run.
+
+    Covers ad-hoc runtime intervention (pause / resume / cancel / retry) that
+    agno does not natively support and we implement via the wait-loop wrapper.
+    Node-level HITL decisions (confirm / reject / edit / user_input /
+    route_select) flow through ``WorkflowRun.pending_requirements`` +
+    ``POST /approve``, not through the directive queue.
+    """
 
     PAUSE = "pause"
     RESUME = "resume"
     CANCEL = "cancel"
     RETRY = "retry"
+
+
+# Enums below mirror agno's HumanReview / OnReject / OnTimeout /
+# StepRequirement methods so the API/UI layer talks in agno-aligned vocabulary.
+class OnRejectPolicy(StrEnum):
+    """What should happen when a user rejects an HITL gate.
+
+    Mirrors ``agno.workflow.types.OnReject``.  ``ELSE_BRANCH`` is only valid on
+    ``CONDITION`` nodes (sends execution down ``false_steps``).
+    """
+
+    SKIP = "skip"
+    CANCEL = "cancel"
+    RETRY = "retry"
+    ELSE_BRANCH = "else_branch"
+
+
+class OnTimeoutPolicy(StrEnum):
+    """What should happen when an HITL gate's timeout expires without a decision.
+
+    Mirrors ``agno.workflow.types.OnTimeout``.
+    """
+
     APPROVE = "approve"
+    SKIP = "skip"
+    CANCEL = "cancel"
+
+
+class RequirementResolution(StrEnum):
+    """The kind of user decision sent to a pending HITL requirement.
+
+    Maps 1:1 to agno ``StepRequirement.confirm() / .reject() / .edit() /
+    .set_user_input() / .set_selected_choices()``.  See API ``POST /approve``.
+    """
+
+    CONFIRM = "confirm"
     REJECT = "reject"
+    EDIT = "edit"
+    USER_INPUT = "user_input"
+    ROUTE_SELECT = "route_select"
 
 
 class WorkflowRunStateMachine:
@@ -358,14 +403,6 @@ class WorkflowRunStateMachine:
             if current in {WorkflowRunStatus.COMPLETED, WorkflowRunStatus.FAILED}:
                 return current
             raise ValueError(f"Cannot retry a run in status '{current}'")
-
-        if directive in {WorkflowDirective.APPROVE, WorkflowDirective.REJECT}:
-            # Approval directives are only valid while a node is holding for approval.
-            # On APPROVE the run resumes; on REJECT it also returns to RUNNING and the
-            # executor applies the node's on_error policy (fail/skip).
-            if current == WorkflowRunStatus.AWAITING_APPROVAL:
-                return WorkflowRunStatus.RUNNING
-            raise ValueError(f"Cannot {directive} a run in status '{current}'")
 
         raise ValueError(f"Unknown directive: '{directive}'")
 
