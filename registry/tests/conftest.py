@@ -260,9 +260,7 @@ def test_client(mock_auth_middleware) -> TestClient:
         acl_service=Mock(),
         mcp_service=Mock(),
         status_resolver=Mock(),
-        vector_service=Mock(),
-        mcp_server_repo=Mock(),
-        a2a_agent_repo=Mock(),
+        search_service=Mock(),
         session_store=Mock(),
         health_service=Mock(),
     )

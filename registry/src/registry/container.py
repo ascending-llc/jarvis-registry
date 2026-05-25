@@ -36,6 +36,7 @@ from .services.oauth.oauth_service import MCPOAuthService
 from .services.oauth.status_resolver import ConnectionStatusResolver
 from .services.oauth.token_service import TokenService
 from .services.search.base import VectorSearchService
+from .services.search.service import SearchService
 from .services.security_scanner import SecurityScannerService
 from .services.server_service import ServerServiceV1
 from .services.user_service import UserService
@@ -97,6 +98,15 @@ class RegistryContainer:
 
         logger.info("Initializing embedded FAISS vector search service")
         return EmbeddedFaissService(self.settings)
+
+    @cached_property
+    def search_service(self) -> SearchService:
+        """Search orchestration shared by the HTTP /search route and mcpgw tools."""
+        return SearchService(
+            vector_service=self.vector_service,
+            mcp_server_repo=self.mcp_server_repo,
+            a2a_agent_repo=self.a2a_agent_repo,
+        )
 
     @cached_property
     def health_service(self) -> HealthMonitoringService:
