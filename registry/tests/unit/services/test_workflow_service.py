@@ -1,6 +1,9 @@
 import re
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
+from beanie import PydanticObjectId
 
 from registry.schemas.workflow_api_schemas import (
     RouterChoiceInput,
@@ -367,3 +370,117 @@ async def test_trigger_run_resolves_requested_historical_version(monkeypatch: py
 
     assert captured["workflow_version"] == 2
     assert captured["definition_snapshot"] == {"snapshot": "v2"}
+
+
+@pytest.mark.asyncio
+async def test_delete_workflow_cascades_agno_sessions(monkeypatch: pytest.MonkeyPatch):
+    """delete_workflow must purge agno_workflow_sessions keyed by run id (GC + PII cleanup)."""
+    workflow_oid = PydanticObjectId()
+    run_ids = [PydanticObjectId(), PydanticObjectId()]
+    deleted_session_query = {}
+    workflow_deleted = []
+
+    async def _wf_delete():
+        workflow_deleted.append(True)
+
+    workflow = SimpleNamespace(id=workflow_oid, name="wf", delete=_wf_delete)
+    monkeypatch.setattr(WorkflowService, "get_workflow_by_id", AsyncMock(return_value=workflow))
+
+    runs = [SimpleNamespace(id=rid) for rid in run_ids]
+
+    class _RunQuery:
+        async def to_list(self):
+            return runs
+
+        async def delete(self):
+            return None
+
+    class _DeleteQuery:
+        async def delete(self):
+            return None
+
+    # Replace the whole Beanie classes: ``delete_workflow`` evaluates
+    # ``WorkflowRun.workflow_definition_id == ...`` at class level, which is a
+    # field descriptor only available once Beanie is initialized.
+    class _FakeWorkflowRun:
+        workflow_definition_id = "workflow_definition_id"
+
+        @staticmethod
+        def find(*_a, **_k):
+            return _RunQuery()
+
+    class _FakeNodeRun:
+        @staticmethod
+        def find(*_a, **_k):
+            return _DeleteQuery()
+
+    class _FakeWorkflowVersion:
+        @staticmethod
+        def find(*_a, **_k):
+            return _DeleteQuery()
+
+    monkeypatch.setattr(workflow_service, "WorkflowRun", _FakeWorkflowRun)
+    monkeypatch.setattr(workflow_service, "NodeRun", _FakeNodeRun)
+    monkeypatch.setattr(workflow_service, "WorkflowVersion", _FakeWorkflowVersion)
+
+    class _Collection:
+        async def delete_many(self, query):
+            deleted_session_query.update(query)
+            return SimpleNamespace(deleted_count=len(run_ids))
+
+    class _Db:
+        def get_collection(self, name):
+            assert name == "agno_workflow_sessions"
+            return _Collection()
+
+    monkeypatch.setattr(workflow_service.MongoDB, "get_database", staticmethod(lambda: _Db()))
+
+    result = await WorkflowService().delete_workflow(str(workflow_oid))
+
+    assert result is True
+    assert workflow_deleted == [True]
+    assert deleted_session_query == {"session_id": {"$in": [str(rid) for rid in run_ids]}}
+
+
+@pytest.mark.asyncio
+async def test_trigger_workflow_run_persists_triggering_identity(monkeypatch: pytest.MonkeyPatch):
+    """The live trigger path must persist the triggering user's non-sensitive
+    identity (user_id / username / scopes) so an HITL resume can re-mint a
+    service JWT on their behalf."""
+    fake_wf = _FakeWorkflow(version=3)
+
+    async def fake_get(self, workflow_id):
+        return fake_wf
+
+    monkeypatch.setattr(WorkflowService, "get_workflow_by_id", fake_get)
+
+    historical = SimpleNamespace(version=2, definition={"snapshot": "v2"})
+
+    async def fake_find_one(*_a, **_k):
+        return historical
+
+    monkeypatch.setattr(workflow_service.WorkflowVersion, "find_one", fake_find_one)
+
+    captured: dict = {}
+
+    class _FakeRun:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self.id = PydanticObjectId()
+
+        async def insert(self):
+            return None
+
+    monkeypatch.setattr(workflow_service, "WorkflowRun", _FakeRun)
+
+    await WorkflowService().trigger_workflow_run(
+        workflow_id=str(fake_wf.id),
+        version=2,
+        triggering_user_id="user-42",
+        triggering_username="alice",
+        triggering_scopes=["workflows-read", "workflows-control"],
+    )
+
+    assert captured["triggering_user_id"] == "user-42"
+    assert captured["triggering_username"] == "alice"
+    assert captured["triggering_scopes"] == ["workflows-read", "workflows-control"]

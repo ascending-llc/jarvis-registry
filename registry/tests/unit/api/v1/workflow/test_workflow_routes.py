@@ -250,7 +250,7 @@ def _fake_workflow(name: str = "wf", version: int = 1):
 
 @pytest.mark.asyncio
 async def test_list_workflows_filters_by_accessible_ids():
-    """list_workflows must restrict results to the caller's ACL-accessible IDs."""
+    """List_workflows must restrict results to the caller's ACL-accessible IDs."""
     wf = _fake_workflow()
     user_context = {"user_id": str(PydanticObjectId()), "username": "u", "groups": [], "scopes": []}
 
@@ -259,7 +259,7 @@ async def test_list_workflows_filters_by_accessible_ids():
 
     mock_acl = MagicMock()
     mock_acl.get_accessible_resource_ids = AsyncMock(return_value=[str(wf.id)])
-    mock_acl.get_user_permissions_for_resource = AsyncMock(return_value=ResourcePermissions(VIEW=True))
+    mock_acl.get_user_permissions_for_resources = AsyncMock(return_value={wf.id: ResourcePermissions(VIEW=True)})
 
     response = await workflow_routes.list_workflows(
         user_context=user_context,
@@ -268,6 +268,10 @@ async def test_list_workflows_filters_by_accessible_ids():
     )
 
     mock_acl.get_accessible_resource_ids.assert_awaited_once()
+    # Permissions resolved via a single batch query (no N+1).
+    mock_acl.get_user_permissions_for_resources.assert_awaited_once()
+    batch_kwargs = mock_acl.get_user_permissions_for_resources.await_args.kwargs
+    assert batch_kwargs["resource_ids"] == [wf.id]
     forwarded = mock_service.list_workflows.await_args.kwargs
     assert forwarded["accessible_workflow_ids"] == [str(wf.id)]
     assert len(response.workflows) == 1
@@ -418,7 +422,11 @@ def test_list_runs_status_filter_covers_all_run_statuses():
     assert {s.value for s in WorkflowRunStatus} <= literal_values
 
 
-def test_workflow_create_request_parses_approval_fields():
+def test_workflow_create_request_parses_human_review():
+    """``humanReview`` embedded object mirrors agno's HumanReview dataclass 1:1.
+
+    See ``registry_pkgs.models.workflow.HumanReviewSpec``.
+    """
     request = WorkflowCreateRequest.model_validate(
         {
             "name": "Approval Demo",
@@ -427,13 +435,21 @@ def test_workflow_create_request_parses_approval_fields():
                     "name": "gate",
                     "nodeType": "step",
                     "executorKey": "tool",
-                    "requireApproval": True,
-                    "approvalTimeoutSeconds": 120,
+                    "humanReview": {
+                        "requiresConfirmation": True,
+                        "confirmationMessage": "Proceed?",
+                        "onReject": "skip",
+                        "timeoutSeconds": 120,
+                        "onTimeout": "cancel",
+                    },
                 }
             ],
         }
     )
 
     node = request.nodes[0]
-    assert node.requireApproval is True
-    assert node.approvalTimeoutSeconds == 120
+    assert node.humanReview is not None
+    assert node.humanReview.requiresConfirmation is True
+    assert node.humanReview.timeoutSeconds == 120
+    assert node.humanReview.onReject.value == "skip"
+    assert node.humanReview.onTimeout.value == "cancel"

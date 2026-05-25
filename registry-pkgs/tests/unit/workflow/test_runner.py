@@ -270,6 +270,7 @@ class TestExecute:
 
         workflow.arun.assert_awaited_once_with(
             input="hello",
+            session_id="run-1",
             session_state={"user_text": "hello", "_workflow_run_id": "run-1"},
         )
         run_doc.sync.assert_awaited_once()

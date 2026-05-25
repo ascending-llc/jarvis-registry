@@ -22,6 +22,23 @@ def _mock_async_context_manager() -> AsyncMock:
 class TestMainApplication:
     """Test suite for main application functionality."""
 
+    @pytest.fixture(autouse=True)
+    def _reset_agno_cancellation_manager(self):
+        """Restore agno's global cancellation manager after each test.
+
+        ``lifespan`` installs a process-global MongoBackedCancellationManager
+        during startup. A startup that fails *after* that install (e.g.
+        ``test_lifespan_startup_container_failure``) never reaches shutdown, so
+        the global leaks and the next lifespan startup trips the install guard.
+        """
+        yield
+        from agno.run.cancel import set_cancellation_manager
+        from agno.run.cancellation_management.in_memory_cancellation_manager import (
+            InMemoryRunCancellationManager,
+        )
+
+        set_cancellation_manager(InMemoryRunCancellationManager())
+
     @pytest.fixture
     def mock_services(self):
         """Mock the startup/shutdown dependencies used by lifespan."""

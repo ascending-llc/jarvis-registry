@@ -14,9 +14,9 @@ from registry.api.v1.workflow.control_routes import (
     resume_run,
     retry_run,
 )
-from registry.schemas.workflow_schemas import ApproveRequest, RetryRequest
+from registry.schemas.workflow_schemas import ResolveRequirementRequest, RetryRequest
 from registry.services.workflow_control_service import WorkflowControlService
-from registry_pkgs.models.enums import WorkflowRunStatus
+from registry_pkgs.models.enums import RequirementResolution, WorkflowRunStatus
 
 
 @pytest.fixture
@@ -44,14 +44,13 @@ def mock_acl():
 
 @pytest.fixture
 def mock_service():
-    """Return a WorkflowControlService with all send_* methods mocked."""
+    """Return a WorkflowControlService with all directive methods mocked."""
     service = MagicMock(spec=WorkflowControlService)
     service.send_pause = AsyncMock()
     service.send_resume = AsyncMock()
     service.send_cancel = AsyncMock()
     service.send_retry = AsyncMock()
-    service.send_approve = AsyncMock()
-    service.send_reject = AsyncMock()
+    service.resolve_requirement = AsyncMock()
     return service
 
 
@@ -371,45 +370,78 @@ async def test_retry_run_wraps_unexpected_exception(wf_id, sample_user_context, 
 
 
 # ---------------------------------------------------------------------------
-# Approve / Reject
+# Approve (HITL): /approve → resolve_requirement with 5-way resolution
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
-async def test_approve_run_approved_calls_send_approve(wf_id, sample_user_context, mock_service, mock_acl):
+async def test_approve_run_confirm_calls_resolve_requirement(wf_id, sample_user_context, mock_service, mock_acl):
     run = _make_run(WorkflowRunStatus.RUNNING)
-    mock_service.send_approve.return_value = run
+    mock_service.resolve_requirement.return_value = run
 
     result = await approve_run(
         workflow_id=wf_id,
         run_id="run-1",
-        body=ApproveRequest(approved=True),
+        body=ResolveRequirementRequest(stepId="node-1", resolution=RequirementResolution.CONFIRM),
         current_user=sample_user_context,
         service=mock_service,
         acl_service=mock_acl,
     )
 
-    mock_service.send_approve.assert_awaited_once_with(wf_id, "run-1")
-    mock_service.send_reject.assert_not_awaited()
-    assert result.status == WorkflowRunStatus.RUNNING
-    assert result.message == "Approval granted"
+    mock_service.resolve_requirement.assert_awaited_once_with(
+        wf_id,
+        "run-1",
+        step_id="node-1",
+        resolution=RequirementResolution.CONFIRM,
+        feedback=None,
+        edited_output=None,
+        user_input=None,
+        selected_choices=None,
+    )
+    assert result.resolvedStepId == "node-1"
+    assert "confirm" in result.message
 
 
 @pytest.mark.asyncio
-async def test_approve_run_rejected_calls_send_reject(wf_id, sample_user_context, mock_service, mock_acl):
+async def test_approve_run_edit_passes_edited_output(wf_id, sample_user_context, mock_service, mock_acl):
     run = _make_run(WorkflowRunStatus.RUNNING)
-    mock_service.send_reject.return_value = run
+    mock_service.resolve_requirement.return_value = run
 
-    result = await approve_run(
+    await approve_run(
         workflow_id=wf_id,
         run_id="run-1",
-        body=ApproveRequest(approved=False),
+        body=ResolveRequirementRequest(
+            stepId="node-1",
+            resolution=RequirementResolution.EDIT,
+            editedOutput={"content": "human-edited content"},
+        ),
         current_user=sample_user_context,
         service=mock_service,
         acl_service=mock_acl,
     )
+    call_kwargs = mock_service.resolve_requirement.await_args.kwargs
+    assert call_kwargs["resolution"] == RequirementResolution.EDIT
+    assert call_kwargs["edited_output"] == {"content": "human-edited content"}
 
-    mock_service.send_reject.assert_awaited_once_with(wf_id, "run-1")
-    mock_service.send_approve.assert_not_awaited()
-    assert result.message == "Approval rejected"
+
+@pytest.mark.asyncio
+async def test_approve_run_user_input_passes_form_data(wf_id, sample_user_context, mock_service, mock_acl):
+    run = _make_run(WorkflowRunStatus.RUNNING)
+    mock_service.resolve_requirement.return_value = run
+
+    await approve_run(
+        workflow_id=wf_id,
+        run_id="run-1",
+        body=ResolveRequirementRequest(
+            stepId="node-2",
+            resolution=RequirementResolution.USER_INPUT,
+            userInput={"discount_pct": 15},
+        ),
+        current_user=sample_user_context,
+        service=mock_service,
+        acl_service=mock_acl,
+    )
+    call_kwargs = mock_service.resolve_requirement.await_args.kwargs
+    assert call_kwargs["resolution"] == RequirementResolution.USER_INPUT
+    assert call_kwargs["user_input"] == {"discount_pct": 15}
 
 
 @pytest.mark.asyncio
@@ -420,28 +452,29 @@ async def test_approve_run_forbidden_without_view(wf_id, sample_user_context, mo
         await approve_run(
             workflow_id=wf_id,
             run_id="run-1",
-            body=ApproveRequest(approved=True),
+            body=ResolveRequirementRequest(stepId="node-1", resolution=RequirementResolution.CONFIRM),
             current_user=sample_user_context,
             service=mock_service,
             acl_service=mock_acl,
         )
 
     assert exc_info.value.status_code == 403
-    mock_service.send_approve.assert_not_awaited()
+    mock_service.resolve_requirement.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_approve_run_invalid_state_returns_400(wf_id, sample_user_context, mock_service, mock_acl):
-    mock_service.send_approve.side_effect = HTTPException(status_code=400, detail="not awaiting approval")
+async def test_approve_run_conflict_returns_409(wf_id, sample_user_context, mock_service, mock_acl):
+    """Run not in awaiting_approval → 409 from service propagates."""
+    mock_service.resolve_requirement.side_effect = HTTPException(status_code=409, detail="state changed")
 
     with pytest.raises(HTTPException) as exc_info:
         await approve_run(
             workflow_id=wf_id,
             run_id="run-1",
-            body=ApproveRequest(approved=True),
+            body=ResolveRequirementRequest(stepId="node-1", resolution=RequirementResolution.CONFIRM),
             current_user=sample_user_context,
             service=mock_service,
             acl_service=mock_acl,
         )
 
-    assert exc_info.value.status_code == 400
+    assert exc_info.value.status_code == 409
