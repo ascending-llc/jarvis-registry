@@ -13,9 +13,15 @@ from uuid import uuid4
 
 from beanie import PydanticObjectId
 
+from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.models.enums import WorkflowRunStatus
 from registry_pkgs.models.workflow import (
+    HumanReviewSpec,
+    LoopConfig,
     NodeRun,
+    RouterChoice,
+    StepConfig,
+    UserInputField,
     WorkflowDefinition,
     WorkflowNode,
     WorkflowRun,
@@ -25,6 +31,44 @@ from registry_pkgs.models.workflow import (
 from ..schemas.workflow_api_schemas import WorkflowCreateRequest, WorkflowUpdateRequest
 
 logger = logging.getLogger(__name__)
+
+
+def _convert_human_review(api_human_review: Any) -> HumanReviewSpec | None:
+    """Translate the ``humanReview`` API input into the embedded ``HumanReviewSpec``.
+
+    Returns ``None`` when no HITL is configured on this node.  Per-node-type
+    field-compatibility validation runs inside ``WorkflowNode._validate_shape``.
+    """
+    if not api_human_review:
+        return None
+    hr = api_human_review
+    return HumanReviewSpec(
+        requires_confirmation=hr.requiresConfirmation,
+        confirmation_message=hr.confirmationMessage,
+        requires_user_input=hr.requiresUserInput,
+        user_input_message=hr.userInputMessage,
+        user_input_schema=(
+            [
+                UserInputField(
+                    name=f.name,
+                    field_type=f.fieldType,
+                    description=f.description,
+                    required=f.required,
+                    default_value=f.defaultValue,
+                )
+                for f in hr.userInputSchema
+            ]
+            if hr.userInputSchema
+            else None
+        ),
+        requires_output_review=hr.requiresOutputReview,
+        output_review_message=hr.outputReviewMessage,
+        requires_iteration_review=hr.requiresIterationReview,
+        iteration_review_message=hr.iterationReviewMessage,
+        on_reject=hr.onReject,
+        timeout_seconds=hr.timeoutSeconds,
+        on_timeout=hr.onTimeout,
+    )
 
 
 class WorkflowService:
@@ -290,6 +334,16 @@ class WorkflowService:
                 await NodeRun.find({"workflow_run_id": {"$in": run_ids}}).delete()
                 logger.info(f"Deleted node runs for {len(run_ids)} workflow runs")
 
+                # agno persists per-run state (HumanReview pauses, step outputs) keyed
+                # by ``session_id == str(run.id)`` — clean it up so we don't leave
+                # orphan documents (and user input data) behind.
+                session_ids = [str(rid) for rid in run_ids]
+                db = MongoDB.get_database()
+                result = await db.get_collection("agno_workflow_sessions").delete_many(
+                    {"session_id": {"$in": session_ids}}
+                )
+                logger.info(f"Deleted {result.deleted_count} agno_workflow_sessions for workflow {workflow_id}")
+
                 await WorkflowRun.find({"_id": {"$in": run_ids}}).delete()
                 logger.info(f"Deleted {len(run_ids)} workflow runs and their node runs for workflow {workflow_id}")
 
@@ -316,6 +370,9 @@ class WorkflowService:
         parent_run_id: str | None = None,
         resolved_dependencies: list[dict[str, Any]] | None = None,
         version: int | None = None,
+        triggering_user_id: str | None = None,
+        triggering_username: str | None = None,
+        triggering_scopes: list[str] | None = None,
     ) -> WorkflowRun:
         """
         Trigger a workflow run (async execution).
@@ -379,6 +436,9 @@ class WorkflowService:
                 definition_snapshot=definition_snapshot,
                 parent_run_id=PydanticObjectId(parent_run_id) if parent_run_id else None,
                 resolved_dependencies=resolved_deps,
+                triggering_user_id=triggering_user_id,
+                triggering_username=triggering_username,
+                triggering_scopes=triggering_scopes,
             )
 
             # Save to database
@@ -509,8 +569,6 @@ class WorkflowService:
         Returns:
             WorkflowNode model instance
         """
-        from registry_pkgs.models.workflow import LoopConfig, RouterChoice, StepConfig
-
         # Generate ID if not provided
         node_id = api_node.id if api_node.id else str(uuid4())
 
@@ -543,6 +601,8 @@ class WorkflowService:
             for choice in api_node.choices
         ]
 
+        human_review = _convert_human_review(api_node.humanReview)
+
         return WorkflowNode(
             id=node_id,
             name=api_node.name,
@@ -557,6 +617,5 @@ class WorkflowService:
             choices=choices,
             condition_cel=api_node.conditionCel,
             loop_config=loop_config,
-            require_approval=api_node.requireApproval,
-            approval_timeout_seconds=api_node.approvalTimeoutSeconds,
+            human_review=human_review,
         )
