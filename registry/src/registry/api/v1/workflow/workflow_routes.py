@@ -149,15 +149,13 @@ async def list_workflows(
             accessible_workflow_ids=accessible_ids,
         )
 
-        # Convert to response items with per-workflow permissions
-        workflow_items = []
-        for workflow in workflows:
-            perms = await acl_service.get_user_permissions_for_resource(
-                user_id=PydanticObjectId(user_id),
-                resource_type=ExtendedResourceType.WORKFLOW.value,
-                resource_id=workflow.id,
-            )
-            workflow_items.append(convert_to_list_item(workflow, acl_permission=perms))
+        # Convert to response items with per-workflow permissions.
+        perms_by_id = await acl_service.get_user_permissions_for_resources(
+            user_id=PydanticObjectId(user_id),
+            resource_type=ExtendedResourceType.WORKFLOW.value,
+            resource_ids=[w.id for w in workflows],
+        )
+        workflow_items = [convert_to_list_item(w, acl_permission=perms_by_id[w.id]) for w in workflows]
 
         # Calculate pagination metadata
         total_pages = math.ceil(total / per_page) if total > 0 else 0
@@ -488,6 +486,9 @@ async def trigger_workflow_run(
             parent_run_id=data.parentRunId,
             resolved_dependencies=[dep.model_dump(by_alias=True) for dep in data.resolvedDependencies],
             version=data.version,
+            triggering_user_id=user_context.get("user_id"),
+            triggering_username=user_context.get("username"),
+            triggering_scopes=user_context.get("scopes", []),
         )
 
         registry_token = _build_registry_token(request, user_context)

@@ -8,8 +8,9 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from registry.auth.dependencies import CurrentUser, UserContextDict
 from registry.deps import get_acl_service, get_workflow_control_service
 from registry.schemas.workflow_schemas import (
-    ApproveRequest,
     DirectiveResponse,
+    ResolveRequirementRequest,
+    ResolveRequirementResponse,
     RetryRequest,
 )
 from registry.services.access_control_service import ACLService
@@ -162,30 +163,46 @@ async def retry_run(
         raise HTTPException(status_code=500, detail="Internal server error") from exc
 
 
-@router.post("/approve", response_model=DirectiveResponse)
+@router.post("/approve", response_model=ResolveRequirementResponse)
 async def approve_run(
     workflow_id: str,
     run_id: str,
-    body: ApproveRequest,
+    body: ResolveRequirementRequest,
     current_user: CurrentUser,
     service: WorkflowControlService = Depends(get_workflow_control_service),
     acl_service: ACLService = Depends(get_acl_service),
-) -> DirectiveResponse:
-    """Approve or reject a workflow run holding at an approval gate.
+) -> ResolveRequirementResponse:
+    """Resolve a pending requirement on a run holding at an HITL gate.
 
-    ``approved=true`` resumes execution; ``approved=false`` rejects the gate,
-    failing the node according to its ``on_error`` policy.
-    Returns 400 if the run is not currently AWAITING_APPROVAL.
+    Carries a rich decision: confirm / reject / edit / user_input /
+    route_select — mirroring agno's ``StepRequirement`` methods 1:1.
+
+    Status codes:
+    - ``200``  decision accepted; ``continue_run`` triggered in the background
+    - ``400``  resolution / requirement type mismatch (e.g. EDIT on a non-output-review
+               requirement); missing required field (editedOutput / userInput / selectedChoices)
+    - ``403``  caller lacks ``workflows-control`` scope or VIEW permission on the workflow
+    - ``404``  workflow, run, or step_id not found (incl. already-resolved requirement)
+    - ``409``  run not in ``awaiting_approval`` (already resolved by someone else, timed out, completed)
     """
     try:
         await _require_workflow_view(acl_service, current_user, workflow_id)
-        if body.approved:
-            run = await service.send_approve(workflow_id, run_id)
-            message = "Approval granted"
-        else:
-            run = await service.send_reject(workflow_id, run_id)
-            message = "Approval rejected"
-        return DirectiveResponse(run_id=str(run.id), status=run.status, message=message)
+        run = await service.resolve_requirement(
+            workflow_id,
+            run_id,
+            step_id=body.stepId,
+            resolution=body.resolution,
+            feedback=body.feedback,
+            edited_output=body.editedOutput,
+            user_input=body.userInput,
+            selected_choices=body.selectedChoices,
+        )
+        return ResolveRequirementResponse(
+            runId=str(run.id),
+            status=run.status,
+            resolvedStepId=body.stepId,
+            message=f"Requirement resolved as {body.resolution.value}; run resuming",
+        )
     except HTTPException:
         raise
     except Exception as exc:
