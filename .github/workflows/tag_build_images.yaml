@@ -57,40 +57,6 @@ jobs:
           DRY_RUN: ${{ inputs.dry_run }}
           DEFAULT_BUMP: ${{ inputs.version_type }}
 
-  # ── AI-generated GitHub Release via github/copilot-release-notes ─────────────
-  create-release:
-    runs-on: ubuntu-22.04
-    needs: bump-version-and-tag
-    if: ${{ inputs.dry_run == false }}
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-
-      - name: Generate release notes with Copilot
-        id: notes
-        uses: github/copilot-release-notes@v1
-        with:
-          base-ref: ${{ needs.bump-version-and-tag.outputs.prev_tag }}
-          head-ref: ${{ needs.bump-version-and-tag.outputs.new_tag }}
-        env:
-          COPILOT_GITHUB_TOKEN: ${{ secrets.GH_COPILOT_KEY }}
-
-      - name: Create GitHub Release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NEW_TAG:  ${{ needs.bump-version-and-tag.outputs.new_tag }}
-          RELEASE_NOTES: ${{ steps.notes.outputs['release-notes'] }}
-        run: |
-          gh release create "$NEW_TAG" \
-            --title "Jarvis Registry $NEW_TAG" \
-            --notes "$RELEASE_NOTES" \
-            --latest
-        # Publishing this release automatically fires release-changelog.yml
-        # (on: release: types: [published]) → generates the MkDocs docs page.
-  # ─────────────────────────────────────────────────────────────────────────────
-
   build-images:
     uses: ./.github/workflows/build-images-reusable.yaml
     needs: bump-version-and-tag

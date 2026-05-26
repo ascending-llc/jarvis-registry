@@ -25,11 +25,32 @@ End each bullet with the PR number in parentheses: `(#123)`.
 For entries with no matching PR, use the short commit SHA: `([a1b2c3d])`.
 
 ## Skip rules
-Omit these from the output entirely:
+Omit these from the output entirely. Evaluate these rules from the PR title and
+labels first — do **not** inspect the diff just to apply a skip rule.
 - Pure whitespace / formatting commits
-- Commits that only update `.github/` workflow files (e.g. "chore: bump actions version")
-- Automated dependency bumps that have no user-visible impact
+- Documentation-only PRs: title starts with `docs:` or `docs(<scope>):`, OR the
+  PR carries a `documentation` label, OR every changed path is under `docs/`,
+  `*.md`, or mkdocs config (only check paths if title/labels are inconclusive)
 - i18n translation-only commits unless they add a new language
+
+## Investigating PRs (shell tool usage)
+
+When a PR title and body are not enough to write a useful entry, you may use the
+allowed `git` tool to inspect commits — but observe these rules:
+
+- Issue **one** `git <subcommand>` invocation per tool call. Do **not** wrap
+  commands in bash constructs (no `for`/`while` loops, no `&&`, `;`, `|`,
+  `$(...)`, subshells, or `xargs`). Only bare `git ...` invocations are
+  permitted by the runner.
+- If you need data about multiple commits, call `git` multiple times — once
+  per commit — instead of looping.
+- Prefer cheap commands first: `git log -1 --format=%B <sha>`,
+  `git show --stat <sha>`, `git show -- <single-file> <sha>`.
+- Avoid full diffs of large changes. If `git show --stat` reports a PR with
+  more than ~500 changed lines, stick to the stat + commit message and the
+  changed file list; do not request the full patch.
+- If after one or two `git` calls you still cannot confidently describe the
+  change, flag it under **🔍 Needs Review** rather than guessing.
 
 ## Uncertainty flagging
 If Copilot is not confident what a PR changes (e.g. the PR body is empty or the diff
