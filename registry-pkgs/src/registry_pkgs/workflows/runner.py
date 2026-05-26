@@ -294,8 +294,6 @@ class WorkflowRunner:
 
         try:
             requirements = [hydrate_requirement(item) for item in pending]
-            run.pending_requirements = []
-            await run.save()
             executor_registry = await self._build_registry(snapshot_def, registry_token, user_id)
             workflow = compile_workflow(
                 snapshot_def,
@@ -313,6 +311,12 @@ class WorkflowRunner:
                 session_id=existing_run_id,
                 step_requirements=requirements,
             )
+            # Only clear pending_requirements after agno has successfully
+            # consumed them.  If acontinue_run (or the build/compile steps
+            # before it) raise, the requirements survive in MongoDB so a
+            # subsequent continue_run — e.g. after a pod restart — can retry.
+            run.pending_requirements = []
+            await run.save()
             await self._handle_run_output(run, result)
         except (WorkflowCancelledError, RunCancelledException) as exc:
             await self._finalize_cancel(run, exc)

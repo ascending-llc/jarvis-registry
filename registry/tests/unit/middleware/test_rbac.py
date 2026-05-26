@@ -685,3 +685,165 @@ class TestIntegrationScenarios:
         # Group should be mapped to servers-read scope
         resp = client.get("/servers")
         assert resp.status_code == 200
+
+    def test_workflows_read_allows_get_workflows(self, monkeypatch):
+        """workflows-read scope allows listing and reading workflows."""
+        from registry.middleware import rbac as rbac_module
+
+        mock_settings = MagicMock()
+        mock_settings.api_version = "v1"
+        mock_settings.scopes_config = {
+            "workflows-read": [
+                {"endpoint": "/workflows", "method": "GET"},
+                {"endpoint": "/workflows/{workflow_id}", "method": "GET"},
+                {"endpoint": "/workflows/{workflow_id}/runs", "method": "GET"},
+                {"endpoint": "/workflows/{workflow_id}/runs/{run_id}", "method": "GET"},
+                {"endpoint": "/workflows/{workflow_id}/runs/{run_id}/status", "method": "GET"},
+                {"endpoint": "/workflows/{workflow_id}/versions", "method": "GET"},
+            ],
+        }
+        monkeypatch.setattr(rbac_module, "settings", mock_settings)
+
+        app = self._build_app()
+
+        @app.get("/workflows")
+        def list_workflows():
+            return {"workflows": []}
+
+        @app.get("/workflows/{workflow_id}")
+        def get_workflow(workflow_id: str):
+            return {"id": workflow_id}
+
+        @app.get("/workflows/{workflow_id}/runs/{run_id}/status")
+        def get_run_status(workflow_id: str, run_id: str):
+            return {"run_id": run_id}
+
+        app.add_middleware(ScopePermissionMiddleware)
+        app.add_middleware(self._auth_middleware_factory({"scopes": ["workflows-read"]}))
+
+        client = TestClient(app)
+        assert client.get("/workflows").status_code == 200
+        assert client.get("/workflows/abc").status_code == 200
+        assert client.get("/workflows/abc/runs/123/status").status_code == 200
+
+    def test_workflows_read_denies_write_operations(self, monkeypatch):
+        """workflows-read scope does not allow creating, updating, or deleting workflows."""
+        from registry.middleware import rbac as rbac_module
+
+        mock_settings = MagicMock()
+        mock_settings.api_version = "v1"
+        mock_settings.scopes_config = {
+            "workflows-read": [
+                {"endpoint": "/workflows", "method": "GET"},
+                {"endpoint": "/workflows/{workflow_id}", "method": "GET"},
+            ],
+            "workflows-write": [
+                {"endpoint": "/workflows", "method": "POST"},
+                {"endpoint": "/workflows/{workflow_id}", "method": "PUT,DELETE"},
+            ],
+        }
+        monkeypatch.setattr(rbac_module, "settings", mock_settings)
+
+        app = self._build_app()
+
+        @app.get("/workflows")
+        def list_workflows():
+            return {"workflows": []}
+
+        @app.post("/workflows")
+        def create_workflow():
+            return {"ok": True}
+
+        @app.put("/workflows/{workflow_id}")
+        def update_workflow(workflow_id: str):
+            return {"id": workflow_id}
+
+        @app.delete("/workflows/{workflow_id}")
+        def delete_workflow(workflow_id: str):
+            return {"deleted": workflow_id}
+
+        app.add_middleware(ScopePermissionMiddleware)
+        app.add_middleware(self._auth_middleware_factory({"scopes": ["workflows-read"]}))
+
+        client = TestClient(app)
+        assert client.get("/workflows").status_code == 200
+        assert client.post("/workflows").status_code == 403
+        assert client.put("/workflows/abc").status_code == 403
+        assert client.delete("/workflows/abc").status_code == 403
+
+    def test_workflows_control_allows_run_directives(self, monkeypatch):
+        """workflows-control scope allows triggering and controlling workflow runs."""
+        from registry.middleware import rbac as rbac_module
+
+        mock_settings = MagicMock()
+        mock_settings.api_version = "v1"
+        mock_settings.scopes_config = {
+            "workflows-read": [
+                {"endpoint": "/workflows/{workflow_id}", "method": "GET"},
+            ],
+            "workflows-control": [
+                {"endpoint": "/workflows/{workflow_id}/runs", "method": "POST"},
+                {"endpoint": "/workflows/{workflow_id}/runs/{run_id}/pause", "method": "POST"},
+                {"endpoint": "/workflows/{workflow_id}/runs/{run_id}/resume", "method": "POST"},
+                {"endpoint": "/workflows/{workflow_id}/runs/{run_id}/cancel", "method": "POST"},
+                {"endpoint": "/workflows/{workflow_id}/runs/{run_id}/retry", "method": "POST"},
+                {"endpoint": "/workflows/{workflow_id}/runs/{run_id}/approve", "method": "POST"},
+            ],
+        }
+        monkeypatch.setattr(rbac_module, "settings", mock_settings)
+
+        app = self._build_app()
+
+        @app.get("/workflows/{workflow_id}")
+        def get_workflow(workflow_id: str):
+            return {"id": workflow_id}
+
+        @app.post("/workflows/{workflow_id}/runs")
+        def trigger_run(workflow_id: str):
+            return {"run_id": "r1"}
+
+        @app.post("/workflows/{workflow_id}/runs/{run_id}/approve")
+        def approve_run(workflow_id: str, run_id: str):
+            return {"ok": True}
+
+        app.add_middleware(ScopePermissionMiddleware)
+        app.add_middleware(self._auth_middleware_factory({"scopes": ["workflows-read", "workflows-control"]}))
+
+        client = TestClient(app)
+        assert client.get("/workflows/abc").status_code == 200
+        assert client.post("/workflows/abc/runs").status_code == 200
+        assert client.post("/workflows/abc/runs/123/approve").status_code == 200
+
+    def test_workflows_control_denied_without_scope(self, monkeypatch):
+        """A user with only workflows-read cannot trigger or control runs."""
+        from registry.middleware import rbac as rbac_module
+
+        mock_settings = MagicMock()
+        mock_settings.api_version = "v1"
+        mock_settings.scopes_config = {
+            "workflows-read": [
+                {"endpoint": "/workflows/{workflow_id}", "method": "GET"},
+            ],
+            "workflows-control": [
+                {"endpoint": "/workflows/{workflow_id}/runs", "method": "POST"},
+                {"endpoint": "/workflows/{workflow_id}/runs/{run_id}/approve", "method": "POST"},
+            ],
+        }
+        monkeypatch.setattr(rbac_module, "settings", mock_settings)
+
+        app = self._build_app()
+
+        @app.get("/workflows/{workflow_id}")
+        def get_workflow(workflow_id: str):
+            return {"id": workflow_id}
+
+        @app.post("/workflows/{workflow_id}/runs")
+        def trigger_run(workflow_id: str):
+            return {"run_id": "r1"}
+
+        app.add_middleware(ScopePermissionMiddleware)
+        app.add_middleware(self._auth_middleware_factory({"scopes": ["workflows-read"]}))
+
+        client = TestClient(app)
+        assert client.get("/workflows/abc").status_code == 200
+        assert client.post("/workflows/abc/runs").status_code == 403

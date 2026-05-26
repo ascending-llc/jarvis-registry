@@ -40,6 +40,7 @@ _ON_TIMEOUT_TO_AGNO: dict[OnTimeoutPolicy, str] = {
     OnTimeoutPolicy.SKIP: "skip",
     OnTimeoutPolicy.CANCEL: "cancel",
 }
+from registry_pkgs.workflows.hitl.field_types import field_type_to_agno
 from registry_pkgs.workflows.persistence import WorkflowRunSyncer
 from registry_pkgs.workflows.types import POOL_KEY_PREFIX
 
@@ -58,7 +59,11 @@ def _to_agno_human_review(spec: HumanReviewSpec | None) -> HumanReview | None:
     """
     if not spec:
         return None
-    schema = [f.model_dump() for f in spec.user_input_schema] if spec.user_input_schema else None
+    schema = (
+        [{**f.model_dump(), "field_type": field_type_to_agno(f.field_type)} for f in spec.user_input_schema]
+        if spec.user_input_schema
+        else None
+    )
     return HumanReview(
         requires_confirmation=spec.requires_confirmation,
         confirmation_message=spec.confirmation_message,
