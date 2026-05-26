@@ -1,17 +1,19 @@
 """End-to-end verification for AS-1543 features against a real MongoDB.
 
-Covers 9 modules / 34 checks:
-  A. ACL                  (2)  — creator OWNER, 403 without scope+ACL
+Covers 11 modules / 49 checks:
+  A. ACL                  (3)  — creator OWNER, 403 without scope+ACL, list VIEW-filter
   B. Versioning           (7)  — PUT bump, checksum, history, version param, in-flight snapshot
-  C. HITL approval gate   (11) — confirm/reject(skip/cancel/else_branch)/user_input/edit/route_select
+  C. HITL approval gate   (13) — confirm/reject(skip/cancel/retry/else_branch)/user_input/edit/route_select
                                  + multi-step chain, Condition+confirm, cross-session restore.
                                  Assertions verify branch selection + data propagation, not just COMPLETED.
   D. Cancel               (5)  — running/awaiting-approval/agno bridge/idempotent/terminal-state
   E. Cascade delete       (1)  — workflow_definitions + runs + node_runs + versions + agno sessions
   F. Run query            (2)  — list, detail with pendingRequirements
-  G. Retry                (1)  — retry a COMPLETED run from a node
+  G. Retry                (6)  — COMPLETED/FAILED retry, middle-node reuse, 400 on non-terminal/cancelled/bad-node
   H. Pause/Resume smoke   (1)  — pause → resume → completes
   I. Error paths          (4)  — 404 / 400 invalid version / 409 terminal cancel / 400 bad node
+  J. Timeout (lazy nudge) (3)  — on_timeout skip/cancel via get_run_status; no-op before deadline
+  K. Step error retry     (4)  — on_error retry recover/exhaust, skip, fail-fast (attempt counts)
 
 Usage:
     uv run python scripts/verify_workflow_control_e2e.py                    # run all
@@ -43,35 +45,36 @@ from fastapi import HTTPException
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
-from registry import settings  # noqa: E402
-from registry.schemas.workflow_api_schemas import (  # noqa: E402
+from registry import settings
+from registry.schemas.workflow_api_schemas import (
     HumanReviewInput,
+    StepConfigInput,
     UserInputFieldSchema,
     WorkflowCreateRequest,
     WorkflowNodeInput,
     WorkflowUpdateRequest,
     _convert_node_to_input,
 )
-from registry.services.access_control_service import ACLService  # noqa: E402
-from registry.services.group_service import GroupService  # noqa: E402
-from registry.services.user_service import UserService  # noqa: E402
-from registry.services.workflow_control_service import WorkflowControlService  # noqa: E402
-from registry.services.workflow_service import WorkflowService  # noqa: E402
-from registry_pkgs.core.config import MongoConfig  # noqa: E402
-from registry_pkgs.database.mongodb import MongoDB  # noqa: E402
-from registry_pkgs.models import PrincipalType  # noqa: E402
-from registry_pkgs.models.enums import (  # noqa: E402
+from registry.services.access_control_service import ACLService
+from registry.services.group_service import GroupService
+from registry.services.user_service import UserService
+from registry.services.workflow_control_service import WorkflowControlService
+from registry.services.workflow_service import WorkflowService
+from registry_pkgs.core.config import MongoConfig
+from registry_pkgs.database.mongodb import MongoDB
+from registry_pkgs.models import PrincipalType
+from registry_pkgs.models.enums import (
     OnRejectPolicy,
     OnTimeoutPolicy,
     RequirementResolution,
     RoleBits,
     WorkflowRunStatus,
 )
-from registry_pkgs.models.extended_acl_entry import ExtendedResourceType  # noqa: E402
-from registry_pkgs.models.workflow import NodeRun, WorkflowDefinition, WorkflowRun, WorkflowVersion  # noqa: E402
-from registry_pkgs.workflows.compiler import flatten_workflow_nodes  # noqa: E402
-from registry_pkgs.workflows.control import DirectiveQueue  # noqa: E402
-from registry_pkgs.workflows.runner import WorkflowRunner  # noqa: E402
+from registry_pkgs.models.extended_acl_entry import ExtendedResourceType
+from registry_pkgs.models.workflow import NodeRun, WorkflowDefinition, WorkflowRun, WorkflowVersion
+from registry_pkgs.workflows.compiler import flatten_workflow_nodes
+from registry_pkgs.workflows.control import DirectiveQueue
+from registry_pkgs.workflows.runner import WorkflowRunner
 
 logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 logger = logging.getLogger("as1543_e2e")
@@ -131,6 +134,70 @@ def _build_runner(queue: DirectiveQueue) -> MockRunner:
         db_name=MongoDB.database_name,
         jwt_config=settings.jwt_signing_config,
         directive_queue=queue,
+    )
+
+
+class FailingMockRunner(WorkflowRunner):
+    """Mock runner whose executors fail a configurable number of times.
+
+    ``fail_counts`` maps an ``executor_key`` to how many leading attempts return
+    ``StepOutput(success=False)``; subsequent attempts succeed.  ``attempts``
+    records how many times each executor was actually invoked, letting tests
+    assert the wrapper's retry loop ran the expected number of times.
+    """
+
+    def __init__(self, *args, fail_counts: dict[str, int] | None = None, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._fail_counts = fail_counts or {}
+        self.attempts: dict[str, int] = {}
+
+    async def _build_registry(self, definition, registry_token, user_id):
+        all_nodes = flatten_workflow_nodes(definition.nodes)
+        keys = list(dict.fromkeys(n.executor_key for n in all_nodes if n.executor_key))
+
+        def make(key: str) -> StepExecutor:
+            async def mock(step_input: StepInput, session_state: dict | None = None) -> StepOutput:
+                await asyncio.sleep(0.01)
+                self.attempts[key] = self.attempts.get(key, 0) + 1
+                if self.attempts[key] <= self._fail_counts.get(key, 0):
+                    return StepOutput(content=f"{key}:FAIL#{self.attempts[key]}", success=False, error="boom")
+                return StepOutput(content=f"{key}:OK", success=True)
+
+            return mock
+
+        return {k: make(k) for k in keys}
+
+
+def _build_failing_runner(queue: DirectiveQueue, fail_counts: dict[str, int]) -> FailingMockRunner:
+    llm = AwsBedrock(
+        id=os.getenv("BEDROCK_MODEL", "us.amazon.nova-lite-v1:0"),
+        aws_region=settings.aws_region,
+        aws_session_token=settings.aws_session_token,
+        aws_access_key_id=settings.aws_access_key_id,
+        aws_secret_access_key=settings.aws_secret_access_key,
+    )
+    return FailingMockRunner(
+        llm=llm,
+        registry_url=os.getenv("REGISTRY_URL", "http://localhost:7860"),
+        db_client=MongoDB.get_client(),
+        db_name=MongoDB.database_name,
+        jwt_config=settings.jwt_signing_config,
+        directive_queue=queue,
+        fail_counts=fail_counts,
+    )
+
+
+def _retry_step(name: str, key: str, *, on_error: str, max_retries: int = 0) -> WorkflowNodeInput:
+    """Step node with a StepConfig exercising error-retry/skip/fail, fast backoff."""
+    return _step_input(
+        name,
+        key,
+        stepConfig=StepConfigInput(
+            maxRetries=max_retries,
+            onError=on_error,
+            backoffBaseSeconds=0.01,
+            backoffMaxSeconds=0.05,
+        ),
     )
 
 
@@ -679,12 +746,14 @@ async def module_c(workflow_service, control_service, acl_service, queue, runner
         r.check("C10 Router + route_select", False, f"setup/exec error: {exc}")
 
     # reject + on_reject=retry → step re-runs and re-pauses, then confirm ─
-    # agno re-executes the rejected step (retry_count+1) and pauses again at the
-    # gate.  Validates the _ON_REJECT_TO_AGNO["retry"]="retry" mapping plus our
-    # continue_run re-pause persistence (new pending_requirements w/ retry_count≥1).
+    # agno's retry re-pause applies to *post-execution* output review: rejecting
+    # the output re-runs the same step (retry_count+1) and pauses again.  (A
+    # pre-execution confirmation gate just proceeds on retry, so output_review is
+    # the meaningful case.)  Validates the _ON_REJECT_TO_AGNO["retry"]="retry"
+    # mapping plus our continue_run re-pause persistence (retry_count≥1).
     nodes_c11 = [
         _step_input(
-            "gate", "tool-c11", humanReview=_hitl_input(requiresConfirmation=True, onReject=OnRejectPolicy.RETRY)
+            "gate", "tool-c11", humanReview=_hitl_input(requiresOutputReview=True, onReject=OnRejectPolicy.RETRY)
         ),
     ]
     wf_id, run_id, task = await _run_with_hitl("c11-retry", nodes_c11)
@@ -947,6 +1016,70 @@ async def module_g(workflow_service, control_service, acl_service, queue, runner
         f"child_id={child.id} parent={child.parent_run_id} status={child.status}",
     )
 
+    # G2: retry from a MIDDLE node → upstream reused, target+downstream re-run.
+    # Reuses the G1 completed run (which has COMPLETED NodeRuns for a + b).
+    second_node_id = wf.nodes[1].id
+    child2 = await control_service.send_retry(
+        str(wf.id), run_id, second_node_id, registry_token="test", user_id=str(USER_A)
+    )
+    deps = {d.node_id: str(d.resolution).lower() for d in child2.resolved_dependencies}
+    r.check(
+        "G2 retry from middle node → upstream REUSE, target RERUN",
+        "reuse" in deps.get(wf.nodes[0].id, "")
+        and "rerun" in deps.get(wf.nodes[1].id, "")
+        and child2.workflow_version == final.workflow_version
+        and child2.parent_run_id == final.id,
+        f"deps={deps} child_version={child2.workflow_version}",
+    )
+
+    # G3: retry a FAILED run is allowed (state machine permits COMPLETED + FAILED).
+    wf_f = await _make_workflow(workflow_service, acl_service, "g3-failed", [_step_input("only", "tool-g3")])
+    parent_failed = await workflow_service.trigger_workflow_run(workflow_id=str(wf_f.id))
+    parent_failed.status = WorkflowRunStatus.FAILED
+    await parent_failed.save()
+    child3 = await control_service.send_retry(
+        str(wf_f.id), str(parent_failed.id), wf_f.nodes[0].id, registry_token="test", user_id=str(USER_A)
+    )
+    r.check(
+        "G3 retry a FAILED run → child created",
+        child3 is not None and child3.parent_run_id == parent_failed.id,
+        f"child_id={getattr(child3, 'id', None)} parent={getattr(child3, 'parent_run_id', None)}",
+    )
+
+    # G4: retry a non-terminal (PENDING) run → 400.
+    pending_run = await workflow_service.trigger_workflow_run(workflow_id=str(wf_f.id))  # status PENDING
+    raised_400 = False
+    try:
+        await control_service.send_retry(
+            str(wf_f.id), str(pending_run.id), wf_f.nodes[0].id, registry_token="test", user_id=str(USER_A)
+        )
+    except HTTPException as exc:
+        raised_400 = exc.status_code == 400
+    r.check("G4 retry a non-terminal (PENDING) run → 400", raised_400)
+
+    # G5: retry a CANCELLED run → 400 (RETRY only valid from COMPLETED/FAILED).
+    cancelled_run = await workflow_service.trigger_workflow_run(workflow_id=str(wf_f.id))
+    cancelled_run.status = WorkflowRunStatus.CANCELLED
+    await cancelled_run.save()
+    raised_cancel = False
+    try:
+        await control_service.send_retry(
+            str(wf_f.id), str(cancelled_run.id), wf_f.nodes[0].id, registry_token="test", user_id=str(USER_A)
+        )
+    except HTTPException as exc:
+        raised_cancel = exc.status_code == 400
+    r.check("G5 retry a CANCELLED run → 400", raised_cancel)
+
+    # G6: retry with an unknown from_node_id → 400.
+    raised_node = False
+    try:
+        await control_service.send_retry(
+            str(wf.id), run_id, "no-such-node-id", registry_token="test", user_id=str(USER_A)
+        )
+    except HTTPException as exc:
+        raised_node = exc.status_code == 400
+    r.check("G6 retry with unknown from_node_id → 400", raised_node)
+
     return r
 
 
@@ -1043,6 +1176,195 @@ async def module_i(workflow_service, control_service, acl_service, queue, runner
 
 
 # ════════════════════════════════════════════════════════════════════════════
+# Module J — HITL timeout (lazy nudge)  (3 checks)
+# ════════════════════════════════════════════════════════════════════════════
+
+
+async def module_j(workflow_service, control_service, acl_service, queue, runner) -> Report:
+    """agno checks HITL timeouts only at continue-time (no background timer)."""
+    r = Report("J. Timeout (lazy nudge)")
+
+    # J1: on_timeout=skip → after deadline, nudge resolves to COMPLETED (gate skipped).
+    wf = await _make_workflow(
+        workflow_service,
+        acl_service,
+        "j1-timeout-skip",
+        [
+            _step_input(
+                "gate",
+                "tool-j1",
+                humanReview=_hitl_input(requiresConfirmation=True, timeoutSeconds=1, onTimeout=OnTimeoutPolicy.SKIP),
+            ),
+            _step_input("after", "tool-j1-after"),
+        ],
+    )
+    run_id, task = await _trigger_run_inproc(runner, str(wf.id))
+    await _wait_status(run_id, WorkflowRunStatus.AWAITING_APPROVAL)
+    await asyncio.sleep(1.6)  # let the 1s deadline pass
+    await control_service.get_run_status(str(wf.id), run_id)  # lazy nudge
+    final = await _wait_status(
+        run_id, WorkflowRunStatus.COMPLETED, WorkflowRunStatus.FAILED, WorkflowRunStatus.CANCELLED, timeout=20
+    )
+    completed = await _completed_names(run_id)
+    r.check(
+        "J1 on_timeout=skip → nudge auto-resolves to COMPLETED (gate skipped, after ran)",
+        final is not None and final.status == WorkflowRunStatus.COMPLETED and "after" in completed,
+        f"final={final.status if final else 'timeout'}, completed={sorted(completed)}",
+    )
+    await _await_or_cancel(task)
+
+    # J2: on_timeout=cancel → after deadline, nudge resolves to CANCELLED.
+    wf = await _make_workflow(
+        workflow_service,
+        acl_service,
+        "j2-timeout-cancel",
+        [
+            _step_input(
+                "gate",
+                "tool-j2",
+                humanReview=_hitl_input(requiresConfirmation=True, timeoutSeconds=1, onTimeout=OnTimeoutPolicy.CANCEL),
+            )
+        ],
+    )
+    run_id, task = await _trigger_run_inproc(runner, str(wf.id))
+    await _wait_status(run_id, WorkflowRunStatus.AWAITING_APPROVAL)
+    await asyncio.sleep(1.6)
+    await control_service.get_run_status(str(wf.id), run_id)
+    final = await _wait_status(
+        run_id, WorkflowRunStatus.CANCELLED, WorkflowRunStatus.FAILED, WorkflowRunStatus.COMPLETED, timeout=20
+    )
+    r.check(
+        "J2 on_timeout=cancel → nudge auto-resolves to CANCELLED",
+        final is not None and final.status == WorkflowRunStatus.CANCELLED,
+        f"final={final.status if final else 'timeout'}",
+    )
+    await _await_or_cancel(task)
+
+    # J3: before the deadline, get_run_status is a no-op (no premature resolution).
+    wf = await _make_workflow(
+        workflow_service,
+        acl_service,
+        "j3-timeout-not-yet",
+        [
+            _step_input(
+                "gate",
+                "tool-j3",
+                humanReview=_hitl_input(requiresConfirmation=True, timeoutSeconds=60, onTimeout=OnTimeoutPolicy.CANCEL),
+            )
+        ],
+    )
+    run_id, task = await _trigger_run_inproc(runner, str(wf.id))
+    await _wait_status(run_id, WorkflowRunStatus.AWAITING_APPROVAL)
+    await control_service.get_run_status(str(wf.id), run_id)  # well before the 60s deadline
+    await asyncio.sleep(0.5)
+    run_now = await WorkflowRun.get(PydanticObjectId(run_id))
+    r.check(
+        "J3 get_run_status before deadline does not resolve the gate",
+        run_now is not None and run_now.status == WorkflowRunStatus.AWAITING_APPROVAL,
+        f"status={run_now.status if run_now else 'missing'}",
+    )
+    await control_service.send_cancel(str(wf.id), run_id)  # cleanup the still-waiting run
+    await _await_or_cancel(task)
+
+    return r
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Module K — Step-level error retry (with_control wrapper)  (4 checks)
+# ════════════════════════════════════════════════════════════════════════════
+
+
+async def module_k(workflow_service, control_service, acl_service, queue, runner) -> Report:
+    """Exercise StepConfig error handling driven by failing executors.
+
+    Uses a dedicated FailingMockRunner so executors return success=False (the
+    wrapper retries on a failed StepOutput, not on raised exceptions).  The
+    runner's ``attempts`` counter proves how many times each executor ran.
+    """
+    r = Report("K. Step error retry")
+
+    fail_counts = {
+        "tool-k1-flaky": 2,  # fail twice, succeed on the 3rd attempt
+        "tool-k2-always": 999,  # never succeeds
+        "tool-k3-skip": 999,  # never succeeds (skipped on_error)
+        "tool-k4-fail": 999,  # never succeeds (fail-fast)
+    }
+    frunner = _build_failing_runner(queue, fail_counts)
+
+    # K1: on_error=retry, max_retries=2, transient failure recovers → COMPLETED, 3 attempts.
+    wf = await _make_workflow(
+        workflow_service,
+        acl_service,
+        "k1-retry-recover",
+        [_retry_step("flaky", "tool-k1-flaky", on_error="retry", max_retries=2)],
+    )
+    run_id, task = await _trigger_run_inproc(frunner, str(wf.id))
+    final = await _wait_status(run_id, WorkflowRunStatus.COMPLETED, WorkflowRunStatus.FAILED, timeout=20)
+    await _await_or_cancel(task)
+    r.check(
+        "K1 on_error=retry recovers after transient failures → COMPLETED (3 attempts)",
+        final is not None
+        and final.status == WorkflowRunStatus.COMPLETED
+        and frunner.attempts.get("tool-k1-flaky") == 3,
+        f"final={final.status if final else 'timeout'}, attempts={frunner.attempts.get('tool-k1-flaky')}",
+    )
+
+    # K2: on_error=retry, max_retries=2, never succeeds → FAILED after 1+2 attempts.
+    wf = await _make_workflow(
+        workflow_service,
+        acl_service,
+        "k2-retry-exhaust",
+        [_retry_step("always", "tool-k2-always", on_error="retry", max_retries=2)],
+    )
+    run_id, task = await _trigger_run_inproc(frunner, str(wf.id))
+    final = await _wait_status(run_id, WorkflowRunStatus.FAILED, WorkflowRunStatus.COMPLETED, timeout=20)
+    await _await_or_cancel(task)
+    r.check(
+        "K2 on_error=retry exhausts retries → FAILED (3 attempts)",
+        final is not None and final.status == WorkflowRunStatus.FAILED and frunner.attempts.get("tool-k2-always") == 3,
+        f"final={final.status if final else 'timeout'}, attempts={frunner.attempts.get('tool-k2-always')}",
+    )
+
+    # K3: on_error=skip → a tolerated failure does not fail the run.  Downstream runs,
+    # the run COMPLETES, and the skipped step's NodeRun is recorded SKIPPED (not FAILED)
+    # so the UI can tell "skipped over" from a hard failure.
+    wf = await _make_workflow(
+        workflow_service,
+        acl_service,
+        "k3-skip",
+        [_retry_step("skipme", "tool-k3-skip", on_error="skip"), _step_input("after", "tool-k3-after")],
+    )
+    run_id, task = await _trigger_run_inproc(frunner, str(wf.id))
+    final = await _wait_status(run_id, WorkflowRunStatus.COMPLETED, WorkflowRunStatus.FAILED, timeout=20)
+    await _await_or_cancel(task)
+    completed = await _completed_names(run_id)
+    skipme_status = next((str(nr.status) for nr in await _node_runs(run_id) if nr.node_name == "skipme"), None)
+    r.check(
+        "K3 on_error=skip → run COMPLETED, failing step recorded SKIPPED, downstream ran",
+        final is not None
+        and final.status == WorkflowRunStatus.COMPLETED
+        and "after" in completed
+        and skipme_status == "skipped",
+        f"final={final.status if final else 'timeout'}, skipme_status={skipme_status}, completed={sorted(completed)}",
+    )
+
+    # K4: on_error=fail (no retry) → run FAILED immediately after a single attempt.
+    wf = await _make_workflow(
+        workflow_service, acl_service, "k4-failfast", [_retry_step("boom", "tool-k4-fail", on_error="fail")]
+    )
+    run_id, task = await _trigger_run_inproc(frunner, str(wf.id))
+    final = await _wait_status(run_id, WorkflowRunStatus.FAILED, WorkflowRunStatus.COMPLETED, timeout=20)
+    await _await_or_cancel(task)
+    r.check(
+        "K4 on_error=fail → FAILED after a single attempt (no retry)",
+        final is not None and final.status == WorkflowRunStatus.FAILED and frunner.attempts.get("tool-k4-fail") == 1,
+        f"final={final.status if final else 'timeout'}, attempts={frunner.attempts.get('tool-k4-fail')}",
+    )
+
+    return r
+
+
+# ════════════════════════════════════════════════════════════════════════════
 # Cleanup
 # ════════════════════════════════════════════════════════════════════════════
 
@@ -1088,6 +1410,8 @@ MODULES = {
     "G": module_g,
     "H": module_h,
     "I": module_i,
+    "J": module_j,
+    "K": module_k,
 }
 
 
@@ -1159,7 +1483,9 @@ async def amain(selected: list[str], keep_data: bool) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--modules", default="A,B,C,D,E,F,G,H,I", help="Comma-separated module letters (default: all).")
+    parser.add_argument(
+        "--modules", default="A,B,C,D,E,F,G,H,I,J,K", help="Comma-separated module letters (default: all)."
+    )
     parser.add_argument(
         "--keep-data", action="store_true", help="Don't delete __as1543_e2e__* records at end (for debugging)."
     )

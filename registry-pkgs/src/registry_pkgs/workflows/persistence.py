@@ -88,7 +88,7 @@ class WorkflowRunSyncer(AsyncMongoDb):
     ) -> None:
         """Write WorkflowRun status and per-step NodeRuns from WorkflowRunOutput."""
         step_outputs = _flatten_step_results(run_output.step_results)
-        final_status = _resolve_workflow_run_status(run_output, step_outputs)
+        final_status = _resolve_workflow_run_status(run_output, step_outputs, self._node_by_name)
         active_session = get_current_session()
 
         if final_status in _TERMINAL_STATUSES:
@@ -143,7 +143,7 @@ class WorkflowRunSyncer(AsyncMongoDb):
         session: AsyncClientSession | None = None,
     ) -> WorkflowRunStatus:
         run = self._workflow_run
-        mapped_status = _resolve_workflow_run_status(run_output, step_outputs or [])
+        mapped_status = _resolve_workflow_run_status(run_output, step_outputs or [], self._node_by_name)
         run.status = mapped_status
         if mapped_status in _TERMINAL_STATUSES:
             if run.finished_at is None:
@@ -184,7 +184,14 @@ class WorkflowRunSyncer(AsyncMongoDb):
                 node_name=step_name,
             )
 
-        node_run.status = NodeRunStatus.COMPLETED if step_output.success else NodeRunStatus.FAILED
+        if step_output.success:
+            node_run.status = NodeRunStatus.COMPLETED
+        elif _is_skip_tolerated_failure(step_output, self._node_by_name):
+            # on_error=skip: a tolerated failure is recorded as SKIPPED (not FAILED)
+            # so the UI distinguishes "skipped over" from a hard failure.
+            node_run.status = NodeRunStatus.SKIPPED
+        else:
+            node_run.status = NodeRunStatus.FAILED
         node_run.attempt = max(node_run.attempt, 1)
         node_run.finished_at = datetime.now(UTC)
         node_run.error = step_output.error
@@ -226,9 +233,26 @@ def _flatten_step_results(results: list[Any]) -> list[StepOutput]:
     return flat
 
 
+def _is_skip_tolerated_failure(
+    step_output: StepOutput,
+    node_by_name: dict[str, WorkflowNode] | None,
+) -> bool:
+    """True if a failed step belongs to a node configured with ``on_error="skip"``.
+
+    Such a failure is non-fatal by the author's explicit choice: agno skips the
+    step and continues, and the run should remain eligible to COMPLETE.  The
+    failure is still surfaced via the node's SKIPPED status (and retained error).
+    """
+    if step_output.success:
+        return False
+    node = (node_by_name or {}).get(step_output.step_name or "")
+    return bool(node and node.step_config and node.step_config.on_error == "skip")
+
+
 def _resolve_workflow_run_status(
     run_output: WorkflowRunOutput,
     step_outputs: list[StepOutput],
+    node_by_name: dict[str, WorkflowNode] | None = None,
 ) -> WorkflowRunStatus:
     mapped_status = _STATUS_MAP.get(run_output.status, WorkflowRunStatus.FAILED)
 
@@ -237,7 +261,12 @@ def _resolve_workflow_run_status(
     if mapped_status == WorkflowRunStatus.CANCELLED:
         return WorkflowRunStatus.CANCELLED
 
-    if any(not step_output.success for step_output in step_outputs):
+    # A failed step forces FAILED only when it is *not* tolerated by on_error=skip;
+    # skip-tolerated failures keep the run eligible to COMPLETE.
+    if any(
+        not step_output.success and not _is_skip_tolerated_failure(step_output, node_by_name)
+        for step_output in step_outputs
+    ):
         return WorkflowRunStatus.FAILED
 
     return mapped_status
