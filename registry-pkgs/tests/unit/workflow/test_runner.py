@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from agno.run.base import RunStatus
@@ -322,3 +322,46 @@ class TestExecute:
         assert run_doc.finished_at.tzinfo == UTC
         run_doc.save.assert_awaited_once()
         run_doc.sync.assert_not_called()
+
+
+@pytest.mark.unit
+class TestContinueRunHydrationFailure:
+    @pytest.mark.asyncio
+    async def test_hydration_failure_preserves_pending_and_marks_failed(self, monkeypatch: pytest.MonkeyPatch):
+        """If hydrate_requirement fails, pending_requirements must survive and the run
+        must be finalized FAILED — never wiped and stranded as RUNNING."""
+        run_oid = PydanticObjectId()
+        original_pending = [{"step_id": "s1", "schema_version": 1}]
+        run_doc = SimpleNamespace(
+            id=run_oid,
+            status=WorkflowRunStatus.RUNNING,
+            definition_snapshot={"name": "demo"},
+            pending_requirements=original_pending,
+            agno_run_id=None,
+            error_summary=None,
+            finished_at=None,
+            save=AsyncMock(),
+        )
+
+        collection = SimpleNamespace(update_one=AsyncMock(return_value=SimpleNamespace(modified_count=1)))
+        fake_db = SimpleNamespace(get_collection=lambda name: collection)
+
+        class _FakeClient:
+            def __getitem__(self, name):
+                return fake_db
+
+        monkeypatch.setattr(runner.WorkflowRun, "get_settings", lambda: SimpleNamespace(name="workflow_runs"))
+        monkeypatch.setattr(runner.WorkflowRun, "get", AsyncMock(return_value=run_doc))
+        monkeypatch.setattr(runner, "WorkflowDefinition", lambda **kwargs: SimpleNamespace())
+        monkeypatch.setattr(runner, "hydrate_requirement", Mock(side_effect=RuntimeError("schema drift")))
+
+        r = _make_runner(db_client=_FakeClient())
+
+        with pytest.raises(RuntimeError, match="schema drift"):
+            await r.continue_run(existing_run_id=str(run_oid), registry_token="tok", user_id="u1")
+
+        # The persisted pending requirements were NOT cleared (still recoverable).
+        assert run_doc.pending_requirements == original_pending
+        # The run was finalized FAILED rather than left stranded as RUNNING.
+        assert run_doc.status == WorkflowRunStatus.FAILED
+        run_doc.save.assert_awaited()

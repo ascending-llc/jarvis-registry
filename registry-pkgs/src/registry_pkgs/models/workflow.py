@@ -313,6 +313,11 @@ def _validate_human_review_for_node(node_type: WorkflowNodeType, spec: HumanRevi
     if spec is None:
         return
 
+    # else_branch needs a false branch, which only CONDITION nodes have; agno only
+    # fails on this at runtime (its validators ignore on_reject), so reject it here.
+    if spec.on_reject == OnRejectPolicy.ELSE_BRANCH and node_type != WorkflowNodeType.CONDITION:
+        raise ValueError("on_reject=else_branch is only supported on condition nodes")
+
     if node_type == WorkflowNodeType.PARALLEL:
         # agno itself raises ``requires_confirmation is not supported on Parallel``.
         if (

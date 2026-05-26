@@ -286,16 +286,16 @@ class WorkflowRunner:
         # Reconstruct definition from the snapshot to guarantee version determinism
         snapshot_def = WorkflowDefinition(**run.definition_snapshot)
 
-        # Pull the pending requirements out and hydrate back to agno objects.
+        # Pull the pending requirements out; hydration happens inside the try below.
         pending = list(run.pending_requirements)
-        run.pending_requirements = []
-        await run.save()
-        requirements = [hydrate_requirement(item) for item in pending]
 
         if self._directive_queue is not None:
             self._directive_queue.register(existing_run_id)
 
         try:
+            requirements = [hydrate_requirement(item) for item in pending]
+            run.pending_requirements = []
+            await run.save()
             executor_registry = await self._build_registry(snapshot_def, registry_token, user_id)
             workflow = compile_workflow(
                 snapshot_def,
@@ -308,18 +308,17 @@ class WorkflowRunner:
             # agno needs its own internal run_id (the UUID it generated inside
             # ``arun``), not our WorkflowRun ObjectId.
             agno_run_id = run.agno_run_id or existing_run_id
-            try:
-                result = await workflow.acontinue_run(
-                    run_id=agno_run_id,
-                    session_id=existing_run_id,
-                    step_requirements=requirements,
-                )
-                await self._handle_run_output(run, result)
-            except (WorkflowCancelledError, RunCancelledException) as exc:
-                await self._finalize_cancel(run, exc)
-            except Exception as exc:
-                await self._finalize_failure(run, exc)
-                raise
+            result = await workflow.acontinue_run(
+                run_id=agno_run_id,
+                session_id=existing_run_id,
+                step_requirements=requirements,
+            )
+            await self._handle_run_output(run, result)
+        except (WorkflowCancelledError, RunCancelledException) as exc:
+            await self._finalize_cancel(run, exc)
+        except Exception as exc:
+            await self._finalize_failure(run, exc)
+            raise
         finally:
             if self._directive_queue is not None:
                 self._directive_queue.unregister(existing_run_id)

@@ -316,16 +316,14 @@ async def amain(args: argparse.Namespace) -> int:
         await _grant_agent_access(user_id, [args.a2a_direct, *args.a2a_pool])
         print(f"{PASS} definition inserted + workflow/agent ACL granted (id={definition.id})")
 
-        exit_code = 1
         try:
             headers = {"Authorization": f"Bearer {token}"}
             async with httpx.AsyncClient(timeout=30) as client:
-                exit_code = await _run_lifecycle(client, args, headers, str(definition.id))
+                return await _run_lifecycle(client, args, headers, str(definition.id))
         finally:
             if not args.keep_data:
                 await _cleanup(definition.id, user_id)
                 print(f"{PASS} cleaned up {PREFIX}* records")
-        return exit_code
     finally:
         await MongoDB.close_db()
 

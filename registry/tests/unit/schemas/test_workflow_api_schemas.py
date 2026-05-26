@@ -1,8 +1,10 @@
 from datetime import UTC, datetime
 
 from registry.schemas.workflow_api_schemas import (
+    PendingUserInputField,
     RouterChoiceInput,
     RouterChoiceOutput,
+    StepRequirementSummary,
     WorkflowNodeInput,
     WorkflowNodeOutput,
     WorkflowRunDetailResponse,
@@ -140,3 +142,81 @@ def test_workflow_run_detail_response_uses_independent_list_defaults():
 
     assert second.resolvedDependencies == []
     assert second.nodeRuns == []
+
+
+def _agno_requirement_dict(**overrides):
+    """Mirror agno ``StepRequirement.to_dict()`` + serde envelope (snake_case keys)."""
+    base = {
+        "step_id": "step-1",
+        "step_name": "Approve",
+        "step_index": 0,
+        "step_type": "step",
+        "requires_confirmation": True,
+        "confirmation_message": "Proceed?",
+        "on_reject": "cancel",
+        "requires_user_input": False,
+        "requires_route_selection": False,
+        "allow_multiple_selections": False,
+        "requires_output_review": False,
+        "is_post_execution": False,
+        "retry_count": 0,
+        "on_timeout": "cancel",
+        "schema_version": 1,
+    }
+    base.update(overrides)
+    return base
+
+
+def test_step_requirement_summary_accepts_agno_snake_case_keys():
+    summary = StepRequirementSummary.model_validate(_agno_requirement_dict())
+
+    assert summary.stepId == "step-1"
+    assert summary.schemaVersion == 1
+    assert summary.requiresConfirmation is True
+
+    # Serialization stays camelCase for the frontend contract.
+    dumped = summary.model_dump()
+    assert "stepId" in dumped
+    assert "step_id" not in dumped
+
+
+def test_step_requirement_summary_hydrates_pending_user_input_fields():
+    payload = _agno_requirement_dict(
+        requires_user_input=True,
+        user_input_message="Enter your name",
+        user_input_schema=[
+            {
+                "name": "fullName",
+                "field_type": "str",
+                "description": "Full legal name",
+                "required": True,
+                "value": None,
+                "allowed_values": None,
+            }
+        ],
+    )
+
+    summary = StepRequirementSummary.model_validate(payload)
+
+    assert summary.userInputSchema is not None
+    field = summary.userInputSchema[0]
+    assert isinstance(field, PendingUserInputField)
+    assert field.name == "fullName"
+    # agno runtime type name is passed through verbatim (not coerced to "string").
+    assert field.fieldType == "str"
+    assert field.required is True
+
+
+def test_pending_user_input_field_round_trips_snake_to_camel():
+    field = PendingUserInputField.model_validate(
+        {"name": "age", "field_type": "int", "allowed_values": [18, 21], "required": False}
+    )
+
+    assert field.fieldType == "int"
+    assert field.allowedValues == [18, 21]
+    assert field.required is False
+
+    dumped = field.model_dump()
+    assert dumped["fieldType"] == "int"
+    assert dumped["allowedValues"] == [18, 21]
+    assert "field_type" not in dumped

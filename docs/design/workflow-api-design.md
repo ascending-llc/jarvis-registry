@@ -961,13 +961,12 @@ All endpoints return errors in the following format:
 }
 ```
 
-> **Backward compatibility (HITL v2 migration)**: legacy `require_approval: bool`
-> and `approval_timeout_seconds: int` fields are accepted for inbound requests
-> and auto-migrated to `humanReview: { requiresConfirmation, timeoutSeconds }`
-> by the backend model layer. Existing MongoDB documents with the legacy fields
-> are upgraded on read (no migration script required). **New clients must use
-> `humanReview` exclusively** — the legacy fields are not echoed back in responses
-> and will be dropped after a deprecation window.
+> **No legacy `require_approval` shim**: the path-A `require_approval` /
+> `approval_timeout_seconds` fields have been removed. They are **not** accepted,
+> auto-migrated, or upgraded on read — with the current `APIBaseModel` config
+> (`extra` at Pydantic's default `ignore`), unknown legacy fields are silently
+> ignored. New clients must use `humanReview` exclusively. See
+> [Backward Compatibility](#backward-compatibility--legacy-require_approval-fields).
 
 ### HumanReview
 
@@ -1040,7 +1039,7 @@ frontend chooses which decision UI to render based on the `requires*` flags.
   // User-facing prompts
   confirmationMessage?: string;
   userInputMessage?: string;
-  userInputSchema?: UserInputField[];
+  userInputSchema?: PendingUserInputField[];   // runtime payload — NOT the authoring UserInputField
   outputReviewMessage?: string;
   availableChoices?: string[];          // for router selection
   allowMultipleSelections: boolean;
@@ -1062,6 +1061,29 @@ frontend chooses which decision UI to render based on the `requires*` flags.
   timeoutAt?: string;                   // ISO8601
   onTimeout: 'approve' | 'skip' | 'cancel';
   onReject: 'skip' | 'cancel' | 'retry' | 'else_branch';
+}
+```
+
+### PendingUserInputField
+
+The `userInputSchema` inside a `StepRequirementSummary` is **not** the authoring
+[`UserInputField`](#userinputfield). It is the live agno runtime payload
+(`StepRequirement.to_dict()`), so its shape differs deliberately:
+
+- `fieldType` is passed through verbatim as agno's Python type name
+  (`"str" | "int" | "float" | "bool" | "list" | "dict"`), **not** coerced into
+  the authoring `'string' | 'number' | 'boolean' | 'array'` set.
+- Carries agno's `value` / `allowedValues` instead of the authoring `defaultValue`.
+- `required` defaults to `true` (agno's default).
+
+```typescript
+{
+  name: string;
+  fieldType?: string;            // agno type name: "str" | "int" | "float" | "bool" | "list" | "dict"
+  description?: string;
+  required: boolean;             // defaults to true
+  value?: unknown;               // value collected so far (null until the user submits)
+  allowedValues?: unknown[];     // optional allow-list for validation
 }
 ```
 
@@ -1216,24 +1238,25 @@ partners.
 ### Backward Compatibility — Legacy `require_approval` Fields
 
 The path-A `require_approval: bool` and `approval_timeout_seconds: int` fields on
-WorkflowNode have been **removed** from the v2 API/model. To avoid breaking
-existing clients and silently dropping data from pre-v2 MongoDB documents, the
-backend provides a transparent migration:
+WorkflowNode have been **removed** from the v2 API/model.
 
-- **Inbound requests** containing legacy `requireApproval=true` (camelCase) are
-  rejected with a Pydantic 400 — frontend must switch to `humanReview`.
-- **Snake-case `require_approval=true` / `approval_timeout_seconds=N` keys
-  (from raw MongoDB documents or internal API callers)** are automatically
-  upgraded to `humanReview: { requiresConfirmation: true, timeoutSeconds: N }`
-  via a Pydantic `model_validator(mode='before')`. An INFO log entry is emitted
-  per migrated node so operators can audit usage.
-- `require_approval=false` was a no-op in path-A and remains a no-op (no
-  `humanReview` is synthesized).
-- If both legacy and `humanReview` are present, **`humanReview` wins** (explicit
-  beats legacy).
+Current behavior is:
 
-These shims will be removed in a future cleanup release once telemetry confirms
-no callers send the legacy fields.
+- There is **no request/model compatibility shim** for legacy `requireApproval`,
+  `require_approval`, or `approval_timeout_seconds` fields — no auto-migration
+  and no validator rejects them.
+- Clients must send the v2 `humanReview` structure instead of the removed legacy
+  fields.
+- With the current `APIBaseModel` configuration (`extra` left at the Pydantic
+  default of `ignore`), unknown legacy fields are **silently ignored** rather
+  than rejected or auto-migrated.
+- Pre-v2 MongoDB documents containing these legacy fields are **not**
+  transparently upgraded by the API/model layer; operators reading older data
+  should not expect `humanReview` to be synthesized automatically.
+
+If compatibility handling is added in the future, this section must be updated to
+document the exact request-validation and document-migration behavior actually
+implemented.
 
 ### Internal WorkflowRun Fields (Not API-Exposed)
 
@@ -1243,19 +1266,23 @@ MongoDB directly or building admin tooling.
 
 | Field                                  | Type   | Purpose |
 |----------------------------------------|--------|---------|
-| `triggering_user_id`                   | string | User ID captured at trigger time; used to re-authenticate downstream MCP/A2A executor calls during HITL resume |
-| `triggering_registry_token_encrypted`  | string | AES-CBC ciphertext of the user's bearer token; decrypted just-in-time by `WorkflowControlService.resolve_requirement` before invoking `runner.continue_run` |
+| `triggering_user_id`                   | string | User ID captured at trigger time. Used (with `triggering_username` / `triggering_scopes`) to re-mint a short-lived service JWT for downstream MCP/A2A executor calls during HITL resume. The raw bearer token is **never** persisted — storing it would be useless since it expires during the pause. |
+| `triggering_username`                  | string | Username captured at trigger time; carried into the re-minted resume JWT identity |
+| `triggering_scopes`                    | array  | Scopes captured at trigger time; copied into the re-minted resume JWT |
 | `pending_requirements`                 | array  | Serialized agno `StepRequirement` objects awaiting user decision; populated when `arun()` returns `is_paused=True`. **Surfaced to clients as `pendingRequirements`** in run-detail responses. |
 | `pending_directive`                    | enum   | Runtime intervention signal for pause/resume/cancel/retry (separate from HITL decisions, which go via `/approve`) |
 | `paused_at`                            | datetime | Set when run enters `paused` via user `/pause` directive (separate from HITL `awaiting_approval`) |
 
 ### Known Limitations
 
-- **JWT expiration during long HITL pauses**: the captured triggering token is
-  not refreshed. If a user resolves an HITL pause after the token's `exp`,
-  `resolve_requirement` detects expiration, clears the token, logs a warning,
-  and proceeds — downstream MCP/A2A calls will return 401 (visible in
-  `nodeRuns[].error`).
+- **Authorization can drift during long HITL pauses**: resume does not reuse the
+  original bearer token (which would have expired anyway). Instead it re-mints a
+  short-lived service JWT from the captured trigger identity (`triggering_user_id`
+  / `triggering_username` / `triggering_scopes`). If the user's account state,
+  roles, or scopes change before they resolve the pause, downstream MCP/A2A calls
+  may be authorized differently than at trigger time. Runs with no captured
+  `triggering_user_id` (e.g. script-driven) get an empty token, so auth-required
+  steps return 401 (visible in `nodeRuns[].error`).
 - **agno cancel edge case ([#7929](https://github.com/agno-agi/agno/issues/7929) OPEN)**:
   cancel signals may not propagate through certain `acontinue_run +
   external_execution` code paths inside agno. Our wait-loop wrapper's CANCEL

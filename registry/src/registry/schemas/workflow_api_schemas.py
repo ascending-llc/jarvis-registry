@@ -10,12 +10,18 @@ All schemas use camelCase for API input/output.
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import Field
+from pydantic import AliasGenerator, ConfigDict, Field
+from pydantic.alias_generators import to_snake
 
 from registry_pkgs.models.enums import OnRejectPolicy, OnTimeoutPolicy
 
 from .acl_schema import ResourcePermissions
 from .case_conversion import APIBaseModel
+
+_AGNO_RUNTIME_VALIDATION_CONFIG = ConfigDict(
+    alias_generator=AliasGenerator(validation_alias=to_snake),
+    populate_by_name=True,
+)
 
 # ==================== Nested Models ====================
 
@@ -47,6 +53,27 @@ class UserInputFieldSchema(APIBaseModel):
     description: str | None = None
     required: bool = False
     defaultValue: Any | None = None
+
+
+class PendingUserInputField(APIBaseModel):
+    """A user-input field surfaced inside a *pending* HITL requirement.
+
+    This mirrors agno ``UserInputField.to_dict()`` (snake_case keys, Python type
+    names such as ``"str"``/``"int"``/``"dict"``) rather than the frontend
+    authoring contract :class:`UserInputFieldSchema` (camelCase, ``"string"``/
+    ``"number"``). The two are intentionally distinct: this one reflects the live
+    agno runtime payload, so ``fieldType`` is passed through verbatim instead of
+    being coerced into the authoring ``Literal``.
+    """
+
+    model_config = _AGNO_RUNTIME_VALIDATION_CONFIG
+
+    name: str
+    fieldType: str | None = None
+    description: str | None = None
+    required: bool = True
+    value: Any | None = None
+    allowedValues: list[Any] | None = None
 
 
 class HumanReviewInput(APIBaseModel):
@@ -324,6 +351,9 @@ class StepRequirementSummary(APIBaseModel):
     See ``docs/design/workflow-api-design.md`` § StepRequirementSummary.
     """
 
+    # Source dicts come from agno ``StepRequirement.to_dict()`` (snake_case keys).
+    model_config = _AGNO_RUNTIME_VALIDATION_CONFIG
+
     schemaVersion: int = 1
     stepId: str
     stepName: str | None = None
@@ -339,7 +369,7 @@ class StepRequirementSummary(APIBaseModel):
     # User-facing prompts
     confirmationMessage: str | None = None
     userInputMessage: str | None = None
-    userInputSchema: list[UserInputFieldSchema] | None = None
+    userInputSchema: list[PendingUserInputField] | None = None
     outputReviewMessage: str | None = None
     availableChoices: list[str] | None = None
     allowMultipleSelections: bool = False
