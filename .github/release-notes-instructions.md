@@ -16,6 +16,12 @@ security, reliability, and integration impact — not marketing language.
   names, and other implementation details unless the change directly exposes
   that surface to the user. When in doubt, name the capability (what the user
   can now do) rather than how it is wired underneath.
+  This rule applies **even when the PR title or body mentions those details
+  explicitly** — many PR descriptions document internal mechanics for
+  reviewers, but those details do not belong in user-facing release notes.
+  When a feature adds a new entrypoint that fulfills requests by calling
+  other services internally, describe the entrypoint and its user-visible
+  contract only — not how the request is fulfilled downstream.
 - **Verify every specific detail, or drop it.** Only include concrete facts
   (content types, header names, RFC numbers, field names, config keys, env
   vars, file paths, version numbers) if you have read them in the PR's diff,
