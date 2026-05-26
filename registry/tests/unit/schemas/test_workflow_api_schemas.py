@@ -202,8 +202,8 @@ def test_step_requirement_summary_hydrates_pending_user_input_fields():
     field = summary.userInputSchema[0]
     assert isinstance(field, PendingUserInputField)
     assert field.name == "fullName"
-    # agno runtime type name is passed through verbatim (not coerced to "string").
-    assert field.fieldType == "str"
+    # agno runtime type name ("str") is normalised back to the authoring vocabulary.
+    assert field.fieldType == "string"
     assert field.required is True
 
 
@@ -212,11 +212,18 @@ def test_pending_user_input_field_round_trips_snake_to_camel():
         {"name": "age", "field_type": "int", "allowed_values": [18, 21], "required": False}
     )
 
-    assert field.fieldType == "int"
+    # agno's "int" is normalised to the authoring "number".
+    assert field.fieldType == "number"
     assert field.allowedValues == [18, 21]
     assert field.required is False
 
     dumped = field.model_dump()
-    assert dumped["fieldType"] == "int"
+    assert dumped["fieldType"] == "number"
     assert dumped["allowedValues"] == [18, 21]
     assert "field_type" not in dumped
+
+
+def test_pending_user_input_field_passes_through_authoring_vocab():
+    """Already-authoring values stay stable (idempotent normalisation)."""
+    field = PendingUserInputField.model_validate({"name": "tags", "field_type": "array"})
+    assert field.fieldType == "array"

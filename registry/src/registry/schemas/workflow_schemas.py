@@ -5,6 +5,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from registry.schemas.workflow_api_schemas import StepRequirementSummary
 from registry_pkgs.models.enums import RequirementResolution
 
 
@@ -140,6 +141,9 @@ class RunStatusResponse(BaseModel):
     error_summary: str | None
     parent_run_id: str | None
     node_runs: list[NodeRunSummary]
+    # Non-empty when the run is awaiting_approval so the frontend can render
+    # the decision UI without making a second request to /runs/{run_id}.
+    pendingRequirements: list[StepRequirementSummary] = Field(default_factory=list)
 
 
 class RunSummary(BaseModel):

@@ -453,3 +453,156 @@ def test_workflow_create_request_parses_human_review():
     assert node.humanReview.timeoutSeconds == 120
     assert node.humanReview.onReject.value == "skip"
     assert node.humanReview.onTimeout.value == "cancel"
+
+
+@pytest.mark.asyncio
+async def test_get_workflow_run_status_returns_run_status_response():
+    """GET /runs/{run_id}/status must return a RunStatusResponse with per-node summary."""
+    from datetime import UTC, datetime
+    from types import SimpleNamespace
+
+    from registry.api.v1.workflow.workflow_routes import get_workflow_run_status
+    from registry.schemas.workflow_schemas import RunStatusResponse
+    from registry_pkgs.models.enums import WorkflowRunStatus
+
+    wf_id = str(PydanticObjectId())
+    run_id = str(PydanticObjectId())
+    user_id = str(PydanticObjectId())
+
+    run = SimpleNamespace(
+        id=PydanticObjectId(run_id),
+        workflow_definition_id=PydanticObjectId(wf_id),
+        status=WorkflowRunStatus.RUNNING,
+        trigger_source="api",
+        started_at=datetime.now(UTC),
+        finished_at=None,
+        paused_at=None,
+        error_summary=None,
+        parent_run_id=None,
+        pending_requirements=[],
+    )
+
+    node_run = SimpleNamespace(
+        node_id="n1",
+        node_name="step-1",
+        status=WorkflowRunStatus.COMPLETED,
+        attempt=1,
+        started_at=datetime.now(UTC),
+        finished_at=datetime.now(UTC),
+        error=None,
+    )
+
+    mock_control = MagicMock()
+    mock_control.get_run_status = AsyncMock(return_value=(run, [node_run]))
+
+    mock_acl = MagicMock()
+    mock_acl.check_user_permission = AsyncMock(return_value=None)
+
+    user_context = {"user_id": user_id, "username": "u", "groups": [], "scopes": []}
+
+    response = await get_workflow_run_status(
+        workflow_id=wf_id,
+        run_id=run_id,
+        user_context=user_context,
+        workflow_control_service=mock_control,
+        acl_service=mock_acl,
+    )
+
+    assert isinstance(response, RunStatusResponse)
+    assert response.run_id == run_id
+    assert response.workflow_id == wf_id
+    assert response.status == WorkflowRunStatus.RUNNING.value
+    assert len(response.node_runs) == 1
+    assert response.node_runs[0].node_id == "n1"
+    mock_control.get_run_status.assert_awaited_once_with(wf_id, run_id)
+
+
+@pytest.mark.asyncio
+async def test_get_workflow_run_status_nudges_continue_run_on_expired_requirement(monkeypatch):
+    """The status endpoint must trigger the lazy timeout nudge when a pending
+    requirement has passed its deadline."""
+    import asyncio
+    from datetime import UTC, datetime, timedelta
+    from types import SimpleNamespace
+
+    from registry.api.v1.workflow.workflow_routes import get_workflow_run_status
+    from registry.services import workflow_control_service as wcs_module
+    from registry_pkgs.models.enums import WorkflowRunStatus
+    from registry_pkgs.workflows.control import DirectiveQueue
+
+    wf_id = str(PydanticObjectId())
+    run_id = str(PydanticObjectId())
+    user_id = str(PydanticObjectId())
+    past = (datetime.now(UTC) - timedelta(minutes=1)).isoformat()
+
+    run = SimpleNamespace(
+        id=PydanticObjectId(run_id),
+        workflow_definition_id=PydanticObjectId(wf_id),
+        status=WorkflowRunStatus.AWAITING_APPROVAL,
+        trigger_source="api",
+        started_at=datetime.now(UTC),
+        finished_at=None,
+        paused_at=None,
+        error_summary=None,
+        parent_run_id=None,
+        pending_requirements=[{"step_id": "s1", "confirmed": None, "timeout_at": past}],
+        triggering_user_id="user-1",
+        triggering_username="u",
+        triggering_scopes=[],
+    )
+
+    fake_node_run = MagicMock()
+    fake_node_run.find.return_value.to_list = AsyncMock(return_value=[])
+    monkeypatch.setattr(wcs_module, "NodeRun", fake_node_run)
+    monkeypatch.setattr(wcs_module, "generate_service_jwt", MagicMock(return_value="svc"))
+
+    continue_mock = AsyncMock()
+    service = wcs_module.WorkflowControlService(
+        directive_queue=DirectiveQueue(),
+        runner_factory=lambda: SimpleNamespace(continue_run=continue_mock),
+    )
+    service._load_run = AsyncMock(return_value=run)
+
+    mock_acl = MagicMock()
+    mock_acl.check_user_permission = AsyncMock(return_value=None)
+
+    user_context = {"user_id": user_id, "username": "u", "groups": [], "scopes": []}
+
+    await get_workflow_run_status(
+        workflow_id=wf_id,
+        run_id=run_id,
+        user_context=user_context,
+        workflow_control_service=service,
+        acl_service=mock_acl,
+    )
+    await asyncio.sleep(0)  # let the fire-and-forget resume settle
+
+    continue_mock.assert_awaited_once()
+    assert continue_mock.await_args.kwargs["existing_run_id"] == run_id
+
+
+def test_workflow_create_request_parses_human_review_with_retry():
+    """``onReject: 'retry'`` must round-trip through the create request schema."""
+    request = WorkflowCreateRequest.model_validate(
+        {
+            "name": "Retry Demo",
+            "nodes": [
+                {
+                    "name": "gate",
+                    "nodeType": "step",
+                    "executorKey": "tool",
+                    "humanReview": {
+                        "requiresConfirmation": True,
+                        "confirmationMessage": "Proceed?",
+                        "onReject": "retry",
+                        "timeoutSeconds": 60,
+                        "onTimeout": "cancel",
+                    },
+                }
+            ],
+        }
+    )
+
+    node = request.nodes[0]
+    assert node.humanReview is not None
+    assert node.humanReview.onReject.value == "retry"

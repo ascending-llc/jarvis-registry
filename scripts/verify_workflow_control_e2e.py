@@ -310,6 +310,27 @@ async def module_a(workflow_service, control_service, acl_service) -> Report:
         raised = exc.status_code == 403
     r.check("A2 user_b without ACL → 403 on VIEW check", raised)
 
+    # GET /workflows only returns workflows the caller has VIEW on (req case ①).
+    # Build one workflow owned by USER_A and one owned by USER_B, then assert the
+    # ACL-restricted listing path (get_accessible_resource_ids + list_workflows)
+    # hides the other user's workflow.
+    wf_a = await _make_workflow(workflow_service, acl_service, "acl-list-a", nodes, creator=USER_A)
+    wf_b = await _make_workflow(workflow_service, acl_service, "acl-list-b", nodes, creator=USER_B)
+    accessible = await acl_service.get_accessible_resource_ids(
+        user_id=USER_A,
+        resource_type=ExtendedResourceType.WORKFLOW.value,
+    )
+    listed, _ = await workflow_service.list_workflows(query=PREFIX + "acl-list", accessible_workflow_ids=accessible)
+    listed_ids = {str(w.id) for w in listed}
+    r.check(
+        "A3 list_workflows hides other users' workflows (VIEW-filtered)",
+        str(wf_a.id) in accessible
+        and str(wf_b.id) not in accessible
+        and str(wf_a.id) in listed_ids
+        and str(wf_b.id) not in listed_ids,
+        f"A_visible={str(wf_a.id) in listed_ids} B_hidden={str(wf_b.id) not in listed_ids}",
+    )
+
     return r
 
 
@@ -656,6 +677,53 @@ async def module_c(workflow_service, control_service, acl_service, queue, runner
         await _await_or_cancel(task)
     except Exception as exc:
         r.check("C10 Router + route_select", False, f"setup/exec error: {exc}")
+
+    # reject + on_reject=retry → step re-runs and re-pauses, then confirm ─
+    # agno re-executes the rejected step (retry_count+1) and pauses again at the
+    # gate.  Validates the _ON_REJECT_TO_AGNO["retry"]="retry" mapping plus our
+    # continue_run re-pause persistence (new pending_requirements w/ retry_count≥1).
+    nodes_c11 = [
+        _step_input(
+            "gate", "tool-c11", humanReview=_hitl_input(requiresConfirmation=True, onReject=OnRejectPolicy.RETRY)
+        ),
+    ]
+    wf_id, run_id, task = await _run_with_hitl("c11-retry", nodes_c11)
+    first = (await WorkflowRun.get(PydanticObjectId(run_id))).pending_requirements
+    await control_service.resolve_requirement(
+        wf_id, run_id, step_id=first[0]["step_id"], resolution=RequirementResolution.REJECT
+    )
+
+    async def _re_paused():
+        run = await WorkflowRun.get(PydanticObjectId(run_id))
+        if run is None or run.status != WorkflowRunStatus.AWAITING_APPROVAL:
+            return None
+        for req in run.pending_requirements:
+            if req.get("confirmed") is None and (req.get("retry_count") or 0) >= 1:
+                return run
+        return None
+
+    repaused = await _poll(_re_paused, timeout=30)
+    r.check(
+        "C11a reject + on_reject=retry → step re-runs and re-pauses (retry_count≥1)",
+        repaused is not None,
+        f"status={getattr(await WorkflowRun.get(PydanticObjectId(run_id)), 'status', None)}",
+    )
+    if repaused is not None:
+        await control_service.resolve_requirement(
+            wf_id,
+            run_id,
+            step_id=repaused.pending_requirements[0]["step_id"],
+            resolution=RequirementResolution.CONFIRM,
+        )
+    final = await _wait_status(
+        run_id, WorkflowRunStatus.COMPLETED, WorkflowRunStatus.FAILED, WorkflowRunStatus.CANCELLED
+    )
+    r.check(
+        "C11 retry then confirm → COMPLETED",
+        final is not None and final.status == WorkflowRunStatus.COMPLETED,
+        f"final={final.status if final else 'timeout'}",
+    )
+    await _await_or_cancel(task)
 
     return r
 

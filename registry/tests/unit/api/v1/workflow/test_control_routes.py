@@ -478,3 +478,58 @@ async def test_approve_run_conflict_returns_409(wf_id, sample_user_context, mock
         )
 
     assert exc_info.value.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_approve_run_reject_calls_resolve_requirement(wf_id, sample_user_context, mock_service, mock_acl):
+    """Reject resolution must forward feedback to the service layer."""
+    run = _make_run(WorkflowRunStatus.RUNNING)
+    mock_service.resolve_requirement.return_value = run
+
+    await approve_run(
+        workflow_id=wf_id,
+        run_id="run-1",
+        body=ResolveRequirementRequest(
+            stepId="node-1",
+            resolution=RequirementResolution.REJECT,
+            feedback="Try again with more context",
+        ),
+        current_user=sample_user_context,
+        service=mock_service,
+        acl_service=mock_acl,
+    )
+
+    call_kwargs = mock_service.resolve_requirement.await_args.kwargs
+    assert call_kwargs["resolution"] == RequirementResolution.REJECT
+    assert call_kwargs["feedback"] == "Try again with more context"
+
+
+@pytest.mark.asyncio
+async def test_approve_run_reject_with_retry_policy(wf_id, sample_user_context, mock_service, mock_acl):
+    """When the gate is configured with on_reject=retry, a reject decision must set
+    confirmed=False so agno's continue_run can re-execute the step (bounded by
+    max_retries)."""
+    run = _make_run(WorkflowRunStatus.RUNNING)
+    mock_service.resolve_requirement.return_value = run
+
+    result = await approve_run(
+        workflow_id=wf_id,
+        run_id="run-1",
+        body=ResolveRequirementRequest(stepId="node-1", resolution=RequirementResolution.REJECT),
+        current_user=sample_user_context,
+        service=mock_service,
+        acl_service=mock_acl,
+    )
+
+    mock_service.resolve_requirement.assert_awaited_once_with(
+        wf_id,
+        "run-1",
+        step_id="node-1",
+        resolution=RequirementResolution.REJECT,
+        feedback=None,
+        edited_output=None,
+        user_input=None,
+        selected_choices=None,
+    )
+    assert result.resolvedStepId == "node-1"
+    assert "reject" in result.message

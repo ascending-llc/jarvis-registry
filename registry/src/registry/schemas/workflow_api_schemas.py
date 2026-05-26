@@ -10,10 +10,11 @@ All schemas use camelCase for API input/output.
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import AliasGenerator, ConfigDict, Field
+from pydantic import AliasGenerator, ConfigDict, Field, field_validator
 from pydantic.alias_generators import to_snake
 
 from registry_pkgs.models.enums import OnRejectPolicy, OnTimeoutPolicy
+from registry_pkgs.workflows.hitl.field_types import field_type_to_authoring
 
 from .acl_schema import ResourcePermissions
 from .case_conversion import APIBaseModel
@@ -58,12 +59,13 @@ class UserInputFieldSchema(APIBaseModel):
 class PendingUserInputField(APIBaseModel):
     """A user-input field surfaced inside a *pending* HITL requirement.
 
-    This mirrors agno ``UserInputField.to_dict()`` (snake_case keys, Python type
-    names such as ``"str"``/``"int"``/``"dict"``) rather than the frontend
-    authoring contract :class:`UserInputFieldSchema` (camelCase, ``"string"``/
-    ``"number"``). The two are intentionally distinct: this one reflects the live
-    agno runtime payload, so ``fieldType`` is passed through verbatim instead of
-    being coerced into the authoring ``Literal``.
+    Source dicts come from agno ``UserInputField.to_dict()`` (snake_case keys).
+    agno echoes ``field_type`` back verbatim, so the runtime value reflects what
+    the compiler fed it — agno Python type names (``"str"``/``"float"``/...).  We
+    normalise it back to the authoring vocabulary (``"string"``/``"number"``/
+    ``"boolean"``/``"array"``) so the frontend sees one consistent field-type
+    vocabulary on both the authoring side (:class:`UserInputFieldSchema`) and the
+    pending side.
     """
 
     model_config = _AGNO_RUNTIME_VALIDATION_CONFIG
@@ -74,6 +76,12 @@ class PendingUserInputField(APIBaseModel):
     required: bool = True
     value: Any | None = None
     allowedValues: list[Any] | None = None
+
+    @field_validator("fieldType", mode="after")
+    @classmethod
+    def _normalise_field_type(cls, value: str | None) -> str | None:
+        """Map agno's runtime type name back to the authoring vocabulary."""
+        return field_type_to_authoring(value)
 
 
 class HumanReviewInput(APIBaseModel):
@@ -375,7 +383,7 @@ class StepRequirementSummary(APIBaseModel):
     allowMultipleSelections: bool = False
 
     # Post-execution review payload (output_review only)
-    stepOutput: dict[str, Any] | None = None
+    stepOutputPreview: dict[str, Any] | None = Field(default=None, validation_alias="step_output")
     isPostExecution: bool = False
 
     # Decision results (None until the user resolves)

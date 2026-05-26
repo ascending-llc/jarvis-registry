@@ -14,11 +14,12 @@ from fastapi import status as http_status
 
 from registry.auth.dependencies import CurrentUser, UserContextDict
 from registry.core.telemetry_decorators import track_registry_operation
-from registry.deps import get_acl_service, get_workflow_runner, get_workflow_service
+from registry.deps import get_acl_service, get_workflow_control_service, get_workflow_runner, get_workflow_service
 from registry.schemas.acl_schema import ResourcePermissions
 from registry.schemas.errors import ErrorCode, create_error_detail
 from registry.schemas.workflow_api_schemas import (
     PaginationMetadata,
+    StepRequirementSummary,
     WorkflowCreateRequest,
     WorkflowDetailResponse,
     WorkflowListResponse,
@@ -34,7 +35,9 @@ from registry.schemas.workflow_api_schemas import (
     convert_to_run_detail,
     convert_to_run_list_item,
 )
+from registry.schemas.workflow_schemas import NodeRunSummary, RunStatusResponse
 from registry.services.access_control_service import ACLService
+from registry.services.workflow_control_service import WorkflowControlService
 from registry.services.workflow_executor import execute_workflow_run_background
 from registry.services.workflow_service import WorkflowService
 from registry.utils.crypto_utils import generate_service_jwt
@@ -672,3 +675,84 @@ async def get_workflow_run(
             status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=create_error_detail(ErrorCode.INTERNAL_ERROR, "Internal server error while getting workflow run"),
         )
+
+
+@router.get(
+    "/workflows/{workflow_id}/runs/{run_id}/status",
+    response_model=RunStatusResponse,
+    response_model_by_alias=True,
+    summary="Get Workflow Run Status",
+    description="Get run status with per-node summary. If the run is awaiting_approval and a pending requirement has timed out, a background continue_run is nudged so agno can apply the gate's on_timeout policy.",
+)
+@track_registry_operation("read", resource_type="workflow_run")
+async def get_workflow_run_status(
+    workflow_id: str,
+    run_id: str,
+    user_context: CurrentUser,
+    workflow_control_service: WorkflowControlService = Depends(get_workflow_control_service),
+    acl_service: ACLService = Depends(get_acl_service),
+):
+    """Pollable status endpoint for a workflow run (requires VIEW on the workflow).
+
+    Side effect: when the run is ``awaiting_approval`` and a pending requirement has
+    passed its ``timeout_at``, this lazily triggers ``continue_run`` so agno can
+    apply the gate's ``on_timeout`` policy. The returned status still shows
+    ``awaiting_approval`` — the actual state transition surfaces on the next poll.
+    """
+    try:
+        workflow_oid = PydanticObjectId(workflow_id)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=http_status.HTTP_404_NOT_FOUND,
+            detail=create_error_detail(ErrorCode.RESOURCE_NOT_FOUND, f"Workflow {workflow_id!r} not found"),
+        ) from exc
+
+    await acl_service.check_user_permission(
+        user_id=PydanticObjectId(user_context.get("user_id")),
+        resource_type=ExtendedResourceType.WORKFLOW,
+        resource_id=workflow_oid,
+        required_permission="VIEW",
+    )
+
+    try:
+        run, node_runs = await workflow_control_service.get_run_status(workflow_id, run_id)
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=http_status.HTTP_404_NOT_FOUND,
+            detail=create_error_detail(ErrorCode.RESOURCE_NOT_FOUND, str(exc)),
+        ) from exc
+    except Exception as exc:
+        logger.exception("Error getting workflow run status %s", run_id)
+        raise HTTPException(
+            status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=create_error_detail(
+                ErrorCode.INTERNAL_ERROR, "Internal server error while getting workflow run status"
+            ),
+        ) from exc
+
+    return RunStatusResponse(
+        run_id=str(run.id),
+        workflow_id=str(run.workflow_definition_id),
+        status=run.status.value if hasattr(run.status, "value") else run.status,
+        trigger_source=run.trigger_source,
+        started_at=run.started_at,
+        finished_at=run.finished_at,
+        paused_at=run.paused_at,
+        error_summary=run.error_summary,
+        parent_run_id=str(run.parent_run_id) if run.parent_run_id else None,
+        node_runs=[
+            NodeRunSummary(
+                node_id=nr.node_id,
+                node_name=nr.node_name,
+                status=nr.status.value if hasattr(nr.status, "value") else nr.status,
+                attempt=nr.attempt,
+                started_at=nr.started_at,
+                finished_at=nr.finished_at,
+                error=nr.error,
+            )
+            for nr in node_runs
+        ],
+        pendingRequirements=[StepRequirementSummary.model_validate(req) for req in (run.pending_requirements or [])],
+    )
