@@ -11,6 +11,18 @@ security, reliability, and integration impact — not marketing language.
 - Direct and factual. One sentence per bullet explaining the WHAT and WHY.
 - No filler phrases: "exciting", "powerful", "seamless", "leverage", "utilize".
 - Use active voice. Prefer "Adds X" over "X has been added".
+- **Describe user-visible behavior, not internal mechanics.** Omit transport
+  protocols, wire formats, deployment topologies, internal class or module
+  names, and other implementation details unless the change directly exposes
+  that surface to the user. When in doubt, name the capability (what the user
+  can now do) rather than how it is wired underneath.
+- **Verify every specific detail, or drop it.** Only include concrete facts
+  (content types, header names, RFC numbers, field names, config keys, env
+  vars, file paths, version numbers) if you have read them in the PR's diff,
+  body, merge commit, or reviewer notes — not from memory, prior knowledge,
+  or inference from surrounding context. If you cannot verify a specific,
+  describe the change at a higher level instead. A wrong specific is worse
+  than no specific.
 
 ## Categories (use these headings in order, omit empty ones)
 1. ⚠️ Breaking Changes & Upgrade Notes  ← always first if present
@@ -20,9 +32,18 @@ security, reliability, and integration impact — not marketing language.
 5. 📦 Dependencies
 6. 🌍 Documentation
 
+## Ordering within each section
+
+List entries in **chronological order: oldest PR first, newest PR last.** The
+underlying `git log` returns merges in reverse-chronological order, so you must
+explicitly reverse them when writing. Ordering by PR number is a good proxy
+when merge timestamps are unavailable.
+
 ## Attribution
-End each bullet with the PR number in parentheses: `(#123)`.
-For entries with no matching PR, use the short commit SHA: `([a1b2c3d])`.
+The action's renderer automatically appends `(#NNN)` to every bullet. Do
+**not** include the PR number in your `description` text — if you do, the
+final output will show `(#NNN) (#NNN)`. Just write the description; the
+action handles attribution.
 
 ## Skip rules
 Omit these from the output entirely. Evaluate these rules from the PR title and
