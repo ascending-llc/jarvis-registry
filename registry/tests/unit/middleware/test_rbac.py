@@ -769,7 +769,8 @@ class TestIntegrationScenarios:
         assert client.get("/workflows").status_code == 200
         assert client.post("/workflows").status_code == 403
         assert client.put("/workflows/abc").status_code == 403
-        assert client.delete("/workflows/abc").status_code == 403
+        delete_response = client.delete("/workflows/abc")
+        assert delete_response.status_code == 403
 
     def test_workflows_control_allows_run_directives(self, monkeypatch):
         """workflows-control scope allows triggering and controlling workflow runs."""
