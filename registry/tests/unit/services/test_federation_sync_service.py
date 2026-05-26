@@ -8,6 +8,7 @@ from beanie import PydanticObjectId
 
 from registry.services.federation.federation_handlers import AwsAgentCoreSyncHandler
 from registry.services.federation_sync_service import (
+    ACL_INHERITANCE_BATCH_SIZE,
     FederationSyncMutationResult,
     FederationSyncPlan,
     FederationSyncService,
@@ -1004,6 +1005,111 @@ async def test_apply_sync_plan_inherits_acl_to_unchanged_mcp_and_a2a_resources(
 
 
 @pytest.mark.asyncio
+async def test_apply_sync_plan_raises_when_federation_acl_query_fails(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
+    sync_plan = FederationSyncPlan(
+        summary=FederationApplySummary(),
+        federation_id=PydanticObjectId(),
+        provider_type=FederationProviderType.AWS_AGENTCORE,
+        discovered_mcp_count=0,
+        discovered_a2a_count=0,
+    )
+
+    monkeypatch.setattr("registry.services.federation_sync_service.get_current_session", lambda: None)
+    federation_sync_service._get_federation_acl_entries = AsyncMock(return_value=([], False))
+    federation_sync_service._batch_inherit_federation_acl = AsyncMock()
+
+    with pytest.raises(RuntimeError, match="could not query federation ACL"):
+        await federation_sync_service._apply_sync_plan(sync_plan, user_id="triggering-user")
+
+    federation_sync_service._batch_inherit_federation_acl.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_get_federation_acl_entries_uses_current_transaction_session(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
+    federation_id = PydanticObjectId()
+    session = object()
+    find_calls = []
+
+    monkeypatch.setattr("registry.services.federation_sync_service.get_current_session", lambda: session)
+
+    def mock_find(query, **kwargs):
+        find_calls.append({"query": query, "kwargs": kwargs})
+        return _FakeQuery([])
+
+    monkeypatch.setattr("registry.services.federation_sync_service.ExtendedAclEntry.find", mock_find)
+
+    entries, query_success = await federation_sync_service._get_federation_acl_entries(federation_id)
+
+    assert entries == []
+    assert query_success is True
+    assert find_calls == [
+        {
+            "query": {
+                "resourceType": ExtendedResourceType.FEDERATION,
+                "resourceId": federation_id,
+                "principalType": {"$ne": PrincipalType.PUBLIC.value},
+                "principalId": {"$ne": None},
+            },
+            "kwargs": {"session": session},
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_batch_inherit_acl_normalizes_resource_type_before_existence_check(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
+    federation_id = PydanticObjectId()
+    server_id = PydanticObjectId()
+    federation_acl_entries = [
+        _make_acl_entry(PrincipalType.USER, "kent", ExtendedResourceType.FEDERATION, federation_id, RoleBits.OWNER)
+    ]
+    existing_resource_acl = [
+        _make_acl_entry(
+            PrincipalType.USER,
+            "kent",
+            ExtendedResourceType.MCPSERVER,
+            server_id,
+            RoleBits.EDITOR,
+        )
+    ]
+    inserted_entries = []
+
+    monkeypatch.setattr("registry.services.federation_sync_service.get_current_session", lambda: None)
+
+    class MockExtendedAclEntry:
+        @staticmethod
+        def find(query, **kwargs):
+            if "$or" in query or "resourceId" in query:
+                return _FakeQuery(existing_resource_acl)
+            return _FakeQuery([])
+
+        @staticmethod
+        async def insert_many(entries, **kwargs):
+            inserted_entries.extend(entries)
+
+        def __init__(self, **kwargs):
+            for key, value in kwargs.items():
+                setattr(self, key, value)
+
+    monkeypatch.setattr("registry.services.federation_sync_service.ExtendedAclEntry", MockExtendedAclEntry)
+
+    await federation_sync_service._batch_inherit_federation_acl(
+        federation_acl_entries=federation_acl_entries,
+        resources=[(ResourceType.MCPSERVER, server_id)],
+    )
+
+    assert inserted_entries == []
+
+
+@pytest.mark.asyncio
 async def test_federation_acl_inheritance_scenario_1_empty_resource(
     federation_sync_service: FederationSyncService, monkeypatch
 ):
@@ -1352,10 +1458,10 @@ async def test_batch_inherit_acl_uses_batched_insert(federation_sync_service: Fe
         resources=resources,
     )
 
-    # Verify: Should have 2 insert calls (600 entries / 500 batch size = 2 batches)
+    # Verify: Should have 2 insert calls (600 entries / batch size = 2 batches)
     assert len(insert_calls) == 2
-    assert insert_calls[0]["count"] == 500
-    assert insert_calls[1]["count"] == 100
+    assert insert_calls[0]["count"] == ACL_INHERITANCE_BATCH_SIZE
+    assert insert_calls[1]["count"] == len(resources) * len(federation_acl_entries) - ACL_INHERITANCE_BATCH_SIZE
 
     # Verify: All calls use ordered=False
     for call in insert_calls:

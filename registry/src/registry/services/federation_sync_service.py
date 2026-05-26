@@ -31,9 +31,15 @@ from .federation_job_service import FederationJobService
 
 logger = logging.getLogger(__name__)
 
+ACL_INHERITANCE_BATCH_SIZE = 500
+
 
 def _enum_value(value):
     return value.value if hasattr(value, "value") else value
+
+
+def _acl_key_part(value: Any) -> str:
+    return str(_enum_value(value))
 
 
 @dataclass
@@ -691,9 +697,10 @@ class FederationSyncService:
 
         if not acl_query_success:
             logger.error(
-                "Failed to query Federation ACL entries, skipping ACL inheritance for federation %s",
+                "Failed to query Federation ACL entries for federation %s",
                 sync_plan.federation_id,
             )
+            raise RuntimeError(f"ACL inheritance failed: could not query federation ACL for {sync_plan.federation_id}")
 
         # Track all resources that need ACL inheritance
         resources_for_acl_inheritance: list[tuple[str, Any]] = []
@@ -783,13 +790,15 @@ class FederationSyncService:
                 - query_success: True if query succeeded, False if query failed
         """
         try:
+            session = get_current_session()
             entries = await ExtendedAclEntry.find(
                 {
                     "resourceType": ExtendedResourceType.FEDERATION,
                     "resourceId": federation_id,
                     "principalType": {"$ne": PrincipalType.PUBLIC.value},
                     "principalId": {"$ne": None},
-                }
+                },
+                session=session,
             ).to_list()
 
             logger.debug("Found %d ACL entries for federation %s", len(entries), federation_id)
@@ -855,7 +864,12 @@ class FederationSyncService:
 
             # Build index: (resource_type, resource_id, principal_type, principal_id) -> exists
             existing_acl_index: set[tuple[str, str, str, str]] = {
-                (entry.resourceType, str(entry.resourceId), entry.principalType, str(entry.principalId))
+                (
+                    _acl_key_part(entry.resourceType),
+                    str(entry.resourceId),
+                    _acl_key_part(entry.principalType),
+                    str(entry.principalId),
+                )
                 for entry in existing_acl_entries
             }
 
@@ -877,7 +891,12 @@ class FederationSyncService:
                         continue
 
                     # Check if this principal already has ACL on this resource
-                    acl_key = (resource_type, str(resource_id), fed_entry.principalType, str(fed_entry.principalId))
+                    acl_key = (
+                        _acl_key_part(resource_type),
+                        str(resource_id),
+                        _acl_key_part(fed_entry.principalType),
+                        str(fed_entry.principalId),
+                    )
 
                     if acl_key in existing_acl_index:
                         # INSERT-only: skip if ACL already exists
@@ -902,9 +921,8 @@ class FederationSyncService:
 
             # Step 3: Batch insert new ACL entries in chunks
             if new_acl_entries:
-                BATCH_SIZE = 500
-                for i in range(0, len(new_acl_entries), BATCH_SIZE):
-                    batch = new_acl_entries[i : i + BATCH_SIZE]
+                for i in range(0, len(new_acl_entries), ACL_INHERITANCE_BATCH_SIZE):
+                    batch = new_acl_entries[i : i + ACL_INHERITANCE_BATCH_SIZE]
                     try:
                         await ExtendedAclEntry.insert_many(batch, session=session, ordered=False)
                         stats["inserted_count"] += len(batch)
