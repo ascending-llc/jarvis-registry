@@ -1,0 +1,366 @@
+/* ── Shared node wrapper ──────────────────────────────────────────────────── */
+.node-wrap {
+  background: var(--jarvis-card-muted);
+  border: 1px solid var(--jarvis-border);
+  border-radius: 11px;
+  min-width: 192px;
+  max-width: 220px;
+  transition:
+    border-color 200ms cubic-bezier(0.4, 0, 0.2, 1),
+    box-shadow 200ms cubic-bezier(0.4, 0, 0.2, 1);
+  cursor: default;
+}
+
+/* Light mode: add subtle shadow to lift nodes off the canvas */
+.node-wrap {
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.08);
+}
+.dark .node-wrap {
+  box-shadow: none;
+}
+
+.node-wrap:hover {
+  border-color: rgba(124, 58, 237, 0.4);
+}
+.node-wrap.selected {
+  border-color: var(--jarvis-primary-hover);
+  box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.15);
+}
+
+/* MCP */
+.node-wrap.mcp:hover {
+  border-color: rgba(2, 132, 199, 0.5);
+}
+.dark .node-wrap.mcp:hover {
+  border-color: rgba(56, 189, 248, 0.5);
+}
+.node-wrap.mcp.selected {
+  border-color: var(--jarvis-blue);
+  box-shadow: 0 0 0 3px var(--jarvis-blue-soft);
+}
+
+/* A2A Agent */
+.node-wrap.agent:hover {
+  border-color: rgba(109, 40, 217, 0.4);
+}
+.dark .node-wrap.agent:hover {
+  border-color: rgba(168, 85, 247, 0.5);
+}
+.node-wrap.agent.selected {
+  border-color: var(--jarvis-primary-hover);
+  box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.12);
+}
+
+/* Gate */
+.node-wrap.gate {
+  border-color: rgba(217, 119, 6, 0.35);
+}
+.dark .node-wrap.gate {
+  border-color: rgba(245, 158, 11, 0.35);
+}
+.node-wrap.gate:hover {
+  border-color: var(--jarvis-warning);
+}
+.node-wrap.gate.selected {
+  border-color: var(--jarvis-warning);
+  box-shadow: 0 0 0 3px var(--jarvis-warning-soft);
+}
+
+/* Conditional */
+.node-wrap.cond {
+  border-color: rgba(2, 132, 199, 0.3);
+}
+.dark .node-wrap.cond {
+  border-color: rgba(56, 189, 248, 0.3);
+}
+.node-wrap.cond:hover {
+  border-color: var(--jarvis-blue);
+}
+.node-wrap.cond.selected {
+  border-color: var(--jarvis-blue);
+  box-shadow: 0 0 0 3px var(--jarvis-blue-soft);
+}
+
+/* Parallel */
+.node-wrap.parallel {
+  border-color: rgba(13, 148, 136, 0.3);
+}
+.dark .node-wrap.parallel {
+  border-color: rgba(20, 184, 166, 0.3);
+}
+.node-wrap.parallel:hover {
+  border-color: var(--jarvis-teal);
+}
+.node-wrap.parallel.selected {
+  border-color: var(--jarvis-teal);
+  box-shadow: 0 0 0 3px var(--jarvis-teal-soft);
+}
+
+/* Router */
+.node-wrap.router {
+  border-color: rgba(219, 39, 119, 0.3);
+}
+.dark .node-wrap.router {
+  border-color: rgba(236, 72, 153, 0.3);
+}
+.node-wrap.router:hover {
+  border-color: var(--jarvis-pink);
+}
+.node-wrap.router.selected {
+  border-color: var(--jarvis-pink);
+  box-shadow: 0 0 0 3px var(--jarvis-pink-soft);
+}
+
+/* Loop */
+.node-wrap.loop {
+  border-color: rgba(234, 88, 12, 0.3);
+}
+.dark .node-wrap.loop {
+  border-color: rgba(251, 146, 60, 0.3);
+}
+.node-wrap.loop:hover {
+  border-color: var(--jarvis-orange);
+}
+.node-wrap.loop.selected {
+  border-color: var(--jarvis-orange);
+  box-shadow: 0 0 0 3px rgba(234, 88, 12, 0.12);
+}
+.dark .node-wrap.loop.selected {
+  box-shadow: 0 0 0 3px rgba(251, 146, 60, 0.12);
+}
+
+/* Pool */
+.node-wrap.pool {
+  border-color: rgba(109, 40, 217, 0.3);
+}
+.dark .node-wrap.pool {
+  border-color: rgba(168, 85, 247, 0.3);
+}
+.node-wrap.pool:hover {
+  border-color: var(--jarvis-primary-hover);
+}
+.node-wrap.pool.selected {
+  border-color: var(--jarvis-primary-hover);
+  box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.12);
+}
+
+/* ── Node header ──────────────────────────────────────────────────────────── */
+.node-header {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 11px;
+  border-bottom: 1px solid var(--jarvis-border);
+}
+.node-icon {
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.node-icon.mcp {
+  background: var(--jarvis-blue-soft);
+  color: var(--jarvis-blue);
+}
+.node-icon.agent {
+  background: var(--jarvis-primary-soft);
+  color: var(--jarvis-primary-text);
+}
+.node-icon.gate {
+  background: var(--jarvis-warning-soft);
+  color: var(--jarvis-warning);
+  font-size: 13px;
+}
+.node-icon.cond {
+  background: var(--jarvis-blue-soft);
+  color: var(--jarvis-blue);
+  font-size: 11px;
+  font-style: italic;
+}
+.node-icon.parallel {
+  background: var(--jarvis-teal-soft);
+  color: var(--jarvis-teal);
+  font-size: 14px;
+}
+.node-icon.router {
+  background: var(--jarvis-pink-soft);
+  color: var(--jarvis-pink);
+  font-size: 14px;
+}
+.node-icon.loop {
+  background: var(--jarvis-warning-soft);
+  color: var(--jarvis-orange);
+  font-size: 13px;
+}
+.dark .node-icon.loop {
+  background: rgba(251, 146, 60, 0.12);
+}
+.node-icon.pool {
+  background: var(--jarvis-primary-soft);
+  color: var(--jarvis-primary-hover);
+  font-size: 12px;
+}
+.dark .node-icon.pool {
+  background: rgba(168, 85, 247, 0.15);
+}
+
+.node-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--jarvis-text-strong);
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.node-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.node-dot.mcp {
+  background: var(--jarvis-blue);
+}
+.node-dot.agent {
+  background: var(--jarvis-primary-hover);
+}
+.node-dot.gate {
+  background: var(--jarvis-warning);
+}
+.node-dot.cond {
+  background: var(--jarvis-blue);
+}
+.node-dot.parallel {
+  background: var(--jarvis-teal);
+}
+.node-dot.router {
+  background: var(--jarvis-pink);
+}
+.node-dot.loop {
+  background: var(--jarvis-orange);
+}
+.node-dot.pool {
+  background: var(--jarvis-primary-hover);
+}
+
+/* ── Node body ────────────────────────────────────────────────────────────── */
+.node-body {
+  padding: 7px 11px;
+  font-size: 11px;
+  color: var(--jarvis-muted);
+  line-height: 1.4;
+}
+
+/* ── Node footer ──────────────────────────────────────────────────────────── */
+.node-footer {
+  padding: 6px 11px;
+  border-top: 1px solid var(--jarvis-border);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+.node-badge {
+  font-size: 9.5px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 3px;
+}
+.node-badge.gate {
+  background: var(--jarvis-warning-soft);
+  color: var(--jarvis-warning);
+}
+.node-badge.purple {
+  background: var(--jarvis-primary-soft);
+  border: 1px solid rgba(124, 58, 237, 0.2);
+  color: var(--jarvis-primary-hover);
+}
+.dark .node-badge.purple {
+  background: rgba(168, 85, 247, 0.12);
+  border-color: rgba(168, 85, 247, 0.25);
+}
+.node-badge.blue {
+  background: var(--jarvis-blue-soft);
+  border: 1px solid rgba(2, 132, 199, 0.2);
+  color: var(--jarvis-blue);
+}
+.dark .node-badge.blue {
+  border-color: rgba(56, 189, 248, 0.2);
+}
+.node-badge.gray {
+  background: rgba(107, 114, 128, 0.1);
+  border: 1px solid rgba(107, 114, 128, 0.18);
+  color: var(--jarvis-subtle);
+}
+.node-badge.teal {
+  background: var(--jarvis-teal-soft);
+  border: 1px solid rgba(13, 148, 136, 0.2);
+  color: var(--jarvis-teal);
+}
+.dark .node-badge.teal {
+  border-color: rgba(20, 184, 166, 0.2);
+}
+.node-badge.pink {
+  background: var(--jarvis-pink-soft);
+  border: 1px solid rgba(219, 39, 119, 0.2);
+  color: var(--jarvis-pink);
+}
+.dark .node-badge.pink {
+  border-color: rgba(236, 72, 153, 0.2);
+}
+.node-badge.orange {
+  background: var(--jarvis-warning-soft);
+  border: 1px solid rgba(234, 88, 12, 0.2);
+  color: var(--jarvis-orange);
+}
+.dark .node-badge.orange {
+  background: rgba(251, 146, 60, 0.1);
+  border-color: rgba(251, 146, 60, 0.2);
+}
+
+.node-hint {
+  font-size: 9px;
+  color: var(--jarvis-subtle);
+  padding: 2px 4px;
+}
+
+/* ── Add-node placeholder ─────────────────────────────────────────────────── */
+.add-node {
+  width: 192px;
+  height: 72px;
+  border: 2px dashed var(--jarvis-border-strong);
+  border-radius: 11px;
+  background: transparent;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  transition: all 200ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.add-node:hover {
+  border-color: var(--jarvis-primary);
+  background: var(--jarvis-primary-soft);
+}
+.add-node:hover .add-plus,
+.add-node:hover .add-label {
+  color: var(--jarvis-primary-text);
+}
+.add-plus {
+  font-size: 22px;
+  color: var(--jarvis-subtle);
+  line-height: 1;
+  transition: color 200ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.add-label {
+  font-size: 11px;
+  color: var(--jarvis-subtle);
+  transition: color 200ms cubic-bezier(0.4, 0, 0.2, 1);
+}

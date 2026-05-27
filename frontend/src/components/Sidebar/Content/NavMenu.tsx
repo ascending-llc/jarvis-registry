@@ -86,7 +86,7 @@ const filters = [
 
 const NavMenu: React.FC<NavMenuProps> = ({ sidebarOpen, setSidebarOpen }) => {
   const [, setSearchParams] = useSearchParams();
-  const { stats, agentStats, federationStats, viewMode, setViewMode, activeFilter, setActiveFilter } = useServer();
+  const { stats, agentStats, federationStats, workflowStats, viewMode, setViewMode, activeFilter, setActiveFilter } = useServer();
 
   const handleNavigation = (mode: 'servers' | 'agents' | 'workflow' | 'external') => {
     if (viewMode === mode) {
@@ -215,6 +215,11 @@ const NavMenu: React.FC<NavMenuProps> = ({ sidebarOpen, setSidebarOpen }) => {
               if (filter.key === 'enabled') count = agentStats.enabled;
               if (filter.key === 'disabled') count = agentStats.disabled;
               if (filter.key === 'unhealthy') count = agentStats.withIssues;
+            } else if (viewMode === 'workflow') {
+              if (filter.key === 'all') count = workflowStats.total;
+              if (filter.key === 'enabled') count = workflowStats.enabled;
+              if (filter.key === 'disabled') count = workflowStats.disabled;
+              if (filter.key === 'unhealthy') count = workflowStats.withIssues;
             } else if (viewMode === 'external' && federationStats) {
               if (filter.key === 'all') count = federationStats.total;
               if (filter.key === 'enabled') count = federationStats.enabled;
