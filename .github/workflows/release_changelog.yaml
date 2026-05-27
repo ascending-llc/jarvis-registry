@@ -1,8 +1,16 @@
 name: Release Changelog
 
+# Manually triggered after the "Create GitHub Release" workflow finishes.
+# Accepts an optional release tag; when omitted, the latest published release
+# (excluding drafts) is used.
+
 on:
-  release:
-    types: [published]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag to generate changelog for (e.g. asc1.2.3). Leave blank to use the latest release.'
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -24,19 +32,57 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Resolve release metadata
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_TAG: ${{ inputs.release_tag }}
+        run: |
+          if [ -n "$INPUT_TAG" ]; then
+            TAG="$INPUT_TAG"
+          else
+            TAG=$(gh release list \
+              --exclude-drafts \
+              --limit 1 \
+              --json tagName \
+              --jq '.[0].tagName' \
+              2>/dev/null || echo "")
+          fi
+          if [ -z "$TAG" ]; then
+            echo "❌ Could not determine a release tag. Pass release_tag explicitly or create a release first." >&2
+            exit 1
+          fi
+          echo "📋 Using release tag: $TAG"
+
+          # Fetch release metadata as JSON and expose each field via GITHUB_OUTPUT.
+          # Use heredoc-style multiline outputs so bodies with newlines pass through cleanly.
+          RELEASE_JSON=$(gh release view "$TAG" --json tagName,body,publishedAt,url,isPrerelease)
+
+          {
+            echo "tag=$(echo "$RELEASE_JSON" | jq -r '.tagName')"
+            echo "date=$(echo "$RELEASE_JSON" | jq -r '.publishedAt')"
+            echo "url=$(echo "$RELEASE_JSON" | jq -r '.url')"
+            echo "prerelease=$(echo "$RELEASE_JSON" | jq -r '.isPrerelease')"
+            echo "body<<__RELEASE_BODY_EOF__"
+            echo "$RELEASE_JSON" | jq -r '.body'
+            echo "__RELEASE_BODY_EOF__"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Generate changelog page and update nav
         env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
-          RELEASE_BODY: ${{ github.event.release.body }}
-          RELEASE_DATE: ${{ github.event.release.published_at }}
-          RELEASE_URL: ${{ github.event.release.html_url }}
-          PRERELEASE: ${{ github.event.release.prerelease }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          RELEASE_BODY: ${{ steps.release.outputs.body }}
+          RELEASE_DATE: ${{ steps.release.outputs.date }}
+          RELEASE_URL: ${{ steps.release.outputs.url }}
+          PRERELEASE: ${{ steps.release.outputs.prerelease }}
         run: python .github/workflows/utils/update_changelog.py
 
       - name: Commit and push changelog updates
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add docs/changelog/ mkdocs.yml
-          git diff --cached --quiet || git commit -m "docs: add changelog for ${{ github.event.release.tag_name }}"
+          git diff --cached --quiet || git commit -m "docs: add changelog for ${RELEASE_TAG}"
           git push origin main
