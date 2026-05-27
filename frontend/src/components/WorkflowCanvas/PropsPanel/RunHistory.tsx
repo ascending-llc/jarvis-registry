@@ -53,7 +53,7 @@ const RunRow: React.FC<{ run: RunEntry }> = ({ run }) => (
           return (
             <button
               key={a}
-              className='action-btn rounded-md border px-2 py-0.5 text-[10px] font-medium cursor-pointer transition-colors'
+              className={`action-btn action-btn--${a} rounded-md border px-2 py-0.5 text-[10px] font-medium cursor-pointer transition-colors`}
               style={{ borderColor: s?.borderColor, color: s?.color, fontFamily: 'Inter,sans-serif' }}
             >
               {ACTION_LABELS[a]}

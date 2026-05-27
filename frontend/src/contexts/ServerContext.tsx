@@ -368,7 +368,7 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
       });
       timeoutRef.current = {};
     };
-  }, [refreshAgentData, refreshServerData, refreshWorkflowData]);
+  }, [refreshAgentData, refreshServerData, refreshWorkflowData, refreshFederationData]);
 
   const getServerStatusById = useCallback(async (serverId: string): Promise<ServerConnection | undefined> => {
     try {

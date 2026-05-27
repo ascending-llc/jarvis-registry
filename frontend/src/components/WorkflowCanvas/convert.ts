@@ -73,8 +73,8 @@ const mapNodeToApi = (
       const branches = pData.branches ?? ['Branch A', 'Branch B'];
       apiNode.children = branches.map((_, i) => branchData[`branch-${i}`]?.[0]).filter(Boolean);
     } else {
-      const keys = Object.keys(branchData).sort((a, b) => a.localeCompare(b));
-      apiNode.children = keys.map(k => branchData[k][0]).filter(Boolean);
+      // loop nodes expect the full sequence from the 'body' handle
+      apiNode.children = branchData['body'] ?? [];
     }
   }
 
@@ -389,7 +389,7 @@ const processApiSequence = (
         });
       } else if (type === 'loop') {
         const children = apiNode.children ?? [];
-        branches.push({ handle: 'loop', sequence: children });
+        branches.push({ handle: 'body', sequence: children });
       }
 
       for (let i = 0; i < branches.length; i++) {

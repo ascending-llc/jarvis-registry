@@ -24,7 +24,7 @@ export const GateNodeProperties: React.FC<Props> = ({ node }) => {
         <div className='mb-2'>
           <label className='block text-xs text-[var(--jarvis-muted)] mb-1'>Reviewer prompt</label>
           <textarea
-            className='resize-none h-13 leading-snug w-full bg-[var(--jarvis-card-muted)] border border-[var(--jarvis-border)] rounded-md text-[var(--jarvis-text-strong)] font-sans text-xs px-2 py-1.5 outline-none'
+            className='resize-none h-[52px] leading-snug w-full bg-[var(--jarvis-card-muted)] border border-[var(--jarvis-border)] rounded-md text-[var(--jarvis-text-strong)] font-sans text-xs px-2 py-1.5 outline-none'
             value={nodeData.reviewerPrompt ?? 'Review and approve to proceed, or reject to cancel.'}
             onChange={e => onNodeDataChange(node.id, { reviewerPrompt: e.target.value })}
           />

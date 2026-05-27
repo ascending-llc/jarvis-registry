@@ -14,7 +14,7 @@ export interface WorkflowCanvasRef {
 /** WorkflowCanvas main component Props */
 export interface WorkflowCanvasProps {
   workflowId?: string;
-  workflow?: Workflow | null;
+  workflow?: Partial<Workflow> | null;
   refreshRunHistoryKey?: number;
   initialNodes?: Node[];
   initialEdges?: Edge[];

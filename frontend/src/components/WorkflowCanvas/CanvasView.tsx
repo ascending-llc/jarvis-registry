@@ -5,6 +5,7 @@ import { createContext, useCallback, useMemo } from 'react';
 import { AiOutlineApartment } from 'react-icons/ai';
 import { useTheme } from '@/contexts/ThemeContext';
 import { EDGE_CONFIG } from './constants';
+import type { useWorkflowCanvas } from './hooks/useWorkflowCanvas';
 import { nodeTypes } from './Nodes';
 
 export const CanvasActionsContext = createContext<{ onAdd?: (nodeId: string) => void }>({});
@@ -34,8 +35,6 @@ const LIGHT_COLORS: Record<string, string> = {
   add: '#d1d5db',
   default: '#d1d5db',
 };
-
-import type { useWorkflowCanvas } from './hooks/useWorkflowCanvas';
 
 interface CanvasViewProps {
   canvas: ReturnType<typeof useWorkflowCanvas>;

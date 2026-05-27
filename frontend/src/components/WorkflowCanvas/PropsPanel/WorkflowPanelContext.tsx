@@ -7,7 +7,7 @@ import type { AgentInfo, NodeData, SchemaField } from '../types';
 export interface WorkflowPanelContextValue {
   workflowId?: string;
   refreshRunHistoryKey?: number;
-  workflow: Workflow | null;
+  workflow: Partial<Workflow> | null;
   selectedNode: Node | null;
   nodes: Node[];
   edges: Edge[];

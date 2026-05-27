@@ -28,7 +28,7 @@ const WorkflowRegistryOrEdit: React.FC = () => {
   const canvasRef = useRef<WorkflowCanvasRef>(null);
 
   // ── 2. Resource State ────────────────────────────────────────────────────────────
-  const [workflow, setWorkflow] = useState<Workflow | null>(null);
+  const [workflow, setWorkflow] = useState<Partial<Workflow> | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
 
   // ── 3. Mutating Action (State Machine) ─────────────────────────────────────────
@@ -42,7 +42,9 @@ const WorkflowRegistryOrEdit: React.FC = () => {
   // ── Side Effects: Block navigation & BeforeUnload ──────────────────────────────
   const blocker = useBlocker(({ currentLocation, nextLocation }) => {
     if (isReadOnly) return false;
-    return hasChanges && currentLocation.pathname !== nextLocation.pathname;
+    const currentUrl = currentLocation.pathname + currentLocation.search;
+    const nextUrl = nextLocation.pathname + nextLocation.search;
+    return hasChanges && currentUrl !== nextUrl;
   });
 
   useEffect(() => {
@@ -78,7 +80,7 @@ const WorkflowRegistryOrEdit: React.FC = () => {
         name: searchParams.get('name') ?? 'New Workflow',
         description: '',
         type: 'supervised',
-      } as Workflow);
+      });
     }
   }, [id, searchParams]);
 
