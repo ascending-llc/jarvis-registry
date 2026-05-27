@@ -1,9 +1,11 @@
+
 from __future__ import annotations
 
 import asyncio
 import logging
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
@@ -219,11 +221,24 @@ def _create_message(text: str) -> Message:
     )
 
 
+async def _maybe_emit_chunk(
+    on_chunk: Callable[[str], Awaitable[None]] | None,
+    text: str,
+) -> None:
+    if not text or on_chunk is None:
+        return
+    try:
+        await on_chunk(text)
+    except Exception as e:
+        logger.warning("on_chunk callback failed:%s, continuing accumulation", e, exc_info=True)
+
+
 async def _consume_stream(
     client: BaseClient,
     message: Message,
     *,
     context: ClientCallContext,
+    on_chunk: Callable[[str], Awaitable[None]] | None = None,
 ) -> Message | Task | None:
     """Drain client.send_message events. Returns the first Message reply,
     the last seen Task, or None if no events were produced.
@@ -236,8 +251,10 @@ async def _consume_stream(
     latest_task: Task | None = None
     async for event in client.send_message(message, context=context):
         if isinstance(event, Message):
+            await _maybe_emit_chunk(on_chunk, get_message_text(event))
             return event
         task, _ = event
+        await _maybe_emit_chunk(on_chunk, get_artifact_text(task.artifacts[-1]) if task.artifacts else "")
         latest_task = task
     return latest_task
 
@@ -324,12 +341,14 @@ def _result_from_task(task: Task) -> A2ACallResult:
 async def _call_with_open_client(
     client: BaseClient,
     agent_name: str,
-    text: str,
+    text: str | Message,
     context: ClientCallContext,
+    on_chunk: Callable[[str], Awaitable[None]] | None = None,
 ) -> A2ACallResult:
     """Run the three-phase consume/poll/build pipeline against an already-open client."""
     # 1. drain the event stream.
-    outcome = await _consume_stream(client, _create_message(text), context=context)
+    msg = text if isinstance(text, Message) else _create_message(text)
+    outcome = await _consume_stream(client, msg, context=context, on_chunk=on_chunk)
 
     if isinstance(outcome, Message):
         logger.debug("← A2A agent %r responded with Message", agent_name)
@@ -362,9 +381,10 @@ async def _call_with_open_client(
 
 async def call_a2a(
     agent: A2AAgent,
-    text: str,
+    text: str | Message,
     *,
     jwt_config: JwtSigningConfig,
+    on_chunk: Callable[[str], Awaitable[None]] | None = None,
     httpx_client: httpx.AsyncClient | None = None,
 ) -> A2ACallResult:
     """Invoke an A2A agent via the a2a-sdk ClientFactory.
@@ -398,7 +418,7 @@ async def call_a2a(
         agent_name,
         transport_type,
         base_url,
-        text[:120],
+        text[:120] if isinstance(text, str) else repr(text)[:120],
     )
 
     agent_card = agent.card.model_copy(deep=True)
@@ -424,8 +444,8 @@ async def call_a2a(
         client: BaseClient = ClientFactory(config).create(agent_card)  # type: ignore[assignment]
         if httpx_client is None:
             async with client:
-                return await _call_with_open_client(client, agent_name, text, context)
-        return await _call_with_open_client(client, agent_name, text, context)
+                return await _call_with_open_client(client, agent_name, text, context, on_chunk)
+        return await _call_with_open_client(client, agent_name, text, context, on_chunk)
 
     except Exception as exc:
         logger.exception("A2A call to %r failed", agent_name)

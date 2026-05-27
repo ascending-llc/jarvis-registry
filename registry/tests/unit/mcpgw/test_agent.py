@@ -20,7 +20,7 @@ from beanie import PydanticObjectId
 from mcp.types import BlobResourceContents, EmbeddedResource, TextContent, TextResourceContents
 
 from registry.mcpgw.tools import agent
-from registry.mcpgw.tools.agent import _convert_response, execute_agent_impl
+from registry.mcpgw.tools.agent import AgentMessageInput, _convert_response, execute_agent_impl
 from registry_pkgs.workflows.a2a_client import A2ACallResult
 
 
@@ -101,10 +101,14 @@ def _result_with_task(*artifacts: Artifact) -> A2ACallResult:
     return A2ACallResult(task=_completed_task(*artifacts), success=True)
 
 
+def _msg(text: str) -> AgentMessageInput:
+    return AgentMessageInput(parts=[TextPart(kind="text", text=text)])
+
+
 @pytest.mark.asyncio
 async def test_execute_agent_invalid_id_returns_error():
     ctx = _make_ctx()
-    result = await execute_agent_impl("not-a-valid-objectid", "hello", ctx)
+    result = await execute_agent_impl("not-a-valid-objectid", _msg("hello"), ctx)
 
     assert result.isError is True
     assert len(result.content) == 1
@@ -123,7 +127,7 @@ async def test_execute_agent_not_found_returns_error():
         mock_model.status = MagicMock()
         mock_model.find_one = AsyncMock(return_value=None)
 
-        result = await execute_agent_impl(valid_id, "hello", ctx)
+        result = await execute_agent_impl(valid_id, _msg("hello"), ctx)
 
     assert result.isError is True
     text = result.content[0].text
@@ -145,7 +149,7 @@ async def test_execute_agent_happy_path_returns_text():
         mock_model.find_one = AsyncMock(return_value=agent)
         mock_call.return_value = _result_with_message("Agent response text")
 
-        result = await execute_agent_impl(valid_id, "Do something", ctx)
+        result = await execute_agent_impl(valid_id, _msg("Do something"), ctx)
 
     assert result.isError is not True
     assert any(isinstance(c, TextContent) and "Agent response text" in c.text for c in result.content)
@@ -166,7 +170,7 @@ async def test_execute_agent_denied_when_agent_not_in_user_acl():
     ):
         mock_model.id = MagicMock()
         mock_model.find_one = AsyncMock(return_value=agent)
-        result = await execute_agent_impl(valid_id, "Do something", ctx)
+        result = await execute_agent_impl(valid_id, _msg("Do something"), ctx)
 
     assert result.isError is True
     assert "Access denied" in result.content[0].text
@@ -186,7 +190,7 @@ async def test_execute_agent_rejects_missing_user_context():
     ):
         mock_model.id = MagicMock()
         mock_model.find_one = AsyncMock(return_value=agent)
-        result = await execute_agent_impl(valid_id, "Do something", ctx)
+        result = await execute_agent_impl(valid_id, _msg("Do something"), ctx)
 
     assert result.isError is True
     assert "Authentication required" in result.content[0].text
@@ -216,7 +220,7 @@ async def test_execute_agent_forwards_a2a_httpx_client_to_call_a2a():
         ):
             mock_model.id = MagicMock()
             mock_model.find_one = AsyncMock(return_value=agent)
-            await execute_agent_impl(valid_id, "test", ctx)
+            await execute_agent_impl(valid_id, _msg("test"), ctx)
 
         assert captured.get("httpx_client") is shared
     finally:
@@ -237,7 +241,7 @@ async def test_execute_agent_a2a_failure_returns_error():
         mock_model.find_one = AsyncMock(return_value=agent)
         mock_call.return_value = A2ACallResult(success=False, error="connection refused")
 
-        result = await execute_agent_impl(valid_id, "Do something", ctx)
+        result = await execute_agent_impl(valid_id, _msg("Do something"), ctx)
 
     assert result.isError is True
     assert "connection refused" in result.content[0].text
@@ -431,7 +435,54 @@ async def test_execute_agent_iam_unsupported_returns_error():
         mock_model.status = MagicMock()
         mock_model.find_one = AsyncMock(return_value=agent)
 
-        result = await execute_agent_impl(valid_id, "hello", ctx)
+        result = await execute_agent_impl(valid_id, _msg("hello"), ctx)
 
     assert result.isError is True
     assert "IAM" in result.content[0].text
+
+
+# ── AgentMessageInput validation ─────────────────────────────────────────────
+
+
+def test_agent_message_input_single_text_part():
+    msg = AgentMessageInput(parts=[TextPart(kind="text", text="hello")])
+    assert len(msg.parts) == 1
+    assert msg.parts[0].kind == "text"
+    assert msg.parts[0].text == "hello"
+
+
+def test_agent_message_input_multi_part_data_and_text():
+    msg = AgentMessageInput(
+        parts=[
+            DataPart(kind="data", data={"month": "2024-01"}),
+            TextPart(kind="text", text="Summarize spending by category"),
+        ]
+    )
+    assert len(msg.parts) == 2
+    assert msg.parts[0].kind == "data"
+    assert msg.parts[1].kind == "text"
+
+
+def test_agent_message_input_file_uri_part():
+    from a2a.types import FileWithUri
+
+    msg = AgentMessageInput(
+        parts=[FilePart(kind="file", file=FileWithUri(uri="s3://bucket/report.json", mimeType="application/json"))]
+    )
+    assert len(msg.parts) == 1
+    assert msg.parts[0].kind == "file"
+    assert "bucket" in str(msg.parts[0].file.uri)
+
+
+def test_agent_message_input_empty_parts_rejected():
+    from pydantic import ValidationError as PydanticValidationError
+
+    with pytest.raises(PydanticValidationError):
+        AgentMessageInput(parts=[])
+
+
+def test_agent_message_input_from_dict_text_part():
+    msg = AgentMessageInput.model_validate({"parts": [{"kind": "text", "text": "run the analysis"}]})
+    assert len(msg.parts) == 1
+    assert msg.parts[0].kind == "text"
+    assert msg.parts[0].text == "run the analysis"
