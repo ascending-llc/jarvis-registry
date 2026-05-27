@@ -19,8 +19,8 @@ from a2a.types import (
 from beanie import PydanticObjectId
 from mcp.types import BlobResourceContents, EmbeddedResource, TextContent, TextResourceContents
 
-from registry.mcpgw.tools import agent_invoke
-from registry.mcpgw.tools.agent_invoke import _convert_response, execute_agent_impl
+from registry.mcpgw.tools import agent
+from registry.mcpgw.tools.agent import _convert_response, execute_agent_impl
 from registry_pkgs.workflows.a2a_client import A2ACallResult
 
 
@@ -118,7 +118,7 @@ async def test_execute_agent_not_found_returns_error():
     ctx = _make_ctx()
     valid_id = str(PydanticObjectId())
 
-    with patch("registry.mcpgw.tools.agent_invoke.A2AAgent") as mock_model:
+    with patch("registry.mcpgw.tools.agent.A2AAgent") as mock_model:
         mock_model.id = MagicMock()
         mock_model.status = MagicMock()
         mock_model.find_one = AsyncMock(return_value=None)
@@ -138,8 +138,8 @@ async def test_execute_agent_happy_path_returns_text():
     agent = _make_agent(valid_id)
 
     with (
-        patch("registry.mcpgw.tools.agent_invoke.A2AAgent") as mock_model,
-        patch("registry.mcpgw.tools.agent_invoke.call_a2a", new_callable=AsyncMock) as mock_call,
+        patch("registry.mcpgw.tools.agent.A2AAgent") as mock_model,
+        patch("registry.mcpgw.tools.agent.call_a2a", new_callable=AsyncMock) as mock_call,
     ):
         mock_model.id = MagicMock()
         mock_model.find_one = AsyncMock(return_value=agent)
@@ -161,8 +161,8 @@ async def test_execute_agent_denied_when_agent_not_in_user_acl():
     agent = _make_agent(valid_id)
 
     with (
-        patch("registry.mcpgw.tools.agent_invoke.A2AAgent") as mock_model,
-        patch("registry.mcpgw.tools.agent_invoke.call_a2a", new_callable=AsyncMock) as mock_call,
+        patch("registry.mcpgw.tools.agent.A2AAgent") as mock_model,
+        patch("registry.mcpgw.tools.agent.call_a2a", new_callable=AsyncMock) as mock_call,
     ):
         mock_model.id = MagicMock()
         mock_model.find_one = AsyncMock(return_value=agent)
@@ -181,8 +181,8 @@ async def test_execute_agent_rejects_missing_user_context():
     agent = _make_agent(valid_id)
 
     with (
-        patch("registry.mcpgw.tools.agent_invoke.A2AAgent") as mock_model,
-        patch("registry.mcpgw.tools.agent_invoke.call_a2a", new_callable=AsyncMock) as mock_call,
+        patch("registry.mcpgw.tools.agent.A2AAgent") as mock_model,
+        patch("registry.mcpgw.tools.agent.call_a2a", new_callable=AsyncMock) as mock_call,
     ):
         mock_model.id = MagicMock()
         mock_model.find_one = AsyncMock(return_value=agent)
@@ -211,8 +211,8 @@ async def test_execute_agent_forwards_a2a_httpx_client_to_call_a2a():
             return _result_with_message("ok")
 
         with (
-            patch("registry.mcpgw.tools.agent_invoke.A2AAgent") as mock_model,
-            patch("registry.mcpgw.tools.agent_invoke.call_a2a", side_effect=fake_call_a2a),
+            patch("registry.mcpgw.tools.agent.A2AAgent") as mock_model,
+            patch("registry.mcpgw.tools.agent.call_a2a", side_effect=fake_call_a2a),
         ):
             mock_model.id = MagicMock()
             mock_model.find_one = AsyncMock(return_value=agent)
@@ -230,8 +230,8 @@ async def test_execute_agent_a2a_failure_returns_error():
     agent = _make_agent(valid_id)
 
     with (
-        patch("registry.mcpgw.tools.agent_invoke.A2AAgent") as mock_model,
-        patch("registry.mcpgw.tools.agent_invoke.call_a2a", new_callable=AsyncMock) as mock_call,
+        patch("registry.mcpgw.tools.agent.A2AAgent") as mock_model,
+        patch("registry.mcpgw.tools.agent.call_a2a", new_callable=AsyncMock) as mock_call,
     ):
         mock_model.id = MagicMock()
         mock_model.find_one = AsyncMock(return_value=agent)
@@ -256,8 +256,8 @@ async def test_execute_agent_on_chunk_calls_ctx_log():
         return _result_with_task(_text_artifact("R", "chunk1chunk2"))
 
     with (
-        patch("registry.mcpgw.tools.agent_invoke.A2AAgent") as mock_model,
-        patch("registry.mcpgw.tools.agent_invoke.call_a2a", side_effect=fake_call_a2a),
+        patch("registry.mcpgw.tools.agent.A2AAgent") as mock_model,
+        patch("registry.mcpgw.tools.agent.call_a2a", side_effect=fake_call_a2a),
     ):
         mock_model.id = MagicMock()
         mock_model.find_one = AsyncMock(return_value=agent)
@@ -270,7 +270,7 @@ async def test_execute_agent_on_chunk_calls_ctx_log():
 
 @pytest.mark.asyncio
 async def test_get_tools_returns_execute_agent():
-    tools = agent_invoke.get_tools()
+    tools = agent.get_tools()
     names = [name for name, _ in tools]
     assert "execute_agent" in names
 
@@ -446,9 +446,9 @@ async def test_execute_agent_iam_unsupported_returns_error():
     agent = _make_agent(valid_id)
 
     with (
-        patch("registry.mcpgw.tools.agent_invoke.A2AAgent") as mock_model,
+        patch("registry.mcpgw.tools.agent.A2AAgent") as mock_model,
         patch(
-            "registry.mcpgw.tools.agent_invoke.raise_if_iam_unsupported",
+            "registry.mcpgw.tools.agent.raise_if_iam_unsupported",
             side_effect=NotImplementedError("IAM-authenticated AgentCore A2A runtime is not supported"),
         ),
     ):
