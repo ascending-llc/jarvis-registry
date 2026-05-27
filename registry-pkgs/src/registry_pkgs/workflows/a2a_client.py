@@ -394,7 +394,7 @@ async def call_a2a(
 
     Args:
         agent:        A2AAgent document from MongoDB.
-        text:         User message / task description to send.
+        text:         User message string or pre-parsed A2A Message to send.
         jwt_config:   JWT signing config for service-to-agent auth.
         httpx_client: Optional shared httpx client.
 

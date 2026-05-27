@@ -571,3 +571,27 @@ async def test_call_a2a_uses_async_with_when_no_shared_httpx_client():
 
     mock_client.__aenter__.assert_awaited_once()
     mock_client.__aexit__.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_call_a2a_accepts_pre_parsed_message():
+    """When call_a2a receives a pre-built Message, it must pass it directly to
+    _consume_stream without re-wrapping via _create_message."""
+    agent = _make_agent()
+    pre_parsed = Message(
+        kind="message",
+        role=Role.user,
+        parts=[Part(root=TextPart(kind="text", text="pre-parsed"))],
+        message_id="pre-id",
+    )
+    mock_factory, _ = _mock_client([_msg("ok")])
+
+    with (
+        patch("registry_pkgs.workflows.a2a_client.build_headers", return_value={}),
+        patch("registry_pkgs.workflows.a2a_client.ClientFactory", return_value=mock_factory),
+        patch("registry_pkgs.workflows.a2a_client._create_message") as mock_create,
+    ):
+        result = await call_a2a(agent, pre_parsed, jwt_config=_jwt_config())
+
+    assert result.success is True
+    mock_create.assert_not_called()
