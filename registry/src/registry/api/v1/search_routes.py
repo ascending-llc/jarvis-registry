@@ -1,28 +1,19 @@
 import logging
-import time
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel, Field
+from pydantic import Field
 
-from registry_pkgs.models.enums import A2AEntityType, MCPEntityType
-from registry_pkgs.vector.enum.enums import SearchType
-from registry_pkgs.vector.repositories.a2a_agent_repository import A2AAgentRepository
-from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRepository
-
-from ...auth.dependencies import CurrentUser
 from ...core.telemetry_decorators import track_registry_operation
-from ...deps import get_a2a_agent_repo, get_mcp_server_repo, get_vector_service
+from ...deps import get_search_service
 from ...schemas.case_conversion import APIBaseModel
-from ...services.search.base import VectorSearchService
-from ...utils.otel_metrics import record_tool_discovery
+from ...services.search.service import SearchService
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-EntityType = Literal["mcp_server", "tool", "a2a_agent"]
-type SearchEntityType = MCPEntityType | A2AEntityType
+EntityType = Literal["mcp_server", "tool", "a2a_agent", "skill"]
 
 
 class MatchingToolResult(APIBaseModel):
@@ -76,479 +67,130 @@ class SkillSearchResult(APIBaseModel):
 
 class SemanticSearchRequest(APIBaseModel):
     query: str = Field(..., min_length=1, max_length=512, description="Natural language query")
-    entityTypes: list[EntityType] | None = Field(default=None, description="Optional entity filters")
+    entityTypes: list[EntityType] | None = Field(
+        default=None,
+        description="Entity types to search: 'mcp_server', 'tool', 'a2a_agent', 'skill'. Default: all.",
+    )
     maxResults: int = Field(default=10, ge=1, le=50, description="Maximum results per entity collection")
+    includeDisabled: bool = Field(default=False, description="Include disabled agents/skills in results")
 
 
 class SemanticSearchResponse(APIBaseModel):
     query: str
     servers: list[ServerSearchResult] = Field(default_factory=list)
     tools: list[ToolSearchResult] = Field(default_factory=list)
-    totalServers: int = 0
-    totalTools: int = 0
-
-
-class AgentSemanticSearchRequest(APIBaseModel):
-    query: str = Field(default="", min_length=0, max_length=512, description="Natural language query")
-    entityTypes: list[A2AEntityType] | None = Field(
-        default=None,
-        description="A2A entity types to search: 'agent', 'skill'. Default: both.",
-    )
-    maxResults: int = Field(default=10, ge=1, le=50, description="Maximum results to return")
-    includeDisabled: bool = Field(default=False, description="Include disabled agents in results")
-
-
-class AgentSemanticSearchResponse(APIBaseModel):
-    query: str
     agents: list[AgentSearchResult] = Field(default_factory=list)
     skills: list[SkillSearchResult] = Field(default_factory=list)
+    totalServers: int = 0
+    totalTools: int = 0
     totalAgents: int = 0
     totalSkills: int = 0
 
 
+def _map_server(server: dict) -> ServerSearchResult:
+    matching_tools = [
+        MatchingToolResult(
+            toolName=tool.get("tool_name", ""),
+            description=tool.get("description"),
+            relevanceScore=tool.get("relevance_score", 0.0),
+            matchContext=tool.get("match_context"),
+        )
+        for tool in server.get("matching_tools", [])
+    ]
+    return ServerSearchResult(
+        path=server.get("path", ""),
+        serverName=server.get("server_name", ""),
+        description=server.get("description"),
+        tags=server.get("tags", []),
+        numTools=server.get("num_tools", 0),
+        isEnabled=server.get("is_enabled", False),
+        relevanceScore=server.get("relevance_score", 0.0),
+        matchContext=server.get("match_context"),
+        matchingTools=matching_tools,
+    )
+
+
+def _map_tool(tool: dict) -> ToolSearchResult:
+    return ToolSearchResult(
+        serverPath=tool.get("server_path", ""),
+        serverName=tool.get("server_name", ""),
+        toolName=tool.get("tool_name", ""),
+        description=tool.get("description"),
+        relevanceScore=tool.get("relevance_score", 0.0),
+        matchContext=tool.get("match_context"),
+    )
+
+
+def _map_agent(doc: dict) -> AgentSearchResult:
+    return AgentSearchResult(
+        agentId=doc.get("agent_id"),
+        path=doc.get("path", ""),
+        agentName=doc.get("agent_name", ""),
+        description=doc.get("description"),
+        tags=doc.get("tags") or [],
+        isEnabled=doc.get("enabled", False),
+        relevanceScore=doc.get("relevance_score") or 0.0,
+        matchContext=doc.get("match_context"),
+    )
+
+
+def _map_skill(doc: dict) -> SkillSearchResult:
+    return SkillSearchResult(
+        agentId=doc.get("agent_id"),
+        agentPath=doc.get("path", ""),
+        agentName=doc.get("agent_name", ""),
+        skillName=doc.get("skill_name", ""),
+        description=doc.get("description"),
+        relevanceScore=doc.get("relevance_score") or 0.0,
+        matchContext=doc.get("match_context"),
+    )
+
+
 @router.post(
-    "/search/semantic",
+    "/search",
     response_model=SemanticSearchResponse,
     response_model_by_alias=True,
-    summary="Unified semantic search for MCP servers and tools",
+    summary="Unified semantic search for MCP servers/tools and A2A agents/skills",
 )
 @track_registry_operation("search", resource_type="semantic")
 async def semantic_search(
     request: Request,
     search_request: SemanticSearchRequest,
-    vector_service: VectorSearchService = Depends(get_vector_service),
+    search_service: SearchService = Depends(get_search_service),
 ) -> SemanticSearchResponse:
-    """
-    Run a semantic search against MCP servers (and their tools) using FAISS embeddings.
-    """
+    """Run a unified semantic search across MCP servers/tools and A2A agents/skills."""
     if not request.state.is_authenticated:
         raise HTTPException(detail="Not authenticated", status_code=401)
-    user_context = request.state.user
-    start_time = time.perf_counter()
-    success = False
-    total_results = 0
-    filtered_servers: list[ServerSearchResult] = []
-    filtered_tools: list[ToolSearchResult] = []
-
-    logger.info(
-        "Semantic search requested by %s (entities=%s, max=%s)",
-        user_context.get("username"),
-        search_request.entityTypes or ["mcp_server", "tool"],
-        search_request.maxResults,
-    )
 
     try:
-        try:
-            raw_results = await vector_service.search_mixed(
-                query=search_request.query,
-                entity_types=search_request.entityTypes,
-                max_results=search_request.maxResults,
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-        except RuntimeError as exc:
-            logger.error("FAISS search service unavailable: %s", exc, exc_info=True)
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Semantic search is temporarily unavailable. Please try again later.",
-            ) from exc
-
-        for server in raw_results.get("servers", []):
-            matching_tools = [
-                MatchingToolResult(
-                    toolName=tool.get("tool_name", ""),
-                    description=tool.get("description"),
-                    relevanceScore=tool.get("relevance_score", 0.0),
-                    matchContext=tool.get("match_context"),
-                )
-                for tool in server.get("matching_tools", [])
-            ]
-
-            filtered_servers.append(
-                ServerSearchResult(
-                    path=server.get("path", ""),
-                    serverName=server.get("server_name", ""),
-                    description=server.get("description"),
-                    tags=server.get("tags", []),
-                    numTools=server.get("num_tools", 0),
-                    isEnabled=server.get("is_enabled", False),
-                    relevanceScore=server.get("relevance_score", 0.0),
-                    matchContext=server.get("match_context"),
-                    matchingTools=matching_tools,
-                )
-            )
-
-        for tool in raw_results.get("tools", []):
-            server_path = tool.get("server_path", "")
-            server_name = tool.get("server_name", "")
-            filtered_tools.append(
-                ToolSearchResult(
-                    serverPath=server_path,
-                    serverName=server_name,
-                    toolName=tool.get("tool_name", ""),
-                    description=tool.get("description"),
-                    relevanceScore=tool.get("relevance_score", 0.0),
-                    matchContext=tool.get("match_context"),
-                )
-            )
-
-        success = True
-        total_results = len(filtered_servers) + len(filtered_tools)
-
-        return SemanticSearchResponse(
-            query=search_request.query.strip(),
-            servers=filtered_servers,
-            tools=filtered_tools,
-            totalServers=len(filtered_servers),
-            totalTools=len(filtered_tools),
+        raw = await search_service.semantic_search(
+            query=search_request.query,
+            entity_types=search_request.entityTypes,
+            max_results=search_request.maxResults,
+            include_disabled=search_request.includeDisabled,
         )
-    finally:
-        # Record tool discovery metrics per discovered server
-        duration = time.perf_counter() - start_time
-        try:
-            discovered_names: set[str] = set()
-            for srv in filtered_servers:
-                if srv.server_name:
-                    discovered_names.add(srv.server_name)
-            for tl in filtered_tools:
-                if tl.server_name:
-                    discovered_names.add(tl.server_name)
-
-            if discovered_names:
-                for name in discovered_names:
-                    record_tool_discovery(
-                        server_name=name,
-                        success=success,
-                        duration_seconds=duration,
-                        transport_type="semantic",
-                        tools_count=total_results,
-                    )
-            else:
-                record_tool_discovery(
-                    server_name="registry",
-                    success=success,
-                    duration_seconds=duration,
-                    transport_type="semantic",
-                    tools_count=total_results,
-                )
-        except Exception as e:
-            logger.warning(f"Failed to record tool discovery metric: {e}")
-
-
-class ToolDiscoveryMatch(BaseModel):
-    """A discovered tool with metadata for execution"""
-
-    tool_name: str
-    server_id: str
-    server_path: str
-    description: str | None = None
-    input_schema: dict | None = None
-    discovery_score: float = Field(..., ge=0.0, le=1.0)
-    transport_type: str = "streamable-http"
-
-
-class ToolDiscoveryResponse(BaseModel):
-    """Response from tool discovery"""
-
-    query: str
-    total_matches: int
-    matches: list[ToolDiscoveryMatch]
-
-
-class SearchRequest(BaseModel):
-    query: str = Field(default="", min_length=0, max_length=512, description="Natural language query")
-    top_n: int = Field(1, description="Number of results to return")
-    search_type: SearchType = Field(default=SearchType.HYBRID, description="Type of search to perform")
-    type_list: list[SearchEntityType] = Field(
-        default_factory=lambda: list(MCPEntityType),
-        description=(
-            "Entity types to search. MCP supports 'tool', 'resource', 'prompt'. "
-            "A2A supports 'agent', 'skill'. Default: all MCP entity types."
-        ),
-    )
-    include_disabled: bool = Field(default=False, description="Include disabled results")
-
-
-def _build_filters(include_disabled: bool, entity_types: list) -> dict[str, object]:
-    """Build vector-store filter dict from entity type list and disabled flag."""
-    filters: dict[str, object] = {"entity_type": entity_types}
-    if not include_disabled:
-        filters["enabled"] = True
-    return filters
-
-
-async def _search_mcp_documents(
-    search: SearchRequest,
-    query: str,
-    mcp_types: list[MCPEntityType],
-    mcp_server_repo: MCPServerRepository,
-) -> list:
-    filters = _build_filters(search.include_disabled, mcp_types)
-    if not query:
-        return await mcp_server_repo.afilter(filters=filters, limit=search.top_n)
-    return await mcp_server_repo.asearch_with_rerank(
-        query=query,
-        k=search.top_n,
-        candidate_k=min(max(search.top_n * 10, 50), 100),
-        search_type=search.search_type,
-        filters=filters,
-    )
-
-
-async def _search_a2a_documents(
-    search: SearchRequest,
-    query: str,
-    a2a_types: list[A2AEntityType],
-    a2a_agent_repo: A2AAgentRepository,
-) -> list:
-    filters = _build_filters(search.include_disabled, a2a_types)
-    if not query:
-        return await a2a_agent_repo.afilter(filters=filters, limit=search.top_n)
-    return await a2a_agent_repo.asearch_with_rerank(
-        query=query,
-        k=search.top_n,
-        candidate_k=min(max(search.top_n * 10, 50), 100),
-        search_type=search.search_type,
-        filters=filters,
-    )
-
-
-async def search_entities_impl(
-    search: SearchRequest,
-    user_context: CurrentUser,
-    *,
-    mcp_server_repo: MCPServerRepository,
-    a2a_agent_repo: A2AAgentRepository | None = None,
-) -> dict[str, object]:
-    """
-    Shared discovery implementation for both FastAPI routes and MCP tools.
-
-    Routes searches to the correct Weaviate collection based on entity type:
-    - tool/resource/prompt -> MCP_Servers collection
-    - agent/skill          -> A2a_agents collection
-
-    Results are merged and re-sorted by relevance_score before truncation to top_n.
-    Every document embeds its server/agent context so no MongoDB lookup is needed.
-    """
-    query = search.query.strip()
-    top_n = search.top_n
-    start_time = time.perf_counter()
-    success = False
-    results_count = 0
-    search_results: list = []
-
-    all_types = search.type_list
-    mcp_types: list[MCPEntityType] = [t for t in all_types if isinstance(t, MCPEntityType)]
-    a2a_types: list[A2AEntityType] = [t for t in all_types if isinstance(t, A2AEntityType)]
-
-    logger.info(
-        f"🔍 Entity search from user '{user_context.get('username', 'unknown')}': "
-        f"query='{query}', top_n={top_n}, search_type={search.search_type}, "
-        f"mcp_types={mcp_types}, a2a_types={a2a_types}"
-    )
-
-    try:
-        results: list = []
-
-        if mcp_types:
-            mcp_results = await _search_mcp_documents(search, query, mcp_types, mcp_server_repo)
-            results.extend(mcp_results)
-
-        if a2a_types and a2a_agent_repo is not None:
-            try:
-                a2a_results = await _search_a2a_documents(search, query, a2a_types, a2a_agent_repo)
-                results.extend(a2a_results)
-            except RuntimeError as exc:
-                logger.warning("A2A vector search unavailable, skipping A2A results: %s", exc)
-
-        # Re-sort merged results by relevance_score (desc) and cap at top_n
-        if len(results) > top_n:
-            results.sort(key=lambda r: r.get("relevance_score") or 0.0, reverse=True)
-            results = results[:top_n]
-
-        search_results = results
-        logger.info(f"✅ Found {len(search_results)} results (mcp={len(mcp_types) > 0}, a2a={len(a2a_types) > 0})")
-
-        success = True
-        results_count = len(search_results)
-
-        return {
-            "query": query,
-            "type_list": search.type_list,
-            "total": len(search_results),
-            "results": search_results,
-        }
-    finally:
-        duration = time.perf_counter() - start_time
-        try:
-            _record_discovery_metrics(search_results, success, duration, search.search_type, results_count)
-        except Exception as e:
-            logger.warning(f"Failed to record tool discovery metric: {e}")
-
-
-def _record_discovery_metrics(
-    search_results: list,
-    success: bool,
-    duration: float,
-    search_type: SearchType,
-    results_count: int,
-) -> None:
-    discovered_names: set[str] = set()
-    for result in search_results:
-        name = result.get("server_name") if isinstance(result, dict) else None
-        if name:
-            discovered_names.add(name)
-
-    if discovered_names:
-        for name in discovered_names:
-            record_tool_discovery(
-                server_name=name,
-                success=success,
-                duration_seconds=duration,
-                transport_type=str(search_type.value),
-                tools_count=results_count,
-            )
-        return
-
-    record_tool_discovery(
-        server_name="registry",
-        success=success,
-        duration_seconds=duration,
-        transport_type=str(search_type.value),
-        tools_count=results_count,
-    )
-
-
-@router.post(
-    "/search/agents",
-    response_model=AgentSemanticSearchResponse,
-    response_model_by_alias=True,
-    summary="Semantic search for A2A agents and skills",
-)
-@track_registry_operation("search", resource_type="agent")
-async def search_agents(
-    request: Request,
-    search_request: AgentSemanticSearchRequest,
-    a2a_agent_repo: A2AAgentRepository = Depends(get_a2a_agent_repo),
-) -> AgentSemanticSearchResponse:
-    """
-    Semantic search against the A2a_agents Weaviate collection.
-
-    Searches A2A agent-level and skill entities.
-    For MCP tool/resource/prompt discovery use POST /search/semantic instead.
-
-    entityTypes filter:
-      - "agent": agent-level results
-      - "skill": individual skill results
-      Default: both agent and skill types.
-    """
-    if not request.state.is_authenticated:
-        raise HTTPException(detail="Not authenticated", status_code=401)
-    user_context = request.state.user
-
-    entity_types: list[A2AEntityType] = search_request.entityTypes or list(A2AEntityType)
-
-    logger.info(
-        "Semantic search (A2A) requested by %s (entities=%s, max=%s, include_disabled=%s)",
-        user_context.get("username"),
-        [et.value for et in entity_types],
-        search_request.maxResults,
-        search_request.includeDisabled,
-    )
-
-    filters = _build_filters(search_request.includeDisabled, entity_types)
-    query = search_request.query.strip()
-    try:
-        if not query:
-            raw_docs = await a2a_agent_repo.afilter(filters=filters, limit=search_request.maxResults)
-        else:
-            raw_docs = await a2a_agent_repo.asearch_with_rerank(
-                query=query,
-                k=search_request.maxResults,
-                candidate_k=min(max(search_request.maxResults * 10, 50), 100),
-                search_type=SearchType.HYBRID,
-                filters=filters,
-            )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except RuntimeError as exc:
-        logger.error("A2A vector search unavailable: %s", exc, exc_info=True)
+        logger.error("Search service unavailable: %s", exc, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Agent search is temporarily unavailable. Please try again later.",
+            detail="Semantic search is temporarily unavailable. Please try again later.",
         ) from exc
 
-    filtered_agents: list[AgentSearchResult] = []
-    filtered_skills: list[SkillSearchResult] = []
+    servers = [_map_server(s) for s in raw.get("servers", [])]
+    tools = [_map_tool(t) for t in raw.get("tools", [])]
+    agents = [_map_agent(a) for a in raw.get("agents", [])]
+    skills = [_map_skill(s) for s in raw.get("skills", [])]
 
-    for doc in raw_docs:
-        entity_type = doc.get("entity_type")
-        if entity_type == A2AEntityType.AGENT:
-            filtered_agents.append(
-                AgentSearchResult(
-                    agentId=doc.get("agent_id"),
-                    path=doc.get("path", ""),
-                    agentName=doc.get("agent_name", ""),
-                    description=doc.get("description"),
-                    tags=doc.get("tags") or [],
-                    isEnabled=doc.get("enabled", False),
-                    relevanceScore=doc.get("relevance_score") or 0.0,
-                    matchContext=doc.get("match_context"),
-                )
-            )
-        elif entity_type == A2AEntityType.SKILL:
-            filtered_skills.append(
-                SkillSearchResult(
-                    agentId=doc.get("agent_id"),
-                    agentPath=doc.get("path", ""),
-                    agentName=doc.get("agent_name", ""),
-                    skillName=doc.get("skill_name", ""),
-                    description=doc.get("description"),
-                    relevanceScore=doc.get("relevance_score") or 0.0,
-                    matchContext=doc.get("match_context"),
-                )
-            )
-
-    return AgentSemanticSearchResponse(
-        query=query,
-        agents=filtered_agents,
-        skills=filtered_skills,
-        totalAgents=len(filtered_agents),
-        totalSkills=len(filtered_skills),
-    )
-
-
-@router.post("/search/servers")
-@track_registry_operation("search", resource_type="server")
-async def search_servers(
-    search: SearchRequest,
-    user_context: CurrentUser,
-    mcp_server_repo: MCPServerRepository = Depends(get_mcp_server_repo),
-    a2a_agent_repo: A2AAgentRepository = Depends(get_a2a_agent_repo),
-):
-    """
-    Search for MCP tools, resources, prompts, and A2A agents/skills via vector search.
-
-    Routes to the appropriate Weaviate collection based on entity type:
-    - tool / resource / prompt -> MCP_Servers collection
-    - agent / skill            -> A2a_agents collection
-
-    Results always contain the execution-ready identifier for the entity type:
-    - tool   -> tool_name
-    - resource -> resource_uri
-    - prompt -> prompt_name
-    - agent / skill -> path + agent_id
-
-    Request body:
-    {
-        "query": "search",
-        "top_n": 5,
-        "search_type": "hybrid",
-        "type_list": ["tool", "resource", "prompt", "agent", "skill"],
-        "include_disabled": false
-    }
-    """
-    return await search_entities_impl(
-        search,
-        user_context,
-        mcp_server_repo=mcp_server_repo,
-        a2a_agent_repo=a2a_agent_repo,
+    return SemanticSearchResponse(
+        query=search_request.query.strip(),
+        servers=servers,
+        tools=tools,
+        agents=agents,
+        skills=skills,
+        totalServers=len(servers),
+        totalTools=len(tools),
+        totalAgents=len(agents),
+        totalSkills=len(skills),
     )

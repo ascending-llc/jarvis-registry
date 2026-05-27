@@ -1,5 +1,4 @@
-"""
-Executor wrapper that injects directive checking and retry backoff into every step.
+"""Executor wrapper that injects directive checking and retry backoff into every step.
 
 ``with_control`` wraps any StepExecutor and adds:
 
@@ -19,6 +18,13 @@ Executor wrapper that injects directive checking and retry backoff into every st
 
 4. **Attempt persistence** — ``NodeRun.attempt`` is incremented and written to
    MongoDB at the start of each attempt so the UI always reflects the latest try.
+
+Node-level HITL (confirmation / user_input / output_review / iteration review)
+is handled by agno's native ``HumanReview`` configuration — agno's execution
+loop detects and pauses on its own, and we surface the pause via
+``WorkflowRunner._handle_run_output`` writing ``WorkflowRun.pending_requirements``.
+This wrapper covers what agno does not: ad-hoc pause/resume, exponential-backoff
+retry, and per-attempt persistence.
 """
 
 from __future__ import annotations
@@ -31,11 +37,11 @@ from datetime import UTC, datetime
 from agno.workflow import StepInput, StepOutput
 from agno.workflow.step import StepExecutor
 from beanie import PydanticObjectId
-from pydantic import BaseModel
 
 from registry_pkgs.models.enums import NodeRunStatus, WorkflowDirective, WorkflowRunStatus
 from registry_pkgs.models.workflow import NodeRun, StepConfig, WorkflowRun
 from registry_pkgs.workflows.control.queue import DirectiveQueue
+from registry_pkgs.workflows.hitl import PendingDirectiveProjection
 
 logger = logging.getLogger(__name__)
 
@@ -171,10 +177,6 @@ async def _check_and_handle_directive(
     return None
 
 
-class _PendingDirectiveProjection(BaseModel):
-    pending_directive: WorkflowDirective | None = None
-
-
 async def _read_mongodb_directive(run_id: str) -> WorkflowDirective | None:
     """Read ``WorkflowRun.pending_directive`` from MongoDB.
 
@@ -182,10 +184,13 @@ async def _read_mongodb_directive(run_id: str) -> WorkflowDirective | None:
     recover a lost directive after a pod restart.  Only ``pending_directive`` is
     projected so the full document (with definition_snapshot, outputs, etc.) is
     never transferred over the wire.
+
+    The projection model is shared with ``MongoBackedCancellationManager`` via
+    ``registry_pkgs.workflows.hitl.projections`` so both consumers stay in sync.
     """
     run = await WorkflowRun.find_one(
         WorkflowRun.id == PydanticObjectId(run_id),
-        projection_model=_PendingDirectiveProjection,
+        projection_model=PendingDirectiveProjection,
     )
     return run.pending_directive if run is not None else None
 

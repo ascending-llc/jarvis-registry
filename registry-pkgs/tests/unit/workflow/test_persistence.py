@@ -11,7 +11,7 @@ from agno.workflow import StepOutput
 from beanie import PydanticObjectId
 
 from registry_pkgs.models.enums import NodeRunStatus, WorkflowRunStatus
-from registry_pkgs.models.workflow import NodeRun, WorkflowNode
+from registry_pkgs.models.workflow import NodeRun, StepConfig, WorkflowNode
 from registry_pkgs.workflows import persistence
 
 
@@ -320,3 +320,75 @@ class TestWorkflowPersistence:
             session_data={},
             session=mongo_session,
         )
+
+    # ── on_error=skip semantics (skip-tolerated failures) ──────────────────────
+
+    def test_resolve_status_skip_tolerated_failure_keeps_run_completed(self):
+        """A failed step whose node is on_error=skip must not force the run to FAILED."""
+        node_by_name = {"opt": WorkflowNode(name="opt", executor_key="t", step_config=StepConfig(on_error="skip"))}
+        run_output = WorkflowRunOutput(content="done", status=RunStatus.completed)
+        status = persistence._resolve_workflow_run_status(
+            run_output,
+            [StepOutput(step_name="opt", content="boom", success=False, error="boom")],
+            node_by_name,
+        )
+        assert status == WorkflowRunStatus.COMPLETED
+
+    def test_resolve_status_non_skip_failure_still_forces_failed(self):
+        """A failed step on a fail/default node still forces FAILED (regression guard)."""
+        node_by_name = {"crit": WorkflowNode(name="crit", executor_key="t", step_config=StepConfig(on_error="fail"))}
+        run_output = WorkflowRunOutput(content="done", status=RunStatus.completed)
+        status = persistence._resolve_workflow_run_status(
+            run_output,
+            [StepOutput(step_name="crit", content="boom", success=False, error="boom")],
+            node_by_name,
+        )
+        assert status == WorkflowRunStatus.FAILED
+
+    def test_resolve_status_unknown_node_failure_forces_failed(self):
+        """Without node mapping a failed step is treated as a real failure (conservative)."""
+        run_output = WorkflowRunOutput(content="done", status=RunStatus.completed)
+        status = persistence._resolve_workflow_run_status(
+            run_output,
+            [StepOutput(step_name="ghost", content="boom", success=False)],
+            None,
+        )
+        assert status == WorkflowRunStatus.FAILED
+
+    @pytest.mark.asyncio
+    async def test_upsert_node_run_records_skipped_for_skip_tolerated_failure(self, monkeypatch: pytest.MonkeyPatch):
+        """A failed step on an on_error=skip node is persisted as SKIPPED, not FAILED."""
+        saved = []
+
+        class FakeNodeRun:
+            workflow_run_id = _FieldExpr("workflow_run_id")
+            node_id = _FieldExpr("node_id")
+
+            def __init__(self, **kwargs):
+                self.__dict__.update(kwargs)
+                self.attempt = 0
+                self.status = NodeRunStatus.PENDING
+                self.output_snapshot = None
+                self.finished_at = None
+                self.error = None
+                self.selected_a2a_key = None
+
+            @classmethod
+            async def find_one(cls, *args, **kwargs):
+                return None
+
+            async def save(self, **kwargs):
+                saved.append((self, kwargs))
+
+        monkeypatch.setattr(persistence, "NodeRun", FakeNodeRun)
+
+        sync = _sync_with_fake_run()
+        sync._node_by_name = {
+            "opt": WorkflowNode(name="opt", executor_key="t", step_config=StepConfig(on_error="skip"))
+        }
+
+        await sync._upsert_node_run(StepOutput(step_name="opt", content="boom", success=False, error="boom"))
+
+        node_run, _ = saved[0]
+        assert node_run.status == NodeRunStatus.SKIPPED
+        assert node_run.error == "boom"  # the skip reason is retained for diagnostics

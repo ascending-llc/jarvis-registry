@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, Field
+
+from registry.schemas.workflow_api_schemas import StepRequirementSummary
+from registry_pkgs.models.enums import RequirementResolution
 
 
 class TriggerRunRequest(BaseModel):
@@ -43,6 +47,35 @@ class RetryRequest(BaseModel):
     from_node_id: str = Field(..., description="Node ID to restart execution from")
 
 
+class ResolveRequirementRequest(BaseModel):
+    """Request body for ``POST /approve``.
+
+    Carries a decision aligned 1:1 with agno's
+    ``StepRequirement.{confirm, reject, edit, set_user_input, set_selected_choices}``
+    methods.
+    """
+
+    stepId: str = Field(..., description="The pending requirement's step_id (from GET /runs/{id})")
+    resolution: RequirementResolution = Field(..., description="confirm / reject / edit / user_input / route_select")
+    feedback: str | None = Field(None, description="Optional reject feedback (passed to agno's on_reject=retry agent)")
+    editedOutput: Any | None = Field(None, description="EDIT resolution only — replaces the original step_output")
+    userInput: dict[str, Any] | None = Field(
+        None, description="USER_INPUT resolution only — values matching user_input_schema"
+    )
+    selectedChoices: list[str] | None = Field(
+        None, description="ROUTE_SELECT resolution only — chosen router choice name(s)"
+    )
+
+
+class ResolveRequirementResponse(BaseModel):
+    """Response for ``POST /approve``."""
+
+    runId: str = Field(..., description="The WorkflowRun ID")
+    status: str = Field(..., description="Run status after the decision was applied")
+    resolvedStepId: str = Field(..., description="The step_id of the requirement just resolved")
+    message: str = Field(..., description="Human-readable summary")
+
+
 class DirectiveResponse(BaseModel):
     """Unified response returned by all four control endpoints.
 
@@ -56,9 +89,6 @@ class DirectiveResponse(BaseModel):
     run_id: str
     status: str
     message: str
-
-
-# ── Status query responses ────────────────────────────────────────────────────
 
 
 class NodeRunSummary(BaseModel):
@@ -111,6 +141,9 @@ class RunStatusResponse(BaseModel):
     error_summary: str | None
     parent_run_id: str | None
     node_runs: list[NodeRunSummary]
+    # Non-empty when the run is awaiting_approval so the frontend can render
+    # the decision UI without making a second request to /runs/{run_id}.
+    pendingRequirements: list[StepRequirementSummary] = Field(default_factory=list)
 
 
 class RunSummary(BaseModel):

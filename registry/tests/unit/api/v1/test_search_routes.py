@@ -1,31 +1,25 @@
+"""Unit tests for the POST /search route handler.
+
+Search business logic lives in SearchService (see
+tests/unit/services/search/test_service.py). These tests only cover the thin
+handler: delegation to the service and mapping the service result onto the
+SemanticSearchResponse model.
+"""
+
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from tests.conftest import make_container
 
-from registry.api.v1.search_routes import (
-    AgentSemanticSearchRequest,
-    SearchRequest,
-    SemanticSearchRequest,
-    search_agents,
-    search_entities_impl,
-    search_servers,
-    semantic_search,
-)
-from registry_pkgs.models.enums import A2AEntityType, MCPEntityType
-from registry_pkgs.vector.enum.enums import SearchType
+from registry.api.v1.search_routes import SemanticSearchRequest, semantic_search
 
 
 @pytest.mark.asyncio
-async def test_semantic_search_uses_injected_vector_service():
-    request = make_container(
-        state=make_container(
-            is_authenticated=True,
-            user={"username": "tester"},
-        )
-    )
-    vector_service = MagicMock()
-    vector_service.search_mixed = AsyncMock(
+async def test_semantic_search_maps_service_result_to_response():
+    """Handler delegates to SearchService and maps MCP + A2A results."""
+    request = make_container(state=make_container(is_authenticated=True, user={"username": "tester"}))
+    search_service = MagicMock()
+    search_service.semantic_search = AsyncMock(
         return_value={
             "servers": [
                 {
@@ -40,164 +34,70 @@ async def test_semantic_search_uses_injected_vector_service():
                 }
             ],
             "tools": [],
+            "agents": [
+                {
+                    "agent_id": "agent-1",
+                    "path": "/deep-intel",
+                    "agent_name": "deep-intel",
+                    "description": "Deep intel agent",
+                    "tags": ["research"],
+                    "enabled": True,
+                    "relevance_score": 0.85,
+                }
+            ],
+            "skills": [
+                {
+                    "agent_id": "agent-1",
+                    "path": "/deep-intel",
+                    "agent_name": "deep-intel",
+                    "skill_name": "web_search",
+                    "relevance_score": 0.75,
+                }
+            ],
         }
     )
 
     response = await semantic_search(
         request=request,
-        search_request=SemanticSearchRequest(query="test", entityTypes=["mcp_server"], maxResults=5),
-        vector_service=vector_service,
+        search_request=SemanticSearchRequest(
+            query="test", entityTypes=["mcp_server", "a2a_agent", "skill"], maxResults=5
+        ),
+        search_service=search_service,
     )
 
-    vector_service.search_mixed.assert_awaited_once_with(
+    search_service.semantic_search.assert_awaited_once_with(
         query="test",
-        entity_types=["mcp_server"],
+        entity_types=["mcp_server", "a2a_agent", "skill"],
         max_results=5,
+        include_disabled=False,
     )
     assert response.totalServers == 1
     assert response.servers[0].serverName == "test-server"
-
-
-@pytest.mark.asyncio
-async def test_search_servers_uses_vector_directly():
-    """Tool search must go through vector search and return tool_name directly."""
-    tool_results = [
-        {"server_id": "id-1", "server_name": "github", "entity_type": "tool", "tool_name": "search_code"},
-        {"server_id": "id-1", "server_name": "github", "entity_type": "tool", "tool_name": "create_pr"},
-    ]
-    mcp_server_repo = MagicMock()
-    mcp_server_repo.asearch_with_rerank = AsyncMock(return_value=tool_results)
-
-    response = await search_servers(
-        search=SearchRequest(query="github", top_n=2, search_type=SearchType.HYBRID, type_list=[MCPEntityType.TOOL]),
-        user_context={"username": "tester"},
-        mcp_server_repo=mcp_server_repo,
-    )
-
-    mcp_server_repo.asearch_with_rerank.assert_awaited_once()
-    assert response["total"] == 2
-    assert response["results"] == tool_results
-
-
-@pytest.mark.asyncio
-async def test_search_servers_filters_metadata_when_tool_query_is_empty():
-    filter_results = [{"server_id": "id-1", "server_name": "server-1", "entity_type": "tool", "tool_name": "search"}]
-    mcp_server_repo = MagicMock()
-    mcp_server_repo.afilter = AsyncMock(return_value=filter_results)
-    mcp_server_repo.asearch_with_rerank = AsyncMock(
-        side_effect=AssertionError("vector search should not run for empty non-server query")
-    )
-
-    response = await search_servers(
-        search=SearchRequest(query="", top_n=5, search_type=SearchType.HYBRID, type_list=[MCPEntityType.TOOL]),
-        user_context={"username": "tester"},
-        mcp_server_repo=mcp_server_repo,
-    )
-
-    mcp_server_repo.afilter.assert_awaited_once_with(filters={"enabled": True, "entity_type": ["tool"]}, limit=5)
-    assert response["query"] == ""
-    assert response["total"] == 1
-    assert response["results"] == filter_results
-
-
-@pytest.mark.asyncio
-async def test_search_request_accepts_a2a_entity_types():
-    request = SearchRequest(type_list=[A2AEntityType.AGENT, A2AEntityType.SKILL])
-
-    assert request.type_list == [A2AEntityType.AGENT, A2AEntityType.SKILL]
-
-
-@pytest.mark.asyncio
-async def test_search_entities_impl_routes_a2a_types_to_a2a_repo():
-    a2a_results = [
-        {
-            "agent_id": "agent-1",
-            "agent_name": "deep-intel",
-            "path": "/deep-intel",
-            "entity_type": A2AEntityType.AGENT,
-            "relevance_score": 0.91,
-        }
-    ]
-    mcp_server_repo = MagicMock()
-    mcp_server_repo.asearch_with_rerank = AsyncMock(
-        side_effect=AssertionError("MCP repo should not run for pure A2A searches")
-    )
-    a2a_agent_repo = MagicMock()
-    a2a_agent_repo.asearch_with_rerank = AsyncMock(return_value=a2a_results)
-
-    response = await search_entities_impl(
-        SearchRequest(query="deep intel", top_n=3, search_type=SearchType.HYBRID, type_list=[A2AEntityType.AGENT]),
-        {"username": "tester"},
-        mcp_server_repo=mcp_server_repo,
-        a2a_agent_repo=a2a_agent_repo,
-    )
-
-    a2a_agent_repo.asearch_with_rerank.assert_awaited_once()
-    assert response["total"] == 1
-    assert response["results"] == a2a_results
-
-
-@pytest.mark.asyncio
-async def test_search_agents_returns_agents_and_skills():
-    """search_agents splits raw docs by entity_type into agents and skills."""
-    agent_doc = {
-        "agent_id": "agent-1",
-        "agent_name": "deep-intel",
-        "path": "/deep-intel",
-        "entity_type": A2AEntityType.AGENT,
-        "relevance_score": 0.85,
-        "description": "Deep intel agent",
-        "tags": ["research"],
-        "enabled": True,
-    }
-    skill_doc = {
-        "agent_id": "agent-1",
-        "agent_name": "deep-intel",
-        "path": "/deep-intel",
-        "entity_type": A2AEntityType.SKILL,
-        "skill_name": "web_search",
-        "relevance_score": 0.75,
-        "description": "Search the web",
-        "enabled": True,
-    }
-    a2a_agent_repo = MagicMock()
-    a2a_agent_repo.asearch_with_rerank = AsyncMock(return_value=[agent_doc, skill_doc])
-
-    request = make_container(state=make_container(is_authenticated=True, user={"username": "tester"}))
-
-    response = await search_agents(
-        request=request,
-        search_request=AgentSemanticSearchRequest(query="intel research", maxResults=5),
-        a2a_agent_repo=a2a_agent_repo,
-    )
-
+    assert response.totalTools == 0
     assert response.totalAgents == 1
-    assert response.totalSkills == 1
     assert response.agents[0].agentName == "deep-intel"
     assert response.agents[0].tags == ["research"]
     assert response.agents[0].isEnabled is True
+    assert response.totalSkills == 1
     assert response.skills[0].skillName == "web_search"
 
 
 @pytest.mark.asyncio
-async def test_search_agents_uses_afilter_for_empty_query():
-    """search_agents falls back to afilter when query is empty."""
-    a2a_agent_repo = MagicMock()
-    a2a_agent_repo.afilter = AsyncMock(return_value=[])
-    a2a_agent_repo.asearch_with_rerank = AsyncMock(
-        side_effect=AssertionError("vector search should not run for empty query")
+async def test_semantic_search_requires_authentication():
+    """Unauthenticated requests are rejected before reaching the service."""
+    from fastapi import HTTPException
+
+    request = make_container(state=make_container(is_authenticated=False, user=None))
+    search_service = MagicMock()
+    search_service.semantic_search = AsyncMock(
+        side_effect=AssertionError("service must not be called when unauthenticated")
     )
 
-    request = make_container(state=make_container(is_authenticated=True, user={"username": "tester"}))
+    with pytest.raises(HTTPException) as exc_info:
+        await semantic_search(
+            request=request,
+            search_request=SemanticSearchRequest(query="test"),
+            search_service=search_service,
+        )
 
-    response = await search_agents(
-        request=request,
-        search_request=AgentSemanticSearchRequest(query="", maxResults=10),
-        a2a_agent_repo=a2a_agent_repo,
-    )
-
-    a2a_agent_repo.afilter.assert_awaited_once_with(
-        filters={"enabled": True, "entity_type": list(A2AEntityType)}, limit=10
-    )
-    assert response.totalAgents == 0
-    assert response.totalSkills == 0
+    assert exc_info.value.status_code == 401

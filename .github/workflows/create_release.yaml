@@ -1,0 +1,77 @@
+name: Create GitHub Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      new_tag:
+        description: 'Tag to create the release for (e.g. asc1.2.3)'
+        required: true
+        type: string
+      prev_tag:
+        description: 'Previous tag for release notes base (leave blank to auto-detect)'
+        required: false
+        type: string
+
+permissions:
+  id-token: write
+  contents: write
+
+jobs:
+  # ── AI-generated GitHub Release via github/copilot-release-notes ─────────────
+  create-release:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Resolve previous tag
+        id: resolve_prev
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEW_TAG: ${{ inputs.new_tag }}
+          PREV_TAG_INPUT: ${{ inputs.prev_tag }}
+        run: |
+          if [ -n "$PREV_TAG_INPUT" ]; then
+            PREV_TAG="$PREV_TAG_INPUT"
+          else
+            # Find the tag of the most recent published (non-draft) GitHub release,
+            # skipping NEW_TAG itself if a release was already created for it.
+            PREV_TAG=$(gh release list \
+              --exclude-drafts \
+              --limit 20 \
+              --json tagName,isDraft \
+              --jq "[.[] | select(.tagName != \"${NEW_TAG}\")][0].tagName" \
+              2>/dev/null || echo "")
+          fi
+          if [ -z "$PREV_TAG" ]; then
+            echo "❌ Could not determine previous release tag. Pass prev_tag explicitly." >&2
+            exit 1
+          fi
+          echo "prev_tag=$PREV_TAG" >> $GITHUB_OUTPUT
+          echo "📋 Previous release tag: $PREV_TAG"
+          echo "📋 New release tag:      $NEW_TAG"
+
+      - name: Generate release notes with Copilot
+        id: notes
+        uses: github/copilot-release-notes@v1
+        timeout-minutes: 30
+        with:
+          base-ref: ${{ steps.resolve_prev.outputs.prev_tag }}
+          head-ref: ${{ inputs.new_tag }}
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.GH_COPILOT_KEY }}
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEW_TAG:  ${{ inputs.new_tag }}
+          RELEASE_NOTES: ${{ steps.notes.outputs['release-notes'] }}
+        run: |
+          gh release create "$NEW_TAG" \
+            --title "Jarvis Registry $NEW_TAG" \
+            --notes "$RELEASE_NOTES" \
+            --latest
+        # Publishing this release automatically fires release-changelog.yml
+        # (on: release: types: [published]) → generates the MkDocs docs page.

@@ -339,3 +339,67 @@ class TestACLService:
             resource_type=ResourceType.MCPSERVER,
         )
         assert result == []
+
+    @pytest.mark.asyncio
+    @patch("registry.services.access_control_service.ExtendedAclEntry")
+    async def test_get_user_permissions_for_resources_batches_single_query(self, mock_acl_entry):
+        """Batch resolution uses a single $in query and resolves per-resource permissions."""
+        service = ACLService(user_service=Mock(), group_service=Mock())
+        rid_a, rid_b, rid_missing = PydanticObjectId(), PydanticObjectId(), PydanticObjectId()
+
+        entry_a = MagicMock(resourceId=rid_a, permBits=PermissionBits.VIEW | PermissionBits.EDIT)
+        entry_b = MagicMock(resourceId=rid_b, permBits=PermissionBits.VIEW)
+
+        mock_find_result = MagicMock()
+        mock_sort_result = MagicMock()
+        mock_sort_result.to_list = AsyncMock(return_value=[entry_a, entry_b])
+        mock_find_result.sort = MagicMock(return_value=mock_sort_result)
+        mock_acl_entry.find = MagicMock(return_value=mock_find_result)
+
+        result = await service.get_user_permissions_for_resources(
+            user_id=PydanticObjectId(),
+            resource_type=ResourceType.MCPSERVER.value,
+            resource_ids=[rid_a, rid_b, rid_missing],
+        )
+
+        # Exactly one DB query covering all ids via $in.
+        mock_acl_entry.find.assert_called_once()
+        query = mock_acl_entry.find.call_args.args[0]
+        assert query["resourceId"] == {"$in": [rid_a, rid_b, rid_missing]}
+
+        assert result[rid_a].VIEW and result[rid_a].EDIT
+        assert result[rid_b].VIEW and not result[rid_b].EDIT
+        # A resource with no ACL entry falls back to empty permissions (no KeyError).
+        assert result[rid_missing] == ResourcePermissions()
+
+    @pytest.mark.asyncio
+    @patch("registry.services.access_control_service.ExtendedAclEntry")
+    async def test_get_user_permissions_for_resources_empty_input_skips_query(self, mock_acl_entry):
+        """Empty resource_ids short-circuits without touching the database."""
+        service = ACLService(user_service=Mock(), group_service=Mock())
+        mock_acl_entry.find = MagicMock(side_effect=AssertionError("find must not be called"))
+
+        result = await service.get_user_permissions_for_resources(
+            user_id=PydanticObjectId(),
+            resource_type=ResourceType.MCPSERVER.value,
+            resource_ids=[],
+        )
+
+        assert result == {}
+        mock_acl_entry.find.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("registry.services.access_control_service.ExtendedAclEntry")
+    async def test_get_user_permissions_for_resources_exception_returns_empty_perms(self, mock_acl_entry):
+        """A DB failure degrades to empty permissions for every requested resource."""
+        service = ACLService(user_service=Mock(), group_service=Mock())
+        rid = PydanticObjectId()
+        mock_acl_entry.find = MagicMock(side_effect=Exception("db error"))
+
+        result = await service.get_user_permissions_for_resources(
+            user_id=PydanticObjectId(),
+            resource_type=ResourceType.MCPSERVER.value,
+            resource_ids=[rid],
+        )
+
+        assert result == {rid: ResourcePermissions()}

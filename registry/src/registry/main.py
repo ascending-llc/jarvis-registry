@@ -6,12 +6,16 @@ import logging
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
+from agno.run.cancel import get_cancellation_manager, set_cancellation_manager
+from agno.run.cancellation_management.in_memory_cancellation_manager import InMemoryRunCancellationManager
 from fastapi import FastAPI
 
 from registry_pkgs.database import close_mongodb, init_mongodb
 from registry_pkgs.database.redis_client import close_redis_client, create_redis_client
 from registry_pkgs.telemetry import setup_metrics
 from registry_pkgs.vector.client import create_database_client
+from registry_pkgs.workflows.control import DirectiveQueue
+from registry_pkgs.workflows.hitl import MongoBackedCancellationManager
 
 from .app_factory import create_app
 from .container import RegistryContainer
@@ -81,13 +85,49 @@ async def _startup_container(app: FastAPI) -> _RuntimeResources:
         db_client=db_client,
         redis_client=redis_client,
     )
+    _install_agno_cancellation_manager(container.directive_queue)
     app.state.container = container
     await container.startup()
     return _RuntimeResources(db_client, redis_client)
 
 
+def _install_agno_cancellation_manager(directive_queue: DirectiveQueue) -> None:
+    """Install our MongoDB-backed cancellation manager process-globally.
+
+    Refuses to overwrite a non-default manager so a second app spinning up in
+    the same process (common in tests) does not silently clobber the first.
+    """
+    current = get_cancellation_manager()
+    if not isinstance(current, InMemoryRunCancellationManager):
+        raise RuntimeError(
+            f"agno cancellation manager already replaced by {type(current).__name__}; "
+            "refusing to overwrite (likely a duplicate startup)."
+        )
+    try:
+        set_cancellation_manager(MongoBackedCancellationManager(directive_queue=directive_queue))
+        logger.info("installed MongoBackedCancellationManager (agno cancel signal source, queue wired)")
+    except Exception as exc:
+        logger.error("Failed to install MongoBackedCancellationManager: %s", exc, exc_info=True)
+        raise
+
+
+def _restore_default_cancellation_manager() -> None:
+    """Reset agno's global cancellation manager back to the in-memory default.
+
+    Called from ``_shutdown_container`` so a test or sequential ``app`` startup
+    does not see our MongoDB-backed manager pointing at a closed Mongo client.
+    """
+    try:
+        set_cancellation_manager(InMemoryRunCancellationManager())
+        logger.info("restored agno default InMemoryRunCancellationManager")
+    except Exception as exc:
+        logger.warning("Failed to restore default cancellation manager: %s", exc)
+
+
 async def _shutdown_container(app: FastAPI, resources: _RuntimeResources) -> None:
     """Shutdown app-scoped services before tearing down the underlying infra clients."""
+    _restore_default_cancellation_manager()
+
     container = getattr(app.state, "container", None)
     if container is not None:
         try:

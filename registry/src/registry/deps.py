@@ -2,8 +2,6 @@ import httpx
 from fastapi import Depends, Request
 from redis import Redis
 
-from registry_pkgs.vector.repositories.a2a_agent_repository import A2AAgentRepository
-from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRepository
 from registry_pkgs.workflows.runner import WorkflowRunner
 
 from .auth.oauth.reconnection import OAuthReconnectionManager
@@ -23,7 +21,7 @@ from .services.oauth.mcp_service import MCPService
 from .services.oauth.oauth_service import MCPOAuthService
 from .services.oauth.status_resolver import ConnectionStatusResolver
 from .services.oauth.token_service import TokenService
-from .services.search.base import VectorSearchService
+from .services.search.service import SearchService
 from .services.server_service import ServerServiceV1
 from .services.user_service import UserService
 from .services.workflow_control_service import WorkflowControlService
@@ -34,16 +32,8 @@ def get_container(request: Request) -> RegistryContainer:
     return request.app.state.container
 
 
-def get_vector_service(container: RegistryContainer = Depends(get_container)) -> VectorSearchService:
-    return container.vector_service
-
-
-def get_mcp_server_repo(container: RegistryContainer = Depends(get_container)) -> MCPServerRepository:
-    return container.mcp_server_repo
-
-
-def get_a2a_agent_repo(container: RegistryContainer = Depends(get_container)) -> A2AAgentRepository:
-    return container.a2a_agent_repo
+def get_search_service(container: RegistryContainer = Depends(get_container)) -> SearchService:
+    return container.search_service
 
 
 def get_session_store(container: RegistryContainer = Depends(get_container)) -> SessionStore:
