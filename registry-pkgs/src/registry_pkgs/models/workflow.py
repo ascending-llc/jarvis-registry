@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from beanie import Document, PydanticObjectId
 from pydantic import BaseModel, Field, field_validator, model_validator
-from pymongo import ASCENDING
+from pymongo import ASCENDING, IndexModel
 
 from registry_pkgs.models.enums import (
     NodeRunStatus,
@@ -262,6 +262,14 @@ class WorkflowNode(BaseModel):
                 raise ValueError("condition node must not define loop_config")
             if self.step_config is not None:
                 raise ValueError("condition node must not define step_config")
+            # on_reject=else_branch routes a rejected gate
+            # into the false branch at runtime;
+            if (
+                self.human_review is not None
+                and self.human_review.on_reject == OnRejectPolicy.ELSE_BRANCH
+                and not self.false_steps
+            ):
+                raise ValueError("condition node with on_reject=else_branch requires at least one false_steps entry")
             return self
 
         if self.node_type == WorkflowNodeType.LOOP:
@@ -412,7 +420,7 @@ class WorkflowVersion(Document):
     class Settings:
         name = "workflow_versions"
         indexes = [
-            [("workflow_id", ASCENDING), ("version", ASCENDING)],
+            IndexModel([("workflow_id", ASCENDING), ("version", ASCENDING)], unique=True),
         ]
 
 

@@ -4,6 +4,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 from beanie import PydanticObjectId
+from fastapi import HTTPException
+from pymongo.errors import DuplicateKeyError
 
 from registry.schemas.workflow_api_schemas import (
     RouterChoiceInput,
@@ -12,6 +14,7 @@ from registry.schemas.workflow_api_schemas import (
 )
 from registry.services import workflow_service
 from registry.services.workflow_service import WorkflowService
+from registry_pkgs.database.mongodb import MongoDB
 
 
 class _WorkflowFindQuery:
@@ -224,6 +227,69 @@ class _FakeWorkflow:
         self.saved = True
 
 
+# ── Transaction + collection mocks for update_workflow (@use_transaction) ──────
+
+
+class _FakeTxnCtx:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+class _FakeTxnSession:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def start_transaction(self):
+        return _FakeTxnCtx()
+
+
+class _FakeTxnClient:
+    def start_session(self):
+        return _FakeTxnSession()
+
+
+def _patch_update_transaction(monkeypatch, *, found_doc, refreshed=None, insert_exc=None):
+    """Patch the transaction + collection machinery used by update_workflow.
+
+    Args:
+        found_doc:   What ``find_one_and_update`` returns (None simulates a lost
+                     optimistic-lock race → 409).
+        refreshed:   Object returned by the final ``WorkflowDefinition.get`` re-fetch.
+        insert_exc:  Exception raised by ``WorkflowVersion.insert`` (e.g. DuplicateKeyError).
+
+    Returns ``(collection, inserted)`` where ``collection.find_one_and_update`` is an
+    AsyncMock and ``inserted`` collects archived WorkflowVersion kwargs.
+    """
+    from registry.services.workflow_service import WorkflowDefinition
+
+    monkeypatch.setattr(MongoDB, "get_client", lambda: _FakeTxnClient())
+    collection = SimpleNamespace(find_one_and_update=AsyncMock(return_value=found_doc))
+    fake_db = SimpleNamespace(get_collection=lambda _name: collection)
+    monkeypatch.setattr(MongoDB, "get_database", lambda: fake_db)
+    monkeypatch.setattr(WorkflowDefinition, "get_settings", lambda: SimpleNamespace(name="workflow_definitions"))
+    monkeypatch.setattr(WorkflowDefinition, "get", AsyncMock(return_value=refreshed))
+
+    inserted: list[dict] = []
+
+    class _FakeWorkflowVersion:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        async def insert(self, session=None):
+            if insert_exc is not None:
+                raise insert_exc
+            inserted.append(self.kwargs)
+
+    monkeypatch.setattr(workflow_service, "WorkflowVersion", _FakeWorkflowVersion)
+    return collection, inserted
+
+
 @pytest.mark.asyncio
 async def test_update_workflow_bumps_version_and_snapshots_history(monkeypatch: pytest.MonkeyPatch):
     from registry.schemas.workflow_api_schemas import WorkflowUpdateRequest
@@ -235,28 +301,26 @@ async def test_update_workflow_bumps_version_and_snapshots_history(monkeypatch: 
 
     monkeypatch.setattr(WorkflowService, "get_workflow_by_id", fake_get)
 
-    inserted: list[dict] = []
-
-    class _FakeWorkflowVersion:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
-
-        async def insert(self):
-            inserted.append(self.kwargs)
-
-    monkeypatch.setattr(workflow_service, "WorkflowVersion", _FakeWorkflowVersion)
+    refreshed = SimpleNamespace(id=fake_wf.id, version=5, name="new-name")
+    collection, inserted = _patch_update_transaction(
+        monkeypatch, found_doc={"_id": fake_wf.id, "version": 5}, refreshed=refreshed
+    )
 
     result = await WorkflowService().update_workflow(
         workflow_id=str(fake_wf.id),
         data=WorkflowUpdateRequest(name="new-name"),
     )
 
-    # Version bumped on the live document
+    # Returned the re-fetched, version-bumped document.
     assert result.version == 5
     assert result.name == "new-name"
-    assert fake_wf.saved is True
 
-    # Prior version (4) archived into history with a checksum
+    # The bump used an optimistic conditional filter (version == previous_version).
+    call = collection.find_one_and_update.await_args
+    assert call.args[0] == {"_id": fake_wf.id, "version": 4}
+    assert call.args[1]["$set"]["version"] == 5
+
+    # Prior version (4) archived into history with a checksum.
     assert len(inserted) == 1
     assert inserted[0]["version"] == 4
     assert inserted[0]["workflow_id"] == fake_wf.id
@@ -264,9 +328,58 @@ async def test_update_workflow_bumps_version_and_snapshots_history(monkeypatch: 
 
 
 @pytest.mark.asyncio
+async def test_update_workflow_returns_409_on_concurrent_modification(monkeypatch: pytest.MonkeyPatch):
+    """When a concurrent writer bumped the version first, the conditional update
+    matches nothing → 409 (lost-update prevention), and no history row is written."""
+    from registry.schemas.workflow_api_schemas import WorkflowUpdateRequest
+
+    fake_wf = _FakeWorkflow(version=4)
+
+    async def fake_get(self, workflow_id):
+        return fake_wf
+
+    monkeypatch.setattr(WorkflowService, "get_workflow_by_id", fake_get)
+    _collection, inserted = _patch_update_transaction(monkeypatch, found_doc=None)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await WorkflowService().update_workflow(
+            workflow_id=str(fake_wf.id), data=WorkflowUpdateRequest(name="new-name")
+        )
+
+    assert exc_info.value.status_code == 409
+    assert inserted == []  # no version archived when the bump lost the race
+
+
+@pytest.mark.asyncio
+async def test_update_workflow_returns_409_on_duplicate_version(monkeypatch: pytest.MonkeyPatch):
+    """A racing archive of the same (workflow_id, version) violates the unique index;
+    the DuplicateKeyError is mapped to 409 rather than bubbling up as a 500."""
+    from registry.schemas.workflow_api_schemas import WorkflowUpdateRequest
+
+    fake_wf = _FakeWorkflow(version=4)
+
+    async def fake_get(self, workflow_id):
+        return fake_wf
+
+    monkeypatch.setattr(WorkflowService, "get_workflow_by_id", fake_get)
+    _patch_update_transaction(
+        monkeypatch,
+        found_doc={"_id": fake_wf.id, "version": 5},
+        insert_exc=DuplicateKeyError("E11000 duplicate key"),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await WorkflowService().update_workflow(
+            workflow_id=str(fake_wf.id), data=WorkflowUpdateRequest(name="new-name")
+        )
+
+    assert exc_info.value.status_code == 409
+
+
+@pytest.mark.asyncio
 async def test_update_workflow_invalid_nodes_writes_nothing(monkeypatch: pytest.MonkeyPatch):
-    """A model-validation failure mid-update must not bump the version, save the
-    document, or leave an orphan version-history row."""
+    """A model-validation failure mid-update must not bump the version or leave an
+    orphan version-history row (validation runs before any DB write)."""
     from registry.schemas.workflow_api_schemas import WorkflowNodeInput, WorkflowUpdateRequest
 
     fake_wf = _FakeWorkflow(version=4)
@@ -275,17 +388,7 @@ async def test_update_workflow_invalid_nodes_writes_nothing(monkeypatch: pytest.
         return fake_wf
 
     monkeypatch.setattr(WorkflowService, "get_workflow_by_id", fake_get)
-
-    inserted: list[dict] = []
-
-    class _FakeWorkflowVersion:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
-
-        async def insert(self):
-            inserted.append(self.kwargs)
-
-    monkeypatch.setattr(workflow_service, "WorkflowVersion", _FakeWorkflowVersion)
+    collection, inserted = _patch_update_transaction(monkeypatch, found_doc={"_id": fake_wf.id, "version": 5})
 
     # A parallel node with no children fails WorkflowNode shape validation during conversion.
     bad_update = WorkflowUpdateRequest(nodes=[WorkflowNodeInput(name="p", nodeType="parallel")])
@@ -293,10 +396,9 @@ async def test_update_workflow_invalid_nodes_writes_nothing(monkeypatch: pytest.
     with pytest.raises(ValueError, match="parallel node requires at least 2 children"):
         await WorkflowService().update_workflow(workflow_id=str(fake_wf.id), data=bad_update)
 
-    # No history row written, version not bumped, document not saved.
+    # Validation raised before the conditional update or any history write.
+    collection.find_one_and_update.assert_not_awaited()
     assert inserted == []
-    assert fake_wf.version == 4
-    assert fake_wf.saved is False
 
 
 @pytest.mark.asyncio

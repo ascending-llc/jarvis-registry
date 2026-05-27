@@ -25,6 +25,14 @@ from registry_pkgs.models.workflow import (
     WorkflowNode,
     WorkflowRun,
 )
+from registry_pkgs.workflows.hitl.field_types import field_type_to_agno
+from registry_pkgs.workflows.persistence import WorkflowRunSyncer
+from registry_pkgs.workflows.types import POOL_KEY_PREFIX
+
+if TYPE_CHECKING:
+    from registry_pkgs.workflows.control import DirectiveQueue
+
+logger = logging.getLogger(__name__)
 
 # Anti-corruption layer: our enum values are the stable API/DB contract; agno's
 # internal string values are an implementation detail we translate at the boundary.
@@ -40,14 +48,6 @@ _ON_TIMEOUT_TO_AGNO: dict[OnTimeoutPolicy, str] = {
     OnTimeoutPolicy.SKIP: "skip",
     OnTimeoutPolicy.CANCEL: "cancel",
 }
-from registry_pkgs.workflows.hitl.field_types import field_type_to_agno
-from registry_pkgs.workflows.persistence import WorkflowRunSyncer
-from registry_pkgs.workflows.types import POOL_KEY_PREFIX
-
-if TYPE_CHECKING:
-    from registry_pkgs.workflows.control import DirectiveQueue
-
-logger = logging.getLogger(__name__)
 
 
 def _to_agno_human_review(spec: HumanReviewSpec | None) -> HumanReview | None:

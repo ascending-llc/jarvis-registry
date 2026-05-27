@@ -84,7 +84,7 @@ class PendingUserInputField(APIBaseModel):
         return field_type_to_authoring(value)
 
 
-class HumanReviewInput(APIBaseModel):
+class HumanReviewConfig(APIBaseModel):
     """Node-level HITL configuration (per-primitive validity enforced by backend).
 
     Field × node-type compatibility (mirrors agno):
@@ -108,12 +108,6 @@ class HumanReviewInput(APIBaseModel):
     onReject: OnRejectPolicy = OnRejectPolicy.SKIP
     timeoutSeconds: int | None = Field(default=None, gt=0)
     onTimeout: OnTimeoutPolicy = OnTimeoutPolicy.CANCEL
-
-
-class HumanReviewOutput(HumanReviewInput):
-    """Same shape as ``HumanReviewInput`` — distinct alias for API clarity."""
-
-    pass
 
 
 class RouterChoiceInput(APIBaseModel):
@@ -161,7 +155,7 @@ class WorkflowNodeInput(APIBaseModel):
     )
     conditionCel: str | None = Field(None, description="CEL expression for condition/router nodes")
     loopConfig: LoopConfigInput | None = Field(None, description="Loop configuration for loop nodes")
-    humanReview: HumanReviewInput | None = Field(
+    humanReview: HumanReviewConfig | None = Field(
         default=None,
         description="HITL configuration",
     )
@@ -189,7 +183,7 @@ class WorkflowNodeOutput(APIBaseModel):
     conditionCel: str | None = None
     loopConfig: LoopConfigInput | None = None
     # ``null`` when no HITL configured.
-    humanReview: HumanReviewOutput | None = None
+    humanReview: HumanReviewConfig | None = None
 
 
 # Enable recursive models
@@ -504,7 +498,7 @@ def _convert_node_to_output(node: Any) -> WorkflowNodeOutput:
         ),
         # Serialize the embedded HumanReviewSpec (None when no HITL configured).
         humanReview=(
-            HumanReviewOutput(
+            HumanReviewConfig(
                 requiresConfirmation=node.human_review.requires_confirmation,
                 confirmationMessage=node.human_review.confirmation_message,
                 requiresUserInput=node.human_review.requires_user_input,
@@ -537,7 +531,7 @@ def _convert_node_to_output(node: Any) -> WorkflowNodeOutput:
     )
 
 
-def _convert_node_to_input(node: Any) -> WorkflowNodeInput:
+def convert_node_to_input(node: Any) -> WorkflowNodeInput:
     """Convert WorkflowNode to WorkflowNodeInput (recursive)."""
     return WorkflowNodeInput(
         id=node.id,
@@ -556,13 +550,13 @@ def _convert_node_to_input(node: Any) -> WorkflowNodeInput:
             else None
         ),
         config=node.config,
-        children=[_convert_node_to_input(child) for child in node.children],
-        trueSteps=[_convert_node_to_input(child) for child in node.true_steps],
-        falseSteps=[_convert_node_to_input(child) for child in node.false_steps],
+        children=[convert_node_to_input(child) for child in node.children],
+        trueSteps=[convert_node_to_input(child) for child in node.true_steps],
+        falseSteps=[convert_node_to_input(child) for child in node.false_steps],
         choices=[
             RouterChoiceInput(
                 name=choice.name,
-                steps=[_convert_node_to_input(s) for s in choice.steps],
+                steps=[convert_node_to_input(s) for s in choice.steps],
             )
             for choice in node.choices
         ],
@@ -575,7 +569,7 @@ def _convert_node_to_input(node: Any) -> WorkflowNodeInput:
             else None
         ),
         humanReview=(
-            HumanReviewInput(
+            HumanReviewConfig(
                 requiresConfirmation=node.human_review.requires_confirmation,
                 confirmationMessage=node.human_review.confirmation_message,
                 requiresUserInput=node.human_review.requires_user_input,

@@ -47,13 +47,13 @@ load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 from registry import settings
 from registry.schemas.workflow_api_schemas import (
-    HumanReviewInput,
+    HumanReviewConfig,
     StepConfigInput,
     UserInputFieldSchema,
     WorkflowCreateRequest,
     WorkflowNodeInput,
     WorkflowUpdateRequest,
-    _convert_node_to_input,
+    convert_node_to_input,
 )
 from registry.services.access_control_service import ACLService
 from registry.services.group_service import GroupService
@@ -264,8 +264,8 @@ def _step_input(name: str, executor_key: str = "tool-x", **kw) -> WorkflowNodeIn
     return WorkflowNodeInput(name=name, nodeType="step", executorKey=executor_key, **kw)
 
 
-def _hitl_input(**kw) -> HumanReviewInput:
-    """Build a HumanReviewInput with sensible defaults; override via kwargs."""
+def _hitl_input(**kw) -> HumanReviewConfig:
+    """Build a HumanReviewConfig with sensible defaults; override via kwargs."""
     defaults: dict = {
         "requiresConfirmation": False,
         "requiresUserInput": False,
@@ -275,7 +275,7 @@ def _hitl_input(**kw) -> HumanReviewInput:
         "onTimeout": OnTimeoutPolicy.CANCEL,
     }
     defaults.update(kw)
-    return HumanReviewInput(**defaults)
+    return HumanReviewConfig(**defaults)
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -916,7 +916,7 @@ async def module_e(workflow_service, control_service, acl_service, queue, runner
         WorkflowUpdateRequest(
             name=hitl_wf.name,
             description="updated",
-            nodes=[_convert_node_to_input(n) for n in hitl_wf.nodes],
+            nodes=[convert_node_to_input(n) for n in hitl_wf.nodes],
         ),
     )
 

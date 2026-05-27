@@ -12,7 +12,11 @@ from typing import Any
 from uuid import uuid4
 
 from beanie import PydanticObjectId
+from fastapi import HTTPException
+from pymongo import ReturnDocument
+from pymongo.errors import DuplicateKeyError
 
+from registry_pkgs.database.decorators import get_current_session, use_transaction
 from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.models.enums import WorkflowRunStatus
 from registry_pkgs.models.workflow import (
@@ -203,6 +207,7 @@ class WorkflowService:
             logger.exception("Error creating workflow")
             raise
 
+    @use_transaction
     async def update_workflow(
         self,
         workflow_id: str,
@@ -219,7 +224,8 @@ class WorkflowService:
             Updated WorkflowDefinition document
 
         Raises:
-            ValueError: If workflow not found or validation fails
+            ValueError: If workflow not found or validation fails.
+            HTTPException(409): If the workflow was modified concurrently.
         """
         try:
             # Get existing workflow
@@ -234,41 +240,58 @@ class WorkflowService:
             # Build and validate the update FIRST. Node conversion runs the model-level
             # shape validators, so an invalid update raises here — before anything is
             # written — and can never leave an orphan/duplicate version-history row.
-            update_data: dict[str, Any] = {}
+            update_fields: dict[str, Any] = {
+                "version": previous_version + 1,
+                "updated_at": datetime.now(UTC),
+            }
 
             if data.name is not None:
-                update_data["name"] = data.name
+                update_fields["name"] = data.name
 
             if data.description is not None:
-                update_data["description"] = data.description
+                update_fields["description"] = data.description
 
             if data.nodes is not None:
-                update_data["nodes"] = [self._convert_api_node_to_model(node) for node in data.nodes]
+                update_fields["nodes"] = [
+                    self._convert_api_node_to_model(node).model_dump(mode="json") for node in data.nodes
+                ]
 
-            # Bump version and timestamp
-            update_data["version"] = previous_version + 1
-            update_data["updated_at"] = datetime.now(UTC)
+            session = get_current_session()
+            collection = MongoDB.get_database().get_collection(WorkflowDefinition.get_settings().name)
 
-            # Apply updates
-            for key, value in update_data.items():
-                setattr(workflow, key, value)
+            updated_doc = await collection.find_one_and_update(
+                {"_id": workflow.id, "version": previous_version},
+                {"$set": update_fields},
+                return_document=ReturnDocument.AFTER,
+                session=session,
+            )
+            if updated_doc is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Workflow was modified concurrently; re-fetch and retry",
+                )
 
-            # Persist the new version (triggers validation), then archive the prior
-            # definition as history. Ordering save-before-snapshot guarantees we never
-            # archive a version that did not actually take effect.
-            await workflow.save()
-            await WorkflowVersion(
-                workflow_id=workflow.id,
-                version=previous_version,
-                definition=previous_definition,
-                checksum=previous_checksum,
-                created_at=previous_updated_at,
-            ).insert()
+            # Archive the prior definition atomically with the bump.  The unique
+            # (workflow_id, version) index is the backstop: a racing archive of the
+            # same version raises DuplicateKeyError → 409.
+            try:
+                await WorkflowVersion(
+                    workflow_id=workflow.id,
+                    version=previous_version,
+                    definition=previous_definition,
+                    checksum=previous_checksum,
+                    created_at=previous_updated_at,
+                ).insert(session=session)
+            except DuplicateKeyError as exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Workflow version already archived; concurrent update detected",
+                ) from exc
 
-            logger.info(f"Updated workflow {workflow_id}: {workflow.name} (version {workflow.version})")
-            return workflow
+            logger.info(f"Updated workflow {workflow_id}: version {previous_version} → {update_fields['version']}")
+            return await WorkflowDefinition.get(workflow.id, session=session)
 
-        except ValueError:
+        except (ValueError, HTTPException):
             raise
         except Exception:
             logger.exception("Error updating workflow %s", workflow_id)
