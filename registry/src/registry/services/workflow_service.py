@@ -26,8 +26,10 @@ from registry_pkgs.models.workflow import (
     RouterChoice,
     StepConfig,
     UserInputField,
+    WorkflowCanvas,
     WorkflowDefinition,
     WorkflowNode,
+    WorkflowNodePosition,
     WorkflowRun,
     WorkflowVersion,
 )
@@ -186,10 +188,13 @@ class WorkflowService:
             nodes = [self._convert_api_node_to_model(node) for node in data.nodes]
 
             # Create workflow definition
+            # Always set enabled to False during creation (regardless of frontend input)
             workflow = WorkflowDefinition(
                 name=data.name,
                 description=data.description,
+                canvas=self._convert_api_canvas_to_model(data.canvas),
                 nodes=nodes,
+                enabled=False,
                 created_at=datetime.now(UTC),
                 updated_at=datetime.now(UTC),
             )
@@ -197,7 +202,7 @@ class WorkflowService:
             # Save to database (this will trigger Pydantic validation)
             await workflow.insert()
 
-            logger.info(f"Created workflow {workflow.id}: {workflow.name}")
+            logger.info(f"Created workflow {workflow.id}: {workflow.name} (enabled: False)")
             return workflow
 
         except ValueError as e:
@@ -251,10 +256,19 @@ class WorkflowService:
             if data.description is not None:
                 update_fields["description"] = data.description
 
+            if data.canvas is not None:
+                update_fields["canvas"] = self._convert_api_canvas_to_model(data.canvas)
+
             if data.nodes is not None:
                 update_fields["nodes"] = [
                     self._convert_api_node_to_model(node).model_dump(mode="json") for node in data.nodes
                 ]
+
+            if data.enabled is not None:
+                update_fields["enabled"] = data.enabled
+
+            # Always update the timestamp
+            update_fields["updated_at"] = datetime.now(UTC)
 
             session = get_current_session()
             collection = MongoDB.get_database().get_collection(WorkflowDefinition.get_settings().name)
@@ -385,6 +399,44 @@ class WorkflowService:
             logger.exception("Error deleting workflow %s", workflow_id)
             raise
 
+    async def toggle_workflow_status(
+        self,
+        workflow_id: str,
+        enabled: bool,
+    ) -> WorkflowDefinition:
+        """
+        Toggle workflow enabled/disabled status.
+
+        Args:
+            workflow_id: Workflow ID
+            enabled: Enable (True) or disable (False)
+
+        Returns:
+            Updated WorkflowDefinition document
+
+        Raises:
+            ValueError: If workflow not found
+        """
+        try:
+            # Get existing workflow
+            workflow = await self.get_workflow_by_id(workflow_id)
+
+            # Update enabled field
+            workflow.enabled = enabled
+            workflow.updated_at = datetime.now(UTC)
+
+            # Save to database
+            await workflow.save()
+
+            logger.info(f"Toggled workflow {workflow.name} (ID: {workflow.id}) enabled to {enabled}")
+            return workflow
+
+        except ValueError:
+            raise
+        except Exception:
+            logger.exception("Error toggling workflow %s", workflow_id)
+            raise
+
     async def trigger_workflow_run(
         self,
         workflow_id: str,
@@ -420,6 +472,12 @@ class WorkflowService:
         try:
             # Get existing workflow
             workflow = await self.get_workflow_by_id(workflow_id)
+
+            # Check if workflow is enabled
+            if not workflow.enabled:
+                raise ValueError(
+                    f"Workflow '{workflow.name}' is disabled. Please enable the workflow before triggering a run."
+                )
 
             # Resolve the definition snapshot for the requested version (defaults to latest).
             if version is not None and version != workflow.version:
@@ -582,6 +640,16 @@ class WorkflowService:
             logger.exception("Error getting workflow run %s", run_id)
             raise
 
+    def _convert_api_canvas_to_model(self, api_canvas: Any) -> WorkflowCanvas:
+        """Convert API canvas input to model WorkflowCanvas."""
+        return WorkflowCanvas(
+            viewport={
+                "x": api_canvas.viewport.x,
+                "y": api_canvas.viewport.y,
+                "zoom": api_canvas.viewport.zoom,
+            },
+        )
+
     def _convert_api_node_to_model(self, api_node: Any) -> WorkflowNode:
         """
         Convert API node input to model WorkflowNode (recursive).
@@ -634,6 +702,7 @@ class WorkflowService:
             a2a_pool=api_node.a2aPool,
             step_config=step_config,
             config=api_node.config,
+            position=WorkflowNodePosition(x=api_node.position.x, y=api_node.position.y),
             children=children,
             true_steps=true_steps,
             false_steps=false_steps,

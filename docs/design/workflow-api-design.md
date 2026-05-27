@@ -32,6 +32,7 @@
       "name": "Customer Onboarding Workflow",
       "description": "Automated workflow for new customer onboarding",
       "numNodes": 5,
+      "enabled": false,
       "createdAt": "2024-01-15T10:30:00Z",
       "updatedAt": "2024-01-20T15:45:00Z"
     }
@@ -65,11 +66,15 @@ node type does not use them. This lets clients access any field without null che
   "id": "wf-demo-id",
   "name": "Customer Onboarding Workflow",
   "description": "Automated workflow for new customer onboarding",
+  "canvas": {
+    "viewport": { "x": 0, "y": 0, "zoom": 1 }
+  },
   "nodes": [
     {
       "id": "node-1",
       "name": "Validate Customer Data",
       "nodeType": "step",
+      "position": { "x": 80, "y": 220 },
       "executorKey": "data-validator",
       "a2aPool": [],
       "stepConfig": {
@@ -101,6 +106,7 @@ node type does not use them. This lets clients access any field without null che
           "id": "node-2-1",
           "name": "Send Welcome Email",
           "nodeType": "step",
+          "position": { "x": 360, "y": 160 },
           "executorKey": "email-sender",
           "a2aPool": [],
           "stepConfig": null,
@@ -118,6 +124,7 @@ node type does not use them. This lets clients access any field without null che
           "id": "node-2-2",
           "name": "Create User Account",
           "nodeType": "step",
+          "position": { "x": 360, "y": 300 },
           "executorKey": null,
           "a2aPool": ["account-creator-v1", "account-creator-v2"],
           "stepConfig": {
@@ -145,6 +152,7 @@ node type does not use them. This lets clients access any field without null che
       "id": "node-3",
       "name": "Route by Customer Type",
       "nodeType": "condition",
+      "position": { "x": 640, "y": 220 },
       "executorKey": null,
       "a2aPool": [],
       "stepConfig": null,
@@ -155,6 +163,7 @@ node type does not use them. This lets clients access any field without null che
           "id": "node-3-t1",
           "name": "Enterprise Provisioning",
           "nodeType": "step",
+          "position": { "x": 920, "y": 160 },
           "executorKey": "mcp-enterprise-provisioner",
           "a2aPool": [],
           "stepConfig": null,
@@ -172,6 +181,7 @@ node type does not use them. This lets clients access any field without null che
           "id": "node-3-f1",
           "name": "Standard Provisioning",
           "nodeType": "step",
+          "position": { "x": 920, "y": 300 },
           "executorKey": "mcp-standard-provisioner",
           "a2aPool": [],
           "stepConfig": null,
@@ -189,6 +199,7 @@ node type does not use them. This lets clients access any field without null che
       "loopConfig": null
     }
   ],
+  "enabled": false,
   "createdAt": "2024-01-15T10:30:00Z",
   "updatedAt": "2024-01-20T15:45:00Z"
 }
@@ -210,10 +221,14 @@ node type does not use them. This lets clients access any field without null che
 {
   "name": "Customer Onboarding Workflow",
   "description": "Automated workflow for new customer onboarding with email validation, parallel processing, and conditional routing",
+  "canvas": {
+    "viewport": { "x": 0, "y": 0, "zoom": 1 }
+  },
   "nodes": [
     {
       "name": "Validate Customer Email",
       "nodeType": "step",
+      "position": { "x": 80, "y": 220 },
       "executorKey": "mcp-email-validator",
       "stepConfig": {
         "maxRetries": 3,
@@ -229,15 +244,18 @@ node type does not use them. This lets clients access any field without null che
     {
       "name": "Check Customer Type",
       "nodeType": "condition",
+      "position": { "x": 360, "y": 220 },
       "conditionCel": "input.customerType == 'enterprise'",
       "trueSteps": [
         {
           "name": "Enterprise Onboarding Path",
           "nodeType": "parallel",
+          "position": { "x": 640, "y": 160 },
           "children": [
             {
               "name": "Send Welcome Email",
               "nodeType": "step",
+              "position": { "x": 920, "y": 120 },
               "executorKey": "mcp-email-sender",
               "stepConfig": {
                 "maxRetries": 2,
@@ -307,10 +325,18 @@ node type does not use them. This lets clients access any field without null che
 **Request Fields**:
 - `name` (required, string): Workflow name
 - `description` (optional, string): Workflow description
+- `canvas` (required, object): Frontend canvas metadata
+  - `viewport` (required, object): Canvas viewport state
+    - `x` (optional, number): Viewport x offset (default: 0)
+    - `y` (optional, number): Viewport y offset (default: 0)
+    - `zoom` (optional, number): Viewport zoom level (default: 1, must be > 0)
 - `nodes` (required, array): At least one root node required
   - `id` (optional, string): Node ID (auto-generated if not provided)
   - `name` (required, string): Node name
   - `nodeType` (required, string): Node type (`step`, `parallel`, `loop`, `condition`, `router`)
+  - `position` (optional, object): Node position on the frontend canvas
+    - `x` (optional, number): Node x coordinate (default: 0)
+    - `y` (optional, number): Node y coordinate (default: 0)
   - `executorKey` (optional for `step` nodes, string): MCP tool name or A2A agent name (required if `a2aPool` is not provided)
   - `a2aPool` (optional for `step` nodes, array): A2A agent pool (max 5 agents, alternative to `executorKey`)
   - `stepConfig` (optional for `step` nodes, object): Step-level retry and error handling configuration
@@ -347,11 +373,21 @@ node type does not use them. This lets clients access any field without null che
   "id": "wf-demo-id",
   "name": "Customer Onboarding Workflow",
   "description": "Automated workflow for new customer onboarding",
+  "canvas": {
+    "viewport": { "x": 0, "y": 0, "zoom": 1 }
+  },
   "nodes": [...],
+  "enabled": false,
   "createdAt": "2024-01-15T10:30:00Z",
   "updatedAt": "2024-01-15T10:30:00Z"
 }
 ```
+
+**Important Notes**:
+- **Workflows are always created with `enabled: false`** for safety (similar to server registration)
+- The `enabled` field cannot be set during creation - it is automatically set to `false`
+- After creating a workflow, you must explicitly enable it using the Toggle Workflow endpoint (`POST /workflows/{id}/toggle`) before it can be triggered
+- This two-step process (create → enable) ensures workflows are reviewed and verified before execution
 
 **Error**:
 - `400` Validation error (invalid node structure, duplicate node names in router, etc.)
@@ -368,10 +404,14 @@ node type does not use them. This lets clients access any field without null che
 {
   "name": "Customer Onboarding Workflow v2",
   "description": "Updated workflow with phone verification and improved enterprise features",
+  "canvas": {
+    "viewport": { "x": -120, "y": 40, "zoom": 0.8 }
+  },
   "nodes": [
     {
       "name": "Validate Customer Email",
       "nodeType": "step",
+      "position": { "x": 80, "y": 220 },
       "executorKey": "mcp-email-validator",
       "config": {
         "validationRules": ["format", "domain", "mx_record", "disposable_check"],
@@ -483,7 +523,9 @@ node type does not use them. This lets clients access any field without null che
 **Request Fields** (all optional):
 - `name` (string): Update workflow name
 - `description` (string): Update workflow description
+- `canvas` (object): Update frontend canvas metadata
 - `nodes` (array): Update workflow nodes (follows same structure and validation as create)
+- `enabled` (boolean): Update workflow enabled status
 
 **Response**: `200 OK`
 ```json
@@ -491,7 +533,11 @@ node type does not use them. This lets clients access any field without null che
   "id": "wf-demo-id",
   "name": "Updated Workflow Name",
   "description": "Updated description",
+  "canvas": {
+    "viewport": { "x": -120, "y": 40, "zoom": 0.8 }
+  },
   "nodes": [...],
+  "enabled": false,
   "createdAt": "2024-01-15T10:30:00Z",
   "updatedAt": "2024-01-20T15:45:00Z"
 }
@@ -519,7 +565,58 @@ node type does not use them. This lets clients access any field without null che
 
 ---
 
-### 6. Trigger Workflow Run
+### 6. Toggle Workflow Status
+
+**Endpoint**: `POST /api/v1/workflows/{workflow_id}/toggle`
+
+**Description**: Enable or disable a workflow.
+
+**Business Rules**:
+- Workflows are created with `enabled: false` by default for safety
+- **Disabled workflows cannot be triggered** - you must enable them first using this endpoint
+- Disabling a workflow does not affect already running workflow runs
+- Similar to server toggle endpoint behavior
+
+**Use Cases**:
+- Enable workflow after creation and verification
+- Temporarily disable a workflow for maintenance or debugging
+- Prevent workflow execution without deleting the workflow definition
+- Control workflow availability in production environments
+
+**Request Body**:
+```json
+{
+  "enabled": true
+}
+```
+
+**Request Fields**:
+- `enabled` (required, boolean): `true` to enable the workflow, `false` to disable it
+
+**Response**: `200 OK`
+```json
+{
+  "id": "wf-demo-id",
+  "name": "Customer Onboarding Workflow",
+  "description": "Automated workflow for new customer onboarding",
+  "canvas": {
+    "viewport": { "x": 0, "y": 0, "zoom": 1 }
+  },
+  "nodes": [...],
+  "enabled": true,
+  "createdAt": "2024-01-15T10:30:00Z",
+  "updatedAt": "2024-01-20T15:45:00Z"
+}
+```
+
+**Error**:
+- `400` Invalid workflow ID or validation error
+- `404` Workflow not found
+- `500` Internal server error
+
+---
+
+### 7. Trigger Workflow Run
 
 **Endpoint**: `POST /api/v1/workflows/{workflow_id}/runs`
 
@@ -592,15 +689,18 @@ node type does not use them. This lets clients access any field without null che
 ```
 
 **Error**:
-- `400` Invalid workflow ID or invalid request body
+- `400` Invalid workflow ID, invalid request body, or **workflow is disabled** (must enable workflow first using toggle endpoint)
 - `404` Workflow not found
 - `500` Internal server error
 
-**Note**: Run executes asynchronously, returns 202 immediately
+**Important Notes**:
+- Run executes asynchronously, returns 202 immediately
+- **Workflow must be enabled before triggering** - disabled workflows will return a 400 error with message "Workflow is disabled. Please enable the workflow before triggering a run."
+- Use the Toggle Workflow endpoint (`POST /workflows/{id}/toggle`) to enable the workflow before triggering
 
 ---
 
-### 7. List Workflow Runs
+### 8. List Workflow Runs
 
 **Endpoint**: `GET /api/v1/workflows/{workflow_id}/runs`
 
@@ -686,7 +786,7 @@ node type does not use them. This lets clients access any field without null che
 
 ---
 
-### 8. Get Workflow Run Detail
+### 9. Get Workflow Run Detail
 
 **Endpoint**: `GET /api/v1/workflows/{workflow_id}/runs/{run_id}`
 
@@ -709,6 +809,9 @@ node type does not use them. This lets clients access any field without null che
   "definitionSnapshot": {
     "name": "Customer Onboarding Workflow",
     "description": "Automated workflow for new customer onboarding",
+    "canvas": {
+      "viewport": { "x": 0, "y": 0, "zoom": 1 }
+    },
     "nodes": [...]
   },
   "parentRunId": null,
@@ -940,6 +1043,18 @@ All endpoints return errors in the following format:
 
 ## Data Models
 
+### WorkflowCanvas
+
+```typescript
+{
+  viewport: {
+    x: number;                    // Canvas viewport x offset
+    y: number;                    // Canvas viewport y offset
+    zoom: number;                 // Canvas viewport zoom level
+  };
+}
+```
+
 ### WorkflowNode
 
 ```typescript
@@ -947,6 +1062,10 @@ All endpoints return errors in the following format:
   id: string;                    // Node ID (UUID)
   name: string;                  // Node name
   nodeType: string;              // step | parallel | loop | condition | router
+  position: {
+    x: number;                   // Node x coordinate on the canvas
+    y: number;                   // Node y coordinate on the canvas
+  };
   executorKey?: string;          // MCP tool name or A2A agent name (required for step nodes if a2aPool is not provided)
   a2aPool?: string[];            // A2A agent pool (max 5 agents, alternative to executorKey for step nodes)
   stepConfig?: StepConfig;       // Step-level retry and error handling configuration (step nodes only)

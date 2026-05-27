@@ -1,10 +1,16 @@
 from datetime import UTC, datetime
 
+import pytest
+from pydantic import ValidationError
+
 from registry.schemas.workflow_api_schemas import (
+    CanvasInput,
     PendingUserInputField,
     RouterChoiceInput,
     RouterChoiceOutput,
     StepRequirementSummary,
+    ViewportInput,
+    WorkflowCreateRequest,
     WorkflowNodeInput,
     WorkflowNodeOutput,
     WorkflowRunDetailResponse,
@@ -57,6 +63,50 @@ def test_workflow_node_input_branch_fields_have_independent_defaults():
     assert second.trueSteps == []
     assert second.falseSteps == []
     assert second.choices == []
+
+
+def test_workflow_node_position_defaults_are_independent():
+    first = WorkflowNodeInput(name="First", nodeType="step", executorKey="first")
+    second = WorkflowNodeInput(name="Second", nodeType="step", executorKey="second")
+
+    first.position.x = 100
+    first.position.y = 200
+
+    assert second.position.x == 0
+    assert second.position.y == 0
+
+
+def test_workflow_create_requires_canvas():
+    with pytest.raises(ValidationError):
+        WorkflowCreateRequest(name="First", nodes=[WorkflowNodeInput(name="A", nodeType="step", executorKey="a")])
+
+
+def test_workflow_create_requires_canvas_viewport():
+    with pytest.raises(ValidationError):
+        WorkflowCreateRequest(
+            name="First",
+            canvas={},  # type: ignore[arg-type]
+            nodes=[WorkflowNodeInput(name="A", nodeType="step", executorKey="a")],
+        )
+
+
+def test_workflow_create_canvas_values_are_independent():
+    first = WorkflowCreateRequest(
+        name="First",
+        canvas=CanvasInput(viewport=ViewportInput(x=0, y=0, zoom=1)),
+        nodes=[WorkflowNodeInput(name="A", nodeType="step", executorKey="a")],
+    )
+    second = WorkflowCreateRequest(
+        name="Second",
+        canvas=CanvasInput(viewport=ViewportInput(x=0, y=0, zoom=1)),
+        nodes=[WorkflowNodeInput(name="B", nodeType="step", executorKey="b")],
+    )
+
+    first.canvas.viewport.x = -120
+    first.canvas.viewport.zoom = 0.8
+
+    assert second.canvas.viewport.x == 0
+    assert second.canvas.viewport.zoom == 1
 
 
 def test_router_choice_input_round_trip_with_multi_step():

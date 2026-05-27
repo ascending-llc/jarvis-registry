@@ -67,6 +67,7 @@ async def test_create_workflow_does_not_convert_unexpected_errors_to_value_error
 
     request = WorkflowCreateRequest(
         name="Demo workflow",
+        canvas={"viewport": {"x": 0, "y": 0, "zoom": 1}},
         nodes=[WorkflowNodeInput(name="Fetch", nodeType="step", executorKey="tool")],
     )
 
@@ -216,6 +217,7 @@ class _FakeWorkflow:
         self.version = version
         self.updated_at = datetime.now(UTC)
         self.saved = False
+        self.enabled = True
 
     def model_dump(self, mode: str | None = None):
         return {"name": self.name, "version": self.version}
