@@ -308,7 +308,6 @@ class WorkflowControlService:
         if new_status == run.status:
             return run
 
-        run.status = new_status
         run.pending_directive = WorkflowDirective.CANCEL
         await run.save()
         self._queue.put(run_id, WorkflowDirective.CANCEL)
