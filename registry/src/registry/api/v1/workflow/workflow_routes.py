@@ -411,8 +411,17 @@ async def toggle_workflow(
     data: WorkflowToggleRequest,
     user_context: CurrentUser,
     workflow_service: WorkflowService = Depends(get_workflow_service),
+    acl_service: ACLService = Depends(get_acl_service),
 ):
     """Toggle workflow enabled/disabled status"""
+
+    await acl_service.check_user_permission(
+        user_id=PydanticObjectId(user_context.get("user_id")),
+        resource_type=ExtendedResourceType.WORKFLOW,
+        resource_id=PydanticObjectId(workflow_id),
+        required_permission="EDIT",
+    )
+
     try:
         # Toggle workflow status
         workflow = await workflow_service.toggle_workflow_status(
