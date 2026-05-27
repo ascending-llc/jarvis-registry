@@ -322,18 +322,6 @@ class A2AAgentService:
         """
         return await A2AAgent.find_one({"path": path})
 
-    async def get_agent_by_slug(self, slug: str) -> A2AAgent | None:
-        """
-        Get agent by slug.
-
-        Args:
-            slug: Agent slug used in proxy routes (e.g., deep-intel)
-
-        Returns:
-            Agent document, or None if not found
-        """
-        return await A2AAgent.find_one({"slug": slug})
-
     async def create_agent(self, data: AgentCreateRequest, user_id: str) -> A2AAgent:
         """
         Create a new agent. Automatically fetches agent card from provided URL.
@@ -410,6 +398,16 @@ class A2AAgentService:
         except ValueError:
             raise
         except Exception as e:
+            # Check for duplicate key error
+            from pymongo.errors import DuplicateKeyError
+
+            if isinstance(e, DuplicateKeyError) or "duplicate key" in str(e).lower():
+                # Extract the normalized path for a clear error message
+                normalized_path = data.path.strip("/").replace("/", "-")
+                raise ValueError(
+                    f"An agent with path '{normalized_path}' already exists. "
+                    f"Please choose a different path. (Your input '{data.path}' was normalized to '{normalized_path}')"
+                )
             logger.error(f"Error creating agent: {e}", exc_info=True)
             raise ValueError(f"Failed to create agent: {str(e)}")
 
@@ -542,6 +540,18 @@ class A2AAgentService:
         except ValueError:
             raise
         except Exception as e:
+            # Check for duplicate key error
+            from pymongo.errors import DuplicateKeyError
+
+            if isinstance(e, DuplicateKeyError) or "duplicate key" in str(e).lower():
+                # Extract the field that caused the conflict from update_data
+                new_path = update_data.get("path") if "path" in update_data else None
+                if new_path:
+                    normalized_path = new_path.strip("/").replace("/", "-")
+                    raise ValueError(
+                        f"An agent with path '{normalized_path}' already exists. "
+                        f"Please choose a different path. (Your input '{new_path}' was normalized to '{normalized_path}')"
+                    )
             logger.error(f"Error updating agent {agent_id}: {e}", exc_info=True)
             raise ValueError(f"Failed to update agent: {str(e)}")
 

@@ -518,9 +518,9 @@ async def jsonrpc_proxy(
     try:
         user_id = user_context.get("user_id")
 
-        agent = await a2a_agent_service.get_agent_by_slug(agent_slug)
+        agent = await a2a_agent_service.get_agent_by_path(agent_slug)
         if agent is None:
-            return _jsonrpc_a2a_error_response(-32603, f"A2A agent with slug '{agent_slug}' not found")
+            return _jsonrpc_a2a_error_response(-32603, f"A2A agent with path '{agent_slug}' not found")
 
         try:
             await acl_service.check_user_permission(
@@ -580,9 +580,9 @@ async def http_json_proxy(
     try:
         user_id = user_context.get("user_id")
 
-        agent = await a2a_agent_service.get_agent_by_slug(agent_slug)
+        agent = await a2a_agent_service.get_agent_by_path(agent_slug)
         if agent is None:
-            return JSONResponse(status_code=404, content={"error": f"A2A agent with slug '{agent_slug}' not found"})
+            return JSONResponse(status_code=404, content={"error": f"A2A agent with path '{agent_slug}' not found"})
 
         try:
             await acl_service.check_user_permission(

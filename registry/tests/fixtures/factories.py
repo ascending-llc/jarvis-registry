@@ -15,7 +15,7 @@ class ServerInfoFactory(factory.DictFactory):
 
     server_name = factory.LazyFunction(lambda: fake.company())
     description = factory.LazyFunction(lambda: fake.text(max_nb_chars=200))
-    path = factory.LazyFunction(lambda: f"/{fake.slug()}")
+    path = factory.LazyFunction(lambda: fake.slug())  # Path is now in slug format (no slashes)
     proxy_pass_url = factory.LazyFunction(lambda: f"http://localhost:{fake.port_number()}")
     tags = factory.LazyFunction(lambda: fake.words(nb=3))
     num_tools = factory.LazyFunction(lambda: fake.random_int(min=0, max=20))

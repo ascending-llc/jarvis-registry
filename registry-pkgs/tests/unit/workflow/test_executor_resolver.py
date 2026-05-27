@@ -39,7 +39,7 @@ def _mcp_server(name: str = "github") -> ExtendedMCPServer:
 
 
 def _a2a_agent(
-    path: str = "/deep-intel",
+    path: str = "deep-intel",  # Updated: path is now in slug format (no slashes)
     transport: str = "jsonrpc",
     config_url: str = "https://config.example.com/agent",
 ) -> A2AAgent:
@@ -114,7 +114,7 @@ class TestExecutorResolver:
         monkeypatch.setattr(
             executor_resolver.ExtendedMCPServer, "find_one", AsyncMock(return_value=_mcp_server("github"))
         )
-        monkeypatch.setattr(executor_resolver.A2AAgent, "find_one", AsyncMock(return_value=_a2a_agent("/github")))
+        monkeypatch.setattr(executor_resolver.A2AAgent, "find_one", AsyncMock(return_value=_a2a_agent("github")))
         monkeypatch.setattr(executor_resolver, "make_mcp_executor", lambda *args, **kwargs: "mcp-executor")
         monkeypatch.setattr(executor_resolver, "make_a2a_executor", lambda *args, **kwargs: "a2a-executor")
 
@@ -156,7 +156,7 @@ class TestExecutorResolver:
     async def test_resolve_executor_falls_back_to_a2a_agent(self, monkeypatch: pytest.MonkeyPatch):
         self._patch_beanie_filters(monkeypatch)
         monkeypatch.setattr(executor_resolver.ExtendedMCPServer, "find_one", AsyncMock(return_value=None))
-        monkeypatch.setattr(executor_resolver.A2AAgent, "find_one", AsyncMock(return_value=_a2a_agent("/deep-intel")))
+        monkeypatch.setattr(executor_resolver.A2AAgent, "find_one", AsyncMock(return_value=_a2a_agent("deep-intel")))
         captured_agents: list = []
 
         def fake_make_a2a_executor(agent, *, jwt_config, httpx_client=None):
@@ -176,7 +176,7 @@ class TestExecutorResolver:
 
         assert resolved == "a2a-executor"
         assert len(captured_agents) == 1
-        assert captured_agents[0].path == "/deep-intel"
+        assert captured_agents[0].path == "deep-intel"  # Path is now normalized (no slashes)
 
     @pytest.mark.asyncio
     async def test_resolve_executor_raises_when_key_is_unknown(self, monkeypatch: pytest.MonkeyPatch):
@@ -199,7 +199,7 @@ class TestExecutorResolver:
         self, monkeypatch: pytest.MonkeyPatch
     ):
         self._patch_beanie_filters(monkeypatch)
-        agent = _a2a_agent("/deep-intel")
+        agent = _a2a_agent("deep-intel")
         monkeypatch.setattr(executor_resolver.ExtendedMCPServer, "find_one", AsyncMock(return_value=None))
         monkeypatch.setattr(executor_resolver.A2AAgent, "find_one", AsyncMock(return_value=agent))
         monkeypatch.setattr(executor_resolver, "make_a2a_executor", lambda *args, **kwargs: "a2a-executor")
@@ -217,7 +217,7 @@ class TestExecutorResolver:
     @pytest.mark.asyncio
     async def test_resolve_executor_allows_accessible_a2a_agent(self, monkeypatch: pytest.MonkeyPatch):
         self._patch_beanie_filters(monkeypatch)
-        agent = _a2a_agent("/deep-intel")
+        agent = _a2a_agent("deep-intel")
         monkeypatch.setattr(executor_resolver.ExtendedMCPServer, "find_one", AsyncMock(return_value=None))
         monkeypatch.setattr(executor_resolver.A2AAgent, "find_one", AsyncMock(return_value=agent))
         monkeypatch.setattr(executor_resolver, "make_a2a_executor", lambda *args, **kwargs: "a2a-executor")

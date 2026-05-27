@@ -9,8 +9,7 @@ Storage Structure:
   "_id": ObjectId("..."),
 
   # Registry-specific Fields
-  "path": "/deep-intel",  # Registry path (not part of SDK AgentCard)
-  "slug": "deep-intel",  # leading and trailing /'s removed; other converted to dashes
+  "path": "deep-intel",  # Registry path in slug format (no slashes), used in /proxy/a2a/{path}
 
   # A2A Protocol Card (validated by SDK - ORIGINAL DATA, DO NOT MODIFY)
   "card": {
@@ -157,8 +156,11 @@ class A2AAgent(Document):
     """
 
     # ========== Registry-specific Fields ==========
-    path: str = Field(..., description="Registry path (e.g., /deep-intel)")
-    slug: str = Field(..., description="slug that appears in /proxy/a2a/{agent_slug} for direct A2A invocation")
+    path: str = Field(
+        ...,
+        description="Registry path in slug format (no slashes, e.g., 'deep-intel'). "
+        "Used in proxy routes /proxy/a2a/{path}. Input paths with slashes are automatically normalized.",
+    )
 
     # ========== A2A Protocol Card (SDK - ORIGINAL DATA) ==========
     card: AgentCard = Field(description="A2A protocol-compliant agent card (validated by SDK, unmodified)")
@@ -200,7 +202,6 @@ class A2AAgent(Document):
         # Indexes for efficient queries
         indexes = [
             IndexModel([("path", 1)], unique=True),
-            IndexModel([("slug", 1)], unique=True),
             "tags",
             "isEnabled",
             "status",
@@ -214,14 +215,32 @@ class A2AAgent(Document):
     # ========== Field Derivation ==========
     @model_validator(mode="before")
     @classmethod
-    def _derive_slug(cls, data: Any) -> Any:
+    def _normalize_path(cls, data: Any) -> Any:
         """
-        Generating slug from path. Slug is used in the A2A "direct access route" `/proxy/a2a/{agent_slug}`
-        and the custom server card route `/proxy/a2a/{agent_slug}/agent-card.json`.
-        Currently uniqueness of `slug` is entirely left on the index.
+        Normalize path input to slug format (no slashes).
+
+        Converts any path-like input (e.g., /agentcore/a2a/agent-1) to slug format (agentcore-a2a-agent-1).
+        The normalized path is used in the A2A proxy routes: /proxy/a2a/{path}
+
+        Handles edge cases:
+        - Leading/trailing slashes: /path/ -> path
+        - Multiple consecutive slashes: ///path/// -> path
+        - Internal slashes: /a/b/c -> a-b-c
+        - Consecutive internal slashes: /a///b -> a-b
+
+        Uniqueness is enforced by the MongoDB unique index on the path field.
+        If the normalized path conflicts with an existing agent, MongoDB will raise a DuplicateKeyError,
+        which should be caught and handled at the service/API layer with a proper HTTP 409 response.
         """
-        if isinstance(data, dict) and data.get("slug") is None:
-            data["slug"] = data["path"].strip("/").replace("/", "-")
+        if isinstance(data, dict) and "path" in data:
+            import re
+
+            original_path = data["path"]
+            # Strip leading/trailing slashes
+            normalized_path = original_path.strip("/")
+            # Replace one or more consecutive slashes with a single hyphen
+            normalized_path = re.sub(r"/+", "-", normalized_path)
+            data["path"] = normalized_path
         return data
 
     # ========== Lifecycle Hooks ==========
