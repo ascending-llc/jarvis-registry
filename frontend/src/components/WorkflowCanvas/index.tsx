@@ -19,10 +19,8 @@ const WorkflowCanvasInner = forwardRef<WorkflowCanvasRef, WorkflowCanvasProps>(
       refreshRunHistoryKey,
       initialNodes,
       initialEdges,
-      panelMode,
       isReadOnly,
       isNewWorkflow,
-      onPanelModeChange,
       onDeleteWorkflow,
       onWorkflowChange,
       onSave,
@@ -30,6 +28,7 @@ const WorkflowCanvasInner = forwardRef<WorkflowCanvasRef, WorkflowCanvasProps>(
     },
     ref,
   ) => {
+    const [panelMode, setPanelMode] = useState<import('./types').PanelMode>('workflow');
     // UI Modal States (moved out of useWorkflowCanvas)
     const [pickerOpen, setPickerOpen] = useState(false);
     const [pickerTab, setPickerTab] = useState('A2A Agents');
@@ -51,11 +50,11 @@ const WorkflowCanvasInner = forwardRef<WorkflowCanvasRef, WorkflowCanvasProps>(
       const shouldBeWorkflowMode = !canvas.selectedNode && !canvas.panelCollapsed;
 
       if (shouldBeNodeMode && panelMode !== 'node') {
-        onPanelModeChange?.('node');
+        setPanelMode('node');
       } else if (shouldBeWorkflowMode && panelMode !== 'workflow') {
-        onPanelModeChange?.('workflow');
+        setPanelMode('workflow');
       }
-    }, [canvas.selectedNode, canvas.panelCollapsed, panelMode, onPanelModeChange]);
+    }, [canvas.selectedNode, canvas.panelCollapsed, panelMode]);
 
     const reactFlow = useReactFlow();
 
@@ -67,14 +66,14 @@ const WorkflowCanvasInner = forwardRef<WorkflowCanvasRef, WorkflowCanvasProps>(
         if (canvas.panelCollapsed) {
           // Panel collapsed -> Expand panel + switch to workflow mode
           canvas.setPanelCollapsed(false);
-          onPanelModeChange?.('workflow');
+          setPanelMode('workflow');
           canvas.clearSelection();
         } else if (panelMode === 'workflow') {
           // Panel expanded + workflow mode -> Collapse panel
           canvas.setPanelCollapsed(true);
         } else {
           // Panel expanded + node mode -> Switch to workflow mode (keep expanded)
-          onPanelModeChange?.('workflow');
+          setPanelMode('workflow');
           canvas.clearSelection();
         }
       },

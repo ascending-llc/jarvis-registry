@@ -18,10 +18,8 @@ export interface WorkflowCanvasProps {
   refreshRunHistoryKey?: number;
   initialNodes?: Node[];
   initialEdges?: Edge[];
-  panelMode: PanelMode;
   isReadOnly: boolean;
   isNewWorkflow: boolean;
-  onPanelModeChange: (mode: PanelMode) => void;
   onDeleteWorkflow: () => void;
   onWorkflowChange: (patch: Partial<Pick<Workflow, 'name' | 'description' | 'type'>>) => void;
   onSave?: (nodes: Node[], edges: Edge[], viewport: { x: number; y: number; zoom: number }) => void;

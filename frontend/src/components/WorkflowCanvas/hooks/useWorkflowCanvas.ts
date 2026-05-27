@@ -1,5 +1,4 @@
 import type { Edge, Node } from '@xyflow/react';
-import { useMemo } from 'react';
 import { useCanvasLayout } from './useCanvasLayout';
 import { useCanvasMutations } from './useCanvasMutations';
 import { useCanvasNodes } from './useCanvasNodes';
@@ -16,7 +15,7 @@ export const useWorkflowCanvas = (
     useCanvasNodes(initialNodes, initialEdges, onChange);
 
   // 2. Layout & ID generation
-  const { syncIdCounters, generateNodeId, generateEdgeId, runLayout } = useCanvasLayout(
+  const { generateNodeId, generateEdgeId, runLayout } = useCanvasLayout(
     nodes,
     edges,
     setNodes,
@@ -36,35 +35,14 @@ export const useWorkflowCanvas = (
     setEdges,
     setSelected,
     setPanelCollapsed,
-    syncIdCounters,
     generateNodeId,
     generateEdgeId,
     onChange,
   });
 
-  // 5. Inject handlers into 'add' nodes
-  const nodesWithHandlers = useMemo(
-    () =>
-      nodes.map(n =>
-        n.type === 'add'
-          ? {
-              ...n,
-              data: {
-                ...n.data,
-                onAdd: () => {
-                  onOpenNodePicker?.(n.id);
-                },
-              },
-            }
-          : n,
-      ),
-    [nodes, onOpenNodePicker],
-  );
-
   return {
     nodes,
     edges,
-    nodesWithHandlers,
     selectedNode,
     panelCollapsed,
     runLayout,
@@ -78,6 +56,7 @@ export const useWorkflowCanvas = (
     onParallelBranchesChange,
     onRouterCasesChange,
     onPick,
+    onOpenNodePicker,
     isValidConnection,
     setPanelCollapsed,
     clearSelection,

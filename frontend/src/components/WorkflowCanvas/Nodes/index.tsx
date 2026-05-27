@@ -1,6 +1,7 @@
 import type { Node, NodeProps } from '@xyflow/react';
 import { Handle, Position, useUpdateNodeInternals } from '@xyflow/react';
-import { useEffect } from 'react';
+import { useContext, useEffect } from 'react';
+import { CanvasActionsContext } from '../CanvasView';
 
 import './index.css';
 
@@ -112,7 +113,11 @@ export const CondNode: React.FC<NodeProps<Node<import('../types').CondNodeData>>
 };
 
 /** Parallel (fan-out) node with one source handle per branch. */
-export const ParallelNode: React.FC<NodeProps<Node<import('../types').ParallelNodeData>>> = ({ id, data, selected }) => {
+export const ParallelNode: React.FC<NodeProps<Node<import('../types').ParallelNodeData>>> = ({
+  id,
+  data,
+  selected,
+}) => {
   const branches = Array.isArray(data.branches) ? data.branches : ['Branch A', 'Branch B'];
   const updateNodeInternals = useUpdateNodeInternals();
 
@@ -263,11 +268,12 @@ export const PoolNode: React.FC<NodeProps<Node<import('../types').PoolNodeData>>
 };
 
 /** Add-node placeholder for inserting new nodes. */
-export const AddNode: React.FC<NodeProps<Node<import('../types').BaseNodeData>>> = ({ data }) => {
+export const AddNode: React.FC<NodeProps<Node<import('../types').BaseNodeData>>> = ({ id }) => {
+  const { onAdd } = useContext(CanvasActionsContext);
   return (
     <>
       <Handle type='target' position={Position.Left} />
-      <div className='add-node' onClick={data.onAdd}>
+      <div className='add-node' onClick={() => onAdd?.(id)}>
         <div className='add-plus'>+</div>
         <div className='add-label'>Add next node</div>
       </div>

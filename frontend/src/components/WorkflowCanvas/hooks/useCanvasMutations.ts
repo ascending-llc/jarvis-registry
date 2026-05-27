@@ -1,7 +1,7 @@
 import type { Edge, Node } from '@xyflow/react';
 import { useCallback } from 'react';
 import { ADD_NODE_MARGIN_X, BRANCH_SPACING, DASHED_EDGE, NODE_WIDTH } from '../constants';
-import { estimateNodeHeight, getLayoutedElements } from '../layout';
+import { estimateNodeHeight } from '../layout';
 import type { AgentInfo, LogicStep, NodeData, PickerItem, WorkflowNode } from '../types';
 
 const CATEGORY_TYPE: Record<string, (item: PickerItem | LogicStep) => string> = {
@@ -45,7 +45,6 @@ export const useCanvasMutations = ({
   setEdges,
   setSelected,
   setPanelCollapsed,
-  syncIdCounters,
   generateNodeId,
   generateEdgeId,
   onChange,
@@ -56,7 +55,6 @@ export const useCanvasMutations = ({
   setEdges: React.Dispatch<React.SetStateAction<Edge[]>>;
   setSelected: React.Dispatch<React.SetStateAction<WorkflowNode | null>>;
   setPanelCollapsed: React.Dispatch<React.SetStateAction<boolean>>;
-  syncIdCounters: (nodes: Node[], edges: Edge[]) => void;
   generateNodeId: () => string;
   generateEdgeId: () => string;
   onChange?: () => void;
@@ -72,13 +70,71 @@ export const useCanvasMutations = ({
 
   const onDeleteNode = useCallback(
     (nodeId: string) => {
-      setNodes(prev => prev.filter(n => n.id !== nodeId));
-      setEdges(prev => prev.filter(e => e.source !== nodeId && e.target !== nodeId));
+
+      const remainingRealNodes = nodes.filter(n => n.id !== nodeId && n.type !== 'add').length;
+      if (remainingRealNodes === 0) {
+        setNodes([{ id: `add_${Date.now()}`, type: 'add', position: { x: 0, y: 0 }, data: { label: '' } }]);
+        setEdges([]);
+        setSelected(null);
+        onChange?.();
+        return;
+      }
+
+      const incomingEdges = edges.filter(e => e.target === nodeId);
+      const outgoingEdges = edges.filter(e => e.source === nodeId);
+
+      const addNodesToRemove = new Set<string>();
+      for (const e of outgoingEdges) {
+        const targetNode = nodes.find(n => n.id === e.target);
+        if (targetNode?.type === 'add') {
+          addNodesToRemove.add(targetNode.id);
+        }
+      }
+
+      const newAddNodes: WorkflowNode[] = [];
+      const newEdges: Edge[] = [];
+      const deletedNode = nodes.find(n => n.id === nodeId);
+      const fallbackX = deletedNode?.position.x ?? 0;
+      const fallbackY = deletedNode?.position.y ?? 0;
+
+      for (const incEdge of incomingEdges) {
+        const sourceNode = nodes.find(n => n.id === incEdge.source);
+        if (!sourceNode) continue;
+
+        const addId = `add_rec_${generateNodeId()}`;
+        newAddNodes.push({
+          id: addId,
+          type: 'add',
+          position: { x: fallbackX, y: fallbackY },
+          data: { label: '' },
+        });
+
+        newEdges.push({
+          id: generateEdgeId(),
+          source: sourceNode.id,
+          target: addId,
+          ...(incEdge.sourceHandle ? { sourceHandle: incEdge.sourceHandle } : {}),
+          ...DASHED_EDGE,
+        });
+      }
+
+      setNodes(prev => prev.filter(n => n.id !== nodeId && !addNodesToRemove.has(n.id)).concat(newAddNodes));
+      setEdges(prev => prev.filter(e => e.source !== nodeId && e.target !== nodeId).concat(newEdges));
       setSelected(null);
-      setPanelCollapsed(true);
       onChange?.();
     },
-    [setNodes, setEdges, setSelected, setPanelCollapsed, onChange],
+    [
+      nodes,
+      edges,
+      setNodes,
+      setEdges,
+      setSelected,
+      setPanelCollapsed,
+      generateNodeId,
+      generateEdgeId,
+      onChange,
+      DASHED_EDGE,
+    ],
   );
 
   const onDynamicBranchesChange = useCallback(
@@ -90,10 +146,19 @@ export const useCanvasMutations = ({
     ) => {
       const { dataKey, handlePrefix } = options;
       if (prevBranches === nextBranches) return;
+
+      if (prevBranches.length === nextBranches.length) {
+        setNodes(prev => prev.map(n => (n.id === nodeId ? { ...n, data: { ...n.data, [dataKey]: nextBranches } } : n)));
+        setSelected(prev =>
+          prev?.id === nodeId ? { ...prev, data: { ...prev.data, [dataKey]: nextBranches } } : prev,
+        );
+        onChange?.();
+        return;
+      }
+
       const N = nextBranches.length;
       const handleOffsetY = (i: number): number => (i - (N - 1) / 2) * BRANCH_SPACING;
 
-      syncIdCounters(nodes, edges);
       onChange?.();
 
       if (nextBranches.length > prevBranches.length) {
@@ -129,12 +194,20 @@ export const useCanvasMutations = ({
 
         const nextEdges = [
           ...edges,
-          { id: generateEdgeId(), source: nodeId, target: addId, sourceHandle: `${handlePrefix}-${newIdx}`, ...DASHED_EDGE },
+          {
+            id: generateEdgeId(),
+            source: nodeId,
+            target: addId,
+            sourceHandle: `${handlePrefix}-${newIdx}`,
+            ...DASHED_EDGE,
+          },
         ];
 
         setNodes(nextNodes as WorkflowNode[]);
         setEdges(nextEdges);
-        setSelected(prev => (prev?.id === nodeId ? { ...prev, data: { ...prev.data, [dataKey]: nextBranches } } : prev));
+        setSelected(prev =>
+          prev?.id === nodeId ? { ...prev, data: { ...prev.data, [dataKey]: nextBranches } } : prev,
+        );
       } else if (nextBranches.length < prevBranches.length) {
         let removedIdx = prevBranches.length - 1;
         for (let i = 0; i < nextBranches.length; i++) {
@@ -185,10 +258,12 @@ export const useCanvasMutations = ({
         const safeNodes = nextNodes as WorkflowNode[];
         setNodes(safeNodes);
         setEdges(nextEdges);
-        setSelected(prev => (prev?.id === nodeId ? { ...prev, data: { ...prev.data, [dataKey]: nextBranches } } : prev));
+        setSelected(prev =>
+          prev?.id === nodeId ? { ...prev, data: { ...prev.data, [dataKey]: nextBranches } } : prev,
+        );
       }
     },
-    [nodes, edges, setNodes, setEdges, setSelected, syncIdCounters, generateEdgeId, onChange],
+    [nodes, edges, setNodes, setEdges, setSelected, generateNodeId, generateEdgeId, onChange],
   );
 
   const onParallelBranchesChange = useCallback(
@@ -210,7 +285,6 @@ export const useCanvasMutations = ({
       const addNode = nodes.find(n => n.id === pendingAddId);
       if (!addNode) return;
 
-      syncIdCounters(nodes, edges);
       onChange?.();
 
       const nodeType = CATEGORY_TYPE[category](item);
@@ -286,7 +360,7 @@ export const useCanvasMutations = ({
 
       setSelected(newNode);
     },
-    [nodes, edges, setNodes, setEdges, setSelected, syncIdCounters, generateNodeId, generateEdgeId, onChange],
+    [nodes, edges, setNodes, setEdges, setSelected, generateNodeId, generateEdgeId, onChange],
   );
 
   return {

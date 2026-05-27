@@ -1,8 +1,11 @@
-import dagre from '@dagrejs/dagre';
 import type { Edge } from '@xyflow/react';
 import { Position } from '@xyflow/react';
-import { BRANCH_CANVAS_SPACING, HANDLE_SPACING, NODE_HEIGHT_DEFAULT, NODE_WIDTH } from './constants';
+import { HANDLE_SPACING, NODE_HEIGHT_DEFAULT, NODE_WIDTH } from './constants';
 import type { WorkflowNode } from './types';
+
+// Layout Constants
+const RANK_SEP_X = 150; // Horizontal spacing between nodes
+const NODE_SEP_Y = 40; // Minimum vertical spacing between sibling subtrees
 
 export const estimateNodeHeight = (type: string | undefined, data: Record<string, unknown>): number => {
   const t = type ?? '';
@@ -21,61 +24,57 @@ export const estimateNodeHeight = (type: string | undefined, data: Record<string
   return NODE_HEIGHT_DEFAULT;
 };
 
+interface LayoutTree {
+  nodeId: string;
+  width: number;
+  height: number;
+  subtreeHeight: number;
+  children: {
+    handleId: string | null;
+    targetId: string;
+    targetTree: LayoutTree | null;
+  }[];
+}
+
 export const getLayoutedElements = (nodes: WorkflowNode[], edges: Edge[]): { nodes: WorkflowNode[]; edges: Edge[] } => {
-  const g = new dagre.graphlib.Graph();
-  g.setDefaultEdgeLabel(() => ({}));
-  g.setGraph({ rankdir: 'LR', ranksep: 150, nodesep: 80, marginx: 40, marginy: 40 });
+  if (nodes.length === 0) return { nodes, edges };
 
-  nodes.forEach(node => {
-    g.setNode(node.id, { width: NODE_WIDTH, height: estimateNodeHeight(node.type, node.data ?? {}) });
-  });
-  edges.forEach(edge => {
-    g.setEdge(edge.source, edge.target);
-  });
+  const nodeMap = new Map<string, WorkflowNode>(nodes.map(n => [n.id, n]));
+  const inDeg = new Map<string, number>(nodes.map(n => [n.id, 0]));
+  const outEdges = new Map<string, Edge[]>(nodes.map(n => [n.id, []]));
 
-  dagre.layout(g);
-
-  const layoutedNodes = nodes.map(node => {
-    const pos = g.node(node.id);
-    const h = estimateNodeHeight(node.type ?? '', node.data ?? {});
-    return {
-      ...node,
-      targetPosition: Position.Left,
-      sourcePosition: Position.Right,
-      position: { x: pos.x - NODE_WIDTH / 2, y: pos.y - h / 2 },
-    };
-  });
-
-  const inDeg = new Map<string, number>(layoutedNodes.map(n => [n.id, 0]));
-  const adj = new Map<string, string[]>(layoutedNodes.map(n => [n.id, []]));
   for (const e of edges) {
     if (inDeg.has(e.target)) inDeg.set(e.target, (inDeg.get(e.target) ?? 0) + 1);
-    if (adj.has(e.source)) {
-      const list = adj.get(e.source);
-      if (list) list.push(e.target);
-    }
-  }
-  const queue = [...inDeg.entries()].filter(([, d]) => d === 0).map(([id]) => id);
-  const topoOrder: string[] = [];
-  while (queue.length) {
-    const id = queue.shift() ?? '';
-    topoOrder.push(id);
-    for (const next of adj.get(id) ?? []) {
-      const d = (inDeg.get(next) ?? 1) - 1;
-      inDeg.set(next, d);
-      if (d === 0) queue.push(next);
+    if (outEdges.has(e.source)) {
+      outEdges.get(e.source)!.push(e);
     }
   }
 
-  const nodeMap = new Map(layoutedNodes.map(n => [n.id, { ...n }]));
+  // Find root nodes (in-degree 0)
+  const roots = nodes.filter(n => (inDeg.get(n.id) ?? 0) === 0);
 
-  for (const nodeId of topoOrder) {
+  const globalVisited = new Set<string>();
+
+  const buildTree = (nodeId: string): LayoutTree | null => {
+    if (globalVisited.has(nodeId)) return null;
+    globalVisited.add(nodeId);
+
     const node = nodeMap.get(nodeId);
-    if (!node) continue;
+    if (!node) return null;
 
-    const srcH = estimateNodeHeight(node.type, node.data ?? {});
-    const srcCenterY = node.position.y + srcH / 2;
+    const fallbackH = estimateNodeHeight(node.type, node.data ?? {});
+    const h = node.measured?.height ?? node.height ?? fallbackH;
+    const w = node.measured?.width ?? node.width ?? NODE_WIDTH;
 
+    const tree: LayoutTree = {
+      nodeId,
+      width: w,
+      height: h,
+      subtreeHeight: h,
+      children: [],
+    };
+
+    // Determine the expected order of handles for this node type
     let handleIds: string[] = [];
     if (node.type === 'cond') {
       handleIds = ['true', 'false'];
@@ -85,36 +84,102 @@ export const getLayoutedElements = (nodes: WorkflowNode[], edges: Edge[]): { nod
     } else if (node.type === 'router') {
       const N = ((node.data?.cases as string[]) ?? []).length;
       handleIds = Array.from({ length: N }, (_, i) => `case-${i}`);
+      if (node.data?.defaultCase) handleIds.push('default');
+    } else if (node.type === 'loop') {
+      handleIds = ['body', 'exit'];
     }
 
-    if (handleIds.length >= 2) {
-      const N = handleIds.length;
-      handleIds.forEach((handleId, i) => {
-        const edge = edges.find(e => e.source === nodeId && e.sourceHandle === handleId);
-        if (!edge) return;
-        const target = nodeMap.get(edge.target);
-        if (!target) return;
-        const tgtH = estimateNodeHeight(target.type, target.data ?? {});
-        const offsetY = (i - (N - 1) / 2) * BRANCH_CANVAS_SPACING;
-        nodeMap.set(edge.target, {
-          ...target,
-          position: { ...target.position, y: srcCenterY + offsetY - tgtH / 2 },
-        });
+    const edgesFromNode = outEdges.get(nodeId) || [];
+
+    // Sort edges sequentially by handle order to prevent cross-overs
+    const sortedEdges = edgesFromNode.slice().sort((a, b) => {
+      const idxA = a.sourceHandle ? handleIds.indexOf(a.sourceHandle) : -1;
+      const idxB = b.sourceHandle ? handleIds.indexOf(b.sourceHandle) : -1;
+      if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+      if (idxA !== -1) return -1;
+      if (idxB !== -1) return 1;
+      return 0;
+    });
+
+    // Compute subtree bounds (Bottom-Up)
+    let totalChildrenHeight = 0;
+    for (const edge of sortedEdges) {
+      const childTree = buildTree(edge.target);
+      tree.children.push({
+        handleId: edge.sourceHandle ?? null,
+        targetId: edge.target,
+        targetTree: childTree,
       });
-    } else {
-      const outEdges = edges.filter(e => e.source === nodeId);
-      if (outEdges.length === 1) {
-        const target = nodeMap.get(outEdges[0].target);
-        if (target) {
-          const tgtH = estimateNodeHeight(target.type, target.data ?? {});
-          nodeMap.set(outEdges[0].target, {
-            ...target,
-            position: { ...target.position, y: srcCenterY - tgtH / 2 },
-          });
-        }
+      if (childTree) {
+        totalChildrenHeight += childTree.subtreeHeight;
+      }
+    }
+
+    const activeChildrenCount = tree.children.filter(c => c.targetTree).length;
+    if (activeChildrenCount > 0) {
+      const padding = (activeChildrenCount - 1) * NODE_SEP_Y;
+      tree.subtreeHeight = Math.max(h, totalChildrenHeight + padding);
+    }
+
+    return tree;
+  };
+
+  const layoutedNodes = new Map<string, WorkflowNode>();
+
+  const positionTree = (tree: LayoutTree, startX: number, centerY: number) => {
+    const node = nodeMap.get(tree.nodeId);
+    if (node) {
+      layoutedNodes.set(tree.nodeId, {
+        ...node,
+        targetPosition: Position.Left,
+        sourcePosition: Position.Right,
+        position: { x: startX, y: centerY - tree.height / 2 },
+      });
+    }
+
+    const childrenWithTrees = tree.children.filter(c => c.targetTree);
+    if (childrenWithTrees.length === 0) return;
+
+    // Distribute subtrees vertically relative to the parent's center
+    const totalH =
+      childrenWithTrees.reduce((sum, c) => sum + c.targetTree!.subtreeHeight, 0) +
+      (childrenWithTrees.length - 1) * NODE_SEP_Y;
+    let currentY = centerY - totalH / 2;
+
+    for (const child of tree.children) {
+      if (child.targetTree) {
+        const childCenterY = currentY + child.targetTree.subtreeHeight / 2;
+        positionTree(child.targetTree, startX + tree.width + RANK_SEP_X, childCenterY);
+        currentY += child.targetTree.subtreeHeight + NODE_SEP_Y;
+      }
+    }
+  };
+
+  let currentRootY = 0;
+
+  // Layout from valid roots
+  for (const root of roots) {
+    if (globalVisited.has(root.id)) continue;
+    const tree = buildTree(root.id);
+    if (tree) {
+      positionTree(tree, 50, currentRootY + tree.subtreeHeight / 2);
+      currentRootY += tree.subtreeHeight + NODE_SEP_Y;
+    }
+  }
+
+  // Fallback for floating disconnected cycles
+  for (const node of nodes) {
+    if (!globalVisited.has(node.id)) {
+      const tree = buildTree(node.id);
+      if (tree) {
+        positionTree(tree, 50, currentRootY + tree.subtreeHeight / 2);
+        currentRootY += tree.subtreeHeight + NODE_SEP_Y;
       }
     }
   }
 
-  return { nodes: Array.from(nodeMap.values()), edges };
+  // Preserve any unvisited nodes (though globalVisited should catch all)
+  const finalNodes = nodes.map(n => layoutedNodes.get(n.id) || n);
+
+  return { nodes: finalNodes, edges };
 };

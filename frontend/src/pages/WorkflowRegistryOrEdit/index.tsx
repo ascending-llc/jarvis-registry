@@ -5,7 +5,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useBlocker, useNavigate, useSearchParams } from 'react-router-dom';
 import WorkflowCanvas from '@/components/WorkflowCanvas';
 import { apiNodesToCanvas, canvasToApiNodes, validateApiNodes } from '@/components/WorkflowCanvas/convert';
-import type { PanelMode, WorkflowCanvasRef } from '@/components/WorkflowCanvas/types';
+import type { WorkflowCanvasRef } from '@/components/WorkflowCanvas/types';
 import { useGlobal } from '@/contexts/GlobalContext';
 import { useServer } from '@/contexts/ServerContext';
 import SERVICES from '@/services';
@@ -36,7 +36,6 @@ const WorkflowRegistryOrEdit: React.FC = () => {
 
   // ── 4. Dirty Checking & UI State ───────────────────────────────────────────────
   const [hasChanges, setHasChanges] = useState(false);
-  const [panelMode, setPanelMode] = useState<PanelMode>('workflow');
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [runHistoryRefresh, setRunHistoryRefresh] = useState(0);
 
@@ -278,10 +277,8 @@ const WorkflowRegistryOrEdit: React.FC = () => {
             refreshRunHistoryKey={runHistoryRefresh}
             initialNodes={initialNodes}
             initialEdges={initialEdges}
-            panelMode={panelMode}
             isReadOnly={isReadOnly}
             isNewWorkflow={!isEditMode}
-            onPanelModeChange={setPanelMode}
             onDeleteWorkflow={() => setDeleteDialogOpen(true)}
             onWorkflowChange={handleWorkflowChange}
             onSave={handleSave}

@@ -1,11 +1,13 @@
 import type { Node } from '@xyflow/react';
 import { Background, BackgroundVariant, Controls, MiniMap, ReactFlow } from '@xyflow/react';
 import type React from 'react';
-import { useCallback } from 'react';
+import { createContext, useCallback, useMemo } from 'react';
 import { AiOutlineApartment } from 'react-icons/ai';
 import { useTheme } from '@/contexts/ThemeContext';
 import { EDGE_CONFIG } from './constants';
 import { nodeTypes } from './Nodes';
+
+export const CanvasActionsContext = createContext<{ onAdd?: (nodeId: string) => void }>({});
 
 const DARK_COLORS: Record<string, string> = {
   mcp: '#38bdf8',
@@ -55,14 +57,15 @@ export const CanvasView: React.FC<CanvasViewProps> = ({ canvas, defaultViewport,
   );
 
   // ── ReadOnly Mode Filters ──────────────────────────────────────────────────
-  const displayNodes = isReadOnly ? canvas.nodesWithHandlers.filter(n => n.type !== 'add') : canvas.nodesWithHandlers;
-  const displayEdges = isReadOnly
-    ? canvas.edges.filter(e => {
-        const sourceIsAdd = canvas.nodesWithHandlers.find(n => n.id === e.source)?.type === 'add';
-        const targetIsAdd = canvas.nodesWithHandlers.find(n => n.id === e.target)?.type === 'add';
-        return !sourceIsAdd && !targetIsAdd;
-      })
-    : canvas.edges;
+  const displayNodes = useMemo(
+    () => (isReadOnly ? canvas.nodes.filter(n => n.type !== 'add') : canvas.nodes),
+    [isReadOnly, canvas.nodes],
+  );
+  const displayEdges = useMemo(() => {
+    if (!isReadOnly) return canvas.edges;
+    const addNodeIds = new Set(canvas.nodes.filter(n => n.type === 'add').map(n => n.id));
+    return canvas.edges.filter(e => !addNodeIds.has(e.source) && !addNodeIds.has(e.target));
+  }, [isReadOnly, canvas.edges, canvas.nodes]);
 
   const handleNodesChange: typeof canvas.onNodesChange = useCallback(
     changes => {
@@ -79,42 +82,48 @@ export const CanvasView: React.FC<CanvasViewProps> = ({ canvas, defaultViewport,
 
   return (
     <div className='flex-1'>
-      <ReactFlow
-        nodes={displayNodes}
-        edges={displayEdges}
-        onNodesChange={handleNodesChange}
-        onEdgesChange={isReadOnly ? undefined : canvas.onEdgesChange}
-        onConnect={isReadOnly ? undefined : canvas.onConnect}
-        onNodeClick={canvas.onNodeClick}
-        onPaneClick={canvas.onPaneClick}
-        nodeTypes={nodeTypes}
-        defaultEdgeOptions={EDGE_CONFIG}
-        isValidConnection={canvas.isValidConnection}
-        defaultViewport={defaultViewport ? { x: defaultViewport.x ?? 0, y: defaultViewport.y ?? 0, zoom: defaultViewport.zoom ?? 1 } : undefined}
-        fitView={!defaultViewport}
-        fitViewOptions={!defaultViewport ? { padding: 0.1, minZoom: 0.1, maxZoom: 1 } : undefined}
-        nodesDraggable={!isReadOnly}
-        nodesConnectable={!isReadOnly}
-        elementsSelectable={true}
-        edgesFocusable={!isReadOnly}
-      >
-        <Background
-          variant={BackgroundVariant.Dots}
-          gap={28}
-          size={1}
-          color={isDark ? 'rgba(42,51,68,.7)' : 'rgba(15,23,42,.18)'}
-        />
-        <Controls>
-          <button
-            title='Auto layout'
-            onClick={canvas.runLayout}
-            className='flex items-center justify-center w-6 h-6 bg-none border-none cursor-pointer text-[var(--jarvis-subtle)] hover:text-[var(--jarvis-text-strong)]'
-          >
-            <AiOutlineApartment className='-rotate-90' />
-          </button>
-        </Controls>
-        <MiniMap nodeColor={miniMapNodeColor} maskColor={isDark ? 'rgba(11,16,32,.7)' : 'rgba(241,245,249,.8)'} />
-      </ReactFlow>
+      <CanvasActionsContext.Provider value={{ onAdd: canvas.onOpenNodePicker }}>
+        <ReactFlow
+          nodes={displayNodes}
+          edges={displayEdges}
+          onNodesChange={handleNodesChange}
+          onEdgesChange={isReadOnly ? undefined : canvas.onEdgesChange}
+          onConnect={isReadOnly ? undefined : canvas.onConnect}
+          onNodeClick={canvas.onNodeClick}
+          onPaneClick={canvas.onPaneClick}
+          nodeTypes={nodeTypes}
+          defaultEdgeOptions={EDGE_CONFIG}
+          isValidConnection={canvas.isValidConnection}
+          defaultViewport={
+            defaultViewport
+              ? { x: defaultViewport.x ?? 0, y: defaultViewport.y ?? 0, zoom: defaultViewport.zoom ?? 1 }
+              : undefined
+          }
+          fitView={!defaultViewport}
+          fitViewOptions={!defaultViewport ? { padding: 0.1, minZoom: 0.1, maxZoom: 1 } : undefined}
+          nodesDraggable={!isReadOnly}
+          nodesConnectable={!isReadOnly}
+          elementsSelectable={true}
+          edgesFocusable={!isReadOnly}
+        >
+          <Background
+            variant={BackgroundVariant.Dots}
+            gap={28}
+            size={1}
+            color={isDark ? 'rgba(42,51,68,.7)' : 'rgba(15,23,42,.18)'}
+          />
+          <Controls>
+            <button
+              title='Auto layout'
+              onClick={canvas.runLayout}
+              className='flex items-center justify-center w-6 h-6 bg-none border-none cursor-pointer text-[var(--jarvis-subtle)] hover:text-[var(--jarvis-text-strong)]'
+            >
+              <AiOutlineApartment className='-rotate-90' />
+            </button>
+          </Controls>
+          <MiniMap nodeColor={miniMapNodeColor} maskColor={isDark ? 'rgba(11,16,32,.7)' : 'rgba(241,245,249,.8)'} />
+        </ReactFlow>
+      </CanvasActionsContext.Provider>
     </div>
   );
 };
