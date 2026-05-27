@@ -62,7 +62,7 @@ class FederationSyncPlan:
     provider_type: Any
     discovered_mcp_count: int
     discovered_a2a_count: int
-    # The six operational fields below (creates, updates, deletes, pre_existing_acl_targets)
+    # The six operational fields below (mcp, a2a) * (creates, updates, pre_existing_acl_targets)
     # are all collected into resources_for_acl_inheritance during _apply_sync_plan.
     # Pre-existing resources have IDs available immediately; creates/updates get their IDs
     # after DB insert/save, which is why they're tracked separately.
