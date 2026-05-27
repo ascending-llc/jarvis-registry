@@ -49,7 +49,10 @@ from datetime import UTC, datetime
 from typing import Any
 
 import httpx
+from agno.exceptions import RunCancelledException
 from agno.models.base import Model
+from agno.run.cancel import acancel_run as agno_acancel_run
+from beanie import PydanticObjectId
 
 from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.models.enums import WorkflowRunStatus
@@ -57,6 +60,7 @@ from registry_pkgs.models.workflow import NodeRun, WorkflowDefinition, WorkflowR
 from registry_pkgs.workflows.compiler import StepExecutor, compile_workflow, flatten_workflow_nodes
 from registry_pkgs.workflows.control import DirectiveQueue, WorkflowCancelledError
 from registry_pkgs.workflows.executor_resolver import build_executor_registry
+from registry_pkgs.workflows.hitl import hydrate_requirement, serialize_requirement
 
 logger = logging.getLogger(__name__)
 
@@ -223,6 +227,109 @@ class WorkflowRunner:
             a2a_httpx_client=self._a2a_httpx_client,
         )
 
+    async def continue_run(
+        self,
+        *,
+        existing_run_id: str,
+        registry_token: str,
+        user_id: str | None,
+    ) -> tuple[WorkflowRun, list[NodeRun]]:
+        """Resume a run that is holding at one or more pending requirements.
+
+        Called by ``WorkflowControlService.resolve_requirement`` (via BackgroundTask)
+        after the user's decision has been written into ``WorkflowRun.pending_requirements``.
+
+        Flow:
+        1. CAS state transition AWAITING_APPROVAL → RUNNING.  If another caller
+           already won the race, this method exits silently (no double-resume).
+        2. Re-build the agno Workflow from ``run.definition_snapshot`` so any pod
+           can resume — we do NOT depend on the in-memory state of whichever pod
+           originally returned ``is_paused=True``.
+        3. Hydrate ``run.pending_requirements`` back into agno ``StepRequirement``
+           objects (with the user's decision fields populated) and clear the field.
+        4. Call ``workflow.acontinue_run(...)`` which:
+            - reads its own session state from ``agno_workflow_sessions`` Mongo collection
+            - applies on_timeout / on_reject routing
+            - either runs to completion / failure, or hits the next HITL pause
+        5. ``_handle_run_output`` again — pause loops back to step 1 next time the
+           user decides; completion / failure is finalized.
+        """
+        try:
+            run_oid = PydanticObjectId(existing_run_id)
+        except Exception:
+            raise ValueError(f"continue_run: invalid run_id {existing_run_id!r}")
+
+        # CAS: only one continuation wins.  We use raw motor ``update_one`` here.
+        collection = self._db_client[self._db_name].get_collection(WorkflowRun.get_settings().name)
+        cas_result = await collection.update_one(
+            {
+                "_id": run_oid,
+                "status": WorkflowRunStatus.AWAITING_APPROVAL.value,
+            },
+            {"$set": {"status": WorkflowRunStatus.RUNNING.value}},
+        )
+        if cas_result.modified_count == 0:
+            logger.info("[run=%s] continue_run: CAS lost (not in AWAITING_APPROVAL), skipping", existing_run_id)
+            run = await WorkflowRun.get(run_oid)
+            node_runs = await NodeRun.find(NodeRun.workflow_run_id == run_oid).to_list() if run is not None else []
+            return run, node_runs  # type: ignore[return-value]
+
+        run = await WorkflowRun.get(run_oid)
+        if run is None:
+            raise ValueError(f"WorkflowRun {existing_run_id!r} not found")
+
+        if not run.definition_snapshot:
+            raise RuntimeError(
+                f"WorkflowRun {existing_run_id!r} has no definition_snapshot — cannot rebuild for continue_run"
+            )
+
+        # Reconstruct definition from the snapshot to guarantee version determinism
+        snapshot_def = WorkflowDefinition(**run.definition_snapshot)
+
+        # Pull the pending requirements out; hydration happens inside the try below.
+        pending = list(run.pending_requirements)
+
+        if self._directive_queue is not None:
+            self._directive_queue.register(existing_run_id)
+
+        try:
+            requirements = [hydrate_requirement(item) for item in pending]
+            executor_registry = await self._build_registry(snapshot_def, registry_token, user_id)
+            workflow = compile_workflow(
+                snapshot_def,
+                run,
+                executor_registry=executor_registry,
+                db_client=self._db_client,
+                db_name=self._db_name,
+                directive_queue=self._directive_queue,
+            )
+            # agno needs its own internal run_id (the UUID it generated inside
+            # ``arun``), not our WorkflowRun ObjectId.
+            agno_run_id = run.agno_run_id or existing_run_id
+            result = await workflow.acontinue_run(
+                run_id=agno_run_id,
+                session_id=existing_run_id,
+                step_requirements=requirements,
+            )
+            # Only clear pending_requirements after agno has successfully
+            # consumed them.  If acontinue_run (or the build/compile steps
+            # before it) raise, the requirements survive in MongoDB so a
+            # subsequent continue_run — e.g. after a pod restart — can retry.
+            run.pending_requirements = []
+            await run.save()
+            await self._handle_run_output(run, result)
+        except (WorkflowCancelledError, RunCancelledException) as exc:
+            await self._finalize_cancel(run, exc)
+        except Exception as exc:
+            await self._finalize_failure(run, exc)
+            raise
+        finally:
+            if self._directive_queue is not None:
+                self._directive_queue.unregister(existing_run_id)
+
+        node_runs = await NodeRun.find(NodeRun.workflow_run_id == run.id).to_list()
+        return run, node_runs
+
     async def _execute(
         self,
         run: WorkflowRun,
@@ -233,8 +340,11 @@ class WorkflowRunner:
     ) -> None:
         """Compile the workflow and run it via agno.
 
-        On success, ``run.sync()`` reloads the status written by WorkflowRunSyncer.
-        On failure, writes FAILED directly so the record is never left as RUNNING.
+        Handles three terminal outcomes of ``workflow.arun()``:
+        - ``is_paused=True``           → HITL pause; persist requirements + return.
+        - Normal completion / failure  → ``WorkflowRunSyncer`` already wrote status;
+                                         reload via ``run.sync()``.
+        - ``WorkflowCancelledError`` / ``RunCancelledException`` → finalize CANCELLED.
         """
         workflow = compile_workflow(
             definition,
@@ -246,26 +356,81 @@ class WorkflowRunner:
             injected_outputs=injected_outputs,
         )
         try:
-            await workflow.arun(
+            result = await workflow.arun(
                 input=user_text,
+                session_id=str(run.id),
                 # _workflow_run_id lets executor closures reference the current
                 # run (e.g. for custom logging or future retry reconstruction).
                 session_state={"user_text": user_text, "_workflow_run_id": str(run.id)},
             )
-            # Reload state written by WorkflowRunSyncer so callers see the latest status.
-            await run.sync()
-        except WorkflowCancelledError as exc:
-            run.status = WorkflowRunStatus.CANCELLED
-            run.error_summary = str(exc)
-            run.finished_at = datetime.now(UTC)
-            await run.save()
-            logger.info("[run=%s] ✗ workflow cancelled: %s", run.id, exc)
+            await self._handle_run_output(run, result)
+        except (WorkflowCancelledError, RunCancelledException) as exc:
+            await self._finalize_cancel(run, exc)
         except Exception as exc:
             # agno may not call upsert_session on a hard failure; write the error
             # directly so the record is never left dangling as RUNNING.
-            run.status = WorkflowRunStatus.FAILED
-            run.error_summary = str(exc)
-            run.finished_at = datetime.now(UTC)
-            await run.save()
-            logger.error("[run=%s] ✗ workflow failed: %s", run.id, exc, exc_info=True)
+            await self._finalize_failure(run, exc)
             raise
+
+    async def _handle_run_output(self, run: WorkflowRun, result: Any) -> None:
+        """Route the WorkflowRunOutput returned by arun / acontinue_run.
+
+        - If ``result.is_paused``: persist serialized ``step_requirements`` into
+          ``WorkflowRun.pending_requirements`` and flip status to AWAITING_APPROVAL.
+          The runner coroutine then returns (no busy-waiting; pod-restart safe).
+        - Otherwise: trust WorkflowRunSyncer to have already written terminal state,
+          and just reload from Mongo so the in-memory ``run`` reflects what
+          callers will see.
+        """
+        if getattr(result, "is_paused", False):
+            serialized: list[dict[str, Any]] = []
+            for req in getattr(result, "step_requirements", None) or []:
+                try:
+                    serialized.append(serialize_requirement(req))
+                except Exception as exc:
+                    logger.exception(
+                        "[run=%s] failed to serialize StepRequirement %r — skipping (%s)",
+                        run.id,
+                        getattr(req, "step_id", "?"),
+                        exc,
+                    )
+            run.status = WorkflowRunStatus.AWAITING_APPROVAL
+            run.pending_requirements = serialized
+            # Capture agno's internal run_id so ``continue_run`` can locate the
+            # persisted RunOutput in agno_workflow_sessions on resume.  We use
+            # str() because agno generates UUID strings.
+            agno_id = getattr(result, "run_id", None)
+            if agno_id:
+                run.agno_run_id = str(agno_id)
+            await run.save()
+            logger.info(
+                "[run=%s] ⏸ HITL pause — %d requirement(s) awaiting decision",
+                run.id,
+                len(serialized),
+            )
+            return
+
+        await run.sync()
+
+    async def _finalize_cancel(self, run: WorkflowRun, exc: BaseException) -> None:
+        """Mark the run CANCELLED and reverse-notify agno (M2)."""
+        run.status = WorkflowRunStatus.CANCELLED
+        run.error_summary = str(exc)
+        run.finished_at = datetime.now(UTC)
+        await run.save()
+        # Bridge back to agno so its in-memory cancellation state flips too —
+        # protects against agno later emitting a WorkflowCompletedEvent that
+        # would otherwise overwrite our CANCELLED with COMPLETED via WorkflowRunSyncer.
+        try:
+            await agno_acancel_run(str(run.id))
+        except Exception as inner:
+            logger.warning("[run=%s] reverse agno cancel failed: %s", run.id, inner)
+        logger.info("[run=%s] ✗ workflow cancelled: %s", run.id, exc)
+
+    async def _finalize_failure(self, run: WorkflowRun, exc: BaseException) -> None:
+        """Mark the run FAILED directly (so a half-finished run never stays RUNNING)."""
+        run.status = WorkflowRunStatus.FAILED
+        run.error_summary = str(exc)
+        run.finished_at = datetime.now(UTC)
+        await run.save()
+        logger.error("[run=%s] ✗ workflow failed: %s", run.id, exc, exc_info=True)

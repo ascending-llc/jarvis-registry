@@ -1,21 +1,26 @@
 from __future__ import annotations
 
+import logging
 from collections import Counter
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from beanie import Document, PydanticObjectId
 from pydantic import BaseModel, Field, field_validator, model_validator
-from pymongo import ASCENDING
+from pymongo import ASCENDING, IndexModel
 
 from registry_pkgs.models.enums import (
     NodeRunStatus,
+    OnRejectPolicy,
+    OnTimeoutPolicy,
     ResolvedDependencyResolution,
     WorkflowDirective,
     WorkflowNodeType,
     WorkflowRunStatus,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class StepConfig(BaseModel):
@@ -84,6 +89,63 @@ class LoopConfig(BaseModel):
         return value
 
 
+class UserInputField(BaseModel):
+    """Schema element used by ``HumanReviewSpec.user_input_schema``"""
+
+    name: str
+    field_type: Literal["string", "number", "boolean", "array"]
+    description: str | None = None
+    required: bool = False
+    default_value: Any | None = None
+
+
+class HumanReviewSpec(BaseModel):
+    """Per-node HITL configuration translated to agno ``HumanReview`` at compile time.
+
+    Field compatibility (validated in :meth:`WorkflowNode._validate_shape`):
+
+    ============================  =============  =============  =============  =============  =============
+    Field                         Step           Steps          Condition      Loop           Router
+    ============================  =============  =============  =============  =============  =============
+    requires_confirmation          ✓             ✓              ✓              ✓               ✓
+    requires_user_input            ✓             —              —              —               ✓
+    requires_output_review         ✓             —              —              —               ✓
+    requires_iteration_review      —             —              —              ✓               —
+    on_reject (else_branch)        —             —              ✓ only         —               —
+    ============================  =============  =============  =============  =============  =============
+
+    Parallel nodes do not support any HITL field (agno itself rejects them).
+    """
+
+    requires_confirmation: bool = False
+    confirmation_message: str | None = None
+    # Step / Router only — collect parameters at runtime via dynamic form
+    requires_user_input: bool = False
+    user_input_message: str | None = None
+    user_input_schema: list[UserInputField] | None = None
+    # Step / Router only — post-execution review (user can accept/edit/reject the step output)
+    requires_output_review: bool = False
+    output_review_message: str | None = None
+    # Loop only — pause after each iteration
+    requires_iteration_review: bool = False
+    iteration_review_message: str | None = None
+    # Shared behaviour
+    on_reject: OnRejectPolicy = OnRejectPolicy.SKIP
+    # timeout_seconds → agno stamps a per-requirement ``timeout_at`` deadline.
+    # agno applies on_timeout only at continue-time (not via a background timer),
+    # so WorkflowControlService.get_run_status nudges continue_run once a polled
+    # AWAITING_APPROVAL run is past the deadline.
+    timeout_seconds: int | None = None
+    on_timeout: OnTimeoutPolicy = OnTimeoutPolicy.CANCEL
+
+    @field_validator("timeout_seconds")
+    @classmethod
+    def _validate_timeout(cls, value: int | None) -> int | None:
+        if value is not None and value <= 0:
+            raise ValueError("timeout_seconds must be > 0")
+        return value
+
+
 class RouterChoice(BaseModel):
     """A single named choice in a ROUTER node, containing one or more steps.
 
@@ -118,6 +180,10 @@ class WorkflowNode(BaseModel):
     step_config: StepConfig | None = None
     config: dict[str, Any] = Field(default_factory=dict)
 
+    # When set, agno's execution loop pauses at this node and emits a
+    # StepRequirement which we surface via WorkflowRun.pending_requirements.
+    human_review: HumanReviewSpec | None = None
+
     # Child nodes used by PARALLEL and LOOP container nodes.
     children: list[WorkflowNode] = Field(default_factory=list)
 
@@ -145,6 +211,10 @@ class WorkflowNode(BaseModel):
 
     @model_validator(mode="after")
     def _validate_shape(self) -> WorkflowNode:
+        # HITL: enforce per-node-type field compatibility for ``human_review``.
+        # Mirrors agno's validate_human_review_for_step / loop / router / condition / steps
+        _validate_human_review_for_node(self.node_type, self.human_review)
+
         if self.node_type == WorkflowNodeType.STEP:
             has_key = bool(self.executor_key)
             has_pool = bool(self.a2a_pool)
@@ -192,6 +262,14 @@ class WorkflowNode(BaseModel):
                 raise ValueError("condition node must not define loop_config")
             if self.step_config is not None:
                 raise ValueError("condition node must not define step_config")
+            # on_reject=else_branch routes a rejected gate
+            # into the false branch at runtime;
+            if (
+                self.human_review is not None
+                and self.human_review.on_reject == OnRejectPolicy.ELSE_BRANCH
+                and not self.false_steps
+            ):
+                raise ValueError("condition node with on_reject=else_branch requires at least one false_steps entry")
             return self
 
         if self.node_type == WorkflowNodeType.LOOP:
@@ -233,6 +311,69 @@ RouterChoice.model_rebuild()
 WorkflowNode.model_rebuild()
 
 
+def _validate_human_review_for_node(node_type: WorkflowNodeType, spec: HumanReviewSpec | None) -> None:
+    """
+        HITL: enforce agno's per-primitive HumanReview compatibility rules.
+
+    Mirrors ``agno.workflow.types.validate_human_review_for_*`` so we fail fast
+    at definition time instead of letting agno raise at compile time.
+    """
+    if spec is None:
+        return
+
+    # else_branch needs a false branch, which only CONDITION nodes have; agno only
+    # fails on this at runtime (its validators ignore on_reject), so reject it here.
+    if spec.on_reject == OnRejectPolicy.ELSE_BRANCH and node_type != WorkflowNodeType.CONDITION:
+        raise ValueError("on_reject=else_branch is only supported on condition nodes")
+
+    if node_type == WorkflowNodeType.PARALLEL:
+        # agno itself raises ``requires_confirmation is not supported on Parallel``.
+        if (
+            spec.requires_confirmation
+            or spec.requires_user_input
+            or spec.requires_output_review
+            or spec.requires_iteration_review
+        ):
+            raise ValueError("parallel node does not support any HITL fields (agno restriction)")
+        return
+
+    if node_type == WorkflowNodeType.STEP:
+        if spec.requires_iteration_review:
+            raise ValueError("requires_iteration_review is not supported on step nodes")
+        return
+
+    if node_type == WorkflowNodeType.ROUTER:
+        if spec.requires_iteration_review:
+            raise ValueError("requires_iteration_review is not supported on router nodes")
+        return
+
+    if node_type == WorkflowNodeType.LOOP:
+        if spec.requires_user_input:
+            raise ValueError("requires_user_input is not supported on loop nodes")
+        if spec.requires_output_review:
+            raise ValueError("requires_output_review is not supported on loop nodes")
+        return
+
+    if node_type == WorkflowNodeType.CONDITION:
+        if spec.requires_user_input:
+            raise ValueError("requires_user_input is not supported on condition nodes")
+        if spec.requires_output_review:
+            raise ValueError("requires_output_review is not supported on condition nodes")
+        if spec.requires_iteration_review:
+            raise ValueError("requires_iteration_review is not supported on condition nodes")
+        # else_branch is only valid here (condition has true/false branches)
+        return
+
+    # Any future node type defaults to "no HITL until explicitly supported".
+    if (
+        spec.requires_confirmation
+        or spec.requires_user_input
+        or spec.requires_output_review
+        or spec.requires_iteration_review
+    ):
+        raise ValueError(f"HITL not supported on node_type={node_type!r}")
+
+
 class ResolvedDependency(BaseModel):
     """Resolution plan for a node when retrying a partially failed run."""
 
@@ -245,6 +386,7 @@ class WorkflowDefinition(Document):
     name: str
     description: str | None = None
     nodes: list[WorkflowNode] = Field(default_factory=list)
+    version: int = 1
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
@@ -259,6 +401,26 @@ class WorkflowDefinition(Document):
         name = "workflow_definitions"
         indexes = [
             [("name", ASCENDING)],
+        ]
+
+
+class WorkflowVersion(Document):
+    """Historical snapshot of a WorkflowDefinition at a specific version.
+
+    Written on each PUT before the definition is overwritten, so prior versions
+    remain available for deterministic replay and audit.
+    """
+
+    workflow_id: PydanticObjectId
+    version: int
+    definition: dict[str, Any]
+    checksum: str
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    class Settings:
+        name = "workflow_versions"
+        indexes = [
+            IndexModel([("workflow_id", ASCENDING), ("version", ASCENDING)], unique=True),
         ]
 
 
@@ -290,6 +452,8 @@ class WorkflowRun(Document):
     """Top-level record for a single execution of a WorkflowDefinition."""
 
     workflow_definition_id: PydanticObjectId
+    # Version of the definition this run executed against (snapshot in definition_snapshot).
+    workflow_version: int | None = None
     status: WorkflowRunStatus = WorkflowRunStatus.PENDING
     trigger_source: str | None = None
     started_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -307,10 +471,30 @@ class WorkflowRun(Document):
     # is the fast path.  On service restart the Queue is lost but this field survives,
     # allowing startup cleanup to mark orphan runs correctly.
     pending_directive: WorkflowDirective | None = None
+
+    # agno generates its own internal run_id (UUID) inside ``workflow.arun``;
+    agno_run_id: str | None = None
     # Set when the run transitions to PAUSED; used to enforce pause_timeout_seconds.
     paused_at: datetime | None = None
     # How long (seconds) a paused run may wait before being automatically cancelled.
+    # NOTE: not yet enforced — ad-hoc PAUSE auto-cancel needs the periodic run
+    # reaper (tracked separately). HITL *gate* timeouts (HumanReviewSpec.on_timeout)
+    # ARE enforced lazily at continue-time; see WorkflowControlService.get_run_status.
     pause_timeout_seconds: int = 3600
+
+    # HITL: serialized agno ``StepRequirement`` objects awaiting user decision.
+    # Populated by ``WorkflowRunner._handle_run_output`` when ``arun()`` returns
+    # ``is_paused=True``; cleared (rehydrated into agno) by ``continue_run``.
+    # Atomically updated by ``WorkflowControlService.resolve_requirement`` using
+    # MongoDB ``array_filters`` so concurrent decisions on different stepIds are safe.
+    pending_requirements: list[dict[str, Any]] = Field(default_factory=list)
+
+    # Non-sensitive identity of the triggering user, captured so an HITL resume
+    # can re-mint a short-lived service JWT on their behalf. We deliberately do
+    # NOT persist the raw bearer token — see _prepare_resume_credentials.
+    triggering_user_id: str | None = None
+    triggering_username: str | None = None
+    triggering_scopes: list[str] | None = None
 
     class Settings:
         name = "workflow_runs"

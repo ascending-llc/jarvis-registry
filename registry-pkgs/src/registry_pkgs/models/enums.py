@@ -266,6 +266,7 @@ class WorkflowRunStatus(StrEnum):
     PENDING = "pending"
     RUNNING = "running"
     PAUSED = "paused"
+    AWAITING_APPROVAL = "awaiting_approval"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
@@ -274,6 +275,7 @@ class WorkflowRunStatus(StrEnum):
 class NodeRunStatus(StrEnum):
     PENDING = "pending"
     RUNNING = "running"
+    AWAITING_APPROVAL = "awaiting_approval"
     COMPLETED = "completed"
     FAILED = "failed"
     SKIPPED = "skipped"
@@ -286,12 +288,59 @@ class ResolvedDependencyResolution(StrEnum):
 
 
 class WorkflowDirective(StrEnum):
-    """User-issued directives that can be sent to a live or finished workflow run."""
+    """User-issued runtime directives for a live workflow run.
+
+    Covers ad-hoc runtime intervention (pause / resume / cancel / retry) that
+    agno does not natively support and we implement via the wait-loop wrapper.
+    Node-level HITL decisions (confirm / reject / edit / user_input /
+    route_select) flow through ``WorkflowRun.pending_requirements`` +
+    ``POST /approve``, not through the directive queue.
+    """
 
     PAUSE = "pause"
     RESUME = "resume"
     CANCEL = "cancel"
     RETRY = "retry"
+
+
+# Enums below mirror agno's HumanReview / OnReject / OnTimeout /
+# StepRequirement methods so the API/UI layer talks in agno-aligned vocabulary.
+class OnRejectPolicy(StrEnum):
+    """What should happen when a user rejects an HITL gate.
+
+    Mirrors ``agno.workflow.types.OnReject``.  ``ELSE_BRANCH`` is only valid on
+    ``CONDITION`` nodes (sends execution down ``false_steps``).
+    """
+
+    SKIP = "skip"
+    CANCEL = "cancel"
+    RETRY = "retry"
+    ELSE_BRANCH = "else_branch"
+
+
+class OnTimeoutPolicy(StrEnum):
+    """What should happen when an HITL gate's timeout expires without a decision.
+
+    Mirrors ``agno.workflow.types.OnTimeout``.
+    """
+
+    APPROVE = "approve"
+    SKIP = "skip"
+    CANCEL = "cancel"
+
+
+class RequirementResolution(StrEnum):
+    """The kind of user decision sent to a pending HITL requirement.
+
+    Maps 1:1 to agno ``StepRequirement.confirm() / .reject() / .edit() /
+    .set_user_input() / .set_selected_choices()``.  See API ``POST /approve``.
+    """
+
+    CONFIRM = "confirm"
+    REJECT = "reject"
+    EDIT = "edit"
+    USER_INPUT = "user_input"
+    ROUTE_SELECT = "route_select"
 
 
 class WorkflowRunStateMachine:
@@ -308,7 +357,9 @@ class WorkflowRunStateMachine:
     )
 
     # Statuses that represent an in-flight execution (can receive pause/cancel).
-    ACTIVE_STATUSES: frozenset[WorkflowRunStatus] = frozenset({WorkflowRunStatus.RUNNING, WorkflowRunStatus.PAUSED})
+    ACTIVE_STATUSES: frozenset[WorkflowRunStatus] = frozenset(
+        {WorkflowRunStatus.RUNNING, WorkflowRunStatus.PAUSED, WorkflowRunStatus.AWAITING_APPROVAL}
+    )
 
     @staticmethod
     def apply_directive(current: WorkflowRunStatus, directive: WorkflowDirective) -> WorkflowRunStatus:

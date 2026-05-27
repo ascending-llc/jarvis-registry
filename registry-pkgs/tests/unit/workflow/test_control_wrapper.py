@@ -144,3 +144,87 @@ class TestWorkflowRunStateMachine:
 
         with pytest.raises(ValueError, match="Cannot retry"):
             WorkflowRunStateMachine.apply_directive(WorkflowRunStatus.CANCELLED, WorkflowDirective.RETRY)
+
+
+@pytest.mark.unit
+class TestHumanReviewModelValidation:
+    """``WorkflowNode._validate_shape`` enforces agno's per-primitive HumanReview rules."""
+
+    def test_step_accepts_full_human_review(self):
+        from registry_pkgs.models.enums import OnRejectPolicy
+        from registry_pkgs.models.workflow import HumanReviewSpec, WorkflowNode
+
+        step = WorkflowNode(
+            name="s",
+            node_type="step",
+            executor_key="tool",
+            human_review=HumanReviewSpec(
+                requires_confirmation=True,
+                requires_user_input=True,
+                requires_output_review=True,
+                on_reject=OnRejectPolicy.SKIP,
+                timeout_seconds=60,
+            ),
+        )
+        assert step.human_review is not None
+        assert step.human_review.requires_confirmation is True
+
+    def test_parallel_rejects_any_hitl_field(self):
+        from registry_pkgs.models.workflow import HumanReviewSpec, WorkflowNode
+
+        with pytest.raises(ValueError, match="parallel node does not support any HITL"):
+            WorkflowNode(
+                name="p",
+                node_type="parallel",
+                children=[
+                    WorkflowNode(name="a", executor_key="x"),
+                    WorkflowNode(name="b", executor_key="y"),
+                ],
+                human_review=HumanReviewSpec(requires_confirmation=True),
+            )
+
+    def test_loop_rejects_user_input_and_output_review(self):
+        from registry_pkgs.models.workflow import HumanReviewSpec, LoopConfig, WorkflowNode
+
+        # Iteration review IS allowed on loop
+        loop_ok = WorkflowNode(
+            name="loop_ok",
+            node_type="loop",
+            loop_config=LoopConfig(max_iterations=3),
+            children=[WorkflowNode(name="c", executor_key="x")],
+            human_review=HumanReviewSpec(requires_iteration_review=True),
+        )
+        assert loop_ok.human_review.requires_iteration_review is True
+
+        # But user_input + output_review are not
+        with pytest.raises(ValueError, match="requires_user_input is not supported on loop"):
+            WorkflowNode(
+                name="loop_bad",
+                node_type="loop",
+                loop_config=LoopConfig(max_iterations=3),
+                children=[WorkflowNode(name="c", executor_key="x")],
+                human_review=HumanReviewSpec(requires_user_input=True),
+            )
+
+    def test_condition_rejects_user_input(self):
+        from registry_pkgs.models.workflow import HumanReviewSpec, WorkflowNode
+
+        with pytest.raises(ValueError, match="requires_user_input is not supported on condition"):
+            WorkflowNode(
+                name="c",
+                node_type="condition",
+                condition_cel="true",
+                true_steps=[WorkflowNode(name="t", executor_key="x")],
+                human_review=HumanReviewSpec(requires_user_input=True),
+            )
+
+    def test_step_rejects_iteration_review(self):
+        from registry_pkgs.models.workflow import HumanReviewSpec, WorkflowNode
+
+        with pytest.raises(ValueError, match="requires_iteration_review is not supported on step"):
+            WorkflowNode(
+                name="s",
+                node_type="step",
+                executor_key="tool",
+                human_review=HumanReviewSpec(requires_iteration_review=True),
+            )

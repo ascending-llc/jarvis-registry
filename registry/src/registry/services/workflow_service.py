@@ -4,6 +4,7 @@ Workflow Service - Business logic for Workflow Management API
 This service handles all workflow-related operations using MongoDB and Beanie ODM.
 """
 
+import hashlib
 import logging
 import re
 from datetime import UTC, datetime
@@ -11,23 +12,83 @@ from typing import Any
 from uuid import uuid4
 
 from beanie import PydanticObjectId
+from fastapi import HTTPException
+from pymongo import ReturnDocument
+from pymongo.errors import DuplicateKeyError
 
+from registry_pkgs.database.decorators import get_current_session, use_transaction
+from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.models.enums import WorkflowRunStatus
-from registry_pkgs.models.workflow import NodeRun, WorkflowDefinition, WorkflowNode, WorkflowRun
+from registry_pkgs.models.workflow import (
+    HumanReviewSpec,
+    LoopConfig,
+    NodeRun,
+    RouterChoice,
+    StepConfig,
+    UserInputField,
+    WorkflowDefinition,
+    WorkflowNode,
+    WorkflowRun,
+    WorkflowVersion,
+)
 
 from ..schemas.workflow_api_schemas import WorkflowCreateRequest, WorkflowUpdateRequest
 
 logger = logging.getLogger(__name__)
 
 
+def _convert_human_review(api_human_review: Any) -> HumanReviewSpec | None:
+    """Translate the ``humanReview`` API input into the embedded ``HumanReviewSpec``.
+
+    Returns ``None`` when no HITL is configured on this node.  Per-node-type
+    field-compatibility validation runs inside ``WorkflowNode._validate_shape``.
+    """
+    if not api_human_review:
+        return None
+    hr = api_human_review
+    return HumanReviewSpec(
+        requires_confirmation=hr.requiresConfirmation,
+        confirmation_message=hr.confirmationMessage,
+        requires_user_input=hr.requiresUserInput,
+        user_input_message=hr.userInputMessage,
+        user_input_schema=(
+            [
+                UserInputField(
+                    name=f.name,
+                    field_type=f.fieldType,
+                    description=f.description,
+                    required=f.required,
+                    default_value=f.defaultValue,
+                )
+                for f in hr.userInputSchema
+            ]
+            if hr.userInputSchema
+            else None
+        ),
+        requires_output_review=hr.requiresOutputReview,
+        output_review_message=hr.outputReviewMessage,
+        requires_iteration_review=hr.requiresIterationReview,
+        iteration_review_message=hr.iterationReviewMessage,
+        on_reject=hr.onReject,
+        timeout_seconds=hr.timeoutSeconds,
+        on_timeout=hr.onTimeout,
+    )
+
+
 class WorkflowService:
     """Service for Workflow operations"""
+
+    @staticmethod
+    def _checksum(definition_json: str) -> str:
+        """Return the sha256 hex digest of a definition's JSON serialization."""
+        return hashlib.sha256(definition_json.encode("utf-8")).hexdigest()
 
     async def list_workflows(
         self,
         query: str | None = None,
         page: int = 1,
         per_page: int = 20,
+        accessible_workflow_ids: list[str] | None = None,
     ) -> tuple[list[WorkflowDefinition], int]:
         """
         List workflows with optional filtering and pagination.
@@ -36,6 +97,8 @@ class WorkflowService:
             query: Free-text search across workflow name, description
             page: Page number (validated by router)
             per_page: Items per page (validated by router)
+            accessible_workflow_ids: When provided, restrict results to these workflow IDs
+                (ACL VIEW filter). An empty list yields no results.
 
         Returns:
             Tuple of (workflows list, total count)
@@ -43,6 +106,10 @@ class WorkflowService:
         try:
             # Build query filters
             filters: dict[str, Any] = {}
+
+            # Restrict to ACL-accessible workflows
+            if accessible_workflow_ids is not None:
+                filters["_id"] = {"$in": [PydanticObjectId(wid) for wid in accessible_workflow_ids]}
 
             # Free-text search
             if query:
@@ -140,6 +207,7 @@ class WorkflowService:
             logger.exception("Error creating workflow")
             raise
 
+    @use_transaction
     async def update_workflow(
         self,
         workflow_id: str,
@@ -156,41 +224,111 @@ class WorkflowService:
             Updated WorkflowDefinition document
 
         Raises:
-            ValueError: If workflow not found or validation fails
+            ValueError: If workflow not found or validation fails.
+            HTTPException(409): If the workflow was modified concurrently.
         """
         try:
             # Get existing workflow
             workflow = await self.get_workflow_by_id(workflow_id)
 
-            # Update fields if provided
-            update_data: dict[str, Any] = {}
+            # Capture the current version's definition for history BEFORE mutating it.
+            previous_version = workflow.version
+            previous_definition = workflow.model_dump(mode="json")
+            previous_checksum = self._checksum(workflow.model_dump_json())
+            previous_updated_at = workflow.updated_at
+
+            # Build and validate the update FIRST. Node conversion runs the model-level
+            # shape validators, so an invalid update raises here — before anything is
+            # written — and can never leave an orphan/duplicate version-history row.
+            update_fields: dict[str, Any] = {
+                "version": previous_version + 1,
+                "updated_at": datetime.now(UTC),
+            }
 
             if data.name is not None:
-                update_data["name"] = data.name
+                update_fields["name"] = data.name
 
             if data.description is not None:
-                update_data["description"] = data.description
+                update_fields["description"] = data.description
 
             if data.nodes is not None:
-                update_data["nodes"] = [self._convert_api_node_to_model(node) for node in data.nodes]
+                update_fields["nodes"] = [
+                    self._convert_api_node_to_model(node).model_dump(mode="json") for node in data.nodes
+                ]
 
-            # Always update the timestamp
-            update_data["updated_at"] = datetime.now(UTC)
+            session = get_current_session()
+            collection = MongoDB.get_database().get_collection(WorkflowDefinition.get_settings().name)
 
-            # Apply updates
-            for key, value in update_data.items():
-                setattr(workflow, key, value)
+            updated_doc = await collection.find_one_and_update(
+                {"_id": workflow.id, "version": previous_version},
+                {"$set": update_fields},
+                return_document=ReturnDocument.AFTER,
+                session=session,
+            )
+            if updated_doc is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Workflow was modified concurrently; re-fetch and retry",
+                )
 
-            # Save to database (this will trigger Pydantic validation)
-            await workflow.save()
+            # Archive the prior definition atomically with the bump.  The unique
+            # (workflow_id, version) index is the backstop: a racing archive of the
+            # same version raises DuplicateKeyError → 409.
+            try:
+                await WorkflowVersion(
+                    workflow_id=workflow.id,
+                    version=previous_version,
+                    definition=previous_definition,
+                    checksum=previous_checksum,
+                    created_at=previous_updated_at,
+                ).insert(session=session)
+            except DuplicateKeyError as exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Workflow version already archived; concurrent update detected",
+                ) from exc
 
-            logger.info(f"Updated workflow {workflow_id}: {workflow.name}")
-            return workflow
+            logger.info(f"Updated workflow {workflow_id}: version {previous_version} → {update_fields['version']}")
+            return await WorkflowDefinition.get(workflow.id, session=session)
+
+        except (ValueError, HTTPException):
+            raise
+        except Exception:
+            logger.exception("Error updating workflow %s", workflow_id)
+            raise
+
+    async def list_versions(self, workflow_id: str) -> list[dict[str, Any]]:
+        """
+        List all versions of a workflow (history + current), oldest first.
+
+        Returns:
+            List of {version, created_at, checksum} dicts.
+
+        Raises:
+            ValueError: If workflow not found.
+        """
+        try:
+            workflow = await self.get_workflow_by_id(workflow_id)
+
+            history = await WorkflowVersion.find({"workflow_id": workflow.id}).sort("version").to_list()
+            versions: list[dict[str, Any]] = [
+                {"version": v.version, "created_at": v.created_at, "checksum": v.checksum} for v in history
+            ]
+
+            # Append the current (latest) version, which is not in the history collection.
+            versions.append(
+                {
+                    "version": workflow.version,
+                    "created_at": workflow.updated_at,
+                    "checksum": self._checksum(workflow.model_dump_json()),
+                }
+            )
+            return versions
 
         except ValueError:
             raise
         except Exception:
-            logger.exception("Error updating workflow %s", workflow_id)
+            logger.exception("Error listing versions for workflow %s", workflow_id)
             raise
 
     async def delete_workflow(self, workflow_id: str) -> bool:
@@ -219,8 +357,21 @@ class WorkflowService:
                 await NodeRun.find({"workflow_run_id": {"$in": run_ids}}).delete()
                 logger.info(f"Deleted node runs for {len(run_ids)} workflow runs")
 
+                # agno persists per-run state (HumanReview pauses, step outputs) keyed
+                # by ``session_id == str(run.id)`` — clean it up so we don't leave
+                # orphan documents (and user input data) behind.
+                session_ids = [str(rid) for rid in run_ids]
+                db = MongoDB.get_database()
+                result = await db.get_collection("agno_workflow_sessions").delete_many(
+                    {"session_id": {"$in": session_ids}}
+                )
+                logger.info(f"Deleted {result.deleted_count} agno_workflow_sessions for workflow {workflow_id}")
+
                 await WorkflowRun.find({"_id": {"$in": run_ids}}).delete()
                 logger.info(f"Deleted {len(run_ids)} workflow runs and their node runs for workflow {workflow_id}")
+
+            # Delete version history
+            await WorkflowVersion.find({"workflow_id": workflow.id}).delete()
 
             # Delete the workflow
             await workflow.delete()
@@ -241,6 +392,10 @@ class WorkflowService:
         initial_input: dict[str, Any] | None = None,
         parent_run_id: str | None = None,
         resolved_dependencies: list[dict[str, Any]] | None = None,
+        version: int | None = None,
+        triggering_user_id: str | None = None,
+        triggering_username: str | None = None,
+        triggering_scopes: list[str] | None = None,
     ) -> WorkflowRun:
         """
         Trigger a workflow run (async execution).
@@ -254,6 +409,7 @@ class WorkflowService:
             initial_input: Initial input data
             parent_run_id: Parent run ID for retry
             resolved_dependencies: Dependency resolution for retry
+            version: Workflow version to run; defaults to the latest version when omitted
 
         Returns:
             Created WorkflowRun document (status=PENDING)
@@ -264,6 +420,17 @@ class WorkflowService:
         try:
             # Get existing workflow
             workflow = await self.get_workflow_by_id(workflow_id)
+
+            # Resolve the definition snapshot for the requested version (defaults to latest).
+            if version is not None and version != workflow.version:
+                workflow_version = await WorkflowVersion.find_one({"workflow_id": workflow.id, "version": version})
+                if not workflow_version:
+                    raise ValueError(f"Workflow {workflow_id} version {version} not found")
+                definition_snapshot = workflow_version.definition
+                resolved_version = version
+            else:
+                definition_snapshot = workflow.model_dump(mode="json")
+                resolved_version = workflow.version
 
             # Convert resolved_dependencies if provided
             from registry_pkgs.models.workflow import ResolvedDependency
@@ -284,13 +451,17 @@ class WorkflowService:
             # Create workflow run
             run = WorkflowRun(
                 workflow_definition_id=workflow.id,
+                workflow_version=resolved_version,
                 status=WorkflowRunStatus.PENDING,
                 trigger_source=trigger_source,
                 started_at=datetime.now(UTC),
                 initial_input=initial_input,
-                definition_snapshot=workflow.model_dump(mode="json"),
+                definition_snapshot=definition_snapshot,
                 parent_run_id=PydanticObjectId(parent_run_id) if parent_run_id else None,
                 resolved_dependencies=resolved_deps,
+                triggering_user_id=triggering_user_id,
+                triggering_username=triggering_username,
+                triggering_scopes=triggering_scopes,
             )
 
             # Save to database
@@ -421,8 +592,6 @@ class WorkflowService:
         Returns:
             WorkflowNode model instance
         """
-        from registry_pkgs.models.workflow import LoopConfig, RouterChoice, StepConfig
-
         # Generate ID if not provided
         node_id = api_node.id if api_node.id else str(uuid4())
 
@@ -455,6 +624,8 @@ class WorkflowService:
             for choice in api_node.choices
         ]
 
+        human_review = _convert_human_review(api_node.humanReview)
+
         return WorkflowNode(
             id=node_id,
             name=api_node.name,
@@ -469,4 +640,5 @@ class WorkflowService:
             choices=choices,
             condition_cel=api_node.conditionCel,
             loop_config=loop_config,
+            human_review=human_review,
         )

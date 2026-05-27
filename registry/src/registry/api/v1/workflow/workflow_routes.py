@@ -8,15 +8,18 @@ import logging
 import math
 from typing import Annotated, Literal
 
+from beanie import PydanticObjectId
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from fastapi import status as http_status
 
 from registry.auth.dependencies import CurrentUser, UserContextDict
 from registry.core.telemetry_decorators import track_registry_operation
-from registry.deps import get_workflow_runner, get_workflow_service
+from registry.deps import get_acl_service, get_workflow_control_service, get_workflow_runner, get_workflow_service
+from registry.schemas.acl_schema import ResourcePermissions
 from registry.schemas.errors import ErrorCode, create_error_detail
 from registry.schemas.workflow_api_schemas import (
     PaginationMetadata,
+    StepRequirementSummary,
     WorkflowCreateRequest,
     WorkflowDetailResponse,
     WorkflowListResponse,
@@ -25,19 +28,49 @@ from registry.schemas.workflow_api_schemas import (
     WorkflowRunTriggerRequest,
     WorkflowRunTriggerResponse,
     WorkflowUpdateRequest,
+    WorkflowVersionItem,
+    WorkflowVersionListResponse,
     convert_to_detail,
     convert_to_list_item,
     convert_to_run_detail,
     convert_to_run_list_item,
 )
+from registry.schemas.workflow_schemas import NodeRunSummary, RunStatusResponse
+from registry.services.access_control_service import ACLService
+from registry.services.workflow_control_service import WorkflowControlService
 from registry.services.workflow_executor import execute_workflow_run_background
 from registry.services.workflow_service import WorkflowService
 from registry.utils.crypto_utils import generate_service_jwt
+from registry_pkgs.models import PrincipalType
+from registry_pkgs.models.enums import RoleBits
+from registry_pkgs.models.extended_acl_entry import ExtendedResourceType
 from registry_pkgs.workflows.runner import WorkflowRunner
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+async def _authorize_workflow(
+    acl_service: ACLService,
+    workflow_service: WorkflowService,
+    user_context: UserContextDict,
+    workflow_id: str,
+    required_permission: str,
+):
+    """Resolve a workflow (404 if missing) and enforce an ACL permission on it.
+
+    Returns the (workflow, ResourcePermissions) tuple on success; raises
+    ValueError (→404) if not found or HTTPException(403) if unauthorized.
+    """
+    workflow = await workflow_service.get_workflow_by_id(workflow_id)
+    permissions = await acl_service.check_user_permission(
+        user_id=PydanticObjectId(user_context.get("user_id")),
+        resource_type=ExtendedResourceType.WORKFLOW,
+        resource_id=workflow.id,
+        required_permission=required_permission,
+    )
+    return workflow, permissions
 
 
 def _extract_bearer_token(request: Request) -> str:
@@ -92,9 +125,12 @@ async def list_workflows(
     page: Annotated[int, Query(ge=1)] = 1,
     per_page: Annotated[int, Query(ge=1, le=100)] = 20,
     workflow_service: WorkflowService = Depends(get_workflow_service),
+    acl_service: ACLService = Depends(get_acl_service),
 ):
     """
     List workflows with optional filtering and pagination.
+
+    Only workflows the caller has VIEW permission on are returned.
 
     Query Parameters:
     - query: Free-text search across workflow name, description
@@ -102,15 +138,27 @@ async def list_workflows(
     - per_page: Items per page (default: 20, min: 1, max: 100)
     """
     try:
-        # List workflows
+        user_id = user_context.get("user_id")
+        accessible_ids = await acl_service.get_accessible_resource_ids(
+            user_id=PydanticObjectId(user_id),
+            resource_type=ExtendedResourceType.WORKFLOW.value,
+        )
+
+        # List workflows restricted to ACL-accessible IDs
         workflows, total = await workflow_service.list_workflows(
             query=query,
             page=page,
             per_page=per_page,
+            accessible_workflow_ids=accessible_ids,
         )
 
-        # Convert to response items
-        workflow_items = [convert_to_list_item(workflow) for workflow in workflows]
+        # Convert to response items with per-workflow permissions.
+        perms_by_id = await acl_service.get_user_permissions_for_resources(
+            user_id=PydanticObjectId(user_id),
+            resource_type=ExtendedResourceType.WORKFLOW.value,
+            resource_ids=[w.id for w in workflows],
+        )
+        workflow_items = [convert_to_list_item(w, acl_permission=perms_by_id[w.id]) for w in workflows]
 
         # Calculate pagination metadata
         total_pages = math.ceil(total / per_page) if total > 0 else 0
@@ -148,14 +196,16 @@ async def get_workflow(
     workflow_id: str,
     user_context: CurrentUser,
     workflow_service: WorkflowService = Depends(get_workflow_service),
+    acl_service: ACLService = Depends(get_acl_service),
 ):
-    """Get detailed information about a workflow by ID"""
+    """Get detailed information about a workflow by ID (requires VIEW)"""
     try:
-        # Get workflow
-        workflow = await workflow_service.get_workflow_by_id(workflow_id)
+        workflow, permissions = await _authorize_workflow(
+            acl_service, workflow_service, user_context, workflow_id, "VIEW"
+        )
 
         # Convert to response model
-        return convert_to_detail(workflow)
+        return convert_to_detail(workflow, acl_permission=permissions)
 
     except ValueError as e:
         error_msg = str(e)
@@ -192,9 +242,12 @@ async def create_workflow(
     data: WorkflowCreateRequest,
     user_context: CurrentUser,
     workflow_service: WorkflowService = Depends(get_workflow_service),
+    acl_service: ACLService = Depends(get_acl_service),
 ):
-    """Create a new workflow"""
+    """Create a new workflow. The creator is granted OWNER permission."""
     try:
+        user_id = user_context.get("user_id")
+
         # Create workflow
         workflow = await workflow_service.create_workflow(data=data)
 
@@ -202,9 +255,20 @@ async def create_workflow(
             logger.error("Workflow creation failed without exception")
             raise ValueError("Failed to create workflow")
 
-        logger.info(f"Created workflow {workflow.id}: {workflow.name}")
+        # Grant OWNER permission to creator
+        await acl_service.grant_permission(
+            principal_type=PrincipalType.USER,
+            principal_id=PydanticObjectId(user_id),
+            resource_type=ExtendedResourceType.WORKFLOW,
+            resource_id=workflow.id,
+            perm_bits=RoleBits.OWNER,
+        )
+        logger.info(f"Created workflow {workflow.id}: {workflow.name}; granted OWNER to user {user_id}")
 
-        return convert_to_detail(workflow)
+        return convert_to_detail(
+            workflow,
+            acl_permission=ResourcePermissions(VIEW=True, EDIT=True, DELETE=True, SHARE=True),
+        )
 
     except ValueError as e:
         error_msg = str(e)
@@ -239,13 +303,16 @@ async def update_workflow(
     data: WorkflowUpdateRequest,
     user_context: CurrentUser,
     workflow_service: WorkflowService = Depends(get_workflow_service),
+    acl_service: ACLService = Depends(get_acl_service),
 ):
-    """Update a workflow with partial data"""
+    """Update a workflow with partial data (requires EDIT)"""
     try:
-        # Update workflow
+        _, permissions = await _authorize_workflow(acl_service, workflow_service, user_context, workflow_id, "EDIT")
+
+        # Update workflow (bumps version, snapshots prior version as history)
         workflow = await workflow_service.update_workflow(workflow_id=workflow_id, data=data)
 
-        return convert_to_detail(workflow)
+        return convert_to_detail(workflow, acl_permission=permissions)
 
     except ValueError as e:
         error_msg = str(e)
@@ -285,14 +352,21 @@ async def delete_workflow(
     workflow_id: str,
     user_context: CurrentUser,
     workflow_service: WorkflowService = Depends(get_workflow_service),
+    acl_service: ACLService = Depends(get_acl_service),
 ):
-    """Delete a workflow"""
+    """Delete a workflow (requires DELETE)"""
     try:
+        workflow, _ = await _authorize_workflow(acl_service, workflow_service, user_context, workflow_id, "DELETE")
+
         # Delete workflow
         successful_delete = await workflow_service.delete_workflow(workflow_id=workflow_id)
 
         if successful_delete:
-            logger.info(f"Deleted workflow {workflow_id}")
+            await acl_service.delete_acl_entries_for_resource(
+                resource_type=ExtendedResourceType.WORKFLOW.value,
+                resource_id=workflow.id,
+            )
+            logger.info(f"Deleted workflow {workflow_id} and its ACL entries")
             return None  # 204 No Content
         else:
             raise ValueError(f"Failed to delete workflow {workflow_id}")
@@ -323,6 +397,58 @@ async def delete_workflow(
         )
 
 
+@router.get(
+    "/workflows/{workflow_id}/versions",
+    response_model=WorkflowVersionListResponse,
+    response_model_by_alias=True,
+    summary="List Workflow Versions",
+    description="List the version history of a workflow",
+)
+@track_registry_operation("list", resource_type="workflow_version")
+async def list_workflow_versions(
+    workflow_id: str,
+    user_context: CurrentUser,
+    workflow_service: WorkflowService = Depends(get_workflow_service),
+    acl_service: ACLService = Depends(get_acl_service),
+):
+    """List the version history of a workflow (requires VIEW)."""
+    try:
+        await _authorize_workflow(acl_service, workflow_service, user_context, workflow_id, "VIEW")
+
+        versions = await workflow_service.list_versions(workflow_id)
+        return WorkflowVersionListResponse(
+            versions=[
+                WorkflowVersionItem(
+                    version=v["version"],
+                    createdAt=v["created_at"],
+                    checksum=v["checksum"],
+                )
+                for v in versions
+            ]
+        )
+
+    except ValueError as e:
+        error_msg = str(e)
+        if "not found" in error_msg.lower():
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail=create_error_detail(ErrorCode.RESOURCE_NOT_FOUND, error_msg),
+            )
+        raise HTTPException(
+            status_code=http_status.HTTP_400_BAD_REQUEST,
+            detail=create_error_detail(ErrorCode.INVALID_REQUEST, error_msg),
+        )
+    except HTTPException:
+        logger.exception("HTTPException in list_workflow_versions")
+        raise
+    except Exception:
+        logger.exception("Error listing versions for workflow %s", workflow_id)
+        raise HTTPException(
+            status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=create_error_detail(ErrorCode.INTERNAL_ERROR, "Internal server error while listing versions"),
+        )
+
+
 # ==================== Workflow Run Endpoints ====================
 
 
@@ -343,13 +469,18 @@ async def trigger_workflow_run(
     request: Request,
     workflow_service: WorkflowService = Depends(get_workflow_service),
     workflow_runner: WorkflowRunner = Depends(get_workflow_runner),
+    acl_service: ACLService = Depends(get_acl_service),
 ):
     """
     Trigger a workflow run (async execution).
 
+    Requires VIEWER (VIEW) permission on the workflow plus the workflows-control scope.
     Returns 202 Accepted immediately. The workflow will be executed asynchronously in the background.
     """
     try:
+        # Running a workflow requires VIEWER or more on the workflow itself
+        await _authorize_workflow(acl_service, workflow_service, user_context, workflow_id, "VIEW")
+
         # Create workflow run record (status=PENDING)
         run = await workflow_service.trigger_workflow_run(
             workflow_id=workflow_id,
@@ -357,6 +488,10 @@ async def trigger_workflow_run(
             initial_input=data.initialInput,
             parent_run_id=data.parentRunId,
             resolved_dependencies=[dep.model_dump(by_alias=True) for dep in data.resolvedDependencies],
+            version=data.version,
+            triggering_user_id=user_context.get("user_id"),
+            triggering_username=user_context.get("username"),
+            triggering_scopes=user_context.get("scopes", []),
         )
 
         registry_token = _build_registry_token(request, user_context)
@@ -422,22 +557,25 @@ async def list_workflow_runs(
     workflow_id: str,
     user_context: CurrentUser,
     status: Annotated[
-        Literal["pending", "running", "paused", "completed", "failed", "cancelled"] | None,
+        Literal["pending", "running", "paused", "awaiting_approval", "completed", "failed", "cancelled"] | None,
         Query(),
     ] = None,
     page: Annotated[int, Query(ge=1)] = 1,
     per_page: Annotated[int, Query(ge=1, le=100)] = 20,
     workflow_service: WorkflowService = Depends(get_workflow_service),
+    acl_service: ACLService = Depends(get_acl_service),
 ):
     """
-    List workflow runs with optional filtering and pagination.
+    List workflow runs with optional filtering and pagination (requires VIEW on the workflow).
 
     Query Parameters:
-    - status: Filter by run status (pending, running, paused, completed, failed, cancelled)
+    - status: Filter by run status (pending, running, paused, awaiting_approval, completed, failed, cancelled)
     - page: Page number (default: 1, min: 1)
     - per_page: Items per page (default: 20, min: 1, max: 100)
     """
     try:
+        await _authorize_workflow(acl_service, workflow_service, user_context, workflow_id, "VIEW")
+
         # List workflow runs
         runs_with_nodes, total = await workflow_service.list_workflow_runs(
             workflow_id=workflow_id,
@@ -501,9 +639,12 @@ async def get_workflow_run(
     run_id: str,
     user_context: CurrentUser,
     workflow_service: WorkflowService = Depends(get_workflow_service),
+    acl_service: ACLService = Depends(get_acl_service),
 ):
-    """Get detailed information about a workflow run by ID"""
+    """Get detailed information about a workflow run by ID (requires VIEW on the workflow)"""
     try:
+        await _authorize_workflow(acl_service, workflow_service, user_context, workflow_id, "VIEW")
+
         # Get workflow run with node runs
         run, node_runs = await workflow_service.get_workflow_run(workflow_id=workflow_id, run_id=run_id)
 
@@ -534,3 +675,84 @@ async def get_workflow_run(
             status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=create_error_detail(ErrorCode.INTERNAL_ERROR, "Internal server error while getting workflow run"),
         )
+
+
+@router.get(
+    "/workflows/{workflow_id}/runs/{run_id}/status",
+    response_model=RunStatusResponse,
+    response_model_by_alias=True,
+    summary="Get Workflow Run Status",
+    description="Get run status with per-node summary. If the run is awaiting_approval and a pending requirement has timed out, a background continue_run is nudged so agno can apply the gate's on_timeout policy.",
+)
+@track_registry_operation("read", resource_type="workflow_run")
+async def get_workflow_run_status(
+    workflow_id: str,
+    run_id: str,
+    user_context: CurrentUser,
+    workflow_control_service: WorkflowControlService = Depends(get_workflow_control_service),
+    acl_service: ACLService = Depends(get_acl_service),
+):
+    """Pollable status endpoint for a workflow run (requires VIEW on the workflow).
+
+    Side effect: when the run is ``awaiting_approval`` and a pending requirement has
+    passed its ``timeout_at``, this lazily triggers ``continue_run`` so agno can
+    apply the gate's ``on_timeout`` policy. The returned status still shows
+    ``awaiting_approval`` — the actual state transition surfaces on the next poll.
+    """
+    try:
+        workflow_oid = PydanticObjectId(workflow_id)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=http_status.HTTP_404_NOT_FOUND,
+            detail=create_error_detail(ErrorCode.RESOURCE_NOT_FOUND, f"Workflow {workflow_id!r} not found"),
+        ) from exc
+
+    await acl_service.check_user_permission(
+        user_id=PydanticObjectId(user_context.get("user_id")),
+        resource_type=ExtendedResourceType.WORKFLOW,
+        resource_id=workflow_oid,
+        required_permission="VIEW",
+    )
+
+    try:
+        run, node_runs = await workflow_control_service.get_run_status(workflow_id, run_id)
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=http_status.HTTP_404_NOT_FOUND,
+            detail=create_error_detail(ErrorCode.RESOURCE_NOT_FOUND, str(exc)),
+        ) from exc
+    except Exception as exc:
+        logger.exception("Error getting workflow run status %s", run_id)
+        raise HTTPException(
+            status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=create_error_detail(
+                ErrorCode.INTERNAL_ERROR, "Internal server error while getting workflow run status"
+            ),
+        ) from exc
+
+    return RunStatusResponse(
+        run_id=str(run.id),
+        workflow_id=str(run.workflow_definition_id),
+        status=run.status.value if hasattr(run.status, "value") else run.status,
+        trigger_source=run.trigger_source,
+        started_at=run.started_at,
+        finished_at=run.finished_at,
+        paused_at=run.paused_at,
+        error_summary=run.error_summary,
+        parent_run_id=str(run.parent_run_id) if run.parent_run_id else None,
+        node_runs=[
+            NodeRunSummary(
+                node_id=nr.node_id,
+                node_name=nr.node_name,
+                status=nr.status.value if hasattr(nr.status, "value") else nr.status,
+                attempt=nr.attempt,
+                started_at=nr.started_at,
+                finished_at=nr.finished_at,
+                error=nr.error,
+            )
+            for nr in node_runs
+        ],
+        pendingRequirements=[StepRequirementSummary.model_validate(req) for req in (run.pending_requirements or [])],
+    )

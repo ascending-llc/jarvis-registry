@@ -881,3 +881,44 @@ class TestNestedBranches:
             "LOOP",
             "body",
         ]
+
+
+@pytest.mark.unit
+class TestEnumDriftAgainstAgno:
+    """Anti-corruption layer: surface agno enum drift the moment it happens.
+
+    Our OnRejectPolicy / OnTimeoutPolicy are the stable contract (API + DB).
+    The compiler translates them to agno's string values via _ON_REJECT_TO_AGNO
+    and _ON_TIMEOUT_TO_AGNO.  These tests fail loudly if either side changes
+    members so we never silently pass an invalid value into agno.
+    """
+
+    def test_on_reject_keys_cover_our_enum(self):
+        from registry_pkgs.models.enums import OnRejectPolicy
+        from registry_pkgs.workflows.compiler import _ON_REJECT_TO_AGNO
+
+        assert set(_ON_REJECT_TO_AGNO.keys()) == set(OnRejectPolicy)
+
+    def test_on_reject_values_are_accepted_by_agno(self):
+        from agno.workflow.types import OnReject
+
+        from registry_pkgs.workflows.compiler import _ON_REJECT_TO_AGNO
+
+        agno_values = {member.value for member in OnReject}
+        for ours, agno_str in _ON_REJECT_TO_AGNO.items():
+            assert agno_str in agno_values, f"OnRejectPolicy.{ours.name} → {agno_str!r} not in agno OnReject"
+
+    def test_on_timeout_keys_cover_our_enum(self):
+        from registry_pkgs.models.enums import OnTimeoutPolicy
+        from registry_pkgs.workflows.compiler import _ON_TIMEOUT_TO_AGNO
+
+        assert set(_ON_TIMEOUT_TO_AGNO.keys()) == set(OnTimeoutPolicy)
+
+    def test_on_timeout_values_are_accepted_by_agno(self):
+        from agno.workflow.types import OnTimeout
+
+        from registry_pkgs.workflows.compiler import _ON_TIMEOUT_TO_AGNO
+
+        agno_values = {member.value for member in OnTimeout}
+        for ours, agno_str in _ON_TIMEOUT_TO_AGNO.items():
+            assert agno_str in agno_values, f"OnTimeoutPolicy.{ours.name} → {agno_str!r} not in agno OnTimeout"

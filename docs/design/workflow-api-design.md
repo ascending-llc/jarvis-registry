@@ -695,18 +695,16 @@ node type does not use them. This lets clients access any field without null che
 {
   "id": "run-demo-id",
   "workflowDefinitionId": "wf-demo-id",
-  "status": "completed",
+  "workflowVersion": 2,
+  "status": "awaiting_approval",
   "triggerSource": "manual",
   "startedAt": "2024-01-25T10:00:00Z",
-  "finishedAt": "2024-01-25T10:05:30Z",
+  "finishedAt": null,
   "initialInput": {
     "customerId": "cust-123",
     "email": "customer@example.com"
   },
-  "finalOutput": {
-    "status": "success",
-    "accountId": "acc-456"
-  },
+  "finalOutput": null,
   "errorSummary": null,
   "definitionSnapshot": {
     "name": "Customer Onboarding Workflow",
@@ -722,26 +720,198 @@ node type does not use them. This lets clients access any field without null che
       "nodeId": "node-1",
       "nodeName": "Validate Customer Data",
       "status": "completed",
-      "attempt": 0,
-      "inputSnapshot": {
-        "customerId": "cust-123",
-        "email": "customer@example.com"
-      },
-      "outputSnapshot": {
-        "valid": true
-      },
+      "attempt": 1,
+      "inputSnapshot": {"customerId": "cust-123"},
+      "outputSnapshot": {"valid": true},
       "error": null,
       "startedAt": "2024-01-25T10:00:05Z",
       "finishedAt": "2024-01-25T10:00:10Z"
+    }
+  ],
+  "pendingRequirements": [
+    {
+      "schemaVersion": 1,
+      "stepId": "node-2",
+      "stepName": "Send Welcome Email",
+      "stepType": "step",
+      "requiresConfirmation": true,
+      "requiresUserInput": false,
+      "requiresOutputReview": false,
+      "requiresRouteSelection": false,
+      "confirmationMessage": "Send welcome email to cust-123?",
+      "isPostExecution": false,
+      "confirmed": null,
+      "timeoutAt": "2024-01-25T11:00:00Z",
+      "onTimeout": "cancel",
+      "onReject": "skip",
+      "retryCount": 0
     }
   ]
 }
 ```
 
+**Notes**:
+- `workflowVersion`: the WorkflowDefinition version snapshot this run is replaying against (HITL v2)
+- `pendingRequirements`: non-empty iff `status == "awaiting_approval"`. Each element is one
+  HITL gate awaiting decision; the frontend renders a decision UI per element (see
+  [StepRequirementSummary](#steprequirementsummary)).
+
 **Error**:
 - `400` Invalid workflow ID or run ID
 - `404` Workflow or run not found
 - `500` Internal server error
+
+---
+
+### 9. Resolve HITL Requirement (Approve / Reject / Edit / etc.)
+
+**Endpoint**: `POST /api/v1/workflows/{workflow_id}/runs/{run_id}/approve`
+
+HITL v2: resolve one pending requirement on a run holding at an HITL gate. The
+endpoint accepts a 5-way decision aligned 1:1 with agno's `StepRequirement`
+methods (`confirm` / `reject` / `edit` / `set_user_input` / `set_selected_choices`).
+
+**Request Body**:
+```json
+{
+  "stepId": "node-2",
+  "resolution": "confirm",
+  "feedback": null,
+  "editedOutput": null,
+  "userInput": null,
+  "selectedChoices": null
+}
+```
+
+**Fields**:
+- `stepId` (required): the `pendingRequirements[].stepId` from GET /runs/{id}
+- `resolution` (required): one of:
+  - `confirm` — approve the gate; run resumes from the held step
+  - `reject` — reject; node fails per `onReject` policy (skip / cancel / retry / else_branch)
+  - `edit` — accept with modifications (output_review only); replaces `step_output` with `editedOutput`
+  - `user_input` — provide collected form values (matching `userInputSchema`); requires `userInput`
+  - `route_select` — choose router branch(es); requires `selectedChoices`
+- `feedback` (optional): explanatory text on rejection (passed to agno when `onReject=retry`)
+- `editedOutput` (required iff resolution=`edit`): replacement output to use downstream
+- `userInput` (required iff resolution=`user_input`): form values matching schema
+- `selectedChoices` (required iff resolution=`route_select`): chosen router choice name(s)
+
+**Response**: `200 OK`
+```json
+{
+  "runId": "run-demo-id",
+  "status": "running",
+  "resolvedStepId": "node-2",
+  "message": "Requirement resolved as confirm; run resuming"
+}
+```
+
+**Resolution × Requirement Type Compatibility**:
+
+The backend validates that the chosen `resolution` matches the requirement's
+capability flags (returns 400 on mismatch):
+
+| Resolution      | Requires (on the pending requirement)              |
+|-----------------|----------------------------------------------------|
+| `confirm`       | always valid                                       |
+| `reject`        | always valid                                       |
+| `edit`          | `requiresOutputReview=true` AND `isPostExecution=true` |
+| `user_input`    | `requiresUserInput=true`                           |
+| `route_select`  | `requiresRouteSelection=true`                      |
+
+**Status Codes**:
+
+| Code | Meaning |
+|------|---------|
+| 200  | Decision accepted; `continue_run` triggered in the background |
+| 400  | Resolution/requirement mismatch, or missing required field (editedOutput/userInput/selectedChoices) |
+| 403  | Caller lacks `workflows-control` scope or VIEW permission on the workflow |
+| 404  | Workflow, run, or step_id not found (incl. already-resolved requirement) |
+| 409  | Run not in `awaiting_approval` (already resolved by someone else, timed out, completed) |
+| 500  | Internal server error |
+
+**Concurrency**: Decisions on different `stepId` values within the same run are
+independent (a single run may have multiple pending requirements, e.g. parallel
+branches). Concurrent decisions on the *same* `stepId` are resolved atomically via
+MongoDB `array_filters` — the loser receives 409. The frontend should disable the
+decision button after click and refetch on 409 to display the winning decision.
+
+**Resume Flow**:
+The HTTP response returns immediately after the decision is persisted. The actual
+workflow resumption (`acontinue_run`) happens in a background task on whichever
+pod handles it (CAS-protected so only one wins). Frontend should poll
+`GET /runs/{run_id}` to observe state transitions.
+
+---
+
+## Internal Data Flow — Control Endpoints
+
+The five control endpoints (`/pause`, `/resume`, `/cancel`, `/retry`, `/approve`)
+look similar from the outside but take different internal paths and therefore
+have different latency / persistence characteristics.  The frontend should not
+treat them as interchangeable.
+
+### `/pause`, `/resume`, `/cancel`
+
+**Path**: route → `WorkflowControlService.send_*` → MongoDB write + in-process
+`DirectiveQueue.put(...)` → HTTP 200 returned.
+
+- The wait-loop wrapper inside the runner picks the directive up at the next
+  step boundary (≤ 2 s under normal load), or on the next Mongo poll (≤ 60 s)
+  if the queue is missed.
+- Persistent: even if the pod owning the queue dies, the directive survives in
+  `WorkflowRun.pending_directive` and is honored when the run is next observed.
+- `cancel` additionally calls `agno.run.cancel.acancel_run(run_id)` via the
+  `MongoBackedCancellationManager`, so any agno-internal code path that checks
+  `raise_if_cancelled` also stops.
+
+### `/retry`
+
+**Path**: route → `WorkflowControlService.send_retry` → builds a *child*
+`WorkflowRun` with `resolved_dependencies` describing which nodes replay from
+cached outputs vs. re-execute → `asyncio.create_task(runner.run(child_run_id))`
+→ HTTP 200 returned immediately with the **child run's** ID.
+
+- The original run is unchanged.
+- The child run starts at `PENDING` and proceeds normally.
+- Background task runs on the pod that handled the HTTP request.
+
+### `/approve` (HITL resolution)
+
+**Path**: route → `WorkflowControlService.resolve_requirement`:
+
+1. Validates the run is in `AWAITING_APPROVAL` and the `stepId` matches an
+   unresolved entry in `pending_requirements`.
+2. Atomically writes the decision into `pending_requirements[stepId]` using
+   MongoDB `array_filters` (three-layer concurrency protection: top-level
+   `status` filter, per-element `confirmed is None` filter, and
+   `modified_count == 0 → 409`).
+3. Fires `asyncio.create_task(runner.continue_run(...))` to resume on the
+   same pod.
+
+`continue_run` then CAS-transitions the run from `AWAITING_APPROVAL` to
+`RUNNING`, rebuilds the agno Workflow from `definition_snapshot`, hydrates the
+decided requirements, and calls `workflow.acontinue_run(...)`.  agno restores
+the persisted `WorkflowRunOutput` from `agno_workflow_sessions` and continues
+execution.
+
+**Frontend implications**:
+
+- HTTP 200 returns *before* the resume completes — the status returned in the
+  response body may still be `awaiting_approval` for a brief moment.  Poll
+  `GET /workflows/{id}/runs/{run_id}` to observe the actual transition.
+- Resume latency depends on the agno workflow's next step (LLM call, tool
+  call, etc.); the `/approve` HTTP itself is fast (~20 ms).
+- If multiple requirements are pending on the same run, decide them one at a
+  time; agno only proceeds when *all* outstanding requirements on the current
+  step are resolved.
+
+### Failure modes shared across endpoints
+
+If the pod that started a background `continue_run` / `runner.run` task dies
+mid-execution, the run stays at `RUNNING` past its expected duration.  An
+operator currently has to mark such runs `FAILED` manually (e.g. via mongosh)
+— automated orphan-run recovery is tracked as a follow-up.
 
 ---
 
@@ -787,6 +957,133 @@ All endpoints return errors in the following format:
   choices: RouterChoice[];       // Named choices for router nodes (≥ 2 required)
   conditionCel?: string;         // CEL expression for condition/router nodes
   loopConfig?: LoopConfig;       // Loop configuration for loop nodes
+  humanReview?: HumanReview;     // HITL v2: per-node Human-In-The-Loop configuration; see HumanReview type
+}
+```
+
+> **No legacy `require_approval` shim**: the path-A `require_approval` /
+> `approval_timeout_seconds` fields have been removed. They are **not** accepted,
+> auto-migrated, or upgraded on read — with the current `APIBaseModel` config
+> (`extra` at Pydantic's default `ignore`), unknown legacy fields are silently
+> ignored. New clients must use `humanReview` exclusively. See
+> [Backward Compatibility](#backward-compatibility--legacy-require_approval-fields).
+
+### HumanReview
+
+Per-node HITL configuration (translated 1:1 to agno's `HumanReview`).
+Field × node-type compatibility is enforced server-side; sending an unsupported
+combination returns 400.
+
+```typescript
+{
+  requiresConfirmation: boolean;        // step / steps / loop / router / condition — pause before/after exec for approval
+  confirmationMessage?: string;
+  requiresUserInput: boolean;           // step / router only — collect form values before exec
+  userInputMessage?: string;
+  userInputSchema?: UserInputField[];
+  requiresOutputReview: boolean;        // step / router only — review/edit/reject output after exec
+  outputReviewMessage?: string;
+  requiresIterationReview: boolean;     // loop only — review after each iteration
+  iterationReviewMessage?: string;
+  onReject: 'skip' | 'cancel' | 'retry' | 'else_branch';   // else_branch is condition-only
+  timeoutSeconds?: number;              // pause timeout; null = use run-level default
+  onTimeout: 'approve' | 'skip' | 'cancel';
+}
+```
+
+**Node-type × field compatibility matrix**:
+
+| Field                     | step | steps | condition | loop | router | parallel |
+|---------------------------|:----:|:-----:|:---------:|:----:|:------:|:--------:|
+| requiresConfirmation      | ✅   | ✅    | ✅        | ✅   | ✅     | ❌       |
+| requiresUserInput         | ✅   | —     | —         | —    | ✅     | ❌       |
+| requiresOutputReview      | ✅   | —     | —         | —    | ✅     | ❌       |
+| requiresIterationReview   | —    | —     | —         | ✅   | —      | ❌       |
+| onReject = else_branch    | —    | —     | ✅ only   | —    | —      | ❌       |
+
+PARALLEL nodes reject any HITL field (agno itself forbids it because parallel
+branches execute concurrently and cannot be individually paused).
+
+### UserInputField
+
+```typescript
+{
+  name: string;
+  fieldType: 'string' | 'number' | 'boolean' | 'array';
+  description?: string;
+  required: boolean;
+  defaultValue?: unknown;
+}
+```
+
+### StepRequirementSummary
+
+Returned inside `WorkflowRun.pendingRequirements` (see Get Workflow Run Detail
+response). Each element represents one HITL gate awaiting user decision. The
+frontend chooses which decision UI to render based on the `requires*` flags.
+
+```typescript
+{
+  schemaVersion: number;                // 1 for current HITL v2 layout
+  stepId: string;
+  stepName?: string;
+  stepIndex?: number;
+  stepType?: 'step' | 'loop' | 'router' | 'condition' | 'steps';
+
+  // Capability flags — drive which UI variant to render
+  requiresConfirmation: boolean;
+  requiresUserInput: boolean;
+  requiresOutputReview: boolean;
+  requiresRouteSelection: boolean;
+
+  // User-facing prompts
+  confirmationMessage?: string;
+  userInputMessage?: string;
+  userInputSchema?: PendingUserInputField[];   // runtime payload — NOT the authoring UserInputField
+  outputReviewMessage?: string;
+  availableChoices?: string[];          // for router selection
+  allowMultipleSelections: boolean;
+
+  // Post-execution review (output_review only)
+  stepOutput?: object;
+  isPostExecution: boolean;
+
+  // Decision state (null until user resolves)
+  confirmed?: boolean;
+  rejectionFeedback?: string;
+  editedOutput?: unknown;
+  userInput?: object;
+  selectedChoices?: string[];
+
+  // Retry + timeout
+  retryCount: number;
+  maxRetries?: number;
+  timeoutAt?: string;                   // ISO8601
+  onTimeout: 'approve' | 'skip' | 'cancel';
+  onReject: 'skip' | 'cancel' | 'retry' | 'else_branch';
+}
+```
+
+### PendingUserInputField
+
+The `userInputSchema` inside a `StepRequirementSummary` is **not** the authoring
+[`UserInputField`](#userinputfield). It is the live agno runtime payload
+(`StepRequirement.to_dict()`), so its shape differs deliberately:
+
+- `fieldType` is passed through verbatim as agno's Python type name
+  (`"str" | "int" | "float" | "bool" | "list" | "dict"`), **not** coerced into
+  the authoring `'string' | 'number' | 'boolean' | 'array'` set.
+- Carries agno's `value` / `allowedValues` instead of the authoring `defaultValue`.
+- `required` defaults to `true` (agno's default).
+
+```typescript
+{
+  name: string;
+  fieldType?: string;            // agno type name: "str" | "int" | "float" | "bool" | "list" | "dict"
+  description?: string;
+  required: boolean;             // defaults to true
+  value?: unknown;               // value collected so far (null until the user submits)
+  allowedValues?: unknown[];     // optional allow-list for validation
 }
 ```
 
@@ -900,7 +1197,8 @@ Notes on the selector semantics:
 
 - `pending`: Run is queued
 - `running`: Run is in progress
-- `paused`: Run is paused and waiting to resume
+- `paused`: Run is paused by user directive (POST /pause); awaiting RESUME
+- `awaiting_approval`: Run is holding at one or more HITL gates; awaiting decision via POST /approve
 - `completed`: Run completed successfully
 - `failed`: Run failed
 - `cancelled`: Run was cancelled
@@ -909,6 +1207,7 @@ Notes on the selector semantics:
 
 - `pending`: Node execution is queued
 - `running`: Node is executing
+- `awaiting_approval`: Node is at an HITL gate (mirrored from WorkflowRun.status for UI highlighting)
 - `completed`: Node completed successfully
 - `failed`: Node execution failed
 - `skipped`: Node was skipped
@@ -926,5 +1225,71 @@ Notes on the selector semantics:
 - All field names use **camelCase** in API requests and responses
 - MongoDB document field names use **snake_case** internally
 - Response models use `response_model_by_alias=True` for automatic conversion
+
+---
+
+## HITL v2 Notes (Backward Compatibility & Internal Fields)
+
+This section documents implementation-level details introduced by the HITL v2
+migration (agno-native HumanReview). Frontend clients generally do not need
+these details, but they're documented here for operators and integration
+partners.
+
+### Backward Compatibility — Legacy `require_approval` Fields
+
+The path-A `require_approval: bool` and `approval_timeout_seconds: int` fields on
+WorkflowNode have been **removed** from the v2 API/model.
+
+Current behavior is:
+
+- There is **no request/model compatibility shim** for legacy `requireApproval`,
+  `require_approval`, or `approval_timeout_seconds` fields — no auto-migration
+  and no validator rejects them.
+- Clients must send the v2 `humanReview` structure instead of the removed legacy
+  fields.
+- With the current `APIBaseModel` configuration (`extra` left at the Pydantic
+  default of `ignore`), unknown legacy fields are **silently ignored** rather
+  than rejected or auto-migrated.
+- Pre-v2 MongoDB documents containing these legacy fields are **not**
+  transparently upgraded by the API/model layer; operators reading older data
+  should not expect `humanReview` to be synthesized automatically.
+
+If compatibility handling is added in the future, this section must be updated to
+document the exact request-validation and document-migration behavior actually
+implemented.
+
+### Internal WorkflowRun Fields (Not API-Exposed)
+
+The following fields exist on the persisted `WorkflowRun` document but are not
+returned in API responses. They are documented here for operators reading
+MongoDB directly or building admin tooling.
+
+| Field                                  | Type   | Purpose |
+|----------------------------------------|--------|---------|
+| `triggering_user_id`                   | string | User ID captured at trigger time. Used (with `triggering_username` / `triggering_scopes`) to re-mint a short-lived service JWT for downstream MCP/A2A executor calls during HITL resume. The raw bearer token is **never** persisted — storing it would be useless since it expires during the pause. |
+| `triggering_username`                  | string | Username captured at trigger time; carried into the re-minted resume JWT identity |
+| `triggering_scopes`                    | array  | Scopes captured at trigger time; copied into the re-minted resume JWT |
+| `pending_requirements`                 | array  | Serialized agno `StepRequirement` objects awaiting user decision; populated when `arun()` returns `is_paused=True`. **Surfaced to clients as `pendingRequirements`** in run-detail responses. |
+| `pending_directive`                    | enum   | Runtime intervention signal for pause/resume/cancel/retry (separate from HITL decisions, which go via `/approve`) |
+| `paused_at`                            | datetime | Set when run enters `paused` via user `/pause` directive (separate from HITL `awaiting_approval`) |
+
+### Known Limitations
+
+- **Authorization can drift during long HITL pauses**: resume does not reuse the
+  original bearer token (which would have expired anyway). Instead it re-mints a
+  short-lived service JWT from the captured trigger identity (`triggering_user_id`
+  / `triggering_username` / `triggering_scopes`). If the user's account state,
+  roles, or scopes change before they resolve the pause, downstream MCP/A2A calls
+  may be authorized differently than at trigger time. Runs with no captured
+  `triggering_user_id` (e.g. script-driven) get an empty token, so auth-required
+  steps return 401 (visible in `nodeRuns[].error`).
+- **agno cancel edge case ([#7929](https://github.com/agno-agi/agno/issues/7929) OPEN)**:
+  cancel signals may not propagate through certain `acontinue_run +
+  external_execution` code paths inside agno. Our wait-loop wrapper's CANCEL
+  branch is the safety net (checks `pending_directive` before each step
+  attempt); dual-signal sync mitigates but does not 100% eliminate the race.
+- **HITL `on_reject=retry` attempt count**: agno's internal HITL retry does not
+  flow into our `NodeRun.attempt` field. The UI's attempt counter reflects
+  wait-loop retries only.
 
 ---
