@@ -22,6 +22,7 @@ from registry.core.exceptions import (
     A2AAgentCardTransportException,
     A2AAgentCardUpstreamException,
 )
+from registry_pkgs.database.decorators import get_current_session
 from registry_pkgs.models.a2a_agent import STATUS_ACTIVE, A2AAgent
 from registry_pkgs.vector.repositories.a2a_agent_repository import A2AAgentRepository
 
@@ -397,9 +398,7 @@ class A2AAgentService:
                 lastSyncStatus="success",
                 lastSyncVersion=agent_card.version,
             )
-
-            # Save to database
-            await agent.insert()
+            await agent.insert(session=get_current_session())
             logger.info(
                 f"Created agent: {agent.config.title} (ID: {agent.id}, path: {agent.path}) with wellKnown sync enabled"
             )
@@ -533,7 +532,7 @@ class A2AAgentService:
 
             # Save changes
             old_hash = agent.vectorContentHash
-            await agent.save()
+            await agent.save(session=get_current_session())
             logger.info(f"Updated agent: {agent.config.title} (ID: {agent_id})")
 
             self._schedule_vector_sync(agent, old_hash)
@@ -564,7 +563,7 @@ class A2AAgentService:
                 raise ValueError(f"Agent not found: {agent_id}")
 
             agent_name = agent.card.name
-            await agent.delete()
+            await agent.delete(session=get_current_session())
             logger.info(f"Deleted agent: {agent_name} (ID: {agent_id})")
 
             self._schedule_delete(agent_id, agent_name)
@@ -599,7 +598,7 @@ class A2AAgentService:
             agent.updatedAt = datetime.now(UTC)
 
             old_hash = agent.vectorContentHash
-            await agent.save()
+            await agent.save(session=get_current_session())
 
             logger.info(f"Toggled agent {agent.card.name} to {'enabled' if enabled else 'disabled'}")
 
@@ -657,6 +656,7 @@ class A2AAgentService:
             ValueError: If agent not found, well-known not enabled, or sync fails
         """
         agent: A2AAgent | None = None
+        session = get_current_session()
 
         try:
             agent = await A2AAgent.get(PydanticObjectId(agent_id))
@@ -716,7 +716,7 @@ class A2AAgentService:
             agent.updatedAt = datetime.now(UTC)
 
             # Save changes
-            await agent.save()
+            await agent.save(session=session)
 
             logger.info(f"Successfully synced agent {agent.card.name} from well-known: {len(changes)} changes")
 
@@ -736,7 +736,7 @@ class A2AAgentService:
             if agent and agent.wellKnown:
                 agent.wellKnown.lastSyncStatus = "failed"
                 agent.wellKnown.syncError = f"HTTP error: {str(e)}"
-                await agent.save()
+                await agent.save(session=session)
 
             logger.error(f"HTTP error syncing agent {agent_id}: {e}", exc_info=True)
             raise
@@ -745,7 +745,7 @@ class A2AAgentService:
             if agent and agent.wellKnown:
                 agent.wellKnown.lastSyncStatus = "failed"
                 agent.wellKnown.syncError = str(e)
-                await agent.save()
+                await agent.save(session=session)
 
             logger.error(f"Error syncing agent {agent_id}: {e}", exc_info=True)
             raise
@@ -757,7 +757,7 @@ class A2AAgentService:
             if agent and agent.wellKnown:
                 agent.wellKnown.lastSyncStatus = "failed"
                 agent.wellKnown.syncError = str(e)
-                await agent.save()
+                await agent.save(session=session)
 
             logger.error(f"Error syncing agent {agent_id}: {e}", exc_info=True)
             raise ValueError(f"Failed to sync well-known configuration: {str(e)}")
