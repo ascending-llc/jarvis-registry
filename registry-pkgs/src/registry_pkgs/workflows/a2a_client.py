@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 import uuid
@@ -221,6 +222,36 @@ def _create_message(text: str) -> Message:
     )
 
 
+def _parse_message_input(text: str) -> Message:
+    """Builds a Message from plain text or a JSON parts-payload; falls back to a TextPart on any parse error."""
+    try:
+        payload = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return _create_message(text)
+
+    if not isinstance(payload, dict) or not payload.get("parts"):
+        return _create_message(text)
+
+    parts: list[Part] = []
+    for raw_part in payload["parts"]:
+        if not isinstance(raw_part, dict):
+            continue
+        try:
+            parts.append(Part.model_validate(raw_part))
+        except Exception as e:
+            logger.warning("Skipping unrecognized message part %s: %s", raw_part, e)
+
+    if not parts:
+        return _create_message(text)
+
+    return Message(
+        kind="message",
+        role=Role.user,
+        parts=parts,
+        message_id=payload.get("messageId") or uuid.uuid4().hex,
+    )
+
+
 async def _maybe_emit_chunk(
     on_chunk: Callable[[str], Awaitable[None]] | None,
     text: str,
@@ -350,7 +381,7 @@ async def _call_with_open_client(
 ) -> A2ACallResult:
     """Run the three-phase consume/poll/build pipeline against an already-open client."""
     # 1. drain the event stream.
-    outcome = await _consume_stream(client, _create_message(text), context=context, on_chunk=on_chunk)
+    outcome = await _consume_stream(client, _parse_message_input(text), context=context, on_chunk=on_chunk)
 
     if isinstance(outcome, Message):
         logger.debug("← A2A agent %r responded with Message", agent_name)

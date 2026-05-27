@@ -21,7 +21,7 @@ from beanie import PydanticObjectId
 
 from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.models.a2a_agent import A2AAgent, AgentConfig
-from registry_pkgs.workflows.a2a_client import A2ACallResult, call_a2a
+from registry_pkgs.workflows.a2a_client import A2ACallResult, _parse_message_input, call_a2a
 
 
 def _jwt_config() -> JwtSigningConfig:
@@ -657,3 +657,35 @@ async def test_call_a2a_uses_async_with_when_no_shared_httpx_client():
 
     mock_client.__aenter__.assert_awaited_once()
     mock_client.__aexit__.assert_awaited_once()
+
+
+# ── _parse_message_input ─────────────────────────────────────────────────────
+
+
+def test_parse_message_input_plain_text_returns_single_text_part():
+    msg = _parse_message_input("hello world")
+    assert len(msg.parts) == 1
+    assert msg.parts[0].root.kind == "text"
+    assert msg.parts[0].root.text == "hello world"
+
+
+def test_parse_message_input_invalid_json_falls_back_to_text():
+    raw = "{not valid json"
+    msg = _parse_message_input(raw)
+    assert len(msg.parts) == 1
+    assert msg.parts[0].root.text == raw
+
+
+def test_parse_message_input_structured_data_part():
+    raw = '{"parts": [{"kind": "data", "data": {"start_time": "2026-05-15T07:00:00Z", "end_time": "2026-05-15T11:00:00Z"}}]}'
+    msg = _parse_message_input(raw)
+    assert len(msg.parts) == 1
+    assert msg.parts[0].root.kind == "data"
+    assert msg.parts[0].root.data == {"start_time": "2026-05-15T07:00:00Z", "end_time": "2026-05-15T11:00:00Z"}
+
+
+def test_parse_message_input_skips_bad_parts_keeps_valid():
+    raw = '{"parts": [{"kind": "unknown", "foo": "bar"}, {"kind": "text", "text": "keep me"}]}'
+    msg = _parse_message_input(raw)
+    assert len(msg.parts) == 1
+    assert msg.parts[0].root.text == "keep me"

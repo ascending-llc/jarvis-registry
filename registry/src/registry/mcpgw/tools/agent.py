@@ -250,7 +250,8 @@ def get_tools() -> list[tuple[str, Callable]]:
                 max_length=8192,
                 description=(
                     "The task or question to send to the agent. "
-                    "Be explicit and complete — the agent has no prior conversation context."
+                    "Accepts plain text or a JSON-serialized payload with typed parts (text, data, file). "
+                    "Check the agent's description from discover_agents — it specifies which format to use."
                 ),
             ),
         ],
@@ -268,9 +269,44 @@ def get_tools() -> list[tuple[str, Callable]]:
           or trying a different agent.
 
         Workflow:
-          1. discover_agents(query='…') → pick agent_id from results
-          2. execute_agent(agent_id='…', message='<full task description>')
-          3. Return the agent's response to the user."""
+        1. discover_agents(query='…') → pick agent_id from results
+        2. Read the agent's description field — it specifies the expected message format
+        3. execute_agent(agent_id='…', message='…') — see Message Format below
+        4. Return the agent's response to the user.
+
+        Message Format:
+        The `message` field accepts plain text (default) or a JSON-serialized payload
+        with typed parts. The agent's description from discover_agents will tell you
+        which format to use.
+
+        PLAIN TEXT (default — use when the agent description gives no special instructions):
+            message='<full task description as natural language>'
+
+        STRUCTURED PAYLOAD (use when the agent description instructs it):
+            Serialize a JSON object as the message string:
+
+            {
+              "messageId": "<uuid>",  (omit to auto-generate; required on the wire per A2A spec)
+              "parts": [...]          (required — one or more Part objects below)
+            }
+
+            Part types:
+
+            kind: "text"  — natural language instruction or context
+            {"kind": "text", "text": "Summarize the results"}
+
+            kind: "data"  — structured parameters matching the agent's input schema
+            {"kind": "data", "data": {"key": "value"}}
+
+            kind: "file"  — file content inline (base64) or by URI reference
+            {"kind": "file", "file": {"name": "report.csv", "mimeType": "text/csv", "bytes": "<base64>"}}
+            {"kind": "file", "file": {"name": "report.json", "mimeType": "application/json", "uri": "s3://bucket/file.json"}}
+
+            Parts can be combined in a single message:
+            message='{"messageId": "uuid", "parts": [
+              {"kind": "data", "data": {"month": "2024-01"}},
+              {"kind": "text", "text": "Summarize spending by category"}
+            ]}'"""
         return await execute_agent_impl(agent_id, message, ctx)
 
     return [("execute_agent", execute_agent)]
