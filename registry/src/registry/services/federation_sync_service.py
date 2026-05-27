@@ -62,14 +62,18 @@ class FederationSyncPlan:
     provider_type: Any
     discovered_mcp_count: int
     discovered_a2a_count: int
+    # The six operational fields below (creates, updates, deletes, pre_existing_acl_targets)
+    # are all collected into resources_for_acl_inheritance during _apply_sync_plan.
+    # Pre-existing resources have IDs available immediately; creates/updates get their IDs
+    # after DB insert/save, which is why they're tracked separately.
     mcp_creates: list[tuple[Any, str]] = field(default_factory=list)
     mcp_updates: list[tuple[Any, Any, str]] = field(default_factory=list)
     mcp_deletes: list[tuple[Any, str | None]] = field(default_factory=list)
-    mcp_unchanged_acl_targets: list[Any] = field(default_factory=list)
+    mcp_pre_existing_acl_targets: list[Any] = field(default_factory=list)
     a2a_creates: list[tuple[Any, str]] = field(default_factory=list)
     a2a_updates: list[tuple[Any, Any, str]] = field(default_factory=list)
     a2a_deletes: list[tuple[Any, str | None]] = field(default_factory=list)
-    a2a_unchanged_acl_targets: list[Any] = field(default_factory=list)
+    a2a_pre_existing_acl_targets: list[Any] = field(default_factory=list)
 
 
 @dataclass
@@ -328,7 +332,7 @@ class FederationSyncService:
             discovered_mcp=discovered_mcp,
             discovered_a2a=discovered_a2a,
         )
-        mutation_result = await self._apply_sync_plan(sync_plan, user_id=user_id)
+        mutation_result = await self._apply_sync_plan(sync_plan)
         await self.federation_job_service.update_apply_summary(job, mutation_result.summary)
         stats = await self._build_federation_stats(federation.id)
         last_sync = self._build_last_sync(job, mutation_result.summary)
@@ -557,7 +561,7 @@ class FederationSyncService:
             else:
                 if not self._runtime_metadata_changed(existing.federationMetadata, item.federationMetadata):
                     apply_summary.unchangedMcpServers += 1
-                    sync_plan.mcp_unchanged_acl_targets.append(existing.id)
+                    sync_plan.mcp_pre_existing_acl_targets.append(existing.id)
                 else:
                     apply_summary.updatedMcpServers += 1
                     sync_plan.mcp_updates.append((existing, item, remote_id))
@@ -654,7 +658,7 @@ class FederationSyncService:
                     and not transport_changed
                 ):
                     apply_summary.unchangedAgents += 1
-                    sync_plan.a2a_unchanged_acl_targets.append(existing.id)
+                    sync_plan.a2a_pre_existing_acl_targets.append(existing.id)
                 else:
                     apply_summary.updatedAgents += 1
                     sync_plan.a2a_updates.append((existing, item, remote_id))
@@ -685,8 +689,6 @@ class FederationSyncService:
     async def _apply_sync_plan(
         self,
         sync_plan: FederationSyncPlan,
-        *,
-        user_id: str | None,
     ) -> FederationSyncMutationResult:
         """Apply a previously computed sync plan inside the current transaction."""
         session = get_current_session()
@@ -705,10 +707,10 @@ class FederationSyncService:
         # Track all resources that need ACL inheritance
         resources_for_acl_inheritance: list[tuple[str, Any]] = []
         resources_for_acl_inheritance.extend(
-            (ResourceType.MCPSERVER, resource_id) for resource_id in sync_plan.mcp_unchanged_acl_targets
+            (ResourceType.MCPSERVER, resource_id) for resource_id in sync_plan.mcp_pre_existing_acl_targets
         )
         resources_for_acl_inheritance.extend(
-            (ResourceType.REMOTE_AGENT, resource_id) for resource_id in sync_plan.a2a_unchanged_acl_targets
+            (ResourceType.REMOTE_AGENT, resource_id) for resource_id in sync_plan.a2a_pre_existing_acl_targets
         )
 
         # Deletes run first so that unique-indexed fields (serverName, path) are freed
@@ -766,12 +768,12 @@ class FederationSyncService:
             resources_for_acl_inheritance.append((ResourceType.REMOTE_AGENT, existing.id))
 
         # Batch inherit Federation ACL to all synced resources
-        if acl_query_success and federation_acl_entries and resources_for_acl_inheritance:
+        if federation_acl_entries and resources_for_acl_inheritance:
             await self._batch_inherit_federation_acl(
                 federation_acl_entries=federation_acl_entries,
                 resources=resources_for_acl_inheritance,
             )
-        elif acl_query_success and not federation_acl_entries and resources_for_acl_inheritance:
+        elif not federation_acl_entries and resources_for_acl_inheritance:
             logger.info(
                 "No ACL entries found on Federation %s, skipping ACL inheritance for %d resources",
                 sync_plan.federation_id,
@@ -852,13 +854,21 @@ class FederationSyncService:
         try:
             session = get_current_session()
 
-            # Step 1: Batch query existing ACL entries for all resources with resourceType filter
-            resource_filters = [
-                {"resourceType": resource_type, "resourceId": resource_id} for resource_type, resource_id in resources
-            ]
-            existing_acl_entries = await ExtendedAclEntry.find(
-                {"$or": resource_filters} if len(resource_filters) > 1 else resource_filters[0], session=session
+            # Step 1: Batch query existing ACL entries for all resources using $in over resourceId
+            # Build lookup set for post-query filtering on resourceType
+            resource_lookup: set[tuple[str, str]] = {
+                (_acl_key_part(resource_type), str(resource_id)) for resource_type, resource_id in resources
+            }
+            all_acl_entries = await ExtendedAclEntry.find(
+                {"resourceId": {"$in": [resource_id for _, resource_id in resources]}},
+                session=session,
             ).to_list()
+            # Filter by resourceType in Python (safe since ObjectId collisions are negligible)
+            existing_acl_entries = [
+                entry
+                for entry in all_acl_entries
+                if (_acl_key_part(entry.resourceType), str(entry.resourceId)) in resource_lookup
+            ]
 
             stats["existing_acl_count"] = len(existing_acl_entries)
 
@@ -923,13 +933,8 @@ class FederationSyncService:
             if new_acl_entries:
                 for i in range(0, len(new_acl_entries), ACL_INHERITANCE_BATCH_SIZE):
                     batch = new_acl_entries[i : i + ACL_INHERITANCE_BATCH_SIZE]
-                    try:
-                        await ExtendedAclEntry.insert_many(batch, session=session, ordered=False)
-                        stats["inserted_count"] += len(batch)
-                    except Exception as batch_error:
-                        raise RuntimeError(
-                            f"ACL inheritance batch insert failed for entries {i}-{i + len(batch)}: {batch_error}"
-                        ) from batch_error
+                    await ExtendedAclEntry.insert_many(batch, session=session, ordered=False)
+                    stats["inserted_count"] += len(batch)
 
                 logger.info(
                     "ACL inheritance completed: federation_acl=%d resources=%d existing_acl=%d "

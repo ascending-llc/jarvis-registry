@@ -964,8 +964,8 @@ async def test_build_sync_plan_tracks_unchanged_resources_for_acl_inheritance(
 
     assert sync_plan.summary.unchangedMcpServers == 1
     assert sync_plan.summary.unchangedAgents == 1
-    assert sync_plan.mcp_unchanged_acl_targets == [mcp_id]
-    assert sync_plan.a2a_unchanged_acl_targets == [a2a_id]
+    assert sync_plan.mcp_pre_existing_acl_targets == [mcp_id]
+    assert sync_plan.a2a_pre_existing_acl_targets == [a2a_id]
 
 
 @pytest.mark.asyncio
@@ -985,15 +985,15 @@ async def test_apply_sync_plan_inherits_acl_to_unchanged_mcp_and_a2a_resources(
         provider_type=FederationProviderType.AWS_AGENTCORE,
         discovered_mcp_count=1,
         discovered_a2a_count=1,
-        mcp_unchanged_acl_targets=[mcp_id],
-        a2a_unchanged_acl_targets=[a2a_id],
+        mcp_pre_existing_acl_targets=[mcp_id],
+        a2a_pre_existing_acl_targets=[a2a_id],
     )
 
     monkeypatch.setattr("registry.services.federation_sync_service.get_current_session", lambda: None)
     federation_sync_service._get_federation_acl_entries = AsyncMock(return_value=(federation_acl_entries, True))
     federation_sync_service._batch_inherit_federation_acl = AsyncMock()
 
-    await federation_sync_service._apply_sync_plan(sync_plan, user_id="triggering-user")
+    await federation_sync_service._apply_sync_plan(sync_plan)
 
     federation_sync_service._batch_inherit_federation_acl.assert_awaited_once_with(
         federation_acl_entries=federation_acl_entries,
@@ -1002,6 +1002,171 @@ async def test_apply_sync_plan_inherits_acl_to_unchanged_mcp_and_a2a_resources(
             (ResourceType.REMOTE_AGENT, a2a_id),
         ],
     )
+
+
+@pytest.mark.asyncio
+async def test_apply_sync_plan_inherits_acl_to_created_updated_and_unchanged_resources(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
+    """
+    Test that ACL inheritance applies to:
+    - Pre-existing unchanged resources
+    - Newly created resources (after insert)
+    - Updated resources (after save)
+    But NOT to deleted resources.
+    """
+    federation_id = PydanticObjectId()
+    unchanged_mcp_id = PydanticObjectId()
+    unchanged_a2a_id = PydanticObjectId()
+
+    # Mock resources for creates - these will have IDs set after insert
+    new_mcp_id = PydanticObjectId()
+    new_a2a_id = PydanticObjectId()
+
+    # Mock resources for updates
+    existing_mcp = SimpleNamespace(
+        id=PydanticObjectId(),
+        serverName="existing-mcp",
+        path="/path",
+        tags=[],
+        config={},
+        status="active",
+        numTools=1,
+        federationMetadata={},
+        save=AsyncMock(),
+    )
+    existing_a2a = SimpleNamespace(
+        id=PydanticObjectId(),
+        path="/path",
+        card=SimpleNamespace(name="existing"),
+        tags=[],
+        status="active",
+        isEnabled=True,
+        wellKnown=None,
+        config=SimpleNamespace(type="jsonrpc"),
+        federationMetadata={},
+        save=AsyncMock(),
+    )
+
+    # Mock resources for deletes
+    deleted_mcp = SimpleNamespace(id=PydanticObjectId(), delete=AsyncMock())
+    deleted_a2a = SimpleNamespace(id=PydanticObjectId(), delete=AsyncMock())
+
+    # Mock new items for creates/updates
+    new_mcp_item = SimpleNamespace(
+        serverName="new-mcp",
+        path="/new-path",
+        tags=[],
+        config={},
+        status="active",
+        numTools=1,
+        federationMetadata={},
+    )
+    new_a2a_item = SimpleNamespace(
+        path="/new-path",
+        card=SimpleNamespace(name="new"),
+        tags=[],
+        status="active",
+        isEnabled=True,
+        wellKnown=None,
+        config=SimpleNamespace(type="jsonrpc"),
+        federationMetadata={},
+    )
+
+    # Mock insert to set IDs on the items
+    async def mock_mcp_insert(**kwargs):
+        new_mcp_item.id = new_mcp_id
+
+    async def mock_a2a_insert(**kwargs):
+        new_a2a_item.id = new_a2a_id
+
+    new_mcp_item.insert = AsyncMock(side_effect=mock_mcp_insert)
+    new_a2a_item.insert = AsyncMock(side_effect=mock_a2a_insert)
+
+    update_mcp_item = SimpleNamespace(
+        serverName="updated-mcp",
+        path="/updated-path",
+        tags=[],
+        config={},
+        status="active",
+        numTools=2,
+        federationMetadata={},
+    )
+    update_a2a_item = SimpleNamespace(
+        path="/updated-path",
+        card=SimpleNamespace(name="updated"),
+        tags=[],
+        status="active",
+        isEnabled=True,
+        wellKnown=None,
+        config=SimpleNamespace(type="jsonrpc"),
+        federationMetadata={},
+    )
+
+    federation_acl_entries = [
+        _make_acl_entry(PrincipalType.USER, "kent", ExtendedResourceType.FEDERATION, federation_id, RoleBits.OWNER)
+    ]
+
+    sync_plan = FederationSyncPlan(
+        summary=FederationApplySummary(
+            unchangedMcpServers=1,
+            unchangedAgents=1,
+            createdMcpServers=1,
+            createdAgents=1,
+            updatedMcpServers=1,
+            updatedAgents=1,
+            deletedMcpServers=1,
+            deletedAgents=1,
+        ),
+        federation_id=federation_id,
+        provider_type=FederationProviderType.AWS_AGENTCORE,
+        discovered_mcp_count=3,
+        discovered_a2a_count=3,
+        mcp_pre_existing_acl_targets=[unchanged_mcp_id],
+        a2a_pre_existing_acl_targets=[unchanged_a2a_id],
+        mcp_creates=[(new_mcp_item, "arn:new-mcp")],
+        a2a_creates=[(new_a2a_item, "arn:new-a2a")],
+        mcp_updates=[(existing_mcp, update_mcp_item, "arn:updated-mcp")],
+        a2a_updates=[(existing_a2a, update_a2a_item, "arn:updated-a2a")],
+        mcp_deletes=[(deleted_mcp, "arn:deleted-mcp")],
+        a2a_deletes=[(deleted_a2a, "arn:deleted-a2a")],
+    )
+
+    monkeypatch.setattr("registry.services.federation_sync_service.get_current_session", lambda: None)
+    federation_sync_service._get_federation_acl_entries = AsyncMock(return_value=(federation_acl_entries, True))
+    federation_sync_service._batch_inherit_federation_acl = AsyncMock()
+
+    await federation_sync_service._apply_sync_plan(sync_plan)
+
+    # Verify that _batch_inherit_federation_acl was called
+    federation_sync_service._batch_inherit_federation_acl.assert_awaited_once()
+
+    # Get the resources argument from the call
+    call_args = federation_sync_service._batch_inherit_federation_acl.await_args
+    resources = call_args.kwargs["resources"]
+
+    # Extract resource IDs from the resources list
+    resource_ids = {str(resource_id) for _, resource_id in resources}
+
+    # Should include: unchanged (2), created (2), updated (2) = 6 total
+    assert len(resources) == 6
+
+    # Should include unchanged resources
+    assert str(unchanged_mcp_id) in resource_ids
+    assert str(unchanged_a2a_id) in resource_ids
+
+    # Should include created resources (after insert sets their IDs)
+    assert str(new_mcp_id) in resource_ids
+    assert str(new_a2a_id) in resource_ids
+
+    # Should include updated resources
+    assert str(existing_mcp.id) in resource_ids
+    assert str(existing_a2a.id) in resource_ids
+
+    # Should NOT include deleted resources
+    assert str(deleted_mcp.id) not in resource_ids
+    assert str(deleted_a2a.id) not in resource_ids
 
 
 @pytest.mark.asyncio
@@ -1022,7 +1187,7 @@ async def test_apply_sync_plan_raises_when_federation_acl_query_fails(
     federation_sync_service._batch_inherit_federation_acl = AsyncMock()
 
     with pytest.raises(RuntimeError, match="could not query federation ACL"):
-        await federation_sync_service._apply_sync_plan(sync_plan, user_id="triggering-user")
+        await federation_sync_service._apply_sync_plan(sync_plan)
 
     federation_sync_service._batch_inherit_federation_acl.assert_not_awaited()
 
