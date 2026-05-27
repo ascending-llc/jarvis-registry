@@ -32,8 +32,8 @@ group_mappings:
     - acl-write
     - mcp-proxy-ops
     - a2a-proxy-ops
-    - workflows-read
     - workflows-control
+    - workflows-share
   jarvis-registry-power-user:
     - servers-read
     - servers-write
@@ -51,8 +51,8 @@ group_mappings:
     - acl-write
     - mcp-proxy-ops
     - a2a-proxy-ops
-    - workflows-read
     - workflows-control
+    - workflows-share
   jarvis-registry-user:
     - servers-read
     - servers-write
@@ -66,7 +66,6 @@ group_mappings:
     - acl-read
     - mcp-proxy-ops
     - a2a-proxy-ops
-    - workflows-read
     - workflows-control
   jarvis-registry-read-only:
     - servers-read
@@ -75,7 +74,6 @@ group_mappings:
     - workflows-read
     - user-read
     - acl-read
-    - workflows-read
 
 servers-read:
   - action: list_servers
@@ -303,9 +301,6 @@ workflows-read:
   - action: get_run_status
     method: GET
     endpoint: /workflows/{workflow_id}/runs/{run_id}/status
-  - action: list_runs_status
-    method: GET
-    endpoint: /workflows/{workflow_id}/runs/status
   - action: list_workflows
     method: GET
     endpoint: /workflows
@@ -318,6 +313,9 @@ workflows-read:
   - action: get_workflow_run
     method: GET
     endpoint: /workflows/{workflow_id}/runs/{run_id}
+  - action: list_workflow_versions
+    method: GET
+    endpoint: /workflows/{workflow_id}/versions
 
 workflows-control:
   # Write directives to live or finished workflow runs. Requires workflows-read.
@@ -336,6 +334,9 @@ workflows-control:
   - action: retry_workflow
     method: POST
     endpoint: /workflows/{workflow_id}/runs/{run_id}/retry
+  - action: approve_workflow_run
+    method: POST
+    endpoint: /workflows/{workflow_id}/runs/{run_id}/approve
 
 
 workflows-write:
@@ -348,6 +349,8 @@ workflows-write:
   - action: delete_workflow
     method: DELETE
     endpoint: /workflows/{workflow_id}
-  - action: trigger_workflow_run
-    method: POST
-    endpoint: /workflows/{workflow_id}/runs
+
+workflows-share:
+  - action: share_workflow
+    method: PUT
+    endpoint: /permissions/workflow/{resource_id}

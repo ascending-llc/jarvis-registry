@@ -8,11 +8,21 @@ All schemas use camelCase for API input/output.
 """
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import Field
+from pydantic import AliasGenerator, ConfigDict, Field, field_validator
+from pydantic.alias_generators import to_snake
 
+from registry_pkgs.models.enums import OnRejectPolicy, OnTimeoutPolicy
+from registry_pkgs.workflows.hitl.field_types import field_type_to_authoring
+
+from .acl_schema import ResourcePermissions
 from .case_conversion import APIBaseModel
+
+_AGNO_RUNTIME_VALIDATION_CONFIG = ConfigDict(
+    alias_generator=AliasGenerator(validation_alias=to_snake),
+    populate_by_name=True,
+)
 
 # ==================== Nested Models ====================
 
@@ -31,6 +41,73 @@ class LoopConfigInput(APIBaseModel):
 
     maxIterations: int = Field(ge=1, description="Maximum iterations (min: 1)")
     endConditionCel: str | None = Field(None, description="CEL expression for loop termination")
+
+
+# ── Human Review schemas ─────────────────────────────
+
+
+class UserInputFieldSchema(APIBaseModel):
+    """A single field in a HITL ``userInputSchema`` (form definition shown to the user)."""
+
+    name: str
+    fieldType: Literal["string", "number", "boolean", "array"]
+    description: str | None = None
+    required: bool = False
+    defaultValue: Any | None = None
+
+
+class PendingUserInputField(APIBaseModel):
+    """A user-input field surfaced inside a *pending* HITL requirement.
+
+    Source dicts come from agno ``UserInputField.to_dict()`` (snake_case keys).
+    agno echoes ``field_type`` back verbatim, so the runtime value reflects what
+    the compiler fed it — agno Python type names (``"str"``/``"float"``/...).  We
+    normalise it back to the authoring vocabulary (``"string"``/``"number"``/
+    ``"boolean"``/``"array"``) so the frontend sees one consistent field-type
+    vocabulary on both the authoring side (:class:`UserInputFieldSchema`) and the
+    pending side.
+    """
+
+    model_config = _AGNO_RUNTIME_VALIDATION_CONFIG
+
+    name: str
+    fieldType: str | None = None
+    description: str | None = None
+    required: bool = True
+    value: Any | None = None
+    allowedValues: list[Any] | None = None
+
+    @field_validator("fieldType", mode="after")
+    @classmethod
+    def _normalise_field_type(cls, value: str | None) -> str | None:
+        """Map agno's runtime type name back to the authoring vocabulary."""
+        return field_type_to_authoring(value)
+
+
+class HumanReviewConfig(APIBaseModel):
+    """Node-level HITL configuration (per-primitive validity enforced by backend).
+
+    Field × node-type compatibility (mirrors agno):
+
+    - ``requiresConfirmation``: Step / Steps / Loop / Router / Condition
+    - ``requiresUserInput``:    Step / Router only
+    - ``requiresOutputReview``: Step / Router only
+    - ``requiresIterationReview``: Loop only
+    - ``onReject = else_branch``: Condition only (sends execution to falseSteps)
+    """
+
+    requiresConfirmation: bool = False
+    confirmationMessage: str | None = None
+    requiresUserInput: bool = False
+    userInputMessage: str | None = None
+    userInputSchema: list[UserInputFieldSchema] | None = None
+    requiresOutputReview: bool = False
+    outputReviewMessage: str | None = None
+    requiresIterationReview: bool = False
+    iterationReviewMessage: str | None = None
+    onReject: OnRejectPolicy = OnRejectPolicy.SKIP
+    timeoutSeconds: int | None = Field(default=None, gt=0)
+    onTimeout: OnTimeoutPolicy = OnTimeoutPolicy.CANCEL
 
 
 class RouterChoiceInput(APIBaseModel):
@@ -78,6 +155,10 @@ class WorkflowNodeInput(APIBaseModel):
     )
     conditionCel: str | None = Field(None, description="CEL expression for condition/router nodes")
     loopConfig: LoopConfigInput | None = Field(None, description="Loop configuration for loop nodes")
+    humanReview: HumanReviewConfig | None = Field(
+        default=None,
+        description="HITL configuration",
+    )
 
 
 # Enable recursive models
@@ -101,6 +182,8 @@ class WorkflowNodeOutput(APIBaseModel):
     choices: list[RouterChoiceOutput] = Field(default_factory=list)
     conditionCel: str | None = None
     loopConfig: LoopConfigInput | None = None
+    # ``null`` when no HITL configured.
+    humanReview: HumanReviewConfig | None = None
 
 
 # Enable recursive models
@@ -153,6 +236,9 @@ class WorkflowRunTriggerRequest(APIBaseModel):
     resolvedDependencies: list[ResolvedDependencyInput] = Field(
         default_factory=list, description="Dependency resolution for retry"
     )
+    version: int | None = Field(
+        None, description="Workflow version to run; defaults to the latest version when omitted"
+    )
 
 
 # ==================== Response Schemas ====================
@@ -165,8 +251,10 @@ class WorkflowListItem(APIBaseModel):
     name: str
     description: str | None = None
     numNodes: int
+    version: int = 1
     createdAt: datetime
     updatedAt: datetime
+    aclPermission: ResourcePermissions | None = None
 
 
 class WorkflowDetailResponse(APIBaseModel):
@@ -176,8 +264,10 @@ class WorkflowDetailResponse(APIBaseModel):
     name: str
     description: str | None = None
     nodes: list[WorkflowNodeOutput]
+    version: int = 1
     createdAt: datetime
     updatedAt: datetime
+    aclPermission: ResourcePermissions | None = None
 
 
 class WorkflowListResponse(APIBaseModel):
@@ -185,6 +275,20 @@ class WorkflowListResponse(APIBaseModel):
 
     workflows: list[WorkflowListItem]
     pagination: PaginationMetadata
+
+
+class WorkflowVersionItem(APIBaseModel):
+    """Response schema for a single workflow version entry"""
+
+    version: int
+    createdAt: datetime
+    checksum: str
+
+
+class WorkflowVersionListResponse(APIBaseModel):
+    """Response schema for workflow version history"""
+
+    versions: list[WorkflowVersionItem]
 
 
 class WorkflowRunTriggerResponse(APIBaseModel):
@@ -238,11 +342,66 @@ class NodeRunOutput(APIBaseModel):
 WorkflowRunListItem.model_rebuild()
 
 
+class StepRequirementSummary(APIBaseModel):
+    """A single pending HITL requirement awaiting user decision.
+
+    Returned inside :class:`WorkflowRunDetailResponse.pendingRequirements` when the
+    run is ``awaiting_approval``.  Maps 1:1 to agno ``StepRequirement`` fields so the
+    frontend can render the correct decision UI (confirm / user_input form /
+    output_review with edit / route_selection).
+
+    See ``docs/design/workflow-api-design.md`` § StepRequirementSummary.
+    """
+
+    # Source dicts come from agno ``StepRequirement.to_dict()`` (snake_case keys).
+    model_config = _AGNO_RUNTIME_VALIDATION_CONFIG
+
+    schemaVersion: int = 1
+    stepId: str
+    stepName: str | None = None
+    stepIndex: int | None = None
+    stepType: str | None = None  # step / loop / router / condition / steps
+
+    # Capability flags — drive which UI variant the frontend renders.
+    requiresConfirmation: bool = False
+    requiresUserInput: bool = False
+    requiresOutputReview: bool = False
+    requiresRouteSelection: bool = False
+
+    # User-facing prompts
+    confirmationMessage: str | None = None
+    userInputMessage: str | None = None
+    userInputSchema: list[PendingUserInputField] | None = None
+    outputReviewMessage: str | None = None
+    availableChoices: list[str] | None = None
+    allowMultipleSelections: bool = False
+
+    # Post-execution review payload (output_review only)
+    stepOutputPreview: dict[str, Any] | None = Field(default=None, validation_alias="step_output")
+    isPostExecution: bool = False
+
+    # Decision results (None until the user resolves)
+    confirmed: bool | None = None
+    rejectionFeedback: str | None = None
+    editedOutput: Any | None = None
+    userInput: dict[str, Any] | None = None
+    selectedChoices: list[str] | None = None
+
+    # Retry + timeout
+    retryCount: int = 0
+    maxRetries: int | None = None
+    timeoutAt: datetime | None = None
+    onTimeout: OnTimeoutPolicy = OnTimeoutPolicy.CANCEL
+    onReject: OnRejectPolicy = OnRejectPolicy.SKIP
+
+
 class WorkflowRunDetailResponse(APIBaseModel):
     """Response schema for workflow run detail"""
 
     id: str
     workflowDefinitionId: str
+    # Version locked at trigger time (snapshot via definitionSnapshot).
+    workflowVersion: int | None = None
     status: str
     triggerSource: str | None = None
     startedAt: datetime
@@ -254,12 +413,15 @@ class WorkflowRunDetailResponse(APIBaseModel):
     parentRunId: str | None = None
     resolvedDependencies: list[ResolvedDependencyInput] = Field(default_factory=list)
     nodeRuns: list[NodeRunOutput] = Field(default_factory=list)
+    # Non-empty iff status == awaiting_approval.  Each element is one
+    # pending requirement; the frontend renders a decision UI per element.
+    pendingRequirements: list[StepRequirementSummary] = Field(default_factory=list)
 
 
 # ==================== Converter Functions ====================
 
 
-def convert_to_list_item(workflow: Any) -> WorkflowListItem:
+def convert_to_list_item(workflow: Any, acl_permission: ResourcePermissions | None = None) -> WorkflowListItem:
     """Convert WorkflowDefinition to WorkflowListItem"""
     from registry_pkgs.models.workflow import WorkflowDefinition
 
@@ -271,12 +433,14 @@ def convert_to_list_item(workflow: Any) -> WorkflowListItem:
         name=workflow.name,
         description=workflow.description,
         numNodes=len(workflow.nodes),
+        version=getattr(workflow, "version", 1),
         createdAt=workflow.created_at,
         updatedAt=workflow.updated_at,
+        aclPermission=acl_permission,
     )
 
 
-def convert_to_detail(workflow: Any) -> WorkflowDetailResponse:
+def convert_to_detail(workflow: Any, acl_permission: ResourcePermissions | None = None) -> WorkflowDetailResponse:
     """Convert WorkflowDefinition to WorkflowDetailResponse"""
     from registry_pkgs.models.workflow import WorkflowDefinition
 
@@ -288,8 +452,10 @@ def convert_to_detail(workflow: Any) -> WorkflowDetailResponse:
         name=workflow.name,
         description=workflow.description,
         nodes=[_convert_node_to_output(node) for node in workflow.nodes],
+        version=getattr(workflow, "version", 1),
         createdAt=workflow.created_at,
         updatedAt=workflow.updated_at,
+        aclPermission=acl_permission,
     )
 
 
@@ -330,6 +496,109 @@ def _convert_node_to_output(node: Any) -> WorkflowNodeOutput:
             if node.loop_config
             else None
         ),
+        # Serialize the embedded HumanReviewSpec (None when no HITL configured).
+        humanReview=(
+            HumanReviewConfig(
+                requiresConfirmation=node.human_review.requires_confirmation,
+                confirmationMessage=node.human_review.confirmation_message,
+                requiresUserInput=node.human_review.requires_user_input,
+                userInputMessage=node.human_review.user_input_message,
+                userInputSchema=(
+                    [
+                        UserInputFieldSchema(
+                            name=f.name,
+                            fieldType=f.field_type,
+                            description=f.description,
+                            required=f.required,
+                            defaultValue=f.default_value,
+                        )
+                        for f in node.human_review.user_input_schema
+                    ]
+                    if node.human_review.user_input_schema
+                    else None
+                ),
+                requiresOutputReview=node.human_review.requires_output_review,
+                outputReviewMessage=node.human_review.output_review_message,
+                requiresIterationReview=node.human_review.requires_iteration_review,
+                iterationReviewMessage=node.human_review.iteration_review_message,
+                onReject=node.human_review.on_reject,
+                timeoutSeconds=node.human_review.timeout_seconds,
+                onTimeout=node.human_review.on_timeout,
+            )
+            if node.human_review
+            else None
+        ),
+    )
+
+
+def convert_node_to_input(node: Any) -> WorkflowNodeInput:
+    """Convert WorkflowNode to WorkflowNodeInput (recursive)."""
+    return WorkflowNodeInput(
+        id=node.id,
+        name=node.name,
+        nodeType=node.node_type.value if hasattr(node.node_type, "value") else node.node_type,
+        executorKey=node.executor_key,
+        a2aPool=node.a2a_pool,
+        stepConfig=(
+            StepConfigInput(
+                maxRetries=node.step_config.max_retries,
+                onError=node.step_config.on_error,
+                backoffBaseSeconds=node.step_config.backoff_base_seconds,
+                backoffMaxSeconds=node.step_config.backoff_max_seconds,
+            )
+            if node.step_config
+            else None
+        ),
+        config=node.config,
+        children=[convert_node_to_input(child) for child in node.children],
+        trueSteps=[convert_node_to_input(child) for child in node.true_steps],
+        falseSteps=[convert_node_to_input(child) for child in node.false_steps],
+        choices=[
+            RouterChoiceInput(
+                name=choice.name,
+                steps=[convert_node_to_input(s) for s in choice.steps],
+            )
+            for choice in node.choices
+        ],
+        conditionCel=node.condition_cel,
+        loopConfig=(
+            LoopConfigInput(
+                maxIterations=node.loop_config.max_iterations, endConditionCel=node.loop_config.end_condition_cel
+            )
+            if node.loop_config
+            else None
+        ),
+        humanReview=(
+            HumanReviewConfig(
+                requiresConfirmation=node.human_review.requires_confirmation,
+                confirmationMessage=node.human_review.confirmation_message,
+                requiresUserInput=node.human_review.requires_user_input,
+                userInputMessage=node.human_review.user_input_message,
+                userInputSchema=(
+                    [
+                        UserInputFieldSchema(
+                            name=f.name,
+                            fieldType=f.field_type,
+                            description=f.description,
+                            required=f.required,
+                            defaultValue=f.default_value,
+                        )
+                        for f in node.human_review.user_input_schema
+                    ]
+                    if node.human_review.user_input_schema
+                    else None
+                ),
+                requiresOutputReview=node.human_review.requires_output_review,
+                outputReviewMessage=node.human_review.output_review_message,
+                requiresIterationReview=node.human_review.requires_iteration_review,
+                iterationReviewMessage=node.human_review.iteration_review_message,
+                onReject=node.human_review.on_reject,
+                timeoutSeconds=node.human_review.timeout_seconds,
+                onTimeout=node.human_review.on_timeout,
+            )
+            if node.human_review
+            else None
+        ),
     )
 
 
@@ -363,6 +632,7 @@ def convert_to_run_detail(run: Any, node_runs: list[Any]) -> WorkflowRunDetailRe
     return WorkflowRunDetailResponse(
         id=str(run.id),
         workflowDefinitionId=str(run.workflow_definition_id),
+        workflowVersion=run.workflow_version,
         status=run.status.value if hasattr(run.status, "value") else run.status,
         triggerSource=run.trigger_source,
         startedAt=run.started_at,
@@ -381,6 +651,10 @@ def convert_to_run_detail(run: Any, node_runs: list[Any]) -> WorkflowRunDetailRe
             for dep in run.resolved_dependencies
         ],
         nodeRuns=[_convert_node_run_to_output(node_run) for node_run in node_runs],
+        # Surface the serialized agno StepRequirements to the frontend.
+        # Pydantic validates each dict against StepRequirementSummary — extra fields
+        # from agno are tolerated (model_config defaults to extra='ignore').
+        pendingRequirements=[StepRequirementSummary.model_validate(req) for req in (run.pending_requirements or [])],
     )
 
 

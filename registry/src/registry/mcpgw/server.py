@@ -11,7 +11,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from ..core.config import settings
 from .core.event_store import InMemoryEventStore
 from .core.types import McpAppContext
-from .tools import agent_invoke, proxied, search
+from .tools import agent, search, server
 
 if TYPE_CHECKING:
     from ..container import RegistryContainer
@@ -261,6 +261,7 @@ def create_mcp_app(*, container_provider: Callable[[], RegistryContainer | None]
                 server_service=container.server_service,
                 mcp_server_repo=container.mcp_server_repo,
                 a2a_agent_repo=container.a2a_agent_repo,
+                search_service=container.search_service,
                 mcp_client_service=container.mcp_client_service,
                 oauth_service=container.oauth_service,
                 session_store=container.session_store,
@@ -335,9 +336,9 @@ def register_tools(mcp: FastMCP) -> None:
         mcp.tool(name=tool_name)(tool_func)
 
     # Register A2A agent invocation tool
-    for tool_name, tool_func in agent_invoke.get_tools():
+    for tool_name, tool_func in agent.get_tools():
         mcp.tool(name=tool_name)(tool_func)
 
     # Register registry API tools
-    for tool_name, tool_func in proxied.get_tools():
+    for tool_name, tool_func in server.get_tools():
         mcp.tool(name=tool_name)(tool_func)

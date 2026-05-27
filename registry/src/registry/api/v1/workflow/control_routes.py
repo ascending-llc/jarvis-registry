@@ -2,15 +2,20 @@ from __future__ import annotations
 
 import logging
 
+from beanie import PydanticObjectId
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from registry.auth.dependencies import CurrentUser
-from registry.deps import get_workflow_control_service
+from registry.auth.dependencies import CurrentUser, UserContextDict
+from registry.deps import get_acl_service, get_workflow_control_service
 from registry.schemas.workflow_schemas import (
     DirectiveResponse,
+    ResolveRequirementRequest,
+    ResolveRequirementResponse,
     RetryRequest,
 )
+from registry.services.access_control_service import ACLService
 from registry.services.workflow_control_service import WorkflowControlService
+from registry_pkgs.models.extended_acl_entry import ExtendedResourceType
 
 logger = logging.getLogger(__name__)
 
@@ -20,12 +25,35 @@ router = APIRouter(
 )
 
 
+async def _require_workflow_view(
+    acl_service: ACLService,
+    user_context: UserContextDict,
+    workflow_id: str,
+) -> None:
+    """Enforce VIEWER (VIEW) permission on the parent workflow for run directives.
+
+    Raises HTTPException(403) if the caller lacks VIEW; HTTPException(404) if the
+    workflow_id is malformed.
+    """
+    try:
+        workflow_oid = PydanticObjectId(workflow_id)
+    except Exception as exc:
+        raise HTTPException(status_code=404, detail=f"Workflow {workflow_id!r} not found") from exc
+    await acl_service.check_user_permission(
+        user_id=PydanticObjectId(user_context.get("user_id")),
+        resource_type=ExtendedResourceType.WORKFLOW,
+        resource_id=workflow_oid,
+        required_permission="VIEW",
+    )
+
+
 @router.post("/pause", response_model=DirectiveResponse)
 async def pause_run(
     workflow_id: str,
     run_id: str,
-    _current_user: CurrentUser,
+    current_user: CurrentUser,
     service: WorkflowControlService = Depends(get_workflow_control_service),
+    acl_service: ACLService = Depends(get_acl_service),
 ) -> DirectiveResponse:
     """Pause a running workflow run.
 
@@ -34,6 +62,7 @@ async def pause_run(
     Idempotent: pausing an already-paused run returns 200.
     """
     try:
+        await _require_workflow_view(acl_service, current_user, workflow_id)
         run = await service.send_pause(workflow_id, run_id)
         return DirectiveResponse(run_id=str(run.id), status=run.status, message="Pause directive sent")
     except HTTPException:
@@ -47,14 +76,16 @@ async def pause_run(
 async def resume_run(
     workflow_id: str,
     run_id: str,
-    _current_user: CurrentUser,
+    current_user: CurrentUser,
     service: WorkflowControlService = Depends(get_workflow_control_service),
+    acl_service: ACLService = Depends(get_acl_service),
 ) -> DirectiveResponse:
     """Resume a paused workflow run.
 
     Returns 400 if the run is not currently in PAUSED status.
     """
     try:
+        await _require_workflow_view(acl_service, current_user, workflow_id)
         run = await service.send_resume(workflow_id, run_id)
         return DirectiveResponse(run_id=str(run.id), status=run.status, message="Resume directive sent")
     except HTTPException:
@@ -68,8 +99,9 @@ async def resume_run(
 async def cancel_run(
     workflow_id: str,
     run_id: str,
-    _current_user: CurrentUser,
+    current_user: CurrentUser,
     service: WorkflowControlService = Depends(get_workflow_control_service),
+    acl_service: ACLService = Depends(get_acl_service),
 ) -> DirectiveResponse:
     """Cancel a running or paused workflow run.
 
@@ -77,6 +109,7 @@ async def cancel_run(
     Returns 400 if the run has already reached a terminal state (completed or failed).
     """
     try:
+        await _require_workflow_view(acl_service, current_user, workflow_id)
         run = await service.send_cancel(workflow_id, run_id)
         return DirectiveResponse(run_id=str(run.id), status=run.status, message="Cancel directive sent")
     except HTTPException:
@@ -92,8 +125,9 @@ async def retry_run(
     run_id: str,
     body: RetryRequest,
     request: Request,
-    _current_user: CurrentUser,
+    current_user: CurrentUser,
     service: WorkflowControlService = Depends(get_workflow_control_service),
+    acl_service: ACLService = Depends(get_acl_service),
 ) -> DirectiveResponse:
     """Retry a finished workflow run from a specific node.
 
@@ -106,9 +140,10 @@ async def retry_run(
     """
     auth_header = request.headers.get("Authorization", "")
     registry_token = auth_header.removeprefix("Bearer ").strip()
-    user_id = _current_user.get("user_id")
+    user_id = current_user.get("user_id")
 
     try:
+        await _require_workflow_view(acl_service, current_user, workflow_id)
         child_run = await service.send_retry(
             workflow_id,
             run_id,
@@ -125,4 +160,51 @@ async def retry_run(
         raise
     except Exception as exc:
         logger.exception("Retry request failed for run %s", run_id)
+        raise HTTPException(status_code=500, detail="Internal server error") from exc
+
+
+@router.post("/approve", response_model=ResolveRequirementResponse)
+async def approve_run(
+    workflow_id: str,
+    run_id: str,
+    body: ResolveRequirementRequest,
+    current_user: CurrentUser,
+    service: WorkflowControlService = Depends(get_workflow_control_service),
+    acl_service: ACLService = Depends(get_acl_service),
+) -> ResolveRequirementResponse:
+    """Resolve a pending requirement on a run holding at an HITL gate.
+
+    Carries a rich decision: confirm / reject / edit / user_input /
+    route_select — mirroring agno's ``StepRequirement`` methods 1:1.
+
+    Status codes:
+    - ``200``  decision accepted; ``continue_run`` triggered in the background
+    - ``400``  resolution / requirement type mismatch (e.g. EDIT on a non-output-review
+               requirement); missing required field (editedOutput / userInput / selectedChoices)
+    - ``403``  caller lacks ``workflows-control`` scope or VIEW permission on the workflow
+    - ``404``  workflow, run, or step_id not found (incl. already-resolved requirement)
+    - ``409``  run not in ``awaiting_approval`` (already resolved by someone else, timed out, completed)
+    """
+    try:
+        await _require_workflow_view(acl_service, current_user, workflow_id)
+        run = await service.resolve_requirement(
+            workflow_id,
+            run_id,
+            step_id=body.stepId,
+            resolution=body.resolution,
+            feedback=body.feedback,
+            edited_output=body.editedOutput,
+            user_input=body.userInput,
+            selected_choices=body.selectedChoices,
+        )
+        return ResolveRequirementResponse(
+            runId=str(run.id),
+            status=run.status,
+            resolvedStepId=body.stepId,
+            message=f"Requirement resolved as {body.resolution.value}; run resuming",
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Approve request failed for run %s", run_id)
         raise HTTPException(status_code=500, detail="Internal server error") from exc
