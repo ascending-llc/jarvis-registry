@@ -371,6 +371,12 @@ async def update_agent(
                 detail=create_error_detail(ErrorCode.RESOURCE_NOT_FOUND, error_msg),
             )
 
+        if "already exists" in error_msg:
+            raise HTTPException(
+                status_code=http_status.HTTP_409_CONFLICT,
+                detail=create_error_detail(ErrorCode.DUPLICATE_ENTRY, error_msg),
+            )
+
         # Other validation errors
         raise HTTPException(
             status_code=http_status.HTTP_400_BAD_REQUEST,

@@ -15,6 +15,7 @@ import httpx
 from a2a.client import A2ACardResolver, A2AClientHTTPError
 from a2a.types import AgentCard
 from beanie import PydanticObjectId
+from pymongo.errors import DuplicateKeyError
 
 from registry.core.exceptions import (
     A2AAgentCardNotFoundException,
@@ -22,7 +23,7 @@ from registry.core.exceptions import (
     A2AAgentCardTransportException,
     A2AAgentCardUpstreamException,
 )
-from registry_pkgs.models.a2a_agent import STATUS_ACTIVE, A2AAgent
+from registry_pkgs.models.a2a_agent import STATUS_ACTIVE, A2AAgent, normalize_a2a_agent_path
 from registry_pkgs.vector.repositories.a2a_agent_repository import A2AAgentRepository
 
 from ..schemas.a2a_agent_api_schemas import AgentCreateRequest, AgentUpdateRequest
@@ -35,6 +36,14 @@ class A2AAgentService:
 
     def __init__(self, a2a_agent_repo: A2AAgentRepository | None = None):
         self._a2a_agent_repo = a2a_agent_repo
+
+    @staticmethod
+    def _path_conflict_message(input_path: Any, normalized_path: str) -> str:
+        """Return a frontend-friendly duplicate path error."""
+        return (
+            f"An agent with path '{normalized_path}' already exists. "
+            f"Please choose a different path. (Your input '{input_path}' was normalized to '{normalized_path}')"
+        )
 
     def _schedule_sync(self, agent: A2AAgent, *, is_delete: bool) -> None:
         """Schedule a non-blocking vector sync after a MongoDB write."""
@@ -315,12 +324,13 @@ class A2AAgentService:
         Get agent by registry path.
 
         Args:
-            path: Registry path (e.g., /deep-intel)
+            path: Registry path or path-like input (e.g., /deep-intel)
 
         Returns:
             Agent document, or None if not found
         """
-        return await A2AAgent.find_one({"path": path})
+        normalized_path = normalize_a2a_agent_path(path)
+        return await A2AAgent.find_one({"path": normalized_path})
 
     async def create_agent(self, data: AgentCreateRequest, user_id: str) -> A2AAgent:
         """
@@ -345,10 +355,12 @@ class A2AAgentService:
                     f"Invalid transport type '{data.type}'. Must be one of: {', '.join(sorted(VALID_TRANSPORT_TYPES))}"
                 )
 
+            normalized_path = normalize_a2a_agent_path(data.path)
+
             # Check if path already exists
-            existing = await A2AAgent.find_one({"path": data.path})
+            existing = await A2AAgent.find_one({"path": normalized_path})
             if existing:
-                raise ValueError(f"Agent with path '{data.path}' already exists")
+                raise ValueError(self._path_conflict_message(data.path, normalized_path))
 
             # Fetch agent card from URL using SDK - KEEP ORIGINAL DATA
             logger.info(f"Fetching agent card from URL for new agent: {data.url}")
@@ -367,7 +379,7 @@ class A2AAgentService:
 
             # Create agent document with wellKnown config
             agent = A2AAgent(
-                path=data.path,
+                path=normalized_path,
                 card=agent_card,  # Original, unmodified card from third-party
                 config=agent_config,  # User-provided configuration including URL
                 tags=[],  # Initialize as empty list - tags are registry metadata, not derived from skills
@@ -399,15 +411,10 @@ class A2AAgentService:
             raise
         except Exception as e:
             # Check for duplicate key error
-            from pymongo.errors import DuplicateKeyError
-
             if isinstance(e, DuplicateKeyError) or "duplicate key" in str(e).lower():
                 # Extract the normalized path for a clear error message
-                normalized_path = data.path.strip("/").replace("/", "-")
-                raise ValueError(
-                    f"An agent with path '{normalized_path}' already exists. "
-                    f"Please choose a different path. (Your input '{data.path}' was normalized to '{normalized_path}')"
-                )
+                normalized_path = normalize_a2a_agent_path(data.path)
+                raise ValueError(self._path_conflict_message(data.path, normalized_path))
             logger.error(f"Error creating agent: {e}", exc_info=True)
             raise ValueError(f"Failed to create agent: {str(e)}")
 
@@ -516,11 +523,12 @@ class A2AAgentService:
 
             # Update path if provided
             if "path" in update_data:
+                normalized_path = normalize_a2a_agent_path(update_data["path"])
                 # Check if new path conflicts with existing agent
-                existing = await A2AAgent.find_one({"path": update_data["path"], "_id": {"$ne": agent.id}})
+                existing = await A2AAgent.find_one({"path": normalized_path, "_id": {"$ne": agent.id}})
                 if existing:
-                    raise ValueError(f"Agent with path '{update_data['path']}' already exists")
-                agent.path = update_data["path"]
+                    raise ValueError(self._path_conflict_message(update_data["path"], normalized_path))
+                agent.path = normalized_path
 
             # Update enabled state if provided
             if "enabled" in update_data:
@@ -541,17 +549,12 @@ class A2AAgentService:
             raise
         except Exception as e:
             # Check for duplicate key error
-            from pymongo.errors import DuplicateKeyError
-
             if isinstance(e, DuplicateKeyError) or "duplicate key" in str(e).lower():
                 # Extract the field that caused the conflict from update_data
                 new_path = update_data.get("path") if "path" in update_data else None
                 if new_path:
-                    normalized_path = new_path.strip("/").replace("/", "-")
-                    raise ValueError(
-                        f"An agent with path '{normalized_path}' already exists. "
-                        f"Please choose a different path. (Your input '{new_path}' was normalized to '{normalized_path}')"
-                    )
+                    normalized_path = normalize_a2a_agent_path(new_path)
+                    raise ValueError(self._path_conflict_message(new_path, normalized_path))
             logger.error(f"Error updating agent {agent_id}: {e}", exc_info=True)
             raise ValueError(f"Failed to update agent: {str(e)}")
 

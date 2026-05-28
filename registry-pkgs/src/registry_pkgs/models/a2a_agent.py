@@ -59,6 +59,7 @@ Storage Structure:
 
 import hashlib
 import logging
+import re
 from datetime import UTC, datetime
 from typing import Any, ClassVar
 
@@ -91,6 +92,21 @@ _A2A_PREFERRED_TRANSPORT_MAP: dict[str, str] = {
     "HTTP+JSON": TRANSPORT_HTTP_JSON,
     "JSONRPC": TRANSPORT_JSONRPC,
 }
+
+
+def normalize_a2a_agent_path(value: Any) -> str:
+    """Normalize user-provided A2A agent path input into a slash-free SEO slug."""
+    if value is None:
+        raise ValueError("A2A agent path is required")
+
+    raw_path = str(value).strip().lower()
+    normalized_path = re.sub(r"[^a-z0-9]+", "-", raw_path)
+    normalized_path = re.sub(r"-+", "-", normalized_path).strip("-")
+
+    if not normalized_path:
+        raise ValueError("A2A agent path must contain at least one letter or number and cannot be '/'")
+
+    return normalized_path
 
 
 def preferred_transport_to_config_type(preferred_transport: str) -> str:
@@ -233,14 +249,8 @@ class A2AAgent(Document):
         which should be caught and handled at the service/API layer with a proper HTTP 409 response.
         """
         if isinstance(data, dict) and "path" in data:
-            import re
-
-            original_path = data["path"]
-            # Strip leading/trailing slashes
-            normalized_path = original_path.strip("/")
-            # Replace one or more consecutive slashes with a single hyphen
-            normalized_path = re.sub(r"/+", "-", normalized_path)
-            data["path"] = normalized_path
+            data = dict(data)
+            data["path"] = normalize_a2a_agent_path(data["path"])
         return data
 
     # ========== Lifecycle Hooks ==========
@@ -572,4 +582,5 @@ __all__ = [
     "TRANSPORT_HTTP_JSON",
     "VALID_TRANSPORT_TYPES",
     "preferred_transport_to_config_type",
+    "normalize_a2a_agent_path",
 ]
