@@ -4,11 +4,46 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from beanie import PydanticObjectId
+from fastapi import HTTPException
 
-from registry.api.v1.a2a.agent_routes import create_agent, get_agent_stats, list_agents, update_agent
+from registry.api.v1.a2a.agent_routes import create_agent, delete_agent, get_agent_stats, list_agents, update_agent
 from registry.schemas.a2a_agent_api_schemas import AgentCreateRequest, AgentUpdateRequest
 from registry_pkgs.models import PrincipalType, ResourceType
 from registry_pkgs.models.enums import RoleBits
+
+
+class _RecordingTxnCtx:
+    def __init__(self):
+        self.exit_exc_type: object = "unset"
+
+    async def __aenter__(self):
+        return None
+
+    async def __aexit__(self, exc_type, exc, tb):
+        self.exit_exc_type = exc_type
+        return False  # do not suppress -> exception propagates out of @use_transaction
+
+
+class _FakeTxnSession:
+    def __init__(self, ctx: _RecordingTxnCtx):
+        self._ctx = ctx
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def start_transaction(self):
+        return self._ctx
+
+
+class _FakeTxnClient:
+    def __init__(self, session: _FakeTxnSession):
+        self._session = session
+
+    def start_session(self):
+        return self._session
 
 
 def _build_agent(agent_id: PydanticObjectId | None = None):
@@ -468,3 +503,72 @@ async def test_refresh_agent_capabilities_permission_denied():
 
     # Verify service was never called (permission check failed first)
     mock_a2a_agent_service.refresh_agent_capabilities.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_create_agent_rolls_back_when_grant_permission_fails(sample_user_context):
+    """AC4: if grant_permission fails after create_agent succeeds, the failure
+    propagates out of the @use_transaction boundary (rollback path), so the
+    agent insert is rolled back rather than left orphaned."""
+    agent = _build_agent()
+    a2a_agent_service = MagicMock()
+    a2a_agent_service.create_agent = AsyncMock(return_value=agent)
+
+    acl_service = MagicMock()
+    acl_service.grant_permission = AsyncMock(side_effect=RuntimeError("ACL write failed"))
+
+    request = AgentCreateRequest(
+        path="/test-agent",
+        title="Test Agent",
+        description="Agent description",
+        url="https://agent.example.com",
+        type="jsonrpc",
+    )
+
+    ctx = _RecordingTxnCtx()
+    fake_client = _FakeTxnClient(_FakeTxnSession(ctx))
+
+    with patch("registry_pkgs.database.decorators.MongoDB.get_client", return_value=fake_client):
+        with pytest.raises(HTTPException) as exc_info:
+            await create_agent(
+                data=request,
+                user_context=sample_user_context,
+                acl_service=acl_service,
+                a2a_agent_service=a2a_agent_service,
+            )
+
+    assert exc_info.value.status_code == 500
+    a2a_agent_service.create_agent.assert_awaited_once()
+    acl_service.grant_permission.assert_awaited_once()
+    # Transaction context manager exited via an exception -> rollback path taken.
+    assert ctx.exit_exc_type is HTTPException
+
+
+@pytest.mark.asyncio
+async def test_delete_agent_rolls_back_when_acl_cleanup_fails(sample_user_context):
+    agent_id = str(PydanticObjectId())
+
+    a2a_agent_service = MagicMock()
+    a2a_agent_service.delete_agent = AsyncMock(return_value=True)
+
+    acl_service = MagicMock()
+    acl_service.check_user_permission = AsyncMock(return_value=MagicMock())
+    acl_service.delete_acl_entries_for_resource = AsyncMock(side_effect=RuntimeError("ACL delete failed"))
+
+    ctx = _RecordingTxnCtx()
+    fake_client = _FakeTxnClient(_FakeTxnSession(ctx))
+
+    with patch("registry_pkgs.database.decorators.MongoDB.get_client", return_value=fake_client):
+        with pytest.raises(HTTPException) as exc_info:
+            await delete_agent(
+                agent_id=agent_id,
+                user_context=sample_user_context,
+                acl_service=acl_service,
+                a2a_agent_service=a2a_agent_service,
+            )
+
+    assert exc_info.value.status_code == 500
+    a2a_agent_service.delete_agent.assert_awaited_once()
+    acl_service.delete_acl_entries_for_resource.assert_awaited_once()
+    # Transaction context manager exited via an exception -> rollback path taken.
+    assert ctx.exit_exc_type is HTTPException

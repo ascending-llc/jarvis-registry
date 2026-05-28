@@ -1,20 +1,17 @@
 import { Dialog, Transition } from '@headlessui/react';
 import { XMarkIcon } from '@heroicons/react/24/outline';
 import type React from 'react';
-import { Fragment, useState } from 'react';
+import { Fragment } from 'react';
 
 import Content from './Content';
-import TokenModal from './TokenModal';
 
 interface SidebarProps {
   sidebarOpen: boolean;
   setSidebarOpen: (open: boolean) => void;
+  isSubPage: boolean;
 }
 
-const Sidebar: React.FC<SidebarProps> = ({ sidebarOpen, setSidebarOpen }) => {
-  const [showTokenModal, setShowTokenModal] = useState(false);
-  const [tokenData, setTokenData] = useState<any>(null);
-
+const Sidebar: React.FC<SidebarProps> = ({ sidebarOpen, setSidebarOpen, isSubPage }) => {
   return (
     <>
       {/* Mobile sidebar only */}
@@ -61,7 +58,7 @@ const Sidebar: React.FC<SidebarProps> = ({ sidebarOpen, setSidebarOpen }) => {
                   </Transition.Child>
 
                   <div className='flex grow flex-col gap-y-5 overflow-y-auto bg-[var(--jarvis-bg)] border-r border-[color:var(--jarvis-border)]'>
-                    <Content setSidebarOpen={setSidebarOpen} />
+                    <Content setSidebarOpen={setSidebarOpen} isSubPage={isSubPage} />
                   </div>
                 </Dialog.Panel>
               </Transition.Child>
@@ -74,20 +71,12 @@ const Sidebar: React.FC<SidebarProps> = ({ sidebarOpen, setSidebarOpen }) => {
       <div className='hidden md:block'>
         <div
           className={`fixed left-0 top-16 bottom-0 z-40 bg-[var(--jarvis-bg)] border-r border-[color:var(--jarvis-border)] overflow-y-auto overflow-x-hidden transition-all duration-300 ${
-            sidebarOpen ? 'w-[272px]' : 'w-16'
+            isSubPage ? 'w-16' : sidebarOpen ? 'w-[272px]' : 'w-16'
           }`}
         >
-          <Content
-            setTokenData={setTokenData}
-            setSidebarOpen={setSidebarOpen}
-            setShowTokenModal={setShowTokenModal}
-            sidebarOpen={sidebarOpen}
-          />
+          <Content setSidebarOpen={setSidebarOpen} sidebarOpen={!isSubPage && sidebarOpen} isSubPage={isSubPage} />
         </div>
       </div>
-
-      {/* Token Modal */}
-      <TokenModal tokenData={tokenData} showTokenModal={showTokenModal} setShowTokenModal={setShowTokenModal} />
     </>
   );
 };

@@ -27,6 +27,7 @@ from registry.schemas.workflow_api_schemas import (
     WorkflowRunListResponse,
     WorkflowRunTriggerRequest,
     WorkflowRunTriggerResponse,
+    WorkflowToggleRequest,
     WorkflowUpdateRequest,
     WorkflowVersionItem,
     WorkflowVersionListResponse,
@@ -394,6 +395,66 @@ async def delete_workflow(
         raise HTTPException(
             status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=create_error_detail(ErrorCode.INTERNAL_ERROR, "Internal server error while deleting workflow"),
+        )
+
+
+@router.post(
+    "/workflows/{workflow_id}/toggle",
+    response_model=WorkflowDetailResponse,
+    response_model_by_alias=True,
+    summary="Toggle Workflow Status",
+    description="Enable or disable a workflow",
+)
+@track_registry_operation("update", resource_type="workflow")
+async def toggle_workflow(
+    workflow_id: str,
+    data: WorkflowToggleRequest,
+    user_context: CurrentUser,
+    workflow_service: WorkflowService = Depends(get_workflow_service),
+    acl_service: ACLService = Depends(get_acl_service),
+):
+    """Toggle workflow enabled/disabled status"""
+
+    await acl_service.check_user_permission(
+        user_id=PydanticObjectId(user_context.get("user_id")),
+        resource_type=ExtendedResourceType.WORKFLOW,
+        resource_id=PydanticObjectId(workflow_id),
+        required_permission="EDIT",
+    )
+
+    try:
+        # Toggle workflow status
+        workflow = await workflow_service.toggle_workflow_status(
+            workflow_id=workflow_id,
+            enabled=data.enabled,
+        )
+
+        return convert_to_detail(workflow)
+
+    except ValueError as e:
+        error_msg = str(e)
+
+        # Check if workflow not found
+        if "not found" in error_msg.lower():
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail=create_error_detail(ErrorCode.RESOURCE_NOT_FOUND, error_msg),
+            )
+
+        # Other validation errors
+        raise HTTPException(
+            status_code=http_status.HTTP_400_BAD_REQUEST,
+            detail=create_error_detail(ErrorCode.INVALID_REQUEST, error_msg),
+        )
+
+    except HTTPException:
+        logger.exception("HTTPException in toggle_workflow")
+        raise
+    except Exception:
+        logger.exception("Error toggling workflow %s", workflow_id)
+        raise HTTPException(
+            status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=create_error_detail(ErrorCode.INTERNAL_ERROR, "Internal server error while toggling workflow"),
         )
 
 
