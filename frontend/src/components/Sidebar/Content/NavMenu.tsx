@@ -73,20 +73,16 @@ const filters = [
   { key: 'all', label: 'All', colorClass: 'bg-[var(--jarvis-card-muted)] text-[var(--jarvis-text)]' },
   {
     key: 'enabled',
-    label: 'Active',
+    label: 'Enabled',
     colorClass: 'bg-[var(--jarvis-success-soft)] text-[var(--jarvis-success-text)]',
   },
-  { key: 'disabled', label: 'Inactive', colorClass: 'bg-[var(--jarvis-card-muted)] text-[var(--jarvis-muted)]' },
-  {
-    key: 'unhealthy',
-    label: 'Issues',
-    colorClass: 'bg-[var(--jarvis-danger-soft)] text-[var(--jarvis-danger-text)]',
-  },
+  { key: 'disabled', label: 'Disabled', colorClass: 'bg-[var(--jarvis-card-muted)] text-[var(--jarvis-muted)]' },
 ];
 
 const NavMenu: React.FC<NavMenuProps> = ({ sidebarOpen, setSidebarOpen }) => {
   const [, setSearchParams] = useSearchParams();
-  const { stats, agentStats, federationStats, workflowStats, viewMode, setViewMode, activeFilter, setActiveFilter } = useServer();
+  const { stats, agentStats, federationStats, workflowStats, viewMode, setViewMode, activeFilter, setActiveFilter } =
+    useServer();
 
   const handleNavigation = (mode: 'servers' | 'agents' | 'workflow' | 'external') => {
     if (viewMode === mode) {
@@ -209,22 +205,18 @@ const NavMenu: React.FC<NavMenuProps> = ({ sidebarOpen, setSidebarOpen }) => {
               if (filter.key === 'all') count = stats.total;
               if (filter.key === 'enabled') count = stats.enabled;
               if (filter.key === 'disabled') count = stats.disabled;
-              if (filter.key === 'unhealthy') count = stats.withIssues;
             } else if (viewMode === 'agents') {
               if (filter.key === 'all') count = agentStats.total;
               if (filter.key === 'enabled') count = agentStats.enabled;
               if (filter.key === 'disabled') count = agentStats.disabled;
-              if (filter.key === 'unhealthy') count = agentStats.withIssues;
             } else if (viewMode === 'workflow') {
               if (filter.key === 'all') count = workflowStats.total;
               if (filter.key === 'enabled') count = workflowStats.enabled;
               if (filter.key === 'disabled') count = workflowStats.disabled;
-              if (filter.key === 'unhealthy') count = workflowStats.withIssues;
             } else if (viewMode === 'external' && federationStats) {
               if (filter.key === 'all') count = federationStats.total;
               if (filter.key === 'enabled') count = federationStats.enabled;
               if (filter.key === 'disabled') count = federationStats.disabled;
-              if (filter.key === 'unhealthy') count = federationStats.withIssues;
             }
 
             return (

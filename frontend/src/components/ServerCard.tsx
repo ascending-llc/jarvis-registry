@@ -370,31 +370,6 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
                   {server.enabled ? 'Enabled' : 'Disabled'}
                 </span>
               </div>
-
-              <div className='h-3 w-px bg-[color:var(--jarvis-border)]' />
-
-              <div className='flex items-center gap-1'>
-                <div
-                  className={`w-2.5 h-2.5 rounded-full ${
-                    server.status === 'active'
-                      ? 'bg-[var(--jarvis-success)] shadow-lg shadow-emerald-500/30'
-                      : server.status === 'inactive'
-                        ? 'bg-[var(--jarvis-warning)] shadow-lg shadow-amber-500/30'
-                        : server.status === 'error'
-                          ? 'bg-[var(--jarvis-danger)] shadow-lg shadow-red-500/30'
-                          : 'bg-[var(--jarvis-warning)] shadow-lg shadow-amber-500/30'
-                  }`}
-                />
-                <span className='max-w-[80px] truncate text-xs font-medium text-[var(--jarvis-muted)]'>
-                  {server.status === 'active'
-                    ? 'Active'
-                    : server.status === 'inactive'
-                      ? 'Inactive'
-                      : server.status === 'error'
-                        ? 'Error'
-                        : 'Unknown'}
-                </span>
-              </div>
             </div>
 
             {/* Controls */}

@@ -11,7 +11,6 @@ import WorkflowCard from '@/components/WorkflowCard';
 import { useServer } from '@/contexts/ServerContext';
 import { useSemanticSearch } from '@/hooks/useSemanticSearch';
 
-
 const RefreshGlyph: React.FC<{ className?: string }> = ({ className = '' }) => (
   <svg viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='1.8' className={className} aria-hidden='true'>
     <polyline points='23 4 23 10 17 10' />
@@ -326,10 +325,7 @@ const Dashboard: React.FC = () => {
                 }}
               >
                 {filteredWorkflows.map(workflow => (
-                  <WorkflowCard
-                    key={workflow.id}
-                    workflow={workflow}
-                  />
+                  <WorkflowCard key={workflow.id} workflow={workflow} />
                 ))}
               </div>
             )}
@@ -417,22 +413,22 @@ const Dashboard: React.FC = () => {
           </IconButton>
 
           <IconButton
-              ariaLabel='Register'
-              tooltip={
-                viewMode === 'agents'
-                  ? 'Register Agent'
-                  : viewMode === 'external'
-                    ? 'Register Provider'
-                    : viewMode === 'workflow'
-                      ? 'New Workflow'
-                      : 'Register Server'
-              }
-              onClick={handleRegister}
-              variant='solid'
-              className='rounded-lg h-10 w-10 flex items-center justify-center bg-[var(--jarvis-primary)] text-white hover:bg-[var(--jarvis-primary-hover)] shadow-sm transition-colors'
-            >
-              <PlusIcon className='h-5 w-5' />
-            </IconButton>
+            ariaLabel='Register'
+            tooltip={
+              viewMode === 'agents'
+                ? 'Register Agent'
+                : viewMode === 'external'
+                  ? 'Register Provider'
+                  : viewMode === 'workflow'
+                    ? 'New Workflow'
+                    : 'Register Server'
+            }
+            onClick={handleRegister}
+            variant='solid'
+            className='rounded-lg h-10 w-10 flex items-center justify-center bg-[var(--jarvis-primary)] text-white hover:bg-[var(--jarvis-primary-hover)] shadow-sm transition-colors'
+          >
+            <PlusIcon className='h-5 w-5' />
+          </IconButton>
         </div>
       </div>
 

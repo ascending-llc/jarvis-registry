@@ -101,11 +101,13 @@ const MainConfigForm: React.FC<MainConfigFormProps> = ({ formData, agentDetail, 
   };
 
   return (
-    <div className="space-y-8">
+    <div className='space-y-8'>
       {/* Section Network Configuration */}
       <section>
-        <h3 className="text-lg font-semibold text-[var(--jarvis-text-strong)] text-[var(--jarvis-text-strong)] mb-4">Network Configuration</h3>
-        <div className="space-y-6">
+        <h3 className='text-lg font-semibold text-[var(--jarvis-text-strong)] text-[var(--jarvis-text-strong)] mb-4'>
+          Network Configuration
+        </h3>
+        <div className='space-y-6'>
           {/* Agent URL */}
           <FormFields.InputField
             label='Agent URL'
@@ -126,15 +128,15 @@ const MainConfigForm: React.FC<MainConfigFormProps> = ({ formData, agentDetail, 
                 type='button'
                 onClick={() => handleTestUrl()}
                 disabled={isReadOnly || !formData.url}
-                className="btn-input-suffix"
+                className='btn-input-suffix'
                 title={isManualLoading ? 'Cancel test' : isReadOnly ? 'Discover Disabled' : 'Test URL'}
               >
                 {isManualLoading ? (
-                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-[color:var(--jarvis-border)]" />
+                  <div className='animate-spin rounded-full h-4 w-4 border-b-2 border-[color:var(--jarvis-border)]' />
                 ) : displayDiscoveredData ? (
-                  <HiCheckCircle className="h-5 w-5 text-[var(--jarvis-success-text)]" aria-hidden='true' />
+                  <HiCheckCircle className='h-5 w-5 text-[var(--jarvis-success-text)]' aria-hidden='true' />
                 ) : (
-                  <HiBolt className="h-5 w-5" aria-hidden='true' />
+                  <HiBolt className='h-5 w-5' aria-hidden='true' />
                 )}
               </button>
             }
@@ -161,8 +163,10 @@ const MainConfigForm: React.FC<MainConfigFormProps> = ({ formData, agentDetail, 
       </section>
 
       <section>
-        <h3 className="text-lg font-semibold text-[var(--jarvis-text-strong)] text-[var(--jarvis-text-strong)] mb-4">Basic Information</h3>
-        <div className="space-y-6">
+        <h3 className='text-lg font-semibold text-[var(--jarvis-text-strong)] text-[var(--jarvis-text-strong)] mb-4'>
+          Basic Information
+        </h3>
+        <div className='space-y-6'>
           {/* Title */}
           <FormFields.InputField
             label='Title'
@@ -207,15 +211,17 @@ const MainConfigForm: React.FC<MainConfigFormProps> = ({ formData, agentDetail, 
 
       {/* Agent Card (Discovered payload) */}
       <section>
-        <div className="flex items-center gap-3 mb-1">
-          <h3 className="text-lg font-semibold text-[var(--jarvis-text-strong)] text-[var(--jarvis-text-strong)] m-0">Agent Card</h3>
+        <div className='flex items-center gap-3 mb-1'>
+          <h3 className='text-lg font-semibold text-[var(--jarvis-text-strong)] text-[var(--jarvis-text-strong)] m-0'>
+            Agent Card
+          </h3>
           {displayDiscoveredData && !isSilentLoading && (
-            <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-[var(--jarvis-success-soft)] text-[var(--jarvis-success-text)] dark:bg-[var(--jarvis-surface)]">
+            <span className='inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-[var(--jarvis-success-soft)] text-[var(--jarvis-success-text)] dark:bg-[var(--jarvis-surface)]'>
               Discovered
             </span>
           )}
           {isSilentLoading && (
-            <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-[var(--jarvis-info-text)] dark:bg-[var(--jarvis-surface)]">
+            <span className='inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-[var(--jarvis-info-text)] dark:bg-[var(--jarvis-surface)]'>
               Discovering...
             </span>
           )}
@@ -224,42 +230,44 @@ const MainConfigForm: React.FC<MainConfigFormProps> = ({ formData, agentDetail, 
               type='button'
               onClick={() => handleTestUrl(true)}
               disabled={isManualLoading}
-              className="ml-auto text-xs text-[var(--jarvis-primary)] hover:text-[var(--jarvis-primary-text-hover)] hover:text-[var(--jarvis-primary-text-hover)] cursor-pointer disabled:opacity-50 flex items-center gap-1"
+              className='ml-auto text-xs text-[var(--jarvis-primary)] hover:text-[var(--jarvis-primary-text-hover)] hover:text-[var(--jarvis-primary-text-hover)] cursor-pointer disabled:opacity-50 flex items-center gap-1'
             >
               {isManualLoading ? 'Discovering...' : 'Re-discover'}
             </button>
           )}
         </div>
         {formData.url ? (
-          <div className="text-xs text-[var(--jarvis-muted)] text-[var(--jarvis-muted)] mb-4">
+          <div className='text-xs text-[var(--jarvis-muted)] text-[var(--jarvis-muted)] mb-4'>
             Auto-discovered from{' '}
-            <code className="px-1.5 py-0.5 bg-[var(--jarvis-card-muted)] bg-[var(--jarvis-card-muted)] rounded text-[var(--jarvis-primary)] text-[var(--jarvis-primary)]">
+            <code className='px-1.5 py-0.5 bg-[var(--jarvis-card-muted)] bg-[var(--jarvis-card-muted)] rounded text-[var(--jarvis-primary)] text-[var(--jarvis-primary)]'>
               {formData.url ? `${formData.url.replace(/\/$/, '')}/.well-known/agent.json` : ''}
             </code>
           </div>
         ) : (
-          <div className="text-xs text-[var(--jarvis-muted)] text-[var(--jarvis-muted)] mb-4">No data discovered</div>
+          <div className='text-xs text-[var(--jarvis-muted)] text-[var(--jarvis-muted)] mb-4'>No data discovered</div>
         )}
 
-        <div className="border border-[color:var(--jarvis-border)] border-[color:var(--jarvis-border)] rounded-lg overflow-hidden">
+        <div className='border border-[color:var(--jarvis-border)] border-[color:var(--jarvis-border)] rounded-lg overflow-hidden'>
           {displayDiscoveredData && (
-            <div className="flex items-center justify-between px-3 py-2 bg-[var(--jarvis-bg)] bg-[var(--jarvis-card)]/60 border-b border-[color:var(--jarvis-border)] border-[color:var(--jarvis-border)]">
-              <span className="text-xs font-mono text-[var(--jarvis-muted)] text-[var(--jarvis-muted)]">.well-known/agent.json</span>
-              <span className="text-xs font-mono text-[var(--jarvis-muted)] text-[var(--jarvis-muted)]">
+            <div className='flex items-center justify-between px-3 py-2 bg-[var(--jarvis-bg)] bg-[var(--jarvis-card)]/60 border-b border-[color:var(--jarvis-border)] border-[color:var(--jarvis-border)]'>
+              <span className='text-xs font-mono text-[var(--jarvis-muted)] text-[var(--jarvis-muted)]'>
+                .well-known/agent.json
+              </span>
+              <span className='text-xs font-mono text-[var(--jarvis-muted)] text-[var(--jarvis-muted)]'>
                 {getLineCount(JSON.stringify(displayDiscoveredData, null, 2))} lines
               </span>
             </div>
           )}
           {isSilentLoading || isManualLoading ? (
-            <div className="bg-[var(--jarvis-card)] bg-[var(--jarvis-card)]/50 p-8 flex items-center justify-center">
-              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-[var(--jarvis-primary)]" />
+            <div className='bg-[var(--jarvis-card)] bg-[var(--jarvis-card)]/50 p-8 flex items-center justify-center'>
+              <div className='animate-spin rounded-full h-8 w-8 border-b-2 border-[var(--jarvis-primary)]' />
             </div>
           ) : displayDiscoveredData ? (
-            <pre className="bg-[var(--jarvis-card)] bg-[var(--jarvis-card)]/50 text-[var(--jarvis-success-text)] font-mono text-xs leading-relaxed whitespace-pre overflow-x-auto p-4 m-0">
+            <pre className='bg-[var(--jarvis-card)] bg-[var(--jarvis-card)]/50 text-[var(--jarvis-success-text)] font-mono text-xs leading-relaxed whitespace-pre overflow-x-auto p-4 m-0'>
               {JSON.stringify(displayDiscoveredData, null, 2)}
             </pre>
           ) : (
-            <div className="bg-[var(--jarvis-card)] bg-[var(--jarvis-card)]/50 p-4" />
+            <div className='bg-[var(--jarvis-card)] bg-[var(--jarvis-card)]/50 p-4' />
           )}
         </div>
       </section>

@@ -37,7 +37,12 @@ export const RouterNodeProperties: React.FC<Props> = ({ node }) => {
           items={routerCases}
           onAdd={() => onRouterCasesChange(node.id, routerCases, [...routerCases, ''])}
           onRm={i =>
-            routerCases.length > 1 && onRouterCasesChange(node.id, routerCases, routerCases.filter((_, j) => j !== i))
+            routerCases.length > 1 &&
+            onRouterCasesChange(
+              node.id,
+              routerCases,
+              routerCases.filter((_, j) => j !== i),
+            )
           }
           onChange={(i, val) => {
             const next = [...routerCases];
