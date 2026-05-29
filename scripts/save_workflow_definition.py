@@ -151,7 +151,7 @@ async def _active_executor_keys() -> tuple[list[str], list[str], list[A2AAgent]]
     mcp_servers = await ExtendedMCPServer.find({"config.enabled": True}).to_list()
     a2a_agents = await A2AAgent.find({"isEnabled": True}).to_list()
     mcp_keys = sorted(server.serverName for server in mcp_servers)
-    a2a_keys = sorted(agent.path.lstrip("/") for agent in a2a_agents)
+    a2a_keys = sorted(agent.path for agent in a2a_agents)
     return mcp_keys, a2a_keys, a2a_agents
 
 
@@ -200,10 +200,10 @@ async def _print_node_agent_details(nodes: list[WorkflowNode]) -> None:
     referenced_paths: set[str] = set()
     for node in nodes:
         if node.executor_key:
-            referenced_paths.add(f"/{node.executor_key.strip('/')}")
+            referenced_paths.add(node.executor_key.strip("/"))
         if node.a2a_pool:
             for key in node.a2a_pool:
-                referenced_paths.add(f"/{key.strip('/')}")
+                referenced_paths.add(key.strip("/"))
 
     if not referenced_paths:
         return

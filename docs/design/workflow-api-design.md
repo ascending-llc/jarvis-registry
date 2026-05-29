@@ -390,7 +390,7 @@ node type does not use them. This lets clients access any field without null che
 - This two-step process (create → enable) ensures workflows are reviewed and verified before execution
 
 **Error**:
-- `400` Validation error (invalid node structure, duplicate node names in router, etc.)
+- `400` Validation error (invalid node structure, duplicate node names in router, unknown `executorKey`, or unresolvable `a2aPool` agent path)
 - `500` Internal server error
 
 ---
@@ -544,7 +544,7 @@ node type does not use them. This lets clients access any field without null che
 ```
 
 **Error**:
-- `400` Validation error or invalid workflow ID
+- `400` Validation error or invalid workflow ID (invalid node structure, duplicate node names in router, unknown `executorKey`, or unresolvable `a2aPool` agent path)
 - `404` Workflow not found
 - `500` Internal server error
 

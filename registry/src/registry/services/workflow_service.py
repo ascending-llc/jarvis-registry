@@ -7,6 +7,7 @@ This service handles all workflow-related operations using MongoDB and Beanie OD
 import hashlib
 import logging
 import re
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
@@ -18,7 +19,9 @@ from pymongo.errors import DuplicateKeyError
 
 from registry_pkgs.database.decorators import get_current_session, use_transaction
 from registry_pkgs.database.mongodb import MongoDB
-from registry_pkgs.models.enums import WorkflowRunStatus
+from registry_pkgs.models.a2a_agent import A2AAgent
+from registry_pkgs.models.enums import WorkflowNodeType, WorkflowRunStatus
+from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 from registry_pkgs.models.workflow import (
     HumanReviewSpec,
     LoopConfig,
@@ -37,6 +40,8 @@ from registry_pkgs.models.workflow import (
 from ..schemas.workflow_api_schemas import WorkflowCreateRequest, WorkflowUpdateRequest
 
 logger = logging.getLogger(__name__)
+
+_BUILTIN_EXECUTOR_KEYS = {"echo", "set_value"}
 
 
 def _convert_human_review(api_human_review: Any) -> HumanReviewSpec | None:
@@ -84,6 +89,61 @@ class WorkflowService:
     def _checksum(definition_json: str) -> str:
         """Return the sha256 hex digest of a definition's JSON serialization."""
         return hashlib.sha256(definition_json.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _iter_nodes(nodes: list[WorkflowNode]) -> Iterator[WorkflowNode]:
+        """Yield every node in a workflow tree, including nested branches."""
+        for node in nodes:
+            yield node
+            yield from WorkflowService._iter_nodes(node.children)
+            yield from WorkflowService._iter_nodes(node.true_steps)
+            yield from WorkflowService._iter_nodes(node.false_steps)
+            for choice in node.choices:
+                yield from WorkflowService._iter_nodes(choice.steps)
+
+    async def _validate_executor_refs(self, nodes: list[WorkflowNode]) -> None:
+        """Ensure workflow executor references resolve before saving the definition."""
+        executor_keys: set[str] = set()
+        pool_paths: set[str] = set()
+
+        for node in self._iter_nodes(nodes):
+            if node.node_type != WorkflowNodeType.STEP:
+                continue
+            if node.executor_key:
+                executor_keys.add(node.executor_key.lstrip("/"))
+            if node.a2a_pool:
+                pool_paths.update(path.lstrip("/") for path in node.a2a_pool)
+
+        executor_keys_to_check = executor_keys - _BUILTIN_EXECUTOR_KEYS
+        matched_mcp_keys: set[str] = set()
+        if executor_keys_to_check:
+            mcp_servers = await ExtendedMCPServer.find(
+                {"serverName": {"$in": sorted(executor_keys_to_check)}, "config.enabled": True}
+            ).to_list()
+            matched_mcp_keys = {server.serverName for server in mcp_servers}
+
+        unmatched_executor_keys = executor_keys_to_check - matched_mcp_keys
+        matched_a2a_executor_keys: set[str] = set()
+        if unmatched_executor_keys:
+            a2a_agents = await A2AAgent.find(
+                {"path": {"$in": sorted(unmatched_executor_keys)}, "isEnabled": True}
+            ).to_list()
+            matched_a2a_executor_keys = {agent.path for agent in a2a_agents}
+
+        unknown_executor_keys = unmatched_executor_keys - matched_a2a_executor_keys
+        if unknown_executor_keys:
+            key = sorted(unknown_executor_keys)[0]
+            raise HTTPException(status_code=400, detail=f"Unknown executor key: {key!r}")
+
+        if not pool_paths:
+            return
+
+        pool_agents = await A2AAgent.find({"path": {"$in": sorted(pool_paths)}, "isEnabled": True}).to_list()
+        matched_pool_paths = {agent.path for agent in pool_agents}
+        unknown_pool_paths = pool_paths - matched_pool_paths
+        if unknown_pool_paths:
+            path = sorted(unknown_pool_paths)[0]
+            raise HTTPException(status_code=400, detail=f"Unknown a2aPool agent path: {path!r}")
 
     async def list_workflows(
         self,
@@ -186,6 +246,7 @@ class WorkflowService:
         try:
             # Convert API nodes to model nodes
             nodes = [self._convert_api_node_to_model(node) for node in data.nodes]
+            await self._validate_executor_refs(nodes)
 
             # Create workflow definition
             # Always set enabled to False during creation (regardless of frontend input)
@@ -260,9 +321,9 @@ class WorkflowService:
                 update_fields["canvas"] = self._convert_api_canvas_to_model(data.canvas).model_dump(mode="json")
 
             if data.nodes is not None:
-                update_fields["nodes"] = [
-                    self._convert_api_node_to_model(node).model_dump(mode="json") for node in data.nodes
-                ]
+                nodes = [self._convert_api_node_to_model(node) for node in data.nodes]
+                await self._validate_executor_refs(nodes)
+                update_fields["nodes"] = [node.model_dump(mode="json") for node in nodes]
 
             if data.enabled is not None:
                 update_fields["enabled"] = data.enabled
