@@ -12,8 +12,8 @@ from beanie import PydanticObjectId
 
 from registry_pkgs.models import A2AAgent
 from registry_pkgs.models.a2a_agent import (
+    TRANSPORT_JSONRPC,
     AgentConfig,
-    preferred_transport_to_config_type,
 )
 from registry_pkgs.models.enums import FederationProviderType
 from registry_pkgs.models.federation import AzureAiFoundryProviderConfig
@@ -134,7 +134,7 @@ class AzureFoundryDiscoveryClient:
     def _is_a2a_enabled(detail: Any) -> bool:
         endpoint = getattr(detail, "agent_endpoint", None)
         protocols = getattr(endpoint, "protocols", None) or []
-        return any(str(p).lower() == A2A_PROTOCOL_VALUE for p in protocols)
+        return any(str(getattr(p, "value", p)).lower() == A2A_PROTOCOL_VALUE for p in protocols)
 
     @staticmethod
     def _matches_metadata_filter(detail: Any, required: dict[str, str]) -> bool:
@@ -185,7 +185,8 @@ class AzureFoundryDiscoveryClient:
         endpoint = getattr(detail, "agent_endpoint", None)
         authorization_schemes = self._serialize_authorization_schemes(endpoint)
         embedded_card = self._embedded_card_payload(detail)
-        skills = embedded_card.get("skills") or []
+
+        skills = [{"tags": [], **s} for s in (embedded_card.get("skills") or []) if isinstance(s, dict)]
         description = embedded_card.get("description") or latest.get("description") or ""
 
         card_data: dict[str, Any] = {
@@ -198,7 +199,6 @@ class AzureFoundryDiscoveryClient:
             "defaultInputModes": ["text"],
             "defaultOutputModes": ["text"],
             "skills": skills,
-            "preferredTransport": "JSONRPC",
         }
 
         return A2AAgent.from_a2a_agent_card(
@@ -209,7 +209,9 @@ class AzureFoundryDiscoveryClient:
                 title=name,
                 description=description or f"Azure Foundry agent {name}",
                 url=a2a_base_url,
-                type=preferred_transport_to_config_type("JSONRPC"),
+                # A Foundry A2A endpoint serves both JSONRPC and HTTP+JSON at the
+                # same URL; we use JSONRPC (its advertised preferredTransport).
+                type=TRANSPORT_JSONRPC,
             ),
             isEnabled=is_ready,
             status="active" if is_ready else "inactive",
@@ -218,9 +220,6 @@ class AzureFoundryDiscoveryClient:
             registeredAt=datetime.now(UTC),
             federationMetadata={
                 "providerType": FederationProviderType.AZURE_AI_FOUNDRY.value,
-                # D2: write the agent name to runtimeArn so the existing
-                # vector-rebuild query keyed by federationMetadata.runtimeArn
-                # also matches Azure resources.
                 "runtimeArn": name,
                 "agentName": name,
                 "agentVersion": version,
@@ -281,7 +280,7 @@ class AzureFoundryDiscoveryClient:
             or AgentConfig(
                 title=fallback.get("name", agent.card.name),
                 description=fallback.get("description", "") or "",
-                type=preferred_transport_to_config_type("JSONRPC"),
+                type=TRANSPORT_JSONRPC,
             ),
             isEnabled=agent.isEnabled,
             status=agent.status,
@@ -295,8 +294,9 @@ class AzureFoundryDiscoveryClient:
 
         agent.card = refreshed.card
         if agent.config is not None:
-            preferred = str(getattr(agent.card, "preferred_transport", None) or "JSONRPC").upper()
-            agent.config.type = preferred_transport_to_config_type(preferred)
+            # No transport derivation needed: a Foundry A2A endpoint serves both
+            # JSONRPC and HTTP+JSON at the same URL, so config.type stays as set in
+            # _transform_to_a2a_agent (JSONRPC). Only the URL is refreshed here.
             agent.config.url = a2a_base_url
 
         if agent.wellKnown is not None:
