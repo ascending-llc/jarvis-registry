@@ -257,7 +257,7 @@ class WorkflowService:
                 update_fields["description"] = data.description
 
             if data.canvas is not None:
-                update_fields["canvas"] = self._convert_api_canvas_to_model(data.canvas)
+                update_fields["canvas"] = self._convert_api_canvas_to_model(data.canvas).model_dump(mode="json")
 
             if data.nodes is not None:
                 update_fields["nodes"] = [
