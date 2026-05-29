@@ -297,45 +297,45 @@ def get_tools() -> list[tuple[str, Callable]]:
         2. execute_agent(agent_id='…', message={parts: [...]})
         3. Return the agent's response to the user.
 
-        Choosing a part type:
-        - Check the agent's description from discover_agents first — if it includes
-          an Input Schema, use DataPart with fields matching that schema.
-        - If no Input Schema is present, use a single TextPart with a natural-language
-          instruction.
-        - Use FilePart to pass file content — URI reference for large files,
-          inline base64 only for small payloads.
+        Message parts (combinable, include as many as the agent needs based on the requirements and functions of the agent):
 
-        Message parts:
+        kind="text":
+            Natural language instruction or context. Use for task descriptions,
+            prompts, and any free-text input. Always valid.
 
-        kind="text"  — natural language instruction or context (most common)
-        kind="data"  — structured parameters matching the agent's Input Schema
-        kind="file"  — file by URI reference or inline base64
+        kind="data":
+            Structured JSON parameters. Use when your input is structured data such as:
+            named fields, key-value pairs, or objects, rather than a natural-language
+            description. If the agent's description (from discover_agents) explicitly
+            defines expected fields or a parameter schema, use those field names and
+            types exactly as described.
 
-        Examples by part type:
+        kind="file":
+            A file by URI reference (preferred for large content) or inline
+            base64 (small payloads only).
 
-        kind="text"  — natural language instruction
-            message={"parts": [{"kind": "text", "text": "Summarize the report."}]}
+        Parts combine freely in a single message. Lead with DataPart or FilePart when
+        relevant, and add a TextPart for any additional instruction or context.
 
-        kind="data"  — structured parameters matching the agent's Input Schema
-            message={"parts": [{"kind": "data", "data": {"month": "2024-01", "region": "us-east"}}]}
+        Examples:
 
-        kind="file"  — URI reference (preferred for large files)
-            message={"parts": [{"kind": "file", "file": {"name": "report.json", "mimeType": "application/json", "uri": "s3://bucket/file.json"}}]}
+        Text only (default):
+            message={"parts": [{"kind": "text", "text": "Summarize Q1 sales trends."}]}
 
-        kind="file"  — inline base64 (small files only)
+        Structured data with a text instruction:
+            message={"parts": [
+              {"kind": "data", "data": {"month": "2024-01", "region": "us-east"}},
+              {"kind": "text", "text": "Summarize spending by category."}
+            ]}
+
+        File by URI with a text instruction:
+            message={"parts": [
+              {"kind": "file", "file": {"name": "report.json", "mimeType": "application/json", "uri": "s3://bucket/report.json"}},
+              {"kind": "text", "text": "Analyze this report and highlight anomalies."}
+            ]}
+
+        File inline base64 (small files only):
             message={"parts": [{"kind": "file", "file": {"name": "data.csv", "mimeType": "text/csv", "bytes": "<base64>"}}]}
-
-        Combining parts — structured data plus a text instruction:
-            message={"parts": [
-              {"kind": "data", "data": {"month": "2024-01"}},
-              {"kind": "text", "text": "Summarize spending by category"}
-            ]}
-
-        Combining parts — file plus a text instruction:
-            message={"parts": [
-              {"kind": "file", "file": {"uri": "s3://bucket/report.pdf", "mimeType": "application/pdf"}},
-              {"kind": "text", "text": "Summarize the key findings from this report."}
-            ]}
 
         Targeting a specific skill — include the skill name in a TextPart:
             message={"parts": [{"kind": "text", "text": "Use the code-review skill to review this PR: <url>"}]}"""
