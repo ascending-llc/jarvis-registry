@@ -290,69 +290,69 @@ def get_tools() -> list[tuple[str, Callable]]:
     ) -> CallToolResult:
         """Invoke an A2A agent by its agent_id and receive its response.
 
-        Use this after discover_agents to delegate a complex task to the selected agent.
-        The agent runs autonomously and returns its final result.
+                Use this after discover_agents to delegate a complex task to the selected agent.
+                The agent runs autonomously and returns its final result.
 
-        Streaming: partial responses are sent as MCP log notifications during execution.
+                Streaming: partial responses are sent as MCP log notifications during execution.
 
-        Error handling:
-        - Invalid or unknown agent_id → isError=True with a retry hint; call discover_agents again.
-        - Agent invocation failure → isError=True with the error message; consider retrying
-          or trying a different agent.
+                Error handling:
+                - Invalid or unknown agent_id → isError=True with a retry hint; call discover_agents again.
+                - Agent invocation failure → isError=True with the error message; consider retrying
+                  or trying a different agent.
 
-        Workflow:
-        1. discover_agents(query='…') → pick agent_id from results
-        2. execute_agent(agent_id='…', message={parts: [...]})
-        3. Return the agent's response to the user.
+                Workflow:
+                1. discover_agents(query='…') → pick agent_id from results
+                2. execute_agent(agent_id='…', message={parts: [...]})
+                3. Return the agent's response to the user.
 
-<<<<<<< HEAD
-        Message parts:
-=======
-        Message Format:
-        The `message` field accepts plain text (default) or a JSON-serialized payload
-        with typed parts. The agent's description from discover_agents will tell you
-        which format to use. The field is capped at 8192 characters — prefer URI file
-        parts over inline base64 for anything beyond a few hundred bytes.
->>>>>>> 8257d9b7 (type validation and prompt consideration for larger files and size limits)
+        <<<<<<< HEAD
+                Message parts:
+        =======
+                Message Format:
+                The `message` field accepts plain text (default) or a JSON-serialized payload
+                with typed parts. The agent's description from discover_agents will tell you
+                which format to use. The field is capped at 8192 characters — prefer URI file
+                parts over inline base64 for anything beyond a few hundred bytes.
+        >>>>>>> 8257d9b7 (type validation and prompt consideration for larger files and size limits)
 
-        kind="text"  — natural language instruction or context (most common)
-            {"kind": "text", "text": "Summarize the attached data by category"}
+                kind="text"  — natural language instruction or context (most common)
+                    {"kind": "text", "text": "Summarize the attached data by category"}
 
-        kind="data"  — structured parameters matching the agent's input schema
-            {"kind": "data", "data": {"month": "2024-01", "region": "us-east"}}
+                kind="data"  — structured parameters matching the agent's input schema
+                    {"kind": "data", "data": {"month": "2024-01", "region": "us-east"}}
 
-<<<<<<< HEAD
-        kind="file"  — file by URI reference (preferred for large content)
-=======
-            {
-              "messageId": "<uuid>",  (omit to auto-generate; required on the wire per A2A spec)
-              "parts": [...]          (required — one or more Part objects below)
-            }
+        <<<<<<< HEAD
+                kind="file"  — file by URI reference (preferred for large content)
+        =======
+                    {
+                      "messageId": "<uuid>",  (omit to auto-generate; required on the wire per A2A spec)
+                      "parts": [...]          (required — one or more Part objects below)
+                    }
 
-            Part types:
+                    Part types:
 
-            kind: "text"  — natural language instruction or context
-            {"kind": "text", "text": "Summarize the results"}
+                    kind: "text"  — natural language instruction or context
+                    {"kind": "text", "text": "Summarize the results"}
 
-            kind: "data"  — structured parameters matching the agent's input schema
-            {"kind": "data", "data": {"key": "value"}}
+                    kind: "data"  — structured parameters matching the agent's input schema
+                    {"kind": "data", "data": {"key": "value"}}
 
-            kind: "file"  — file by URI reference (recommended) or inline base64 (small files only)
->>>>>>> 8257d9b7 (type validation and prompt consideration for larger files and size limits)
-            {"kind": "file", "file": {"name": "report.json", "mimeType": "application/json", "uri": "s3://bucket/file.json"}}
-            {"kind": "file", "file": {"name": "report.csv", "mimeType": "text/csv", "bytes": "<base64>"}}
+                    kind: "file"  — file by URI reference (recommended) or inline base64 (small files only)
+        >>>>>>> 8257d9b7 (type validation and prompt consideration for larger files and size limits)
+                    {"kind": "file", "file": {"name": "report.json", "mimeType": "application/json", "uri": "s3://bucket/file.json"}}
+                    {"kind": "file", "file": {"name": "report.csv", "mimeType": "text/csv", "bytes": "<base64>"}}
 
-        kind="file"  — inline base64 (small files only)
-            {"kind": "file", "file": {"name": "data.csv", "mimeType": "text/csv", "bytes": "<base64>"}}
+                kind="file"  — inline base64 (small files only)
+                    {"kind": "file", "file": {"name": "data.csv", "mimeType": "text/csv", "bytes": "<base64>"}}
 
-        Parts can be combined. Example — structured data plus a text instruction:
-            message={"parts": [
-              {"kind": "data", "data": {"month": "2024-01"}},
-              {"kind": "text", "text": "Summarize spending by category"}
-            ]}
+                Parts can be combined. Example — structured data plus a text instruction:
+                    message={"parts": [
+                      {"kind": "data", "data": {"month": "2024-01"}},
+                      {"kind": "text", "text": "Summarize spending by category"}
+                    ]}
 
-        Default (text only):
-            message={"parts": [{"kind": "text", "text": "Run a full code review of this PR."}]}"""
+                Default (text only):
+                    message={"parts": [{"kind": "text", "text": "Run a full code review of this PR."}]}"""
         return await execute_agent_impl(agent_id, message, ctx)
 
     return [("execute_agent", execute_agent)]
