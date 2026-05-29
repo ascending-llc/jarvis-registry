@@ -109,17 +109,27 @@ new_row = f"| [{tag}]({slug}.md) | {date_str} | {tag_label} | {description} |\n"
 
 if index_path.exists():
     content = index_path.read_text(encoding="utf-8")
-    # Find the header separator row of the table and insert after it
-    # Table pattern:  | --- | --- | --- | --- |
-    table_sep_re = re.compile(r"(\| *[-:]+ *\| *[-:]+ *\| *[-:]+ *\| *[-:]+ *\|\n)")
-    match = table_sep_re.search(content)
-    if match:
-        insert_pos = match.end()
-        content = content[:insert_pos] + new_row + content[insert_pos:]
+    # Idempotency: if a row for this tag already exists, replace it in place
+    # so re-runs of the workflow don't accumulate duplicate rows.
+    existing_row_re = re.compile(
+        rf"^\| *\[{re.escape(tag)}\]\([^)]+\) *\|.*\|\n",
+        re.MULTILINE,
+    )
+    if existing_row_re.search(content):
+        content = existing_row_re.sub(new_row, content, count=1)
+        print(f"✅  Replaced existing row for {tag} in {index_path}")
     else:
-        content = content.rstrip("\n") + "\n" + new_row
+        # Find the header separator row of the table and insert after it.
+        # Table pattern:  | --- | --- | --- | --- |
+        table_sep_re = re.compile(r"(\| *[-:]+ *\| *[-:]+ *\| *[-:]+ *\| *[-:]+ *\|\n)")
+        match = table_sep_re.search(content)
+        if match:
+            insert_pos = match.end()
+            content = content[:insert_pos] + new_row + content[insert_pos:]
+        else:
+            content = content.rstrip("\n") + "\n" + new_row
+        print(f"✅  Updated {index_path}")
     index_path.write_text(content, encoding="utf-8")
-    print(f"✅  Updated {index_path}")
 else:
     # Bootstrap the index from scratch
     index_content = (
@@ -139,6 +149,18 @@ if not mkdocs_path.exists():
     sys.exit(0)
 
 mkdocs_text = mkdocs_path.read_text(encoding="utf-8")
+
+# Idempotency: if a nav entry for this tag already exists, leave it alone.
+# The slug path is stable for a given tag, so the existing entry is correct.
+existing_nav_re = re.compile(
+    rf"^[ \t]+-[ \t]+{re.escape(tag)}:[ \t]+changelog/{re.escape(slug)}\.md[ \t]*\n",
+    re.MULTILINE,
+)
+if existing_nav_re.search(mkdocs_text):
+    print(f"ℹ️  Nav entry for {tag} already present in mkdocs.yml — skipping")
+    mkdocs_path.write_text(mkdocs_text, encoding="utf-8")
+    print("Done.")
+    sys.exit(0)
 
 changelog_section_re = re.compile(
     r"- Changelog:\s*\n"  # section header
