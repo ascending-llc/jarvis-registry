@@ -50,6 +50,7 @@ def _make_ctx(
     lifespan_context = SimpleNamespace(
         jwt_signing_config=jwt_config or SimpleNamespace(),
         a2a_httpx_client=a2a_httpx_client,
+        a2a_headers_provider=MagicMock(),
         acl_service=acl_service,
     )
     request_state = SimpleNamespace(user={"user_id": user_id})
@@ -249,7 +250,7 @@ async def test_execute_agent_on_chunk_calls_ctx_log():
     valid_id = str(PydanticObjectId())
     agent = _make_agent(valid_id)
 
-    async def fake_call_a2a(agent_obj, text, *, jwt_config, on_chunk=None, httpx_client=None):
+    async def fake_call_a2a(agent_obj, text, *, jwt_config, on_chunk=None, httpx_client=None, headers_provider=None):
         if on_chunk:
             await on_chunk("chunk1")
             await on_chunk("chunk2")
