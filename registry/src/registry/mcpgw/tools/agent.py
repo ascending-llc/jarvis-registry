@@ -31,8 +31,6 @@ from ..core.types import McpAppContext
 
 logger = logging.getLogger(__name__)
 
-_AGENT_INVOKE_LOGGER = "execute_agent"
-
 
 def _file_to_resource(f: FileWithBytes | FileWithUri) -> EmbeddedResource | None:
     """Convert one A2A file payload to an MCP EmbeddedResource. None for unsupported."""
@@ -238,15 +236,11 @@ async def execute_agent_impl(
         parts=[Part(root=p) for p in message.parts],
     )
 
-    async def on_chunk(chunk: str) -> None:
-        await ctx.log("info", chunk, logger_name=_AGENT_INVOKE_LOGGER)
-
     logger.info("execute_agent: invoking agent_id=%s path=%s", agent_id, agent.path)
     result = await call_a2a(
         agent,
         a2a_message,
         jwt_config=lifespan.jwt_signing_config,
-        on_chunk=on_chunk,
         httpx_client=lifespan.a2a_httpx_client,
     )
     if not result.success:
@@ -290,69 +284,35 @@ def get_tools() -> list[tuple[str, Callable]]:
     ) -> CallToolResult:
         """Invoke an A2A agent by its agent_id and receive its response.
 
-                Use this after discover_agents to delegate a complex task to the selected agent.
-                The agent runs autonomously and returns its final result.
+        Use this after discover_agents to delegate a complex task to the selected agent.
+        The agent runs autonomously and returns its final result.
 
-                Streaming: partial responses are sent as MCP log notifications during execution.
+        Error handling:
+        - Invalid or unknown agent_id → isError=True with a retry hint; call discover_agents again.
+        - Agent invocation failure → isError=True with the error message; consider retrying
+          or trying a different agent.
 
-                Error handling:
-                - Invalid or unknown agent_id → isError=True with a retry hint; call discover_agents again.
-                - Agent invocation failure → isError=True with the error message; consider retrying
-                  or trying a different agent.
+        Workflow:
+        1. discover_agents(query='…') → pick agent_id from results
+        2. execute_agent(agent_id='…', message={parts: [...]})
+        3. Return the agent's response to the user.
 
-                Workflow:
-                1. discover_agents(query='…') → pick agent_id from results
-                2. execute_agent(agent_id='…', message={parts: [...]})
-                3. Return the agent's response to the user.
+        Choosing a part type:
+        - Check the agent's description from discover_agents first — if it includes
+          an Input Schema, use DataPart with fields matching that schema.
+        - If no Input Schema is present, use a single TextPart with a natural-language
+          instruction.
+        - Use FilePart to pass file content — URI reference for large files,
+          inline base64 only for small payloads.
 
-        <<<<<<< HEAD
-                Message parts:
-        =======
-                Message Format:
-                The `message` field accepts plain text (default) or a JSON-serialized payload
-                with typed parts. The agent's description from discover_agents will tell you
-                which format to use. The field is capped at 8192 characters — prefer URI file
-                parts over inline base64 for anything beyond a few hundred bytes.
-        >>>>>>> 8257d9b7 (type validation and prompt consideration for larger files and size limits)
+        Message parts:
 
-                kind="text"  — natural language instruction or context (most common)
-                    {"kind": "text", "text": "Summarize the attached data by category"}
+        kind="text"  — natural language instruction or context (most common)
+        kind="data"  — structured parameters matching the agent's Input Schema
+        kind="file"  — file by URI reference or inline base64
 
-                kind="data"  — structured parameters matching the agent's input schema
-                    {"kind": "data", "data": {"month": "2024-01", "region": "us-east"}}
-
-        <<<<<<< HEAD
-                kind="file"  — file by URI reference (preferred for large content)
-        =======
-                    {
-                      "messageId": "<uuid>",  (omit to auto-generate; required on the wire per A2A spec)
-                      "parts": [...]          (required — one or more Part objects below)
-                    }
-
-                    Part types:
-
-                    kind: "text"  — natural language instruction or context
-                    {"kind": "text", "text": "Summarize the results"}
-
-                    kind: "data"  — structured parameters matching the agent's input schema
-                    {"kind": "data", "data": {"key": "value"}}
-
-                    kind: "file"  — file by URI reference (recommended) or inline base64 (small files only)
-        >>>>>>> 8257d9b7 (type validation and prompt consideration for larger files and size limits)
-                    {"kind": "file", "file": {"name": "report.json", "mimeType": "application/json", "uri": "s3://bucket/file.json"}}
-                    {"kind": "file", "file": {"name": "report.csv", "mimeType": "text/csv", "bytes": "<base64>"}}
-
-                kind="file"  — inline base64 (small files only)
-                    {"kind": "file", "file": {"name": "data.csv", "mimeType": "text/csv", "bytes": "<base64>"}}
-
-                Parts can be combined. Example — structured data plus a text instruction:
-                    message={"parts": [
-                      {"kind": "data", "data": {"month": "2024-01"}},
-                      {"kind": "text", "text": "Summarize spending by category"}
-                    ]}
-
-                Default (text only):
-                    message={"parts": [{"kind": "text", "text": "Run a full code review of this PR."}]}"""
+        Example (text only):
+            message={"parts": [{"kind": "text", "text": "Run a full code review of this PR."}]}"""
         return await execute_agent_impl(agent_id, message, ctx)
 
     return [("execute_agent", execute_agent)]
