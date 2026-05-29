@@ -57,6 +57,7 @@ from beanie import PydanticObjectId
 from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.models.enums import WorkflowRunStatus
 from registry_pkgs.models.workflow import NodeRun, WorkflowDefinition, WorkflowRun
+from registry_pkgs.workflows.a2a_client import HeadersProvider
 from registry_pkgs.workflows.compiler import StepExecutor, compile_workflow, flatten_workflow_nodes
 from registry_pkgs.workflows.control import DirectiveQueue, WorkflowCancelledError
 from registry_pkgs.workflows.executor_resolver import build_executor_registry
@@ -94,6 +95,7 @@ class WorkflowRunner:
         selector_llm: Model | None = None,
         directive_queue: DirectiveQueue | None = None,
         a2a_httpx_client: httpx.AsyncClient | None = None,
+        headers_provider: HeadersProvider | None = None,
     ) -> None:
         if db_client is None:
             raise ValueError("WorkflowRunner requires db_client")
@@ -110,6 +112,7 @@ class WorkflowRunner:
         # with pause/cancel/retry-backoff logic via with_control().
         self._directive_queue = directive_queue
         self._a2a_httpx_client = a2a_httpx_client
+        self._headers_provider = headers_provider
 
     async def run(
         self,
@@ -225,6 +228,7 @@ class WorkflowRunner:
             pool_nodes=pool_nodes,
             selector_llm=self._selector_llm,
             a2a_httpx_client=self._a2a_httpx_client,
+            headers_provider=self._headers_provider,
         )
 
     async def continue_run(

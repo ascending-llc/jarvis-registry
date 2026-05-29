@@ -5,8 +5,14 @@ from typing import Any
 
 from registry.services.federation.agentcore_discovery import AgentCoreFederationClient
 from registry.services.federation.agentcore_runtime import AgentCoreRuntimeInvoker
+from registry.services.federation.azure_foundry_auth import AzureFoundryAuthService
+from registry.services.federation.azure_foundry_discovery import AzureFoundryDiscoveryClient
 from registry_pkgs.models.enums import FederationProviderType
-from registry_pkgs.models.federation import AwsAgentCoreProviderConfig, Federation
+from registry_pkgs.models.federation import (
+    AwsAgentCoreProviderConfig,
+    AzureAiFoundryProviderConfig,
+    Federation,
+)
 
 from ...core.config import settings
 
@@ -78,3 +84,23 @@ class AwsAgentCoreSyncHandler(BaseFederationSyncHandler):
                 region=region,
                 assume_role_arn=assume_role_arn,
             )
+
+
+class AzureAiFoundrySyncHandler(BaseFederationSyncHandler):
+    provider_type = FederationProviderType.AZURE_AI_FOUNDRY
+
+    def __init__(
+        self,
+        discovery_client: AzureFoundryDiscoveryClient | None = None,
+    ):
+        self.discovery_client = discovery_client or AzureFoundryDiscoveryClient()
+
+    async def discover_entities(self, federation: Federation) -> dict[str, list[Any]]:
+        provider_config = AzureAiFoundryProviderConfig(**dict(federation.providerConfig or {}))
+        async with AzureFoundryAuthService(provider_config) as auth:
+            agents = await self.discovery_client.discover_a2a_agents(
+                provider_config=provider_config,
+                auth=auth,
+            )
+        # Foundry hosted agents only expose A2A;
+        return {"a2a_agents": agents, "mcp_servers": []}

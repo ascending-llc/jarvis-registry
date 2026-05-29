@@ -98,13 +98,15 @@ async def test_aws_handler_passes_resource_tags_filter_to_client():
 
 
 @pytest.mark.asyncio
-async def test_azure_sync_is_not_implemented(federation_sync_service: FederationSyncService):
+async def test_azure_sync_dispatches_through_handler(federation_sync_service: FederationSyncService):
+    """Sync now dispatches to AzureAiFoundrySyncHandler; missing credentials surface
+    as a ValueError from AzureFoundryAuthService rather than NotImplemented."""
     federation = _make_federation(
         FederationProviderType.AZURE_AI_FOUNDRY,
         {"projectEndpoint": "https://example.projects.ai.azure.com"},
     )
 
-    with pytest.raises(ValueError, match="not implemented yet"):
+    with pytest.raises(ValueError, match="tenantId, clientId and clientSecret"):
         await federation_sync_service._discover_entities(federation)
 
 

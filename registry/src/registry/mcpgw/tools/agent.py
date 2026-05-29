@@ -215,6 +215,7 @@ async def execute_agent_impl(
         jwt_config=lifespan.jwt_signing_config,
         on_chunk=on_chunk,
         httpx_client=lifespan.a2a_httpx_client,
+        headers_provider=lifespan.a2a_headers_provider,
     )
     if not result.success:
         logger.warning("execute_agent: agent_id=%s failed: %s", agent_id, result.error)

@@ -185,15 +185,58 @@ def test_validate_provider_config_rejects_deprecated_federation_runtime_access()
         )
 
 
-def test_normalize_provider_config_allows_empty_azure_config_for_create():
+def test_normalize_provider_config_azure_encrypts_client_secret(monkeypatch):
+    # Force a known encryption key so encrypt_value succeeds deterministically.
+    from registry.core.config import settings as registry_settings
+
+    monkeypatch.setattr(registry_settings, "encryption_key", b"0" * 32, raising=False)
+
+    service = FederationCrudService()
+    normalized = service.normalize_provider_config(
+        FederationProviderType.AZURE_AI_FOUNDRY,
+        {
+            "projectEndpoint": "https://acc.services.ai.azure.com/api/projects/p",
+            "tenantId": "tenant",
+            "clientId": "client",
+            "clientSecret": "plaintext-secret",
+        },
+    )
+
+    assert normalized["clientSecret"] != "plaintext-secret"
+    assert ":" in normalized["clientSecret"]  # hex(iv):hex(ciphertext)
+
+    # Idempotent: a second pass must not re-encrypt an already encrypted value.
+    second = service.normalize_provider_config(
+        FederationProviderType.AZURE_AI_FOUNDRY,
+        normalized,
+    )
+    assert second["clientSecret"] == normalized["clientSecret"]
+
+
+def test_validate_provider_config_azure_requires_all_credentials():
     service = FederationCrudService()
 
-    with pytest.raises(ValueError, match="not implemented yet"):
-        service.normalize_provider_config(FederationProviderType.AZURE_AI_FOUNDRY, {})
+    with pytest.raises(ValueError, match="Azure AI Foundry federation requires"):
+        service.validate_provider_config(
+            FederationProviderType.AZURE_AI_FOUNDRY,
+            {"projectEndpoint": "https://x"},
+        )
 
 
-def test_validate_provider_config_rejects_azure_provider():
+def test_validate_provider_config_azure_accepts_full_config(monkeypatch):
+    from registry.core.config import settings as registry_settings
+
+    monkeypatch.setattr(registry_settings, "encryption_key", b"0" * 32, raising=False)
+
     service = FederationCrudService()
-
-    with pytest.raises(ValueError, match="not implemented yet"):
-        service.validate_provider_config(FederationProviderType.AZURE_AI_FOUNDRY, {})
+    normalized = service.validate_provider_config(
+        FederationProviderType.AZURE_AI_FOUNDRY,
+        {
+            "projectEndpoint": "https://acc.services.ai.azure.com/api/projects/p",
+            "tenantId": "tenant",
+            "clientId": "client",
+            "clientSecret": "plaintext-secret",
+        },
+    )
+    assert normalized["projectEndpoint"].startswith("https://")
+    assert normalized["tenantId"] == "tenant"

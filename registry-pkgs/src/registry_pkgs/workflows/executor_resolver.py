@@ -25,6 +25,7 @@ from registry_pkgs.models.enums import PermissionBits
 from registry_pkgs.models.extended_acl_entry import ExtendedAclEntry, ExtendedResourceType
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 from registry_pkgs.models.workflow import WorkflowNode
+from registry_pkgs.workflows.a2a_client import HeadersProvider
 from registry_pkgs.workflows.a2a_executor import make_a2a_executor, make_a2a_pool_executor
 from registry_pkgs.workflows.helpers import build_prompt
 from registry_pkgs.workflows.mcp_executor import make_mcp_executor
@@ -88,6 +89,7 @@ async def build_executor_registry(
     pool_nodes: list[WorkflowNode] | None = None,
     selector_llm: Model | None = None,
     a2a_httpx_client: httpx.AsyncClient | None = None,
+    headers_provider: HeadersProvider | None = None,
 ) -> dict[str, StepExecutor]:
     """Resolve each executor key to an MCP server or A2A agent executor.
 
@@ -109,6 +111,7 @@ async def build_executor_registry(
                           own pool (slower but isolated). Production code
                           should always pass a long-lived client owned by
                           the app container.
+        headers_provider: Optional shared headers provider passed to A2A
 
     Returns:
         dict mapping each ``executor_key`` / pool synthetic-key → ``StepExecutor``.
@@ -132,6 +135,7 @@ async def build_executor_registry(
             jwt_config=jwt_config,
             accessible_agent_ids=accessible_agent_ids,
             a2a_httpx_client=a2a_httpx_client,
+            headers_provider=headers_provider,
         )
 
     _selector = selector_llm or llm
@@ -144,6 +148,7 @@ async def build_executor_registry(
             jwt_config=jwt_config,
             accessible_agent_ids=accessible_agent_ids,
             httpx_client=a2a_httpx_client,
+            headers_provider=headers_provider,
         )
         logger.debug("pool executor registered: %r → %s", node.name, synthetic_key)
 
@@ -159,6 +164,7 @@ async def _resolve_executor(
     jwt_config: JwtSigningConfig,
     accessible_agent_ids: set[str] | None,
     a2a_httpx_client: httpx.AsyncClient | None = None,
+    headers_provider: HeadersProvider | None = None,
 ) -> StepExecutor:
     """Resolve a single executor key to its MCP or A2A executor.
 
@@ -190,7 +196,12 @@ async def _resolve_executor(
                 f"executor_key {key!r} → A2A agent {path!r}: user lacks access (agent_id={a2a_agent.id})"
             )
         logger.debug("executor_key %r → A2A agent %r (direct)", key, a2a_agent.path)
-        return make_a2a_executor(a2a_agent, jwt_config=jwt_config, httpx_client=a2a_httpx_client)
+        return make_a2a_executor(
+            a2a_agent,
+            jwt_config=jwt_config,
+            httpx_client=a2a_httpx_client,
+            headers_provider=headers_provider,
+        )
 
     raise KeyError(
         f"executor_key {key!r} not resolved: "
