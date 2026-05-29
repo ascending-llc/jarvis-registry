@@ -87,5 +87,20 @@ is ambiguous), place the entry under a separate section:
 - [ ] PR #NNN — {title} — *could not determine impact; please review manually*
 
 ## Release summary
-Start every set of notes with a 2–4 sentence paragraph summarising what this release
-is about in plain English. Focus on the most impactful changes, not an exhaustive list.
+**Required.** Begin every set of notes with a 2–4 sentence plain-English paragraph
+summarising what this release is about, placed **before any category heading or
+bullet list**. Focus on the most impactful changes, not an exhaustive list.
+
+The first sentence of this paragraph is extracted verbatim by
+`.github/workflows/utils/update_changelog.py` and used as:
+
+- the `description:` field in the per-release page frontmatter
+  (`docs/changelog/{tag}.md`), which MkDocs surfaces in page metadata and
+  social cards, and
+- the **Description** column for this release's row in
+  `docs/changelog/index.md`.
+
+If the notes start with a category heading (e.g. `### ✨ Features`) or a bullet
+instead of prose, the script falls back to the generic placeholder
+`The {tag} release of Jarvis Registry`. Write the opening sentence so it stands
+on its own as a summary — it will be read out of context.

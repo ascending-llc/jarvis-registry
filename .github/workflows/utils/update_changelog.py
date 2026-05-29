@@ -52,9 +52,23 @@ changelog_dir.mkdir(parents=True, exist_ok=True)
 
 page_path = changelog_dir / f"{slug}.md"
 
-# Build a one-line description from the first non-empty line of the body
+# Build a one-line description from the first prose line of the body.
+# Skip markdown headings (#, ##, ###...) and list bullets (-, *, +, 1.) so
+# the description is an actual summary sentence — not a category label like
+# "✨ Features" or the first bullet point.
+def _is_prose_line(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped:
+        return False
+    if stripped.startswith("#"):
+        return False
+    if re.match(r"^([-*+]|\d+\.)\s", stripped):
+        return False
+    return True
+
+
 first_line = next(
-    (line.strip().lstrip("#").strip() for line in body.splitlines() if line.strip()),
+    (line.strip() for line in body.splitlines() if _is_prose_line(line)),
     f"The {tag} release of Jarvis Registry",
 )
 # Strip markdown from description for frontmatter (remove bold, links, etc.)
