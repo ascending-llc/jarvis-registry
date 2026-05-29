@@ -159,6 +159,28 @@ async def test_validate_executor_refs_returns_400_for_unknown_a2a_pool_path(monk
     assert exc_info.value.detail == "Unknown a2aPool agent path: 'missing'"
 
 
+@pytest.mark.asyncio
+async def test_validate_executor_refs_finds_bad_key_in_nested_step(monkeypatch: pytest.MonkeyPatch):
+    service = WorkflowService()
+    _patch_executor_ref_queries(monkeypatch, mcp_names=set(), a2a_paths=set())
+    parallel = service._convert_api_node_to_model(
+        WorkflowNodeInput(
+            name="par",
+            nodeType="parallel",
+            children=[
+                WorkflowNodeInput(name="ok", nodeType="step", executorKey="echo"),
+                WorkflowNodeInput(name="bad", nodeType="step", executorKey="missing"),
+            ],
+        )
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await service._validate_executor_refs([parallel])
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "Unknown executor key: 'missing'"
+
+
 def test_convert_step_node_preserves_executor_key():
     api_node = WorkflowNodeInput(name="fetch", nodeType="step", executorKey="tool-fetch")
     model = WorkflowService()._convert_api_node_to_model(api_node)
