@@ -325,13 +325,12 @@ class A2AAgentService:
         Get agent by registry path.
 
         Args:
-            path: Registry path or path-like input (e.g., /deep-intel)
+            path: Registry path slug
 
         Returns:
             Agent document, or None if not found
         """
-        normalized_path = normalize_a2a_agent_path(path)
-        return await A2AAgent.find_one({"path": normalized_path})
+        return await A2AAgent.find_one({"path": path})
 
     async def create_agent(self, data: AgentCreateRequest, user_id: str) -> A2AAgent:
         """

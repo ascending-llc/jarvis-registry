@@ -3,10 +3,11 @@
 Data Migration Script: Merge A2AAgent.slug into A2AAgent.path
 
 This script migrates the A2AAgent collection by:
-1. Detecting and reporting any path conflicts before migration
-2. Converting all path values to slug format (no slashes)
-3. Removing the slug field from all documents
+1. Fetching all A2A agent documents
+2. Detecting and reporting any path conflicts before migration
+3. Converting all path values to slug format (no slashes)
 4. Dropping the slug unique index
+5. Removing the slug field from all documents
 
 Usage:
     cd /path/to/mcp-gateway-registry
@@ -161,7 +162,7 @@ async def migrate_agents(dry_run: bool = False) -> dict:
     return stats
 
 
-async def main(dry_run: bool = False, force: bool = False) -> None:
+async def main(dry_run: bool = False) -> None:
     """Main migration function"""
     logger.info("=" * 80)
     logger.info("A2AAgent Path/Slug Migration Script")
@@ -242,4 +243,4 @@ if __name__ == "__main__":
             print("Migration cancelled.")
             sys.exit(0)
 
-    asyncio.run(main(dry_run=args.dry_run, force=args.force))
+    asyncio.run(main(dry_run=args.dry_run))
