@@ -30,6 +30,7 @@ export type AgentItem = {
   author: string;
   createdAt: string;
   updatedAt: string;
+  lastCheckedTime?: string;
   config?: {
     title?: string;
     description?: string;
@@ -104,6 +105,7 @@ export type Agent = {
   wellKnown: AgentWellKnown;
   createdAt: string;
   updatedAt: string;
+  lastCheckedTime?: string;
   config?: {
     title?: string;
     description?: string;

@@ -70,7 +70,6 @@ export const useCanvasMutations = ({
 
   const onDeleteNode = useCallback(
     (nodeId: string) => {
-
       const remainingRealNodes = nodes.filter(n => n.id !== nodeId && n.type !== 'add').length;
       if (remainingRealNodes === 0) {
         setNodes([{ id: `add_${Date.now()}`, type: 'add', position: { x: 0, y: 0 }, data: { label: '' } }]);

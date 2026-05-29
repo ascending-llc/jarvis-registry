@@ -36,10 +36,7 @@ const ServerCreationSuccessDialog: React.FC<ServerCreationSuccessDialogProps> = 
             <Dialog.Title className='text-lg font-bold text-[var(--jarvis-text-strong)]'>
               MCP server created successfully
             </Dialog.Title>
-            <button
-              onClick={onClose}
-              className='text-[var(--jarvis-icon)] hover:text-[var(--jarvis-icon-hover)]'
-            >
+            <button onClick={onClose} className='text-[var(--jarvis-icon)] hover:text-[var(--jarvis-icon-hover)]'>
               <XMarkIcon className='h-6 w-6' />
             </button>
           </div>

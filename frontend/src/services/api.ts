@@ -45,6 +45,7 @@ const API = {
   toggleAgentState: (id: string) => `${AGENT_BASE_URL}/${id}/toggle`,
   getAgentSkills: (id: string) => `${AGENT_BASE_URL}/${id}/skills`,
   getWellKnownAgentCards: `${AGENT_BASE_URL}/.well-known/agent-cards`,
+  refreshAgent: (id: string) => `${AGENT_BASE_URL}/${id}/refresh`,
 
   // federation
   getFederations: `${FEDERATION_BASE_URL}`,

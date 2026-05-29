@@ -151,7 +151,8 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
       }
     } catch (error: any) {
       if (showToast) {
-        showToast(error?.detail?.message || 'Failed to refresh health status', 'error');
+        const errorMessage = error?.detail?.message || 'Failed to refresh health status';
+        showToast(errorMessage.split('\n')[0], 'error');
       }
     } finally {
       setLoadingRefresh(false);
@@ -166,8 +167,9 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
       handleServerUpdate(id, { enabled });
       showToast(`Server ${enabled ? 'enabled' : 'disabled'} successfully!`, 'success');
     } catch (error: any) {
-      const errorMessage = error.detail?.message || (typeof error.detail === 'string' ? error.detail : '');
-      showToast(errorMessage || 'Failed to toggle server', 'error');
+      const errorMessage =
+        error.detail?.message || (typeof error.detail === 'string' ? error.detail : 'Failed to toggle server');
+      showToast(errorMessage.split('\n')[0], 'error');
     } finally {
       setLoading(false);
     }
@@ -370,31 +372,6 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
                   {server.enabled ? 'Enabled' : 'Disabled'}
                 </span>
               </div>
-
-              <div className='h-3 w-px bg-[color:var(--jarvis-border)]' />
-
-              <div className='flex items-center gap-1'>
-                <div
-                  className={`w-2.5 h-2.5 rounded-full ${
-                    server.status === 'active'
-                      ? 'bg-[var(--jarvis-success)] shadow-lg shadow-emerald-500/30'
-                      : server.status === 'inactive'
-                        ? 'bg-[var(--jarvis-warning)] shadow-lg shadow-amber-500/30'
-                        : server.status === 'error'
-                          ? 'bg-[var(--jarvis-danger)] shadow-lg shadow-red-500/30'
-                          : 'bg-[var(--jarvis-warning)] shadow-lg shadow-amber-500/30'
-                  }`}
-                />
-                <span className='max-w-[80px] truncate text-xs font-medium text-[var(--jarvis-muted)]'>
-                  {server.status === 'active'
-                    ? 'Active'
-                    : server.status === 'inactive'
-                      ? 'Inactive'
-                      : server.status === 'error'
-                        ? 'Error'
-                        : 'Unknown'}
-                </span>
-              </div>
             </div>
 
             {/* Controls */}
@@ -413,9 +390,9 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
               {/* Refresh Button */}
               <IconButton
                 ariaLabel='Refresh health status'
-                tooltip='Refresh'
+                tooltip={canEdit ? 'Refresh' : 'No edit permission'}
                 onClick={handleRefreshHealth}
-                disabled={loadingRefresh}
+                disabled={!canEdit || loadingRefresh}
                 size='card'
                 className='text-[var(--jarvis-icon)] transition-all duration-200 hover:bg-[var(--jarvis-primary-soft)] hover:text-[var(--jarvis-icon-hover)]'
               >

@@ -1,10 +1,9 @@
 import { CheckIcon, ClipboardIcon, ExclamationTriangleIcon, KeyIcon } from '@heroicons/react/24/outline';
 import type React from 'react';
 import { useState } from 'react';
-
+import IconButton from '@/components/IconButton';
 import SERVICES from '@/services';
 import { useAuth } from '../contexts/AuthContext';
-import IconButton from '@/components/IconButton';
 
 const TokenGeneration: React.FC = () => {
   const { user } = useAuth();
@@ -169,10 +168,7 @@ const TokenGeneration: React.FC = () => {
                 <div className='space-y-3'>
                   {/* Description */}
                   <div>
-                    <label
-                      htmlFor='description'
-                      className='mb-1 block text-sm font-medium text-[var(--jarvis-text)]'
-                    >
+                    <label htmlFor='description' className='mb-1 block text-sm font-medium text-[var(--jarvis-text)]'>
                       Description (optional)
                     </label>
                     <input
@@ -249,9 +245,7 @@ const TokenGeneration: React.FC = () => {
                           <div className='text-sm font-medium text-[var(--jarvis-text)]'>
                             Upload custom scopes (JSON)
                           </div>
-                          <div className='text-xs text-[var(--jarvis-muted)]'>
-                            Specify custom scopes in JSON format
-                          </div>
+                          <div className='text-xs text-[var(--jarvis-muted)]'>Specify custom scopes in JSON format</div>
                         </div>
                       </label>
                     </div>
@@ -335,13 +329,13 @@ const TokenGeneration: React.FC = () => {
                   <code className='break-all text-sm font-mono text-[var(--jarvis-text)]'>{generatedToken}</code>
                 </div>
 
-                <div className="absolute right-2 top-2 z-10">
+                <div className='absolute right-2 top-2 z-10'>
                   <IconButton
-                    ariaLabel="Copy token"
-                    tooltip={copied ? "Copied!" : "Copy token"}
+                    ariaLabel='Copy token'
+                    tooltip={copied ? 'Copied!' : 'Copy token'}
                     onClick={handleCopyToken}
-                    size="card"
-                    className="text-[var(--jarvis-icon)] hover:bg-[var(--jarvis-card-muted)] hover:text-[var(--jarvis-icon-hover)] border-none bg-transparent hover:bg-transparent shadow-none"
+                    size='card'
+                    className='text-[var(--jarvis-icon)] hover:bg-[var(--jarvis-card-muted)] hover:text-[var(--jarvis-icon-hover)] border-none bg-transparent hover:bg-transparent shadow-none'
                   >
                     {copied ? (
                       <CheckIcon className='h-4 w-4 text-[var(--jarvis-success-text)]' />
