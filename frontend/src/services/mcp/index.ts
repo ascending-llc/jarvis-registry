@@ -12,8 +12,7 @@ const getOauthInitiate: (id: string) => Promise<TYPE.GetOauthInitiateResponse> =
 const getOauthReinit: (id: string) => Promise<TYPE.GetServerAuthUrlResponse> = async id =>
   await Request.post(API.getOauthReinit(id));
 
-const cancelAuth: (id: string) => Promise<TYPE.CancelAuthResponse> = async id =>
-  await Request.post(API.cancelAuth(id));
+const cancelAuth: (id: string) => Promise<TYPE.CancelAuthResponse> = async id => await Request.post(API.cancelAuth(id));
 
 const revokeAuth: (id: string) => Promise<TYPE.CancelAuthResponse> = async id =>
   await Request.delete(API.revokeAuth(id));

@@ -238,64 +238,7 @@ async def test_call_a2a_message_reply_sets_message_field():
     assert result.render_text() == "Hello world!"
 
 
-@pytest.mark.asyncio
-async def test_call_a2a_message_on_chunk_called():
-    agent = _make_agent()
-    chunks: list[str] = []
-
-    async def on_chunk(c: str) -> None:
-        chunks.append(c)
-
-    mock_factory, _ = _mock_client([_msg("a complete reply")])
-
-    with (
-        patch("registry_pkgs.workflows.a2a_client.build_headers", return_value={}),
-        patch("registry_pkgs.workflows.a2a_client.ClientFactory", return_value=mock_factory),
-    ):
-        result = await call_a2a(agent, "test", jwt_config=_jwt_config(), on_chunk=on_chunk)
-
-    assert result.success is True
-    assert chunks == ["a complete reply"]
-
-
 # ── call_a2a: streaming Task path ────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_call_a2a_streaming_artifact_chunks_emit_on_chunk():
-    """Each TaskArtifactUpdateEvent emits its chunk text via on_chunk; the
-    final result.task comes from the latest task with the SDK-aggregated artifacts."""
-    agent = _make_agent()
-    chunks: list[str] = []
-
-    async def on_chunk(c: str) -> None:
-        chunks.append(c)
-
-    a_partial1 = _artifact("Summary", ["Hello "])
-    a_partial2 = _artifact("Summary", ["Hello ", "world"])
-    a_final = _artifact("Summary", ["Hello ", "world", "!"])
-
-    events = [
-        _artifact_event("Hello ", task=_task(TaskState.working, artifacts=[a_partial1])),
-        _artifact_event("world", task=_task(TaskState.working, artifacts=[a_partial2])),
-        _artifact_event("!", task=_task(TaskState.working, artifacts=[a_final])),
-        _status_event(TaskState.completed, task=_task(TaskState.completed, artifacts=[a_final])),
-    ]
-    mock_factory, _ = _mock_client(events)
-
-    with (
-        patch("registry_pkgs.workflows.a2a_client.build_headers", return_value={}),
-        patch("registry_pkgs.workflows.a2a_client.ClientFactory", return_value=mock_factory),
-    ):
-        result = await call_a2a(agent, "test", jwt_config=_jwt_config(), on_chunk=on_chunk)
-
-    assert result.success is True
-    assert result.task_state == TaskState.completed
-    assert chunks == ["Hello ", "world", "!"]
-    assert result.task is not None
-    assert len(result.task.artifacts) == 1
-    assert result.task.artifacts[0].name == "Summary"
-    assert result.render_text() == "[Summary]\nHello world!"
 
 
 @pytest.mark.asyncio
@@ -532,35 +475,6 @@ async def test_call_a2a_non_completed_terminal_state_returns_failure_with_task()
     # We still surface the server response so callers can inspect.
     assert result.task is not None
     assert result.task.artifacts[0].name == "Error"
-
-
-@pytest.mark.asyncio
-async def test_call_a2a_on_chunk_failure_does_not_abort_accumulation():
-    agent = _make_agent()
-    call_count = 0
-
-    async def failing_on_chunk(chunk: str) -> None:
-        nonlocal call_count
-        call_count += 1
-        raise RuntimeError("MCP session gone")
-
-    final = _artifact("R", ["part1part2"])
-    events = [
-        _artifact_event("part1", task=_task(TaskState.working, artifacts=[_artifact("R", ["part1"])])),
-        _artifact_event("part2", task=_task(TaskState.working, artifacts=[final])),
-        _status_event(TaskState.completed, task=_task(TaskState.completed, artifacts=[final])),
-    ]
-    mock_factory, _ = _mock_client(events)
-
-    with (
-        patch("registry_pkgs.workflows.a2a_client.build_headers", return_value={}),
-        patch("registry_pkgs.workflows.a2a_client.ClientFactory", return_value=mock_factory),
-    ):
-        result = await call_a2a(agent, "test", jwt_config=_jwt_config(), on_chunk=failing_on_chunk)
-
-    assert result.success is True
-    assert result.task.artifacts[0].name == "R"
-    assert call_count == 2
 
 
 @pytest.mark.asyncio

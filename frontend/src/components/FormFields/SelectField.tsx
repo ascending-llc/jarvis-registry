@@ -1,8 +1,8 @@
-import { Fragment, useRef, useState } from 'react';
 import { Listbox, Transition } from '@headlessui/react';
 import { CheckIcon, ChevronDownIcon } from '@heroicons/react/24/outline';
-import { createPortal } from 'react-dom';
 import type React from 'react';
+import { Fragment, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { BaseFieldProps } from './types';
 
 export interface SelectOption {
@@ -49,9 +49,7 @@ export const SelectField: React.FC<SelectFieldProps> = ({
     onChange?.(val);
   };
 
-  const borderClass = error
-    ? 'border-[var(--jarvis-danger)]'
-    : 'border-[color:var(--jarvis-input-border)]';
+  const borderClass = error ? 'border-[var(--jarvis-danger)]' : 'border-[color:var(--jarvis-input-border)]';
 
   const focusClass = error
     ? 'focus:border-[var(--jarvis-danger)] focus:ring-[var(--jarvis-danger)]'
@@ -94,9 +92,7 @@ export const SelectField: React.FC<SelectFieldProps> = ({
                   padding: '6px 36px 6px 12px',
                 }}
               >
-                <span className='block truncate'>
-                  {selectedOption ? selectedOption.label : placeholder}
-                </span>
+                <span className='block truncate'>{selectedOption ? selectedOption.label : placeholder}</span>
                 <span className='pointer-events-none absolute inset-y-0 right-0 flex items-center pr-2.5'>
                   <ChevronDownIcon
                     className={`h-4 w-4 text-[var(--jarvis-icon)] transition-transform duration-150 ${open ? 'rotate-180' : ''}`}

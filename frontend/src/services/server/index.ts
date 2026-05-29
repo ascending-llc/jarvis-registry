@@ -16,8 +16,7 @@ const getServerDetail: (id: string) => Promise<TYPE.GetServersDetailResponse> = 
 const testServerUrl: (
   data: TYPE.TestServerUrlRequest,
   config?: AxiosRequestConfig,
-) => Promise<TYPE.TestServerUrlResponse> = async (data, config) =>
-  await Request.post(API.testServerUrl, data, config);
+) => Promise<TYPE.TestServerUrlResponse> = async (data, config) => await Request.post(API.testServerUrl, data, config);
 
 const createServer: (data: TYPE.CreateServerRequest) => Promise<TYPE.Server> = async data =>
   await Request.post(API.createServer, data);

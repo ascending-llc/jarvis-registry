@@ -121,12 +121,6 @@ async def main(path: str, message: str, *, list_agents: bool = False, transport:
             print(f"ERROR: {exc}")
             return 1
 
-        chunks_received: list[str] = []
-
-        async def on_chunk(chunk: str) -> None:
-            chunks_received.append(chunk)
-            print(chunk, end="", flush=True)
-
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(connect=30.0, read=None, write=60.0, pool=30.0),
             follow_redirects=False,
@@ -139,20 +133,15 @@ async def main(path: str, message: str, *, list_agents: bool = False, transport:
                 agent,
                 message,
                 jwt_config=settings.jwt_signing_config,
-                on_chunk=on_chunk,
                 httpx_client=a2a_httpx,
             )
-
-        if chunks_received:
-            print()
 
         print("\n── Result ────────────────────────────────────────────────")
         print(f"  success : {result.success}")
         if result.task_state is not None:
             print(f"  state   : {result.task_state.value}")
         if result.success:
-            if not chunks_received:
-                print(f"  response:\n{result.render_text()}")
+            print(f"  response:\n{result.render_text()}")
             if result.task and result.task.artifacts:
                 for i, artifact in enumerate(result.task.artifacts):
                     label = artifact.name or f"artifact-{i}"

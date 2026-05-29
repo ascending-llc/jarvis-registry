@@ -34,28 +34,24 @@ interface ServerStats {
   total: number;
   enabled: number;
   disabled: number;
-  withIssues: number;
 }
 
 interface AgentStats {
   total: number;
   enabled: number;
   disabled: number;
-  withIssues: number;
 }
 
 export interface FederationListStats {
   total: number;
   enabled: number;
   disabled: number;
-  withIssues: number;
 }
 
 interface WorkflowStats {
   total: number;
   enabled: number;
   disabled: number;
-  withIssues: number;
 }
 
 interface ServerContextType {
@@ -149,7 +145,6 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
       total: servers.length,
       enabled: servers.filter(s => s.enabled).length,
       disabled: servers.filter(s => !s.enabled).length,
-      withIssues: servers.filter(s => s.status === 'inactive' || s.status === 'error').length,
     }),
     [servers],
   );
@@ -160,7 +155,6 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
       total: agents.length,
       enabled: agents.filter(a => a.enabled).length,
       disabled: agents.filter(a => !a.enabled).length,
-      withIssues: agents.filter(a => a.status === 'inactive' || a.status === 'error').length,
     }),
     [agents],
   );
@@ -171,7 +165,6 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
       total: workflows.length,
       enabled: workflows.filter(w => w.enabled).length,
       disabled: workflows.filter(w => !w.enabled).length,
-      withIssues: workflows.filter(w => w.status === 'inactive' || w.status === 'error').length,
     }),
     [workflows],
   );
@@ -182,7 +175,6 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
       total: federations.length,
       enabled: federations.filter(f => f.status === 'active').length,
       disabled: federations.filter(f => f.status !== 'active').length,
-      withIssues: federations.filter(f => f.syncStatus === 'failed').length,
     }),
     [federations],
   );
@@ -279,6 +271,7 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
         author: agentInfo.author || '',
         createdAt: agentInfo.createdAt || '',
         updatedAt: agentInfo.updatedAt || '',
+        lastCheckedTime: agentInfo.wellKnown?.lastSyncAt ?? agentInfo.updatedAt ?? '',
       }));
       setAgents(transformedAgents);
     } catch (error: any) {

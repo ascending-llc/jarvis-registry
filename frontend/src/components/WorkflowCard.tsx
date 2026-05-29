@@ -1,9 +1,4 @@
-import {
-  ChartBarIcon,
-  ClockIcon,
-  PencilSquareIcon,
-  QueueListIcon,
-} from '@heroicons/react/24/outline';
+import { ChartBarIcon, ClockIcon, PencilSquareIcon, QueueListIcon } from '@heroicons/react/24/outline';
 import type React from 'react';
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -76,7 +71,7 @@ const WorkflowCard: React.FC<WorkflowCardProps> = ({ workflow, onEdit }) => {
         <div className='mb-2 flex items-start justify-between gap-2 mt-1'>
           <div className='flex-1 min-w-0'>
             <h3
-              onClick={handleViewClick}
+              onClick={workflow.permissions?.VIEW ? handleViewClick : undefined}
               className={`truncate text-[15px] font-semibold text-[var(--jarvis-text)] ${
                 workflow.permissions?.VIEW
                   ? 'cursor-pointer transition-colors hover:text-[var(--jarvis-text-strong)]'
@@ -88,15 +83,17 @@ const WorkflowCard: React.FC<WorkflowCardProps> = ({ workflow, onEdit }) => {
           </div>
 
           <div className='flex flex-shrink-0 gap-0.5'>
-            <IconButton
-              ariaLabel='Edit workflow'
-              tooltip='Edit'
-              onClick={handleEditClick}
-              size='card'
-              className='text-[var(--jarvis-icon)] hover:bg-[var(--jarvis-primary-soft)] hover:text-[var(--jarvis-icon-hover)]'
-            >
-              <PencilSquareIcon className='h-3.5 w-3.5' />
-            </IconButton>
+            {workflow.permissions?.EDIT && (
+              <IconButton
+                ariaLabel='Edit workflow'
+                tooltip='Edit'
+                onClick={handleEditClick}
+                size='card'
+                className='text-[var(--jarvis-icon)] hover:bg-[var(--jarvis-primary-soft)] hover:text-[var(--jarvis-icon-hover)]'
+              >
+                <PencilSquareIcon className='h-3.5 w-3.5' />
+              </IconButton>
+            )}
           </div>
         </div>
 

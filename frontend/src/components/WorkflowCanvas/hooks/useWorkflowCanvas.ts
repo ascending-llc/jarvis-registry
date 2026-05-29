@@ -15,13 +15,7 @@ export const useWorkflowCanvas = (
     useCanvasNodes(initialNodes, initialEdges, onChange);
 
   // 2. Layout & ID generation
-  const { generateNodeId, generateEdgeId, runLayout } = useCanvasLayout(
-    nodes,
-    edges,
-    setNodes,
-    setEdges,
-    onChange,
-  );
+  const { generateNodeId, generateEdgeId, runLayout } = useCanvasLayout(nodes, edges, setNodes, setEdges, onChange);
 
   // 3. Selection & Panel state
   const { selectedNode, setSelected, panelCollapsed, setPanelCollapsed, onNodeClick, onPaneClick, clearSelection } =
