@@ -31,8 +31,6 @@ from ..core.types import McpAppContext
 
 logger = logging.getLogger(__name__)
 
-_AGENT_INVOKE_LOGGER = "execute_agent"
-
 
 def _file_to_resource(f: FileWithBytes | FileWithUri) -> EmbeddedResource | None:
     """Convert one A2A file payload to an MCP EmbeddedResource. None for unsupported."""
@@ -205,15 +203,11 @@ async def execute_agent_impl(
         return _error_result(str(exc))
 
     # 5. Invoke
-    async def on_chunk(chunk: str) -> None:
-        await ctx.log("info", chunk, logger_name=_AGENT_INVOKE_LOGGER)
-
     logger.info("execute_agent: invoking agent_id=%s path=%s", agent_id, agent.path)
     result = await call_a2a(
         agent,
         message,
         jwt_config=lifespan.jwt_signing_config,
-        on_chunk=on_chunk,
         httpx_client=lifespan.a2a_httpx_client,
     )
     if not result.success:
@@ -259,8 +253,6 @@ def get_tools() -> list[tuple[str, Callable]]:
 
         Use this after discover_agents to delegate a complex task to the selected agent.
         The agent runs autonomously and returns its final result.
-
-        Streaming: partial responses are sent as MCP log notifications during execution.
 
         Error handling:
         - Invalid or unknown agent_id → isError=True with a retry hint; call discover_agents again.
