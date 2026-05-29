@@ -36,7 +36,7 @@ def _jwt_config() -> JwtSigningConfig:
 def _make_agent(url: str = "https://agent.example.com", transport: str = "jsonrpc") -> A2AAgent:
     return A2AAgent.model_construct(
         id=PydanticObjectId(),
-        path="/test-agent",
+        path="test-agent",  # path is now in slug format (no slashes)
         card=AgentCard.model_construct(
             name="Test Agent",
             url=url,

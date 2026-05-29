@@ -9,8 +9,7 @@ Storage Structure:
   "_id": ObjectId("..."),
 
   # Registry-specific Fields
-  "path": "/deep-intel",  # Registry path (not part of SDK AgentCard)
-  "slug": "deep-intel",  # leading and trailing /'s removed; other converted to dashes
+  "path": "deep-intel",  # Registry path in slug format (no slashes), used in /proxy/a2a/{path}
 
   # A2A Protocol Card (validated by SDK - ORIGINAL DATA, DO NOT MODIFY)
   "card": {
@@ -60,6 +59,7 @@ Storage Structure:
 
 import hashlib
 import logging
+import re
 from datetime import UTC, datetime
 from typing import Any, ClassVar
 
@@ -92,6 +92,21 @@ _A2A_PREFERRED_TRANSPORT_MAP: dict[str, str] = {
     "HTTP+JSON": TRANSPORT_HTTP_JSON,
     "JSONRPC": TRANSPORT_JSONRPC,
 }
+
+
+def normalize_a2a_agent_path(value: Any) -> str:
+    """Normalize user-provided A2A agent path input into a slash-free SEO slug."""
+    if value is None:
+        raise ValueError("A2A agent path is required")
+
+    raw_path = str(value).strip().lower()
+    normalized_path = re.sub(r"[^a-z0-9]+", "-", raw_path)
+    normalized_path = re.sub(r"-+", "-", normalized_path).strip("-")
+
+    if not normalized_path:
+        raise ValueError("A2A agent path must contain at least one letter or number and cannot be '/'")
+
+    return normalized_path
 
 
 def preferred_transport_to_config_type(preferred_transport: str) -> str:
@@ -157,8 +172,11 @@ class A2AAgent(Document):
     """
 
     # ========== Registry-specific Fields ==========
-    path: str = Field(..., description="Registry path (e.g., /deep-intel)")
-    slug: str = Field(..., description="slug that appears in /proxy/a2a/{agent_slug} for direct A2A invocation")
+    path: str = Field(
+        ...,
+        description="Registry path in slug format (no slashes, e.g., 'deep-intel'). "
+        "Used in proxy routes /proxy/a2a/{path}. Input paths with slashes are automatically normalized.",
+    )
 
     # ========== A2A Protocol Card (SDK - ORIGINAL DATA) ==========
     card: AgentCard = Field(description="A2A protocol-compliant agent card (validated by SDK, unmodified)")
@@ -200,7 +218,6 @@ class A2AAgent(Document):
         # Indexes for efficient queries
         indexes = [
             IndexModel([("path", 1)], unique=True),
-            IndexModel([("slug", 1)], unique=True),
             "tags",
             "isEnabled",
             "status",
@@ -214,14 +231,26 @@ class A2AAgent(Document):
     # ========== Field Derivation ==========
     @model_validator(mode="before")
     @classmethod
-    def _derive_slug(cls, data: Any) -> Any:
+    def _normalize_path(cls, data: Any) -> Any:
         """
-        Generating slug from path. Slug is used in the A2A "direct access route" `/proxy/a2a/{agent_slug}`
-        and the custom server card route `/proxy/a2a/{agent_slug}/agent-card.json`.
-        Currently uniqueness of `slug` is entirely left on the index.
+        Normalize path input to slug format (no slashes).
+
+        Converts any path-like input (e.g., /agentcore/a2a/agent-1) to slug format (agentcore-a2a-agent-1).
+        The normalized path is used in the A2A proxy routes: /proxy/a2a/{path}
+
+        Handles edge cases:
+        - Leading/trailing slashes: /path/ -> path
+        - Multiple consecutive slashes: ///path/// -> path
+        - Internal slashes: /a/b/c -> a-b-c
+        - Consecutive internal slashes: /a///b -> a-b
+
+        Uniqueness is enforced by the MongoDB unique index on the path field.
+        If the normalized path conflicts with an existing agent, MongoDB will raise a DuplicateKeyError,
+        which should be caught and handled at the service/API layer with a proper HTTP 409 response.
         """
-        if isinstance(data, dict) and data.get("slug") is None:
-            data["slug"] = data["path"].strip("/").replace("/", "-")
+        if isinstance(data, dict) and "path" in data:
+            data = dict(data)
+            data["path"] = normalize_a2a_agent_path(data["path"])
         return data
 
     # ========== Lifecycle Hooks ==========
@@ -553,4 +582,5 @@ __all__ = [
     "TRANSPORT_HTTP_JSON",
     "VALID_TRANSPORT_TYPES",
     "preferred_transport_to_config_type",
+    "normalize_a2a_agent_path",
 ]

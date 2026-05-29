@@ -25,6 +25,13 @@ The `config` object contains user-provided metadata:
 - `url`: User-configured agent endpoint URL
 - `type`: Transport type (jsonrpc, grpc, http_json)
 
+### Path Field
+- `path` is the unique registry identifier used by proxy routes.
+- API input may be path-like (for example `/team/a2a/agent-1`) and is normalized by the backend into a slash-free SEO-style slug (for example `team-a2a-agent-1`).
+- Stored and returned `path` values never contain `/`.
+- `path` cannot be `/` or any value that normalizes to an empty slug. Those requests return `400 Bad Request`.
+- If two different inputs normalize to the same `path`, create/update returns `409 Conflict`.
+
 ### Well-Known Field
 The `wellKnown` object contains sync status only (no URL):
 - `enabled`: Whether well-known sync is enabled
@@ -56,7 +63,7 @@ The `wellKnown` object contains sync status only (no URL):
   "agents": [
     {
       "id": "507f1f77bcf86cd799439011",
-      "path": "/code-reviewer",
+      "path": "code-reviewer",
       "name": "Code Review Agent",
       "description": "AI-powered code review assistant",
       "url": "https://example.com/agents/code-reviewer",
@@ -154,7 +161,7 @@ The `wellKnown` object contains sync status only (no URL):
 ```json
 {
   "id": "507f1f77bcf86cd799439011",
-  "path": "/code-reviewer",
+  "path": "code-reviewer",
   "name": "Code Review Agent",
   "description": "AI-powered code review assistant",
   "url": "https://example.com/agents/code-reviewer",
@@ -237,7 +244,7 @@ The `wellKnown` object contains sync status only (no URL):
 **Request Body**:
 ```json
 {
-  "path": "/code-reviewer",
+  "path": "code-reviewer",
   "title": "Code Review Agent",
   "description": "AI-powered code review assistant",
   "url": "https://example.com/agents/code-reviewer",
@@ -246,7 +253,7 @@ The `wellKnown` object contains sync status only (no URL):
 ```
 
 **Request Fields**:
-- `path` (required, string): Unique registry path identifier (e.g., `/code-reviewer`)
+- `path` (required, string): Unique registry path identifier. Input may contain slashes (e.g., `/code-reviewer` or `/team/a2a/code-reviewer`) but is normalized and stored as a slash-free slug (e.g., `code-reviewer` or `team-a2a-code-reviewer`). The value `/` is invalid and returns `400 Bad Request`.
 - `title` (required, string): Display title for the agent in the registry (stored in `config.title`)
 - `description` (optional, string): Description of the agent for the registry (stored in `config.description`)
 - `url` (required, string): Agent endpoint URL - the agent card will be automatically fetched from `{url}/.well-known/agent-card.json`
@@ -268,7 +275,7 @@ The `wellKnown` object contains sync status only (no URL):
 ```json
 {
   "id": "507f1f77bcf86cd799439011",
-  "path": "/code-reviewer",
+  "path": "code-reviewer",
   "name": "Code Review Agent",
   "description": "AI-powered code review assistant",
   "url": "https://example.com/agents/code-reviewer",
@@ -323,8 +330,8 @@ The `wellKnown` object contains sync status only (no URL):
 - User-provided configuration is stored separately in `config` field
 
 **Error**:
-- `400` Validation error, invalid transport type, or failed to fetch agent card from URL
-- `409` Path already exists
+- `400` Validation error, invalid transport type, invalid path (including `/`), or failed to fetch agent card from URL
+- `409` Path already exists, including when another input normalizes to the same slash-free path
 
 ---
 
@@ -337,7 +344,7 @@ The `wellKnown` object contains sync status only (no URL):
 **Request Body** (all fields optional):
 ```json
 {
-  "path": "/new-code-reviewer",
+  "path": "new-code-reviewer",
   "title": "Updated Agent Name",
   "description": "Updated description",
   "url": "https://example.com/agents/new-code-reviewer",
@@ -347,7 +354,7 @@ The `wellKnown` object contains sync status only (no URL):
 ```
 
 **Request Fields** (all optional):
-- `path` (string): Update the registry path
+- `path` (string): Update the registry path. Input may contain slashes, but the stored/returned value is normalized to a slash-free slug. The value `/` is invalid and returns `400 Bad Request`.
 - `title` (string): Update the display title (stored in `config.title`)
 - `description` (string): Update the description (stored in `config.description`)
 - `url` (string): Update the agent endpoint URL
@@ -369,7 +376,7 @@ The `wellKnown` object contains sync status only (no URL):
    - The `card` field remains unchanged
 
 3. **If only `path` is updated**:
-   - Registry path is updated (must be unique)
+   - Registry path is normalized to a slash-free slug and updated (must be unique)
    - Agent card and config remain unchanged
 
 4. **If only `enabled` is updated**:
@@ -380,7 +387,7 @@ The `wellKnown` object contains sync status only (no URL):
 ```json
 {
   "id": "507f1f77bcf86cd799439011",
-  "path": "/new-code-reviewer",
+  "path": "new-code-reviewer",
   "name": "Updated Agent Name",
   "description": "Updated description",
   "url": "https://example.com/agents/new-code-reviewer",
@@ -427,10 +434,10 @@ The `wellKnown` object contains sync status only (no URL):
 - User-provided configuration is stored separately in `config` field
 
 **Error**:
-- `400` Validation error, invalid transport type, or failed to fetch agent card from new URL
+- `400` Validation error, invalid transport type, invalid path (including `/`), or failed to fetch agent card from new URL
 - `404` Agent not found
 - `403` Access denied
-- `409` New path conflicts with existing agent
+- `409` New path conflicts with existing agent, including when another input normalizes to the same slash-free path
 
 **Permission**: Requires EDIT permission
 
@@ -465,7 +472,7 @@ The `wellKnown` object contains sync status only (no URL):
 ```json
 {
   "id": "507f1f77bcf86cd799439011",
-  "path": "/code-reviewer",
+  "path": "code-reviewer",
   "name": "Code Review Agent",
   "description": "AI-powered code review assistant",
   "url": "https://example.com/agents/code-reviewer",
@@ -552,7 +559,7 @@ The `wellKnown` object contains sync status only (no URL):
 ```json
 {
   "id": "507f1f77bcf86cd799439011",
-  "path": "/code-reviewer",
+  "path": "code-reviewer",
   "name": "Code Review Agent",
   "description": "AI-powered code review assistant",
   "url": "https://example.com/agents/code-reviewer",

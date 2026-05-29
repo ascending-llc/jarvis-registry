@@ -6,8 +6,8 @@ import pytest
 from beanie import PydanticObjectId
 from fastapi import HTTPException
 
-from registry.api.v1.a2a.agent_routes import create_agent, delete_agent, get_agent_stats, list_agents
-from registry.schemas.a2a_agent_api_schemas import AgentCreateRequest
+from registry.api.v1.a2a.agent_routes import create_agent, delete_agent, get_agent_stats, list_agents, update_agent
+from registry.schemas.a2a_agent_api_schemas import AgentCreateRequest, AgentUpdateRequest
 from registry_pkgs.models import PrincipalType, ResourceType
 from registry_pkgs.models.enums import RoleBits
 
@@ -193,6 +193,116 @@ async def test_create_agent_uses_injected_services(sample_user_context):
     assert result.config.title == "Test Agent"
     assert result.config.description == "Agent description"
     assert result.config.type == "jsonrpc"
+
+
+@pytest.mark.asyncio
+async def test_create_agent_invalid_root_path_returns_400(sample_user_context):
+    from fastapi import HTTPException
+
+    a2a_agent_service = MagicMock()
+    a2a_agent_service.create_agent = AsyncMock(
+        side_effect=ValueError("A2A agent path must contain at least one letter or number and cannot be '/'")
+    )
+
+    acl_service = MagicMock()
+    acl_service.grant_permission = AsyncMock()
+
+    request = AgentCreateRequest(
+        path="/",
+        title="Root Agent",
+        description="Agent description",
+        url="https://agent.example.com",
+        type="jsonrpc",
+    )
+
+    with patch("registry_pkgs.database.decorators.MongoDB.get_client") as mock_get_client:
+        mock_session = AsyncMock()
+        mock_client = MagicMock()
+        mock_client.start_session.return_value.__aenter__.return_value = mock_session
+        mock_session.start_transaction.return_value.__aenter__.return_value = None
+        mock_get_client.return_value = mock_client
+
+        with pytest.raises(HTTPException) as exc_info:
+            await create_agent(
+                data=request,
+                user_context=sample_user_context,
+                acl_service=acl_service,
+                a2a_agent_service=a2a_agent_service,
+            )
+
+    assert exc_info.value.status_code == 400
+    assert "invalid_request" in str(exc_info.value.detail)
+    acl_service.grant_permission.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_update_agent_duplicate_path_returns_409(sample_user_context):
+    from fastapi import HTTPException
+
+    agent_id = str(PydanticObjectId())
+    acl_service = MagicMock()
+    acl_service.check_user_permission = AsyncMock(return_value=15)
+
+    a2a_agent_service = MagicMock()
+    a2a_agent_service.update_agent = AsyncMock(
+        side_effect=ValueError("An agent with path 'team-a-crm-agent' already exists. Please choose a different path.")
+    )
+
+    request = AgentUpdateRequest(path="/Team A/CRM Agent")
+
+    with patch("registry_pkgs.database.decorators.MongoDB.get_client") as mock_get_client:
+        mock_session = AsyncMock()
+        mock_client = MagicMock()
+        mock_client.start_session.return_value.__aenter__.return_value = mock_session
+        mock_session.start_transaction.return_value.__aenter__.return_value = None
+        mock_get_client.return_value = mock_client
+
+        with pytest.raises(HTTPException) as exc_info:
+            await update_agent(
+                agent_id=agent_id,
+                data=request,
+                user_context=sample_user_context,
+                acl_service=acl_service,
+                a2a_agent_service=a2a_agent_service,
+            )
+
+    assert exc_info.value.status_code == 409
+    assert "duplicate_entry" in str(exc_info.value.detail)
+
+
+@pytest.mark.asyncio
+async def test_update_agent_invalid_root_path_returns_400(sample_user_context):
+    from fastapi import HTTPException
+
+    agent_id = str(PydanticObjectId())
+    acl_service = MagicMock()
+    acl_service.check_user_permission = AsyncMock(return_value=15)
+
+    a2a_agent_service = MagicMock()
+    a2a_agent_service.update_agent = AsyncMock(
+        side_effect=ValueError("A2A agent path must contain at least one letter or number and cannot be '/'")
+    )
+
+    request = AgentUpdateRequest(path="/")
+
+    with patch("registry_pkgs.database.decorators.MongoDB.get_client") as mock_get_client:
+        mock_session = AsyncMock()
+        mock_client = MagicMock()
+        mock_client.start_session.return_value.__aenter__.return_value = mock_session
+        mock_session.start_transaction.return_value.__aenter__.return_value = None
+        mock_get_client.return_value = mock_client
+
+        with pytest.raises(HTTPException) as exc_info:
+            await update_agent(
+                agent_id=agent_id,
+                data=request,
+                user_context=sample_user_context,
+                acl_service=acl_service,
+                a2a_agent_service=a2a_agent_service,
+            )
+
+    assert exc_info.value.status_code == 400
+    assert "invalid_request" in str(exc_info.value.detail)
 
 
 # ==================== refresh_agent_capabilities endpoint tests ====================
