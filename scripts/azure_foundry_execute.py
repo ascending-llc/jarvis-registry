@@ -78,7 +78,6 @@ async def main() -> None:
         print(f"task_state = {getattr(result.task_state, 'value', result.task_state)}")
         print("response text:\n" + (result.render_text() or "<empty>"))
     finally:
-        await headers_provider.close()
         await close_mongodb()
 
 

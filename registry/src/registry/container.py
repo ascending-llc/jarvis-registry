@@ -202,7 +202,7 @@ class RegistryContainer:
 
     @cached_property
     def a2a_headers_provider(self) -> A2aHeadersProvider:
-        """App-scoped headers provider; caches per-federation Entra credentials."""
+        """App-scoped A2A headers provider; resolves Azure Entra credentials fresh per call (no caching)."""
         return make_a2a_headers_provider(jwt_config=self.settings.jwt_signing_config)
 
     @cached_property

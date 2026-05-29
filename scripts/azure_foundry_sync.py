@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 
 from registry.container import RegistryContainer
 from registry.core.config import settings
+from registry.services.federation_crud_service import FederationCrudService
 from registry_pkgs.database import close_mongodb, init_mongodb
 from registry_pkgs.database.decorators import use_transaction
 from registry_pkgs.database.redis_client import create_redis_client
@@ -49,7 +50,7 @@ def _banner(title: str) -> None:
 
 
 @use_transaction
-async def _create_federation(crud, provider_config: dict) -> Federation:
+async def _create_federation(crud: FederationCrudService, provider_config: dict) -> Federation:
     """Wrapped in a txn because create_federation persists via get_current_session()."""
     return await crud.create_federation(
         provider_type=FederationProviderType.AZURE_AI_FOUNDRY,
@@ -80,7 +81,6 @@ async def main() -> None:
 
     crud = container.federation_crud_service
     sync = container.federation_sync_service
-    headers_provider = container.a2a_headers_provider
 
     # ---- 0. pre-clean leftovers from prior runs so this is re-runnable ----
     _banner("STEP 0 — pre-clean prior e2e federations/agents")
@@ -143,7 +143,6 @@ async def main() -> None:
                 print(f"deleted federation {federation.id} + its agents")
             except Exception as exc:
                 logger.warning("cleanup failed (leaving federation %s): %s", federation.id, exc)
-        await headers_provider.close()
         await close_mongodb()
 
 

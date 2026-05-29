@@ -46,6 +46,15 @@ def _federation(provider_type: str, provider_config: dict | None = None) -> Simp
     )
 
 
+def _auth_cm_mock(headers: dict) -> MagicMock:
+    """Mock AzureFoundryAuthService usable as an async context manager."""
+    auth = MagicMock()
+    auth.build_headers = AsyncMock(return_value=headers)
+    auth.__aenter__ = AsyncMock(return_value=auth)
+    auth.__aexit__ = AsyncMock(return_value=False)
+    return auth
+
+
 @pytest.mark.asyncio
 async def test_non_azure_agent_falls_back_to_self_signed_jwt():
     """AWS / plain-JWT agents must continue to use the existing build_headers path —
@@ -76,8 +85,7 @@ async def test_azure_agent_uses_federation_and_returns_entra_bearer():
     federation = _federation(FederationProviderType.AZURE_AI_FOUNDRY.value)
     federation.id = federation_id
 
-    fake_auth = MagicMock()
-    fake_auth.build_headers = AsyncMock(return_value={"Authorization": "Bearer entra-token"})
+    fake_auth = _auth_cm_mock({"Authorization": "Bearer entra-token"})
 
     provider = A2aHeadersProvider(jwt_config=_jwt_config())
     agent = _agent(provider="azure_ai_foundry", federation_id=federation_id)
@@ -99,15 +107,14 @@ async def test_azure_agent_uses_federation_and_returns_entra_bearer():
 
 
 @pytest.mark.asyncio
-async def test_azure_credential_is_cached_per_federation():
-    """Two calls for the same federation must reuse one AzureFoundryAuthService —
-    the Entra token cache lives inside ClientSecretCredential."""
+async def test_azure_credential_resolved_fresh_each_call():
+    """No caching: each call re-reads the Federation and builds a fresh auth
+    service, so a rotated providerConfig takes effect immediately."""
     federation_id = PydanticObjectId()
     federation = _federation(FederationProviderType.AZURE_AI_FOUNDRY.value)
     federation.id = federation_id
 
-    fake_auth = MagicMock()
-    fake_auth.build_headers = AsyncMock(return_value={"Authorization": "Bearer entra-token"})
+    fake_auth = _auth_cm_mock({"Authorization": "Bearer entra-token"})
 
     provider = A2aHeadersProvider(jwt_config=_jwt_config())
     agent = _agent(provider="azure_ai_foundry", federation_id=federation_id)
@@ -125,8 +132,8 @@ async def test_azure_credential_is_cached_per_federation():
         await provider(agent)
         await provider(agent)
 
-    assert federation_get.await_count == 1
-    assert auth_factory.call_count == 1
+    assert federation_get.await_count == 2
+    assert auth_factory.call_count == 2
     assert fake_auth.build_headers.await_count == 2
 
 
@@ -167,32 +174,3 @@ async def test_azure_provider_rejects_wrong_provider_type_federation():
     ):
         with pytest.raises(ValueError, match="is not azure_ai_foundry"):
             await provider(agent)
-
-
-@pytest.mark.asyncio
-async def test_close_releases_cached_credentials():
-    federation_id = PydanticObjectId()
-    federation = _federation(FederationProviderType.AZURE_AI_FOUNDRY.value)
-    federation.id = federation_id
-
-    fake_auth = MagicMock()
-    fake_auth.build_headers = AsyncMock(return_value={"Authorization": "Bearer t"})
-    fake_auth.close = AsyncMock()
-
-    provider = A2aHeadersProvider(jwt_config=_jwt_config())
-    agent = _agent(provider="azure_ai_foundry", federation_id=federation_id)
-
-    with (
-        patch(
-            "registry.services.federation.azure_foundry_proxy_auth.Federation.get",
-            new=AsyncMock(return_value=federation),
-        ),
-        patch(
-            "registry.services.federation.azure_foundry_proxy_auth.AzureFoundryAuthService",
-            return_value=fake_auth,
-        ),
-    ):
-        await provider(agent)
-
-    await provider.close()
-    fake_auth.close.assert_awaited_once()
