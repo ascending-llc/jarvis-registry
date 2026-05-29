@@ -38,6 +38,39 @@ class _WorkflowFindQuery:
         return self._workflows
 
 
+class _ListQuery:
+    def __init__(self, items: list):
+        self._items = items
+
+    async def to_list(self):
+        return self._items
+
+
+def _patch_executor_ref_queries(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    mcp_names: set[str] | None = None,
+    a2a_paths: set[str] | None = None,
+) -> list[tuple[str, dict]]:
+    captured_queries: list[tuple[str, dict]] = []
+    mcp_names = mcp_names or set()
+    a2a_paths = a2a_paths or set()
+
+    def fake_mcp_find(query: dict):
+        captured_queries.append(("mcp", query))
+        requested = set(query["serverName"]["$in"])
+        return _ListQuery([SimpleNamespace(serverName=name) for name in sorted(mcp_names & requested)])
+
+    def fake_a2a_find(query: dict):
+        captured_queries.append(("a2a", query))
+        requested = set(query["path"]["$in"])
+        return _ListQuery([SimpleNamespace(path=path) for path in sorted(a2a_paths & requested)])
+
+    monkeypatch.setattr(workflow_service.ExtendedMCPServer, "find", fake_mcp_find)
+    monkeypatch.setattr(workflow_service.A2AAgent, "find", fake_a2a_find)
+    return captured_queries
+
+
 @pytest.mark.asyncio
 async def test_list_workflows_escapes_regex_query(monkeypatch: pytest.MonkeyPatch):
     captured_filters = []
@@ -64,6 +97,7 @@ async def test_create_workflow_does_not_convert_unexpected_errors_to_value_error
             raise RuntimeError("database unavailable")
 
     monkeypatch.setattr(workflow_service, "WorkflowDefinition", FailingWorkflowDefinition)
+    monkeypatch.setattr(WorkflowService, "_validate_executor_refs", AsyncMock(return_value=None))
 
     request = WorkflowCreateRequest(
         name="Demo workflow",
@@ -73,6 +107,78 @@ async def test_create_workflow_does_not_convert_unexpected_errors_to_value_error
 
     with pytest.raises(RuntimeError, match="database unavailable"):
         await WorkflowService().create_workflow(request)
+
+
+@pytest.mark.asyncio
+async def test_validate_executor_refs_passes_for_valid_mcp_server_and_a2a_agent(monkeypatch: pytest.MonkeyPatch):
+    service = WorkflowService()
+    captured_queries = _patch_executor_ref_queries(
+        monkeypatch,
+        mcp_names={"github"},
+        a2a_paths={"deep-intel", "researcher"},
+    )
+    nodes = [
+        service._convert_api_node_to_model(WorkflowNodeInput(name="mcp", nodeType="step", executorKey="github")),
+        service._convert_api_node_to_model(WorkflowNodeInput(name="a2a", nodeType="step", executorKey="deep-intel")),
+        service._convert_api_node_to_model(WorkflowNodeInput(name="pool", nodeType="step", a2aPool=["researcher"])),
+    ]
+
+    await service._validate_executor_refs(nodes)
+
+    assert captured_queries[0] == (
+        "mcp",
+        {"serverName": {"$in": ["deep-intel", "github"]}, "config.enabled": True},
+    )
+    assert captured_queries[1] == ("a2a", {"path": {"$in": ["deep-intel"]}, "isEnabled": True})
+    assert captured_queries[2] == ("a2a", {"path": {"$in": ["researcher"]}, "isEnabled": True})
+
+
+@pytest.mark.asyncio
+async def test_validate_executor_refs_returns_400_for_unknown_executor_key(monkeypatch: pytest.MonkeyPatch):
+    service = WorkflowService()
+    _patch_executor_ref_queries(monkeypatch, mcp_names=set(), a2a_paths=set())
+    nodes = [service._convert_api_node_to_model(WorkflowNodeInput(name="bad", nodeType="step", executorKey="typo"))]
+
+    with pytest.raises(HTTPException) as exc_info:
+        await service._validate_executor_refs(nodes)
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "Unknown executor key: 'typo'"
+
+
+@pytest.mark.asyncio
+async def test_validate_executor_refs_returns_400_for_unknown_a2a_pool_path(monkeypatch: pytest.MonkeyPatch):
+    service = WorkflowService()
+    _patch_executor_ref_queries(monkeypatch, a2a_paths=set())
+    nodes = [service._convert_api_node_to_model(WorkflowNodeInput(name="pool", nodeType="step", a2aPool=["missing"]))]
+
+    with pytest.raises(HTTPException) as exc_info:
+        await service._validate_executor_refs(nodes)
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "Unknown a2aPool agent path: 'missing'"
+
+
+@pytest.mark.asyncio
+async def test_validate_executor_refs_finds_bad_key_in_nested_step(monkeypatch: pytest.MonkeyPatch):
+    service = WorkflowService()
+    _patch_executor_ref_queries(monkeypatch, mcp_names=set(), a2a_paths=set())
+    parallel = service._convert_api_node_to_model(
+        WorkflowNodeInput(
+            name="par",
+            nodeType="parallel",
+            children=[
+                WorkflowNodeInput(name="ok", nodeType="step", executorKey="echo"),
+                WorkflowNodeInput(name="bad", nodeType="step", executorKey="missing"),
+            ],
+        )
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await service._validate_executor_refs([parallel])
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "Unknown executor key: 'missing'"
 
 
 def test_convert_step_node_preserves_executor_key():
