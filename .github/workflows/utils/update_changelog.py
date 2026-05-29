@@ -52,6 +52,7 @@ changelog_dir.mkdir(parents=True, exist_ok=True)
 
 page_path = changelog_dir / f"{slug}.md"
 
+
 # Build a one-line description from the first prose line of the body.
 # Skip markdown headings (#, ##, ###...) and list bullets (-, *, +, 1.) so
 # the description is an actual summary sentence — not a category label like
@@ -62,9 +63,7 @@ def _is_prose_line(line: str) -> bool:
         return False
     if stripped.startswith("#"):
         return False
-    if re.match(r"^([-*+]|\d+\.)\s", stripped):
-        return False
-    return True
+    return not re.match(r"^([-*+]|\d+\.)\s", stripped)
 
 
 first_line = next(
