@@ -269,6 +269,8 @@ class WorkflowService:
         except ValueError as e:
             logger.error(f"Validation error creating workflow: {e}")
             raise
+        except HTTPException:
+            raise
         except Exception:
             logger.exception("Error creating workflow")
             raise
