@@ -151,7 +151,8 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
       }
     } catch (error: any) {
       if (showToast) {
-        showToast(error?.detail?.message || 'Failed to refresh health status', 'error');
+        const errorMessage = error?.detail?.message || 'Failed to refresh health status';
+        showToast(errorMessage.split('\n')[0], 'error');
       }
     } finally {
       setLoadingRefresh(false);
@@ -166,8 +167,9 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
       handleServerUpdate(id, { enabled });
       showToast(`Server ${enabled ? 'enabled' : 'disabled'} successfully!`, 'success');
     } catch (error: any) {
-      const errorMessage = error.detail?.message || (typeof error.detail === 'string' ? error.detail : '');
-      showToast(errorMessage || 'Failed to toggle server', 'error');
+      const errorMessage =
+        error.detail?.message || (typeof error.detail === 'string' ? error.detail : 'Failed to toggle server');
+      showToast(errorMessage.split('\n')[0], 'error');
     } finally {
       setLoading(false);
     }
@@ -388,9 +390,9 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
               {/* Refresh Button */}
               <IconButton
                 ariaLabel='Refresh health status'
-                tooltip='Refresh'
+                tooltip={canEdit ? 'Refresh' : 'No edit permission'}
                 onClick={handleRefreshHealth}
-                disabled={loadingRefresh}
+                disabled={!canEdit || loadingRefresh}
                 size='card'
                 className='text-[var(--jarvis-icon)] transition-all duration-200 hover:bg-[var(--jarvis-primary-soft)] hover:text-[var(--jarvis-icon-hover)]'
               >

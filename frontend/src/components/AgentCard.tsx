@@ -100,8 +100,9 @@ const AgentCard: React.FC<AgentCardProps> = ({ agent }) => {
       handleAgentUpdate(id, { enabled });
       showToast(`Agent ${enabled ? 'enabled' : 'disabled'} successfully!`, 'success');
     } catch (error: any) {
-      const errorMessage = error.detail?.message || (typeof error.detail === 'string' ? error.detail : '');
-      showToast(errorMessage || 'Failed to toggle agent', 'error');
+      const errorMessage =
+        error.detail?.message || (typeof error.detail === 'string' ? error.detail : 'Failed to toggle agent');
+      showToast(errorMessage.split('\n')[0], 'error');
     } finally {
       setLoading(false);
     }
@@ -114,13 +115,15 @@ const AgentCard: React.FC<AgentCardProps> = ({ agent }) => {
       const result = await SERVICES.AGENT.refreshAgent(agent.id);
       if (handleAgentUpdate && result) {
         const updates: any = {};
-        if (result.lastConnected) updates.lastCheckedTime = result.lastConnected;
+        const lastCheckedTime = result.wellKnown?.lastSyncAt ?? result.updatedAt;
+        if (lastCheckedTime) updates.lastCheckedTime = lastCheckedTime;
         if (result.numSkills !== undefined) updates.numSkills = result.numSkills;
         handleAgentUpdate(agent.id, updates);
       }
       showToast('Agent skills refreshed successfully', 'success');
     } catch (error: any) {
-      showToast(error?.detail?.message || 'Failed to refresh agent skills', 'error');
+      const errorMessage = error?.detail?.message || 'Failed to refresh agent skills';
+      showToast(errorMessage.split('\n')[0], 'error');
     } finally {
       setLoadingRefresh(false);
     }
@@ -278,9 +281,9 @@ const AgentCard: React.FC<AgentCardProps> = ({ agent }) => {
               {/* Refresh Button */}
               <IconButton
                 ariaLabel='Refresh agent skills'
-                tooltip='Refresh'
+                tooltip={canEdit ? 'Refresh' : 'No edit permission'}
                 onClick={handleRefreshAgent}
-                disabled={loadingRefresh}
+                disabled={!canEdit || loadingRefresh}
                 size='card'
                 className='text-[var(--jarvis-icon)] transition-all duration-200 hover:bg-[var(--jarvis-primary-soft)] hover:text-[var(--jarvis-icon-hover)]'
               >

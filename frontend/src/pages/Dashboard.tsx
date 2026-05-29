@@ -88,8 +88,6 @@ const Dashboard: React.FC = () => {
     // Apply filter first
     if (activeFilter === 'enabled') filtered = filtered.filter(s => s.enabled);
     else if (activeFilter === 'disabled') filtered = filtered.filter(s => !s.enabled);
-    else if (activeFilter === 'unhealthy')
-      filtered = filtered.filter(s => s.status === 'inactive' || s.status === 'error');
 
     // Then apply search
     if (searchTerm) {
@@ -113,8 +111,6 @@ const Dashboard: React.FC = () => {
     // Apply filter first
     if (activeFilter === 'enabled') filtered = filtered.filter(a => a.enabled);
     else if (activeFilter === 'disabled') filtered = filtered.filter(a => !a.enabled);
-    else if (activeFilter === 'unhealthy')
-      filtered = filtered.filter(a => a.status === 'inactive' || a.status === 'error');
 
     // Then apply search
     if (searchTerm) {
@@ -137,7 +133,6 @@ const Dashboard: React.FC = () => {
     // Apply filter first
     if (activeFilter === 'enabled') filtered = filtered.filter(f => f.status === 'active');
     else if (activeFilter === 'disabled') filtered = filtered.filter(f => f.status !== 'active');
-    else if (activeFilter === 'unhealthy') filtered = filtered.filter(f => f.syncStatus === 'failed');
 
     // Then apply search
     if (searchTerm) {
