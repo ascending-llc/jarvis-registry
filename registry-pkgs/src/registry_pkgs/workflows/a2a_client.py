@@ -399,7 +399,7 @@ async def call_a2a(
         agent_name,
         transport_type,
         base_url,
-        text[:120] if isinstance(text, str) else repr(text)[:120],
+        text[:120] if isinstance(text, str) else f"<Message parts={len(text.parts)}>",
     )
 
     agent_card = agent.card.model_copy(deep=True)

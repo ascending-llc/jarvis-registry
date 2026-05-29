@@ -311,8 +311,8 @@ def get_tools() -> list[tuple[str, Callable]]:
         kind="data"  — structured parameters matching the agent's Input Schema
         kind="file"  — file by URI reference or inline base64
 
-        Example (text only):
-            message={"parts": [{"kind": "text", "text": "Run a full code review of this PR."}]}"""
+        Example:
+            message={"parts": [{"kind": "text", "text": "Run a full code review of this repo."}]}"""
         return await execute_agent_impl(agent_id, message, ctx)
 
     return [("execute_agent", execute_agent)]

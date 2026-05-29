@@ -464,8 +464,6 @@ def test_agent_message_input_multi_part_data_and_text():
 
 
 def test_agent_message_input_file_uri_part():
-    from a2a.types import FileWithUri
-
     msg = AgentMessageInput(
         parts=[FilePart(kind="file", file=FileWithUri(uri="s3://bucket/report.json", mimeType="application/json"))]
     )
@@ -479,6 +477,13 @@ def test_agent_message_input_empty_parts_rejected():
 
     with pytest.raises(PydanticValidationError):
         AgentMessageInput(parts=[])
+
+
+def test_agent_message_input_invalid_kind_rejected():
+    from pydantic import ValidationError as PydanticValidationError
+
+    with pytest.raises(PydanticValidationError):
+        AgentMessageInput.model_validate({"parts": [{"kind": "unknown", "text": "x"}]})
 
 
 def test_agent_message_input_from_dict_text_part():
