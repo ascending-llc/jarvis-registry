@@ -311,8 +311,34 @@ def get_tools() -> list[tuple[str, Callable]]:
         kind="data"  — structured parameters matching the agent's Input Schema
         kind="file"  — file by URI reference or inline base64
 
-        Example:
-            message={"parts": [{"kind": "text", "text": "Run a full code review of this repo."}]}"""
+        Examples by part type:
+
+        kind="text"  — natural language instruction
+            message={"parts": [{"kind": "text", "text": "Summarize the report."}]}
+
+        kind="data"  — structured parameters matching the agent's Input Schema
+            message={"parts": [{"kind": "data", "data": {"month": "2024-01", "region": "us-east"}}]}
+
+        kind="file"  — URI reference (preferred for large files)
+            message={"parts": [{"kind": "file", "file": {"name": "report.json", "mimeType": "application/json", "uri": "s3://bucket/file.json"}}]}
+
+        kind="file"  — inline base64 (small files only)
+            message={"parts": [{"kind": "file", "file": {"name": "data.csv", "mimeType": "text/csv", "bytes": "<base64>"}}]}
+
+        Combining parts — structured data plus a text instruction:
+            message={"parts": [
+              {"kind": "data", "data": {"month": "2024-01"}},
+              {"kind": "text", "text": "Summarize spending by category"}
+            ]}
+
+        Combining parts — file plus a text instruction:
+            message={"parts": [
+              {"kind": "file", "file": {"uri": "s3://bucket/report.pdf", "mimeType": "application/pdf"}},
+              {"kind": "text", "text": "Summarize the key findings from this report."}
+            ]}
+
+        Targeting a specific skill — include the skill name in a TextPart:
+            message={"parts": [{"kind": "text", "text": "Use the code-review skill to review this PR: <url>"}]}"""
         return await execute_agent_impl(agent_id, message, ctx)
 
     return [("execute_agent", execute_agent)]
