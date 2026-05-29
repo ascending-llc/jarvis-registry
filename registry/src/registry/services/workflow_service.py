@@ -133,7 +133,9 @@ class WorkflowService:
         unknown_executor_keys = unmatched_executor_keys - matched_a2a_executor_keys
         if unknown_executor_keys:
             key = sorted(unknown_executor_keys)[0]
-            raise HTTPException(status_code=400, detail=f"Unknown executor key: {key!r}")
+            msg = f"Unknown executor key: {key!r}"
+            logger.warning(msg)
+            raise HTTPException(status_code=400, detail=msg)
 
         if not pool_paths:
             return
@@ -143,7 +145,9 @@ class WorkflowService:
         unknown_pool_paths = pool_paths - matched_pool_paths
         if unknown_pool_paths:
             path = sorted(unknown_pool_paths)[0]
-            raise HTTPException(status_code=400, detail=f"Unknown a2aPool agent path: {path!r}")
+            msg = f"Unknown a2aPool agent path: {path!r}"
+            logger.warning(msg)
+            raise HTTPException(status_code=400, detail=msg)
 
     async def list_workflows(
         self,
