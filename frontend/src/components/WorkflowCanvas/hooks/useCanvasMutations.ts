@@ -136,6 +136,46 @@ export const useCanvasMutations = ({
     ],
   );
 
+  const onDeleteEdges = useCallback(
+    (edgesToDelete: Edge[]) => {
+      const newAddNodes: WorkflowNode[] = [];
+      const newEdges: Edge[] = [];
+
+      for (const edge of edgesToDelete) {
+        const targetNode = nodes.find(n => n.id === edge.target);
+        const sourceNode = nodes.find(n => n.id === edge.source);
+
+        if (!targetNode || targetNode.type === 'add' || !sourceNode) continue;
+
+        const addId = `add_rec_${generateNodeId()}`;
+        newAddNodes.push({
+          id: addId,
+          type: 'add',
+          position: {
+            x: sourceNode.position.x + NODE_WIDTH + ADD_NODE_MARGIN_X,
+            y: sourceNode.position.y,
+          },
+          data: { label: '' },
+        });
+
+        newEdges.push({
+          id: generateEdgeId(),
+          source: sourceNode.id,
+          target: addId,
+          ...(edge.sourceHandle ? { sourceHandle: edge.sourceHandle } : {}),
+          ...DASHED_EDGE,
+        });
+      }
+
+      if (newAddNodes.length > 0) {
+        setNodes(prev => [...prev, ...newAddNodes]);
+        setEdges(prev => [...prev.filter(e => !edgesToDelete.find(del => del.id === e.id)), ...newEdges]);
+        onChange?.();
+      }
+    },
+    [nodes, setNodes, setEdges, generateNodeId, generateEdgeId, onChange],
+  );
+
   const onDynamicBranchesChange = useCallback(
     (
       nodeId: string,
@@ -365,6 +405,7 @@ export const useCanvasMutations = ({
   return {
     onNodeDataChange,
     onDeleteNode,
+    onDeleteEdges,
     onParallelBranchesChange,
     onRouterCasesChange,
     onPick,

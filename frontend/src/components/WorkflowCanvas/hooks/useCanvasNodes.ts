@@ -15,7 +15,10 @@ export const useCanvasNodes = (initialNodes?: Node[], initialEdges?: Edge[], onC
 
   const onNodesChange = useCallback(
     (changes: NodeChange<WorkflowNode>[]) => {
-      baseOnNodesChange(changes);
+      const nonRemoveChanges = changes.filter(c => c.type !== 'remove');
+      if (nonRemoveChanges.length > 0) {
+        baseOnNodesChange(nonRemoveChanges);
+      }
       if (changes.some(c => c.type !== 'select')) {
         onChange?.();
       }
@@ -45,23 +48,46 @@ export const useCanvasNodes = (initialNodes?: Node[], initialEdges?: Edge[], onC
       );
       if (hasTargetEdge) return false;
 
-      const hasSourceEdge = edges.some(
-        e => e.source === source && normalizeHandle(e.sourceHandle) === normalizeHandle(sourceHandle),
-      );
+      const hasSourceEdge = edges.some(e => {
+        if (e.source !== source || normalizeHandle(e.sourceHandle) !== normalizeHandle(sourceHandle)) return false;
+        const targetNode = nodes.find(n => n.id === e.target);
+        return targetNode?.type !== 'add';
+      });
       if (hasSourceEdge) return false;
 
       return true;
     },
-    [edges],
+    [edges, nodes],
   );
 
   const onConnect = useCallback(
     (params: Connection) => {
       if (!isValidConnection(params)) return;
-      setEdges(es => addEdge({ ...params, ...EDGE_CONFIG }, es));
+
+      const normalizeHandle = (h: string | null | undefined): string | null => h ?? null;
+
+      const existingAddEdge = edges.find(e => {
+        if (e.source !== params.source || normalizeHandle(e.sourceHandle) !== normalizeHandle(params.sourceHandle))
+          return false;
+        const targetNode = nodes.find(n => n.id === e.target);
+        return targetNode?.type === 'add';
+      });
+
+      if (existingAddEdge) {
+        setEdges(es =>
+          addEdge(
+            { ...params, ...EDGE_CONFIG },
+            es.filter(e => e.id !== existingAddEdge.id),
+          ),
+        );
+        setNodes(ns => ns.filter(n => n.id !== existingAddEdge.target));
+      } else {
+        setEdges(es => addEdge({ ...params, ...EDGE_CONFIG }, es));
+      }
+
       onChange?.();
     },
-    [isValidConnection, setEdges, onChange],
+    [isValidConnection, edges, nodes, setEdges, setNodes, onChange],
   );
 
   return {

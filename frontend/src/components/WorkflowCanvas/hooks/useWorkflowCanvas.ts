@@ -22,7 +22,7 @@ export const useWorkflowCanvas = (
     useCanvasSelection(setNodes);
 
   // 4. Complex Graph Mutations
-  const { onNodeDataChange, onDeleteNode, onParallelBranchesChange, onRouterCasesChange, onPick } = useCanvasMutations({
+  const { onNodeDataChange, onDeleteNode, onDeleteEdges, onParallelBranchesChange, onRouterCasesChange, onPick } = useCanvasMutations({
     nodes,
     edges,
     setNodes,
@@ -47,6 +47,7 @@ export const useWorkflowCanvas = (
     onPaneClick,
     onNodeDataChange,
     onDeleteNode,
+    onDeleteEdges,
     onParallelBranchesChange,
     onRouterCasesChange,
     onPick,
