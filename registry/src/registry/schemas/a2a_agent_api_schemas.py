@@ -80,7 +80,10 @@ class WellKnownInfo(APIBaseModel):
 class AgentCreateRequest(APIBaseModel):
     """Request schema for creating a new agent - only 5 required fields, other info auto-fetched from URL"""
 
-    path: str = Field(description="Registry path (e.g., /code-reviewer)")
+    path: str = Field(
+        description="Registry path - automatically normalized to slug format (no slashes). "
+        "Example input: '/code-reviewer' or '/agentcore/a2a/agent-1' -> stored as 'code-reviewer' or 'agentcore-a2a-agent-1'"
+    )
     title: str = Field(description="Agent title")
     description: str | None = Field(None, description="Agent description")
     url: HttpUrl | str = Field(description="Agent endpoint URL - agent card will be fetched from this URL")
@@ -90,7 +93,11 @@ class AgentCreateRequest(APIBaseModel):
 class AgentUpdateRequest(APIBaseModel):
     """Request schema for updating an agent - supports 6 fields: path, title, description, url, type, enabled"""
 
-    path: str | None = Field(None, description="Registry path (e.g., /code-reviewer)")
+    path: str | None = Field(
+        None,
+        description="Registry path - automatically normalized to slug format (no slashes). "
+        "Example: '/code-reviewer' -> 'code-reviewer'",
+    )
     title: str | None = Field(None, description="Agent title")
     description: str | None = Field(None, description="Agent description")
     url: HttpUrl | str | None = Field(None, description="Agent endpoint URL - agent card will be fetched from this URL")

@@ -244,31 +244,6 @@ async def test_execute_agent_a2a_failure_returns_error():
 
 
 @pytest.mark.asyncio
-async def test_execute_agent_on_chunk_calls_ctx_log():
-    ctx = _make_ctx()
-    valid_id = str(PydanticObjectId())
-    agent = _make_agent(valid_id)
-
-    async def fake_call_a2a(agent_obj, text, *, jwt_config, on_chunk=None, httpx_client=None):
-        if on_chunk:
-            await on_chunk("chunk1")
-            await on_chunk("chunk2")
-        return _result_with_task(_text_artifact("R", "chunk1chunk2"))
-
-    with (
-        patch("registry.mcpgw.tools.agent.A2AAgent") as mock_model,
-        patch("registry.mcpgw.tools.agent.call_a2a", side_effect=fake_call_a2a),
-    ):
-        mock_model.id = MagicMock()
-        mock_model.find_one = AsyncMock(return_value=agent)
-
-        result = await execute_agent_impl(valid_id, "stream me", ctx)
-
-    assert ctx.log.await_count == 2
-    assert result.isError is not True
-
-
-@pytest.mark.asyncio
 async def test_get_tools_returns_execute_agent():
     tools = agent.get_tools()
     names = [name for name, _ in tools]

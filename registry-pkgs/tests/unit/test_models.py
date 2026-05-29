@@ -421,7 +421,7 @@ class TestExtendedMCPServerStructure:
 
         agent = A2AAgent.model_construct(
             id=PydanticObjectId(),
-            path="/agentcore/a2a/versioned-agent",
+            path="agentcore-a2a-versioned-agent",  # Normalized path (no slashes)
             card=AgentCard(
                 name="Versioned Agent",
                 description="A test A2A agent",
@@ -464,7 +464,7 @@ class TestExtendedMCPServerStructure:
                 "defaultOutputModes": ["application/json"],
                 "skills": [],
             },
-            path="/azure-ai-foundry/a2a/azure-agent",
+            path="azure-ai-foundry-a2a-azure-agent",  # Normalized path
             author=PydanticObjectId(),
             config=AgentConfig(
                 title="Azure Agent",
@@ -499,7 +499,7 @@ class TestExtendedMCPServerStructure:
                 "defaultOutputModes": ["application/json"],
                 "skills": [],
             },
-            path="/agentcore/a2a/with-well-known",
+            path="agentcore-a2a-with-well-known",  # Normalized path
             author=PydanticObjectId(),
             config=AgentConfig(
                 title="Agent With Well Known",

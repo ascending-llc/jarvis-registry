@@ -1,4 +1,10 @@
-import { PencilSquareIcon, WrenchScrewdriverIcon, XMarkIcon } from '@heroicons/react/24/outline';
+import {
+  ArrowPathIcon,
+  ClockIcon,
+  PencilSquareIcon,
+  WrenchScrewdriverIcon,
+  XMarkIcon,
+} from '@heroicons/react/24/outline';
 import type React from 'react';
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -8,6 +14,7 @@ import { useGlobal } from '@/contexts/GlobalContext';
 import { useServer } from '@/contexts/ServerContext';
 import SERVICES from '@/services';
 import type { Agent, AgentItem } from '@/services/agent/type';
+import UTILS from '@/utils';
 
 /**
  * Props for the AgentCard component.
@@ -60,6 +67,7 @@ const AgentCard: React.FC<AgentCardProps> = ({ agent }) => {
   const { showToast } = useGlobal();
   const { handleAgentUpdate } = useServer();
   const [loading, setLoading] = useState(false);
+  const [loadingRefresh, setLoadingRefresh] = useState(false);
   const [showSkills, setShowSkills] = useState(false);
   const canEdit = !!agent.permissions?.EDIT;
 
@@ -92,10 +100,32 @@ const AgentCard: React.FC<AgentCardProps> = ({ agent }) => {
       handleAgentUpdate(id, { enabled });
       showToast(`Agent ${enabled ? 'enabled' : 'disabled'} successfully!`, 'success');
     } catch (error: any) {
-      const errorMessage = error.detail?.message || (typeof error.detail === 'string' ? error.detail : '');
-      showToast(errorMessage || 'Failed to toggle agent', 'error');
+      const errorMessage =
+        error.detail?.message || (typeof error.detail === 'string' ? error.detail : 'Failed to toggle agent');
+      showToast(errorMessage.split('\n')[0], 'error');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleRefreshAgent = async () => {
+    if (loadingRefresh) return;
+    setLoadingRefresh(true);
+    try {
+      const result = await SERVICES.AGENT.refreshAgent(agent.id);
+      if (handleAgentUpdate && result) {
+        const updates: any = {};
+        const lastCheckedTime = result.wellKnown?.lastSyncAt ?? result.updatedAt;
+        if (lastCheckedTime) updates.lastCheckedTime = lastCheckedTime;
+        if (result.numSkills !== undefined) updates.numSkills = result.numSkills;
+        handleAgentUpdate(agent.id, updates);
+      }
+      showToast('Agent skills refreshed successfully', 'success');
+    } catch (error: any) {
+      const errorMessage = error?.detail?.message || 'Failed to refresh agent skills';
+      showToast(errorMessage.split('\n')[0], 'error');
+    } finally {
+      setLoadingRefresh(false);
     }
   };
 
@@ -233,35 +263,33 @@ const AgentCard: React.FC<AgentCardProps> = ({ agent }) => {
                   {agent.enabled ? 'Enabled' : 'Disabled'}
                 </span>
               </div>
-
-              <div className='h-3 w-px bg-[color:var(--jarvis-border)]' />
-
-              <div className='flex items-center gap-1'>
-                <div
-                  className={`w-2.5 h-2.5 rounded-full ${
-                    agent.status === 'active'
-                      ? 'bg-[var(--jarvis-success)] shadow-lg shadow-emerald-500/30'
-                      : agent.status === 'inactive'
-                        ? 'bg-[var(--jarvis-warning)] shadow-lg shadow-amber-500/30'
-                        : agent.status === 'error'
-                          ? 'bg-[var(--jarvis-danger)] shadow-lg shadow-red-500/30'
-                          : 'bg-[var(--jarvis-warning)] shadow-lg shadow-amber-500/30'
-                  }`}
-                />
-                <span className='max-w-[80px] truncate text-xs font-medium text-[var(--jarvis-muted)]'>
-                  {agent.status === 'active'
-                    ? 'Active'
-                    : agent.status === 'inactive'
-                      ? 'Inactive'
-                      : agent.status === 'error'
-                        ? 'Error'
-                        : 'Unknown'}
-                </span>
-              </div>
             </div>
 
             {/* Controls */}
             <div className='flex items-center gap-2'>
+              {/* Last Checked */}
+              {(() => {
+                const timeText = UTILS.formatTimeSince(agent.lastCheckedTime);
+                return agent.lastCheckedTime && timeText ? (
+                  <div className='hidden items-center gap-1 text-xs text-[var(--jarvis-muted)] md:flex'>
+                    <ClockIcon className='h-3 w-3' />
+                    <span>{timeText}</span>
+                  </div>
+                ) : null;
+              })()}
+
+              {/* Refresh Button */}
+              <IconButton
+                ariaLabel='Refresh agent skills'
+                tooltip={canEdit ? 'Refresh' : 'No edit permission'}
+                onClick={handleRefreshAgent}
+                disabled={!canEdit || loadingRefresh}
+                size='card'
+                className='text-[var(--jarvis-icon)] transition-all duration-200 hover:bg-[var(--jarvis-primary-soft)] hover:text-[var(--jarvis-icon-hover)]'
+              >
+                <ArrowPathIcon className={`h-3 w-3 ${loadingRefresh ? 'animate-spin' : ''}`} />
+              </IconButton>
+
               {/* Toggle Switch */}
               <label
                 className={`relative inline-flex items-center ${canEdit ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'}`}

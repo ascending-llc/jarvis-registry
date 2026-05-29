@@ -22,6 +22,20 @@ interface LayoutProps {
   children: React.ReactNode;
 }
 
+const isSubPagePath = (pathname: string): boolean => {
+  return (
+    pathname === '/generate-token' ||
+    pathname === '/server-registry' ||
+    pathname === '/server-edit' ||
+    pathname === '/agent-registry' ||
+    pathname === '/agent-edit' ||
+    pathname === '/federation-registry' ||
+    pathname === '/federation-edit' ||
+    pathname === '/workflow-registry' ||
+    pathname === '/workflow-edit'
+  );
+};
+
 const Layout: React.FC<LayoutProps> = ({ children }) => {
   const { theme, toggleTheme } = useTheme();
   const { viewMode, searchTerm, setSearchTerm, setCommittedQuery } = useServer();
@@ -32,6 +46,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
 
   const isDashboard = location.pathname === '/';
   const showSearch = isDashboard;
+  const isSubPage = isSubPagePath(location.pathname);
 
   const handleClearSearch = () => {
     setSearchTerm('');
@@ -75,8 +90,9 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
               {/* Sidebar toggle button - aligned exactly with collapsed sidebar width (64px) */}
               <div className='w-16 flex justify-center flex-shrink-0'>
                 <button
-                  className='rounded-md p-1.5 text-[var(--jarvis-icon)] hover:bg-[var(--jarvis-primary-soft)] hover:text-[var(--jarvis-icon-hover)] focus:outline-none focus:ring-2 focus:ring-[var(--jarvis-primary)]'
+                  className='rounded-md p-1.5 text-[var(--jarvis-icon)] hover:bg-[var(--jarvis-primary-soft)] hover:text-[var(--jarvis-icon-hover)] focus:outline-none focus:ring-2 focus:ring-[var(--jarvis-primary)] disabled:opacity-50 disabled:cursor-not-allowed'
                   onClick={() => setSidebarOpen(!sidebarOpen)}
+                  disabled={isSubPage}
                 >
                   <Bars3Icon className='h-6 w-6' />
                 </button>
@@ -158,11 +174,11 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
 
       <div className='flex h-screen pt-16'>
         {/* Sidebar */}
-        <Sidebar sidebarOpen={sidebarOpen} setSidebarOpen={setSidebarOpen} />
+        <Sidebar sidebarOpen={sidebarOpen} setSidebarOpen={setSidebarOpen} isSubPage={isSubPage} />
 
         {/* Main content */}
         <main
-          className={`flex-1 flex flex-col transition-all duration-300 ${sidebarOpen ? 'md:ml-[272px]' : 'md:ml-16'}`}
+          className={`flex-1 flex flex-col transition-all duration-300 ${isSubPage ? 'md:ml-16' : sidebarOpen ? 'md:ml-[272px]' : 'md:ml-16'}`}
         >
           <div className='flex-1 flex flex-col px-4 sm:px-6 lg:px-8 pt-4 md:pt-8 pb-1 md:pb-2 overflow-hidden'>
             {children}

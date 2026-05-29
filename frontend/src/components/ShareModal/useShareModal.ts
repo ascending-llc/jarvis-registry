@@ -295,7 +295,17 @@ export const useShareModal = ({
     } finally {
       setSaving(false);
     }
-  }, [permissions, roles, shareWithEveryone, publicRole, removedPermissions, resourceType, resourceId, showToast, onClose]);
+  }, [
+    permissions,
+    roles,
+    shareWithEveryone,
+    publicRole,
+    removedPermissions,
+    resourceType,
+    resourceId,
+    showToast,
+    onClose,
+  ]);
 
   return {
     search,

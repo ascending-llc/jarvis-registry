@@ -390,7 +390,7 @@ async def _forward_a2a(
     request: Request,
     target_url: str,
     proxy_client: httpx.AsyncClient,
-    agent_slug: str,
+    agent_path: str,
     is_jsonrpc: bool = False,
 ) -> Response:
     """
@@ -418,7 +418,7 @@ async def _forward_a2a(
 
         try:
             logger.debug(
-                f"A2A backend [{agent_slug}]: status={backend_response.status_code}, content-type={backend_content_type}"
+                f"A2A backend [{agent_path}]: status={backend_response.status_code}, content-type={backend_content_type}"
             )
 
             if not is_stream:
@@ -427,10 +427,10 @@ async def _forward_a2a(
                 if backend_response.status_code >= 400:
                     try:
                         error_body = content_bytes.decode("utf-8")
-                        logger.error(f"A2A backend [{agent_slug}] error ({backend_response.status_code}): {error_body}")
+                        logger.error(f"A2A backend [{agent_path}] error ({backend_response.status_code}): {error_body}")
                     except Exception:
                         logger.error(
-                            f"A2A backend [{agent_slug}] error ({backend_response.status_code}): "
+                            f"A2A backend [{agent_path}] error ({backend_response.status_code}): "
                             f"[binary, {len(content_bytes)} bytes]"
                         )
 
@@ -446,7 +446,7 @@ async def _forward_a2a(
                     media_type=backend_content_type or "application/json",
                 )
 
-            logger.info(f"Streaming SSE from A2A agent [{agent_slug}]")
+            logger.info(f"Streaming SSE from A2A agent [{agent_path}]")
 
             response_headers = _sanitize_hop_by_hop_headers(backend_response.headers)
             # Content-Length cannot be set for a stream of indeterminate length.
@@ -465,7 +465,7 @@ async def _forward_a2a(
                     async for chunk in backend_response.aiter_bytes():
                         yield chunk
                 except Exception:
-                    logger.exception(f"A2A SSE streaming error [{agent_slug}]")
+                    logger.exception(f"A2A SSE streaming error [{agent_path}]")
                     raise
                 finally:
                     await stream_context.__aexit__(None, None, None)
@@ -482,12 +482,12 @@ async def _forward_a2a(
                 await stream_context.__aexit__(None, None, None)
 
     except httpx.TimeoutException:
-        logger.error(f"A2A proxy timeout for agent [{agent_slug}] {target_url}")
+        logger.error(f"A2A proxy timeout for agent [{agent_path}] {target_url}")
         if is_jsonrpc:
             return _jsonrpc_a2a_error_response(-32603, "Gateway timeout communicating with agent")
         return JSONResponse(status_code=504, content={"error": "Gateway timeout communicating with agent"})
     except Exception as e:
-        logger.error(f"A2A proxy error for agent [{agent_slug}] {target_url}: {e}", exc_info=True)
+        logger.error(f"A2A proxy error for agent [{agent_path}] {target_url}: {e}", exc_info=True)
         if is_jsonrpc:
             return _jsonrpc_a2a_error_response(-32603, "Failed to communicate with agent")
         return JSONResponse(status_code=502, content={"error": "Failed to communicate with agent"})
@@ -506,10 +506,10 @@ def _is_agentcore_jwt(
 
 
 # Route 1: JSON-RPC binding — bare base path, POST only
-@router.post("/a2a/{agent_slug}")
+@router.post("/a2a/{agent_path}")
 async def jsonrpc_proxy(
     request: Request,
-    agent_slug: str,
+    agent_path: str,
     user_context: CurrentUser,
     a2a_agent_service: A2AAgentService = Depends(get_a2a_agent_service),
     acl_service: ACLService = Depends(get_acl_service),
@@ -518,9 +518,9 @@ async def jsonrpc_proxy(
     try:
         user_id = user_context.get("user_id")
 
-        agent = await a2a_agent_service.get_agent_by_slug(agent_slug)
+        agent = await a2a_agent_service.get_agent_by_path(agent_path)
         if agent is None:
-            return _jsonrpc_a2a_error_response(-32603, f"A2A agent with slug '{agent_slug}' not found")
+            return _jsonrpc_a2a_error_response(-32603, f"A2A agent with path '{agent_path}' not found")
 
         try:
             await acl_service.check_user_permission(
@@ -530,10 +530,10 @@ async def jsonrpc_proxy(
                 required_permission="VIEW",
             )
         except HTTPException:
-            return _jsonrpc_a2a_error_response(-32001, f"Access denied to A2A agent '{agent_slug}'")
+            return _jsonrpc_a2a_error_response(-32001, f"Access denied to A2A agent '{agent_path}'")
 
         if not agent.isEnabled:
-            return _jsonrpc_a2a_error_response(-32004, f"A2A agent '{agent_slug}' is disabled")
+            return _jsonrpc_a2a_error_response(-32004, f"A2A agent '{agent_path}' is disabled")
 
         if (
             agent.config
@@ -542,35 +542,35 @@ async def jsonrpc_proxy(
         ):
             return _jsonrpc_a2a_error_response(
                 -32004,
-                f"A2A agent '{agent_slug}' uses IAM inbound auth which is not supported by this gateway",
+                f"A2A agent '{agent_path}' uses IAM inbound auth which is not supported by this gateway",
             )
 
         if agent.config and agent.config.url:
             base_url = str(agent.config.url)
-            logger.debug(f"Using config.url for agent {agent_slug}: {base_url}")
+            logger.debug(f"Using config.url for agent {agent_path}: {base_url}")
         else:
             base_url = str(agent.card.url)
             logger.warning(
-                f"Agent {agent_slug} missing config.url, falling back to card.url: {base_url}. "  # nosec B608
+                f"Agent {agent_path} missing config.url, falling back to card.url: {base_url}. "  # nosec B608
                 "This may fail if card.url is not accessible. Please update the agent to set config.url."
             )
 
         agentcore_jwt = _is_agentcore_jwt(agent.config, agent.federationMetadata)
-        proxy_client = proxy_client_registry.get(agent_slug, agentcore_jwt=agentcore_jwt)
+        proxy_client = proxy_client_registry.get(agent_path, agentcore_jwt=agentcore_jwt)
 
-        logger.info(f"A2A JSON-RPC proxy: agent={agent_slug} agentcore={agentcore_jwt} {base_url}")
+        logger.info(f"A2A JSON-RPC proxy: agent={agent_path} agentcore={agentcore_jwt} {base_url}")
 
-        return await _forward_a2a(request, base_url, proxy_client, agent_slug, is_jsonrpc=True)
+        return await _forward_a2a(request, base_url, proxy_client, agent_path, is_jsonrpc=True)
     except Exception:
-        logger.exception(f"Unexpected error in jsonrpc_proxy for agent [{agent_slug}]")
+        logger.exception(f"Unexpected error in jsonrpc_proxy for agent [{agent_path}]")
         return _jsonrpc_a2a_error_response(-32603, "Internal server error")
 
 
 # Route 2: HTTP+JSON binding — all paths with at least one segment
-@router.route("/a2a/{agent_slug}/{http_json_path:path}", methods=["GET", "POST", "DELETE", "PUT"])
+@router.route("/a2a/{agent_path}/{http_json_path:path}", methods=["GET", "POST", "DELETE", "PUT"])
 async def http_json_proxy(
     request: Request,
-    agent_slug: str,
+    agent_path: str,
     http_json_path: str,
     user_context: CurrentUser,
     a2a_agent_service: A2AAgentService = Depends(get_a2a_agent_service),
@@ -580,9 +580,9 @@ async def http_json_proxy(
     try:
         user_id = user_context.get("user_id")
 
-        agent = await a2a_agent_service.get_agent_by_slug(agent_slug)
+        agent = await a2a_agent_service.get_agent_by_path(agent_path)
         if agent is None:
-            return JSONResponse(status_code=404, content={"error": f"A2A agent with slug '{agent_slug}' not found"})
+            return JSONResponse(status_code=404, content={"error": f"A2A agent with path '{agent_path}' not found"})
 
         try:
             await acl_service.check_user_permission(
@@ -592,10 +592,10 @@ async def http_json_proxy(
                 required_permission="VIEW",
             )
         except HTTPException:
-            return JSONResponse(status_code=403, content={"error": f"Access denied to A2A agent '{agent_slug}'"})
+            return JSONResponse(status_code=403, content={"error": f"Access denied to A2A agent '{agent_path}'"})
 
         if not agent.isEnabled:
-            return JSONResponse(status_code=403, content={"error": f"A2A agent '{agent_slug}' is disabled"})
+            return JSONResponse(status_code=403, content={"error": f"A2A agent '{agent_path}' is disabled"})
 
         if (
             agent.config
@@ -604,31 +604,31 @@ async def http_json_proxy(
         ):
             return JSONResponse(
                 status_code=501,
-                content={"error": f"A2A agent '{agent_slug}' uses IAM inbound auth which is not supported"},
+                content={"error": f"A2A agent '{agent_path}' uses IAM inbound auth which is not supported"},
             )
 
         if agent.config and agent.config.url:
             base_url = str(agent.config.url)
-            logger.debug(f"Using config.url for agent {agent_slug}: {base_url}")
+            logger.debug(f"Using config.url for agent {agent_path}: {base_url}")
         else:
             base_url = str(agent.card.url)
             logger.warning(
-                f"Agent {agent_slug} missing config.url, falling back to card.url: {base_url}. "  # nosec B608
+                f"Agent {agent_path} missing config.url, falling back to card.url: {base_url}. "  # nosec B608
                 "This may fail if card.url is not accessible. Please update the agent to set config.url."
             )
 
         agentcore_jwt = _is_agentcore_jwt(agent.config, agent.federationMetadata)
-        proxy_client = proxy_client_registry.get(agent_slug, agentcore_jwt=agentcore_jwt)
+        proxy_client = proxy_client_registry.get(agent_path, agentcore_jwt=agentcore_jwt)
 
         target_url = base_url.rstrip("/") + "/" + http_json_path
 
         logger.info(
-            f"A2A HTTP+JSON proxy: agent={agent_slug} path=/{http_json_path} agentcore={agentcore_jwt} {target_url}"
+            f"A2A HTTP+JSON proxy: agent={agent_path} path=/{http_json_path} agentcore={agentcore_jwt} {target_url}"
         )
 
-        return await _forward_a2a(request, target_url, proxy_client, agent_slug)
+        return await _forward_a2a(request, target_url, proxy_client, agent_path)
     except Exception:
-        logger.exception(f"Unexpected error in http_json_proxy for agent [{agent_slug}]")
+        logger.exception(f"Unexpected error in http_json_proxy for agent [{agent_path}]")
         return JSONResponse(status_code=500, content={"error": "Internal server error"})
 
 

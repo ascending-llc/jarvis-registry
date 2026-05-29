@@ -327,9 +327,7 @@ const ServerRegistryOrEdit: React.FC = () => {
               <h1 className='text-2xl font-bold text-[var(--jarvis-text-strong)]'>
                 {isReadOnly ? 'View MCP Server' : isEditMode ? 'Edit MCP Server' : 'Register MCP Server'}
               </h1>
-              <p className='mt-0.5 text-base text-[var(--jarvis-muted)]'>
-                Configure a Model Context Protocol server
-              </p>
+              <p className='mt-0.5 text-base text-[var(--jarvis-muted)]'>Configure a Model Context Protocol server</p>
             </div>
           </div>
           {/* Content */}
@@ -351,7 +349,7 @@ const ServerRegistryOrEdit: React.FC = () => {
           </div>
           {/* Footer */}
           <div className='flex flex-wrap items-center justify-between gap-4 border-t border-[color:var(--jarvis-border)] px-6 py-4'>
-          <div className='flex items-center gap-3'>
+            <div className='flex items-center gap-3'>
               {isEditMode && !isReadOnly && serverDetail?.permissions?.DELETE && (
                 <button
                   onClick={handleDelete}

@@ -35,6 +35,8 @@ const getWellKnownAgentCards: (
 ) => Promise<TYPE.GetWellKnownAgentCardsResponse> = async (url, config) =>
   await Request.get(API.getWellKnownAgentCards, { url }, config);
 
+const refreshAgent: (id: string) => Promise<any> = async id => await Request.post(API.refreshAgent(id));
+
 const AGENT = {
   getAgentsList,
   getAgentState,
@@ -46,6 +48,7 @@ const AGENT = {
   testAgentUrl,
   getAgentSkills,
   getWellKnownAgentCards,
+  refreshAgent,
 };
 
 export default AGENT;

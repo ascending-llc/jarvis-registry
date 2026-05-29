@@ -39,7 +39,7 @@ def _mcp_server(name: str = "github") -> ExtendedMCPServer:
 
 
 def _a2a_agent(
-    path: str = "/deep-intel",
+    path: str = "deep-intel",  # Updated: path is now in slug format (no slashes)
     transport: str = "jsonrpc",
     config_url: str = "https://config.example.com/agent",
 ) -> A2AAgent:
@@ -114,7 +114,7 @@ class TestExecutorResolver:
         monkeypatch.setattr(
             executor_resolver.ExtendedMCPServer, "find_one", AsyncMock(return_value=_mcp_server("github"))
         )
-        monkeypatch.setattr(executor_resolver.A2AAgent, "find_one", AsyncMock(return_value=_a2a_agent("/github")))
+        monkeypatch.setattr(executor_resolver.A2AAgent, "find_one", AsyncMock(return_value=_a2a_agent("github")))
         monkeypatch.setattr(executor_resolver, "make_mcp_executor", lambda *args, **kwargs: "mcp-executor")
         monkeypatch.setattr(executor_resolver, "make_a2a_executor", lambda *args, **kwargs: "a2a-executor")
 
@@ -155,8 +155,9 @@ class TestExecutorResolver:
     @pytest.mark.asyncio
     async def test_resolve_executor_falls_back_to_a2a_agent(self, monkeypatch: pytest.MonkeyPatch):
         self._patch_beanie_filters(monkeypatch)
+        find_one = AsyncMock(return_value=_a2a_agent("deep-intel"))
         monkeypatch.setattr(executor_resolver.ExtendedMCPServer, "find_one", AsyncMock(return_value=None))
-        monkeypatch.setattr(executor_resolver.A2AAgent, "find_one", AsyncMock(return_value=_a2a_agent("/deep-intel")))
+        monkeypatch.setattr(executor_resolver.A2AAgent, "find_one", find_one)
         captured_agents: list = []
 
         def fake_make_a2a_executor(agent, *, jwt_config, httpx_client=None):
@@ -176,7 +177,8 @@ class TestExecutorResolver:
 
         assert resolved == "a2a-executor"
         assert len(captured_agents) == 1
-        assert captured_agents[0].path == "/deep-intel"
+        assert captured_agents[0].path == "deep-intel"  # Path is now normalized (no slashes)
+        find_one.assert_awaited_once_with(("path", "==", "deep-intel"), {"isEnabled": True})
 
     @pytest.mark.asyncio
     async def test_resolve_executor_raises_when_key_is_unknown(self, monkeypatch: pytest.MonkeyPatch):
@@ -199,7 +201,7 @@ class TestExecutorResolver:
         self, monkeypatch: pytest.MonkeyPatch
     ):
         self._patch_beanie_filters(monkeypatch)
-        agent = _a2a_agent("/deep-intel")
+        agent = _a2a_agent("deep-intel")
         monkeypatch.setattr(executor_resolver.ExtendedMCPServer, "find_one", AsyncMock(return_value=None))
         monkeypatch.setattr(executor_resolver.A2AAgent, "find_one", AsyncMock(return_value=agent))
         monkeypatch.setattr(executor_resolver, "make_a2a_executor", lambda *args, **kwargs: "a2a-executor")
@@ -217,7 +219,7 @@ class TestExecutorResolver:
     @pytest.mark.asyncio
     async def test_resolve_executor_allows_accessible_a2a_agent(self, monkeypatch: pytest.MonkeyPatch):
         self._patch_beanie_filters(monkeypatch)
-        agent = _a2a_agent("/deep-intel")
+        agent = _a2a_agent("deep-intel")
         monkeypatch.setattr(executor_resolver.ExtendedMCPServer, "find_one", AsyncMock(return_value=None))
         monkeypatch.setattr(executor_resolver.A2AAgent, "find_one", AsyncMock(return_value=agent))
         monkeypatch.setattr(executor_resolver, "make_a2a_executor", lambda *args, **kwargs: "a2a-executor")
@@ -563,6 +565,7 @@ class TestA2APoolExecutorQueries:
         query = captured_queries[0]
         assert "status" not in query, f"status filter found in pool query: {query}"
         assert query.get("isEnabled") is True, f"isEnabled=True not in pool query: {query}"
+        assert query.get("path") == {"$in": ["agent-a", "agent-b"]}
 
     @pytest.mark.asyncio
     async def test_pool_retry_path_queries_by_is_enabled(self, monkeypatch: pytest.MonkeyPatch):
@@ -586,7 +589,7 @@ class TestA2APoolExecutorQueries:
         )
 
         # Pre-fill cache to simulate retry path
-        state = {"a2a_target_retry-pool": "/agent-a"}
+        state = {"a2a_target_retry-pool": "agent-a"}
         result = await executor(SimpleNamespace(input="hello", previous_step_content=None), state)
 
         assert result.success is False
@@ -595,3 +598,4 @@ class TestA2APoolExecutorQueries:
         args_str = str(captured_args)
         assert "status" not in args_str, f"status filter found in retry query: {captured_args}"
         assert "isEnabled" in args_str, f"isEnabled not in retry query: {captured_args}"
+        assert captured_args[0] == {"path": "agent-a", "isEnabled": True}

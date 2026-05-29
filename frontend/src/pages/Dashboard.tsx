@@ -7,6 +7,7 @@ import FederationCard from '@/components/FederationCard';
 import IconButton from '@/components/IconButton';
 import SemanticSearchResults from '@/components/SemanticSearchResults';
 import ServerCard from '@/components/ServerCard';
+import WorkflowCard from '@/components/WorkflowCard';
 import { useServer } from '@/contexts/ServerContext';
 import { useSemanticSearch } from '@/hooks/useSemanticSearch';
 
@@ -36,6 +37,11 @@ const Dashboard: React.FC = () => {
     federations,
     federationsLoading,
     refreshFederationData,
+
+    workflows,
+    workflowLoading,
+    refreshWorkflowData,
+
     searchTerm,
     committedQuery,
     setCommittedQuery,
@@ -82,8 +88,6 @@ const Dashboard: React.FC = () => {
     // Apply filter first
     if (activeFilter === 'enabled') filtered = filtered.filter(s => s.enabled);
     else if (activeFilter === 'disabled') filtered = filtered.filter(s => !s.enabled);
-    else if (activeFilter === 'unhealthy')
-      filtered = filtered.filter(s => s.status === 'inactive' || s.status === 'error');
 
     // Then apply search
     if (searchTerm) {
@@ -107,8 +111,6 @@ const Dashboard: React.FC = () => {
     // Apply filter first
     if (activeFilter === 'enabled') filtered = filtered.filter(a => a.enabled);
     else if (activeFilter === 'disabled') filtered = filtered.filter(a => !a.enabled);
-    else if (activeFilter === 'unhealthy')
-      filtered = filtered.filter(a => a.status === 'inactive' || a.status === 'error');
 
     // Then apply search
     if (searchTerm) {
@@ -131,7 +133,6 @@ const Dashboard: React.FC = () => {
     // Apply filter first
     if (activeFilter === 'enabled') filtered = filtered.filter(f => f.status === 'active');
     else if (activeFilter === 'disabled') filtered = filtered.filter(f => f.status !== 'active');
-    else if (activeFilter === 'unhealthy') filtered = filtered.filter(f => f.syncStatus === 'failed');
 
     // Then apply search
     if (searchTerm) {
@@ -146,6 +147,27 @@ const Dashboard: React.FC = () => {
     return filtered;
   }, [federations, activeFilter, searchTerm]);
 
+  // Filter workflows based on activeFilter and searchTerm
+  const filteredWorkflows = useMemo(() => {
+    let filtered = workflows;
+
+    // Apply filter first
+    if (activeFilter === 'enabled') filtered = filtered.filter(w => w.enabled);
+    else if (activeFilter === 'disabled') filtered = filtered.filter(w => !w.enabled);
+
+    // Then apply search
+    if (searchTerm) {
+      const query = searchTerm.toLowerCase();
+      filtered = filtered.filter(
+        w =>
+          w.name.toLowerCase().includes(query) ||
+          (w.description || '').toLowerCase().includes(query) ||
+          w.type.toLowerCase().includes(query),
+      );
+    }
+    return filtered;
+  }, [workflows, activeFilter, searchTerm]);
+
   useEffect(() => {
     if (searchTerm.trim().length === 0 && committedQuery.length > 0) {
       setCommittedQuery('');
@@ -159,6 +181,8 @@ const Dashboard: React.FC = () => {
         await refreshServerData();
       } else if (viewMode === 'agents') {
         await refreshAgentData();
+      } else if (viewMode === 'workflow') {
+        await refreshWorkflowData();
       } else {
         await refreshFederationData();
       }
@@ -172,6 +196,8 @@ const Dashboard: React.FC = () => {
       navigate('/agent-registry');
     } else if (viewMode === 'external') {
       navigate('/federation-registry');
+    } else if (viewMode === 'workflow') {
+      navigate('/workflow-registry');
     } else {
       navigate('/server-registry');
     }
@@ -267,14 +293,37 @@ const Dashboard: React.FC = () => {
         </div>
       )}
 
-      {/* Workflow Section (Placeholder) */}
+      {/* Workflow Section */}
       {viewMode === 'workflow' && (
         <div className='mb-8'>
-          <div className='rounded-2xl border border-dashed border-[color:var(--jarvis-border-strong)] bg-[var(--jarvis-card)] py-20 text-center'>
-            <div className='mb-2 text-xl font-medium text-[var(--jarvis-faint)]'>Coming soon...</div>
-            <p className='mx-auto max-w-md text-sm text-[var(--jarvis-muted)]'>
-              The Workflow feature is currently in beta and will be available in a future update.
-            </p>
+          <div className='relative'>
+            {workflowLoading && (
+              <div className='absolute inset-0 z-10 flex items-center justify-center rounded-2xl bg-[var(--jarvis-overlay)] backdrop-blur-sm'>
+                <div className='h-8 w-8 animate-spin rounded-full border-b-2 border-[var(--jarvis-spinner)]' />
+              </div>
+            )}
+            {filteredWorkflows.length === 0 ? (
+              <div className='rounded-2xl border border-[color:var(--jarvis-info-text)]/25 bg-[var(--jarvis-info-soft)] py-12 text-center'>
+                <div className='mb-2 text-lg text-[var(--jarvis-faint)]'>No workflows found</div>
+                <p className='text-sm text-[var(--jarvis-muted)]'>
+                  {searchTerm || activeFilter !== 'all'
+                    ? 'Try adjusting your search terms'
+                    : 'No workflows are registered yet'}
+                </p>
+              </div>
+            ) : (
+              <div
+                className='grid'
+                style={{
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))',
+                  gap: 'clamp(1.5rem, 1.5rem, 2.5rem)',
+                }}
+              >
+                {filteredWorkflows.map(workflow => (
+                  <WorkflowCard key={workflow.id} workflow={workflow} />
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -335,47 +384,47 @@ const Dashboard: React.FC = () => {
               {viewMode === 'workflow' && 'Workflow'}
             </h2>
           </div>
-          <p className='text-sm text-[var(--jarvis-muted)] max-w-2xl'>
+          <p className='text-sm text-[var(--jarvis-muted)]'>
             {viewMode === 'servers' &&
               'Model Context Protocol servers federated and discoverable through your Jarvis registry.'}
             {viewMode === 'agents' &&
               'Agent-to-Agent protocol endpoints with auto-discovered .well-known capabilities.'}
             {viewMode === 'external' && 'Federated MCP servers and agents from AWS AgentCore and Azure AI Foundry.'}
             {viewMode === 'workflow' &&
-              'The Workflow feature is currently in beta and will be available in a future update.'}
+              'Agentic pipelines spanning your MCP servers and A2A agents. Autonomous workflows let the LLM decide; Supervised workflows follow a predefined sequence.'}
           </p>
         </div>
 
-        {viewMode !== 'workflow' && (
-          <div className='flex items-center gap-3'>
-            <IconButton
-              ariaLabel='Refresh'
-              tooltip='Refresh'
-              onClick={handleRefreshHealth}
-              disabled={refreshing}
-              spinning={refreshing}
-              className='rounded-lg h-10 w-10 flex items-center justify-center border border-[color:var(--jarvis-border)] bg-[var(--jarvis-surface)] hover:bg-[var(--jarvis-card-muted)] text-[var(--jarvis-text)] transition-colors'
-            >
-              <RefreshGlyph className='h-4 w-4' />
-            </IconButton>
+        <div className='flex items-center gap-3'>
+          <IconButton
+            ariaLabel='Refresh'
+            tooltip='Refresh'
+            onClick={handleRefreshHealth}
+            disabled={refreshing}
+            spinning={refreshing}
+            className='rounded-lg h-10 w-10 flex items-center justify-center border border-[color:var(--jarvis-border)] bg-[var(--jarvis-surface)] hover:bg-[var(--jarvis-card-muted)] text-[var(--jarvis-text)] transition-colors'
+          >
+            <RefreshGlyph className='h-4 w-4' />
+          </IconButton>
 
-            <IconButton
-              ariaLabel='Register'
-              tooltip={
-                viewMode === 'agents'
-                  ? 'Register Agent'
-                  : viewMode === 'external'
-                    ? 'Register Provider'
+          <IconButton
+            ariaLabel='Register'
+            tooltip={
+              viewMode === 'agents'
+                ? 'Register Agent'
+                : viewMode === 'external'
+                  ? 'Register Provider'
+                  : viewMode === 'workflow'
+                    ? 'New Workflow'
                     : 'Register Server'
-              }
-              onClick={handleRegister}
-              variant='solid'
-              className='rounded-lg h-10 w-10 flex items-center justify-center bg-[var(--jarvis-primary)] text-white hover:bg-[var(--jarvis-primary-hover)] shadow-sm transition-colors'
-            >
-              <PlusIcon className='h-5 w-5' />
-            </IconButton>
-          </div>
-        )}
+            }
+            onClick={handleRegister}
+            variant='solid'
+            className='rounded-lg h-10 w-10 flex items-center justify-center bg-[var(--jarvis-primary)] text-white hover:bg-[var(--jarvis-primary-hover)] shadow-sm transition-colors'
+          >
+            <PlusIcon className='h-5 w-5' />
+          </IconButton>
+        </div>
       </div>
 
       {/* Scrollable Content Area */}
