@@ -6,7 +6,7 @@ import uuid
 from collections.abc import Callable
 from typing import Annotated
 
-from a2a.types import Artifact, FileWithBytes, FileWithUri, Message, Task
+from a2a.types import Artifact, DataPart, FilePart, FileWithBytes, FileWithUri, Message, Part, Role, Task, TextPart
 from a2a.utils.artifact import get_artifact_text
 from a2a.utils.message import get_message_text
 from a2a.utils.parts import get_data_parts, get_file_parts
@@ -20,7 +20,7 @@ from mcp.types import (
     TextContent,
     TextResourceContents,
 )
-from pydantic import AnyUrl, Field
+from pydantic import AnyUrl, BaseModel, Field
 
 from registry_pkgs.models import ResourceType
 from registry_pkgs.models.a2a_agent import A2AAgent
@@ -165,9 +165,33 @@ async def _resolve_active_agent(agent_id: str) -> tuple[A2AAgent | None, CallToo
     return agent, None
 
 
+AgentPart = Annotated[TextPart | FilePart | DataPart, Field(discriminator="kind")]
+
+
+class AgentMessageInput(BaseModel):
+    """Content to send to the A2A agent.
+
+    Each element of `parts` is one of:
+      - TextPart  (kind="text")  — natural language instruction or context
+      - DataPart  (kind="data")  — structured parameters as a JSON object
+      - FilePart  (kind="file")  — a file by URI reference or inline base64
+
+    Parts can be combined in a single message.
+    """
+
+    parts: list[AgentPart] = Field(
+        min_length=1,
+        description=(
+            "One or more content parts that form the message body. "
+            "Use TextPart for plain instructions, DataPart for structured input, "
+            "FilePart for file references or inline content."
+        ),
+    )
+
+
 async def execute_agent_impl(
     agent_id: str,
-    message: str,
+    message: AgentMessageInput,
     ctx: Context[ServerSession, McpAppContext],
 ) -> CallToolResult:
     """
@@ -203,10 +227,19 @@ async def execute_agent_impl(
         return _error_result(str(exc))
 
     # 5. Invoke
+    # AgentPart is TextPart | FilePart | DataPart — bare concrete types from a2a-sdk.
+    # a2a.types.Part is RootModel[...] — the SDK wrapper call_a2a expects.
+    a2a_message = Message(
+        kind="message",
+        role=Role.user,
+        message_id=uuid.uuid4().hex,
+        parts=[Part(root=p) for p in message.parts],
+    )
+
     logger.info("execute_agent: invoking agent_id=%s path=%s", agent_id, agent.path)
     result = await call_a2a(
         agent,
-        message,
+        a2a_message,
         jwt_config=lifespan.jwt_signing_config,
         httpx_client=lifespan.a2a_httpx_client,
     )
@@ -238,13 +271,13 @@ def get_tools() -> list[tuple[str, Callable]]:
             ),
         ],
         message: Annotated[
-            str,
+            AgentMessageInput,
             Field(
-                min_length=1,
-                max_length=8192,
                 description=(
-                    "The task or question to send to the agent. "
-                    "Be explicit and complete — the agent has no prior conversation context."
+                    "The message to send to the agent. "
+                    "Must contain at least one part. "
+                    "Use TextPart for plain task descriptions (most common). "
+                    "Use DataPart to pass structured parameters, FilePart to pass files."
                 ),
             ),
         ],
@@ -260,9 +293,52 @@ def get_tools() -> list[tuple[str, Callable]]:
           or trying a different agent.
 
         Workflow:
-          1. discover_agents(query='…') → pick agent_id from results
-          2. execute_agent(agent_id='…', message='<full task description>')
-          3. Return the agent's response to the user."""
+        1. discover_agents(query='…') → pick agent_id from results
+        2. execute_agent(agent_id='…', message={parts: [...]})
+        3. Return the agent's response to the user.
+
+        Message parts (combinable, include as many as the agent needs based on the requirements and functions of the agent):
+
+        kind="text":
+            Natural language instruction or context. Use for task descriptions,
+            prompts, and any free-text input. Always valid.
+
+        kind="data":
+            Structured JSON parameters. Use when your input is structured data such as:
+            named fields, key-value pairs, or objects, rather than a natural-language
+            description. If the agent's description (from discover_agents) explicitly
+            defines expected fields or a parameter schema, use those field names and
+            types exactly as described.
+
+        kind="file":
+            A file by URI reference (preferred for large content) or inline
+            base64 (small payloads only).
+
+        Parts combine freely in a single message. Lead with DataPart or FilePart when
+        relevant, and add a TextPart for any additional instruction or context.
+
+        Examples:
+
+        Text only (default):
+            message={"parts": [{"kind": "text", "text": "Summarize Q1 sales trends."}]}
+
+        Structured data with a text instruction:
+            message={"parts": [
+              {"kind": "data", "data": {"month": "2024-01", "region": "us-east"}},
+              {"kind": "text", "text": "Summarize spending by category."}
+            ]}
+
+        File by URI with a text instruction:
+            message={"parts": [
+              {"kind": "file", "file": {"name": "report.json", "mimeType": "application/json", "uri": "s3://bucket/report.json"}},
+              {"kind": "text", "text": "Analyze this report and highlight anomalies."}
+            ]}
+
+        File inline base64 (small files only):
+            message={"parts": [{"kind": "file", "file": {"name": "data.csv", "mimeType": "text/csv", "bytes": "<base64>"}}]}
+
+        Targeting a specific skill — include the skill name in a TextPart:
+            message={"parts": [{"kind": "text", "text": "Use the code-review skill to review this PR: <url>"}]}"""
         return await execute_agent_impl(agent_id, message, ctx)
 
     return [("execute_agent", execute_agent)]

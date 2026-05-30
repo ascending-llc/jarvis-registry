@@ -637,7 +637,6 @@ podman compose down
 ---
 
 ## 11. Troubleshooting
->>>>>>> fork-sync
 
 ### Common macOS Issues
 

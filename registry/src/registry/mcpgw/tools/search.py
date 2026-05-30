@@ -150,8 +150,9 @@ def get_tools() -> list[tuple[str, Callable]]:
         - skill_name (entity_type='skill'): the specific skill to target
 
         Execution:
-        - call execute_agent(agent_id=<agent_id>, message=<full task description>).
-        - If entity_type='skill', include the skill_name in the message to target that capability.
+        - call execute_agent(agent_id=<agent_id>, message=<payload>) — see execute_agent's
+          inputSchema for the message structure (parts array with typed content).
+        - If entity_type='skill', target the specific skill via the message payload.
 
         Evaluating results: read each result's description to confirm the agent's
         domain matches the user's task — do not rely on the score alone. If the top
