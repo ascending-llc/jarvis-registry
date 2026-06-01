@@ -93,6 +93,16 @@ export const CanvasView: React.FC<CanvasViewProps> = ({ canvas, defaultViewport,
           nodeTypes={nodeTypes}
           defaultEdgeOptions={EDGE_CONFIG}
           isValidConnection={canvas.isValidConnection}
+          onNodesDelete={nodesToDelete => {
+            nodesToDelete.forEach(node => {
+              if (node.type !== 'add') {
+                canvas.onDeleteNode(node.id);
+              }
+            });
+          }}
+          onEdgesDelete={edgesToDelete => {
+            canvas.onDeleteEdges(edgesToDelete);
+          }}
           defaultViewport={
             defaultViewport
               ? { x: defaultViewport.x ?? 0, y: defaultViewport.y ?? 0, zoom: defaultViewport.zoom ?? 1 }
