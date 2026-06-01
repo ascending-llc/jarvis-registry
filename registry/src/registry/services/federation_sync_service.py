@@ -3,8 +3,10 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from beanie import PydanticObjectId
+
 from registry_pkgs.database.decorators import get_current_session, use_transaction
-from registry_pkgs.models import A2AAgent, ExtendedMCPServer, PrincipalType, ResourceType
+from registry_pkgs.models import A2AAgent, ExtendedAccessRole, ExtendedMCPServer, PrincipalType, ResourceType
 from registry_pkgs.models.enums import (
     FederationJobPhase,
     FederationJobType,
@@ -883,6 +885,17 @@ class FederationSyncService:
                 for entry in existing_acl_entries
             }
 
+            # Pre-fetch target-scoped roles so inherited ACL entries do not
+            # keep federation roleIds on mcpServer/remoteAgent resources.
+            target_resource_types = {_acl_key_part(resource_type) for resource_type, _ in resources}
+            target_roles = await ExtendedAccessRole.find(
+                {"resourceType": {"$in": sorted(target_resource_types)}},
+                session=session,
+            ).to_list()
+            role_id_lookup: dict[tuple[str, int], PydanticObjectId] = {
+                (_acl_key_part(role.resourceType), role.permBits): role.id for role in target_roles
+            }
+
             # Step 2: Compute new ACL entries to INSERT
             now = datetime.now(UTC)
             new_acl_entries: list[ExtendedAclEntry] = []
@@ -919,7 +932,7 @@ class FederationSyncService:
                         principalId=fed_entry.principalId,
                         resourceType=resource_type,
                         resourceId=resource_id,
-                        roleId=fed_entry.roleId,
+                        roleId=role_id_lookup.get((_acl_key_part(resource_type), fed_entry.permBits)),
                         permBits=fed_entry.permBits,
                         grantedAt=now,
                         createdAt=now,
