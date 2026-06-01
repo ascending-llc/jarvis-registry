@@ -301,7 +301,6 @@ class RegistryContainer:
 
     async def shutdown(self) -> None:
         """Shutdown services that hold background tasks or external resources."""
-        await self.workflow_reaper.stop()
         await cancel_in_flight_runs()
         await self.health_service.shutdown()
         await self.mcp_proxy_client.aclose()
