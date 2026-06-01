@@ -149,6 +149,9 @@ async def apply_reset(
             except Exception as exc:
                 outcome.errors.append(f"vector a2a {aid}: {exc}")
 
+    if outcome.errors:
+        return outcome
+
     # 2. ACL referencing the doomed resources.
     if not skip_acl and plan.acl_entries:
         acl_ids = [entry.id for entry in plan.acl_entries if entry.id is not None]
@@ -158,6 +161,8 @@ async def apply_reset(
                 outcome.acl_deleted = _coerce_deleted_count(result, fallback=len(acl_ids))
             except Exception as exc:
                 outcome.errors.append(f"acl bulk delete: {exc}")
+    if outcome.errors:
+        return outcome
 
     # 3. Mongo resource docs last.
     for server in plan.mcp_servers:
@@ -350,9 +355,11 @@ async def run(argv: list[str] | None = None) -> int:
         return 1
     finally:
         try:
-            await container.shutdown()
+            if container is not None:
+                await container.shutdown()
             close_redis_client(redis_client)
-            db_client.close()
+            if db_client is not None:
+                db_client.close()
         except Exception as exc:
             print(f"\nFatal error: {exc}")
             traceback.print_exc()
