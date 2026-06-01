@@ -31,6 +31,14 @@ def federation_sync_service():
     )
 
 
+@pytest.fixture(autouse=True)
+def default_empty_access_roles(monkeypatch):
+    monkeypatch.setattr(
+        "registry.services.federation_sync_service.ExtendedAccessRole.find",
+        lambda *args, **kwargs: _FakeQuery([]),
+    )
+
+
 def _make_federation(provider_type: FederationProviderType, provider_config: dict):
     now = datetime.now(UTC)
     return SimpleNamespace(
@@ -902,6 +910,42 @@ def _make_acl_entry(
     return entry
 
 
+def _make_access_role(resource_type: str, perm_bits: int, access_role_id: str):
+    return SimpleNamespace(
+        id=PydanticObjectId(),
+        resourceType=resource_type,
+        permBits=perm_bits,
+        accessRoleId=access_role_id,
+    )
+
+
+def _patch_acl_inheritance_storage(
+    monkeypatch,
+    *,
+    existing_acl_entries: list[ExtendedAclEntry],
+    inserted_entries: list[ExtendedAclEntry],
+    insert_calls: list[list[ExtendedAclEntry]] | None = None,
+) -> None:
+    class MockExtendedAclEntry:
+        @staticmethod
+        def find(query, **kwargs):
+            if "$or" in query or "resourceId" in query:
+                return _FakeQuery(existing_acl_entries)
+            return _FakeQuery([])
+
+        @staticmethod
+        async def insert_many(entries, **kwargs):
+            inserted_entries.extend(entries)
+            if insert_calls is not None:
+                insert_calls.append(entries)
+
+        def __init__(self, **kwargs):
+            for key, value in kwargs.items():
+                setattr(self, key, value)
+
+    monkeypatch.setattr("registry.services.federation_sync_service.ExtendedAclEntry", MockExtendedAclEntry)
+
+
 @pytest.mark.asyncio
 async def test_build_sync_plan_tracks_unchanged_resources_for_acl_inheritance(
     federation_sync_service: FederationSyncService,
@@ -1272,6 +1316,227 @@ async def test_batch_inherit_acl_normalizes_resource_type_before_existence_check
     )
 
     assert inserted_entries == []
+
+
+@pytest.mark.asyncio
+async def test_batch_inherit_acl_rewrites_role_id_to_target_resource_type(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
+    federation_id = PydanticObjectId()
+    server_id = PydanticObjectId()
+    federation_editor_role = _make_access_role(
+        ExtendedResourceType.FEDERATION,
+        RoleBits.EDITOR,
+        "federation_editor",
+    )
+    mcp_editor_role = _make_access_role(ResourceType.MCPSERVER, RoleBits.EDITOR, "mcpServer_editor")
+    federation_acl_entries = [
+        _make_acl_entry(
+            PrincipalType.USER,
+            "kent",
+            ExtendedResourceType.FEDERATION,
+            federation_id,
+            RoleBits.EDITOR,
+            role_id=federation_editor_role.id,
+        )
+    ]
+    inserted_entries = []
+
+    monkeypatch.setattr("registry.services.federation_sync_service.get_current_session", lambda: None)
+    monkeypatch.setattr(
+        "registry.services.federation_sync_service.ExtendedAccessRole.find",
+        lambda *args, **kwargs: _FakeQuery([mcp_editor_role]),
+    )
+    _patch_acl_inheritance_storage(
+        monkeypatch,
+        existing_acl_entries=[],
+        inserted_entries=inserted_entries,
+    )
+
+    await federation_sync_service._batch_inherit_federation_acl(
+        federation_acl_entries=federation_acl_entries,
+        resources=[(ResourceType.MCPSERVER, server_id)],
+    )
+
+    assert len(inserted_entries) == 1
+    assert inserted_entries[0].roleId == mcp_editor_role.id
+    assert inserted_entries[0].roleId != federation_editor_role.id
+
+
+@pytest.mark.asyncio
+async def test_batch_inherit_acl_uses_role_id_scoped_to_each_resource_type(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
+    federation_id = PydanticObjectId()
+    server_id = PydanticObjectId()
+    agent_id = PydanticObjectId()
+    federation_editor_role = _make_access_role(
+        ExtendedResourceType.FEDERATION,
+        RoleBits.EDITOR,
+        "federation_editor",
+    )
+    mcp_editor_role = _make_access_role(ResourceType.MCPSERVER, RoleBits.EDITOR, "mcpServer_editor")
+    remote_agent_editor_role = _make_access_role(
+        ResourceType.REMOTE_AGENT,
+        RoleBits.EDITOR,
+        "remoteAgent_editor",
+    )
+    federation_acl_entries = [
+        _make_acl_entry(
+            PrincipalType.USER,
+            "kent",
+            ExtendedResourceType.FEDERATION,
+            federation_id,
+            RoleBits.EDITOR,
+            role_id=federation_editor_role.id,
+        )
+    ]
+    inserted_entries = []
+
+    monkeypatch.setattr("registry.services.federation_sync_service.get_current_session", lambda: None)
+    monkeypatch.setattr(
+        "registry.services.federation_sync_service.ExtendedAccessRole.find",
+        lambda *args, **kwargs: _FakeQuery([mcp_editor_role, remote_agent_editor_role]),
+    )
+    _patch_acl_inheritance_storage(
+        monkeypatch,
+        existing_acl_entries=[],
+        inserted_entries=inserted_entries,
+    )
+
+    await federation_sync_service._batch_inherit_federation_acl(
+        federation_acl_entries=federation_acl_entries,
+        resources=[(ResourceType.MCPSERVER, server_id), (ResourceType.REMOTE_AGENT, agent_id)],
+    )
+
+    inserted_by_resource_type = {entry.resourceType: entry for entry in inserted_entries}
+    assert inserted_by_resource_type[ResourceType.MCPSERVER].roleId == mcp_editor_role.id
+    assert inserted_by_resource_type[ResourceType.REMOTE_AGENT].roleId == remote_agent_editor_role.id
+
+
+@pytest.mark.asyncio
+async def test_batch_inherit_acl_sets_role_id_none_when_target_role_is_missing(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
+    federation_id = PydanticObjectId()
+    server_id = PydanticObjectId()
+    federation_acl_entries = [
+        _make_acl_entry(
+            PrincipalType.USER,
+            "kent",
+            ExtendedResourceType.FEDERATION,
+            federation_id,
+            7,
+            role_id=PydanticObjectId(),
+        )
+    ]
+    inserted_entries = []
+
+    monkeypatch.setattr("registry.services.federation_sync_service.get_current_session", lambda: None)
+    _patch_acl_inheritance_storage(
+        monkeypatch,
+        existing_acl_entries=[],
+        inserted_entries=inserted_entries,
+    )
+
+    await federation_sync_service._batch_inherit_federation_acl(
+        federation_acl_entries=federation_acl_entries,
+        resources=[(ResourceType.MCPSERVER, server_id)],
+    )
+
+    assert len(inserted_entries) == 1
+    assert inserted_entries[0].roleId is None
+
+
+@pytest.mark.asyncio
+async def test_batch_inherit_acl_copies_perm_bits_when_target_role_is_missing(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
+    federation_id = PydanticObjectId()
+    server_id = PydanticObjectId()
+    federation_acl_entries = [
+        _make_acl_entry(
+            PrincipalType.USER,
+            "kent",
+            ExtendedResourceType.FEDERATION,
+            federation_id,
+            7,
+            role_id=PydanticObjectId(),
+        )
+    ]
+    inserted_entries = []
+
+    monkeypatch.setattr("registry.services.federation_sync_service.get_current_session", lambda: None)
+    _patch_acl_inheritance_storage(
+        monkeypatch,
+        existing_acl_entries=[],
+        inserted_entries=inserted_entries,
+    )
+
+    await federation_sync_service._batch_inherit_federation_acl(
+        federation_acl_entries=federation_acl_entries,
+        resources=[(ResourceType.MCPSERVER, server_id)],
+    )
+
+    assert len(inserted_entries) == 1
+    assert inserted_entries[0].permBits == 7
+
+
+@pytest.mark.asyncio
+async def test_batch_inherit_acl_insert_only_semantics_are_unchanged_by_role_lookup(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
+    federation_id = PydanticObjectId()
+    server_id = PydanticObjectId()
+    principal_id = "kent"
+    federation_acl_entries = [
+        _make_acl_entry(
+            PrincipalType.USER,
+            principal_id,
+            ExtendedResourceType.FEDERATION,
+            federation_id,
+            RoleBits.EDITOR,
+            role_id=PydanticObjectId(),
+        )
+    ]
+    existing_resource_acl = [
+        _make_acl_entry(
+            PrincipalType.USER,
+            principal_id,
+            ResourceType.MCPSERVER,
+            server_id,
+            RoleBits.VIEWER,
+        )
+    ]
+    inserted_entries = []
+    insert_calls = []
+
+    monkeypatch.setattr("registry.services.federation_sync_service.get_current_session", lambda: None)
+    monkeypatch.setattr(
+        "registry.services.federation_sync_service.ExtendedAccessRole.find",
+        lambda *args, **kwargs: _FakeQuery(
+            [_make_access_role(ResourceType.MCPSERVER, RoleBits.EDITOR, "mcpServer_editor")]
+        ),
+    )
+    _patch_acl_inheritance_storage(
+        monkeypatch,
+        existing_acl_entries=existing_resource_acl,
+        inserted_entries=inserted_entries,
+        insert_calls=insert_calls,
+    )
+
+    await federation_sync_service._batch_inherit_federation_acl(
+        federation_acl_entries=federation_acl_entries,
+        resources=[(ResourceType.MCPSERVER, server_id)],
+    )
+
+    assert inserted_entries == []
+    assert insert_calls == []
 
 
 @pytest.mark.asyncio
