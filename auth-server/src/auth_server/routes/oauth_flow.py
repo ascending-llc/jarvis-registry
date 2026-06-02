@@ -104,8 +104,6 @@ async def register_client(registration: ClientRegistrationRequest, request: Requ
             f"token_endpoint_auth_method: {registration.token_endpoint_auth_method}."
         )
 
-        logger.info(f"OAuth2 registration request parameters: {registration.model_dump()}")
-
         client_id = f"mcp-client-{secrets.token_urlsafe(16)}"
 
         if registration.token_endpoint_auth_method == "client_secret_post":
@@ -146,7 +144,7 @@ async def register_client(registration: ClientRegistrationRequest, request: Requ
 
         logger.info(f"Registered new OAuth client: client_id={client_id}, name={client_metadata['client_name']}")
 
-        response = ClientRegistrationResponse(
+        return ClientRegistrationResponse(
             client_id=client_id,
             client_secret=client_secret,
             client_id_issued_at=issued_at,
@@ -159,8 +157,6 @@ async def register_client(registration: ClientRegistrationRequest, request: Requ
             scope=client_metadata["scope"],
             token_endpoint_auth_method=client_metadata["token_endpoint_auth_method"],
         )
-        logger.info(f"OAuth2 registration response: {response.model_dump()}")    
-        return response
     except Exception:
         logger.exception("Client registration failed")
 
@@ -327,7 +323,7 @@ async def _parse_device_token_params(request: Request) -> dict:
     if content_type.startswith("application/json"):
         body = await request.json()
 
-        return {
+        params = {
             "grant_type": body.get("grant_type"),
             "device_code": body.get("device_code"),
             "client_id": body.get("client_id"),
@@ -340,7 +336,7 @@ async def _parse_device_token_params(request: Request) -> dict:
     elif content_type.startswith("application/x-www-form-urlencoded"):
         form = await request.form()
 
-        return {
+        params = {
             "grant_type": form.get("grant_type"),
             "device_code": form.get("device_code"),
             "client_id": form.get("client_id"),
@@ -355,6 +351,42 @@ async def _parse_device_token_params(request: Request) -> dict:
             status_code=415, detail="content-type must be application/json or application/x-www-form-urlencoded"
         )
 
+    if params.get("client_id"):
+        return params
+
+    request_redirect_uri = params.get("redirect_uri")
+    if not isinstance(request_redirect_uri, str):
+        return params
+
+    try:
+        hostname = (urlparse(request_redirect_uri).hostname or "").lower()
+    except ValueError:
+        return params
+
+    is_quick_suite_host = hostname == "quicksight.aws.amazon.com" or hostname.endswith(".quicksight.aws.amazon.com")
+    if not is_quick_suite_host:
+        return params
+
+    logger.info("Quick Suite host identified. Attempting to resolve client credentials from Authorization header.")
+    auth_header = request.headers.get("authorization", "")
+    scheme, _, encoded = auth_header.partition(" ")
+    if scheme.lower() != "basic" or not encoded:
+        return params
+
+    try:
+        decoded = base64.b64decode(encoded, validate=True).decode("utf-8")
+        basic_client_id, basic_client_secret = decoded.split(":", 1)
+    except Exception as e:
+        logger.warning(f"Quick Suite Authorization header parsing failed: {e}. Continuing without fallback credentials.")
+        return params
+
+    if basic_client_id:
+        params["client_id"] = basic_client_id
+        params["client_secret"] = basic_client_secret
+        logger.info("Resolved Quick Suite client credentials from Authorization header.")
+
+    return params
+
 
 @router.post("/oauth2/token", response_model=DeviceTokenResponse, response_model_exclude_none=True)
 async def device_token(request: Request, user_service: UserService = Depends(get_user_service)):
@@ -367,9 +399,6 @@ async def device_token(request: Request, user_service: UserService = Depends(get
     code_verifier: str | None = params["code_verifier"]
     refresh_token: str | None = params["refresh_token"]
     redirect_uri: str | None = params["redirect_uri"]
-
-    logger.info(f"Token request parameters: {params}")
-    logger.info(f"Authorization header: {request.headers.get('Authorization')}")
 
     if not grant_type:
         return oauth_error_response("invalid_request", "grant_type is required")
