@@ -185,7 +185,7 @@ async def _resolve_executor(
         logger.debug("executor_key %r → MCP server %r", key, mcp_server.serverName)
         return make_mcp_executor(mcp_server, llm=llm, registry_url=registry_url, registry_token=registry_token)
 
-    path = f"/{key}" if not key.startswith("/") else key
+    path = key.lstrip("/")
     a2a_agent = await A2AAgent.find_one(
         A2AAgent.path == path,
         {"isEnabled": True},

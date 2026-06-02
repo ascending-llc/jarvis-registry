@@ -81,9 +81,9 @@ const IconButton: React.FC<IconButtonProps> = ({
     };
   }, [tooltip, tooltipVisible]);
 
-  const wrapperClasses =
+  const baseClasses =
     size === 'card'
-      ? `group/icon-btn relative inline-flex h-[26px] w-[26px] items-center justify-center rounded-md text-[var(--jarvis-icon)] transition-all duration-150 hover:bg-[var(--jarvis-primary-soft)] hover:text-[var(--jarvis-icon-hover)] focus:outline-none focus:ring-2 focus:ring-violet-500/40 ${className}`
+      ? `group/icon-btn relative inline-flex h-[26px] w-[26px] items-center justify-center rounded-md text-[var(--jarvis-icon)] transition-all duration-150 hover:bg-[var(--jarvis-primary-soft)] hover:text-[var(--jarvis-icon-hover)] focus:outline-none focus:ring-2 focus:ring-violet-500/40`
       : `group/icon-btn relative inline-flex h-9 w-9 items-center justify-center rounded-lg border transition-all duration-150 focus:outline-none focus:ring-2 focus:ring-violet-500/40 ${
           active
             ? 'border-[var(--jarvis-primary)] bg-[var(--jarvis-primary-soft)] text-[var(--jarvis-primary-text)] hover:border-[var(--jarvis-primary-hover)] hover:bg-[var(--jarvis-primary-soft-hover)] hover:text-[var(--jarvis-primary-text-hover)]'
@@ -92,7 +92,9 @@ const IconButton: React.FC<IconButtonProps> = ({
               : variant === 'solid'
                 ? 'border-transparent bg-[var(--jarvis-primary)] text-white hover:bg-[var(--jarvis-primary-hover)] shadow-sm'
                 : 'border-[color:var(--jarvis-border)] bg-[var(--jarvis-input-bg)] text-[var(--jarvis-icon)] hover:border-[color:var(--jarvis-border-strong)] hover:bg-[var(--jarvis-primary-soft)] hover:text-[var(--jarvis-icon-hover)]'
-        } ${disabled ? 'cursor-not-allowed opacity-60' : ''} ${className}`;
+        }`;
+
+  const wrapperClasses = `${baseClasses} ${disabled ? 'cursor-not-allowed opacity-60' : ''} ${className}`;
 
   const tooltipClasses = `pointer-events-none absolute left-1/2 z-20 -translate-x-1/2 transition-opacity duration-100 ${
     tooltipPlacement === 'top' ? 'bottom-full mb-2' : 'top-full mt-2'

@@ -349,6 +349,12 @@ workflows-write:
   - action: delete_workflow
     method: DELETE
     endpoint: /workflows/{workflow_id}
+  - action: toggle_workflow
+    method: POST
+    endpoint: /workflows/{workflow_id}/toggle
+  - action: trigger_workflow_run
+    method: POST
+    endpoint: /workflows/{workflow_id}/runs
 
 workflows-share:
   - action: share_workflow

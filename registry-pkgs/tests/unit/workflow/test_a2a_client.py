@@ -36,7 +36,7 @@ def _jwt_config() -> JwtSigningConfig:
 def _make_agent(url: str = "https://agent.example.com", transport: str = "jsonrpc") -> A2AAgent:
     return A2AAgent.model_construct(
         id=PydanticObjectId(),
-        path="/test-agent",
+        path="test-agent",  # path is now in slug format (no slashes)
         card=AgentCard.model_construct(
             name="Test Agent",
             url=url,
@@ -238,64 +238,7 @@ async def test_call_a2a_message_reply_sets_message_field():
     assert result.render_text() == "Hello world!"
 
 
-@pytest.mark.asyncio
-async def test_call_a2a_message_on_chunk_called():
-    agent = _make_agent()
-    chunks: list[str] = []
-
-    async def on_chunk(c: str) -> None:
-        chunks.append(c)
-
-    mock_factory, _ = _mock_client([_msg("a complete reply")])
-
-    with (
-        patch("registry_pkgs.workflows.a2a_client.build_headers", return_value={}),
-        patch("registry_pkgs.workflows.a2a_client.ClientFactory", return_value=mock_factory),
-    ):
-        result = await call_a2a(agent, "test", jwt_config=_jwt_config(), on_chunk=on_chunk)
-
-    assert result.success is True
-    assert chunks == ["a complete reply"]
-
-
 # ── call_a2a: streaming Task path ────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_call_a2a_streaming_artifact_chunks_emit_on_chunk():
-    """Each TaskArtifactUpdateEvent emits its chunk text via on_chunk; the
-    final result.task comes from the latest task with the SDK-aggregated artifacts."""
-    agent = _make_agent()
-    chunks: list[str] = []
-
-    async def on_chunk(c: str) -> None:
-        chunks.append(c)
-
-    a_partial1 = _artifact("Summary", ["Hello "])
-    a_partial2 = _artifact("Summary", ["Hello ", "world"])
-    a_final = _artifact("Summary", ["Hello ", "world", "!"])
-
-    events = [
-        _artifact_event("Hello ", task=_task(TaskState.working, artifacts=[a_partial1])),
-        _artifact_event("world", task=_task(TaskState.working, artifacts=[a_partial2])),
-        _artifact_event("!", task=_task(TaskState.working, artifacts=[a_final])),
-        _status_event(TaskState.completed, task=_task(TaskState.completed, artifacts=[a_final])),
-    ]
-    mock_factory, _ = _mock_client(events)
-
-    with (
-        patch("registry_pkgs.workflows.a2a_client.build_headers", return_value={}),
-        patch("registry_pkgs.workflows.a2a_client.ClientFactory", return_value=mock_factory),
-    ):
-        result = await call_a2a(agent, "test", jwt_config=_jwt_config(), on_chunk=on_chunk)
-
-    assert result.success is True
-    assert result.task_state == TaskState.completed
-    assert chunks == ["Hello ", "world", "!"]
-    assert result.task is not None
-    assert len(result.task.artifacts) == 1
-    assert result.task.artifacts[0].name == "Summary"
-    assert result.render_text() == "[Summary]\nHello world!"
 
 
 @pytest.mark.asyncio
@@ -535,35 +478,6 @@ async def test_call_a2a_non_completed_terminal_state_returns_failure_with_task()
 
 
 @pytest.mark.asyncio
-async def test_call_a2a_on_chunk_failure_does_not_abort_accumulation():
-    agent = _make_agent()
-    call_count = 0
-
-    async def failing_on_chunk(chunk: str) -> None:
-        nonlocal call_count
-        call_count += 1
-        raise RuntimeError("MCP session gone")
-
-    final = _artifact("R", ["part1part2"])
-    events = [
-        _artifact_event("part1", task=_task(TaskState.working, artifacts=[_artifact("R", ["part1"])])),
-        _artifact_event("part2", task=_task(TaskState.working, artifacts=[final])),
-        _status_event(TaskState.completed, task=_task(TaskState.completed, artifacts=[final])),
-    ]
-    mock_factory, _ = _mock_client(events)
-
-    with (
-        patch("registry_pkgs.workflows.a2a_client.build_headers", return_value={}),
-        patch("registry_pkgs.workflows.a2a_client.ClientFactory", return_value=mock_factory),
-    ):
-        result = await call_a2a(agent, "test", jwt_config=_jwt_config(), on_chunk=failing_on_chunk)
-
-    assert result.success is True
-    assert result.task.artifacts[0].name == "R"
-    assert call_count == 2
-
-
-@pytest.mark.asyncio
 async def test_call_a2a_uses_http_json_protocol_for_rest_transport():
     """ClientConfig must receive TransportProtocol.http_json for http_json agents."""
     agent = _make_agent(transport="http_json")
@@ -726,3 +640,25 @@ async def test_call_a2a_falls_back_to_build_headers_when_no_provider():
         await call_a2a(agent, "test", jwt_config=_jwt_config())
 
     build_headers_spy.assert_called_once()
+@pytest.mark.asyncio
+async def test_call_a2a_accepts_pre_parsed_message():
+    """When call_a2a receives a pre-built Message, it must pass it directly to
+    _consume_stream without re-wrapping via _create_message."""
+    agent = _make_agent()
+    pre_parsed = Message(
+        kind="message",
+        role=Role.user,
+        parts=[Part(root=TextPart(kind="text", text="pre-parsed"))],
+        message_id="pre-id",
+    )
+    mock_factory, _ = _mock_client([_msg("ok")])
+
+    with (
+        patch("registry_pkgs.workflows.a2a_client.build_headers", return_value={}),
+        patch("registry_pkgs.workflows.a2a_client.ClientFactory", return_value=mock_factory),
+        patch("registry_pkgs.workflows.a2a_client._create_message") as mock_create,
+    ):
+        result = await call_a2a(agent, pre_parsed, jwt_config=_jwt_config())
+
+    assert result.success is True
+    mock_create.assert_not_called()

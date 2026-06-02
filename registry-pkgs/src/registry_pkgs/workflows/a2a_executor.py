@@ -49,7 +49,7 @@ def make_a2a_executor(
         )
         return StepOutput(content=result.render_text(), success=result.success, error=result.error)
 
-    executor.__name__ = f"{agent.path.lstrip('/')}_a2a_executor"
+    executor.__name__ = f"{agent.path}_a2a_executor"
     return executor
 
 
@@ -94,7 +94,7 @@ def make_a2a_pool_executor(
         instructions=[
             "You are given a task and a list of agents with their capabilities.",
             "Pick the single best agent for the task.",
-            "Respond with ONLY the agent path (starting with /), nothing else.",
+            "Respond with ONLY the agent path slug (e.g. 'deep-intel'), nothing else.",
         ],
     )
 
@@ -107,7 +107,7 @@ def make_a2a_pool_executor(
         selected_agent: A2AAgent | None = None
 
         if selected_path is None:
-            paths = [f"/{k.lstrip('/')}" for k in pool_keys]
+            paths = [k.lstrip("/") for k in pool_keys]
             agents = await A2AAgent.find(
                 {"path": {"$in": paths}, "isEnabled": True},
             ).to_list()
@@ -175,11 +175,11 @@ async def _select_agent_with_llm(
     prompt = (
         f"Task: {task_description}\n\n"
         f"Available agents:\n\n" + "\n---\n".join(summaries) + "\n\nWhich agent path is the best fit for this task? "
-        "Reply with ONLY the agent path (e.g. /agent-name), nothing else."
+        "Reply with ONLY the agent path slug (e.g. agent-name), nothing else."
     )
 
     result = await selector_agent.arun(prompt)
-    chosen_path = (result.content or "").strip()
+    chosen_path = (result.content or "").strip().lstrip("/")
 
     agent_by_path = {a.path: a for a in agents}
     selected = agent_by_path.get(chosen_path)

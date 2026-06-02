@@ -4,6 +4,7 @@ const MCP_BASE_URL = `${BASE_URL}/mcp`;
 const SERVER_BASE_URL = `${BASE_URL}/servers`;
 const AGENT_BASE_URL = `${BASE_URL}/agents`;
 const FEDERATION_BASE_URL = `${BASE_URL}/federations`;
+const WORKFLOW_BASE_URL = `${BASE_URL}/workflows`;
 
 const API = {
   // auth
@@ -44,6 +45,7 @@ const API = {
   toggleAgentState: (id: string) => `${AGENT_BASE_URL}/${id}/toggle`,
   getAgentSkills: (id: string) => `${AGENT_BASE_URL}/${id}/skills`,
   getWellKnownAgentCards: `${AGENT_BASE_URL}/.well-known/agent-cards`,
+  refreshAgent: (id: string) => `${AGENT_BASE_URL}/${id}/refresh`,
 
   // federation
   getFederations: `${FEDERATION_BASE_URL}`,
@@ -52,6 +54,17 @@ const API = {
   updateFederation: (id: string) => `${FEDERATION_BASE_URL}/${id}`,
   deleteFederation: (id: string) => `${FEDERATION_BASE_URL}/${id}`,
   syncFederation: (id: string) => `${FEDERATION_BASE_URL}/${id}/sync`,
+
+  // workflow
+  getWorkflowsList: `${WORKFLOW_BASE_URL}`,
+  getWorkflowDetail: (id: string) => `${WORKFLOW_BASE_URL}/${id}`,
+  createWorkflow: `${WORKFLOW_BASE_URL}`,
+  updateWorkflow: (id: string) => `${WORKFLOW_BASE_URL}/${id}`,
+  deleteWorkflow: (id: string) => `${WORKFLOW_BASE_URL}/${id}`,
+  toggleWorkflowState: (id: string) => `${WORKFLOW_BASE_URL}/${id}/toggle`,
+  triggerWorkflowRun: (id: string) => `${WORKFLOW_BASE_URL}/${id}/runs`,
+  getWorkflowRunsList: (id: string) => `${WORKFLOW_BASE_URL}/${id}/runs`,
+  getWorkflowRunDetail: (id: string, runId: string) => `${WORKFLOW_BASE_URL}/${id}/runs/${runId}`,
 
   // acl (permissions)
   searchPrincipals: `${BASE_URL}/permissions/search-principals`,

@@ -89,6 +89,27 @@ class LoopConfig(BaseModel):
         return value
 
 
+class WorkflowViewport(BaseModel):
+    """Viewport state for the workflow canvas."""
+
+    x: float = 0
+    y: float = 0
+    zoom: float = 1
+
+
+class WorkflowCanvas(BaseModel):
+    """Canvas metadata for rendering a workflow in the frontend."""
+
+    viewport: WorkflowViewport = Field(default_factory=WorkflowViewport)
+
+
+class WorkflowNodePosition(BaseModel):
+    """Node position on the workflow canvas."""
+
+    x: float = 0
+    y: float = 0
+
+
 class UserInputField(BaseModel):
     """Schema element used by ``HumanReviewSpec.user_input_schema``"""
 
@@ -179,6 +200,7 @@ class WorkflowNode(BaseModel):
     # Per-step retry and error-handling policy (STEP nodes only).
     step_config: StepConfig | None = None
     config: dict[str, Any] = Field(default_factory=dict)
+    position: WorkflowNodePosition = Field(default_factory=WorkflowNodePosition)
 
     # When set, agno's execution loop pauses at this node and emits a
     # StepRequirement which we surface via WorkflowRun.pending_requirements.
@@ -385,7 +407,9 @@ class ResolvedDependency(BaseModel):
 class WorkflowDefinition(Document):
     name: str
     description: str | None = None
+    canvas: WorkflowCanvas = Field(default_factory=WorkflowCanvas)
     nodes: list[WorkflowNode] = Field(default_factory=list)
+    enabled: bool = Field(default=False, description="Whether the workflow is enabled")
     version: int = 1
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
