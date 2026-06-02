@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from azure.identity.aio import ClientSecretCredential
+from azure.identity.aio import ClientSecretCredential, DefaultAzureCredential
 
 from registry.utils.crypto_utils import decrypt_value, is_encrypted
 from registry_pkgs.models.federation import AzureAiFoundryProviderConfig
@@ -17,35 +17,40 @@ _PREVIEW_HEADER_VALUE = "HostedAgents=V1Preview"
 
 
 class AzureFoundryAuthService:
-    """Owns the ClientSecretCredential lifecycle for one discovery run.
+    """Owns the Entra credential lifecycle for one discovery/invocation run.
 
-    `provider_config.clientSecret` may be either ciphertext (production) or
-    plaintext (initial create-before-encrypt or test) — decrypt_value already
-    handles both via the colon-separated format check.
+    Two authentication modes, selected implicitly by `provider_config.clientSecret`:
     """
 
     def __init__(self, provider_config: AzureAiFoundryProviderConfig):
         self._config = provider_config
-        self._credential: ClientSecretCredential | None = None
+        self._credential: DefaultAzureCredential | ClientSecretCredential | None = None
 
     @property
     def send_preview_header(self) -> bool:
         return bool(self._config.sendPreviewHeader)
 
-    def credential(self) -> ClientSecretCredential:
+    def credential(self) -> DefaultAzureCredential | ClientSecretCredential:
         if self._credential is None:
-            tenant_id = self._config.tenantId
-            client_id = self._config.clientId
-            secret = self._config.clientSecret
-            if not (tenant_id and client_id and secret):
-                raise ValueError("Azure AI Foundry providerConfig must include tenantId, clientId and clientSecret")
-            plain_secret = decrypt_value(secret) if is_encrypted(secret) else secret
-            self._credential = ClientSecretCredential(
-                tenant_id=tenant_id,
-                client_id=client_id,
-                client_secret=plain_secret,
-            )
+            self._credential = self._build_credential()
         return self._credential
+
+    def _build_credential(self) -> DefaultAzureCredential | ClientSecretCredential:
+        secret = self._config.clientSecret
+        if not secret:
+            return DefaultAzureCredential()
+        tenant_id = self._config.tenantId
+        client_id = self._config.clientId
+        if not tenant_id or not client_id:
+            raise ValueError(
+                "Azure AI Foundry service-principal auth requires tenantId and clientId alongside clientSecret"
+            )
+        plain_secret = decrypt_value(secret) if is_encrypted(secret) else secret
+        return ClientSecretCredential(
+            tenant_id=tenant_id,
+            client_id=client_id,
+            client_secret=plain_secret,
+        )
 
     async def access_token(self) -> str:
         token = await self.credential().get_token(_TOKEN_SCOPE)

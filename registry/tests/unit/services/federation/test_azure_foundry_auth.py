@@ -110,7 +110,50 @@ async def test_credential_decrypts_encrypted_secret(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_missing_credentials_raises_before_calling_sdk():
-    auth = AzureFoundryAuthService(_config(clientSecret=""))
-    with pytest.raises(ValueError, match="tenantId, clientId and clientSecret"):
+async def test_no_secret_falls_back_to_default_azure_credential():
+    fake_cred = SimpleNamespace(
+        get_token=AsyncMock(return_value=SimpleNamespace(token="tok")),
+        close=AsyncMock(),
+    )
+    with patch(
+        "registry.services.federation.azure_foundry_auth.DefaultAzureCredential",
+        return_value=fake_cred,
+    ) as cred_cls:
+        auth = AzureFoundryAuthService(_config(clientSecret=""))
+        token = await auth.access_token()
+        await auth.close()
+
+    assert token == "tok"
+    cred_cls.assert_called_once_with()
+    fake_cred.get_token.assert_awaited_once_with("https://ai.azure.com/.default")
+    fake_cred.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_secret_present_uses_client_secret_credential():
+    fake_cred = SimpleNamespace(
+        get_token=AsyncMock(return_value=SimpleNamespace(token="tok")),
+        close=AsyncMock(),
+    )
+    with (
+        patch(
+            "registry.services.federation.azure_foundry_auth.ClientSecretCredential",
+            return_value=fake_cred,
+        ) as cred_cls,
+        patch(
+            "registry.services.federation.azure_foundry_auth.DefaultAzureCredential",
+        ) as default_cls,
+    ):
+        auth = AzureFoundryAuthService(_config(clientSecret="plain-secret"))
+        await auth.access_token()
+        await auth.close()
+
+    cred_cls.assert_called_once()
+    default_cls.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_secret_without_tenant_or_client_raises():
+    auth = AzureFoundryAuthService(_config(clientSecret="plain-secret", tenantId="", clientId=""))
+    with pytest.raises(ValueError, match="tenantId and clientId"):
         await auth.access_token()

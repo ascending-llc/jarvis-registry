@@ -89,19 +89,27 @@ class AzureAiFoundryProviderConfig(BaseModel):
     projectEndpoint: str | None = Field(
         default=None,
         description="Azure AI Foundry project endpoint used to create AIProjectClient, "
-        "form: https://{account}.services.ai.azure.com/api/projects/{project}",
+        "form: https://{account}.services.ai.azure.com/api/projects/{project}. "
+        "Always required, regardless of auth mode.",
     )
     tenantId: str | None = Field(
         default=None,
-        description="Microsoft Entra tenant id of the customer tenant",
+        description="Microsoft Entra tenant id. "
+        "Required for service-principal auth; leave empty when using managed identity.",
     )
     clientId: str | None = Field(
         default=None,
-        description="Service principal (App Registration) client id",
+        description="Service principal (App Registration) client id. "
+        "Required for service-principal auth; leave empty when using managed identity.",
     )
     clientSecret: str | None = Field(
         default=None,
-        description="Service principal client secret; stored encrypted at rest",
+        description="Service principal client secret; stored encrypted at rest. "
+        "Required for service-principal auth (provide together with tenantId and clientId). "
+        "Leave empty to use managed identity: DefaultAzureCredential then resolves credentials "
+        "from the runtime — Managed Identity on Azure, or the "
+        "AZURE_TENANT_ID/AZURE_CLIENT_ID/AZURE_CLIENT_SECRET environment variables on AWS "
+        "(set on the host, not in this config).",
     )
     agentNames: list[str] = Field(
         default_factory=list,
