@@ -377,7 +377,9 @@ async def _parse_device_token_params(request: Request) -> dict:
         decoded = base64.b64decode(encoded, validate=True).decode("utf-8")
         basic_client_id, basic_client_secret = decoded.split(":", 1)
     except Exception as e:
-        logger.warning(f"Quick Suite Authorization header parsing failed: {e}. Continuing without fallback credentials.")
+        logger.warning(
+            f"Quick Suite Authorization header parsing failed: {e}. Continuing without fallback credentials."
+        )
         return params
 
     if basic_client_id:

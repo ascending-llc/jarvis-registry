@@ -518,7 +518,11 @@ class TestOAuth2TokenEndpoint:
             test_client = TestClient(app)
 
             headers = {"Authorization": f"Basic {basic_auth}"}
-            kwargs = {"json": payload, "headers": headers} if content_type == "json" else {"data": payload, "headers": headers}
+            kwargs = (
+                {"json": payload, "headers": headers}
+                if content_type == "json"
+                else {"data": payload, "headers": headers}
+            )
             response = test_client.post(f"{API_PREFIX}/oauth2/token", **kwargs)
 
             assert response.status_code == 200
