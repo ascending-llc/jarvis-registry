@@ -35,7 +35,7 @@ const WorkflowRegistryOrEdit: React.FC = () => {
   const [mutatingAction, setMutatingAction] = useState<MutatingAction>('idle');
 
   // ── 4. Dirty Checking & UI State ───────────────────────────────────────────────
-  const [hasChanges, _setHasChanges] = useState(false);
+  const [_hasChanges, _setHasChanges] = useState(false);
   const hasChangesRef = useRef(false);
   const setHasChanges = (val: boolean) => {
     hasChangesRef.current = val;
