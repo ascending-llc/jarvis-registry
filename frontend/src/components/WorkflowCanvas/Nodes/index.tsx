@@ -273,8 +273,16 @@ export const AddNode: React.FC<NodeProps<Node<import('../types').BaseNodeData>>>
   return (
     <>
       <Handle type='target' position={Position.Left} />
-      <div className='add-node' onClick={() => onAdd?.(id)}>
-        <div className='add-plus'>+</div>
+      <div className='add-node'>
+        <div
+          className='add-plus cursor-pointer'
+          onClick={e => {
+            e.stopPropagation();
+            onAdd?.(id);
+          }}
+        >
+          +
+        </div>
         <div className='add-label'>Add next node</div>
       </div>
     </>

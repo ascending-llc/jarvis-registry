@@ -70,6 +70,15 @@ export const useCanvasMutations = ({
 
   const onDeleteNode = useCallback(
     (nodeId: string) => {
+      const deletedNode = nodes.find(n => n.id === nodeId);
+      if (deletedNode?.type === 'add') {
+        setNodes(prev => prev.filter(n => n.id !== nodeId));
+        setEdges(prev => prev.filter(e => e.source !== nodeId && e.target !== nodeId));
+        setSelected(null);
+        onChange?.();
+        return;
+      }
+
       const remainingRealNodes = nodes.filter(n => n.id !== nodeId && n.type !== 'add').length;
       if (remainingRealNodes === 0) {
         setNodes([{ id: `add_${Date.now()}`, type: 'add', position: { x: 0, y: 0 }, data: { label: '' } }]);
@@ -92,7 +101,6 @@ export const useCanvasMutations = ({
 
       const newAddNodes: WorkflowNode[] = [];
       const newEdges: Edge[] = [];
-      const deletedNode = nodes.find(n => n.id === nodeId);
       const fallbackX = deletedNode?.position.x ?? 0;
       const fallbackY = deletedNode?.position.y ?? 0;
 
@@ -321,19 +329,33 @@ export const useCanvasMutations = ({
 
   const onPick = useCallback(
     (pendingAddId: string, category: 'agent' | 'mcp' | 'logic', item: PickerItem | LogicStep) => {
-      const addNode = nodes.find(n => n.id === pendingAddId);
-      if (!addNode) return;
-
       onChange?.();
 
       const nodeType = CATEGORY_TYPE[category](item);
       const newId = generateNodeId();
       const data = getDefaultNodeData(nodeType, item.label, item.desc);
 
+      let targetX = 0;
+      let targetY = 0;
+
+      if (pendingAddId === 'global') {
+        if (nodes.length > 0) {
+          const maxX = Math.max(...nodes.map(n => n.position.x));
+          const rightmostNode = nodes.find(n => n.position.x === maxX);
+          targetX = maxX + NODE_WIDTH + ADD_NODE_MARGIN_X;
+          targetY = rightmostNode ? rightmostNode.position.y : 0;
+        }
+      } else {
+        const addNode = nodes.find(n => n.id === pendingAddId);
+        if (!addNode) return;
+        targetX = addNode.position.x;
+        targetY = addNode.position.y;
+      }
+
       const newNode: WorkflowNode = {
         id: newId,
         type: nodeType,
-        position: { ...addNode.position },
+        position: { x: targetX, y: targetY },
         data,
       };
 
@@ -376,9 +398,25 @@ export const useCanvasMutations = ({
         data: { label: '' },
       }));
 
-      const nextNodes = nodes.filter(n => n.id !== pendingAddId).concat([newNode, ...newAddNodes]);
+      const nextNodes =
+        pendingAddId === 'global'
+          ? nodes.concat([newNode, ...newAddNodes])
+          : nodes.filter(n => n.id !== pendingAddId).concat([newNode, ...newAddNodes]);
 
       const nextEdges = (() => {
+        if (pendingAddId === 'global') {
+          return [
+            ...edges,
+            ...newAddNodes.map((addN, i) => ({
+              id: generateEdgeId(),
+              source: newId,
+              target: addN.id,
+              ...(handles[i].id ? { sourceHandle: handles[i].id } : {}),
+              ...DASHED_EDGE,
+            })),
+          ];
+        }
+
         const without = edges.filter(e => e.target !== pendingAddId);
         const incoming = edges.find(e => e.target === pendingAddId);
         return [
