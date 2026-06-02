@@ -96,6 +96,7 @@ const NodePicker: React.FC<NodePickerProps> = ({ onPick, onClose, agentOnly = fa
         label: a.name,
         desc: a.description || `${a.numSkills} skill${a.numSkills !== 1 ? 's' : ''}`,
         status: a.status || 'active',
+        executorKey: a.path,
       })),
     [agents],
   );
@@ -107,6 +108,7 @@ const NodePicker: React.FC<NodePickerProps> = ({ onPick, onClose, agentOnly = fa
         label: s.name,
         desc: s.description || `${s.numTools ?? 0} tool${s.numTools !== 1 ? 's' : ''}`,
         status: s.status || 'active',
+        executorKey: s.name,
       })),
     [servers],
   );

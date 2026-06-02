@@ -30,6 +30,7 @@ export interface WorkflowCanvasProps {
 export interface BaseNodeData extends Record<string, unknown> {
   label: string;
   description?: string;
+  executorKey?: string;
   onAdd?: () => void;
 }
 
@@ -114,6 +115,7 @@ export interface PickerItem {
   label: string;
   desc: string;
   status?: 'active' | 'inactive' | 'error';
+  executorKey?: string;
 }
 
 /** Agent info type */
@@ -121,6 +123,7 @@ export interface AgentInfo {
   id: string;
   label: string;
   desc: string;
+  path?: string;
 }
 
 /** Logic Step type */

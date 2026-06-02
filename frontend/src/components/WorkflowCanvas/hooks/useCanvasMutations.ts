@@ -30,8 +30,8 @@ const getDefaultNodeData = (type: string, label: string, desc: string): NodeData
     return {
       ...base,
       agents: [
-        { id: 'classifier-agent', label: 'Classifier Agent', desc: '' },
-        { id: 'responder-agent', label: 'Responder Agent', desc: '' },
+        { id: 'classifier-agent', label: 'Classifier Agent', desc: '', path: 'classifier-agent' },
+        { id: 'responder-agent', label: 'Responder Agent', desc: '', path: 'responder-agent' },
       ] satisfies AgentInfo[],
     };
   if (type === 'cond') return { ...base, expression: 'session_state.score > 0.8' };
@@ -334,6 +334,9 @@ export const useCanvasMutations = ({
       const nodeType = CATEGORY_TYPE[category](item);
       const newId = generateNodeId();
       const data = getDefaultNodeData(nodeType, item.label, item.desc);
+      if ((nodeType === 'agent' || nodeType === 'mcp') && 'executorKey' in item) {
+        (data as AgentNodeData | McpNodeData).executorKey = (item as PickerItem).executorKey;
+      }
 
       let targetX = 0;
       let targetY = 0;
