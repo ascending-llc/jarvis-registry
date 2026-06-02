@@ -146,7 +146,7 @@ async def register_client(registration: ClientRegistrationRequest, request: Requ
 
         logger.info(f"Registered new OAuth client: client_id={client_id}, name={client_metadata['client_name']}")
 
-        return ClientRegistrationResponse(
+        response = ClientRegistrationResponse(
             client_id=client_id,
             client_secret=client_secret,
             client_id_issued_at=issued_at,
@@ -159,6 +159,8 @@ async def register_client(registration: ClientRegistrationRequest, request: Requ
             scope=client_metadata["scope"],
             token_endpoint_auth_method=client_metadata["token_endpoint_auth_method"],
         )
+        logger.info(f"OAuth2 registration response: {response.model_dump()}")    
+        return response
     except Exception:
         logger.exception("Client registration failed")
 
