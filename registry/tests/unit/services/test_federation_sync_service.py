@@ -18,16 +18,22 @@ from registry_pkgs.models.enums import FederationProviderType, FederationStatus,
 from registry_pkgs.models.extended_acl_entry import ExtendedAclEntry, ExtendedResourceType
 from registry_pkgs.models.federation_sync_job import FederationApplySummary
 
+_DEFAULT_USER_OBJECT_ID = PydanticObjectId()
+
 
 @pytest.fixture
 def federation_sync_service():
+    user_service = MagicMock()
+    user_service.get_user_by_user_id = AsyncMock(
+        return_value=SimpleNamespace(id=_DEFAULT_USER_OBJECT_ID, user_id="user-1")
+    )
     return FederationSyncService(
         federation_crud_service=MagicMock(),
         federation_job_service=MagicMock(),
         mcp_server_repo=MagicMock(),
         a2a_agent_repo=MagicMock(),
         acl_service=MagicMock(),
-        user_service=MagicMock(),
+        user_service=user_service,
     )
 
 
@@ -72,9 +78,9 @@ async def test_discover_entities_dispatches_to_aws_handler(federation_sync_servi
     aws_handler.discover_entities = AsyncMock(return_value=expected)
     federation_sync_service.sync_handlers[FederationProviderType.AWS_AGENTCORE] = aws_handler
 
-    result = await federation_sync_service._discover_entities(federation)
+    result = await federation_sync_service._discover_entities(federation, author_id=_DEFAULT_USER_OBJECT_ID)
 
-    aws_handler.discover_entities.assert_awaited_once_with(federation)
+    aws_handler.discover_entities.assert_awaited_once_with(federation, author_id=_DEFAULT_USER_OBJECT_ID)
     assert result == expected
 
 
@@ -100,10 +106,10 @@ async def test_aws_handler_passes_resource_tags_filter_to_client():
         return_value={"mcp_servers": [], "a2a_agents": [], "skipped_runtimes": []}
     )
 
-    result = await handler.discover_entities(federation)
+    result = await handler.discover_entities(federation, author_id=_DEFAULT_USER_OBJECT_ID)
 
     fake_discovery_client.discover_runtime_entities.assert_awaited_once_with(
-        author_id=None,
+        author_id=_DEFAULT_USER_OBJECT_ID,
         region="us-east-1",
         assume_role_arn="arn:aws:iam::123456789012:role/TestRole",
         resource_tags_filter={"env": "production", "team": "platform"},
@@ -119,7 +125,7 @@ async def test_azure_sync_is_not_implemented(federation_sync_service: Federation
     )
 
     with pytest.raises(ValueError, match="not implemented yet"):
-        await federation_sync_service._discover_entities(federation)
+        await federation_sync_service._discover_entities(federation, author_id=_DEFAULT_USER_OBJECT_ID)
 
 
 @pytest.mark.asyncio
@@ -261,7 +267,7 @@ async def test_run_sync_calls_vector_sync_after_commit(federation_sync_service: 
     federation_sync_service.federation_job_service.mark_failed = AsyncMock()
     federation_sync_service.federation_job_service.mark_success = AsyncMock()
 
-    result = await federation_sync_service.run_sync(federation=federation, job=job, user_id="user-1")
+    result = await federation_sync_service.run_sync(federation=federation, job=job, author_id=_DEFAULT_USER_OBJECT_ID)
 
     assert result == job
     federation_sync_service._sync_vector_index_after_commit.assert_awaited_once_with(
@@ -297,7 +303,7 @@ async def test_run_sync_marks_failed_when_vector_sync_fails(federation_sync_serv
     federation_sync_service.federation_job_service.mark_failed = AsyncMock()
 
     with pytest.raises(RuntimeError, match="vector down"):
-        await federation_sync_service.run_sync(federation=federation, job=job, user_id="user-1")
+        await federation_sync_service.run_sync(federation=federation, job=job, author_id=_DEFAULT_USER_OBJECT_ID)
 
     federation_sync_service.federation_crud_service.mark_sync_failed.assert_awaited_once()
     federation_sync_service.federation_job_service.mark_failed.assert_awaited_once()
@@ -405,7 +411,7 @@ async def test_run_sync_returns_failed_job_without_vector_when_apply_summary_has
     federation_sync_service.federation_crud_service.mark_sync_success = AsyncMock()
     federation_sync_service.federation_job_service.mark_success = AsyncMock()
 
-    result = await federation_sync_service.run_sync(federation=federation, job=job, user_id="user-1")
+    result = await federation_sync_service.run_sync(federation=federation, job=job, author_id=_DEFAULT_USER_OBJECT_ID)
 
     assert result == job
     federation_sync_service._sync_vector_index_after_commit.assert_not_awaited()
@@ -428,7 +434,7 @@ async def test_run_sync_updates_last_sync_when_discovery_fails(federation_sync_s
     federation_sync_service.federation_job_service.mark_failed = AsyncMock()
 
     with pytest.raises(RuntimeError, match="discovery failed"):
-        await federation_sync_service.run_sync(federation=federation, job=job, user_id="user-1")
+        await federation_sync_service.run_sync(federation=federation, job=job, author_id=_DEFAULT_USER_OBJECT_ID)
 
     federation_sync_service.federation_crud_service.mark_sync_failed.assert_awaited_once()
     failed_last_sync = federation_sync_service.federation_crud_service.mark_sync_failed.await_args.kwargs["last_sync"]
@@ -765,7 +771,6 @@ async def test_commit_sync_transaction_marks_federation_failed_when_resource_enr
         federation=federation,
         job=job,
         discovered={"mcp_servers": [SimpleNamespace()], "a2a_agents": [SimpleNamespace()]},
-        user_id="user-1",
     )
 
     assert result == mutation_result
@@ -1922,3 +1927,158 @@ async def test_batch_inherit_acl_raises_after_failure(federation_sync_service: F
             federation_acl_entries=federation_acl_entries,
             resources=[(ResourceType.MCPSERVER, server_id)],
         )
+
+
+# --- user_id resolution defense-in-depth ---------------------------------
+
+
+@pytest.mark.asyncio
+async def test_start_manual_sync_raises_when_user_id_is_missing(federation_sync_service: FederationSyncService):
+    # Author resolution happens before any job is created, so a missing user_id
+    # must fail fast without touching job/federation state.
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    federation_sync_service.federation_job_service.get_active_job = AsyncMock()
+    federation_sync_service.create_sync_job_and_mark_pending = AsyncMock()
+    federation_sync_service.run_sync = AsyncMock()
+    federation_sync_service.federation_crud_service.mark_sync_failed = AsyncMock()
+    federation_sync_service.federation_job_service.mark_failed = AsyncMock()
+
+    with pytest.raises(ValueError, match="requires a user_id"):
+        await federation_sync_service.start_manual_sync(federation=federation, reason="test", triggered_by=None)
+
+    federation_sync_service.federation_job_service.get_active_job.assert_not_awaited()
+    federation_sync_service.create_sync_job_and_mark_pending.assert_not_awaited()
+    federation_sync_service.run_sync.assert_not_awaited()
+    federation_sync_service.federation_crud_service.mark_sync_failed.assert_not_awaited()
+    federation_sync_service.federation_job_service.mark_failed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_start_manual_sync_raises_when_user_not_found(federation_sync_service: FederationSyncService):
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    federation_sync_service.user_service.get_user_by_user_id = AsyncMock(return_value=None)
+    federation_sync_service.federation_job_service.get_active_job = AsyncMock()
+    federation_sync_service.create_sync_job_and_mark_pending = AsyncMock()
+    federation_sync_service.run_sync = AsyncMock()
+    federation_sync_service.federation_crud_service.mark_sync_failed = AsyncMock()
+    federation_sync_service.federation_job_service.mark_failed = AsyncMock()
+
+    with pytest.raises(ValueError, match="user not found"):
+        await federation_sync_service.start_manual_sync(federation=federation, reason="test", triggered_by="ghost-user")
+
+    federation_sync_service.federation_job_service.get_active_job.assert_not_awaited()
+    federation_sync_service.create_sync_job_and_mark_pending.assert_not_awaited()
+    federation_sync_service.run_sync.assert_not_awaited()
+    federation_sync_service.federation_crud_service.mark_sync_failed.assert_not_awaited()
+    federation_sync_service.federation_job_service.mark_failed.assert_not_awaited()
+
+
+def _arrange_resync_update(federation_sync_service: FederationSyncService, federation):
+    federation_sync_service.federation_crud_service.validate_provider_config = MagicMock(
+        return_value={"region": "us-west-2"}
+    )
+    federation_sync_service.federation_job_service.get_active_job = AsyncMock()
+    federation_sync_service.update_federation_and_create_resync_job = AsyncMock()
+    federation_sync_service.run_sync = AsyncMock()
+
+
+async def _call_update_resync(federation_sync_service: FederationSyncService, federation, updated_by):
+    return await federation_sync_service.update_federation_with_optional_resync(
+        federation=federation,
+        display_name="name",
+        description=None,
+        tags=[],
+        provider_config={"region": "us-west-2"},
+        updated_by=updated_by,
+        sync_after_update=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_update_with_resync_raises_when_user_id_is_missing(federation_sync_service: FederationSyncService):
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    _arrange_resync_update(federation_sync_service, federation)
+
+    with pytest.raises(ValueError, match="requires a user_id"):
+        await _call_update_resync(federation_sync_service, federation, updated_by=None)
+
+    federation_sync_service.federation_job_service.get_active_job.assert_not_awaited()
+    federation_sync_service.update_federation_and_create_resync_job.assert_not_awaited()
+    federation_sync_service.run_sync.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_update_with_resync_raises_when_user_not_found(federation_sync_service: FederationSyncService):
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    _arrange_resync_update(federation_sync_service, federation)
+    federation_sync_service.user_service.get_user_by_user_id = AsyncMock(return_value=None)
+
+    with pytest.raises(ValueError, match="user not found"):
+        await _call_update_resync(federation_sync_service, federation, updated_by="ghost-user")
+
+    federation_sync_service.federation_job_service.get_active_job.assert_not_awaited()
+    federation_sync_service.update_federation_and_create_resync_job.assert_not_awaited()
+    federation_sync_service.run_sync.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_plain_update_skips_author_resolution(federation_sync_service: FederationSyncService):
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    federation_sync_service.federation_crud_service.validate_provider_config = MagicMock(
+        return_value={"region": "us-east-1"}
+    )
+    federation_sync_service.user_service.get_user_by_user_id = AsyncMock(return_value=None)
+    federation_sync_service.federation_crud_service.update_federation = AsyncMock(return_value=federation)
+    federation_sync_service.run_sync = AsyncMock()
+
+    updated, job = await federation_sync_service.update_federation_with_optional_resync(
+        federation=federation,
+        display_name="name",
+        description=None,
+        tags=[],
+        provider_config={"region": "us-east-1"},
+        updated_by=None,
+        sync_after_update=True,
+    )
+
+    assert updated is federation
+    assert job is None
+    federation_sync_service.user_service.get_user_by_user_id.assert_not_awaited()
+    federation_sync_service.run_sync.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_preview_manual_sync_raises_when_user_id_is_missing(
+    federation_sync_service: FederationSyncService,
+):
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    with pytest.raises(ValueError, match="requires a user_id"):
+        await federation_sync_service.preview_manual_sync(
+            federation=federation,
+            reason="test",
+            triggered_by=None,
+        )
+
+
+@pytest.mark.asyncio
+async def test_run_sync_forwards_author_id_to_discover_entities(
+    federation_sync_service: FederationSyncService,
+):
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    job = SimpleNamespace(id=PydanticObjectId(), startedAt=datetime.now(UTC))
+    mutation_result = FederationSyncMutationResult(
+        summary=FederationApplySummary(),
+        stats=SimpleNamespace(),
+        last_sync=SimpleNamespace(),
+    )
+
+    discover_mock = AsyncMock(return_value={"mcp_servers": [], "a2a_agents": []})
+    federation_sync_service._discover_entities = discover_mock
+    federation_sync_service._commit_sync_transaction = AsyncMock(return_value=mutation_result)
+    federation_sync_service._sync_vector_index_after_commit = AsyncMock()
+    federation_sync_service.federation_crud_service.mark_sync_success = AsyncMock()
+    federation_sync_service.federation_job_service.mark_success = AsyncMock()
+
+    await federation_sync_service.run_sync(federation=federation, job=job, author_id=_DEFAULT_USER_OBJECT_ID)
+
+    discover_mock.assert_awaited_once_with(federation, author_id=_DEFAULT_USER_OBJECT_ID)

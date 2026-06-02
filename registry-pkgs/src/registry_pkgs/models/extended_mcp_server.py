@@ -583,7 +583,10 @@ class ExtendedMCPServer(MCPServer):
         # Extract server_id if available (for updates)
         server_id = server_info.get("id") or server_info.get("_id")
 
-        # Create server instance
+        author = server_info.get("author")
+        if author is None:
+            raise ValueError("server_info must contain a non-null 'author' field")
+
         return cls(
             id=PydanticObjectId(server_id) if server_id else None,
             serverName=server_name,
@@ -591,7 +594,7 @@ class ExtendedMCPServer(MCPServer):
             config=config,
             status=status,
             tags=server_info.get("tags", []),
-            author=server_info.get("author") or PydanticObjectId(),
+            author=author,
             federationRefId=server_info.get("federationRefId"),
             federationMetadata=server_info.get("federationMetadata"),
         )

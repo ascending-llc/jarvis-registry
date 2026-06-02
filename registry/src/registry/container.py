@@ -24,7 +24,6 @@ from .health.service import HealthMonitoringService
 from .services.a2a_agent_service import A2AAgentService
 from .services.access_control_service import ACLService
 from .services.agent_scanner import AgentScannerService
-from .services.agentcore_import_service import AgentCoreImportService
 from .services.federation_crud_service import FederationCrudService
 from .services.federation_job_service import FederationJobService
 from .services.federation_service import FederationService
@@ -178,16 +177,6 @@ class RegistryContainer:
         return A2AAgentService(a2a_agent_repo=self.a2a_agent_repo)
 
     @cached_property
-    def agentcore_import_service(self) -> AgentCoreImportService:
-        return AgentCoreImportService(
-            acl_service_instance=self.acl_service,
-            server_service=self.server_service,
-            user_service_instance=self.user_service,
-            mcp_server_repo=self.mcp_server_repo,
-            a2a_agent_repo=self.a2a_agent_repo,
-        )
-
-    @cached_property
     def security_scanner_service(self) -> SecurityScannerService:
         return SecurityScannerService(server_service=self.server_service)
 
@@ -312,7 +301,6 @@ class RegistryContainer:
 
     async def shutdown(self) -> None:
         """Shutdown services that hold background tasks or external resources."""
-        await self.workflow_reaper.stop()
         await cancel_in_flight_runs()
         await self.health_service.shutdown()
         await self.mcp_proxy_client.aclose()
