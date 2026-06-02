@@ -369,6 +369,7 @@ async def device_token(request: Request, user_service: UserService = Depends(get
     redirect_uri: str | None = params["redirect_uri"]
 
     logger.info(f"Token request parameters: {params}")
+    logger.info(f"Authorization header: {request.headers.get('Authorization')}")
 
     if not grant_type:
         return oauth_error_response("invalid_request", "grant_type is required")
