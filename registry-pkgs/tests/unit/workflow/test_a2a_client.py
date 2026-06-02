@@ -640,6 +640,8 @@ async def test_call_a2a_falls_back_to_build_headers_when_no_provider():
         await call_a2a(agent, "test", jwt_config=_jwt_config())
 
     build_headers_spy.assert_called_once()
+
+
 @pytest.mark.asyncio
 async def test_call_a2a_accepts_pre_parsed_message():
     """When call_a2a receives a pre-built Message, it must pass it directly to
