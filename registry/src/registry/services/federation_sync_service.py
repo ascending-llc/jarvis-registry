@@ -191,7 +191,7 @@ class FederationSyncService:
         self,
         federation: Federation,
         job: FederationSyncJob,
-        user_id: str | None,
+        author_id: PydanticObjectId,
     ) -> FederationSyncJob:
         """
         Sync execution follows a fixed flow:
@@ -207,7 +207,6 @@ class FederationSyncService:
         even though the Mongo transaction has already committed.
         """
         try:
-            author_id = await self._resolve_author_id(user_id)
             discovered = await self._discover_entities(federation, author_id=author_id)
             mutation_result = await self._commit_sync_transaction(
                 federation=federation,
@@ -305,6 +304,9 @@ class FederationSyncService:
             )
             return updated, None
 
+        # Resolve the author up front so an unknown user fails before we create a
+        # job; otherwise a phantom resync job would be left behind.
+        author_id = await self._resolve_author_id(updated_by)
         active_job = await self.federation_job_service.get_active_job(federation.id)
         if active_job:
             raise ValueError("Federation already has an active sync job")
@@ -320,7 +322,7 @@ class FederationSyncService:
         await self.run_sync(
             federation=federation,
             job=job,
-            user_id=updated_by,
+            author_id=author_id,
         )
         return federation, job
 
@@ -437,6 +439,7 @@ class FederationSyncService:
         triggered_by: str | None,
     ) -> FederationSyncJob:
         """Start a user-triggered sync using the shared pending-job then run-sync flow."""
+        author_id = await self._resolve_author_id(triggered_by)
         active_job = await self.federation_job_service.get_active_job(federation.id)
         if active_job:
             raise ValueError("Federation already has an active sync job")
@@ -455,7 +458,7 @@ class FederationSyncService:
         await self.run_sync(
             federation=federation,
             job=job,
-            user_id=triggered_by,
+            author_id=author_id,
         )
         return job
 
