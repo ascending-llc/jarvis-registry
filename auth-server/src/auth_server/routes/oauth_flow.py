@@ -104,6 +104,8 @@ async def register_client(registration: ClientRegistrationRequest, request: Requ
             f"token_endpoint_auth_method: {registration.token_endpoint_auth_method}."
         )
 
+        logger.info(f"OAuth2 registration request parameters: {registration.model_dump()}")
+
         client_id = f"mcp-client-{secrets.token_urlsafe(16)}"
 
         if registration.token_endpoint_auth_method == "client_secret_post":
@@ -363,6 +365,8 @@ async def device_token(request: Request, user_service: UserService = Depends(get
     code_verifier: str | None = params["code_verifier"]
     refresh_token: str | None = params["refresh_token"]
     redirect_uri: str | None = params["redirect_uri"]
+
+    logger.info(f"Token request parameters: {params}")
 
     if not grant_type:
         return oauth_error_response("invalid_request", "grant_type is required")
