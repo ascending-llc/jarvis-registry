@@ -268,6 +268,7 @@ def create_mcp_app(*, container_provider: Callable[[], RegistryContainer | None]
                 redis_client=container.redis_client,
                 jwt_signing_config=settings.jwt_signing_config,
                 acl_service=container.acl_service,
+                a2a_headers_provider=container.a2a_headers_provider,
             )
 
     # Configure transport security settings from environment variables

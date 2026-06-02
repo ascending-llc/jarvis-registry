@@ -573,6 +573,75 @@ async def test_call_a2a_uses_async_with_when_no_shared_httpx_client():
     mock_client.__aexit__.assert_awaited_once()
 
 
+# ── Provider detection + headers_provider hook ────────────────────────────────
+
+
+def test_is_azure_foundry_runtime_matches_provider_type_value():
+    from registry_pkgs.workflows.a2a_client import is_azure_foundry_runtime
+
+    agent = _make_agent()
+    agent.federationMetadata = {"providerType": "azure_ai_foundry"}
+    assert is_azure_foundry_runtime(agent) is True
+
+
+def test_is_azure_foundry_runtime_false_for_unknown_provider():
+    from registry_pkgs.workflows.a2a_client import is_azure_foundry_runtime
+
+    agent = _make_agent()
+    agent.federationMetadata = {"providerType": "aws_agentcore"}
+    assert is_azure_foundry_runtime(agent) is False
+
+    agent.federationMetadata = {}
+    assert is_azure_foundry_runtime(agent) is False
+
+
+@pytest.mark.asyncio
+async def test_call_a2a_uses_headers_provider_when_supplied():
+    """When headers_provider is supplied, it must be awaited and its result used —
+    the default build_headers JWT path must NOT be touched."""
+    agent = _make_agent()
+    mock_factory, _ = _mock_client([_msg("ok")])
+
+    provider_calls: list[A2AAgent] = []
+
+    async def provider(target_agent: A2AAgent) -> dict[str, str]:
+        provider_calls.append(target_agent)
+        return {"Authorization": "Bearer entra-token"}
+
+    with (
+        patch("registry_pkgs.workflows.a2a_client.build_headers") as build_headers_spy,
+        patch("registry_pkgs.workflows.a2a_client.ClientFactory", return_value=mock_factory),
+    ):
+        await call_a2a(
+            agent,
+            "test",
+            jwt_config=_jwt_config(),
+            headers_provider=provider,
+        )
+
+    build_headers_spy.assert_not_called()
+    assert provider_calls == [agent]
+
+
+@pytest.mark.asyncio
+async def test_call_a2a_falls_back_to_build_headers_when_no_provider():
+    """Without headers_provider, the default sync build_headers must still run.
+    This keeps the AWS AgentCore + plain-JWT paths unchanged."""
+    agent = _make_agent()
+    mock_factory, _ = _mock_client([_msg("ok")])
+
+    with (
+        patch(
+            "registry_pkgs.workflows.a2a_client.build_headers",
+            return_value={"Authorization": "Bearer self-signed"},
+        ) as build_headers_spy,
+        patch("registry_pkgs.workflows.a2a_client.ClientFactory", return_value=mock_factory),
+    ):
+        await call_a2a(agent, "test", jwt_config=_jwt_config())
+
+    build_headers_spy.assert_called_once()
+
+
 @pytest.mark.asyncio
 async def test_call_a2a_accepts_pre_parsed_message():
     """When call_a2a receives a pre-built Message, it must pass it directly to

@@ -10,6 +10,7 @@ from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRep
 from ...core.mcp_client import MCPClientService
 from ...core.session_store import SessionStore
 from ...services.access_control_service import ACLService
+from ...services.federation.azure_foundry_proxy_auth import A2aHeadersProvider
 from ...services.oauth.oauth_service import MCPOAuthService
 from ...services.search.service import SearchService
 from ...services.server_service import ServerServiceV1
@@ -31,3 +32,4 @@ class McpAppContext:
     redis_client: Redis
     jwt_signing_config: JwtSigningConfig
     acl_service: ACLService
+    a2a_headers_provider: A2aHeadersProvider

@@ -12,6 +12,7 @@ from agno.workflow.step import StepExecutor
 from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.models.a2a_agent import A2AAgent
 from registry_pkgs.workflows.a2a_client import (
+    HeadersProvider,
     call_a2a,
     raise_if_iam_unsupported,
 )
@@ -25,6 +26,7 @@ def make_a2a_executor(
     *,
     jwt_config: JwtSigningConfig,
     httpx_client: httpx.AsyncClient | None = None,
+    headers_provider: HeadersProvider | None = None,
 ) -> StepExecutor:
     """Wrap an A2A agent as a workflow StepExecutor via a direct A2A call.
 
@@ -33,6 +35,7 @@ def make_a2a_executor(
         jwt_config:   JWT signing config for service-to-agent auth.
         httpx_client: Optional shared httpx pool. When None, call_a2a creates
                       one per call (suitable for tests / one-off scripts).
+        headers_provider: Optional shared headers provider.
     """
 
     async def executor(step_input: StepInput, session_state: dict[str, Any] | None = None) -> StepOutput:
@@ -42,6 +45,7 @@ def make_a2a_executor(
             build_prompt(step_input),
             jwt_config=jwt_config,
             httpx_client=httpx_client,
+            headers_provider=headers_provider,
         )
         return StepOutput(content=result.render_text(), success=result.success, error=result.error)
 
@@ -57,6 +61,7 @@ def make_a2a_pool_executor(
     jwt_config: JwtSigningConfig,
     accessible_agent_ids: set[str] | None,
     httpx_client: httpx.AsyncClient | None = None,
+    headers_provider: HeadersProvider | None = None,
 ) -> StepExecutor:
     """Build a StepExecutor that picks the best A2A agent from a pool at runtime.
 
@@ -77,6 +82,7 @@ def make_a2a_pool_executor(
         httpx_client:         Optional shared httpx pool forwarded to ``call_a2a``.
                               When ``None``, ``call_a2a`` builds a fresh pool per
                               invocation (slower but isolated; fine for tests).
+        headers_provider:     Optional shared headers provider.
 
     Returns:
         An async callable that accepts ``(StepInput, session_state)`` and
@@ -144,6 +150,7 @@ def make_a2a_pool_executor(
             task,
             jwt_config=jwt_config,
             httpx_client=httpx_client,
+            headers_provider=headers_provider,
         )
         return StepOutput(content=result.render_text(), success=result.success, error=result.error)
 

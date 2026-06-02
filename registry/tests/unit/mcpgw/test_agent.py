@@ -50,6 +50,7 @@ def _make_ctx(
     lifespan_context = SimpleNamespace(
         jwt_signing_config=jwt_config or SimpleNamespace(),
         a2a_httpx_client=a2a_httpx_client,
+        a2a_headers_provider=MagicMock(),
         acl_service=acl_service,
     )
     request_state = SimpleNamespace(user={"user_id": user_id})
