@@ -363,17 +363,25 @@ async def _parse_device_token_params(request: Request) -> dict:
     except ValueError:
         return params
 
-    is_quick_suite_host = hostname == "quicksight.aws.amazon.com" or hostname.endswith(".quicksight.aws.amazon.com")
-    if not is_quick_suite_host:
-        return params
-
-    logger.info("Quick Suite host identified. Attempting to resolve client credentials from Authorization header.")
     auth_header = request.headers.get("authorization", "")
     scheme, _, encoded = auth_header.partition(" ")
-    if scheme.lower() != "basic" or not encoded:
+    has_basic_credentials = scheme.lower() == "basic" and encoded
+
+    is_quick_suite_host = hostname == "quicksight.aws.amazon.com" or hostname.endswith(".quicksight.aws.amazon.com")
+    if not is_quick_suite_host:
+        if has_basic_credentials:
+            logger.warning(
+                "client_secret_basic was provided for non-Quick Suite redirect_uri host '%s'; "
+                "skipping Quick Suite fallback client_id parsing.",
+                hostname or "unknown",
+            )
+        return params
+
+    if not has_basic_credentials:
         return params
 
     try:
+        logger.info("Quick Suite host identified. Attempting to resolve client credentials from Authorization header.")
         decoded = base64.b64decode(encoded, validate=True).decode("utf-8")
         basic_client_id, basic_client_secret = decoded.split(":", 1)
     except Exception as e:
