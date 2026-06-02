@@ -35,7 +35,12 @@ const WorkflowRegistryOrEdit: React.FC = () => {
   const [mutatingAction, setMutatingAction] = useState<MutatingAction>('idle');
 
   // ── 4. Dirty Checking & UI State ───────────────────────────────────────────────
-  const [hasChanges, setHasChanges] = useState(false);
+  const [_hasChanges, _setHasChanges] = useState(false);
+  const hasChangesRef = useRef(false);
+  const setHasChanges = (val: boolean) => {
+    hasChangesRef.current = val;
+    _setHasChanges(val);
+  };
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [runHistoryRefresh, setRunHistoryRefresh] = useState(0);
 
@@ -44,20 +49,20 @@ const WorkflowRegistryOrEdit: React.FC = () => {
     if (isReadOnly) return false;
     const currentUrl = currentLocation.pathname + currentLocation.search;
     const nextUrl = nextLocation.pathname + nextLocation.search;
-    return hasChanges && currentUrl !== nextUrl;
+    return hasChangesRef.current && currentUrl !== nextUrl;
   });
 
   useEffect(() => {
     if (isReadOnly) return;
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
-      if (hasChanges) {
+      if (hasChangesRef.current) {
         e.preventDefault();
         e.returnValue = '';
       }
     };
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [isReadOnly, hasChanges]);
+  }, [isReadOnly]);
 
   // ── Side Effects: Save shortcut (Cmd+S / Ctrl+S) ───────────────────────────────
   useEffect(() => {

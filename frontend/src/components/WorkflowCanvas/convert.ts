@@ -78,11 +78,11 @@ const mapNodeToApi = (
     }
   }
 
-  if ((node.type === 'mcp' || node.type === 'agent') && data.label) {
-    apiNode.executorKey = data.label;
+  if (node.type === 'mcp' || node.type === 'agent') {
+    apiNode.executorKey = (data.executorKey as string | undefined) || data.label;
   }
   if (node.type === 'pool')
-    apiNode.a2aPool = (data as import('./types').PoolNodeData).agents?.map((a: AgentInfo) => a.id) ?? [];
+    apiNode.a2aPool = (data as import('./types').PoolNodeData).agents?.map((a: AgentInfo) => a.path || a.id) ?? [];
   if (node.type === 'parallel') {
     const pData = data as import('./types').ParallelNodeData;
     apiNode.config = {
@@ -272,6 +272,7 @@ const apiNodeToCanvas = (w: ApiWorkflowNode): CanvasNode => {
   const data = {
     label: w.name,
     description: (w.config?.description as string | undefined) ?? '',
+    executorKey: w.executorKey,
   } as NodeData;
 
   if (canvasType === 'cond' && w.conditionCel) {
@@ -292,7 +293,7 @@ const apiNodeToCanvas = (w: ApiWorkflowNode): CanvasNode => {
   if (w.config?.cases) (data as import('./types').RouterNodeData).cases = w.config.cases as string[];
   if (w.a2aPool)
     (data as import('./types').PoolNodeData).agents = w.a2aPool.map(
-      id => ({ id, label: id, desc: '' }) satisfies AgentInfo,
+      id => ({ id, label: id, desc: '', path: id }) satisfies AgentInfo,
     );
 
   // Restore branch/case labels for parallel & router handles
