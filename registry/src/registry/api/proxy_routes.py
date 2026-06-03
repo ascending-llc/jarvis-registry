@@ -625,7 +625,7 @@ async def http_json_proxy(
         agentcore_jwt = _is_agentcore_jwt(agent.config, agent.federationMetadata)
         proxy_client = proxy_client_registry.get(agent_path, agentcore_jwt=agentcore_jwt)
 
-        target_url = base_url.rstrip("/") + "/" + http_json_path
+        target_url = base_url.rstrip("/") + "/" + http_json_path.lstrip("/")
 
         logger.info(
             f"A2A HTTP+JSON proxy: agent={agent_path} path=/{http_json_path} agentcore={agentcore_jwt} {target_url}"

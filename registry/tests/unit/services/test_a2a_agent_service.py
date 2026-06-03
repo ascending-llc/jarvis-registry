@@ -172,7 +172,13 @@ async def test_sync_wellknown_passes_session_to_save():
         ("https://agent.example.com/", "https://agent.example.com"),
         ("https://agent.example.com/.well-known/agent-card.json", "https://agent.example.com"),
         ("https://agent.example.com/.well-known/agent.json/", "https://agent.example.com"),
+        ("https://agent.example.com/.well-known", "https://agent.example.com"),
         ("https://agent.example.com/i-just-like-this", "https://agent.example.com/i-just-like-this"),
+        ("https://api.example.com/.well-known-data/v1", "https://api.example.com/.well-known-data/v1"),
+        (
+            "https://api.example.com/api/.well-known-foo/resource",
+            "https://api.example.com/api/.well-known-foo/resource",
+        ),
     ],
 )
 def test_normalize_config_url(raw: str, expected: str):

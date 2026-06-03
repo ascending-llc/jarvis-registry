@@ -35,10 +35,9 @@ logger = logging.getLogger(__name__)
 
 
 def _normalize_config_url(url: str) -> str:
-    """Strip trailing slash and any /.well-known/... suffix so config.url is a clean service root."""
-    url = url.rstrip("/")
-    idx = url.find("/.well-known")
-    return url[:idx] if idx != -1 else url
+    """Strip trailing slash and any terminal /.well-known/... suffix from a URL."""
+    well_known_suffix_re = re.compile(r"/\.well-known(/.*)?$")
+    return well_known_suffix_re.sub("", url.rstrip("/"))
 
 
 class A2AAgentService:
@@ -516,6 +515,9 @@ class A2AAgentService:
                         agent.wellKnown.lastSyncVersion = agent_card.version
                 else:
                     logger.debug(f"URL unchanged ({new_url}), skipping agent card fetch")
+                    if agent.config and str(agent.config.url) != new_url:
+                        logger.debug(f"Normalizing stored config.url from {agent.config.url!r} to {new_url!r}")
+                        agent.config.url = new_url
 
             # Update config fields (title, description, type)
             # These are stored separately in the config field
@@ -698,13 +700,18 @@ class A2AAgentService:
             if not agent.wellKnown or not agent.wellKnown.enabled:
                 raise ValueError("Well-known sync is not enabled for this agent")
 
-            # URL comes from config.url (user-provided), fallback to card.url for backward compatibility
+            # Discovery base URL: config.url is the canonical source (user-provided, normalized
+            # at write time by _normalize_config_url — clean service root, no trailing slash,
+            # no /.well-known suffix).  card.url is the spec-defined INVOCATION endpoint and
+            # is NOT normalized for discovery; A2ACardResolver strips trailing slashes itself,
+            # but for safety we normalize it too via _normalize_config_url before use.
             if agent.config and agent.config.url:
                 agent_url = str(agent.config.url)
             elif agent.card and agent.card.url:
-                agent_url = str(agent.card.url)
+                agent_url = _normalize_config_url(str(agent.card.url))
                 logger.warning(
-                    f"Agent {agent_id} missing config.url, falling back to card.url. Consider updating the agent."
+                    f"Agent {agent_id} missing config.url, falling back to card.url for discovery "
+                    f"(normalized to {agent_url!r}). Consider updating the agent to set config.url."
                 )
             else:
                 raise ValueError("Agent URL is not configured")
@@ -716,7 +723,17 @@ class A2AAgentService:
                 try:
                     auth_headers = build_headers(agent, jwt_config=self._jwt_config)
                 except Exception as e:
-                    logger.error(f"Error building JWT headers: {e}", exc_info=True)
+                    # Best-effort: JWT header construction failed (misconfigured jwt_config or
+                    # runtimeAccess settings). Discovery will proceed without auth — if the
+                    # well-known endpoint requires authentication this will surface as a 401
+                    # upstream error, NOT as a JWT signing error. Check jwt_config and the
+                    # agent's runtimeAccess configuration if sync fails with an upstream error.
+                    logger.warning(
+                        f"Could not build JWT auth headers for agent {agent_id} "
+                        f"({type(e).__name__}: {e}); retrying discovery without auth. "
+                        "If sync fails with HTTP 401, check jwt_config / runtimeAccess settings.",
+                        exc_info=True,
+                    )
 
             logger.info(f"Fetching agent card from {base_url} using SDK")
             updated_card = await self._resolve_agent_card_with_fallback(
