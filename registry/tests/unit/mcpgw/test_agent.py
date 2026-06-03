@@ -124,7 +124,6 @@ async def test_execute_agent_not_found_returns_error():
 
     with patch("registry.mcpgw.tools.agent.A2AAgent") as mock_model:
         mock_model.id = MagicMock()
-        mock_model.isEnabled = MagicMock()
         mock_model.find_one = AsyncMock(return_value=None)
 
         result = await execute_agent_impl(valid_id, _msg("hello"), ctx)
@@ -432,7 +431,6 @@ async def test_execute_agent_iam_unsupported_returns_error():
         ),
     ):
         mock_model.id = MagicMock()
-        mock_model.status = MagicMock()
         mock_model.find_one = AsyncMock(return_value=agent)
 
         result = await execute_agent_impl(valid_id, _msg("hello"), ctx)
