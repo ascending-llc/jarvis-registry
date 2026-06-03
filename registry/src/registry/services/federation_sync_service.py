@@ -821,10 +821,14 @@ class FederationSyncService:
             existing.wellKnown = item.wellKnown
             existing.federationMetadata = item.federationMetadata
             if item.config and existing.config:
+                # For an A2AAgent document created via Federation, the two fields `type` and `runtimeAccess` of `A2AAgent.config: AgentConfig`
+                # should both be set according to data retrieved during the discovery process—`type` represents the A2A agent's actual
+                # preferred protocol binding on its agent card; `runtimeAccess` tells us how to satisfy authentication requirements
+                # when actually invoking it.
+                if hasattr(item.config, "type"):
+                    existing.config.type = item.config.type
                 if hasattr(item.config, "runtimeAccess"):
                     existing.config.runtimeAccess = item.config.runtimeAccess
-            elif item.config:
-                existing.config = item.config
             await existing.save(session=session)
             mutation_result.changed_a2a_runtime_arns.add(remote_id)
             resources_for_acl_inheritance.append((ResourceType.REMOTE_AGENT, existing.id))

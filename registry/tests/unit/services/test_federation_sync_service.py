@@ -1246,7 +1246,7 @@ async def test_apply_sync_plan_updates_a2a_runtime_access(
 
     assert existing_a2a.config.runtimeAccess is updated_runtime_access
     assert existing_a2a.config.runtimeAccess.mode == "jwt"
-    assert existing_a2a.config.type == "http_json"
+    assert existing_a2a.config.type == update_a2a_item.config.type
     existing_a2a.save.assert_awaited_once_with(session=None)
     federation_sync_service._batch_inherit_federation_acl.assert_not_awaited()
 
