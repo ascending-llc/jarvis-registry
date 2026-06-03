@@ -120,6 +120,28 @@ const MainConfigForm: React.FC<MainConfigFormProps> = ({
     }
   };
 
+  const handleRefreshAgent = async () => {
+    if (!agentDetail) return;
+    setDiscoverStatus("manual");
+    try {
+      const result = await SERVICES.AGENT.refreshAgent(agentDetail.id);
+      if (result) {
+        setDiscoveredData(agentDetailToCardShape(result));
+        showToast("Agent card refreshed successfully", "success");
+      }
+    } catch (error: any) {
+      const errorMessage =
+        typeof error?.detail === "string"
+          ? error.detail
+          : typeof error?.detail?.message === "string"
+            ? error.detail.message
+            : error?.message || "Unknown error";
+      showToast(errorMessage, "error");
+    } finally {
+      setDiscoverStatus("idle");
+    }
+  };
+
   useEffect(() => {
     if (agentDetail && !isSameUrl && formData.url) {
       handleTestUrl(true);
@@ -267,7 +289,13 @@ const MainConfigForm: React.FC<MainConfigFormProps> = ({
           {displayDiscoveredData && !isSilentLoading && (
             <button
               type="button"
-              onClick={() => handleTestUrl(true)}
+              onClick={() => {
+                if (isSameUrl && agentDetail) {
+                  handleRefreshAgent();
+                } else {
+                  handleTestUrl();
+                }
+              }}
               disabled={isManualLoading}
               className="ml-auto text-xs text-[var(--jarvis-primary)] hover:text-[var(--jarvis-primary-text-hover)] hover:text-[var(--jarvis-primary-text-hover)] cursor-pointer disabled:opacity-50 flex items-center gap-1"
             >
