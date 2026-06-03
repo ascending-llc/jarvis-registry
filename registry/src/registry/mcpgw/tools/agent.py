@@ -146,9 +146,9 @@ async def _user_can_view_agent(
     return str(agent_id) in accessible
 
 
-async def _resolve_active_agent(agent_id: str) -> tuple[A2AAgent | None, CallToolResult | None]:
+async def _resolve_enabled_agent(agent_id: str) -> tuple[A2AAgent | None, CallToolResult | None]:
     """
-    Parse `agent_id` and load the active A2AAgent.
+    Parse `agent_id` and load the A2AAgent, gated on isEnabled.
     """
     try:
         oid = PydanticObjectId(agent_id)
@@ -156,11 +156,11 @@ async def _resolve_active_agent(agent_id: str) -> tuple[A2AAgent | None, CallToo
         logger.warning("execute_agent: invalid agent_id format %r, e: %s", agent_id, e)
         return None, _error_result(f"Invalid agent_id format: {agent_id!r}. Use the agent_id from discover_agents.")
 
-    agent = await A2AAgent.find_one(A2AAgent.id == oid, A2AAgent.status == "active")
+    agent = await A2AAgent.find_one(A2AAgent.id == oid, {"isEnabled": True})
     if agent is None:
-        logger.warning("execute_agent: agent not found or inactive agent_id=%s", agent_id)
+        logger.warning("execute_agent: agent not found or disabled agent_id=%s", agent_id)
         return None, _error_result(
-            f"Agent {agent_id!r} not found or no longer active. Run discover_agents to get a fresh agent_id."
+            f"Agent {agent_id!r} not found or not enabled. Run discover_agents to get a fresh agent_id."
         )
     return agent, None
 
@@ -198,7 +198,7 @@ async def execute_agent_impl(
     Invoke an A2A agent and return its response.
     """
     # 1. Resolve agent
-    agent, error = await _resolve_active_agent(agent_id)
+    agent, error = await _resolve_enabled_agent(agent_id)
     if error:
         return error
 

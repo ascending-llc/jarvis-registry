@@ -364,3 +364,6 @@ image-manifest.json
 /.playwright-cli
 /.playwright
 .gitnexus
+
+# Editor specific config files
+pyrightconfig.json
