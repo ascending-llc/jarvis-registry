@@ -34,10 +34,12 @@ from ..schemas.a2a_agent_api_schemas import AgentCreateRequest, AgentUpdateReque
 logger = logging.getLogger(__name__)
 
 
+_WELL_KNOWN_SUFFIX_RE = re.compile(r"/\.well-known(/.*)?$")
+
+
 def _normalize_config_url(url: str) -> str:
     """Strip trailing slash and any terminal /.well-known/... suffix from a URL."""
-    well_known_suffix_re = re.compile(r"/\.well-known(/.*)?$")
-    return well_known_suffix_re.sub("", url.rstrip("/"))
+    return _WELL_KNOWN_SUFFIX_RE.sub("", url.rstrip("/"))
 
 
 class A2AAgentService:

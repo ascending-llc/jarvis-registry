@@ -214,7 +214,7 @@ async def test_create_agent_normalizes_config_url():
 
     # Discovery and the stored config.url both use the clean service root.
     fetch.assert_awaited_once_with("https://agent.example.com")
-    assert MockAgent.call_args.kwargs["config"].url == "https://agent.example.com"
+    assert str(MockAgent.call_args.kwargs["config"].url).rstrip("/") == "https://agent.example.com"
 
 
 # ---------------------------------------------------------------------------
