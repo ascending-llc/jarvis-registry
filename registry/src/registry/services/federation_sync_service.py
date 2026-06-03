@@ -23,7 +23,7 @@ from registry_pkgs.models.federation import (
 )
 from registry_pkgs.models.federation_sync_job import FederationApplySummary, FederationSyncJob
 
-from .agentcore_import_service import AgentCoreImportService
+from .federation.agentcore_metadata import detect_runtime_version_change, extract_runtime_arn
 from .federation.federation_handlers import (
     AwsAgentCoreSyncHandler,
     BaseFederationSyncHandler,
@@ -145,13 +145,31 @@ class FederationSyncService:
             raise ValueError(f"Unsupported federation provider type: {provider_type}")
         return handler
 
-    async def _discover_entities(self, federation: Federation) -> dict[str, list[Any]]:
+    async def _discover_entities(
+        self,
+        federation: Federation,
+        *,
+        author_id: PydanticObjectId,
+    ) -> dict[str, list[Any]]:
         # Provider dispatch happens here. The federation already owns the
         # provider type and normalized provider config, so the sync service only
         # needs to select the correct handler and delegate discovery.
         handler = self.get_sync_handler(federation.providerType)
         logger.info("Dispatching federation %s sync to provider handler %s", federation.id, handler.__class__.__name__)
-        return await handler.discover_entities(federation)
+        return await handler.discover_entities(federation, author_id=author_id)
+
+    async def _resolve_author_id(self, user_id: str | None) -> PydanticObjectId:
+        # Defense in depth: route-layer ACL has already validated the caller,
+        # but every code path that writes federated entities must also confirm
+        # the user exists. This prevents a fabricated/stale user_id (or any
+        # internal caller that bypasses the route) from landing a phantom
+        # author ObjectId on persisted resources.
+        if not user_id:
+            raise ValueError("federation sync requires a user_id")
+        user = await self.user_service.get_user_by_user_id(user_id)
+        if user is None or user.id is None:
+            raise ValueError(f"federation sync user not found: {user_id}")
+        return user.id
 
     @staticmethod
     def _resolve_job_started_at(job: FederationSyncJob) -> datetime:
@@ -201,7 +219,7 @@ class FederationSyncService:
         self,
         federation: Federation,
         job: FederationSyncJob,
-        user_id: str | None,
+        author_id: PydanticObjectId,
     ) -> FederationSyncJob:
         """
         Sync execution follows a fixed flow:
@@ -217,12 +235,11 @@ class FederationSyncService:
         even though the Mongo transaction has already committed.
         """
         try:
-            discovered = await self._discover_entities(federation)
+            discovered = await self._discover_entities(federation, author_id=author_id)
             mutation_result = await self._commit_sync_transaction(
                 federation=federation,
                 job=job,
                 discovered=discovered,
-                user_id=user_id,
             )
             if mutation_result.summary.errorMessages:
                 return job
@@ -259,8 +276,9 @@ class FederationSyncService:
         triggered_by: str | None,
     ) -> FederationSyncPreviewResult:
         """Run provider discovery and local diff without mutating persisted state."""
-        del reason, triggered_by
-        discovered = await self._discover_entities(federation)
+        del reason
+        author_id = await self._resolve_author_id(triggered_by)
+        discovered = await self._discover_entities(federation, author_id=author_id)
         sync_plan = await self._build_sync_plan(
             federation=federation,
             discovered_mcp=discovered.get("mcp_servers", []),
@@ -314,6 +332,9 @@ class FederationSyncService:
             )
             return updated, None
 
+        # Resolve the author up front so an unknown user fails before we create a
+        # job; otherwise a phantom resync job would be left behind.
+        author_id = await self._resolve_author_id(updated_by)
         active_job = await self.federation_job_service.get_active_job(federation.id)
         if active_job:
             raise ValueError("Federation already has an active sync job")
@@ -329,7 +350,7 @@ class FederationSyncService:
         await self.run_sync(
             federation=federation,
             job=job,
-            user_id=updated_by,
+            author_id=author_id,
         )
         return federation, job
 
@@ -340,7 +361,6 @@ class FederationSyncService:
         federation: Federation,
         job: FederationSyncJob,
         discovered: dict[str, list[Any]],
-        user_id: str | None,
     ) -> FederationSyncMutationResult:
         """Apply the discovered federation state in one Mongo transaction."""
         discovered_mcp = discovered.get("mcp_servers", [])
@@ -447,6 +467,7 @@ class FederationSyncService:
         triggered_by: str | None,
     ) -> FederationSyncJob:
         """Start a user-triggered sync using the shared pending-job then run-sync flow."""
+        author_id = await self._resolve_author_id(triggered_by)
         active_job = await self.federation_job_service.get_active_job(federation.id)
         if active_job:
             raise ValueError("Federation already has an active sync job")
@@ -465,7 +486,7 @@ class FederationSyncService:
         await self.run_sync(
             federation=federation,
             job=job,
-            user_id=triggered_by,
+            author_id=author_id,
         )
         return job
 
@@ -1351,7 +1372,7 @@ class FederationSyncService:
 
     @staticmethod
     def _extract_runtime_arn(metadata: dict[str, Any] | None) -> str | None:
-        return AgentCoreImportService.extract_runtime_arn(metadata)
+        return extract_runtime_arn(metadata)
 
     @classmethod
     def _runtime_metadata_changed(
@@ -1361,4 +1382,4 @@ class FederationSyncService:
     ) -> bool:
         # Federation sync currently treats runtime version drift as the canonical
         # signal that a discovered resource should overwrite the persisted one.
-        return bool(AgentCoreImportService.detect_runtime_version_change(existing_metadata, new_metadata))
+        return bool(detect_runtime_version_change(existing_metadata, new_metadata))

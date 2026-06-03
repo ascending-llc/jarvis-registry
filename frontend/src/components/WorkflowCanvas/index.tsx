@@ -135,7 +135,7 @@ const WorkflowCanvasInner = forwardRef<WorkflowCanvasRef, WorkflowCanvasProps>(
           <NodePicker
             agentOnly
             onPick={(_, agent) => {
-              agentPickerCb.current?.({ id: agent.id, label: agent.label, desc: agent.desc });
+              agentPickerCb.current?.({ id: agent.id, label: agent.label, desc: agent.desc, path: agent.executorKey });
               setAgentPickerOpen(false);
             }}
             onClose={() => setAgentPickerOpen(false)}

@@ -513,3 +513,29 @@ class TestExtendedMCPServerStructure:
         assert agent.wellKnown is not None
         assert agent.wellKnown.enabled is True
         assert str(agent.config.url) == "https://example.com/.well-known/agent-card.json"
+
+
+class TestFromServerInfoAuthorRequirement:
+    """Regression: from_server_info must not silently fabricate an author ObjectId."""
+
+    def test_raises_when_author_missing(self):
+        with pytest.raises(ValueError, match="non-null 'author'"):
+            ExtendedMCPServer.from_server_info(
+                server_info={
+                    "path": "/example",
+                    "server_name": "example",
+                    "config": {"title": "example"},
+                },
+                is_enabled=True,
+            )
+
+    def test_raises_when_author_is_none(self):
+        with pytest.raises(ValueError, match="non-null 'author'"):
+            ExtendedMCPServer.from_server_info(
+                server_info={
+                    "path": "/example",
+                    "server_name": "example",
+                    "author": None,
+                },
+                is_enabled=True,
+            )
