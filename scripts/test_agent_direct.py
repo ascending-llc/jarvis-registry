@@ -62,12 +62,12 @@ async def _connect() -> None:
 
 
 async def _list_agents() -> None:
-    agents = await A2AAgent.find({"status": "active"}).to_list()
+    agents = await A2AAgent.find({"isEnabled": True}).to_list()
     if not agents:
-        print("No active A2A agents found.")
+        print("No enabled A2A agents found.")
         return
 
-    print(f"\n── Active A2A agents ({len(agents)}) ─────────────────────────────────")
+    print(f"\n── Enabled A2A agents ({len(agents)}) ─────────────────────────────────")
     for a in agents:
         base_url = agent_base_url(a)
         provider = (a.federationMetadata or {}).get("providerType", "—")
@@ -79,9 +79,9 @@ async def _list_agents() -> None:
 
 async def _resolve_agent(path: str) -> A2AAgent | None:
     normalized = path if path.startswith("/") else f"/{path}"
-    agent = await A2AAgent.find_one(A2AAgent.path == normalized, A2AAgent.status == "active")
+    agent = await A2AAgent.find_one(A2AAgent.path == normalized, {"isEnabled": True})
     if agent is None:
-        print(f"ERROR: No active agent found with path={normalized!r}")
+        print(f"ERROR: No enabled agent found with path={normalized!r}")
     return agent
 
 

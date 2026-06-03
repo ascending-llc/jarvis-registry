@@ -117,14 +117,14 @@ async def test_execute_agent_invalid_id_returns_error():
 
 @pytest.mark.asyncio
 async def test_execute_agent_not_found_returns_error():
-    """The single 'not found / inactive' branch — `find_one(id, status=active)`
+    """The single 'not found / disabled' branch — `find_one(id, isEnabled=True)`
     returns None — should produce the combined error message."""
     ctx = _make_ctx()
     valid_id = str(PydanticObjectId())
 
     with patch("registry.mcpgw.tools.agent.A2AAgent") as mock_model:
         mock_model.id = MagicMock()
-        mock_model.status = MagicMock()
+        mock_model.isEnabled = MagicMock()
         mock_model.find_one = AsyncMock(return_value=None)
 
         result = await execute_agent_impl(valid_id, _msg("hello"), ctx)
@@ -132,7 +132,7 @@ async def test_execute_agent_not_found_returns_error():
     assert result.isError is True
     text = result.content[0].text
     assert "not found" in text
-    assert "no longer active" in text
+    assert "not enabled" in text
 
 
 @pytest.mark.asyncio
