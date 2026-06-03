@@ -544,16 +544,17 @@ async def jsonrpc_proxy(
                 -32004,
                 f"A2A agent '{agent_path}' uses IAM inbound auth which is not supported by this gateway",
             )
-
-        if agent.config and agent.config.url:
-            base_url = str(agent.config.url)
-            logger.debug(f"Using config.url for agent {agent_path}: {base_url}")
-        else:
+        # card.url is the spec-defined invocation endpoint
+        if agent.card and agent.card.url:
             base_url = str(agent.card.url)
+        elif agent.config and agent.config.url:
+            base_url = str(agent.config.url)
             logger.warning(
-                f"Agent {agent_path} missing config.url, falling back to card.url: {base_url}. "  # nosec B608
-                "This may fail if card.url is not accessible. Please update the agent to set config.url."
+                f"Agent {agent_path} has no fetched card; falling back to config.url for invocation: "  # nosec B608
+                f"{base_url}. Card may not have been synced yet."
             )
+        else:
+            return _jsonrpc_a2a_error_response(-32603, f"No invocation URL available for agent '{agent_path}'")
 
         agentcore_jwt = _is_agentcore_jwt(agent.config, agent.federationMetadata)
         proxy_client = proxy_client_registry.get(agent_path, agentcore_jwt=agentcore_jwt)
@@ -607,14 +608,18 @@ async def http_json_proxy(
                 content={"error": f"A2A agent '{agent_path}' uses IAM inbound auth which is not supported"},
             )
 
-        if agent.config and agent.config.url:
-            base_url = str(agent.config.url)
-            logger.debug(f"Using config.url for agent {agent_path}: {base_url}")
-        else:
+        if agent.card and agent.card.url:
             base_url = str(agent.card.url)
+        elif agent.config and agent.config.url:
+            base_url = str(agent.config.url)
             logger.warning(
-                f"Agent {agent_path} missing config.url, falling back to card.url: {base_url}. "  # nosec B608
-                "This may fail if card.url is not accessible. Please update the agent to set config.url."
+                f"Agent {agent_path} has no fetched card; falling back to config.url for invocation: "  # nosec B608
+                f"{base_url}. Card may not have been synced yet."
+            )
+        else:
+            return JSONResponse(
+                status_code=500,
+                content={"error": f"No invocation URL available for agent '{agent_path}'"},
             )
 
         agentcore_jwt = _is_agentcore_jwt(agent.config, agent.federationMetadata)
