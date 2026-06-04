@@ -605,7 +605,7 @@ class ServerServiceV1:
     async def list_servers(
         self,
         query: str | None = None,
-        status: str | None = None,
+        enabled_only: bool = False,
         page: int = 1,
         per_page: int = 20,
         user_id: str | None = None,
@@ -616,7 +616,7 @@ class ServerServiceV1:
 
         Args:
             query: Free-text search across server_name, description, tags
-            status: Filter by operational state (active, inactive, error)
+            enabled_only: When True, return only enabled servers (config.enabled is True)
             page: Page number (min: 1)
             per_page: Items per page (min: 1, max: 100)
             user_id: Current user's ID (kept for compatibility but not used for filtering)
@@ -633,9 +633,9 @@ class ServerServiceV1:
         # Build filter conditions
         filters = []
 
-        # Status filter (now at root level)
-        if status:
-            filters.append({"status": status})
+        # Enabled filter (config.enabled is the source of truth for enablement)
+        if enabled_only:
+            filters.append({"config.enabled": True})
 
         # Text search across multiple fields (tags now at root level)
         if query:

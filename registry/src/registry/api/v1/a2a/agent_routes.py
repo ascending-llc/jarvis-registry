@@ -7,7 +7,7 @@ Includes well-known agent card discovery endpoint.
 
 import logging
 import math
-from typing import Annotated, Literal
+from typing import Annotated
 
 from beanie import PydanticObjectId
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -79,7 +79,6 @@ def check_admin_permission(user_context: dict) -> bool:
 async def list_agents(
     user_context: CurrentUser,
     query: str | None = None,
-    status: Annotated[Literal["active", "inactive", "error"] | None, Query()] = None,
     page: Annotated[int, Query(ge=1)] = 1,
     per_page: Annotated[int, Query(ge=1, le=100)] = 20,
     acl_service: ACLService = Depends(get_acl_service),
@@ -90,7 +89,6 @@ async def list_agents(
 
     Query Parameters:
     - query: Free-text search across agent name, description, tags, skills
-    - status: Filter by operational state (active, inactive, error)
     - page: Page number (default: 1, min: 1)
     - per_page: Items per page (default: 20, min: 1, max: 100)
     """
@@ -105,7 +103,7 @@ async def list_agents(
         # List agents
         agents, total = await a2a_agent_service.list_agents(
             query=query,
-            status=status,
+            enabled_only=False,
             page=page,
             per_page=per_page,
             accessible_agent_ids=accessible_ids,

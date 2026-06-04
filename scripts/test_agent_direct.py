@@ -78,13 +78,11 @@ async def _list_agents() -> None:
 
 
 async def _resolve_agent(path: str) -> A2AAgent | None:
-    slug = path.lstrip("/")
-    for candidate in (slug, f"/{slug}"):
-        agent = await A2AAgent.find_one(A2AAgent.path == candidate, {"isEnabled": True})
-        if agent is not None:
-            return agent
-    print(f"ERROR: No enabled agent found with path={path!r} (tried {slug!r} and /{slug!r})")
-    return None
+    normalized = path if path.startswith("/") else f"/{path}"
+    agent = await A2AAgent.find_one(A2AAgent.path == normalized, {"isEnabled": True})
+    if agent is None:
+        print(f"ERROR: No enabled agent found with path={normalized!r}")
+    return agent
 
 
 async def main(path: str, message: str, *, list_agents: bool = False, transport: str | None = None) -> int:

@@ -7,7 +7,12 @@ from beanie import PydanticObjectId
 from fastapi import HTTPException
 
 from registry.api.v1.a2a.agent_routes import create_agent, delete_agent, get_agent_stats, list_agents, update_agent
-from registry.schemas.a2a_agent_api_schemas import AgentCreateRequest, AgentUpdateRequest
+from registry.schemas.a2a_agent_api_schemas import (
+    AgentCreateRequest,
+    AgentUpdateRequest,
+    convert_to_detail,
+    convert_to_list_item,
+)
 from registry_pkgs.models import PrincipalType, ResourceType
 from registry_pkgs.models.enums import RoleBits
 
@@ -108,7 +113,6 @@ async def test_list_agents_uses_injected_services(sample_user_context):
     result = await list_agents(
         user_context=sample_user_context,
         query="test",
-        status="active",
         page=1,
         per_page=20,
         acl_service=acl_service,
@@ -117,6 +121,8 @@ async def test_list_agents_uses_injected_services(sample_user_context):
 
     acl_service.get_accessible_resource_ids.assert_awaited_once()
     a2a_agent_service.list_agents.assert_awaited_once()
+    # status filtering is gone; the route always calls the service with enabled_only=False
+    assert a2a_agent_service.list_agents.await_args.kwargs["enabled_only"] is False
     assert result.pagination.total == 1
     assert result.agents[0].name == "Test Agent"
     # Assert config field is returned
@@ -572,3 +578,22 @@ async def test_delete_agent_rolls_back_when_acl_cleanup_fails(sample_user_contex
     acl_service.delete_acl_entries_for_resource.assert_awaited_once()
     # Transaction context manager exited via an exception -> rollback path taken.
     assert ctx.exit_exc_type is HTTPException
+
+
+def test_convert_to_list_item_hardcodes_status_and_reads_isenabled():
+    agent = _build_agent()
+    agent.status = "inactive"  # deprecated field — must be ignored by the converter
+    agent.isEnabled = False
+    item = convert_to_list_item(agent, 15)
+    assert item.status == "active"
+    # enablement comes from isEnabled, not status
+    assert item.enabled is False
+
+
+def test_convert_to_detail_hardcodes_status_active():
+    agent = _build_agent()
+    agent.status = "error"
+    agent.isEnabled = True
+    detail = convert_to_detail(agent, 15)
+    assert detail.status == "active"
+    assert detail.enabled is True
