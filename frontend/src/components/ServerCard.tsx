@@ -162,7 +162,7 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
   const handleToggleServer = async (id: string, enabled: boolean) => {
     try {
       setLoading(true);
-      await SERVICES.SERVER.toggleServerStatus(id, { enabled });
+      await SERVICES.SERVER.toggleServerStatus(id, { enabled }, { timeout: 60000 });
       handleServerUpdate(id, { enabled });
       showToast(`Server ${enabled ? 'enabled' : 'disabled'} successfully!`, 'success');
     } catch (error: any) {
