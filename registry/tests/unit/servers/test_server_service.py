@@ -1449,3 +1449,45 @@ class TestHealthCheckEndpointUrlConstruction:
         mock_result.serverInfo = Mock()
         mock_result.serverInfo.name = "test-server"
         return mock_result
+
+
+@pytest.mark.asyncio
+async def test_list_servers_enabled_only_filters_config_enabled():
+    """enabled_only=True must filter on {config.enabled: True} (config.enabled is the source of truth)."""
+    service = ServerServiceV1(
+        user_service=Mock(),
+        token_service=Mock(),
+        oauth_service=Mock(),
+        mcp_server_repo=Mock(),
+    )
+    with patch("registry.services.server_service.ExtendedMCPServer") as MockServer:
+        MockServer.find.return_value.count = AsyncMock(return_value=0)
+        MockServer.find.return_value.sort.return_value.skip.return_value.limit.return_value.to_list = AsyncMock(
+            return_value=[]
+        )
+
+        await service.list_servers(enabled_only=True)
+
+        query_filter = MockServer.find.call_args.args[0]
+        assert query_filter == {"config.enabled": True}
+
+
+@pytest.mark.asyncio
+async def test_list_servers_without_enabled_only_has_no_status_filter():
+    """Default (enabled_only=False) must not constrain on status or enabled."""
+    service = ServerServiceV1(
+        user_service=Mock(),
+        token_service=Mock(),
+        oauth_service=Mock(),
+        mcp_server_repo=Mock(),
+    )
+    with patch("registry.services.server_service.ExtendedMCPServer") as MockServer:
+        MockServer.find.return_value.count = AsyncMock(return_value=0)
+        MockServer.find.return_value.sort.return_value.skip.return_value.limit.return_value.to_list = AsyncMock(
+            return_value=[]
+        )
+
+        await service.list_servers()
+
+        query_filter = MockServer.find.call_args.args[0]
+        assert query_filter == {}

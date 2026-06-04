@@ -185,7 +185,7 @@ class A2AAgentService:
     async def list_agents(
         self,
         query: str | None = None,
-        status: str | None = None,
+        enabled_only: bool = False,
         page: int = 1,
         per_page: int = 20,
         accessible_agent_ids: list[str] | None = None,
@@ -195,7 +195,7 @@ class A2AAgentService:
 
         Args:
             query: Free-text search across name, description, tags, skills
-            status: Filter by operational state (active, inactive, error)
+            enabled_only: When True, return only enabled agents (isEnabled is True)
             page: Page number (validated by router)
             per_page: Items per page (validated by router)
             accessible_agent_ids: List of agent ID strings accessible to the user (from ACL)
@@ -212,9 +212,9 @@ class A2AAgentService:
                 object_ids = [PydanticObjectId(aid) for aid in accessible_agent_ids]
                 filters["_id"] = {"$in": object_ids}
 
-            # Filter by status if provided
-            if status:
-                filters["status"] = status
+            # Filter by enabled flag (isEnabled is the source of truth for enablement)
+            if enabled_only:
+                filters["isEnabled"] = True
 
             # Build text search filter if query provided
             if query:

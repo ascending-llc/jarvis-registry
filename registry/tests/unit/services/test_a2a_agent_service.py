@@ -144,3 +144,35 @@ async def test_sync_wellknown_passes_session_to_save():
 
     fake_agent.save.assert_awaited_once()
     assert fake_agent.save.await_args.kwargs["session"] is _SENTINEL_SESSION
+
+
+@pytest.mark.asyncio
+async def test_list_agents_enabled_only_filters_isenabled():
+    """enabled_only=True must add {isEnabled: True} to the Mongo filter (isEnabled is the source of truth)."""
+    service = _service()
+    with patch("registry.services.a2a_agent_service.A2AAgent") as MockAgent:
+        MockAgent.find.return_value.count = AsyncMock(return_value=0)
+        MockAgent.find.return_value.sort.return_value.skip.return_value.limit.return_value.to_list = AsyncMock(
+            return_value=[]
+        )
+
+        await service.list_agents(enabled_only=True)
+
+        filters = MockAgent.find.call_args.args[0]
+        assert filters.get("isEnabled") is True
+
+
+@pytest.mark.asyncio
+async def test_list_agents_without_enabled_only_omits_isenabled():
+    """Default (enabled_only=False) must not constrain on isEnabled."""
+    service = _service()
+    with patch("registry.services.a2a_agent_service.A2AAgent") as MockAgent:
+        MockAgent.find.return_value.count = AsyncMock(return_value=0)
+        MockAgent.find.return_value.sort.return_value.skip.return_value.limit.return_value.to_list = AsyncMock(
+            return_value=[]
+        )
+
+        await service.list_agents()
+
+        filters = MockAgent.find.call_args.args[0]
+        assert "isEnabled" not in filters

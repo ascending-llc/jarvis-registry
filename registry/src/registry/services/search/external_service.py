@@ -244,8 +244,8 @@ class ExternalVectorSearchService(VectorSearchService):
                 "description": config.get("description", ""),
                 "title": config.get("title", server.serverName),
                 "tags": server.tags or [],
-                "is_enabled": server.status == "active",
-                "status": server.status,
+                "is_enabled": config.get("enabled", False),
+                "status": "active",
                 "numTools": server.numTools,
                 "numStars": server.numStars,
             }
@@ -455,7 +455,7 @@ class ExternalVectorSearchService(VectorSearchService):
                     "match_context": description[:200] if description else "",
                     "relevance_score": relevance_score,
                     "tags": server.tags or [],
-                    "is_enabled": server.status == "active",
+                    "is_enabled": config.get("enabled", False),
                 }
 
                 # Add to servers results
