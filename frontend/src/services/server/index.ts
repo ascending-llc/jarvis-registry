@@ -35,7 +35,7 @@ const toggleServerStatus: (
 const getServerTools: (id: string) => Promise<TYPE.GetServerToolsResponse> = async id =>
   await Request.get(API.getServerTools(id));
 
-const refreshServer: any = async (id: string) => await Request.post(API.refreshServer(id));
+const refreshServer: (id: string) => Promise<TYPE.GetServersDetailResponse> = async id => await Request.post(API.refreshServer(id));
 
 export default {
   getVersion,
