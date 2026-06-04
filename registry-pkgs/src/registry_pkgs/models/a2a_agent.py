@@ -122,6 +122,8 @@ class AgentConfig(BaseModel):
 
     title: str = Field(description="User-provided display title for the agent")
     description: str = Field(default="", description="User-provided description of the agent")
+    # Service root supplied by the user for card DISCOVERY only. The registry appends
+    # /.well-known/agent-card.json (and fallbacks) to this to fetch the card.
     url: HttpUrl | str | None = Field(
         default=None, description="User-provided agent endpoint URL (where agent card was fetched from)"
     )
@@ -179,6 +181,7 @@ class A2AAgent(Document):
     )
 
     # ========== A2A Protocol Card (SDK - ORIGINAL DATA) ==========
+    # Fetched AgentCard document. card.url is the spec-defined invocation endpoint
     card: AgentCard = Field(description="A2A protocol-compliant agent card (validated by SDK, unmodified)")
 
     # ========== Registry-specific Configuration ==========
