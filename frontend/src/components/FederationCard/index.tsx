@@ -32,7 +32,7 @@ const FederationCard: React.FC<FederationCardProps> = ({ federation }) => {
       if (!isSyncing) {
         setIsSyncing(true);
         try {
-          await SERVICES.FEDERATION.syncFederation(federation.id);
+          await SERVICES.FEDERATION.syncFederation(federation.id, undefined, { timeout: 120000 });
           showToast?.('Sync started successfully', 'success');
           // Wait momentarily for status updates
           setTimeout(() => {
