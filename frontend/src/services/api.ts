@@ -33,7 +33,7 @@ const API = {
   deleteServer: (id: string) => `${SERVER_BASE_URL}/${id}`,
   toggleServerStatus: (id: string) => `${SERVER_BASE_URL}/${id}/toggle`,
   getServerTools: (id: string) => `${SERVER_BASE_URL}/${id}/tools`,
-  refreshServerHealth: (id: string) => `${SERVER_BASE_URL}/${id}/refresh`,
+  refreshServer: (id: string) => `${SERVER_BASE_URL}/${id}/refresh`,
 
   // agent
   getAgentsList: `${AGENT_BASE_URL}`,

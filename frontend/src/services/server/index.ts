@@ -32,7 +32,7 @@ const toggleServerStatus: (id: string, data: { enabled: boolean }) => Promise<vo
 const getServerTools: (id: string) => Promise<TYPE.GetServerToolsResponse> = async id =>
   await Request.get(API.getServerTools(id));
 
-const refreshServerHealth: any = async (id: string) => await Request.post(API.refreshServerHealth(id));
+const refreshServer: any = async (id: string) => await Request.post(API.refreshServer(id));
 
 export default {
   getVersion,
@@ -44,5 +44,5 @@ export default {
   deleteServer,
   toggleServerStatus,
   getServerTools,
-  refreshServerHealth,
+  refreshServer,
 };

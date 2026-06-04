@@ -397,7 +397,7 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
             clearTimeout(timeoutRef.current[serverId]);
             delete timeoutRef.current[serverId];
 
-            const result = await SERVICES.SERVER.refreshServerHealth(serverId);
+            const result = await SERVICES.SERVER.refreshServer(serverId);
             handleServerUpdate(serverId, {
               lastCheckedTime: result.lastConnected,
               numTools: result.numTools,
