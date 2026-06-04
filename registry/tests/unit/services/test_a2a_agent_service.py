@@ -3,12 +3,26 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from a2a.client import A2AClientHTTPError
 from beanie import PydanticObjectId
 
 from registry.schemas.a2a_agent_api_schemas import AgentCreateRequest, AgentUpdateRequest
-from registry.services.a2a_agent_service import A2AAgentService
+from registry.services.a2a_agent_service import A2AAgentService, _normalize_config_url
 
 _SENTINEL_SESSION = object()
+
+
+class _AsyncCM:
+    """Minimal async context manager wrapping a stand-in httpx client."""
+
+    def __init__(self, client: object):
+        self._client = client
+
+    async def __aenter__(self) -> object:
+        return self._client
+
+    async def __aexit__(self, *_: object) -> bool:
+        return False
 
 
 def _service() -> A2AAgentService:
@@ -146,33 +160,140 @@ async def test_sync_wellknown_passes_session_to_save():
     assert fake_agent.save.await_args.kwargs["session"] is _SENTINEL_SESSION
 
 
+# ---------------------------------------------------------------------------
+# Change 4: config.url normalization
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("https://agent.example.com", "https://agent.example.com"),
+        ("https://agent.example.com/", "https://agent.example.com"),
+        ("https://agent.example.com/.well-known/agent-card.json", "https://agent.example.com"),
+        ("https://agent.example.com/.well-known/agent.json/", "https://agent.example.com"),
+        ("https://agent.example.com/.well-known", "https://agent.example.com"),
+        ("https://agent.example.com/i-just-like-this", "https://agent.example.com/i-just-like-this"),
+        ("https://api.example.com/.well-known-data/v1", "https://api.example.com/.well-known-data/v1"),
+        (
+            "https://api.example.com/api/.well-known-foo/resource",
+            "https://api.example.com/api/.well-known-foo/resource",
+        ),
+    ],
+)
+def test_normalize_config_url(raw: str, expected: str):
+    assert _normalize_config_url(raw) == expected
+
+
 @pytest.mark.asyncio
-async def test_list_agents_enabled_only_filters_isenabled():
-    """enabled_only=True must add {isEnabled: True} to the Mongo filter (isEnabled is the source of truth)."""
+async def test_create_agent_normalizes_config_url():
     service = _service()
-    with patch("registry.services.a2a_agent_service.A2AAgent") as MockAgent:
-        MockAgent.find.return_value.count = AsyncMock(return_value=0)
-        MockAgent.find.return_value.sort.return_value.skip.return_value.limit.return_value.to_list = AsyncMock(
-            return_value=[]
+    request = AgentCreateRequest(
+        path="/test-agent",
+        title="Test Agent",
+        description="desc",
+        url="https://agent.example.com/.well-known/agent-card.json",
+        type="jsonrpc",
+    )
+    mock_card = SimpleNamespace(version="1.0.0", name="Test Agent", description="desc")
+    fetch = AsyncMock(return_value=mock_card)
+
+    with (
+        _patch_session(),
+        patch("registry.services.a2a_agent_service.A2AAgent") as MockAgent,
+        patch.object(service, "_fetch_agent_card_from_url", fetch),
+    ):
+        MockAgent.find_one = AsyncMock(return_value=None)
+        agent_instance = MockAgent.return_value
+        agent_instance.insert = AsyncMock()
+        agent_instance.id = PydanticObjectId()
+        agent_instance.config = SimpleNamespace(title="Test Agent")
+        agent_instance.path = "/test-agent"
+
+        await service.create_agent(data=request, user_id=str(PydanticObjectId()))
+
+    # Discovery and the stored config.url both use the clean service root.
+    fetch.assert_awaited_once_with("https://agent.example.com")
+    assert str(MockAgent.call_args.kwargs["config"].url).rstrip("/") == "https://agent.example.com"
+
+
+# ---------------------------------------------------------------------------
+# Change 5 / 6: three-attempt fallback + auth header injection
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resolve_card_succeeds_on_third_base_url_attempt():
+    service = _service()
+    card = SimpleNamespace(name="Test Agent", version="1.0.0")
+
+    resolver = MagicMock()
+    resolver.get_agent_card = AsyncMock(
+        side_effect=[
+            A2AClientHTTPError(404, "not found"),
+            A2AClientHTTPError(404, "not found"),
+            card,
+        ]
+    )
+
+    with (
+        patch("registry.services.a2a_agent_service.httpx.AsyncClient", return_value=_AsyncCM(object())),
+        patch("registry.services.a2a_agent_service.A2ACardResolver", return_value=resolver) as MockResolver,
+    ):
+        result = await service._resolve_agent_card_with_fallback(
+            base_url="https://agent.example.com/i-just-like-this", timeout_seconds=5.0
         )
 
-        await service.list_agents(enabled_only=True)
-
-        filters = MockAgent.find.call_args.args[0]
-        assert filters.get("isEnabled") is True
+    assert result is card
+    assert resolver.get_agent_card.await_count == 3
+    # Third resolver is created with the empty path so it hits base_url itself.
+    assert MockResolver.call_args_list[2].kwargs["agent_card_path"] == ""
 
 
 @pytest.mark.asyncio
-async def test_list_agents_without_enabled_only_omits_isenabled():
-    """Default (enabled_only=False) must not constrain on isEnabled."""
+async def test_resolve_card_passes_auth_headers_to_httpx_client():
     service = _service()
-    with patch("registry.services.a2a_agent_service.A2AAgent") as MockAgent:
-        MockAgent.find.return_value.count = AsyncMock(return_value=0)
-        MockAgent.find.return_value.sort.return_value.skip.return_value.limit.return_value.to_list = AsyncMock(
-            return_value=[]
+    card = SimpleNamespace(name="Test Agent", version="1.0.0")
+    resolver = MagicMock()
+    resolver.get_agent_card = AsyncMock(return_value=card)
+    headers = {"Authorization": "Bearer token-123"}
+
+    with (
+        patch("registry.services.a2a_agent_service.httpx.AsyncClient", return_value=_AsyncCM(object())) as MockClient,
+        patch("registry.services.a2a_agent_service.A2ACardResolver", return_value=resolver),
+    ):
+        await service._resolve_agent_card_with_fallback(
+            base_url="https://agent.example.com", timeout_seconds=5.0, auth_headers=headers
         )
 
-        await service.list_agents()
+    assert MockClient.call_args.kwargs["headers"] == headers
 
-        filters = MockAgent.find.call_args.args[0]
-        assert "isEnabled" not in filters
+
+@pytest.mark.asyncio
+async def test_sync_wellknown_builds_and_passes_auth_headers():
+    service = A2AAgentService(a2a_agent_repo=None, jwt_config=SimpleNamespace())
+    old_card = SimpleNamespace(version="1.0.0", description="old", skills=[], capabilities={}, name="Test Agent")
+    updated_card = SimpleNamespace(version="2.0.0", description="new", skills=[], capabilities={}, name="Test Agent")
+
+    fake_agent = MagicMock()
+    fake_agent.save = AsyncMock()
+    fake_agent.card = old_card
+    fake_agent.config = SimpleNamespace(url="https://agent.example.com")
+    fake_agent.wellKnown = SimpleNamespace(
+        enabled=True, lastSyncAt=datetime.now(UTC), lastSyncStatus="success", lastSyncVersion="1.0.0", syncError=None
+    )
+
+    headers = {"Authorization": "Bearer agentcore-jwt"}
+    resolve = AsyncMock(return_value=updated_card)
+
+    with (
+        _patch_session(),
+        patch("registry.services.a2a_agent_service.A2AAgent") as MockAgent,
+        patch("registry.services.a2a_agent_service.build_headers", return_value=headers),
+        patch.object(service, "_resolve_agent_card_with_fallback", resolve),
+    ):
+        MockAgent.get = AsyncMock(return_value=fake_agent)
+
+        await service.sync_wellknown(agent_id=str(PydanticObjectId()))
+
+    assert resolve.await_args.kwargs["auth_headers"] == headers

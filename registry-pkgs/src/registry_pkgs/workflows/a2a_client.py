@@ -392,18 +392,15 @@ async def call_a2a(
             error=f"Unsupported transport type '{transport_type}' for agent {agent_name!r}. Supported: {sorted(_PROTOCOL_MAP)}",
         )
 
-    base_url = str(agent.config.url if agent.config and agent.config.url else agent.card.url).rstrip("/")
-
     logger.debug(
         "→ calling A2A agent %r  transport=%s  url=%s  prompt=%r",
         agent_name,
         transport_type,
-        base_url,
+        str(agent.card.url),
         text[:120] if isinstance(text, str) else f"<Message parts={len(text.parts)}>",
     )
 
-    agent_card = agent.card.model_copy(deep=True)
-    agent_card.url = base_url  # type: ignore[assignment]
+    agent_card = agent.card
     protocol = _PROTOCOL_MAP.get(transport_type, TransportProtocol.jsonrpc)
 
     context = ClientCallContext(

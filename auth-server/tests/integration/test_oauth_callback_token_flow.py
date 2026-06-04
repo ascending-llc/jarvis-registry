@@ -5,6 +5,7 @@ Tests the refactored oauth2_callback that always uses OAuth client flow
 and registry redirect endpoint that calls /oauth2/token to decode JWT.
 """
 
+import base64
 import secrets
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -470,6 +471,130 @@ class TestOAuth2TokenEndpoint:
 
             # Code should be deleted after successful exchange
             assert auth_code not in authorization_codes_storage
+
+    @pytest.mark.parametrize("content_type", ["form", "json"])
+    def test_token_endpoint_quick_suite_basic_auth_fallback(
+        self,
+        clear_device_storage,
+        mock_user_service,
+        content_type,
+    ):
+        """Test Quick Suite compatibility: resolve client_id/client_secret from Basic auth when body omits them."""
+        auth_code = secrets.token_urlsafe(32)
+        current_time = int(__import__("time").time())
+
+        authorization_codes_storage[auth_code] = {
+            "token_data": {},
+            "user_info": {
+                "user_id": "507f1f77bcf86cd799439011",
+                "username": "testuser",
+                "email": "test@example.com",
+                "groups": ["user-group"],
+                "idp_id": "provider-sub-123",
+            },
+            "client_id": "test-client",
+            "expires_at": current_time + 600,
+            "used": False,
+            "redirect_uri": "https://us-east-1.quicksight.aws.amazon.com/sn/oauthcallback",
+            "resource": None,
+            "created_at": current_time,
+        }
+
+        payload = {
+            "grant_type": "authorization_code",
+            "code": auth_code,
+            "code_verifier": "test-code-verifier",
+            "redirect_uri": "https://us-east-1.quicksight.aws.amazon.com/sn/oauthcallback",
+        }
+
+        basic_auth = base64.b64encode(b"test-client:test-secret").decode("ascii")
+
+        with patch("auth_server.routes.oauth_flow.encode_jwt") as mock_jwt_encode:
+            mock_jwt_encode.return_value = "mock-jwt-token-with-user-id"
+
+            app.dependency_overrides = {}
+            app.dependency_overrides[get_user_service] = lambda: mock_user_service
+
+            test_client = TestClient(app)
+
+            headers = {"Authorization": f"Basic {basic_auth}"}
+            kwargs = (
+                {"json": payload, "headers": headers}
+                if content_type == "json"
+                else {"data": payload, "headers": headers}
+            )
+            response = test_client.post(f"{API_PREFIX}/oauth2/token", **kwargs)
+
+            assert response.status_code == 200
+
+            token_data = response.json()
+            assert token_data["access_token"] == "mock-jwt-token-with-user-id"
+
+            call_args = mock_jwt_encode.call_args[0]
+            token_payload = call_args[0]
+            assert token_payload["client_id"] == "test-client"
+
+            assert auth_code not in authorization_codes_storage
+
+    @pytest.mark.parametrize("content_type", ["form", "json"])
+    def test_token_endpoint_non_quick_suite_basic_auth_no_fallback(
+        self,
+        clear_device_storage,
+        mock_user_service,
+        content_type,
+    ):
+        """Test non-Quick Suite clients using Basic auth do not get client_id fallback."""
+        auth_code = secrets.token_urlsafe(32)
+        current_time = int(__import__("time").time())
+
+        authorization_codes_storage[auth_code] = {
+            "token_data": {},
+            "user_info": {
+                "user_id": "507f1f77bcf86cd799439011",
+                "username": "testuser",
+                "email": "test@example.com",
+                "groups": ["user-group"],
+                "idp_id": "provider-sub-123",
+            },
+            "client_id": "test-client",
+            "expires_at": current_time + 600,
+            "used": False,
+            "redirect_uri": "https://example.com/oauth/callback",
+            "resource": None,
+            "created_at": current_time,
+        }
+
+        payload = {
+            "grant_type": "authorization_code",
+            "code": auth_code,
+            "code_verifier": "test-code-verifier",
+            "redirect_uri": "https://example.com/oauth/callback",
+        }
+
+        basic_auth = base64.b64encode(b"test-client:test-secret").decode("ascii")
+
+        with patch("auth_server.routes.oauth_flow.encode_jwt") as mock_jwt_encode:
+            app.dependency_overrides = {}
+            app.dependency_overrides[get_user_service] = lambda: mock_user_service
+
+            test_client = TestClient(app)
+
+            headers = {"Authorization": f"Basic {basic_auth}"}
+            kwargs = (
+                {"json": payload, "headers": headers}
+                if content_type == "json"
+                else {"data": payload, "headers": headers}
+            )
+            response = test_client.post(f"{API_PREFIX}/oauth2/token", **kwargs)
+
+            # Should reject since client_id fallback only applies to Quick Suite hosts
+            assert response.status_code == 400
+            assert response.json()["error"] == "invalid_request"
+            assert response.json()["error_description"] == "client_id is required"
+            mock_jwt_encode.assert_not_called()
+
+            # Request should fail before code exchange, so code remains stored.
+            assert auth_code in authorization_codes_storage
 
     @pytest.mark.parametrize("content_type", ["form", "json"])
     def test_token_endpoint_code_already_used(self, test_client, clear_device_storage, content_type):
