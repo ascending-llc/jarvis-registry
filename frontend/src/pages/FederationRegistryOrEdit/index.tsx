@@ -173,7 +173,7 @@ const FederationRegistryOrEdit: React.FC = () => {
       const result = await SERVICES.FEDERATION.syncFederation(id, {
         dryRun: true,
         providerConfig,
-      });
+      }, { timeout: 20000 });
 
       const discoveredMcp = result?.summary?.discoveredMcpServers ?? 0;
       const discoveredAgents = result?.summary?.discoveredAgents ?? 0;
@@ -196,7 +196,7 @@ const FederationRegistryOrEdit: React.FC = () => {
     if (!id) return;
     setIsSyncing(true);
     try {
-      await SERVICES.FEDERATION.syncFederation(id);
+      await SERVICES.FEDERATION.syncFederation(id, undefined, { timeout: 20000 });
       showToast('Sync started successfully', 'success');
     } catch (error: any) {
       showToast(error?.detail?.message || 'Failed to start sync', 'error');
