@@ -45,6 +45,19 @@ export const PropertiesContent: React.FC<PropertiesContentProps> = ({ panelMode,
   const nodeData = selectedNode.data as NodeData | undefined;
   const nodeType = selectedNode.type ?? '';
 
+  if (nodeType === 'add') {
+    return (
+      <div className='flex flex-col items-center justify-center min-h-[200px] gap-4 p-7'>
+        <div className='text-center'>
+          <p className='text-xs font-medium text-[var(--jarvis-text-strong)] mb-1'>Empty Path</p>
+          <p className='text-[10px] text-[var(--jarvis-muted)] leading-relaxed'>
+            Press Delete to remove this empty path.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <>
       <div className='px-4 py-3 border-b border-[var(--jarvis-border)]'>

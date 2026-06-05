@@ -79,10 +79,13 @@ const mapNodeToApi = (
   }
 
   if (node.type === 'mcp' || node.type === 'agent') {
-    apiNode.executorKey = (data.executorKey as string | undefined) || data.label;
+    if ('executorKey' in data) {
+      apiNode.executorKey = (data as import('./types').AgentNodeData | import('./types').McpNodeData).executorKey;
+    }
   }
-  if (node.type === 'pool')
-    apiNode.a2aPool = (data as import('./types').PoolNodeData).agents?.map((a: AgentInfo) => a.path || a.id) ?? [];
+  if (node.type === 'pool') {
+    apiNode.a2aPool = (data as import('./types').PoolNodeData).agents?.map((a: AgentInfo) => a.path) ?? [];
+  }
   if (node.type === 'parallel') {
     const pData = data as import('./types').ParallelNodeData;
     apiNode.config = {

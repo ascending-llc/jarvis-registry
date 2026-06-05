@@ -1,17 +1,14 @@
-import { useEffect, useState } from "react";
-import { HiBolt, HiCheckCircle } from "react-icons/hi2";
+import { useEffect, useState } from 'react';
+import { HiBolt, HiCheckCircle } from 'react-icons/hi2';
 
-import FormFields from "@/components/FormFields";
-import { useGlobal } from "@/contexts/GlobalContext";
-import SERVICES from "@/services";
-import type {
-  Agent,
-  GetWellKnownAgentCardsResponse,
-} from "@/services/agent/type";
-import Request from "@/services/request";
-import type { AgentConfig } from "./types";
+import FormFields from '@/components/FormFields';
+import { useGlobal } from '@/contexts/GlobalContext';
+import SERVICES from '@/services';
+import type { Agent, GetWellKnownAgentCardsResponse } from '@/services/agent/type';
+import Request from '@/services/request';
+import type { AgentConfig } from './types';
 
-const TEST_URL_CANCEL_KEY = "testAgentUrl";
+const TEST_URL_CANCEL_KEY = 'testAgentUrl';
 
 function agentDetailToCardShape(detail: Agent): GetWellKnownAgentCardsResponse {
   return {
@@ -38,25 +35,16 @@ interface MainConfigFormProps {
   isReadOnly?: boolean;
 }
 
-const MainConfigForm: React.FC<MainConfigFormProps> = ({
-  formData,
-  agentDetail,
-  updateField,
-  errors,
-  isReadOnly,
-}) => {
+const MainConfigForm: React.FC<MainConfigFormProps> = ({ formData, agentDetail, updateField, errors, isReadOnly }) => {
   const { showToast } = useGlobal();
-  const [discoverStatus, setDiscoverStatus] = useState<
-    "idle" | "manual" | "silent"
-  >("idle");
+  const [discoverStatus, setDiscoverStatus] = useState<'idle' | 'manual' | 'silent'>('idle');
   const [discoveredData, setDiscoveredData] = useState<any>(null);
 
-  const isManualLoading = discoverStatus === "manual";
-  const isSilentLoading = discoverStatus === "silent";
+  const isManualLoading = discoverStatus === 'manual';
+  const isSilentLoading = discoverStatus === 'silent';
   const isSameUrl = !!agentDetail?.url && agentDetail.url === formData.url;
   const displayDiscoveredData =
-    discoveredData ??
-    (isSameUrl && agentDetail ? agentDetailToCardShape(agentDetail) : null);
+    discoveredData ?? (isSameUrl && agentDetail ? agentDetailToCardShape(agentDetail) : null);
 
   const handleTestUrl = async (silent = false) => {
     if (!silent && isManualLoading) {
@@ -65,11 +53,11 @@ const MainConfigForm: React.FC<MainConfigFormProps> = ({
         cancel();
         delete Request.cancels[TEST_URL_CANCEL_KEY];
       }
-      setDiscoverStatus("idle");
+      setDiscoverStatus('idle');
       return;
     }
 
-    setDiscoverStatus(silent ? "silent" : "manual");
+    setDiscoverStatus(silent ? 'silent' : 'manual');
     if (!silent) {
       setDiscoveredData(null);
     }
@@ -83,38 +71,36 @@ const MainConfigForm: React.FC<MainConfigFormProps> = ({
 
       if (result) {
         setDiscoveredData(result);
-        if (!silent) showToast("Agent card discovered successfully", "success");
+        if (!silent) showToast('Agent card discovered successfully', 'success');
 
-        let discoveredType = "";
+        let discoveredType = '';
         if (result.preferredTransport) {
           const transportStr = result.preferredTransport.toLowerCase();
-          if (transportStr.includes("grpc")) discoveredType = "grpc";
-          else if (transportStr.includes("jsonrpc")) discoveredType = "jsonrpc";
-          else if (transportStr.includes("http")) discoveredType = "http_json";
+          if (transportStr.includes('grpc')) discoveredType = 'grpc';
+          else if (transportStr.includes('jsonrpc')) discoveredType = 'jsonrpc';
+          else if (transportStr.includes('http')) discoveredType = 'http_json';
         }
 
-        if (!formData.title && result.name) updateField("title", result.name);
-        if (!formData.description && result.description)
-          updateField("description", result.description);
-        if (!formData.type && discoveredType)
-          updateField("type", discoveredType);
+        if (!formData.title && result.name) updateField('title', result.name);
+        if (!formData.description && result.description) updateField('description', result.description);
+        if (!formData.type && discoveredType) updateField('type', discoveredType);
       } else {
-        if (!silent) showToast("Failed to discover agent card", "error");
+        if (!silent) showToast('Failed to discover agent card', 'error');
       }
     } catch (error: any) {
       if (!silent) {
         const errorMessage =
-          typeof error?.detail === "string"
+          typeof error?.detail === 'string'
             ? error.detail
-            : typeof error?.detail?.message === "string"
+            : typeof error?.detail?.message === 'string'
               ? error.detail.message
-              : error?.message || "Unknown error";
-        showToast(errorMessage, "error");
+              : error?.message || 'Unknown error';
+        showToast(errorMessage, 'error');
       }
     } finally {
-      setDiscoverStatus((prev) => {
-        if (silent && prev === "silent") return "idle";
-        if (!silent && prev === "manual") return "idle";
+      setDiscoverStatus(prev => {
+        if (silent && prev === 'silent') return 'idle';
+        if (!silent && prev === 'manual') return 'idle';
         return prev;
       });
     }
@@ -122,23 +108,23 @@ const MainConfigForm: React.FC<MainConfigFormProps> = ({
 
   const handleRefreshAgent = async () => {
     if (!agentDetail) return;
-    setDiscoverStatus("manual");
+    setDiscoverStatus('manual');
     try {
       const result = await SERVICES.AGENT.refreshAgent(agentDetail.id);
       if (result) {
         setDiscoveredData(agentDetailToCardShape(result));
-        showToast("Agent card refreshed successfully", "success");
+        showToast('Agent card refreshed successfully', 'success');
       }
     } catch (error: any) {
       const errorMessage =
-        typeof error?.detail === "string"
+        typeof error?.detail === 'string'
           ? error.detail
-          : typeof error?.detail?.message === "string"
+          : typeof error?.detail?.message === 'string'
             ? error.detail.message
-            : error?.message || "Unknown error";
-      showToast(errorMessage, "error");
+            : error?.message || 'Unknown error';
+      showToast(errorMessage, 'error');
     } finally {
-      setDiscoverStatus("idle");
+      setDiscoverStatus('idle');
     }
   };
 
@@ -149,55 +135,46 @@ const MainConfigForm: React.FC<MainConfigFormProps> = ({
   }, [agentDetail, isSameUrl, formData.url]);
 
   const getLineCount = (jsonStr: string) => {
-    return jsonStr.split("\n").length;
+    return jsonStr.split('\n').length;
   };
 
   return (
-    <div className="space-y-8">
+    <div className='space-y-8'>
       {/* Section Network Configuration */}
       <section>
-        <h3 className="text-lg font-semibold text-[var(--jarvis-text-strong)] text-[var(--jarvis-text-strong)] mb-4">
+        <h3 className='text-lg font-semibold text-[var(--jarvis-text-strong)] text-[var(--jarvis-text-strong)] mb-4'>
           Network Configuration
         </h3>
-        <div className="space-y-6">
+        <div className='space-y-6'>
           {/* Agent URL */}
           <FormFields.InputField
-            label="Agent URL"
-            type="url"
-            name="url"
-            id="url"
+            label='Agent URL'
+            type='url'
+            name='url'
+            id='url'
             required
             disabled={isReadOnly}
-            placeholder="https://agent.example.com"
-            value={formData.url || ""}
-            onChange={(e) => {
+            placeholder='https://agent.example.com'
+            value={formData.url || ''}
+            onChange={e => {
               setDiscoveredData(null);
-              updateField("url", e.target.value);
+              updateField('url', e.target.value);
             }}
-            helperText="The base URL where your agent is running."
+            helperText='The base URL where your agent is running.'
             suffix={
               <button
-                type="button"
+                type='button'
                 onClick={() => handleTestUrl()}
                 disabled={isReadOnly || !formData.url}
-                className="btn-input-suffix"
-                title={
-                  isManualLoading
-                    ? "Cancel test"
-                    : isReadOnly
-                      ? "Discover Disabled"
-                      : "Test URL"
-                }
+                className='btn-input-suffix'
+                title={isManualLoading ? 'Cancel test' : isReadOnly ? 'Discover Disabled' : 'Test URL'}
               >
                 {isManualLoading ? (
-                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-[color:var(--jarvis-border)]" />
+                  <div className='animate-spin rounded-full h-4 w-4 border-b-2 border-[color:var(--jarvis-border)]' />
                 ) : displayDiscoveredData ? (
-                  <HiCheckCircle
-                    className="h-5 w-5 text-[var(--jarvis-success-text)]"
-                    aria-hidden="true"
-                  />
+                  <HiCheckCircle className='h-5 w-5 text-[var(--jarvis-success-text)]' aria-hidden='true' />
                 ) : (
-                  <HiBolt className="h-5 w-5" aria-hidden="true" />
+                  <HiBolt className='h-5 w-5' aria-hidden='true' />
                 )}
               </button>
             }
@@ -206,65 +183,65 @@ const MainConfigForm: React.FC<MainConfigFormProps> = ({
 
           {/* Transport Type */}
           <FormFields.RadioGroupField
-            label="Transport Type"
-            name="type"
-            id="type"
+            label='Transport Type'
+            name='type'
+            id='type'
             required
             disabled={isReadOnly}
             options={[
-              { label: "JSONRPC", value: "jsonrpc" },
-              { label: "GRPC", value: "grpc" },
-              { label: "HTTP_JSON", value: "http_json" },
+              { label: 'JSONRPC', value: 'jsonrpc' },
+              { label: 'GRPC', value: 'grpc' },
+              { label: 'HTTP_JSON', value: 'http_json' },
             ]}
             value={formData.type}
-            onChange={(val) => updateField("type", val)}
+            onChange={val => updateField('type', val)}
             error={errors?.type}
           />
         </div>
       </section>
 
       <section>
-        <h3 className="text-lg font-semibold text-[var(--jarvis-text-strong)] text-[var(--jarvis-text-strong)] mb-4">
+        <h3 className='text-lg font-semibold text-[var(--jarvis-text-strong)] text-[var(--jarvis-text-strong)] mb-4'>
           Basic Information
         </h3>
-        <div className="space-y-6">
+        <div className='space-y-6'>
           {/* Title */}
           <FormFields.InputField
-            label="Title"
-            name="title"
-            id="title"
+            label='Title'
+            name='title'
+            id='title'
             required
             disabled={isReadOnly}
-            placeholder="e.g., My Sales Agent"
+            placeholder='e.g., My Sales Agent'
             value={formData.title}
-            onChange={(e) => updateField("title", e.target.value)}
+            onChange={e => updateField('title', e.target.value)}
             error={errors?.title}
           />
 
           {/* Description */}
           <FormFields.InputField
-            label="Description"
-            name="description"
-            id="description"
+            label='Description'
+            name='description'
+            id='description'
             disabled={isReadOnly}
-            placeholder="An agent that handles CRM queries"
+            placeholder='An agent that handles CRM queries'
             value={formData.description}
-            onChange={(e) => updateField("description", e.target.value)}
-            helperText="Describe what this agent does and its capabilities."
+            onChange={e => updateField('description', e.target.value)}
+            helperText='Describe what this agent does and its capabilities.'
           />
 
           {/* Path */}
           <FormFields.InputField
-            label="Path"
-            name="path"
-            id="path"
+            label='Path'
+            name='path'
+            id='path'
             required
             disabled={isReadOnly}
-            placeholder="/my-agent"
+            placeholder='/my-agent'
             value={formData.path}
-            onChange={(e) => updateField("path", e.target.value)}
-            onBlur={(e) => updateField("path", e.target.value.toLowerCase())}
-            helperText="Unique URL path prefix (must start with /)"
+            onChange={e => updateField('path', e.target.value)}
+            onBlur={e => updateField('path', e.target.value.toLowerCase())}
+            helperText='Unique URL path prefix (must start with /)'
             error={errors?.path}
           />
         </div>
@@ -272,23 +249,23 @@ const MainConfigForm: React.FC<MainConfigFormProps> = ({
 
       {/* Agent Card (Discovered payload) */}
       <section>
-        <div className="flex items-center gap-3 mb-1">
-          <h3 className="text-lg font-semibold text-[var(--jarvis-text-strong)] text-[var(--jarvis-text-strong)] m-0">
+        <div className='flex items-center gap-3 mb-1'>
+          <h3 className='text-lg font-semibold text-[var(--jarvis-text-strong)] text-[var(--jarvis-text-strong)] m-0'>
             Agent Card
           </h3>
           {displayDiscoveredData && !isSilentLoading && (
-            <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-[var(--jarvis-success-soft)] text-[var(--jarvis-success-text)] dark:bg-[var(--jarvis-surface)]">
+            <span className='inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-[var(--jarvis-success-soft)] text-[var(--jarvis-success-text)] dark:bg-[var(--jarvis-surface)]'>
               Discovered
             </span>
           )}
           {isSilentLoading && (
-            <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-[var(--jarvis-info-text)] dark:bg-[var(--jarvis-surface)]">
+            <span className='inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-[var(--jarvis-info-text)] dark:bg-[var(--jarvis-surface)]'>
               Discovering...
             </span>
           )}
           {displayDiscoveredData && !isSilentLoading && (
             <button
-              type="button"
+              type='button'
               onClick={() => {
                 if (isSameUrl && agentDetail) {
                   handleRefreshAgent();
@@ -297,65 +274,60 @@ const MainConfigForm: React.FC<MainConfigFormProps> = ({
                 }
               }}
               disabled={isManualLoading}
-              className="ml-auto text-xs text-[var(--jarvis-primary)] hover:text-[var(--jarvis-primary-text-hover)] hover:text-[var(--jarvis-primary-text-hover)] cursor-pointer disabled:opacity-50 flex items-center gap-1"
+              className='ml-auto text-xs text-[var(--jarvis-primary)] hover:text-[var(--jarvis-primary-text-hover)] hover:text-[var(--jarvis-primary-text-hover)] cursor-pointer disabled:opacity-50 flex items-center gap-1'
             >
-              {isManualLoading ? "Discovering..." : "Re-discover"}
+              {isManualLoading ? 'Discovering...' : 'Re-discover'}
             </button>
           )}
         </div>
         {formData.url ? (
-          <div className="text-xs text-[var(--jarvis-muted)] text-[var(--jarvis-muted)] mb-4">
-            Auto-discovered from{" "}
-            <code className="px-1.5 py-0.5 bg-[var(--jarvis-card-muted)] bg-[var(--jarvis-card-muted)] rounded text-[var(--jarvis-primary)] text-[var(--jarvis-primary)]">
-              {formData.url
-                ? `${formData.url.replace(/\/$/, "")}/.well-known/agent.json`
-                : ""}
+          <div className='text-xs text-[var(--jarvis-muted)] text-[var(--jarvis-muted)] mb-4'>
+            Auto-discovered from{' '}
+            <code className='px-1.5 py-0.5 bg-[var(--jarvis-card-muted)] bg-[var(--jarvis-card-muted)] rounded text-[var(--jarvis-primary)] text-[var(--jarvis-primary)]'>
+              {formData.url ? `${formData.url.replace(/\/$/, '')}/.well-known/agent.json` : ''}
             </code>
           </div>
         ) : (
-          <div className="text-xs text-[var(--jarvis-muted)] text-[var(--jarvis-muted)] mb-4">
-            No data discovered
-          </div>
+          <div className='text-xs text-[var(--jarvis-muted)] text-[var(--jarvis-muted)] mb-4'>No data discovered</div>
         )}
 
-        <div className="border border-[color:var(--jarvis-border)] border-[color:var(--jarvis-border)] rounded-lg overflow-hidden">
+        <div className='border border-[color:var(--jarvis-border)] border-[color:var(--jarvis-border)] rounded-lg overflow-hidden'>
           {displayDiscoveredData && (
-            <div className="flex items-center justify-between px-3 py-2 bg-[var(--jarvis-bg)] bg-[var(--jarvis-card)]/60 border-b border-[color:var(--jarvis-border)] border-[color:var(--jarvis-border)]">
-              <span className="text-xs font-mono text-[var(--jarvis-muted)] text-[var(--jarvis-muted)]">
+            <div className='flex items-center justify-between px-3 py-2 bg-[var(--jarvis-bg)] bg-[var(--jarvis-card)]/60 border-b border-[color:var(--jarvis-border)] border-[color:var(--jarvis-border)]'>
+              <span className='text-xs font-mono text-[var(--jarvis-muted)] text-[var(--jarvis-muted)]'>
                 .well-known/agent.json
               </span>
-              <span className="text-xs font-mono text-[var(--jarvis-muted)] text-[var(--jarvis-muted)]">
-                {getLineCount(JSON.stringify(displayDiscoveredData, null, 2))}{" "}
-                lines
+              <span className='text-xs font-mono text-[var(--jarvis-muted)] text-[var(--jarvis-muted)]'>
+                {getLineCount(JSON.stringify(displayDiscoveredData, null, 2))} lines
               </span>
             </div>
           )}
           {isSilentLoading || isManualLoading ? (
-            <div className="bg-[var(--jarvis-card)] bg-[var(--jarvis-card)]/50 p-8 flex items-center justify-center">
-              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-[var(--jarvis-primary)]" />
+            <div className='bg-[var(--jarvis-card)] bg-[var(--jarvis-card)]/50 p-8 flex items-center justify-center'>
+              <div className='animate-spin rounded-full h-8 w-8 border-b-2 border-[var(--jarvis-primary)]' />
             </div>
           ) : displayDiscoveredData ? (
-            <pre className="bg-[var(--jarvis-card)] bg-[var(--jarvis-card)]/50 text-[var(--jarvis-success-text)] font-mono text-xs leading-relaxed whitespace-pre-wrap overflow-x-auto p-4 m-0">
+            <pre className='bg-[var(--jarvis-card)] bg-[var(--jarvis-card)]/50 text-[var(--jarvis-success-text)] font-mono text-xs leading-relaxed whitespace-pre-wrap overflow-x-auto p-4 m-0'>
               {JSON.stringify(displayDiscoveredData, null, 2)}
             </pre>
           ) : (
-            <div className="bg-[var(--jarvis-card)] bg-[var(--jarvis-card)]/50 p-4" />
+            <div className='bg-[var(--jarvis-card)] bg-[var(--jarvis-card)]/50 p-4' />
           )}
         </div>
       </section>
 
       <section>
         <FormFields.CheckboxField
-          label="I trust this agent"
-          name="trustAgent"
-          id="trustAgent"
+          label='I trust this agent'
+          name='trustAgent'
+          id='trustAgent'
           required
           disabled={isReadOnly}
           checked={formData.trustAgent}
-          onChange={(e) => {
-            updateField("trustAgent", e.target.checked);
+          onChange={e => {
+            updateField('trustAgent', e.target.checked);
           }}
-          description="Custom agents are not verified by Jarvis"
+          description='Custom agents are not verified by Jarvis'
           error={errors?.trustAgent}
         />
       </section>
