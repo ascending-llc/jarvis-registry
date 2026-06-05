@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from beanie import PydanticObjectId
@@ -97,24 +97,34 @@ def sample_job(sample_federation):
     )
 
 
+def _mock_route_transaction():
+    mock_session = AsyncMock()
+    mock_client = MagicMock()
+    mock_client.start_session.return_value.__aenter__.return_value = mock_session
+    mock_session.start_transaction.return_value.__aenter__.return_value = None
+    return mock_client, mock_session
+
+
 @pytest.mark.asyncio
 async def test_create_federation_does_not_trigger_sync(sample_user_context, sample_federation, acl_service):
     federation_crud_service = MagicMock()
     federation_crud_service.create_federation = AsyncMock(return_value=sample_federation)
     federation_crud_service.get_recent_jobs = AsyncMock(return_value=[])
 
-    result = await _unwrap_route(create_federation)(
-        data=FederationCreateRequest(
-            providerType=FederationProviderType.AWS_AGENTCORE,
-            displayName="AWS AgentCore Prod",
-            description="Production federation",
-            tags=["prod"],
-            providerConfig={"region": "us-east-1", "assumeRoleArn": "arn:aws:iam::123456789012:role/TestRole"},
-        ),
-        user_context=sample_user_context,
-        federation_crud_service=federation_crud_service,
-        acl_service=acl_service,
-    )
+    mock_client, mock_session = _mock_route_transaction()
+    with patch("registry.api.v1.federation.federation_routes.MongoDB.get_client", return_value=mock_client):
+        result = await _unwrap_route(create_federation)(
+            data=FederationCreateRequest(
+                providerType=FederationProviderType.AWS_AGENTCORE,
+                displayName="AWS AgentCore Prod",
+                description="Production federation",
+                tags=["prod"],
+                providerConfig={"region": "us-east-1", "assumeRoleArn": "arn:aws:iam::123456789012:role/TestRole"},
+            ),
+            user_context=sample_user_context,
+            federation_crud_service=federation_crud_service,
+            acl_service=acl_service,
+        )
 
     assert result.id == str(sample_federation.id)
     assert len(result.recentJobs) == 0
@@ -125,7 +135,10 @@ async def test_create_federation_does_not_trigger_sync(sample_user_context, samp
         resource_type="federation",
         resource_id=sample_federation.id,
         perm_bits=15,
+        session=mock_session,
     )
+    federation_crud_service.create_federation.assert_awaited_once()
+    assert federation_crud_service.create_federation.await_args.kwargs["session"] is mock_session
 
 
 @pytest.mark.asyncio
@@ -140,18 +153,20 @@ async def test_create_federation_allows_empty_aws_provider_config(sample_user_co
     federation_crud_service.create_federation = AsyncMock(return_value=created_federation)
     federation_crud_service.get_recent_jobs = AsyncMock(return_value=[])
 
-    result = await _unwrap_route(create_federation)(
-        data=FederationCreateRequest(
-            providerType=FederationProviderType.AWS_AGENTCORE,
-            displayName="AWS AgentCore Prod",
-            description="Production federation",
-            tags=["prod"],
-            providerConfig={},
-        ),
-        user_context=sample_user_context,
-        federation_crud_service=federation_crud_service,
-        acl_service=acl_service,
-    )
+    mock_client, _mock_session = _mock_route_transaction()
+    with patch("registry.api.v1.federation.federation_routes.MongoDB.get_client", return_value=mock_client):
+        result = await _unwrap_route(create_federation)(
+            data=FederationCreateRequest(
+                providerType=FederationProviderType.AWS_AGENTCORE,
+                displayName="AWS AgentCore Prod",
+                description="Production federation",
+                tags=["prod"],
+                providerConfig={},
+            ),
+            user_context=sample_user_context,
+            federation_crud_service=federation_crud_service,
+            acl_service=acl_service,
+        )
 
     assert result.providerConfig == {"resourceTagsFilter": {}}
 

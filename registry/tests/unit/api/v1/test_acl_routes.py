@@ -84,7 +84,7 @@ async def test_update_resource_permissions_uses_injected_acl_service(sample_user
         ],
     )
 
-    with patch("registry_pkgs.database.decorators.MongoDB.get_client") as mock_get_client:
+    with patch("registry.api.v1.acl_routes.MongoDB.get_client") as mock_get_client:
         mock_session = AsyncMock()
         mock_client = MagicMock()
         mock_client.start_session.return_value.__aenter__.return_value = mock_session

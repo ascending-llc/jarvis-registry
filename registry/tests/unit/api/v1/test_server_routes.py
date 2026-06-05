@@ -63,13 +63,13 @@ async def test_create_server_route_creates_acl_entry(
     mock_acl_service.grant_permission = AsyncMock(return_value=MagicMock())
 
     with (
-        patch("registry_pkgs.database.decorators.MongoDB.get_client") as mock_get_client,
+        patch("registry.api.v1.server.server_routes.MongoDB.get_client") as mock_get_client,
         patch(
             "registry.api.v1.server.server_routes.convert_to_detail",
             return_value={"id": str(mock_created_server.id)},
         ),
     ):
-        # Mock the MongoDB client and session for @use_transaction
+        # Mock the MongoDB client and session for the explicit transaction block
         mock_client = MagicMock()
         mock_client.start_session.return_value.__aenter__.return_value = mock_session
         mock_session.start_transaction.return_value.__aenter__.return_value = None
@@ -86,6 +86,7 @@ async def test_create_server_route_creates_acl_entry(
         mock_server_service.create_server.assert_awaited_once_with(
             data=sample_server_request,
             user_id=sample_user_context["user_id"],
+            session=mock_session,
         )
 
         # Verify ACL permission was granted
@@ -98,6 +99,7 @@ async def test_create_server_route_creates_acl_entry(
         assert call_args.kwargs["resource_type"] == ResourceType.MCPSERVER
         assert call_args.kwargs["resource_id"] == mock_created_server.id
         assert call_args.kwargs["perm_bits"] == RoleBits.OWNER
+        assert call_args.kwargs["session"] is mock_session
 
 
 # ==================== refresh_server_capabilities endpoint tests ====================

@@ -77,7 +77,11 @@ class TestWorkflowPersistence:
 
         assert result == {"ok": True}
         super_upsert.assert_awaited_once_with(session, deserialize=True)
-        sync._sync_to_beanie.assert_awaited_once_with(session.runs[-1], session_data={})
+        sync._sync_to_beanie.assert_awaited_once_with(
+            session.runs[-1],
+            session_data={},
+            session=None,
+        )
 
     @pytest.mark.asyncio
     async def test_upsert_sessions_is_not_supported_for_single_run_syncer(self, caplog):
@@ -261,13 +265,12 @@ class TestWorkflowPersistence:
         assert save_kwargs == {"session": mongo_session}
 
     @pytest.mark.asyncio
-    async def test_sync_to_beanie_uses_active_transaction_session(self, monkeypatch: pytest.MonkeyPatch):
+    async def test_sync_to_beanie_uses_supplied_transaction_session(self, monkeypatch: pytest.MonkeyPatch):
         sync = _sync_with_fake_run()
         active_session = object()
         sync._write_run_and_nodes = AsyncMock()
         fake_db_client = SimpleNamespace(start_session=AsyncMock())
 
-        monkeypatch.setattr(persistence, "get_current_session", lambda: active_session)
         monkeypatch.setattr(persistence.WorkflowRunSyncer, "db_client", property(lambda self: fake_db_client))
 
         run_output = WorkflowRunOutput(
@@ -276,7 +279,11 @@ class TestWorkflowPersistence:
             step_results=[StepOutput(step_name="fetch", content="ok", success=True)],
         )
 
-        await sync._sync_to_beanie(run_output, session_data={"a2a_target_fetch": "agent-1"})
+        await sync._sync_to_beanie(
+            run_output,
+            session_data={"a2a_target_fetch": "agent-1"},
+            session=active_session,
+        )
 
         sync._write_run_and_nodes.assert_awaited_once_with(
             run_output,
@@ -303,7 +310,6 @@ class TestWorkflowPersistence:
         fake_db_client = SimpleNamespace(start_session=start_session)
         sync._write_run_and_nodes = AsyncMock()
 
-        monkeypatch.setattr(persistence, "get_current_session", lambda: None)
         monkeypatch.setattr(persistence.WorkflowRunSyncer, "db_client", property(lambda self: fake_db_client))
 
         run_output = WorkflowRunOutput(

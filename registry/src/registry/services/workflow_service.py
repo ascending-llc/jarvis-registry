@@ -15,9 +15,9 @@ from uuid import uuid4
 from beanie import PydanticObjectId
 from fastapi import HTTPException
 from pymongo import ReturnDocument
+from pymongo.asynchronous.client_session import AsyncClientSession
 from pymongo.errors import DuplicateKeyError
 
-from registry_pkgs.database.decorators import get_current_session, use_transaction
 from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.models.a2a_agent import A2AAgent
 from registry_pkgs.models.enums import WorkflowNodeType, WorkflowRunStatus
@@ -101,7 +101,11 @@ class WorkflowService:
             for choice in node.choices:
                 yield from WorkflowService._iter_nodes(choice.steps)
 
-    async def _validate_executor_refs(self, nodes: list[WorkflowNode]) -> None:
+    async def _validate_executor_refs(
+        self,
+        nodes: list[WorkflowNode],
+        session: AsyncClientSession | None = None,
+    ) -> None:
         """Ensure workflow executor references resolve before saving the definition."""
         executor_keys: set[str] = set()
         pool_paths: set[str] = set()
@@ -118,7 +122,8 @@ class WorkflowService:
         matched_mcp_keys: set[str] = set()
         if executor_keys_to_check:
             mcp_servers = await ExtendedMCPServer.find(
-                {"serverName": {"$in": sorted(executor_keys_to_check)}, "config.enabled": True}
+                {"serverName": {"$in": sorted(executor_keys_to_check)}, "config.enabled": True},
+                session=session,
             ).to_list()
             matched_mcp_keys = {server.serverName for server in mcp_servers}
 
@@ -126,7 +131,8 @@ class WorkflowService:
         matched_a2a_executor_keys: set[str] = set()
         if unmatched_executor_keys:
             a2a_agents = await A2AAgent.find(
-                {"path": {"$in": sorted(unmatched_executor_keys)}, "isEnabled": True}
+                {"path": {"$in": sorted(unmatched_executor_keys)}, "isEnabled": True},
+                session=session,
             ).to_list()
             matched_a2a_executor_keys = {agent.path for agent in a2a_agents}
 
@@ -140,7 +146,10 @@ class WorkflowService:
         if not pool_paths:
             return
 
-        pool_agents = await A2AAgent.find({"path": {"$in": sorted(pool_paths)}, "isEnabled": True}).to_list()
+        pool_agents = await A2AAgent.find(
+            {"path": {"$in": sorted(pool_paths)}, "isEnabled": True},
+            session=session,
+        ).to_list()
         matched_pool_paths = {agent.path for agent in pool_agents}
         unknown_pool_paths = pool_paths - matched_pool_paths
         if unknown_pool_paths:
@@ -199,7 +208,11 @@ class WorkflowService:
             logger.exception("Error listing workflows")
             raise
 
-    async def get_workflow_by_id(self, workflow_id: str) -> WorkflowDefinition:
+    async def get_workflow_by_id(
+        self,
+        workflow_id: str,
+        session: AsyncClientSession | None = None,
+    ) -> WorkflowDefinition:
         """
         Get workflow by ID.
 
@@ -218,7 +231,7 @@ class WorkflowService:
             except Exception as exc:
                 raise ValueError(f"Invalid workflow ID: {workflow_id}") from exc
 
-            workflow = await WorkflowDefinition.get(workflow_oid)
+            workflow = await WorkflowDefinition.get(workflow_oid, session=session)
             if not workflow:
                 raise ValueError(f"Workflow {workflow_id} not found")
 
@@ -279,11 +292,11 @@ class WorkflowService:
             logger.exception("Error creating workflow")
             raise
 
-    @use_transaction
     async def update_workflow(
         self,
         workflow_id: str,
         data: WorkflowUpdateRequest,
+        session: AsyncClientSession | None = None,
     ) -> WorkflowDefinition:
         """
         Update an existing workflow.
@@ -301,7 +314,7 @@ class WorkflowService:
         """
         try:
             # Get existing workflow
-            workflow = await self.get_workflow_by_id(workflow_id)
+            workflow = await self.get_workflow_by_id(workflow_id, session=session)
 
             # Capture the current version's definition for history BEFORE mutating it.
             previous_version = workflow.version
@@ -328,7 +341,7 @@ class WorkflowService:
 
             if data.nodes is not None:
                 nodes = [self._convert_api_node_to_model(node) for node in data.nodes]
-                await self._validate_executor_refs(nodes)
+                await self._validate_executor_refs(nodes, session=session)
                 update_fields["nodes"] = [node.model_dump(mode="json") for node in nodes]
 
             if data.enabled is not None:
@@ -337,7 +350,6 @@ class WorkflowService:
             # Always update the timestamp
             update_fields["updated_at"] = datetime.now(UTC)
 
-            session = get_current_session()
             collection = MongoDB.get_database().get_collection(WorkflowDefinition.get_settings().name)
 
             updated_doc = await collection.find_one_and_update(

@@ -5,8 +5,8 @@ from typing import Any
 from beanie import PydanticObjectId
 from fastapi import HTTPException
 from fastapi import status as http_status
+from pymongo.asynchronous.client_session import AsyncClientSession
 
-from registry_pkgs.database.decorators import get_current_session
 from registry_pkgs.models import (
     ExtendedAccessRole,
     PrincipalType,
@@ -36,9 +36,8 @@ class ACLService:
         resource_id: PydanticObjectId,
         role_id: PydanticObjectId | None,
         perm_bits: int | None,
+        session: AsyncClientSession | None = None,
     ) -> ExtendedAclEntry:
-        session = get_current_session()
-
         acl_entry = await ExtendedAclEntry.find_one(
             {
                 "principalType": principal_type,
@@ -85,13 +84,21 @@ class ACLService:
             else "",
         )
 
-    async def get_role_by_resource_and_permbits(self, resource_type: str, perm_bits: int) -> ExtendedAccessRole | None:
+    async def get_role_by_resource_and_permbits(
+        self,
+        resource_type: str,
+        perm_bits: int,
+        session: AsyncClientSession | None = None,
+    ) -> ExtendedAccessRole | None:
         """
         Find the ExtendedAccessRole for a given resource_type and perm_bits.
         Used to automatically associate a roleId when only perm_bits is provided.
         """
         try:
-            role = await ExtendedAccessRole.find_one({"resourceType": resource_type, "permBits": perm_bits})
+            role = await ExtendedAccessRole.find_one(
+                {"resourceType": resource_type, "permBits": perm_bits},
+                session=session,
+            )
             return role
         except Exception as e:
             logger.error(f"Error finding role for {resource_type} with permBits {perm_bits}: {e}")
@@ -105,6 +112,7 @@ class ACLService:
         resource_id: PydanticObjectId,
         role_id: PydanticObjectId | None = None,
         perm_bits: int | None = None,
+        session: AsyncClientSession | None = None,
     ) -> ExtendedAclEntry:
         """
         Grant ACL permission to a principal (user or group) for a specific resource.
@@ -127,12 +135,12 @@ class ACLService:
             raise ValueError("principal_id must be set for user/group principal_type")
 
         if role_id:
-            access_role = await ExtendedAccessRole.find_one({"_id": role_id})
+            access_role = await ExtendedAccessRole.find_one({"_id": role_id}, session=session)
             if not access_role:
                 raise ValueError("Role not found")
             perm_bits = access_role.permBits
         elif perm_bits and not role_id:
-            role = await self.get_role_by_resource_and_permbits(resource_type, perm_bits)
+            role = await self.get_role_by_resource_and_permbits(resource_type, perm_bits, session=session)
             if role:
                 role_id = role.id
 
@@ -145,10 +153,11 @@ class ACLService:
                 resource_id=resource_id,
                 role_id=role_id,
                 perm_bits=perm_bits,
+                session=session,
             )
         except Exception as e:
             if "NoSuchTransaction" in str(e) or "txnNumber" in str(e):
-                logger.warning("Retrying ACL upsert without transaction session due to transient tx abort: %s", e)
+                logger.warning("Retrying ACL upsert with explicit session after transient tx abort: %s", e)
                 try:
                     return await self._upsert_acl_entry(
                         principal_type=principal_type,
@@ -157,6 +166,7 @@ class ACLService:
                         resource_id=resource_id,
                         role_id=role_id,
                         perm_bits=perm_bits,
+                        session=session,
                     )
                 except Exception as retry_error:
                     logger.error(f"Error upserting ACL entry on retry: {retry_error}")
@@ -165,7 +175,11 @@ class ACLService:
             raise ValueError(f"Error upserting ACL permissions: {e}")
 
     async def delete_acl_entries_for_resource(
-        self, resource_type: str, resource_id: PydanticObjectId, perm_bits_to_delete: int | None = None
+        self,
+        resource_type: str,
+        resource_id: PydanticObjectId,
+        perm_bits_to_delete: int | None = None,
+        session: AsyncClientSession | None = None,
     ) -> int:
         """
         Bulk delete ACL entries for a given resource, optionally deleting all entries with permBits less than or equal to the specified value.
@@ -174,7 +188,6 @@ class ACLService:
             None (returns 0 on error).
         """
         try:
-            session = get_current_session()
             query = {"resourceType": resource_type, "resourceId": resource_id}
 
             if perm_bits_to_delete:
@@ -195,6 +208,7 @@ class ACLService:
         resource_id: PydanticObjectId,
         principal_type: str,
         principal_id: PydanticObjectId | str | None,
+        session: AsyncClientSession | None = None,
     ) -> int:
         """
         Remove a single ACL entry for a given resource, principal type, and principal ID.
@@ -212,7 +226,6 @@ class ACLService:
                 None (returns 0 on error).
         """
         try:
-            session = get_current_session()
             query = {
                 "resourceType": resource_type,
                 "resourceId": resource_id,
@@ -266,6 +279,7 @@ class ACLService:
         self,
         resource_type: str,
         resource_id: PydanticObjectId,
+        session: AsyncClientSession | None = None,
     ) -> dict[str, Any]:
         """
         Get all ACL permissions for a specific resource with full principal details.
@@ -273,7 +287,8 @@ class ACLService:
         """
         try:
             acl_entries = await ExtendedAclEntry.find(
-                {"resourceType": resource_type, "resourceId": resource_id}
+                {"resourceType": resource_type, "resourceId": resource_id},
+                session=session,
             ).to_list()
 
             principals: list[PrincipalDetailOut] = []
@@ -285,11 +300,11 @@ class ACLService:
                     continue
 
                 if entry.principalType == PrincipalType.USER.value and entry.principalId:
-                    user = await User.get(entry.principalId)
+                    user = await User.get(entry.principalId, session=session)
                     if user:
                         access_role_id = None
                         if entry.roleId:
-                            role = await ExtendedAccessRole.get(entry.roleId)
+                            role = await ExtendedAccessRole.get(entry.roleId, session=session)
                             if role:
                                 access_role_id = role.accessRoleId
 
@@ -321,6 +336,7 @@ class ACLService:
         user_id: PydanticObjectId,
         resource_type: str,
         resource_id: PydanticObjectId,
+        session: AsyncClientSession | None = None,
     ) -> ResourcePermissions:
         """
         Get the resolved permissions for a single user on a single resource.
@@ -339,7 +355,8 @@ class ACLService:
                             {"principalType": PrincipalType.USER.value, "principalId": user_id},
                             {"principalType": PrincipalType.PUBLIC.value, "principalId": None},
                         ],
-                    }
+                    },
+                    session=session,
                 )
                 .sort([("permBits", -1)])
                 .to_list()
@@ -364,6 +381,7 @@ class ACLService:
         user_id: PydanticObjectId,
         resource_type: str,
         resource_ids: list[PydanticObjectId],
+        session: AsyncClientSession | None = None,
     ) -> dict[PydanticObjectId, ResourcePermissions]:
         """Batch variant of ``get_user_permissions_for_resource``.
 
@@ -388,7 +406,8 @@ class ACLService:
                             {"principalType": PrincipalType.USER.value, "principalId": user_id},
                             {"principalType": PrincipalType.PUBLIC.value, "principalId": None},
                         ],
-                    }
+                    },
+                    session=session,
                 )
                 .sort([("permBits", -1)])
                 .to_list()
@@ -417,6 +436,7 @@ class ACLService:
         resource_type: str,
         resource_id: PydanticObjectId,
         required_permission: str,
+        session: AsyncClientSession | None = None,
     ) -> ResourcePermissions:
         """
         Verify a user holds a specific permission on a resource.
@@ -440,6 +460,7 @@ class ACLService:
             user_id=user_id,
             resource_type=resource_type,
             resource_id=resource_id,
+            session=session,
         )
         if not getattr(permissions, required_permission, False):
             raise HTTPException(
@@ -452,6 +473,7 @@ class ACLService:
         self,
         user_id: PydanticObjectId,
         resource_type: str,
+        session: AsyncClientSession | None = None,
     ) -> list[str]:
         """
         Return the IDs of all resources of a given type that the user can VIEW.
@@ -475,7 +497,8 @@ class ACLService:
                         {"principalType": PrincipalType.USER.value, "principalId": user_id},
                         {"principalType": PrincipalType.PUBLIC.value, "principalId": None},
                     ],
-                }
+                },
+                session=session,
             ).to_list()
 
             seen: set[str] = set()
@@ -492,7 +515,11 @@ class ACLService:
             logger.error(f"Error fetching accessible {resource_type} IDs for user {user_id}: {e}")
             return []
 
-    async def get_roles_by_resource_type(self, resource_type: str) -> list[RoleOut]:
+    async def get_roles_by_resource_type(
+        self,
+        resource_type: str,
+        session: AsyncClientSession | None = None,
+    ) -> list[RoleOut]:
         """
         Get all available roles for a specific resource type.
 
@@ -503,7 +530,7 @@ class ACLService:
             List of roles with their accessRoleId, name, description, and permBits
         """
         try:
-            roles = await ExtendedAccessRole.find({"resourceType": resource_type}).to_list()
+            roles = await ExtendedAccessRole.find({"resourceType": resource_type}, session=session).to_list()
             return [
                 RoleOut(
                     accessRoleId=role.accessRoleId,
@@ -523,6 +550,7 @@ class ACLService:
         resource_id: PydanticObjectId,
         updated_principals: list[Any],
         removed_principals: list[Any],
+        session: AsyncClientSession | None = None,
     ) -> None:
         """
         Validate that after the update, at least one owner remains for the resource.
@@ -531,7 +559,8 @@ class ACLService:
             ValueError: If the update would result in no owners remaining
         """
         current_acl_entries = await ExtendedAclEntry.find(
-            {"resourceType": resource_type, "resourceId": resource_id}
+            {"resourceType": resource_type, "resourceId": resource_id},
+            session=session,
         ).to_list()
 
         owner_perm_bits = PermissionBits.VIEW | PermissionBits.EDIT | PermissionBits.DELETE | PermissionBits.SHARE
@@ -556,7 +585,10 @@ class ACLService:
             if updated_principal:
                 new_perm_bits = updated_principal.permBits
                 if updated_principal.accessRoleId:
-                    role = await ExtendedAccessRole.find_one({"accessRoleId": updated_principal.accessRoleId})
+                    role = await ExtendedAccessRole.find_one(
+                        {"accessRoleId": updated_principal.accessRoleId},
+                        session=session,
+                    )
                     if role:
                         new_perm_bits = role.permBits
 
@@ -575,7 +607,10 @@ class ACLService:
         for new_principal in new_owners:
             perm_bits = new_principal.permBits
             if new_principal.accessRoleId:
-                role = await ExtendedAccessRole.find_one({"accessRoleId": new_principal.accessRoleId})
+                role = await ExtendedAccessRole.find_one(
+                    {"accessRoleId": new_principal.accessRoleId},
+                    session=session,
+                )
                 if role:
                     perm_bits = role.permBits
 

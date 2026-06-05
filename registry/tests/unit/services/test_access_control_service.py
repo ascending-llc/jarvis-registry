@@ -12,11 +12,10 @@ from registry_pkgs.models.enums import PermissionBits, RoleBits
 
 class TestACLService:
     @pytest.mark.asyncio
-    @patch("registry.services.access_control_service.get_current_session")
     @patch("registry.services.access_control_service.ExtendedAclEntry")
-    async def test_grant_permission_new_entry(self, mock_acl_entry, mock_get_session):
+    async def test_grant_permission_new_entry(self, mock_acl_entry):
         service = ACLService(user_service=Mock(), group_service=Mock())
-        mock_get_session.return_value = AsyncMock()  # Mock session
+        mock_session = AsyncMock()
         mock_acl_entry.find_one = AsyncMock(return_value=None)
 
         # ExtendedAclEntry() returns an AsyncMock, whose insert is also an AsyncMock
@@ -38,16 +37,16 @@ class TestACLService:
                 resource_id=PydanticObjectId(),
                 role_id=role_id,
                 perm_bits=PermissionBits.EDIT,
+                session=mock_session,
             )
             new_entry.insert.assert_awaited()
             assert mock_acl_entry.call_args.kwargs["roleId"] == role_id
 
     @pytest.mark.asyncio
-    @patch("registry.services.access_control_service.get_current_session")
     @patch("registry.services.access_control_service.ExtendedAclEntry")
-    async def test_grant_permission_update_existing(self, mock_acl_entry, mock_get_session):
+    async def test_grant_permission_update_existing(self, mock_acl_entry):
         service = ACLService(user_service=Mock(), group_service=Mock())
-        mock_get_session.return_value = AsyncMock()  # Mock session
+        mock_session = AsyncMock()
         existing_entry = MagicMock()
         existing_entry.save = AsyncMock()
         mock_acl_entry.find_one = AsyncMock(return_value=existing_entry)
@@ -59,6 +58,7 @@ class TestACLService:
                 resource_type=ResourceType.MCPSERVER.value,
                 resource_id=PydanticObjectId(),
                 perm_bits=PermissionBits.EDIT,
+                session=mock_session,
             )
             existing_entry.save.assert_awaited()
 
@@ -86,16 +86,17 @@ class TestACLService:
             )
 
     @pytest.mark.asyncio
-    @patch("registry.services.access_control_service.get_current_session")
     @patch("registry.services.access_control_service.ExtendedAclEntry")
-    async def test_delete_acl_entries_for_resource(self, mock_acl_entry, mock_get_session):
+    async def test_delete_acl_entries_for_resource(self, mock_acl_entry):
         service = ACLService(user_service=Mock(), group_service=Mock())
-        mock_get_session.return_value = AsyncMock()  # Mock session
+        mock_session = AsyncMock()
         mock_result = MagicMock()
         mock_result.deleted_count = 2
         mock_acl_entry.find.return_value.delete = AsyncMock(return_value=mock_result)
         deleted = await service.delete_acl_entries_for_resource(
-            resource_type=ResourceType.MCPSERVER.value, resource_id=PydanticObjectId()
+            resource_type=ResourceType.MCPSERVER.value,
+            resource_id=PydanticObjectId(),
+            session=mock_session,
         )
         assert deleted == 2
 
@@ -136,11 +137,10 @@ class TestACLService:
         assert perms.SHARE is False
 
     @pytest.mark.asyncio
-    @patch("registry.services.access_control_service.get_current_session")
     @patch("registry.services.access_control_service.ExtendedAclEntry")
-    async def test_delete_permission(self, mock_acl_entry, mock_get_session):
+    async def test_delete_permission(self, mock_acl_entry):
         service = ACLService(user_service=Mock(), group_service=Mock())
-        mock_get_session.return_value = AsyncMock()  # Mock session
+        mock_session = AsyncMock()
         mock_result = MagicMock()
         mock_result.deleted_count = 1
         mock_acl_entry.find.return_value.delete = AsyncMock(return_value=mock_result)
@@ -149,6 +149,7 @@ class TestACLService:
             resource_id=PydanticObjectId(),
             principal_type="user",
             principal_id=PydanticObjectId(),
+            session=mock_session,
         )
         assert deleted_count == 1
 

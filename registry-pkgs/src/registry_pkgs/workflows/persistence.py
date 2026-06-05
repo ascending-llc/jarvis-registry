@@ -11,7 +11,6 @@ from agno.session import Session, WorkflowSession
 from agno.workflow import StepOutput
 from pymongo.asynchronous.client_session import AsyncClientSession
 
-from registry_pkgs.database.decorators import get_current_session
 from registry_pkgs.models.enums import NodeRunStatus, WorkflowRunStatus
 from registry_pkgs.models.workflow import NodeRun, WorkflowNode, WorkflowRun
 
@@ -57,13 +56,18 @@ class WorkflowRunSyncer(AsyncMongoDb):
         self,
         session: Session,
         deserialize: bool | None = True,
+        mongo_session: AsyncClientSession | None = None,
     ) -> Session | dict[str, Any] | None:
         """Persist agno session, then mirror the latest run into Beanie."""
         result = await super().upsert_session(session, deserialize=deserialize)
         if isinstance(session, WorkflowSession) and session.runs:
             session_data: dict[str, Any] = session.session_data or {}
             try:
-                await self._sync_to_beanie(session.runs[-1], session_data=session_data)
+                await self._sync_to_beanie(
+                    session.runs[-1],
+                    session_data=session_data,
+                    session=mongo_session,
+                )
             except Exception as e:
                 logger.exception(
                     "WorkflowRunSyncer: failed to sync run %s to Beanie, error: %s", self._workflow_run.id, e
@@ -85,19 +89,19 @@ class WorkflowRunSyncer(AsyncMongoDb):
         self,
         run_output: WorkflowRunOutput,
         session_data: dict[str, Any] | None = None,
+        session: AsyncClientSession | None = None,
     ) -> None:
         """Write WorkflowRun status and per-step NodeRuns from WorkflowRunOutput."""
         step_outputs = _flatten_step_results(run_output.step_results)
         final_status = _resolve_workflow_run_status(run_output, step_outputs, self._node_by_name)
-        active_session = get_current_session()
 
         if final_status in _TERMINAL_STATUSES:
-            if active_session is not None:
+            if session is not None:
                 await self._write_run_and_nodes(
                     run_output,
                     step_outputs,
                     session_data=session_data or {},
-                    session=active_session,
+                    session=session,
                 )
                 return
 
@@ -113,12 +117,12 @@ class WorkflowRunSyncer(AsyncMongoDb):
             return
 
         # Non-terminal state can be synced outside a transaction, but should still
-        # participate in any ambient transaction when one exists.
+        # participate in a caller-supplied transaction when one exists.
         await self._write_run_and_nodes(
             run_output,
             step_outputs,
             session_data=session_data or {},
-            session=active_session,
+            session=session,
         )
 
     async def _write_run_and_nodes(

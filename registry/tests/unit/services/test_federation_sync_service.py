@@ -66,6 +66,42 @@ class _FakeQuery:
         return list(self._items)
 
 
+class _FakeTxnCtx:
+    async def __aenter__(self):
+        return None
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+class _FakeTxnSession:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def start_transaction(self):
+        return _FakeTxnCtx()
+
+
+class _FakeTxnClient:
+    def __init__(self, session: _FakeTxnSession):
+        self.session = session
+
+    def start_session(self):
+        return self.session
+
+
+def _patch_mongo_session(monkeypatch) -> _FakeTxnSession:
+    session = _FakeTxnSession()
+    monkeypatch.setattr(
+        "registry.services.federation_sync_service.MongoDB.get_client",
+        lambda: _FakeTxnClient(session),
+    )
+    return session
+
+
 @pytest.mark.asyncio
 async def test_discover_entities_dispatches_to_aws_handler(federation_sync_service: FederationSyncService):
     federation = _make_federation(
@@ -129,7 +165,10 @@ async def test_azure_sync_is_not_implemented(federation_sync_service: Federation
 
 
 @pytest.mark.asyncio
-async def test_run_delete_marks_job_success_and_cleans_up_vectors(federation_sync_service: FederationSyncService):
+async def test_run_delete_marks_job_success_and_cleans_up_vectors(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
     federation = _make_federation(
         FederationProviderType.AWS_AGENTCORE,
         {"region": "us-east-1", "assumeRoleArn": "arn:aws:iam::123456789012:role/TestRole"},
@@ -144,10 +183,15 @@ async def test_run_delete_marks_job_success_and_cleans_up_vectors(federation_syn
     federation_sync_service.federation_job_service.mark_success = AsyncMock()
     federation_sync_service._delete_transaction = AsyncMock(return_value=(mcp_arns, a2a_arns))
     federation_sync_service._delete_vectors_for_federation = AsyncMock(return_value=[])
+    mongo_session = _patch_mongo_session(monkeypatch)
 
     result = await federation_sync_service.run_delete(federation=federation, job=job)
 
-    federation_sync_service._delete_transaction.assert_awaited_once_with(federation, current_job_id=job.id)
+    federation_sync_service._delete_transaction.assert_awaited_once_with(
+        federation,
+        current_job_id=job.id,
+        session=mongo_session,
+    )
     federation_sync_service._delete_vectors_for_federation.assert_awaited_once_with(
         str(federation.id), mcp_arns, a2a_arns
     )
@@ -158,6 +202,7 @@ async def test_run_delete_marks_job_success_and_cleans_up_vectors(federation_syn
 @pytest.mark.asyncio
 async def test_run_delete_records_vector_errors_in_job_but_still_succeeds(
     federation_sync_service: FederationSyncService,
+    monkeypatch,
 ):
     federation = _make_federation(
         FederationProviderType.AWS_AGENTCORE,
@@ -177,6 +222,7 @@ async def test_run_delete_records_vector_errors_in_job_but_still_succeeds(
     federation_sync_service.federation_job_service.mark_success = AsyncMock()
     federation_sync_service._delete_transaction = AsyncMock(return_value=(["arn:..."], []))
     federation_sync_service._delete_vectors_for_federation = AsyncMock(return_value=vector_errors)
+    _patch_mongo_session(monkeypatch)
 
     result = await federation_sync_service.run_delete(federation=federation, job=job)
 
@@ -185,7 +231,10 @@ async def test_run_delete_records_vector_errors_in_job_but_still_succeeds(
 
 
 @pytest.mark.asyncio
-async def test_run_delete_restores_active_status_when_delete_fails(federation_sync_service: FederationSyncService):
+async def test_run_delete_restores_active_status_when_delete_fails(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
     federation = _make_federation(
         FederationProviderType.AWS_AGENTCORE,
         {"region": "us-east-1", "assumeRoleArn": "arn:aws:iam::123456789012:role/TestRole"},
@@ -198,6 +247,7 @@ async def test_run_delete_restores_active_status_when_delete_fails(federation_sy
     federation_sync_service.federation_job_service.mark_failed = AsyncMock()
     federation_sync_service.federation_crud_service.mark_delete_failed = AsyncMock()
     federation_sync_service._delete_transaction = AsyncMock(side_effect=RuntimeError("delete failed"))
+    _patch_mongo_session(monkeypatch)
 
     with pytest.raises(RuntimeError, match="delete failed"):
         await federation_sync_service.run_delete(federation=federation, job=job)
@@ -227,20 +277,24 @@ async def test_update_federation_and_create_resync_job_creates_pending_job(
     federation_sync_service.federation_crud_service.update_federation = AsyncMock(return_value=updated)
     federation_sync_service.federation_job_service.create_job = AsyncMock(return_value=job)
     federation_sync_service.federation_crud_service.mark_sync_pending = AsyncMock(return_value=updated)
+    session = object()
 
-    result, created_job = await FederationSyncService.update_federation_and_create_resync_job.__wrapped__(
-        federation_sync_service,
+    result, created_job = await federation_sync_service.update_federation_and_create_resync_job(
         federation=federation,
         display_name="Updated",
         description="Updated",
         tags=["prod"],
         normalized_provider_config={"region": "us-west-2", "assumeRoleArn": "arn:aws:iam::123456789012:role/TestRole"},
         updated_by="user-1",
+        session=session,
     )
 
     federation_sync_service.federation_crud_service.update_federation.assert_awaited_once()
     federation_sync_service.federation_job_service.create_job.assert_awaited_once()
     federation_sync_service.federation_crud_service.mark_sync_pending.assert_awaited_once()
+    assert federation_sync_service.federation_crud_service.update_federation.await_args.kwargs["session"] is session
+    assert federation_sync_service.federation_job_service.create_job.await_args.kwargs["session"] is session
+    assert federation_sync_service.federation_crud_service.mark_sync_pending.await_args.kwargs["session"] is session
     assert federation_sync_service.federation_crud_service.mark_sync_pending.await_args.args[0] == updated
     assert federation_sync_service.federation_crud_service.mark_sync_pending.await_args.kwargs["last_sync"].status == (
         FederationSyncStatus.PENDING
@@ -250,7 +304,10 @@ async def test_update_federation_and_create_resync_job_creates_pending_job(
 
 
 @pytest.mark.asyncio
-async def test_run_sync_calls_vector_sync_after_commit(federation_sync_service: FederationSyncService):
+async def test_run_sync_calls_vector_sync_after_commit(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
     federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
     job = SimpleNamespace(id=PydanticObjectId(), startedAt=datetime.now(UTC))
     mutation_result = FederationSyncMutationResult(
@@ -266,10 +323,17 @@ async def test_run_sync_calls_vector_sync_after_commit(federation_sync_service: 
     federation_sync_service.federation_crud_service.mark_sync_success = AsyncMock()
     federation_sync_service.federation_job_service.mark_failed = AsyncMock()
     federation_sync_service.federation_job_service.mark_success = AsyncMock()
+    mongo_session = _patch_mongo_session(monkeypatch)
 
     result = await federation_sync_service.run_sync(federation=federation, job=job, author_id=_DEFAULT_USER_OBJECT_ID)
 
     assert result == job
+    federation_sync_service._commit_sync_transaction.assert_awaited_once_with(
+        federation=federation,
+        job=job,
+        discovered={"mcp_servers": [], "a2a_agents": []},
+        session=mongo_session,
+    )
     federation_sync_service._sync_vector_index_after_commit.assert_awaited_once_with(
         federation=federation,
         job=job,
@@ -286,7 +350,10 @@ async def test_run_sync_calls_vector_sync_after_commit(federation_sync_service: 
 
 
 @pytest.mark.asyncio
-async def test_run_sync_marks_failed_when_vector_sync_fails(federation_sync_service: FederationSyncService):
+async def test_run_sync_marks_failed_when_vector_sync_fails(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
     federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
     job = SimpleNamespace(
         id=PydanticObjectId(),
@@ -301,6 +368,7 @@ async def test_run_sync_marks_failed_when_vector_sync_fails(federation_sync_serv
     federation_sync_service._sync_vector_index_after_commit = AsyncMock(side_effect=RuntimeError("vector down"))
     federation_sync_service.federation_crud_service.mark_sync_failed = AsyncMock()
     federation_sync_service.federation_job_service.mark_failed = AsyncMock()
+    _patch_mongo_session(monkeypatch)
 
     with pytest.raises(RuntimeError, match="vector down"):
         await federation_sync_service.run_sync(federation=federation, job=job, author_id=_DEFAULT_USER_OBJECT_ID)
@@ -413,8 +481,6 @@ async def test_build_sync_plan_updates_mcp_when_only_runtime_access_mode_changes
         config={"runtimeAccess": {"mode": "jwt"}},
     )
 
-    monkeypatch.setattr("registry.services.federation_sync_service.get_current_session", lambda: None)
-
     def _fake_mcp_find(query, session=None):
         if query == {"federationRefId": federation.id}:
             return _FakeQuery([existing_mcp])
@@ -460,8 +526,6 @@ async def test_build_sync_plan_updates_a2a_when_only_runtime_access_mode_changes
         card=SimpleNamespace(name="auth-mode-a2a"),
         config=SimpleNamespace(type="jsonrpc", runtimeAccess=SimpleNamespace(mode="jwt")),
     )
-
-    monkeypatch.setattr("registry.services.federation_sync_service.get_current_session", lambda: None)
 
     def _fake_mcp_find(query, session=None):
         if query == {"federationRefId": federation.id}:
@@ -511,8 +575,6 @@ async def test_build_sync_plan_ignores_a2a_transport_type_only_change(
         config=SimpleNamespace(type="jsonrpc", runtimeAccess=SimpleNamespace(mode="jwt")),
     )
 
-    monkeypatch.setattr("registry.services.federation_sync_service.get_current_session", lambda: None)
-
     def _fake_mcp_find(query, session=None):
         if query == {"federationRefId": federation.id}:
             return _FakeQuery([])
@@ -543,6 +605,7 @@ async def test_build_sync_plan_ignores_a2a_transport_type_only_change(
 @pytest.mark.asyncio
 async def test_run_sync_returns_failed_job_without_vector_when_apply_summary_has_errors(
     federation_sync_service: FederationSyncService,
+    monkeypatch,
 ):
     federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
     job = SimpleNamespace(id=PydanticObjectId(), startedAt=datetime.now(UTC))
@@ -557,6 +620,7 @@ async def test_run_sync_returns_failed_job_without_vector_when_apply_summary_has
     federation_sync_service._sync_vector_index_after_commit = AsyncMock()
     federation_sync_service.federation_crud_service.mark_sync_success = AsyncMock()
     federation_sync_service.federation_job_service.mark_success = AsyncMock()
+    _patch_mongo_session(monkeypatch)
 
     result = await federation_sync_service.run_sync(federation=federation, job=job, author_id=_DEFAULT_USER_OBJECT_ID)
 
@@ -912,12 +976,13 @@ async def test_commit_sync_transaction_marks_federation_failed_when_resource_enr
     federation_sync_service.federation_crud_service.mark_sync_success = AsyncMock()
     federation_sync_service.federation_job_service.mark_failed = AsyncMock()
     federation_sync_service.federation_job_service.mark_success = AsyncMock()
+    session = object()
 
-    result = await FederationSyncService._commit_sync_transaction.__wrapped__(
-        federation_sync_service,
+    result = await federation_sync_service._commit_sync_transaction(
         federation=federation,
         job=job,
         discovered={"mcp_servers": [SimpleNamespace()], "a2a_agents": [SimpleNamespace()]},
+        session=session,
     )
 
     assert result == mutation_result
@@ -925,6 +990,8 @@ async def test_commit_sync_transaction_marks_federation_failed_when_resource_enr
     federation_sync_service.federation_crud_service.mark_sync_success.assert_not_awaited()
     federation_sync_service.federation_job_service.mark_failed.assert_awaited_once()
     federation_sync_service.federation_job_service.mark_success.assert_not_awaited()
+    assert federation_sync_service.federation_crud_service.mark_sync_failed.await_args.kwargs["session"] is session
+    assert federation_sync_service.federation_job_service.mark_failed.await_args.kwargs["session"] is session
     assert federation_sync_service.federation_crud_service.mark_syncing.await_args.kwargs["last_sync"].status == (
         FederationSyncStatus.SYNCING
     )
@@ -1135,8 +1202,6 @@ async def test_build_sync_plan_tracks_unchanged_resources_for_acl_inheritance(
         federationMetadata={"runtimeArn": a2a_runtime_arn, "runtimeVersion": "1"},
     )
 
-    monkeypatch.setattr("registry.services.federation_sync_service.get_current_session", lambda: None)
-
     def _fake_mcp_find(query, session=None):
         if query == {"federationRefId": federation.id}:
             return _FakeQuery([existing_mcp])
@@ -1185,11 +1250,10 @@ async def test_apply_sync_plan_inherits_acl_to_unchanged_mcp_and_a2a_resources(
         a2a_pre_existing_acl_targets=[a2a_id],
     )
 
-    monkeypatch.setattr("registry.services.federation_sync_service.get_current_session", lambda: None)
     federation_sync_service._get_federation_acl_entries = AsyncMock(return_value=(federation_acl_entries, True))
     federation_sync_service._batch_inherit_federation_acl = AsyncMock()
 
-    await federation_sync_service._apply_sync_plan(sync_plan)
+    await federation_sync_service._apply_sync_plan(sync_plan, session=None)
 
     federation_sync_service._batch_inherit_federation_acl.assert_awaited_once_with(
         federation_acl_entries=federation_acl_entries,
@@ -1197,6 +1261,7 @@ async def test_apply_sync_plan_inherits_acl_to_unchanged_mcp_and_a2a_resources(
             (ResourceType.MCPSERVER, mcp_id),
             (ResourceType.REMOTE_AGENT, a2a_id),
         ],
+        session=None,
     )
 
 
@@ -1238,11 +1303,10 @@ async def test_apply_sync_plan_updates_a2a_runtime_access(
         a2a_updates=[(existing_a2a, update_a2a_item, "arn:updated-a2a")],
     )
 
-    monkeypatch.setattr("registry.services.federation_sync_service.get_current_session", lambda: None)
     federation_sync_service._get_federation_acl_entries = AsyncMock(return_value=([], True))
     federation_sync_service._batch_inherit_federation_acl = AsyncMock()
 
-    await federation_sync_service._apply_sync_plan(sync_plan)
+    await federation_sync_service._apply_sync_plan(sync_plan, session=None)
 
     assert existing_a2a.config.runtimeAccess is updated_runtime_access
     assert existing_a2a.config.runtimeAccess.mode == "jwt"
@@ -1380,11 +1444,10 @@ async def test_apply_sync_plan_inherits_acl_to_created_updated_and_unchanged_res
         a2a_deletes=[(deleted_a2a, "arn:deleted-a2a")],
     )
 
-    monkeypatch.setattr("registry.services.federation_sync_service.get_current_session", lambda: None)
     federation_sync_service._get_federation_acl_entries = AsyncMock(return_value=(federation_acl_entries, True))
     federation_sync_service._batch_inherit_federation_acl = AsyncMock()
 
-    await federation_sync_service._apply_sync_plan(sync_plan)
+    await federation_sync_service._apply_sync_plan(sync_plan, session=None)
 
     # Verify that _batch_inherit_federation_acl was called
     federation_sync_service._batch_inherit_federation_acl.assert_awaited_once()
@@ -1429,12 +1492,11 @@ async def test_apply_sync_plan_raises_when_federation_acl_query_fails(
         discovered_a2a_count=0,
     )
 
-    monkeypatch.setattr("registry.services.federation_sync_service.get_current_session", lambda: None)
     federation_sync_service._get_federation_acl_entries = AsyncMock(return_value=([], False))
     federation_sync_service._batch_inherit_federation_acl = AsyncMock()
 
     with pytest.raises(RuntimeError, match="could not query federation ACL"):
-        await federation_sync_service._apply_sync_plan(sync_plan)
+        await federation_sync_service._apply_sync_plan(sync_plan, session=None)
 
     federation_sync_service._batch_inherit_federation_acl.assert_not_awaited()
 
@@ -1448,15 +1510,13 @@ async def test_get_federation_acl_entries_uses_current_transaction_session(
     session = object()
     find_calls = []
 
-    monkeypatch.setattr("registry.services.federation_sync_service.get_current_session", lambda: session)
-
     def mock_find(query, **kwargs):
         find_calls.append({"query": query, "kwargs": kwargs})
         return _FakeQuery([])
 
     monkeypatch.setattr("registry.services.federation_sync_service.ExtendedAclEntry.find", mock_find)
 
-    entries, query_success = await federation_sync_service._get_federation_acl_entries(federation_id)
+    entries, query_success = await federation_sync_service._get_federation_acl_entries(federation_id, session=session)
 
     assert entries == []
     assert query_success is True
@@ -1493,8 +1553,6 @@ async def test_batch_inherit_acl_normalizes_resource_type_before_existence_check
         )
     ]
     inserted_entries = []
-
-    monkeypatch.setattr("registry.services.federation_sync_service.get_current_session", lambda: None)
 
     class MockExtendedAclEntry:
         @staticmethod
@@ -1546,7 +1604,6 @@ async def test_batch_inherit_acl_rewrites_role_id_to_target_resource_type(
     ]
     inserted_entries = []
 
-    monkeypatch.setattr("registry.services.federation_sync_service.get_current_session", lambda: None)
     monkeypatch.setattr(
         "registry.services.federation_sync_service.ExtendedAccessRole.find",
         lambda *args, **kwargs: _FakeQuery([mcp_editor_role]),
@@ -1598,7 +1655,6 @@ async def test_batch_inherit_acl_uses_role_id_scoped_to_each_resource_type(
     ]
     inserted_entries = []
 
-    monkeypatch.setattr("registry.services.federation_sync_service.get_current_session", lambda: None)
     monkeypatch.setattr(
         "registry.services.federation_sync_service.ExtendedAccessRole.find",
         lambda *args, **kwargs: _FakeQuery([mcp_editor_role, remote_agent_editor_role]),
@@ -1638,7 +1694,6 @@ async def test_batch_inherit_acl_sets_role_id_none_when_target_role_is_missing(
     ]
     inserted_entries = []
 
-    monkeypatch.setattr("registry.services.federation_sync_service.get_current_session", lambda: None)
     _patch_acl_inheritance_storage(
         monkeypatch,
         existing_acl_entries=[],
@@ -1673,7 +1728,6 @@ async def test_batch_inherit_acl_copies_perm_bits_when_target_role_is_missing(
     ]
     inserted_entries = []
 
-    monkeypatch.setattr("registry.services.federation_sync_service.get_current_session", lambda: None)
     _patch_acl_inheritance_storage(
         monkeypatch,
         existing_acl_entries=[],
@@ -1719,7 +1773,6 @@ async def test_batch_inherit_acl_insert_only_semantics_are_unchanged_by_role_loo
     inserted_entries = []
     insert_calls = []
 
-    monkeypatch.setattr("registry.services.federation_sync_service.get_current_session", lambda: None)
     monkeypatch.setattr(
         "registry.services.federation_sync_service.ExtendedAccessRole.find",
         lambda *args, **kwargs: _FakeQuery(
@@ -1764,8 +1817,6 @@ async def test_federation_acl_inheritance_scenario_1_empty_resource(
     ]
 
     # Mock: Federation has 3 ACL entries, resource has 0
-    monkeypatch.setattr("registry.services.federation_sync_service.get_current_session", lambda: None)
-
     inserted_entries = []
 
     # Create a mock class that has both class methods and constructor
@@ -1827,8 +1878,6 @@ async def test_federation_acl_inheritance_scenario_2_preserve_existing(
         _make_acl_entry(PrincipalType.USER, "alex", ResourceType.MCPSERVER, server_id, RoleBits.OWNER)
     ]
 
-    monkeypatch.setattr("registry.services.federation_sync_service.get_current_session", lambda: None)
-
     inserted_entries = []
 
     # Create a mock class that has both class methods and constructor
@@ -1888,8 +1937,6 @@ async def test_federation_acl_inheritance_scenario_3_higher_permission_preserved
     existing_resource_acl = [
         _make_acl_entry(PrincipalType.USER, "ryo", ResourceType.MCPSERVER, server_id, RoleBits.OWNER)
     ]
-
-    monkeypatch.setattr("registry.services.federation_sync_service.get_current_session", lambda: None)
 
     inserted_entries = []
 
@@ -1951,8 +1998,6 @@ async def test_federation_acl_inheritance_scenario_4_lower_permission_preserved(
         _make_acl_entry(PrincipalType.USER, "kent", ResourceType.MCPSERVER, server_id, RoleBits.EDITOR)
     ]
 
-    monkeypatch.setattr("registry.services.federation_sync_service.get_current_session", lambda: None)
-
     inserted_entries = []
 
     # Create a mock class that has both class methods and constructor
@@ -2010,8 +2055,6 @@ async def test_federation_acl_inheritance_validates_principal_id(
 
     federation_acl_entries = [valid_entry, invalid_entry]
 
-    monkeypatch.setattr("registry.services.federation_sync_service.get_current_session", lambda: None)
-
     inserted_entries = []
 
     # Create a mock class that has both class methods and constructor
@@ -2062,8 +2105,6 @@ async def test_batch_inherit_acl_uses_batched_insert(federation_sync_service: Fe
     # Create 200 resources (will generate 600 ACL entries, split into 2 batches)
     resources = [(ResourceType.MCPSERVER, PydanticObjectId()) for _ in range(200)]
 
-    monkeypatch.setattr("registry.services.federation_sync_service.get_current_session", lambda: None)
-
     insert_calls = []
 
     # Create a mock class that has both class methods and constructor
@@ -2110,8 +2151,6 @@ async def test_batch_inherit_acl_raises_after_failure(federation_sync_service: F
     federation_acl_entries = [
         _make_acl_entry(PrincipalType.USER, "kent", ExtendedResourceType.FEDERATION, federation_id, RoleBits.OWNER),
     ]
-
-    monkeypatch.setattr("registry.services.federation_sync_service.get_current_session", lambda: None)
 
     def mock_find(query, **kwargs):
         if query.get("resourceType") == ExtendedResourceType.FEDERATION:
@@ -2261,6 +2300,7 @@ async def test_preview_manual_sync_raises_when_user_id_is_missing(
 @pytest.mark.asyncio
 async def test_run_sync_forwards_author_id_to_discover_entities(
     federation_sync_service: FederationSyncService,
+    monkeypatch,
 ):
     federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
     job = SimpleNamespace(id=PydanticObjectId(), startedAt=datetime.now(UTC))
@@ -2276,6 +2316,7 @@ async def test_run_sync_forwards_author_id_to_discover_entities(
     federation_sync_service._sync_vector_index_after_commit = AsyncMock()
     federation_sync_service.federation_crud_service.mark_sync_success = AsyncMock()
     federation_sync_service.federation_job_service.mark_success = AsyncMock()
+    _patch_mongo_session(monkeypatch)
 
     await federation_sync_service.run_sync(federation=federation, job=job, author_id=_DEFAULT_USER_OBJECT_ID)
 
