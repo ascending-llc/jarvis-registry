@@ -1186,7 +1186,7 @@ def _extract_resource_details(resources_response) -> list[dict]:
                 }
             )
 
-    resource_uris = [r["uri"] for r in resource_details_list]
+    resource_uris = [str(r["uri"]) for r in resource_details_list]
     logger.info(
         f"Successfully retrieved details for {len(resource_details_list)} resources: {', '.join(resource_uris)}"
     )

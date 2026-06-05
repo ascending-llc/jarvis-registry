@@ -358,7 +358,7 @@ class OAuthReconnectionManager:
     async def _get_oauth_servers(self) -> list[str]:
         """Get all OAuth servers"""
         try:
-            servers, _ = await self.server_service.list_servers(page=1, per_page=1000, status="active")
+            servers, _ = await self.server_service.list_servers(page=1, per_page=1000, enabled_only=True)
 
             oauth_servers = [server.serverName for server in servers if server.config.get("requires_oauth", False)]
             return oauth_servers

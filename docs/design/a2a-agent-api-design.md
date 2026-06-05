@@ -51,7 +51,6 @@ The `wellKnown` object contains sync status only (no URL):
 ```typescript
 {
   query?: string;           // Search keywords (name, description, tags, skills)
-  status?: string;          // Status filter: active | inactive | error
   page?: number;            // Page number (default: 1)
   perPage?: number;         // Items per page (default: 20, max: 100)
 }

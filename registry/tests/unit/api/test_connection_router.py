@@ -249,6 +249,8 @@ class TestConnectionRouter:
         assert isinstance(response_data["connectionStatus"], dict)
         assert TEST_SERVER_ID in response_data["connectionStatus"]
         assert response_data["connectionStatus"][TEST_SERVER_ID]["connection_state"] == ConnectionState.CONNECTED
+        # Connection status must only consider enabled servers (config.enabled), not the deprecated status field
+        assert mock_server_service.list_servers.call_args.kwargs.get("enabled_only") is True
 
     def test_get_all_connection_status_empty(self, client):
         """Test retrieval of all connection statuses when no servers exist"""

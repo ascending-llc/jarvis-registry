@@ -394,6 +394,153 @@ async def test_build_sync_plan_handles_runtime_type_switch_without_discovery_mut
 
 
 @pytest.mark.asyncio
+async def test_build_sync_plan_updates_mcp_when_only_runtime_access_mode_changes(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    runtime_arn = "arn:aws:bedrock-agentcore:us-east-1:123:runtime/auth-mode-mcp"
+    existing_mcp = SimpleNamespace(
+        id=PydanticObjectId(),
+        federationRefId=federation.id,
+        federationMetadata={"runtimeArn": runtime_arn, "runtimeVersion": "1"},
+        serverName="auth-mode-mcp",
+        config={"runtimeAccess": {"mode": "iam"}},
+    )
+    discovered_mcp = SimpleNamespace(
+        federationMetadata={"runtimeArn": runtime_arn, "runtimeVersion": "1"},
+        serverName="auth-mode-mcp",
+        config={"runtimeAccess": {"mode": "jwt"}},
+    )
+
+    monkeypatch.setattr("registry.services.federation_sync_service.get_current_session", lambda: None)
+
+    def _fake_mcp_find(query, session=None):
+        if query == {"federationRefId": federation.id}:
+            return _FakeQuery([existing_mcp])
+        raise AssertionError(f"Unexpected MCP query: {query}")
+
+    def _fake_a2a_find(query, session=None):
+        if query == {"federationRefId": federation.id}:
+            return _FakeQuery([])
+        raise AssertionError(f"Unexpected A2A query: {query}")
+
+    monkeypatch.setattr("registry.services.federation_sync_service.ExtendedMCPServer.find", _fake_mcp_find)
+    monkeypatch.setattr("registry.services.federation_sync_service.A2AAgent.find", _fake_a2a_find)
+
+    sync_plan = await federation_sync_service._build_sync_plan(
+        federation=federation,
+        discovered_mcp=[discovered_mcp],
+        discovered_a2a=[],
+    )
+
+    assert sync_plan.summary.updatedMcpServers == 1
+    assert sync_plan.summary.unchangedMcpServers == 0
+    assert sync_plan.mcp_updates == [(existing_mcp, discovered_mcp, runtime_arn)]
+
+
+@pytest.mark.asyncio
+async def test_build_sync_plan_updates_a2a_when_only_runtime_access_mode_changes(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    runtime_arn = "arn:aws:bedrock-agentcore:us-east-1:123:runtime/auth-mode-a2a"
+    agent_path = "/agentcore/a2a/auth-mode-a2a"
+    existing_a2a = SimpleNamespace(
+        id=PydanticObjectId(),
+        federationRefId=federation.id,
+        federationMetadata={"runtimeArn": runtime_arn, "runtimeVersion": "1"},
+        path=agent_path,
+        config=SimpleNamespace(type="jsonrpc", runtimeAccess=SimpleNamespace(mode="iam")),
+    )
+    discovered_a2a = SimpleNamespace(
+        federationMetadata={"runtimeArn": runtime_arn, "runtimeVersion": "1"},
+        path=agent_path,
+        card=SimpleNamespace(name="auth-mode-a2a"),
+        config=SimpleNamespace(type="jsonrpc", runtimeAccess=SimpleNamespace(mode="jwt")),
+    )
+
+    monkeypatch.setattr("registry.services.federation_sync_service.get_current_session", lambda: None)
+
+    def _fake_mcp_find(query, session=None):
+        if query == {"federationRefId": federation.id}:
+            return _FakeQuery([])
+        raise AssertionError(f"Unexpected MCP query: {query}")
+
+    def _fake_a2a_find(query, session=None):
+        if query == {"federationRefId": federation.id}:
+            return _FakeQuery([existing_a2a])
+        if query == {"path": {"$in": [agent_path]}}:
+            return _FakeQuery([existing_a2a])
+        raise AssertionError(f"Unexpected A2A query: {query}")
+
+    monkeypatch.setattr("registry.services.federation_sync_service.ExtendedMCPServer.find", _fake_mcp_find)
+    monkeypatch.setattr("registry.services.federation_sync_service.A2AAgent.find", _fake_a2a_find)
+
+    sync_plan = await federation_sync_service._build_sync_plan(
+        federation=federation,
+        discovered_mcp=[],
+        discovered_a2a=[discovered_a2a],
+    )
+
+    assert sync_plan.summary.updatedAgents == 1
+    assert sync_plan.summary.unchangedAgents == 0
+    assert sync_plan.a2a_updates == [(existing_a2a, discovered_a2a, runtime_arn)]
+
+
+@pytest.mark.asyncio
+async def test_build_sync_plan_ignores_a2a_transport_type_only_change(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    runtime_arn = "arn:aws:bedrock-agentcore:us-east-1:123:runtime/transport-only-a2a"
+    agent_path = "/agentcore/a2a/transport-only-a2a"
+    existing_a2a = SimpleNamespace(
+        id=PydanticObjectId(),
+        federationRefId=federation.id,
+        federationMetadata={"runtimeArn": runtime_arn, "runtimeVersion": "1"},
+        path=agent_path,
+        config=SimpleNamespace(type="http_json", runtimeAccess=SimpleNamespace(mode="jwt")),
+    )
+    discovered_a2a = SimpleNamespace(
+        federationMetadata={"runtimeArn": runtime_arn, "runtimeVersion": "1"},
+        path=agent_path,
+        card=SimpleNamespace(name="transport-only-a2a"),
+        config=SimpleNamespace(type="jsonrpc", runtimeAccess=SimpleNamespace(mode="jwt")),
+    )
+
+    monkeypatch.setattr("registry.services.federation_sync_service.get_current_session", lambda: None)
+
+    def _fake_mcp_find(query, session=None):
+        if query == {"federationRefId": federation.id}:
+            return _FakeQuery([])
+        raise AssertionError(f"Unexpected MCP query: {query}")
+
+    def _fake_a2a_find(query, session=None):
+        if query == {"federationRefId": federation.id}:
+            return _FakeQuery([existing_a2a])
+        if query == {"path": {"$in": [agent_path]}}:
+            return _FakeQuery([existing_a2a])
+        raise AssertionError(f"Unexpected A2A query: {query}")
+
+    monkeypatch.setattr("registry.services.federation_sync_service.ExtendedMCPServer.find", _fake_mcp_find)
+    monkeypatch.setattr("registry.services.federation_sync_service.A2AAgent.find", _fake_a2a_find)
+
+    sync_plan = await federation_sync_service._build_sync_plan(
+        federation=federation,
+        discovered_mcp=[],
+        discovered_a2a=[discovered_a2a],
+    )
+
+    assert sync_plan.summary.updatedAgents == 0
+    assert sync_plan.summary.unchangedAgents == 1
+    assert sync_plan.a2a_updates == []
+    assert sync_plan.a2a_pre_existing_acl_targets == [existing_a2a.id]
+
+
+@pytest.mark.asyncio
 async def test_run_sync_returns_failed_job_without_vector_when_apply_summary_has_errors(
     federation_sync_service: FederationSyncService,
 ):
@@ -1051,6 +1198,57 @@ async def test_apply_sync_plan_inherits_acl_to_unchanged_mcp_and_a2a_resources(
             (ResourceType.REMOTE_AGENT, a2a_id),
         ],
     )
+
+
+@pytest.mark.asyncio
+async def test_apply_sync_plan_updates_a2a_runtime_access(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
+    federation_id = PydanticObjectId()
+    existing_a2a = SimpleNamespace(
+        id=PydanticObjectId(),
+        path="/agentcore/a2a/auth-mode-a2a",
+        card=SimpleNamespace(name="auth-mode-a2a"),
+        tags=[],
+        status="active",
+        isEnabled=True,
+        wellKnown=None,
+        config=SimpleNamespace(type="http_json", runtimeAccess=SimpleNamespace(mode="iam")),
+        federationMetadata={"runtimeVersion": "1"},
+        save=AsyncMock(),
+    )
+    updated_runtime_access = SimpleNamespace(mode="jwt")
+    update_a2a_item = SimpleNamespace(
+        path="/agentcore/a2a/auth-mode-a2a",
+        card=SimpleNamespace(name="auth-mode-a2a"),
+        tags=[],
+        status="active",
+        isEnabled=True,
+        wellKnown=None,
+        config=SimpleNamespace(type="jsonrpc", runtimeAccess=updated_runtime_access),
+        federationMetadata={"runtimeVersion": "1"},
+    )
+    sync_plan = FederationSyncPlan(
+        summary=FederationApplySummary(updatedAgents=1),
+        federation_id=federation_id,
+        provider_type=FederationProviderType.AWS_AGENTCORE,
+        discovered_mcp_count=0,
+        discovered_a2a_count=1,
+        a2a_updates=[(existing_a2a, update_a2a_item, "arn:updated-a2a")],
+    )
+
+    monkeypatch.setattr("registry.services.federation_sync_service.get_current_session", lambda: None)
+    federation_sync_service._get_federation_acl_entries = AsyncMock(return_value=([], True))
+    federation_sync_service._batch_inherit_federation_acl = AsyncMock()
+
+    await federation_sync_service._apply_sync_plan(sync_plan)
+
+    assert existing_a2a.config.runtimeAccess is updated_runtime_access
+    assert existing_a2a.config.runtimeAccess.mode == "jwt"
+    assert existing_a2a.config.type == update_a2a_item.config.type
+    existing_a2a.save.assert_awaited_once_with(session=None)
+    federation_sync_service._batch_inherit_federation_acl.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -47,8 +47,8 @@ class MCPConnectionService(ConnectionManager):
         """
         async with self._lock:
             try:
-                servers, total = await self.server_service.list_servers(page=1, per_page=1000, status="active")
-                logger.info(f"Found {total} active servers in MongoDB")
+                servers, total = await self.server_service.list_servers(page=1, per_page=1000, enabled_only=True)
+                logger.info(f"Found {total} enabled servers in MongoDB")
 
                 for server in servers:
                     if not server.config.get("requiresOAuth"):

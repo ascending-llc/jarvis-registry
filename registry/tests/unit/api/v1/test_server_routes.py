@@ -1,10 +1,12 @@
+from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from beanie import PydanticObjectId
 
 from registry.api.v1.server.server_routes import create_server
-from registry.schemas.server_api_schemas import ServerCreateRequest
+from registry.schemas.server_api_schemas import ServerCreateRequest, convert_to_detail, convert_to_list_item
 from registry_pkgs.models import PrincipalType, ResourceType
 from registry_pkgs.models.enums import RoleBits
 
@@ -247,3 +249,86 @@ async def test_refresh_server_capabilities_server_not_found():
     # Verify 404 error
     assert exc_info.value.status_code == 404
     assert "not_found" in str(exc_info.value.detail)
+
+
+def _fake_mcp_server(*, doc_status: str = "inactive", enabled: bool = True):
+    """Minimal ExtendedMCPServer stand-in for converter tests.
+
+    doc_status is intentionally NOT "active" so we can prove the converter ignores the
+    deprecated root-level status field and always reports "active".
+    """
+    now = datetime.now(UTC)
+    return SimpleNamespace(
+        id=PydanticObjectId(),
+        serverName="test-server",
+        author=None,
+        numTools=2,
+        numStars=0,
+        path="/test",
+        tags=["t"],
+        status=doc_status,
+        lastConnected=None,
+        lastError=None,
+        createdAt=now,
+        updatedAt=now,
+        config={"enabled": enabled, "title": "Test", "description": "desc"},
+    )
+
+
+def test_convert_to_list_item_hardcodes_status_and_reads_config_enabled():
+    server = _fake_mcp_server(doc_status="inactive", enabled=True)
+    item = convert_to_list_item(server)
+    # status is hard-coded; the deprecated doc.status="inactive" must be ignored
+    assert item.status == "active"
+    # enablement comes from config.enabled, not status
+    assert item.enabled is True
+
+
+def test_convert_to_list_item_reflects_disabled_config():
+    server = _fake_mcp_server(doc_status="active", enabled=False)
+    item = convert_to_list_item(server)
+    assert item.status == "active"
+    assert item.enabled is False
+
+
+def test_convert_to_detail_hardcodes_status_active():
+    server = _fake_mcp_server(doc_status="error", enabled=True)
+    detail = convert_to_detail(server)
+    assert detail.status == "active"
+    assert detail.enabled is True
+
+
+@pytest.mark.asyncio
+async def test_list_servers_route_requests_all_servers_with_enabled_only_false(sample_user_context):
+    """The list endpoint dropped ?status: it must ask the service for ALL servers (enabled_only=False)
+    and the deprecated status field must surface as the hard-coded "active"."""
+    from registry.api.v1.server.server_routes import list_servers as list_servers_route
+
+    server = _fake_mcp_server(doc_status="inactive", enabled=True)
+
+    acl_service = MagicMock()
+    acl_service.get_accessible_resource_ids = AsyncMock(return_value=[str(server.id)])
+    acl_service.get_user_permissions_for_resource = AsyncMock(return_value=None)
+
+    server_service = MagicMock()
+    server_service.list_servers = AsyncMock(return_value=([server], 1))
+
+    with patch(
+        "registry.api.v1.server.server_routes.get_servers_connection_status",
+        new=AsyncMock(return_value={}),
+    ):
+        result = await list_servers_route(
+            query=None,
+            page=1,
+            per_page=20,
+            user_context=sample_user_context,
+            acl_service=acl_service,
+            server_service=server_service,
+            mcp_service=MagicMock(),
+            status_resolver=MagicMock(),
+        )
+
+    assert server_service.list_servers.await_args.kwargs["enabled_only"] is False
+    assert result.pagination.total == 1
+    assert len(result.servers) == 1
+    assert result.servers[0].status == "active"

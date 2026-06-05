@@ -211,7 +211,6 @@ class AgentCoreRuntimeInvoker:
                 type="jsonrpc",
             ),
             isEnabled=agent.isEnabled,
-            status=agent.status,
             tags=agent.tags,
             registeredBy=agent.registeredBy,
             registeredAt=agent.registeredAt,

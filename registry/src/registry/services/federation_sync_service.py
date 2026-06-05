@@ -44,6 +44,34 @@ def _acl_key_part(value: Any) -> str:
     return str(_enum_value(value))
 
 
+def _runtime_access_mode(config: Any) -> str | None:
+    if not config:
+        return None
+
+    if isinstance(config, dict):
+        runtime_access = config.get("runtimeAccess")
+    else:
+        runtime_access = getattr(config, "runtimeAccess", None)
+
+    if runtime_access is None:
+        return None
+
+    if isinstance(runtime_access, dict):
+        mode = runtime_access.get("mode")
+    else:
+        mode = getattr(runtime_access, "mode", None)
+
+    if mode is None:
+        return None
+
+    normalized = str(_enum_value(mode)).strip().upper()
+    return normalized or None
+
+
+def _runtime_access_mode_changed(existing_config: Any, new_config: Any) -> bool:
+    return _runtime_access_mode(existing_config) != _runtime_access_mode(new_config)
+
+
 @dataclass
 class FederationSyncMutationResult:
     """Capture Mongo apply results that drive post-commit vector repair."""
@@ -582,7 +610,14 @@ class FederationSyncService:
                 apply_summary.createdMcpServers += 1
                 sync_plan.mcp_creates.append((item, remote_id))
             else:
-                if not self._runtime_metadata_changed(existing.federationMetadata, item.federationMetadata):
+                runtime_access_changed = _runtime_access_mode_changed(
+                    getattr(existing, "config", None),
+                    getattr(item, "config", None),
+                )
+                if (
+                    not self._runtime_metadata_changed(existing.federationMetadata, item.federationMetadata)
+                    and not runtime_access_changed
+                ):
                     apply_summary.unchangedMcpServers += 1
                     sync_plan.mcp_pre_existing_acl_targets.append(existing.id)
                 else:
@@ -673,12 +708,13 @@ class FederationSyncService:
                         f"(owned by federation {path_conflict.federationRefId or 'unknown'})"
                     )
                     continue
-                transport_changed = getattr(getattr(item, "config", None), "type", None) != getattr(
-                    getattr(existing, "config", None), "type", None
+                runtime_access_changed = _runtime_access_mode_changed(
+                    getattr(existing, "config", None),
+                    getattr(item, "config", None),
                 )
                 if (
                     not self._runtime_metadata_changed(existing.federationMetadata, item.federationMetadata)
-                    and not transport_changed
+                    and not runtime_access_changed
                 ):
                     apply_summary.unchangedAgents += 1
                     sync_plan.a2a_pre_existing_acl_targets.append(existing.id)
@@ -785,7 +821,14 @@ class FederationSyncService:
             existing.wellKnown = item.wellKnown
             existing.federationMetadata = item.federationMetadata
             if item.config and existing.config:
-                existing.config.type = item.config.type
+                # For an A2AAgent document created via Federation, the two fields `type` and `runtimeAccess` of `A2AAgent.config: AgentConfig`
+                # should both be set according to data retrieved during the discovery process—`type` represents the A2A agent's actual
+                # preferred protocol binding on its agent card; `runtimeAccess` tells us how to satisfy authentication requirements
+                # when actually invoking it.
+                if hasattr(item.config, "type"):
+                    existing.config.type = item.config.type
+                if hasattr(item.config, "runtimeAccess"):
+                    existing.config.runtimeAccess = item.config.runtimeAccess
             await existing.save(session=session)
             mutation_result.changed_a2a_runtime_arns.add(remote_id)
             resources_for_acl_inheritance.append((ResourceType.REMOTE_AGENT, existing.id))

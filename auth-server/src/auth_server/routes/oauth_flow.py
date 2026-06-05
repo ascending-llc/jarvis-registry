@@ -323,7 +323,7 @@ async def _parse_device_token_params(request: Request) -> dict:
     if content_type.startswith("application/json"):
         body = await request.json()
 
-        return {
+        params = {
             "grant_type": body.get("grant_type"),
             "device_code": body.get("device_code"),
             "client_id": body.get("client_id"),
@@ -336,7 +336,7 @@ async def _parse_device_token_params(request: Request) -> dict:
     elif content_type.startswith("application/x-www-form-urlencoded"):
         form = await request.form()
 
-        return {
+        params = {
             "grant_type": form.get("grant_type"),
             "device_code": form.get("device_code"),
             "client_id": form.get("client_id"),
@@ -350,6 +350,52 @@ async def _parse_device_token_params(request: Request) -> dict:
         raise HTTPException(
             status_code=415, detail="content-type must be application/json or application/x-www-form-urlencoded"
         )
+
+    if params.get("client_id"):
+        return params
+
+    request_redirect_uri = params.get("redirect_uri")
+    if not isinstance(request_redirect_uri, str):
+        return params
+
+    try:
+        hostname = (urlparse(request_redirect_uri).hostname or "").lower()
+    except ValueError:
+        return params
+
+    auth_header = request.headers.get("authorization", "")
+    scheme, _, encoded = auth_header.partition(" ")
+    has_basic_credentials = scheme.lower() == "basic" and encoded
+
+    is_quick_suite_host = hostname == "quicksight.aws.amazon.com" or hostname.endswith(".quicksight.aws.amazon.com")
+    if not is_quick_suite_host:
+        if has_basic_credentials:
+            logger.warning(
+                "client_secret_basic was provided for non-Quick Suite redirect_uri host '%s'; "
+                "skipping Quick Suite fallback client_id parsing.",
+                hostname or "unknown",
+            )
+        return params
+
+    if not has_basic_credentials:
+        return params
+
+    try:
+        logger.info("Quick Suite host identified. Attempting to resolve client credentials from Authorization header.")
+        decoded = base64.b64decode(encoded, validate=True).decode("utf-8")
+        basic_client_id, basic_client_secret = decoded.split(":", 1)
+    except Exception as e:
+        logger.warning(
+            f"Quick Suite Authorization header parsing failed: {e}. Continuing without fallback credentials."
+        )
+        return params
+
+    if basic_client_id:
+        params["client_id"] = basic_client_id
+        params["client_secret"] = basic_client_secret
+        logger.info("Resolved Quick Suite client credentials from Authorization header.")
+
+    return params
 
 
 @router.post("/oauth2/token", response_model=DeviceTokenResponse, response_model_exclude_none=True)
