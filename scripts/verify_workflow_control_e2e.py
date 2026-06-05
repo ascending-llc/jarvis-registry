@@ -55,7 +55,7 @@ from registry.schemas.workflow_api_schemas import (
     WorkflowUpdateRequest,
     convert_node_to_input,
 )
-from registry.services.access_control_service import ACLService
+from registry.services.access_control_service import ACLService, load_role_cache
 from registry.services.group_service import GroupService
 from registry.services.user_service import UserService
 from registry.services.workflow_control_service import WorkflowControlService
@@ -1427,7 +1427,11 @@ async def amain(selected: list[str], keep_data: bool) -> int:
     workflow_service = WorkflowService()
     queue = DirectiveQueue()
     runner = _build_runner(queue)
-    acl_service = ACLService(user_service=UserService(), group_service=GroupService())
+    acl_service = ACLService(
+        user_service=UserService(),
+        group_service=GroupService(),
+        role_cache=await load_role_cache(),
+    )
     control_service = WorkflowControlService(directive_queue=queue, runner_factory=lambda: runner)
 
     reports: list[Report] = []

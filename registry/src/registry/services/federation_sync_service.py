@@ -951,7 +951,7 @@ class FederationSyncService:
                     new_entry = ExtendedAclEntry(
                         principalType=fed_entry.principalType,
                         principalId=fed_entry.principalId,
-                        resourceType=resource_type,
+                        resourceType=ExtendedResourceType(resource_type),
                         resourceId=resource_id,
                         roleId=role_id_lookup.get((_acl_key_part(resource_type), fed_entry.permBits)),
                         permBits=fed_entry.permBits,

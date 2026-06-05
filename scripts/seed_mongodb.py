@@ -26,6 +26,7 @@ load_dotenv()
 from registry.utils.crypto_utils import encrypt_auth_fields
 from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.models import ExtendedAclEntry, ExtendedMCPServer, Group, Key, Token, User
+from registry_pkgs.models.extended_acl_entry import ExtendedResourceType
 
 
 async def seed_groups():
@@ -661,7 +662,7 @@ async def seed_acl_entries(users, servers):
             public_acl_entry = ExtendedAclEntry(
                 principalType=PrincipalType.PUBLIC,
                 principalId=None,
-                resourceType=ResourceType.MCPSERVER.value,
+                resourceType=ExtendedResourceType.MCPSERVER,
                 resourceId=server.id,
                 permBits=PermissionBits.VIEW,
                 grantedAt=datetime.now(UTC),
@@ -693,7 +694,7 @@ async def seed_acl_entries(users, servers):
                     acl_entry = ExtendedAclEntry(
                         principalType=PrincipalType.USER,
                         principalId=user.id,
-                        resourceType=ResourceType.MCPSERVER.value,
+                        resourceType=ExtendedResourceType.MCPSERVER,
                         resourceId=server.id,
                         permBits=perm_bits,
                         grantedAt=datetime.now(UTC),

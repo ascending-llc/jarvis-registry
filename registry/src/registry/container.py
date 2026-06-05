@@ -10,7 +10,6 @@ from beanie import PydanticObjectId
 from redis import Redis
 
 from registry_pkgs.database.mongodb import MongoDB
-from registry_pkgs.models import ExtendedAccessRole
 from registry_pkgs.vector.client import DatabaseClient
 from registry_pkgs.vector.repositories.a2a_agent_repository import A2AAgentRepository
 from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRepository
@@ -24,7 +23,7 @@ from .core.mcp_client import MCPClientService
 from .core.session_store import SessionStore
 from .health.service import HealthMonitoringService
 from .services.a2a_agent_service import A2AAgentService
-from .services.access_control_service import ACLService
+from .services.access_control_service import ACLService, load_role_cache
 from .services.agent_scanner import AgentScannerService
 from .services.federation_crud_service import FederationCrudService
 from .services.federation_job_service import FederationJobService
@@ -283,7 +282,7 @@ class RegistryContainer:
         logger.info("Initializing services via registry container...")
 
         logger.info("Loading ACL role cache...")
-        loaded = await self._load_role_cache()
+        loaded = await load_role_cache()
         self.role_cache.clear()
         self.role_cache.update(loaded)
         logger.info("ACL role cache loaded: %d roles", len(self.role_cache))
@@ -311,26 +310,6 @@ class RegistryContainer:
         logger.info("Initializing workflow runner...")
         workflow_runner = self.workflow_runner
         logger.info("Workflow runner initialized successfully: %s", type(workflow_runner).__name__)
-
-    async def _load_role_cache(self) -> dict[tuple[str, int], PydanticObjectId]:
-        """Load the static ACL role catalog into an in-memory map."""
-        cache: dict[tuple[str, int], PydanticObjectId] = {}
-        roles = await ExtendedAccessRole.find({}).to_list()
-        for role in roles:
-            key = (str(role.resourceType), role.permBits)
-            if key in cache:
-                logger.error(
-                    "Duplicate ACL role for %s: roles %s and %s share resourceType+permBits. "
-                    "Keeping %s, skipping %s. The (resourceType, permBits) -> roleId mapping must be unique.",
-                    key,
-                    cache[key],
-                    role.id,
-                    cache[key],
-                    role.id,
-                )
-                continue
-            cache[key] = role.id
-        return cache
 
     async def shutdown(self) -> None:
         """Shutdown services that hold background tasks or external resources."""

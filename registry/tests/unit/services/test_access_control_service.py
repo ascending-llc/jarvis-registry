@@ -471,6 +471,34 @@ class TestACLService:
 
     @pytest.mark.asyncio
     @patch("registry.services.access_control_service.ExtendedAclEntry")
+    async def test_validate_owner_remains_new_public_owner_not_counted(self, mock_acl_entry):
+        """A newly added PUBLIC principal must NOT satisfy the owner constraint."""
+        owner_role_id = PydanticObjectId()
+        service = ACLService(
+            user_service=Mock(),
+            group_service=Mock(),
+            role_cache={(ResourceType.MCPSERVER.value, RoleBits.OWNER): owner_role_id},
+        )
+        owner_id = PydanticObjectId()
+        entry = MagicMock(principalType=PrincipalType.USER.value, principalId=owner_id, permBits=RoleBits.OWNER)
+        mock_acl_entry.find.return_value.to_list = AsyncMock(return_value=[entry])
+
+        # Remove the only real owner and add PUBLIC as a new owner-roled principal.
+        removed = MagicMock(principalType=PrincipalType.USER.value, principalId=owner_id)
+        new_public = MagicMock(principalType=PrincipalType.PUBLIC.value, principalId=None, roleId=owner_role_id)
+
+        with pytest.raises(HTTPException) as exc_info:
+            await service.validate_at_least_one_owner_remains(
+                resource_type=ResourceType.MCPSERVER.value,
+                resource_id=PydanticObjectId(),
+                updated_principals=[new_public],
+                removed_principals=[removed],
+            )
+        assert exc_info.value.status_code == 409
+        assert exc_info.value.detail["error"] == "owner_required"
+
+    @pytest.mark.asyncio
+    @patch("registry.services.access_control_service.ExtendedAclEntry")
     async def test_validate_owner_remains_cross_type_role_not_counted_as_owner(self, mock_acl_entry):
         """An OWNER roleId belonging to a different resourceType must NOT count as an owner."""
         # Cache holds an OWNER role for "workflow" only; the resource is an MCP server.

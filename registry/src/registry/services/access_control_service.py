@@ -13,13 +13,34 @@ from registry_pkgs.models import (
     User,
 )
 from registry_pkgs.models.enums import PermissionBits
-from registry_pkgs.models.extended_acl_entry import ExtendedAclEntry
+from registry_pkgs.models.extended_acl_entry import ExtendedAclEntry, ExtendedResourceType
 
 from ..schemas.acl_schema import PermissionPrincipalOut, PrincipalDetailOut, ResourcePermissions, RoleOut
 from .group_service import GroupService
 from .user_service import UserService
 
 logger = logging.getLogger(__name__)
+
+
+async def load_role_cache() -> dict[tuple[str, int], PydanticObjectId]:
+    """Load the static ACL role catalog into an in-memory map keyed by (resourceType, permBits)."""
+    cache: dict[tuple[str, int], PydanticObjectId] = {}
+    roles = await ExtendedAccessRole.find({}).to_list()
+    for role in roles:
+        key = (str(role.resourceType), role.permBits)
+        if key in cache:
+            logger.error(
+                "Duplicate ACL role for %s: roles %s and %s share resourceType+permBits. "
+                "Keeping %s, skipping %s. The (resourceType, permBits) -> roleId mapping must be unique.",
+                key,
+                cache[key],
+                role.id,
+                cache[key],
+                role.id,
+            )
+            continue
+        cache[key] = role.id
+    return cache
 
 
 class ACLService:
@@ -62,7 +83,7 @@ class ACLService:
         resource_type: str,
         resource_id: PydanticObjectId,
         role_id: PydanticObjectId | None,
-        perm_bits: int | None,
+        perm_bits: int,
     ) -> ExtendedAclEntry:
         session = get_current_session()
 
@@ -85,9 +106,9 @@ class ACLService:
             return acl_entry
 
         new_entry = ExtendedAclEntry(
-            principalType=principal_type,
+            principalType=PrincipalType(principal_type),
             principalId=principal_id,
-            resourceType=resource_type,
+            resourceType=ExtendedResourceType(resource_type),
             resourceId=resource_id,
             roleId=role_id,
             permBits=perm_bits,
@@ -548,11 +569,13 @@ class ACLService:
             elif entry.permBits == owner_perm_bits:
                 remaining_owners.append(principal_key)
 
+        current_keys = {f"{e.principalType}_{e.principalId}" for e in current_acl_entries}
+
         new_owners = [
             u
             for u in updated_principals
-            if f"{u.principalType}_{u.principalId}"
-            not in [f"{e.principalType}_{e.principalId}" for e in current_acl_entries]
+            if u.principalType != PrincipalType.PUBLIC.value
+            and f"{u.principalType}_{u.principalId}" not in current_keys
         ]
 
         for new_principal in new_owners:
