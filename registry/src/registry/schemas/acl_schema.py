@@ -32,11 +32,18 @@ class PermissionPrincipalIn(APIBaseModel):
     roleId: PydanticObjectId = Field(..., description="Access role ID (ObjectId)")
 
 
+class RemovePrincipalIn(APIBaseModel):
+    """Request schema for a principal being removed"""
+
+    principalId: str = Field(..., description="Principal ID")
+    principalType: PrincipalType = Field(..., description="Principal type (user, group, etc.)")
+
+
 class UpdateResourcePermissionsRequest(APIBaseModel):
     """Request schema for updating resource permissions"""
 
     updated: list[PermissionPrincipalIn] = Field(default_factory=list, description="Principals to update or add")
-    removed: list[PermissionPrincipalIn] = Field(default_factory=list, description="Principals to remove")
+    removed: list[RemovePrincipalIn] = Field(default_factory=list, description="Principals to remove")
     public: bool = Field(default=False, description="Whether the resource is public")
 
 

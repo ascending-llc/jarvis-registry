@@ -313,21 +313,22 @@ class RegistryContainer:
         logger.info("Workflow runner initialized successfully: %s", type(workflow_runner).__name__)
 
     async def _load_role_cache(self) -> dict[tuple[str, int], PydanticObjectId]:
-        """Load the static ACL role catalog into an in-memory map.
-
-        Keyed by (resourceType, permBits). Asserts uniqueness of that key so a
-        misconfigured catalog (two roles sharing the same resourceType+permBits)
-        fails loudly at startup rather than silently collapsing the mapping.
-        """
+        """Load the static ACL role catalog into an in-memory map."""
         cache: dict[tuple[str, int], PydanticObjectId] = {}
         roles = await ExtendedAccessRole.find({}).to_list()
         for role in roles:
             key = (str(role.resourceType), role.permBits)
             if key in cache:
-                raise RuntimeError(
-                    f"Duplicate ACL role for {key}: roles {cache[key]} and {role.id} share "
-                    f"resourceType+permBits. The (resourceType, permBits) -> roleId mapping must be unique."
+                logger.error(
+                    "Duplicate ACL role for %s: roles %s and %s share resourceType+permBits. "
+                    "Keeping %s, skipping %s. The (resourceType, permBits) -> roleId mapping must be unique.",
+                    key,
+                    cache[key],
+                    role.id,
+                    cache[key],
+                    role.id,
                 )
+                continue
             cache[key] = role.id
         return cache
 

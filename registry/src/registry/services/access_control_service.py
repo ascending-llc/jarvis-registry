@@ -486,19 +486,15 @@ class ACLService:
         Returns:
             List of roles (roleId, name, description) in ascending permission order
         """
-        try:
-            roles = await ExtendedAccessRole.find({"resourceType": resource_type}).sort([("permBits", 1)]).to_list()
-            return [
-                RoleOut(
-                    roleId=role.id,
-                    name=role.name,
-                    description=role.description or "",
-                )
-                for role in roles
-            ]
-        except Exception as e:
-            logger.error(f"Error fetching roles for resource type {resource_type}: {e}")
-            return []
+        roles = await ExtendedAccessRole.find({"resourceType": resource_type}).sort([("permBits", 1)]).to_list()
+        return [
+            RoleOut(
+                roleId=role.id,
+                name=role.name,
+                description=role.description or "",
+            )
+            for role in roles
+        ]
 
     async def validate_at_least_one_owner_remains(
         self,

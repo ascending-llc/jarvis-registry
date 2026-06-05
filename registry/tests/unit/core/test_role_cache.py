@@ -27,11 +27,19 @@ async def test_load_role_cache_builds_unique_map(mock_role):
 
 @pytest.mark.asyncio
 @patch("registry.container.ExtendedAccessRole")
-async def test_load_role_cache_rejects_duplicate_key(mock_role):
-    """Two roles sharing resourceType+permBits fail loudly at startup."""
-    roles = [_role("workflow", RoleBits.VIEWER), _role("workflow", RoleBits.VIEWER)]
-    mock_role.find.return_value.to_list = AsyncMock(return_value=roles)
+async def test_load_role_cache_skips_duplicate_key(mock_role):
+    """A duplicate resourceType+permBits is skipped (first wins), not fatal.
+
+    The catalog is partly maintained externally (Jarvis Chat); a duplicate must not
+    crash registry startup.
+    """
+    first = _role("workflow", RoleBits.VIEWER)
+    second = _role("workflow", RoleBits.VIEWER)
+    mock_role.find.return_value.to_list = AsyncMock(return_value=[first, second])
 
     container = RegistryContainer.__new__(RegistryContainer)
-    with pytest.raises(RuntimeError, match="Duplicate ACL role"):
-        await container._load_role_cache()
+    # Does not raise; first role wins and the duplicate is dropped.
+    cache = await container._load_role_cache()
+
+    assert cache[("workflow", RoleBits.VIEWER)] == first.id
+    assert len(cache) == 1
