@@ -11,6 +11,7 @@ class ExtendedAccessRoleResourceType(StrEnum):
     MCP_SERVER = "mcpServer"
     REMOTE_AGENT = "remoteAgent"
     FEDERATION = "federation"
+    WORKFLOW = "workflow"
 
 
 class ExtendedAccessRole(AccessRole):
