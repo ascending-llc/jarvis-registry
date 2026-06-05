@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi import status as http_status
 
 from registry_pkgs.database.decorators import use_transaction
-from registry_pkgs.models import ExtendedAccessRole, PrincipalType
+from registry_pkgs.models import PrincipalType
 from registry_pkgs.models.enums import PermissionBits
 
 from ...auth.dependencies import CurrentUser
@@ -89,6 +89,19 @@ async def update_resource_permissions(
     )
 
     try:
+        perm_bits_by_role: dict[PydanticObjectId, int] = {}
+        for principal in data.updated:
+            perm_bits = acl_service.resolve_perm_bits_for_role(resource_type, principal.roleId)
+            if perm_bits is None:
+                raise HTTPException(
+                    status_code=http_status.HTTP_400_BAD_REQUEST,
+                    detail={
+                        "error": "invalid_role",
+                        "message": f"Role {principal.roleId} not found for resource type {resource_type!r}",
+                    },
+                )
+            perm_bits_by_role[principal.roleId] = perm_bits
+
         await acl_service.validate_at_least_one_owner_remains(
             resource_type=resource_type,
             resource_id=PydanticObjectId(resource_id),
@@ -143,16 +156,7 @@ async def update_resource_permissions(
 
         if data.updated:
             for principal in data.updated:
-                role_id = None
-                perm_bits = principal.permBits
-
-                if principal.accessRoleId:
-                    role = await ExtendedAccessRole.find_one({"accessRoleId": principal.accessRoleId})
-                    if role:
-                        role_id = role.id
-                        perm_bits = role.permBits
-                    else:
-                        logger.warning(f"Role {principal.accessRoleId} not found, using permBits: {perm_bits}")
+                perm_bits = perm_bits_by_role[principal.roleId]
 
                 principal_id = (
                     None if principal.principalType == PrincipalType.PUBLIC else PydanticObjectId(principal.principalId)
@@ -162,7 +166,6 @@ async def update_resource_permissions(
                     principal_id=principal_id,
                     resource_type=resource_type,
                     resource_id=PydanticObjectId(resource_id),
-                    role_id=role_id,
                     perm_bits=perm_bits,
                 )
                 updated_count += 1
@@ -173,6 +176,8 @@ async def update_resource_permissions(
             results={"resourceId": resource_id},
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error updating permissions for resource {resource_id}: {e}")
         raise HTTPException(
@@ -194,7 +199,7 @@ async def get_resource_type_roles(
 ) -> list[RoleOut]:
     """
     Get all available roles for a specific resource type.
-    Returns list of roles with accessRoleId, name, description, and permBits.
+    Returns list of roles with roleId, name, and description in ascending permission order.
     """
     validate_resource_type(resource_type)
 

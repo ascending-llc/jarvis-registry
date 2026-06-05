@@ -6,9 +6,11 @@ from typing import TYPE_CHECKING
 
 import httpx
 from agno.models.aws import AwsBedrock
+from beanie import PydanticObjectId
 from redis import Redis
 
 from registry_pkgs.database.mongodb import MongoDB
+from registry_pkgs.models import ExtendedAccessRole
 from registry_pkgs.vector.client import DatabaseClient
 from registry_pkgs.vector.repositories.a2a_agent_repository import A2AAgentRepository
 from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRepository
@@ -63,6 +65,7 @@ class RegistryContainer:
         self.db_client = db_client
         self.redis_client = redis_client
         self.directive_queue = DirectiveQueue()
+        self.role_cache: dict[tuple[str, int], PydanticObjectId] = {}
 
     @cached_property
     def mcp_server_repo(self) -> MCPServerRepository:
@@ -125,7 +128,11 @@ class RegistryContainer:
 
     @cached_property
     def acl_service(self) -> ACLService:
-        return ACLService(user_service=self.user_service, group_service=self.group_service)
+        return ACLService(
+            user_service=self.user_service,
+            group_service=self.group_service,
+            role_cache=self.role_cache,
+        )
 
     @cached_property
     def token_service(self) -> TokenService:
@@ -275,6 +282,12 @@ class RegistryContainer:
         """Warm services that need async initialization before the app can serve traffic."""
         logger.info("Initializing services via registry container...")
 
+        logger.info("Loading ACL role cache...")
+        loaded = await self._load_role_cache()
+        self.role_cache.clear()
+        self.role_cache.update(loaded)
+        logger.info("ACL role cache loaded: %d roles", len(self.role_cache))
+
         logger.info("Initializing vector search service...")
         await self.vector_service.initialize()
         if self.vector_service.is_initialized:
@@ -298,6 +311,25 @@ class RegistryContainer:
         logger.info("Initializing workflow runner...")
         workflow_runner = self.workflow_runner
         logger.info("Workflow runner initialized successfully: %s", type(workflow_runner).__name__)
+
+    async def _load_role_cache(self) -> dict[tuple[str, int], PydanticObjectId]:
+        """Load the static ACL role catalog into an in-memory map.
+
+        Keyed by (resourceType, permBits). Asserts uniqueness of that key so a
+        misconfigured catalog (two roles sharing the same resourceType+permBits)
+        fails loudly at startup rather than silently collapsing the mapping.
+        """
+        cache: dict[tuple[str, int], PydanticObjectId] = {}
+        roles = await ExtendedAccessRole.find({}).to_list()
+        for role in roles:
+            key = (str(role.resourceType), role.permBits)
+            if key in cache:
+                raise RuntimeError(
+                    f"Duplicate ACL role for {key}: roles {cache[key]} and {role.id} share "
+                    f"resourceType+permBits. The (resourceType, permBits) -> roleId mapping must be unique."
+                )
+            cache[key] = role.id
+        return cache
 
     async def shutdown(self) -> None:
         """Shutdown services that hold background tasks or external resources."""

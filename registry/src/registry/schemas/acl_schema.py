@@ -7,6 +7,7 @@ ACL Management endpoints based on the API documentation.
 All schemas use camelCase for API input/output and for MongoDB storage.
 """
 
+from beanie import PydanticObjectId
 from pydantic import BaseModel, Field
 
 from registry_pkgs.models import PrincipalType
@@ -28,8 +29,7 @@ class PermissionPrincipalIn(APIBaseModel):
 
     principalId: str = Field(..., description="Principal ID")
     principalType: PrincipalType = Field(..., description="Principal type (user, group, etc.)")
-    permBits: int | None = Field(default=0, description="Permission bits")
-    accessRoleId: str | None = Field(default=None, description="Access role ID")
+    roleId: PydanticObjectId = Field(..., description="Access role ID (ObjectId)")
 
 
 class UpdateResourcePermissionsRequest(APIBaseModel):
@@ -47,7 +47,6 @@ class PermissionPrincipalOut(APIBaseModel):
     principalId: str = Field(..., description="Principal ID")
     name: str | None = Field(default=None, description="Principal name")
     email: str | None = Field(default=None, description="Principal email")
-    accessRoleId: str = Field(..., description="Access role ID")
 
 
 class PrincipalDetailOut(APIBaseModel):
@@ -60,7 +59,7 @@ class PrincipalDetailOut(APIBaseModel):
     avatar: str | None = Field(default=None, description="Avatar URL")
     source: str | None = Field(default=None, description="Authentication source")
     idOnTheSource: str | None = Field(default=None, description="ID on the authentication source")
-    accessRoleId: str | None = Field(default=None, description="Access role ID if assigned")
+    roleId: PydanticObjectId | None = Field(default=None, description="Access role ID (ObjectId) if assigned")
 
 
 class GetResourcePermissionsResponse(APIBaseModel):
@@ -75,10 +74,9 @@ class GetResourcePermissionsResponse(APIBaseModel):
 class RoleOut(APIBaseModel):
     """Response schema for an access role"""
 
-    accessRoleId: str = Field(..., description="Access role ID")
+    roleId: PydanticObjectId = Field(..., description="Access role ID (ObjectId)")
     name: str = Field(..., description="Role name (i18n key)")
     description: str = Field(..., description="Role description (i18n key)")
-    permBits: int = Field(..., description="Permission bits value")
 
 
 class UpdateResourcePermissionsResponse(APIBaseModel):
