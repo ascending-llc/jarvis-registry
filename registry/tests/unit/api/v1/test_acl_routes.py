@@ -65,21 +65,23 @@ async def test_update_resource_permissions_uses_injected_acl_service(sample_user
     acl_service.validate_at_least_one_owner_remains = AsyncMock()
     acl_service.delete_permission = AsyncMock(return_value=1)
     acl_service.grant_permission = AsyncMock(return_value=MagicMock(id=PydanticObjectId()))
+    acl_service.resolve_perm_bits_for_role = MagicMock(return_value=PermissionBits.VIEW)
 
+    role_id = PydanticObjectId()
     request = UpdateResourcePermissionsRequest(
         public=False,
         updated=[
             PermissionPrincipalIn(
                 principalType=PrincipalType.USER,
                 principalId=principal_id,
-                permBits=PermissionBits.VIEW,
+                roleId=role_id,
             )
         ],
         removed=[
             PermissionPrincipalIn(
                 principalType=PrincipalType.USER,
                 principalId=principal_id,
-                permBits=PermissionBits.VIEW,
+                roleId=role_id,
             )
         ],
     )
