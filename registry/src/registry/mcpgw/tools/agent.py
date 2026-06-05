@@ -146,9 +146,9 @@ async def _user_can_view_agent(
     return str(agent_id) in accessible
 
 
-async def _resolve_active_agent(agent_id: str) -> tuple[A2AAgent | None, CallToolResult | None]:
+async def _resolve_enabled_agent(agent_id: str) -> tuple[A2AAgent | None, CallToolResult | None]:
     """
-    Parse `agent_id` and load the active A2AAgent.
+    Parse `agent_id` and load the A2AAgent, gated on isEnabled.
     """
     try:
         oid = PydanticObjectId(agent_id)
@@ -198,7 +198,7 @@ async def execute_agent_impl(
     Invoke an A2A agent and return its response.
     """
     # 1. Resolve agent
-    agent, error = await _resolve_active_agent(agent_id)
+    agent, error = await _resolve_enabled_agent(agent_id)
     if error:
         return error
 

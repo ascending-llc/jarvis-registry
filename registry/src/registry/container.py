@@ -181,7 +181,10 @@ class RegistryContainer:
 
     @cached_property
     def a2a_agent_service(self) -> A2AAgentService:
-        return A2AAgentService(a2a_agent_repo=self.a2a_agent_repo)
+        return A2AAgentService(
+            a2a_agent_repo=self.a2a_agent_repo,
+            jwt_config=self.settings.jwt_signing_config,
+        )
 
     @cached_property
     def security_scanner_service(self) -> SecurityScannerService:

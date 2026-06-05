@@ -85,7 +85,6 @@ def apply_connection_status_to_server(
 @track_registry_operation("list", resource_type="server")
 async def list_servers(
     query: str | None = None,
-    status: str | None = None,
     page: int = 1,
     per_page: int = 20,
     user_context: dict = Depends(get_user_context),
@@ -100,18 +99,10 @@ async def list_servers(
 
     Query Parameters:
     - query: Free-text search across server_name, description, tags
-    - status: Filter by operational state (active, inactive, error)
     - page: Page number (default: 1, min: 1)
     - per_page: Items per page (default: 20, min: 1, max: 100)
     """
     try:
-        # Validate status if provided
-        if status and status not in ["active", "inactive", "error"]:
-            raise HTTPException(
-                status_code=http_status.HTTP_400_BAD_REQUEST,
-                detail="Invalid status. Must be one of: active, inactive, error",
-            )
-
         user_id = user_context.get("user_id")
         accessible_ids = await acl_service.get_accessible_resource_ids(
             user_id=PydanticObjectId(user_id),
@@ -120,7 +111,7 @@ async def list_servers(
 
         servers, total = await server_service.list_servers(
             query=query,
-            status=status,
+            enabled_only=False,
             page=page,
             per_page=per_page,
             user_id=None,
