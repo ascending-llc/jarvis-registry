@@ -3,7 +3,6 @@ export interface PrincipalSearchResult {
   principalId: string;
   name?: string;
   email?: string;
-  accessRoleId?: string;
   source?: string | null;
   idOnTheSource?: string | null;
 }
@@ -16,14 +15,13 @@ export interface Principal {
   avatar?: string;
   source?: string | null;
   idOnTheSource?: string | null;
-  accessRoleId?: string | null;
+  roleId?: string | null;
 }
 
 export interface Role {
-  accessRoleId: string;
+  roleId: string;
   name: string;
   description: string;
-  permBits: number;
 }
 
 export interface GetResourcePermissionsResponse {
@@ -41,7 +39,7 @@ export interface UpdatePrincipal {
   avatar?: string;
   source?: string | null;
   idOnTheSource?: string | null;
-  accessRoleId?: string | null;
+  roleId?: string | null;
   isExisting?: boolean;
 }
 
