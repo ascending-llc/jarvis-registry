@@ -337,22 +337,39 @@
   border: 2px dashed var(--jarvis-border-strong);
   border-radius: 11px;
   background: transparent;
-  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 200ms cubic-bezier(0.4, 0, 0.2, 1);
+  cursor: default;
+}
+.add-node:hover {
+  border-color: var(--jarvis-primary);
+}
+.add-node.selected {
+  border-color: var(--jarvis-primary-hover);
+  box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.15);
+}
+
+.add-trigger {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 5px;
+  padding: 6px 16px;
+  border-radius: 8px;
   transition: all 200ms cubic-bezier(0.4, 0, 0.2, 1);
 }
-.add-node:hover {
-  border-color: var(--jarvis-primary);
+
+.add-node:has(.add-trigger:hover) {
   background: var(--jarvis-primary-soft);
 }
-.add-node:hover .add-plus,
-.add-node:hover .add-label {
+.add-node:has(.add-trigger:hover) .add-plus,
+.add-node:has(.add-trigger:hover) .add-label {
   color: var(--jarvis-primary-text);
 }
+
 .add-plus {
   font-size: 22px;
   color: var(--jarvis-subtle);

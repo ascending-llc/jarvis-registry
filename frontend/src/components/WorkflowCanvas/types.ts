@@ -66,8 +66,12 @@ export interface PoolNodeData extends BaseNodeData {
   agents?: AgentInfo[];
 }
 
-export interface AgentNodeData extends BaseNodeData {}
-export interface McpNodeData extends BaseNodeData {}
+export interface AgentNodeData extends BaseNodeData {
+  executorKey: string;
+}
+export interface McpNodeData extends BaseNodeData {
+  executorKey: string;
+}
 
 /** Union type of workflow node data */
 export type NodeData =
@@ -114,8 +118,8 @@ export interface PickerItem {
   id: string;
   label: string;
   desc: string;
-  status?: 'active' | 'inactive' | 'error';
-  executorKey?: string;
+  enabled?: boolean;
+  executorKey: string;
 }
 
 /** Agent info type */
@@ -123,7 +127,7 @@ export interface AgentInfo {
   id: string;
   label: string;
   desc: string;
-  path?: string;
+  path: string;
 }
 
 /** Logic Step type */

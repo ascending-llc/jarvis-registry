@@ -268,22 +268,22 @@ export const PoolNode: React.FC<NodeProps<Node<import('../types').PoolNodeData>>
 };
 
 /** Add-node placeholder for inserting new nodes. */
-export const AddNode: React.FC<NodeProps<Node<import('../types').BaseNodeData>>> = ({ id }) => {
+export const AddNode: React.FC<NodeProps<Node<import('../types').BaseNodeData>>> = ({ id, selected }) => {
   const { onAdd } = useContext(CanvasActionsContext);
   return (
     <>
       <Handle type='target' position={Position.Left} />
-      <div className='add-node'>
+      <div className={`add-node ${selected ? 'selected' : ''}`}>
         <div
-          className='add-plus cursor-pointer'
+          className='add-trigger cursor-pointer'
           onClick={e => {
             e.stopPropagation();
             onAdd?.(id);
           }}
         >
-          +
+          <div className='add-plus'>+</div>
+          <div className='add-label'>Add next node</div>
         </div>
-        <div className='add-label'>Add next node</div>
       </div>
     </>
   );

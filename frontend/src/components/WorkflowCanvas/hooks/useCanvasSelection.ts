@@ -7,7 +7,6 @@ export const useCanvasSelection = (setNodes: React.Dispatch<React.SetStateAction
   const [panelCollapsed, setPanelCollapsed] = useState(false);
 
   const onNodeClick = useCallback((_event: React.MouseEvent, node: Node) => {
-    if (node.type === 'add') return;
     const workflowNode = node as WorkflowNode;
     setSelected(prev => {
       const isSame = prev?.id === workflowNode.id;
