@@ -13,6 +13,7 @@ from registry_pkgs.models import (
     User,
 )
 from registry_pkgs.models.enums import PermissionBits
+from registry_pkgs.models.extended_access_role import ExtendedAccessRoleResourceType
 from registry_pkgs.models.extended_acl_entry import ExtendedAclEntry, ExtendedResourceType
 
 from ..schemas.acl_schema import PermissionPrincipalOut, PrincipalDetailOut, ResourcePermissions, RoleOut
@@ -21,11 +22,13 @@ from .user_service import UserService
 
 logger = logging.getLogger(__name__)
 
+_REGISTRY_ROLE_RESOURCE_TYPES = [rt.value for rt in ExtendedAccessRoleResourceType]
+
 
 async def load_role_cache() -> dict[tuple[str, int], PydanticObjectId]:
     """Load the static ACL role catalog into an in-memory map keyed by (resourceType, permBits)."""
     cache: dict[tuple[str, int], PydanticObjectId] = {}
-    roles = await ExtendedAccessRole.find({}).to_list()
+    roles = await ExtendedAccessRole.find({"resourceType": {"$in": _REGISTRY_ROLE_RESOURCE_TYPES}}).to_list()
     for role in roles:
         key = (str(role.resourceType), role.permBits)
         if key in cache:

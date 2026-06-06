@@ -26,6 +26,22 @@ async def test_load_role_cache_builds_unique_map(mock_role):
 
 @pytest.mark.asyncio
 @patch("registry.services.access_control_service.ExtendedAccessRole")
+async def test_load_role_cache_filters_to_registry_owned_resource_types(mock_role):
+    """The startup query MUST filter to Registry-owned resource types."""
+    mock_role.find.return_value.to_list = AsyncMock(return_value=[])
+
+    await load_role_cache()
+
+    mock_role.find.assert_called_once()
+    (query,), _ = mock_role.find.call_args
+    valid = set(query["resourceType"]["$in"])
+    assert {"mcpServer", "remoteAgent", "federation", "workflow"} <= valid
+    assert "skill" not in valid
+    assert "agent" not in valid
+
+
+@pytest.mark.asyncio
+@patch("registry.services.access_control_service.ExtendedAccessRole")
 async def test_load_role_cache_skips_duplicate_key(mock_role):
     """A duplicate resourceType+permBits is skipped (first wins), not fatal.
 
