@@ -57,3 +57,14 @@ async def test_load_role_cache_skips_duplicate_key(mock_role):
 
     assert cache[("workflow", RoleBits.VIEWER)] == first.id
     assert len(cache) == 1
+
+
+@pytest.mark.asyncio
+@patch("registry.services.access_control_service.ExtendedAccessRole")
+async def test_load_role_cache_never_crashes_startup(mock_role):
+    """A failure loading the catalog must not propagate — the registry must still boot."""
+    mock_role.find.return_value.to_list = AsyncMock(side_effect=RuntimeError("boom"))
+
+    cache = await load_role_cache()
+
+    assert cache == {}

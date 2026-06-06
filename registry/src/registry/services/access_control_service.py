@@ -28,21 +28,24 @@ _REGISTRY_ROLE_RESOURCE_TYPES = [rt.value for rt in ExtendedAccessRoleResourceTy
 async def load_role_cache() -> dict[tuple[str, int], PydanticObjectId]:
     """Load the static ACL role catalog into an in-memory map keyed by (resourceType, permBits)."""
     cache: dict[tuple[str, int], PydanticObjectId] = {}
-    roles = await ExtendedAccessRole.find({"resourceType": {"$in": _REGISTRY_ROLE_RESOURCE_TYPES}}).to_list()
-    for role in roles:
-        key = (str(role.resourceType), role.permBits)
-        if key in cache:
-            logger.error(
-                "Duplicate ACL role for %s: roles %s and %s share resourceType+permBits. "
-                "Keeping %s, skipping %s. The (resourceType, permBits) -> roleId mapping must be unique.",
-                key,
-                cache[key],
-                role.id,
-                cache[key],
-                role.id,
-            )
-            continue
-        cache[key] = role.id
+    try:
+        roles = await ExtendedAccessRole.find({"resourceType": {"$in": _REGISTRY_ROLE_RESOURCE_TYPES}}).to_list()
+        for role in roles:
+            key = (str(role.resourceType), role.permBits)
+            if key in cache:
+                logger.error(
+                    "Duplicate ACL role for %s: roles %s and %s share resourceType+permBits. "
+                    "Keeping %s, skipping %s. The (resourceType, permBits) -> roleId mapping must be unique.",
+                    key,
+                    cache[key],
+                    role.id,
+                    cache[key],
+                    role.id,
+                )
+                continue
+            cache[key] = role.id
+    except Exception as e:  # noqa: BLE001
+        logger.error("Failed to load ACL role catalog: %s", e)
     return cache
 
 
