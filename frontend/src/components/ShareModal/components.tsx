@@ -3,7 +3,7 @@ import { MagnifyingGlassIcon, QuestionMarkCircleIcon, UserIcon, XMarkIcon } from
 import type React from 'react';
 import { Fragment, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { HiOutlineCheck, HiOutlineChevronDown, HiOutlineShieldCheck, HiOutlineUsers } from 'react-icons/hi2';
+import { HiOutlineCheck, HiOutlineChevronDown, HiOutlineUsers } from 'react-icons/hi2';
 import { RiGlobalLine } from 'react-icons/ri';
 import IconButton from '@/components/IconButton';
 import type { Role } from '@/services/acl/type';
@@ -275,11 +275,10 @@ export const PermissionList: React.FC<PermissionListProps> = ({ permissions, rol
 
 interface PublicShareProps {
   publicShare: PublicShareState;
-  roles: Role[];
   resourceLabel?: string;
 }
 
-export const PublicShare: React.FC<PublicShareProps> = ({ publicShare, roles, resourceLabel = 'MCP Server' }) => {
+export const PublicShare: React.FC<PublicShareProps> = ({ publicShare, resourceLabel = 'MCP Server' }) => {
   return (
     <div className='flex flex-col gap-4 mb-6'>
       <div className='flex items-center justify-between'>
@@ -319,22 +318,6 @@ export const PublicShare: React.FC<PublicShareProps> = ({ publicShare, roles, re
           />
         </Switch>
       </div>
-
-      {publicShare.enabled && (
-        <div className='flex items-center justify-between'>
-          <div className='flex items-center gap-2'>
-            <HiOutlineShieldCheck className='h-5 w-5 text-[var(--jarvis-primary-text)]' />
-            <span className='font-semibold text-[var(--jarvis-text)]'>Permission level for everyone</span>
-          </div>
-          <RoleDropdown
-            value={publicShare.role}
-            onChange={publicShare.setRole}
-            roles={roles}
-            resourceLabel={resourceLabel}
-            direction='up'
-          />
-        </div>
-      )}
     </div>
   );
 };

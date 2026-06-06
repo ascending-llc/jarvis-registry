@@ -35,8 +35,6 @@ export interface PermissionsState {
 export interface PublicShareState {
   enabled: boolean;
   setEnabled: (val: boolean) => void;
-  role: string;
-  setRole: (val: string) => void;
 }
 
 export interface ShareModalState {
@@ -101,8 +99,6 @@ export const useShareModal = ({
 
   const [shareWithEveryone, setShareWithEveryone] = useState(false);
   const initialShareRef = useRef(false);
-  const [publicRole, setPublicRole] = useState('');
-  const initialPublicRoleRef = useRef('');
 
   const [loadingPermissions, setLoadingPermissions] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -119,25 +115,10 @@ export const useShareModal = ({
 
       // Backend returns roles in ascending permission order; use as-is.
       setRoles(rolesData);
-      const defaultRoleId = rolesData[0]?.roleId ?? '';
 
       const list: UserPermission[] = [];
-      let foundPublicRole = false;
-
       for (const principal of permsData.principals || []) {
-        if (principal.type === 'public') {
-          const roleId = principal.roleId || defaultRoleId;
-          setPublicRole(roleId);
-          initialPublicRoleRef.current = roleId;
-          foundPublicRole = true;
-          continue;
-        }
         list.push(toUserPermission(principal));
-      }
-
-      if (!foundPublicRole) {
-        setPublicRole(defaultRoleId);
-        initialPublicRoleRef.current = defaultRoleId;
       }
 
       const isPublic = Boolean(permsData.public);
@@ -283,17 +264,10 @@ export const useShareModal = ({
           isExisting: p.isExisting,
         }));
 
-      const publicChanged =
-        shareWithEveryone !== initialShareRef.current || publicRole !== initialPublicRoleRef.current;
-
-      if (shareWithEveryone && publicChanged) {
-        updated.push({
-          principalType: 'public',
-          principalId: '*',
-          name: 'public',
-          roleId: publicRole,
-        });
-      }
+      // Public access is a binary toggle handled entirely by the `public` field
+      // (backend hard-wires it to VIEW). A public principal is never written into
+      // `updated` — doing so is rejected with 400.
+      const publicChanged = shareWithEveryone !== initialShareRef.current;
 
       await SERVICES.ACL.updateResourcePermissions(resourceType, resourceId, {
         ...(publicChanged ? { public: shareWithEveryone } : {}),
@@ -308,17 +282,7 @@ export const useShareModal = ({
     } finally {
       setSaving(false);
     }
-  }, [
-    permissions,
-    roles,
-    shareWithEveryone,
-    publicRole,
-    removedPermissions,
-    resourceType,
-    resourceId,
-    showToast,
-    onClose,
-  ]);
+  }, [permissions, roles, shareWithEveryone, removedPermissions, resourceType, resourceId, showToast, onClose]);
 
   return {
     search,
@@ -331,8 +295,6 @@ export const useShareModal = ({
     publicShare: {
       enabled: shareWithEveryone,
       setEnabled: setShareWithEveryone,
-      role: publicRole,
-      setRole: setPublicRole,
     },
     roles,
     saving,
