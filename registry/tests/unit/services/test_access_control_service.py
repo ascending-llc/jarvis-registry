@@ -88,6 +88,38 @@ class TestACLService:
                 perm_bits=PermissionBits.EDIT,
             )
 
+    @pytest.mark.asyncio
+    async def test_grant_permission_public_non_view_rejected(self):
+        """Hard invariant: a PUBLIC principal may only be granted VIEW.
+
+        Structural backstop for the route guard — a public OWNER/EDITOR grant is
+        rejected at the write boundary regardless of how it arrived.
+        """
+        service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
+        with pytest.raises(ValueError, match="VIEW"):
+            await service.grant_permission(
+                principal_type=PrincipalType.PUBLIC.value,
+                principal_id=None,
+                resource_type=ResourceType.MCPSERVER.value,
+                resource_id=PydanticObjectId(),
+                perm_bits=RoleBits.OWNER,
+            )
+
+    @pytest.mark.asyncio
+    async def test_grant_permission_public_view_passes_invariant(self):
+        """PUBLIC + VIEW clears the invariant (then fails later only on empty role_cache)."""
+        service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
+        # With an empty cache, a VIEW grant gets past the public clamp and fails on the
+        # role lookup instead — proving the clamp does not block the legitimate VIEW path.
+        with pytest.raises(ValueError, match="No role found"):
+            await service.grant_permission(
+                principal_type=PrincipalType.PUBLIC.value,
+                principal_id=None,
+                resource_type=ResourceType.MCPSERVER.value,
+                resource_id=PydanticObjectId(),
+                perm_bits=PermissionBits.VIEW,
+            )
+
     def test_resolve_perm_bits_for_role(self):
         """Resolves perm_bits only for a role belonging to the given resource type."""
         role_id = PydanticObjectId()

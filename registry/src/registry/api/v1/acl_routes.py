@@ -91,6 +91,17 @@ async def update_resource_permissions(
     try:
         perm_bits_by_role: dict[PydanticObjectId, int] = {}
         for principal in data.updated:
+            if principal.principalType == PrincipalType.PUBLIC:
+                raise HTTPException(
+                    status_code=http_status.HTTP_400_BAD_REQUEST,
+                    detail={
+                        "error": "invalid_principal_type",
+                        "message": (
+                            "Public access is managed via the 'public' field. "
+                            "Remove the public principal from 'updated'."
+                        ),
+                    },
+                )
             perm_bits = acl_service.resolve_perm_bits_for_role(resource_type, principal.roleId)
             if perm_bits is None:
                 raise HTTPException(

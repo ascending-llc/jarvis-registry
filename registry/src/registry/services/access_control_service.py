@@ -157,10 +157,14 @@ class ACLService:
                 ExtendedAclEntry: The upserted or newly created ACL entry.
 
         Raises:
-                ValueError: If required parameters are missing/invalid or no role matches.
+                ValueError: If required parameters are missing/invalid, if a PUBLIC
+                        principal is granted anything other than VIEW, or no role matches.
         """
         if principal_type in (PrincipalType.USER, PrincipalType.GROUP) and not principal_id:
             raise ValueError("principal_id must be set for user/group principal_type")
+
+        if principal_type == PrincipalType.PUBLIC and perm_bits != PermissionBits.VIEW:
+            raise ValueError("PUBLIC principal may only be granted VIEW permission")
 
         role_id = self._role_cache.get((resource_type, perm_bits))
         if role_id is None:

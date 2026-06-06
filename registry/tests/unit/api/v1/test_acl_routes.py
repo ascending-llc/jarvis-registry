@@ -158,6 +158,47 @@ async def test_update_permissions_invalid_role_returns_400(sample_user_context):
 
 
 @pytest.mark.asyncio
+async def test_update_permissions_public_principal_in_updated_returns_400(sample_user_context):
+    """PUBLIC principal in data.updated must be rejected with 400 (not silently filtered).
+
+    Closes the privilege-escalation hole where a crafted PUT could write a public
+    OWNER ACL entry. Public access is only ever set via the 'public' field (VIEW-only).
+    """
+    resource_id = str(PydanticObjectId())
+    acl_service = MagicMock()
+    acl_service.check_user_permission = AsyncMock()
+    acl_service.validate_at_least_one_owner_remains = AsyncMock()
+    acl_service.grant_permission = AsyncMock()
+    acl_service.resolve_perm_bits_for_role = MagicMock(return_value=PermissionBits.VIEW)
+
+    request = UpdateResourcePermissionsRequest(
+        public=False,
+        updated=[
+            PermissionPrincipalIn(
+                principalType=PrincipalType.PUBLIC,
+                principalId="*",
+                roleId=PydanticObjectId(),
+            )
+        ],
+    )
+
+    with _mock_transaction(), pytest.raises(HTTPException) as exc_info:
+        await update_resource_permissions(
+            resource_id=resource_id,
+            resource_type=ResourceType.MCPSERVER.value,
+            data=request,
+            user_context=sample_user_context,
+            acl_service=acl_service,
+        )
+
+    assert exc_info.value.status_code == http_status.HTTP_400_BAD_REQUEST
+    assert exc_info.value.detail["error"] == "invalid_principal_type"
+    # Rejected before any owner check or write.
+    acl_service.validate_at_least_one_owner_remains.assert_not_awaited()
+    acl_service.grant_permission.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_update_permissions_owner_required_returns_409(sample_user_context):
     """validate_at_least_one_owner_remains raising 409 must propagate (not be wrapped to 500)."""
     resource_id = str(PydanticObjectId())
