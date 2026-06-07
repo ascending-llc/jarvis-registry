@@ -13,7 +13,8 @@ from registry_pkgs.models import (
     User,
 )
 from registry_pkgs.models.enums import PermissionBits
-from registry_pkgs.models.extended_acl_entry import ExtendedAclEntry
+from registry_pkgs.models.extended_access_role import ExtendedAccessRoleResourceType
+from registry_pkgs.models.extended_acl_entry import ExtendedAclEntry, ExtendedResourceType
 
 from ..schemas.acl_schema import PermissionPrincipalOut, PrincipalDetailOut, ResourcePermissions, RoleOut
 from .group_service import GroupService
@@ -21,11 +22,64 @@ from .user_service import UserService
 
 logger = logging.getLogger(__name__)
 
+_REGISTRY_ROLE_RESOURCE_TYPES = [rt.value for rt in ExtendedAccessRoleResourceType]
+
+
+async def load_role_cache() -> dict[tuple[str, int], PydanticObjectId]:
+    """Load the static ACL role catalog into an in-memory map keyed by (resourceType, permBits)."""
+    cache: dict[tuple[str, int], PydanticObjectId] = {}
+    try:
+        roles = await ExtendedAccessRole.find({"resourceType": {"$in": _REGISTRY_ROLE_RESOURCE_TYPES}}).to_list()
+        for role in roles:
+            key = (str(role.resourceType), role.permBits)
+            if key in cache:
+                logger.error(
+                    "Duplicate ACL role for %s: roles %s and %s share resourceType+permBits. "
+                    "Keeping %s, skipping %s. The (resourceType, permBits) -> roleId mapping must be unique.",
+                    key,
+                    cache[key],
+                    role.id,
+                    cache[key],
+                    role.id,
+                )
+                continue
+            cache[key] = role.id
+    except Exception as e:  # noqa: BLE001
+        logger.error("Failed to load ACL role catalog: %s", e)
+    return cache
+
 
 class ACLService:
-    def __init__(self, user_service: UserService, group_service: GroupService):
+    def __init__(
+        self,
+        user_service: UserService,
+        group_service: GroupService,
+        role_cache: dict[tuple[str, int], PydanticObjectId],
+    ):
         self.user_service = user_service
         self.group_service = group_service
+        self._role_cache = role_cache
+
+    @property
+    def _role_id_to_key(self) -> dict[PydanticObjectId, tuple[str, int]]:
+        """Reverse lookup roleId -> (resourceType, permBits), derived live from the cache.
+
+        Built on access rather than at __init__ so it reflects the cache after the
+        container populates it at startup. The catalog is tiny (<~20 entries), so
+        rebuilding per call is negligible.
+        """
+        return {rid: key for key, rid in self._role_cache.items()}
+
+    def resolve_perm_bits_for_role(self, resource_type: str, role_id: PydanticObjectId) -> int | None:
+        """Resolve perm_bits for a role ObjectId, but only if the role belongs to
+        ``resource_type`` (the contract: an ACL entry's roleId must match its own
+        resourceType). Returns None for an unknown role or a cross-resource-type
+        roleId, so callers reject it rather than silently accepting it. No DB query.
+        """
+        key = self._role_id_to_key.get(role_id)
+        if key is None or key[0] != resource_type:
+            return None
+        return key[1]
 
     async def _upsert_acl_entry(
         self,
@@ -35,7 +89,7 @@ class ACLService:
         resource_type: str,
         resource_id: PydanticObjectId,
         role_id: PydanticObjectId | None,
-        perm_bits: int | None,
+        perm_bits: int,
     ) -> ExtendedAclEntry:
         session = get_current_session()
 
@@ -58,9 +112,9 @@ class ACLService:
             return acl_entry
 
         new_entry = ExtendedAclEntry(
-            principalType=principal_type,
+            principalType=PrincipalType(principal_type),
             principalId=principal_id,
-            resourceType=resource_type,
+            resourceType=ExtendedResourceType(resource_type),
             resourceId=resource_id,
             roleId=role_id,
             permBits=perm_bits,
@@ -80,22 +134,7 @@ class ACLService:
             principalId=str(obj.id),
             name=getattr(obj, "name", None),
             email=getattr(obj, "email", None),
-            accessRoleId=str(getattr(obj, "accessRoleId", ""))
-            if hasattr(obj, "accessRoleId") and obj.accessRoleId is not None
-            else "",
         )
-
-    async def get_role_by_resource_and_permbits(self, resource_type: str, perm_bits: int) -> ExtendedAccessRole | None:
-        """
-        Find the ExtendedAccessRole for a given resource_type and perm_bits.
-        Used to automatically associate a roleId when only perm_bits is provided.
-        """
-        try:
-            role = await ExtendedAccessRole.find_one({"resourceType": resource_type, "permBits": perm_bits})
-            return role
-        except Exception as e:
-            logger.error(f"Error finding role for {resource_type} with permBits {perm_bits}: {e}")
-            return None
 
     async def grant_permission(
         self,
@@ -103,66 +142,48 @@ class ACLService:
         principal_id: PydanticObjectId | str | None,
         resource_type: str,
         resource_id: PydanticObjectId,
-        role_id: PydanticObjectId | None = None,
-        perm_bits: int | None = None,
+        perm_bits: int,
     ) -> ExtendedAclEntry:
         """
         Grant ACL permission to a principal (user or group) for a specific resource.
+
+        The role catalog is resolved from the in-memory ``role_cache`` keyed by
+        ``(resource_type, perm_bits)`` — no DB query. A missing role raises rather
+        than silently writing a null ``roleId`` (defense-in-depth: catches a new
+        resource type added without its seed data).
 
         Args:
                 principal_type (str): Type of principal ('user', 'group', etc.).
                 principal_id (Any): ID of the principal (user ID, group ID, etc.).
                 resource_type (str): Type of resource (see ResourceType enum).
                 resource_id (PydanticObjectId): Resource document ID.
-                role_id (Optional[PydanticObjectId]): Optional role ID to derive permission bits.
-                perm_bits (Optional[int]): Permission bits to assign (overrides role if provided).
+                perm_bits (int): Permission bits to assign.
 
         Returns:
                 ExtendedAclEntry: The upserted or newly created ACL entry.
 
         Raises:
-                ValueError: If required parameters are missing or invalid, or if upsert fails.
+                ValueError: If required parameters are missing/invalid, if a PUBLIC
+                        principal is granted anything other than VIEW, or no role matches.
         """
-        if principal_type in ["user", "group"] and not principal_id:
+        if principal_type in (PrincipalType.USER, PrincipalType.GROUP) and not principal_id:
             raise ValueError("principal_id must be set for user/group principal_type")
 
-        if role_id:
-            access_role = await ExtendedAccessRole.find_one({"_id": role_id})
-            if not access_role:
-                raise ValueError("Role not found")
-            perm_bits = access_role.permBits
-        elif perm_bits and not role_id:
-            role = await self.get_role_by_resource_and_permbits(resource_type, perm_bits)
-            if role:
-                role_id = role.id
+        if principal_type == PrincipalType.PUBLIC and perm_bits != PermissionBits.VIEW:
+            raise ValueError("PUBLIC principal may only be granted VIEW permission")
 
-        # Check if an ACL entry already exists for this principal/resource
-        try:
-            return await self._upsert_acl_entry(
-                principal_type=principal_type,
-                principal_id=principal_id,
-                resource_type=resource_type,
-                resource_id=resource_id,
-                role_id=role_id,
-                perm_bits=perm_bits,
-            )
-        except Exception as e:
-            if "NoSuchTransaction" in str(e) or "txnNumber" in str(e):
-                logger.warning("Retrying ACL upsert without transaction session due to transient tx abort: %s", e)
-                try:
-                    return await self._upsert_acl_entry(
-                        principal_type=principal_type,
-                        principal_id=principal_id,
-                        resource_type=resource_type,
-                        resource_id=resource_id,
-                        role_id=role_id,
-                        perm_bits=perm_bits,
-                    )
-                except Exception as retry_error:
-                    logger.error(f"Error upserting ACL entry on retry: {retry_error}")
-                    raise ValueError(f"Error upserting ACL permissions: {retry_error}") from retry_error
-            logger.error(f"Error upserting ACL entry: {e}")
-            raise ValueError(f"Error upserting ACL permissions: {e}")
+        role_id = self._role_cache.get((resource_type, perm_bits))
+        if role_id is None:
+            raise ValueError(f"No role found for resource_type={resource_type!r}, perm_bits={perm_bits!r}")
+
+        return await self._upsert_acl_entry(
+            principal_type=principal_type,
+            principal_id=principal_id,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            role_id=role_id,
+            perm_bits=perm_bits,
+        )
 
     async def delete_acl_entries_for_resource(
         self, resource_type: str, resource_id: PydanticObjectId, perm_bits_to_delete: int | None = None
@@ -287,12 +308,6 @@ class ACLService:
                 if entry.principalType == PrincipalType.USER.value and entry.principalId:
                     user = await User.get(entry.principalId)
                     if user:
-                        access_role_id = None
-                        if entry.roleId:
-                            role = await ExtendedAccessRole.get(entry.roleId)
-                            if role:
-                                access_role_id = role.accessRoleId
-
                         principals.append(
                             PrincipalDetailOut(
                                 type="user",
@@ -302,7 +317,7 @@ class ACLService:
                                 avatar=getattr(user, "avatar", None),
                                 source=getattr(user, "source", None),
                                 idOnTheSource=user.idOnTheSource,
-                                accessRoleId=access_role_id,
+                                roleId=entry.roleId,
                             )
                         )
 
@@ -500,22 +515,17 @@ class ACLService:
             resource_type: The resource type (e.g., "mcpServer", "agent")
 
         Returns:
-            List of roles with their accessRoleId, name, description, and permBits
+            List of roles (roleId, name, description) in ascending permission order
         """
-        try:
-            roles = await ExtendedAccessRole.find({"resourceType": resource_type}).to_list()
-            return [
-                RoleOut(
-                    accessRoleId=role.accessRoleId,
-                    name=role.name,
-                    description=role.description or "",
-                    permBits=role.permBits,
-                )
-                for role in roles
-            ]
-        except Exception as e:
-            logger.error(f"Error fetching roles for resource type {resource_type}: {e}")
-            return []
+        roles = await ExtendedAccessRole.find({"resourceType": resource_type}).sort([("permBits", 1)]).to_list()
+        return [
+            RoleOut(
+                roleId=role.id,
+                name=role.name,
+                description=role.description or "",
+            )
+            for role in roles
+        ]
 
     async def validate_at_least_one_owner_remains(
         self,
@@ -528,13 +538,21 @@ class ACLService:
         Validate that after the update, at least one owner remains for the resource.
 
         Raises:
-            ValueError: If the update would result in no owners remaining
+            HTTPException: 409 if the update would result in no owners remaining
         """
         current_acl_entries = await ExtendedAclEntry.find(
             {"resourceType": resource_type, "resourceId": resource_id}
         ).to_list()
 
         owner_perm_bits = PermissionBits.VIEW | PermissionBits.EDIT | PermissionBits.DELETE | PermissionBits.SHARE
+
+        role_id_to_key = self._role_id_to_key
+
+        def _owner_perm_bits_for(role_id: PydanticObjectId | None) -> int | None:
+            key = role_id_to_key.get(role_id)
+            if key is None or key[0] != resource_type:
+                return None
+            return key[1]
 
         remaining_owners = []
         for entry in current_acl_entries:
@@ -554,33 +572,32 @@ class ACLService:
             )
 
             if updated_principal:
-                new_perm_bits = updated_principal.permBits
-                if updated_principal.accessRoleId:
-                    role = await ExtendedAccessRole.find_one({"accessRoleId": updated_principal.accessRoleId})
-                    if role:
-                        new_perm_bits = role.permBits
+                new_perm_bits = _owner_perm_bits_for(updated_principal.roleId)
 
                 if new_perm_bits == owner_perm_bits:
                     remaining_owners.append(principal_key)
             elif entry.permBits == owner_perm_bits:
                 remaining_owners.append(principal_key)
 
+        current_keys = {f"{e.principalType}_{e.principalId}" for e in current_acl_entries}
+
         new_owners = [
             u
             for u in updated_principals
-            if f"{u.principalType}_{u.principalId}"
-            not in [f"{e.principalType}_{e.principalId}" for e in current_acl_entries]
+            if u.principalType != PrincipalType.PUBLIC.value
+            and f"{u.principalType}_{u.principalId}" not in current_keys
         ]
 
         for new_principal in new_owners:
-            perm_bits = new_principal.permBits
-            if new_principal.accessRoleId:
-                role = await ExtendedAccessRole.find_one({"accessRoleId": new_principal.accessRoleId})
-                if role:
-                    perm_bits = role.permBits
-
+            perm_bits = _owner_perm_bits_for(new_principal.roleId)
             if perm_bits == owner_perm_bits:
                 remaining_owners.append(f"{new_principal.principalType}_{new_principal.principalId}")
 
         if not remaining_owners:
-            raise ValueError("At least one owner must remain for the resource")
+            raise HTTPException(
+                status_code=http_status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "owner_required",
+                    "message": "At least one owner must remain for the resource",
+                },
+            )

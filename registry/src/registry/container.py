@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 import httpx
 from agno.models.aws import AwsBedrock
+from beanie import PydanticObjectId
 from redis import Redis
 
 from registry_pkgs.database.mongodb import MongoDB
@@ -22,7 +23,7 @@ from .core.mcp_client import MCPClientService
 from .core.session_store import SessionStore
 from .health.service import HealthMonitoringService
 from .services.a2a_agent_service import A2AAgentService
-from .services.access_control_service import ACLService
+from .services.access_control_service import ACLService, load_role_cache
 from .services.agent_scanner import AgentScannerService
 from .services.federation_crud_service import FederationCrudService
 from .services.federation_job_service import FederationJobService
@@ -63,6 +64,7 @@ class RegistryContainer:
         self.db_client = db_client
         self.redis_client = redis_client
         self.directive_queue = DirectiveQueue()
+        self.role_cache: dict[tuple[str, int], PydanticObjectId] = {}
 
     @cached_property
     def mcp_server_repo(self) -> MCPServerRepository:
@@ -125,7 +127,11 @@ class RegistryContainer:
 
     @cached_property
     def acl_service(self) -> ACLService:
-        return ACLService(user_service=self.user_service, group_service=self.group_service)
+        return ACLService(
+            user_service=self.user_service,
+            group_service=self.group_service,
+            role_cache=self.role_cache,
+        )
 
     @cached_property
     def token_service(self) -> TokenService:
@@ -277,6 +283,12 @@ class RegistryContainer:
     async def startup(self) -> None:
         """Warm services that need async initialization before the app can serve traffic."""
         logger.info("Initializing services via registry container...")
+
+        logger.info("Loading ACL role cache...")
+        loaded = await load_role_cache()
+        self.role_cache.clear()
+        self.role_cache.update(loaded)
+        logger.info("ACL role cache loaded: %d roles", len(self.role_cache))
 
         logger.info("Initializing vector search service...")
         await self.vector_service.initialize()
