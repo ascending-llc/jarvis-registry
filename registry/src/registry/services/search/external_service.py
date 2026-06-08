@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from typing import Any
 
@@ -69,6 +70,20 @@ class ExternalVectorSearchService(VectorSearchService):
             logger.error(f"Initialization verification failed: {e}", exc_info=True)
             self._initialized = False
             raise Exception(f"Cannot verify vector search: {e}")
+
+        await self._prewarm_reranker()
+
+    async def _prewarm_reranker(self) -> None:
+        """Eagerly load the rerank model at startup to avoid a cold-download race."""
+        if not self.enable_rerank:
+            return
+        try:
+            from registry_pkgs.vector.retrievers.reranker import create_reranker
+
+            await asyncio.to_thread(create_reranker, RerankerProvider.FLASHRANK, model=self.reranker_model)
+            logger.info("Reranker model pre-warmed: %s", self.reranker_model)
+        except Exception as e:
+            logger.warning("Reranker pre-warm failed; will lazy-load on first search: %s", e)
 
     def get_retriever(self, search_type: SearchType | None = None, enable_rerank: bool | None = None, top_k: int = 10):
         """
