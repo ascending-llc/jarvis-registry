@@ -60,13 +60,13 @@ const Dashboard: React.FC = () => {
   }, [urlTab, setViewMode]);
 
   // Semantic search
-  const semanticEnabled = committedQuery.trim().length >= 2;
+  const semanticEnabled = committedQuery.trim().length >= 1;
   const {
     results: semanticResults,
     loading: semanticLoading,
     error: semanticError,
   } = useSemanticSearch(committedQuery, {
-    minLength: 2,
+    minLength: 1,
     maxResults: 12,
     enabled: semanticEnabled,
   });
@@ -74,12 +74,18 @@ const Dashboard: React.FC = () => {
   const semanticServers = semanticResults?.servers ?? [];
   const semanticTools = semanticResults?.tools ?? [];
   const semanticAgents = semanticResults?.agents ?? [];
+  const semanticSkills = semanticResults?.skills ?? [];
   const semanticDisplayQuery = semanticResults?.query || committedQuery || searchTerm;
   const semanticSectionVisible = semanticEnabled;
+
   const shouldShowFallbackGrid =
     semanticSectionVisible &&
     (Boolean(semanticError) ||
-      (!semanticLoading && semanticServers.length === 0 && semanticTools.length === 0 && semanticAgents.length === 0));
+      (!semanticLoading &&
+        semanticServers.length === 0 &&
+        semanticTools.length === 0 &&
+        semanticAgents.length === 0 &&
+        semanticSkills.length === 0));
 
   // Filter servers based on activeFilter and searchTerm
   const filteredServers = useMemo(() => {
@@ -438,6 +444,7 @@ const Dashboard: React.FC = () => {
               servers={semanticServers}
               tools={semanticTools}
               agents={semanticAgents}
+              skills={semanticSkills}
             />
 
             {shouldShowFallbackGrid && (

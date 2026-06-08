@@ -5,7 +5,12 @@ import { useState } from 'react';
 
 import type { ServerInfo } from '@/contexts/ServerContext';
 import type { Agent as AgentType } from '@/services/agent/type';
-import type { SemanticAgentHit, SemanticServerHit, SemanticToolHit } from '../hooks/useSemanticSearch';
+import type {
+  SemanticAgentHit,
+  SemanticServerHit,
+  SemanticSkillHit,
+  SemanticToolHit,
+} from '../hooks/useSemanticSearch';
 import AgentDetailsModal from './AgentDetailsModal';
 import IconButton from './IconButton';
 import ServerConfigModal from './ServerConfigModal';
@@ -17,6 +22,7 @@ interface SemanticSearchResultsProps {
   servers: SemanticServerHit[];
   tools: SemanticToolHit[];
   agents: SemanticAgentHit[];
+  skills: SemanticSkillHit[];
 }
 
 const formatPercent = (value: number) => `${Math.round(Math.min(value, 1) * 100)}%`;
@@ -28,8 +34,9 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
   servers,
   tools,
   agents,
+  skills,
 }) => {
-  const hasResults = servers.length > 0 || tools.length > 0 || agents.length > 0;
+  const hasResults = servers.length > 0 || tools.length > 0 || agents.length > 0 || skills.length > 0;
   const [configServer, setConfigServer] = useState<SemanticServerHit | null>(null);
   const [detailsAgent, setDetailsAgent] = useState<SemanticAgentHit | null>(null);
   const [agentDetailsData, setAgentDetailsData] = useState<any>(null);
@@ -296,6 +303,41 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
                     </span>
                     <span>{agent.isEnabled ? 'Enabled' : 'Disabled'}</span>
                   </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {skills.length > 0 && (
+          <section className='space-y-4'>
+            <div className='flex items-center justify-between'>
+              <h4 className='text-lg font-semibold text-[var(--jarvis-text-strong)]'>
+                Matching Skills{' '}
+                <span className='text-sm font-normal text-[var(--jarvis-muted)]'>({skills.length})</span>
+              </h4>
+            </div>
+            <div
+              className='grid'
+              style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '1.25rem' }}
+            >
+              {skills.map(skill => (
+                <div
+                  key={`${skill.agentPath}-${skill.skillName}`}
+                  className='flex flex-col gap-2 rounded-2xl border border-[var(--jarvis-border)] bg-[var(--jarvis-card)] p-4 sm:flex-row sm:items-center sm:justify-between'
+                >
+                  <div>
+                    <p className='text-sm font-semibold text-[var(--jarvis-text-strong)]'>
+                      {skill.skillName}
+                      <span className='ml-2 text-xs font-normal text-[var(--jarvis-muted)]'>({skill.agentName})</span>
+                    </p>
+                    <p className='text-sm text-[var(--jarvis-muted)]'>
+                      {skill.description || skill.matchContext || 'No description available.'}
+                    </p>
+                  </div>
+                  <span className='inline-flex items-center rounded-full border border-[var(--jarvis-info-text)]/20 bg-[var(--jarvis-info-soft)] px-3 py-1 text-xs font-semibold text-[var(--jarvis-info-text)]'>
+                    {formatPercent(skill.relevanceScore)} match
+                  </span>
                 </div>
               ))}
             </div>
