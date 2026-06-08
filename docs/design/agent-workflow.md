@@ -481,15 +481,14 @@ def _ref_to_resolved(
 
 No new ACL service is written. The existing `access_control_service.ACLService` (in `registry/src/registry/services/access_control_service.py`) is reused directly via the existing DI container.
 
-**Step 1 — Add `workflow` to `RegistryResourceType`** (in `registry-pkgs/src/registry_pkgs/models/extended_access_role.py`):
+**Step 1 — `workflow` is a member of `RegistryResourceType`** (in `registry-pkgs/src/registry_pkgs/models/extended_access_role.py`). This enum is narrowed to exactly the resource types this Registry's ACL owns:
 
 ```python
 class RegistryResourceType(StrEnum):
-    AGENT        = "agent"
-    MCPSERVER    = "mcpServer"
+    MCP_SERVER   = "mcpServer"
     REMOTE_AGENT = "remoteAgent"
     FEDERATION   = "federation"
-    WORKFLOW     = "workflow"   # ← add this
+    WORKFLOW     = "workflow"
 ```
 
 **Step 2 — Permission bits** reuse the existing `PermissionBits` model:
