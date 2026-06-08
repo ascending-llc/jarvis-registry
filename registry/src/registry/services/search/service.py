@@ -8,6 +8,7 @@ It is intentionally decoupled from the API layer: route handlers and MCP tools
 inject it and map its plain-dict results onto their own response shapes.
 """
 
+import asyncio
 import logging
 import time
 
@@ -186,6 +187,13 @@ class SearchService:
                 tools_count=tools_count,
             )
 
+    def _semantic_reranker_kwargs(self) -> dict[str, str]:
+        """Reuse the MCP vector service reranker model for structured A2A search when available."""
+        model = getattr(self.vector_service, "reranker_model", None)
+        if isinstance(model, str) and model:
+            return {"model": model}
+        return {}
+
     async def semantic_search(
         self,
         query: str,
@@ -220,18 +228,26 @@ class SearchService:
             max_results,
         )
 
-        try:
-            if mcp_types:
-                mcp_results = await self.vector_service.search_mixed(
-                    query=query,
-                    entity_types=mcp_types,
-                    max_results=max_results,
-                )
-                servers = mcp_results.get("servers", [])
-                tools = mcp_results.get("tools", [])
+        async def run_mcp() -> None:
+            nonlocal servers, tools
+            if not mcp_types:
+                return
+            mcp_results = await self.vector_service.search_mixed(
+                query=query,
+                entity_types=mcp_types,
+                max_results=max_results,
+            )
+            servers = mcp_results.get("servers", [])
+            tools = mcp_results.get("tools", [])
 
-            if a2a_types:
-                agents, skills = await self._search_a2a_for_semantic(query, a2a_types, max_results, include_disabled)
+        async def run_a2a() -> None:
+            nonlocal agents, skills
+            if not a2a_types:
+                return
+            agents, skills = await self._search_a2a_for_semantic(query, a2a_types, max_results, include_disabled)
+
+        try:
+            await asyncio.gather(run_mcp(), run_a2a())
 
             success = True
             return {"servers": servers, "tools": tools, "agents": agents, "skills": skills}
@@ -261,6 +277,7 @@ class SearchService:
                 candidate_k=_candidate_k(max_results),
                 search_type=SearchType.HYBRID,
                 filters=filters,
+                reranker_kwargs=self._semantic_reranker_kwargs(),
             )
         except RuntimeError as exc:
             logger.warning("A2A vector search unavailable, skipping A2A results: %s", exc)

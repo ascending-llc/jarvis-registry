@@ -180,13 +180,21 @@ async def test_semantic_search_splits_a2a_into_agents_and_skills():
     }
     vector_service = MagicMock()
     vector_service.search_mixed = AsyncMock(return_value={"servers": [], "tools": []})
+    vector_service.reranker_model = "semantic-reranker"
     a2a_agent_repo = MagicMock()
     a2a_agent_repo.asearch_with_rerank = AsyncMock(return_value=[agent_doc, skill_doc])
     service = _make_service(vector_service=vector_service, a2a_agent_repo=a2a_agent_repo)
 
     result = await service.semantic_search(query="intel research", entity_types=["a2a_agent", "skill"], max_results=5)
 
-    a2a_agent_repo.asearch_with_rerank.assert_awaited_once()
+    a2a_agent_repo.asearch_with_rerank.assert_awaited_once_with(
+        query="intel research",
+        k=5,
+        candidate_k=50,
+        search_type=SearchType.HYBRID,
+        filters={"entity_type": [A2AEntityType.AGENT, A2AEntityType.SKILL], "enabled": True},
+        reranker_kwargs={"model": "semantic-reranker"},
+    )
     assert result["agents"] == [agent_doc]
     assert result["skills"] == [skill_doc]
 
