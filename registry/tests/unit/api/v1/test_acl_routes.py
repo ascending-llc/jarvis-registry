@@ -33,14 +33,14 @@ def sample_user_context():
 
 @contextmanager
 def _mock_transaction():
-    """Stub out the @use_transaction decorator's MongoDB session handling."""
-    with patch("registry_pkgs.database.decorators.MongoDB.get_client") as mock_get_client:
+    """Stub out explicit MongoDB session handling in ACL routes."""
+    with patch("registry.api.v1.acl_routes.MongoDB.get_client") as mock_get_client:
         mock_session = AsyncMock()
         mock_client = MagicMock()
         mock_client.start_session.return_value.__aenter__.return_value = mock_session
         mock_session.start_transaction.return_value.__aenter__.return_value = None
         mock_get_client.return_value = mock_client
-        yield
+        yield mock_session
 
 
 @pytest.mark.asyncio

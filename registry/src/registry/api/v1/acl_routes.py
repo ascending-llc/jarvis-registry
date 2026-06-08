@@ -91,38 +91,37 @@ async def update_resource_permissions(
                     session=mongo_session,
                 )
 
-    try:
-        perm_bits_by_role: dict[PydanticObjectId, int] = {}
-        for principal in data.updated:
-            if principal.principalType == PrincipalType.PUBLIC:
-                raise HTTPException(
-                    status_code=http_status.HTTP_400_BAD_REQUEST,
-                    detail={
-                        "error": "invalid_principal_type",
-                        "message": (
-                            "Public access is managed via the 'public' field. "
-                            "Remove the public principal from 'updated'."
-                        ),
-                    },
-                )
-            perm_bits = acl_service.resolve_perm_bits_for_role(resource_type, principal.roleId)
-            if perm_bits is None:
-                raise HTTPException(
-                    status_code=http_status.HTTP_400_BAD_REQUEST,
-                    detail={
-                        "error": "invalid_role",
-                        "message": f"Role {principal.roleId} not found for resource type {resource_type!r}",
-                    },
-                )
-            perm_bits_by_role[principal.roleId] = perm_bits
+                perm_bits_by_role: dict[PydanticObjectId, int] = {}
+                for principal in data.updated:
+                    if principal.principalType == PrincipalType.PUBLIC:
+                        raise HTTPException(
+                            status_code=http_status.HTTP_400_BAD_REQUEST,
+                            detail={
+                                "error": "invalid_principal_type",
+                                "message": (
+                                    "Public access is managed via the 'public' field. "
+                                    "Remove the public principal from 'updated'."
+                                ),
+                            },
+                        )
+                    perm_bits = acl_service.resolve_perm_bits_for_role(resource_type, principal.roleId)
+                    if perm_bits is None:
+                        raise HTTPException(
+                            status_code=http_status.HTTP_400_BAD_REQUEST,
+                            detail={
+                                "error": "invalid_role",
+                                "message": f"Role {principal.roleId} not found for resource type {resource_type!r}",
+                            },
+                        )
+                    perm_bits_by_role[principal.roleId] = perm_bits
 
-        await acl_service.validate_at_least_one_owner_remains(
-            resource_type=resource_type,
-            resource_id=PydanticObjectId(resource_id),
-            updated_principals=data.updated,
-            removed_principals=data.removed,
-            session=mongo_session,
-        )
+                await acl_service.validate_at_least_one_owner_remains(
+                    resource_type=resource_type,
+                    resource_id=PydanticObjectId(resource_id),
+                    updated_principals=data.updated,
+                    removed_principals=data.removed,
+                    session=mongo_session,
+                )
 
                 deleted_count = 0
                 updated_count = 0
@@ -175,22 +174,24 @@ async def update_resource_permissions(
                         )
                         deleted_count += result
 
-        if data.updated:
-            for principal in data.updated:
-                perm_bits = perm_bits_by_role[principal.roleId]
+                if data.updated:
+                    for principal in data.updated:
+                        perm_bits = perm_bits_by_role[principal.roleId]
 
-                principal_id = (
-                    None if principal.principalType == PrincipalType.PUBLIC else PydanticObjectId(principal.principalId)
-                )
-                await acl_service.grant_permission(
-                    principal_type=principal.principalType,
-                    principal_id=principal_id,
-                    resource_type=resource_type,
-                    resource_id=PydanticObjectId(resource_id),
-                    perm_bits=perm_bits,
-                    session=mongo_session,
-                )
-                updated_count += 1
+                        principal_id = (
+                            None
+                            if principal.principalType == PrincipalType.PUBLIC
+                            else PydanticObjectId(principal.principalId)
+                        )
+                        await acl_service.grant_permission(
+                            principal_type=principal.principalType,
+                            principal_id=principal_id,
+                            resource_type=resource_type,
+                            resource_id=PydanticObjectId(resource_id),
+                            perm_bits=perm_bits,
+                            session=mongo_session,
+                        )
+                        updated_count += 1
 
                 logger.info(
                     f"Updated permissions for resource {resource_id}: {updated_count} updated, {deleted_count} deleted"

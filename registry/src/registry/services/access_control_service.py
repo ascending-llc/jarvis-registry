@@ -343,7 +343,7 @@ class ACLService:
                                 avatar=getattr(user, "avatar", None),
                                 source=getattr(user, "source", None),
                                 idOnTheSource=user.idOnTheSource,
-                                roleId=entry.roleId
+                                roleId=entry.roleId,
                             )
                         )
 
@@ -555,7 +555,11 @@ class ACLService:
         Returns:
             List of roles (roleId, name, description) in ascending permission order
         """
-        roles = await ExtendedAccessRole.find({"resourceType": resource_type}, session=session).sort([("permBits", 1)]).to_list()
+        roles = (
+            await ExtendedAccessRole.find({"resourceType": resource_type}, session=session)
+            .sort([("permBits", 1)])
+            .to_list()
+        )
         return [
             RoleOut(
                 roleId=role.id,
