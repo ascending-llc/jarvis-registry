@@ -46,11 +46,6 @@ def cfg() -> JwtTokenConfig:
     )
 
 
-# --------------------------------------------------------------------------- #
-# Happy paths
-# --------------------------------------------------------------------------- #
-
-
 def test_managed_agent_roundtrip(cfg):
     token = mint_managed_agent_token(
         cfg, subject="alice", client_id="mcp-client-abc", expires_in_seconds=3600, extra_claims={"scope": "x"}

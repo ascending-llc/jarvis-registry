@@ -1,130 +1,74 @@
-"""
-Unit tests for JWT audience validation with RFC 8707 Resource Indicators.
-
-Tests verify that:
-1. Self-signed tokens (kid='self-signed-key-v1') skip audience validation
-2. Resource URLs are accepted as audience claims
-3. Provider tokens still validate audience properly
-
-JWT operations are fully mocked — crypto logic is tested in
-registry-pkgs/tests/unit/test_jwt_utils.py.
-"""
-
-from unittest.mock import patch
-
 import pytest
+
+from auth_server.core.config import settings
+from auth_server.services.cognito_validator_service import SimplifiedCognitoValidator
+from registry_pkgs.core.jwt_tokens import mint_crud_session_token, mint_managed_agent_token
+
+
+@pytest.fixture
+def validator() -> SimplifiedCognitoValidator:
+    return SimplifiedCognitoValidator()
+
+
+@pytest.fixture
+def cfg():
+    return settings.jwt_token_config
 
 
 @pytest.mark.unit
 @pytest.mark.auth
-class TestJWTAudienceValidation:
-    """Test JWT audience validation for RFC 8707 compliance."""
+class TestSelfSignedTokenValidation:
+    def test_accepts_managed_agent_token(self, validator, cfg):
+        token = mint_managed_agent_token(
+            cfg,
+            subject="alice",
+            client_id="mcp-client-abc",
+            expires_in_seconds=3600,
+            extra_claims={"token_use": "access", "scope": "a b"},
+        )
 
-    def test_self_signed_token_skips_audience_validation(self):
-        """Self-signed tokens should skip audience validation (aud == resource URL)."""
-        from auth_server.server import JWT_ISSUER, JWT_SELF_SIGNED_KID
+        result = validator.validate_self_signed_token(token)
 
-        resource_url = "http://localhost/proxy/mcpgw"
+        assert result["valid"] is True
+        assert result["method"] == "self_signed"
+        assert result["client_id"] == "mcp-client-abc"
+        assert result["username"] == "alice"
+        assert result["scopes"] == ["a", "b"]
 
-        fake_claims = {
-            "iss": JWT_ISSUER,
-            "aud": resource_url,
-            "sub": "test-user",
-            "scope": "test-scope",
-        }
-        fake_token = "header.payload.sig"
+    def test_rejects_crud_session_token(self, validator, cfg):
+        # A dashboard cookie token must never validate as a managed-agent token.
+        token = mint_crud_session_token(
+            cfg,
+            subject="bob",
+            token_type="access_token",
+            expires_in_seconds=3600,
+            extra_claims={"token_use": "access"},
+        )
 
-        with (
-            patch("registry_pkgs.core.jwt_utils.encode_jwt", return_value=fake_token),
-            patch("registry_pkgs.core.jwt_utils.decode_jwt", return_value=fake_claims),
-        ):
-            # Simulate encoding a self-signed token with a resource URL as audience
-            from registry_pkgs.core.jwt_utils import decode_jwt, encode_jwt
+        with pytest.raises(ValueError):
+            validator.validate_self_signed_token(token)
 
-            payload = {
-                "iss": JWT_ISSUER,
-                "aud": resource_url,
-                "sub": "test-user",
-                "scope": "test-scope",
-            }
-            token = encode_jwt(payload, "dummy-private-key", kid=JWT_SELF_SIGNED_KID)
-            assert token == fake_token
+    def test_rejects_registry_self_token(self, validator, cfg):
+        # Registry's own-login token (client_id == registry) is inert on the proxy path.
+        token = mint_managed_agent_token(
+            cfg,
+            subject="self",
+            client_id=cfg.registry_client_id,
+            expires_in_seconds=3600,
+            extra_claims={"token_use": "access"},
+        )
 
-            # Decode skipping audience verification (audience=None)
-            claims = decode_jwt(token, "dummy-public-key", issuer=JWT_ISSUER, audience=None)
-            assert claims["aud"] == resource_url
-            assert claims["sub"] == "test-user"
+        with pytest.raises(ValueError):
+            validator.validate_self_signed_token(token)
 
-    def test_provider_token_validates_audience(self):
-        """Provider tokens should validate audience strictly."""
-        from auth_server.server import JWT_AUDIENCE, JWT_ISSUER
+    def test_rejects_non_access_token_use(self, validator, cfg):
+        token = mint_managed_agent_token(
+            cfg,
+            subject="alice",
+            client_id="mcp-client-abc",
+            expires_in_seconds=3600,
+            extra_claims={"token_use": "id"},
+        )
 
-        fake_claims = {
-            "iss": JWT_ISSUER,
-            "aud": JWT_AUDIENCE,
-            "sub": "test-user",
-            "scope": "test-scope",
-        }
-        fake_token = "header.payload.sig"
-
-        with (
-            patch("registry_pkgs.core.jwt_utils.encode_jwt", return_value=fake_token),
-            patch("registry_pkgs.core.jwt_utils.decode_jwt", return_value=fake_claims),
-        ):
-            from registry_pkgs.core.jwt_utils import decode_jwt, encode_jwt
-
-            payload = {"iss": JWT_ISSUER, "aud": JWT_AUDIENCE, "sub": "test-user", "scope": "test-scope"}
-            token = encode_jwt(payload, "dummy-private-key", kid="provider-key-id")
-            claims = decode_jwt(token, "dummy-public-key", issuer=JWT_ISSUER, audience=JWT_AUDIENCE)
-            assert claims["aud"] == JWT_AUDIENCE
-
-    def test_provider_token_rejects_wrong_audience(self):
-        """Provider tokens should reject mismatched audience."""
-        from auth_server.server import JWT_AUDIENCE, JWT_ISSUER
-        from registry_pkgs.core.jwt_utils import InvalidAudienceError
-
-        fake_token = "header.payload.sig"
-
-        with (
-            patch("registry_pkgs.core.jwt_utils.encode_jwt", return_value=fake_token),
-            patch("registry_pkgs.core.jwt_utils.decode_jwt", side_effect=InvalidAudienceError("wrong audience")),
-        ):
-            from registry_pkgs.core.jwt_utils import decode_jwt, encode_jwt
-
-            payload = {"iss": JWT_ISSUER, "aud": "wrong-audience", "sub": "test-user"}
-            token = encode_jwt(payload, "dummy-private-key", kid="provider-key-id")
-
-            with pytest.raises(InvalidAudienceError):
-                decode_jwt(token, "dummy-public-key", issuer=JWT_ISSUER, audience=JWT_AUDIENCE)
-
-    def test_resource_url_in_token_payload(self):
-        """Token with resource URL should contain correct aud claim."""
-        from auth_server.server import JWT_ISSUER, JWT_SELF_SIGNED_KID
-
-        resource_url = "http://localhost/proxy/server123"
-
-        fake_claims = {
-            "iss": JWT_ISSUER,
-            "aud": resource_url,
-            "sub": "test-user",
-            "scope": "server123:read server123:write",
-        }
-        fake_token = "header.payload.sig"
-
-        with (
-            patch("registry_pkgs.core.jwt_utils.encode_jwt", return_value=fake_token),
-            patch("registry_pkgs.core.jwt_utils.decode_jwt", return_value=fake_claims),
-        ):
-            from registry_pkgs.core.jwt_utils import decode_jwt, encode_jwt
-
-            payload = {
-                "iss": JWT_ISSUER,
-                "aud": resource_url,
-                "sub": "test-user",
-                "scope": "server123:read server123:write",
-            }
-            token = encode_jwt(payload, "dummy-private-key", kid=JWT_SELF_SIGNED_KID)
-            claims = decode_jwt(token, "dummy-public-key", issuer=JWT_ISSUER, audience=None)
-
-            assert claims["aud"] == resource_url
-            assert "server123:read" in claims["scope"]
+        with pytest.raises(ValueError):
+            validator.validate_self_signed_token(token)

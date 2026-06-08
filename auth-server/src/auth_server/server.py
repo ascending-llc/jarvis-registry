@@ -29,7 +29,6 @@ logger = logging.getLogger(__name__)
 
 # Configuration for token generation (from settings)
 JWT_ISSUER = settings.jwt_issuer
-JWT_AUDIENCE = settings.jwt_audience
 JWT_SELF_SIGNED_KID = settings.jwt_self_signed_kid
 MAX_TOKEN_LIFETIME_HOURS = settings.max_token_lifetime_hours
 DEFAULT_TOKEN_LIFETIME_HOURS = settings.default_token_lifetime_hours
