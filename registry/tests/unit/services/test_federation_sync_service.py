@@ -15,7 +15,8 @@ from registry.services.federation_sync_service import (
 )
 from registry_pkgs.models import A2AAgent, ExtendedMCPServer, PrincipalType, ResourceType
 from registry_pkgs.models.enums import FederationProviderType, FederationStatus, FederationSyncStatus, RoleBits
-from registry_pkgs.models.extended_acl_entry import ExtendedAclEntry, ExtendedResourceType
+from registry_pkgs.models.extended_access_role import RegistryResourceType
+from registry_pkgs.models.extended_acl_entry import RegistryAclEntry
 from registry_pkgs.models.federation_sync_job import FederationApplySummary
 
 _DEFAULT_USER_OBJECT_ID = PydanticObjectId()
@@ -40,7 +41,7 @@ def federation_sync_service():
 @pytest.fixture(autouse=True)
 def default_empty_access_roles(monkeypatch):
     monkeypatch.setattr(
-        "registry.services.federation_sync_service.ExtendedAccessRole.find",
+        "registry.services.federation_sync_service.RegistryAccessRole.find",
         lambda *args, **kwargs: _FakeQuery([]),
     )
 
@@ -1048,7 +1049,7 @@ def _make_acl_entry(
 ):
     """Helper to create a mock ACL entry for testing."""
     now = datetime.now(UTC)
-    entry = MagicMock(spec=ExtendedAclEntry)
+    entry = MagicMock(spec=RegistryAclEntry)
     entry.id = PydanticObjectId()
     entry.principalType = principal_type
     entry.principalId = principal_id
@@ -1074,11 +1075,11 @@ def _make_access_role(resource_type: str, perm_bits: int, access_role_id: str):
 def _patch_acl_inheritance_storage(
     monkeypatch,
     *,
-    existing_acl_entries: list[ExtendedAclEntry],
-    inserted_entries: list[ExtendedAclEntry],
-    insert_calls: list[list[ExtendedAclEntry]] | None = None,
+    existing_acl_entries: list[RegistryAclEntry],
+    inserted_entries: list[RegistryAclEntry],
+    insert_calls: list[list[RegistryAclEntry]] | None = None,
 ) -> None:
-    class MockExtendedAclEntry:
+    class MockRegistryAclEntry:
         @staticmethod
         def find(query, **kwargs):
             if "$or" in query or "resourceId" in query:
@@ -1095,7 +1096,7 @@ def _patch_acl_inheritance_storage(
             for key, value in kwargs.items():
                 setattr(self, key, value)
 
-    monkeypatch.setattr("registry.services.federation_sync_service.ExtendedAclEntry", MockExtendedAclEntry)
+    monkeypatch.setattr("registry.services.federation_sync_service.RegistryAclEntry", MockRegistryAclEntry)
 
 
 @pytest.mark.asyncio
@@ -1173,7 +1174,7 @@ async def test_apply_sync_plan_inherits_acl_to_unchanged_mcp_and_a2a_resources(
     mcp_id = PydanticObjectId()
     a2a_id = PydanticObjectId()
     federation_acl_entries = [
-        _make_acl_entry(PrincipalType.USER, "kent", ExtendedResourceType.FEDERATION, federation_id, RoleBits.OWNER)
+        _make_acl_entry(PrincipalType.USER, "kent", RegistryResourceType.FEDERATION, federation_id, RoleBits.OWNER)
     ]
     sync_plan = FederationSyncPlan(
         summary=FederationApplySummary(unchangedMcpServers=1, unchangedAgents=1),
@@ -1352,7 +1353,7 @@ async def test_apply_sync_plan_inherits_acl_to_created_updated_and_unchanged_res
     )
 
     federation_acl_entries = [
-        _make_acl_entry(PrincipalType.USER, "kent", ExtendedResourceType.FEDERATION, federation_id, RoleBits.OWNER)
+        _make_acl_entry(PrincipalType.USER, "kent", RegistryResourceType.FEDERATION, federation_id, RoleBits.OWNER)
     ]
 
     sync_plan = FederationSyncPlan(
@@ -1454,7 +1455,7 @@ async def test_get_federation_acl_entries_uses_current_transaction_session(
         find_calls.append({"query": query, "kwargs": kwargs})
         return _FakeQuery([])
 
-    monkeypatch.setattr("registry.services.federation_sync_service.ExtendedAclEntry.find", mock_find)
+    monkeypatch.setattr("registry.services.federation_sync_service.RegistryAclEntry.find", mock_find)
 
     entries, query_success = await federation_sync_service._get_federation_acl_entries(federation_id)
 
@@ -1463,7 +1464,7 @@ async def test_get_federation_acl_entries_uses_current_transaction_session(
     assert find_calls == [
         {
             "query": {
-                "resourceType": ExtendedResourceType.FEDERATION,
+                "resourceType": RegistryResourceType.FEDERATION,
                 "resourceId": federation_id,
                 "principalType": {"$ne": PrincipalType.PUBLIC.value},
                 "principalId": {"$ne": None},
@@ -1481,13 +1482,13 @@ async def test_batch_inherit_acl_normalizes_resource_type_before_existence_check
     federation_id = PydanticObjectId()
     server_id = PydanticObjectId()
     federation_acl_entries = [
-        _make_acl_entry(PrincipalType.USER, "kent", ExtendedResourceType.FEDERATION, federation_id, RoleBits.OWNER)
+        _make_acl_entry(PrincipalType.USER, "kent", RegistryResourceType.FEDERATION, federation_id, RoleBits.OWNER)
     ]
     existing_resource_acl = [
         _make_acl_entry(
             PrincipalType.USER,
             "kent",
-            ExtendedResourceType.MCPSERVER,
+            RegistryResourceType.MCP_SERVER,
             server_id,
             RoleBits.EDITOR,
         )
@@ -1496,7 +1497,7 @@ async def test_batch_inherit_acl_normalizes_resource_type_before_existence_check
 
     monkeypatch.setattr("registry.services.federation_sync_service.get_current_session", lambda: None)
 
-    class MockExtendedAclEntry:
+    class MockRegistryAclEntry:
         @staticmethod
         def find(query, **kwargs):
             if "$or" in query or "resourceId" in query:
@@ -1511,7 +1512,7 @@ async def test_batch_inherit_acl_normalizes_resource_type_before_existence_check
             for key, value in kwargs.items():
                 setattr(self, key, value)
 
-    monkeypatch.setattr("registry.services.federation_sync_service.ExtendedAclEntry", MockExtendedAclEntry)
+    monkeypatch.setattr("registry.services.federation_sync_service.RegistryAclEntry", MockRegistryAclEntry)
 
     await federation_sync_service._batch_inherit_federation_acl(
         federation_acl_entries=federation_acl_entries,
@@ -1529,7 +1530,7 @@ async def test_batch_inherit_acl_rewrites_role_id_to_target_resource_type(
     federation_id = PydanticObjectId()
     server_id = PydanticObjectId()
     federation_editor_role = _make_access_role(
-        ExtendedResourceType.FEDERATION,
+        RegistryResourceType.FEDERATION,
         RoleBits.EDITOR,
         "federation_editor",
     )
@@ -1538,7 +1539,7 @@ async def test_batch_inherit_acl_rewrites_role_id_to_target_resource_type(
         _make_acl_entry(
             PrincipalType.USER,
             "kent",
-            ExtendedResourceType.FEDERATION,
+            RegistryResourceType.FEDERATION,
             federation_id,
             RoleBits.EDITOR,
             role_id=federation_editor_role.id,
@@ -1548,7 +1549,7 @@ async def test_batch_inherit_acl_rewrites_role_id_to_target_resource_type(
 
     monkeypatch.setattr("registry.services.federation_sync_service.get_current_session", lambda: None)
     monkeypatch.setattr(
-        "registry.services.federation_sync_service.ExtendedAccessRole.find",
+        "registry.services.federation_sync_service.RegistryAccessRole.find",
         lambda *args, **kwargs: _FakeQuery([mcp_editor_role]),
     )
     _patch_acl_inheritance_storage(
@@ -1576,7 +1577,7 @@ async def test_batch_inherit_acl_uses_role_id_scoped_to_each_resource_type(
     server_id = PydanticObjectId()
     agent_id = PydanticObjectId()
     federation_editor_role = _make_access_role(
-        ExtendedResourceType.FEDERATION,
+        RegistryResourceType.FEDERATION,
         RoleBits.EDITOR,
         "federation_editor",
     )
@@ -1590,7 +1591,7 @@ async def test_batch_inherit_acl_uses_role_id_scoped_to_each_resource_type(
         _make_acl_entry(
             PrincipalType.USER,
             "kent",
-            ExtendedResourceType.FEDERATION,
+            RegistryResourceType.FEDERATION,
             federation_id,
             RoleBits.EDITOR,
             role_id=federation_editor_role.id,
@@ -1600,7 +1601,7 @@ async def test_batch_inherit_acl_uses_role_id_scoped_to_each_resource_type(
 
     monkeypatch.setattr("registry.services.federation_sync_service.get_current_session", lambda: None)
     monkeypatch.setattr(
-        "registry.services.federation_sync_service.ExtendedAccessRole.find",
+        "registry.services.federation_sync_service.RegistryAccessRole.find",
         lambda *args, **kwargs: _FakeQuery([mcp_editor_role, remote_agent_editor_role]),
     )
     _patch_acl_inheritance_storage(
@@ -1630,7 +1631,7 @@ async def test_batch_inherit_acl_sets_role_id_none_when_target_role_is_missing(
         _make_acl_entry(
             PrincipalType.USER,
             "kent",
-            ExtendedResourceType.FEDERATION,
+            RegistryResourceType.FEDERATION,
             federation_id,
             7,
             role_id=PydanticObjectId(),
@@ -1665,7 +1666,7 @@ async def test_batch_inherit_acl_copies_perm_bits_when_target_role_is_missing(
         _make_acl_entry(
             PrincipalType.USER,
             "kent",
-            ExtendedResourceType.FEDERATION,
+            RegistryResourceType.FEDERATION,
             federation_id,
             7,
             role_id=PydanticObjectId(),
@@ -1701,7 +1702,7 @@ async def test_batch_inherit_acl_insert_only_semantics_are_unchanged_by_role_loo
         _make_acl_entry(
             PrincipalType.USER,
             principal_id,
-            ExtendedResourceType.FEDERATION,
+            RegistryResourceType.FEDERATION,
             federation_id,
             RoleBits.EDITOR,
             role_id=PydanticObjectId(),
@@ -1721,7 +1722,7 @@ async def test_batch_inherit_acl_insert_only_semantics_are_unchanged_by_role_loo
 
     monkeypatch.setattr("registry.services.federation_sync_service.get_current_session", lambda: None)
     monkeypatch.setattr(
-        "registry.services.federation_sync_service.ExtendedAccessRole.find",
+        "registry.services.federation_sync_service.RegistryAccessRole.find",
         lambda *args, **kwargs: _FakeQuery(
             [_make_access_role(ResourceType.MCPSERVER, RoleBits.EDITOR, "mcpServer_editor")]
         ),
@@ -1758,9 +1759,9 @@ async def test_federation_acl_inheritance_scenario_1_empty_resource(
 
     # Federation ACL entries
     federation_acl_entries = [
-        _make_acl_entry(PrincipalType.USER, "kent", ExtendedResourceType.FEDERATION, federation_id, RoleBits.OWNER),
-        _make_acl_entry(PrincipalType.USER, "ryo", ExtendedResourceType.FEDERATION, federation_id, RoleBits.EDITOR),
-        _make_acl_entry(PrincipalType.USER, "celeste", ExtendedResourceType.FEDERATION, federation_id, RoleBits.VIEWER),
+        _make_acl_entry(PrincipalType.USER, "kent", RegistryResourceType.FEDERATION, federation_id, RoleBits.OWNER),
+        _make_acl_entry(PrincipalType.USER, "ryo", RegistryResourceType.FEDERATION, federation_id, RoleBits.EDITOR),
+        _make_acl_entry(PrincipalType.USER, "celeste", RegistryResourceType.FEDERATION, federation_id, RoleBits.VIEWER),
     ]
 
     # Mock: Federation has 3 ACL entries, resource has 0
@@ -1769,11 +1770,11 @@ async def test_federation_acl_inheritance_scenario_1_empty_resource(
     inserted_entries = []
 
     # Create a mock class that has both class methods and constructor
-    class MockExtendedAclEntry:
+    class MockRegistryAclEntry:
         @staticmethod
         def find(query, **kwargs):
             # Check for Federation ACL query
-            if query.get("resourceType") == ExtendedResourceType.FEDERATION:
+            if query.get("resourceType") == RegistryResourceType.FEDERATION:
                 return _FakeQuery(federation_acl_entries)
             # Check for resource ACL query (either $or or single resource filter)
             if "$or" in query or "resourceId" in query:
@@ -1788,7 +1789,7 @@ async def test_federation_acl_inheritance_scenario_1_empty_resource(
             for key, value in kwargs.items():
                 setattr(self, key, value)
 
-    monkeypatch.setattr("registry.services.federation_sync_service.ExtendedAclEntry", MockExtendedAclEntry)
+    monkeypatch.setattr("registry.services.federation_sync_service.RegistryAclEntry", MockRegistryAclEntry)
 
     # Execute
     await federation_sync_service._batch_inherit_federation_acl(
@@ -1817,9 +1818,9 @@ async def test_federation_acl_inheritance_scenario_2_preserve_existing(
     server_id = PydanticObjectId()
 
     federation_acl_entries = [
-        _make_acl_entry(PrincipalType.USER, "kent", ExtendedResourceType.FEDERATION, federation_id, RoleBits.OWNER),
-        _make_acl_entry(PrincipalType.USER, "ryo", ExtendedResourceType.FEDERATION, federation_id, RoleBits.EDITOR),
-        _make_acl_entry(PrincipalType.USER, "celeste", ExtendedResourceType.FEDERATION, federation_id, RoleBits.VIEWER),
+        _make_acl_entry(PrincipalType.USER, "kent", RegistryResourceType.FEDERATION, federation_id, RoleBits.OWNER),
+        _make_acl_entry(PrincipalType.USER, "ryo", RegistryResourceType.FEDERATION, federation_id, RoleBits.EDITOR),
+        _make_acl_entry(PrincipalType.USER, "celeste", RegistryResourceType.FEDERATION, federation_id, RoleBits.VIEWER),
     ]
 
     # Resource already has Alex as owner
@@ -1832,11 +1833,11 @@ async def test_federation_acl_inheritance_scenario_2_preserve_existing(
     inserted_entries = []
 
     # Create a mock class that has both class methods and constructor
-    class MockExtendedAclEntry:
+    class MockRegistryAclEntry:
         @staticmethod
         def find(query, **kwargs):
             # Check for Federation ACL query
-            if query.get("resourceType") == ExtendedResourceType.FEDERATION:
+            if query.get("resourceType") == RegistryResourceType.FEDERATION:
                 return _FakeQuery(federation_acl_entries)
             # Check for resource ACL query (either $or or single resource filter)
             if "$or" in query or "resourceId" in query:
@@ -1851,7 +1852,7 @@ async def test_federation_acl_inheritance_scenario_2_preserve_existing(
             for key, value in kwargs.items():
                 setattr(self, key, value)
 
-    monkeypatch.setattr("registry.services.federation_sync_service.ExtendedAclEntry", MockExtendedAclEntry)
+    monkeypatch.setattr("registry.services.federation_sync_service.RegistryAclEntry", MockRegistryAclEntry)
 
     await federation_sync_service._batch_inherit_federation_acl(
         federation_acl_entries=federation_acl_entries,
@@ -1879,9 +1880,9 @@ async def test_federation_acl_inheritance_scenario_3_higher_permission_preserved
     server_id = PydanticObjectId()
 
     federation_acl_entries = [
-        _make_acl_entry(PrincipalType.USER, "kent", ExtendedResourceType.FEDERATION, federation_id, RoleBits.OWNER),
-        _make_acl_entry(PrincipalType.USER, "ryo", ExtendedResourceType.FEDERATION, federation_id, RoleBits.EDITOR),
-        _make_acl_entry(PrincipalType.USER, "celeste", ExtendedResourceType.FEDERATION, federation_id, RoleBits.VIEWER),
+        _make_acl_entry(PrincipalType.USER, "kent", RegistryResourceType.FEDERATION, federation_id, RoleBits.OWNER),
+        _make_acl_entry(PrincipalType.USER, "ryo", RegistryResourceType.FEDERATION, federation_id, RoleBits.EDITOR),
+        _make_acl_entry(PrincipalType.USER, "celeste", RegistryResourceType.FEDERATION, federation_id, RoleBits.VIEWER),
     ]
 
     # Ryo already has OWNER on the resource
@@ -1894,11 +1895,11 @@ async def test_federation_acl_inheritance_scenario_3_higher_permission_preserved
     inserted_entries = []
 
     # Create a mock class that has both class methods and constructor
-    class MockExtendedAclEntry:
+    class MockRegistryAclEntry:
         @staticmethod
         def find(query, **kwargs):
             # Check for Federation ACL query
-            if query.get("resourceType") == ExtendedResourceType.FEDERATION:
+            if query.get("resourceType") == RegistryResourceType.FEDERATION:
                 return _FakeQuery(federation_acl_entries)
             # Check for resource ACL query (either $or or single resource filter)
             if "$or" in query or "resourceId" in query:
@@ -1913,7 +1914,7 @@ async def test_federation_acl_inheritance_scenario_3_higher_permission_preserved
             for key, value in kwargs.items():
                 setattr(self, key, value)
 
-    monkeypatch.setattr("registry.services.federation_sync_service.ExtendedAclEntry", MockExtendedAclEntry)
+    monkeypatch.setattr("registry.services.federation_sync_service.RegistryAclEntry", MockRegistryAclEntry)
 
     await federation_sync_service._batch_inherit_federation_acl(
         federation_acl_entries=federation_acl_entries,
@@ -1941,9 +1942,9 @@ async def test_federation_acl_inheritance_scenario_4_lower_permission_preserved(
     server_id = PydanticObjectId()
 
     federation_acl_entries = [
-        _make_acl_entry(PrincipalType.USER, "kent", ExtendedResourceType.FEDERATION, federation_id, RoleBits.OWNER),
-        _make_acl_entry(PrincipalType.USER, "ryo", ExtendedResourceType.FEDERATION, federation_id, RoleBits.EDITOR),
-        _make_acl_entry(PrincipalType.USER, "celeste", ExtendedResourceType.FEDERATION, federation_id, RoleBits.VIEWER),
+        _make_acl_entry(PrincipalType.USER, "kent", RegistryResourceType.FEDERATION, federation_id, RoleBits.OWNER),
+        _make_acl_entry(PrincipalType.USER, "ryo", RegistryResourceType.FEDERATION, federation_id, RoleBits.EDITOR),
+        _make_acl_entry(PrincipalType.USER, "celeste", RegistryResourceType.FEDERATION, federation_id, RoleBits.VIEWER),
     ]
 
     # Kent already has EDITOR (lower than OWNER in Federation)
@@ -1956,11 +1957,11 @@ async def test_federation_acl_inheritance_scenario_4_lower_permission_preserved(
     inserted_entries = []
 
     # Create a mock class that has both class methods and constructor
-    class MockExtendedAclEntry:
+    class MockRegistryAclEntry:
         @staticmethod
         def find(query, **kwargs):
             # Check for Federation ACL query
-            if query.get("resourceType") == ExtendedResourceType.FEDERATION:
+            if query.get("resourceType") == RegistryResourceType.FEDERATION:
                 return _FakeQuery(federation_acl_entries)
             # Check for resource ACL query (either $or or single resource filter)
             if "$or" in query or "resourceId" in query:
@@ -1975,7 +1976,7 @@ async def test_federation_acl_inheritance_scenario_4_lower_permission_preserved(
             for key, value in kwargs.items():
                 setattr(self, key, value)
 
-    monkeypatch.setattr("registry.services.federation_sync_service.ExtendedAclEntry", MockExtendedAclEntry)
+    monkeypatch.setattr("registry.services.federation_sync_service.RegistryAclEntry", MockRegistryAclEntry)
 
     await federation_sync_service._batch_inherit_federation_acl(
         federation_acl_entries=federation_acl_entries,
@@ -2000,11 +2001,11 @@ async def test_federation_acl_inheritance_validates_principal_id(
 
     # Create ACL entries, including one with None principalId
     valid_entry = _make_acl_entry(
-        PrincipalType.USER, "kent", ExtendedResourceType.FEDERATION, federation_id, RoleBits.OWNER
+        PrincipalType.USER, "kent", RegistryResourceType.FEDERATION, federation_id, RoleBits.OWNER
     )
 
     invalid_entry = _make_acl_entry(
-        PrincipalType.USER, "invalid", ExtendedResourceType.FEDERATION, federation_id, RoleBits.EDITOR
+        PrincipalType.USER, "invalid", RegistryResourceType.FEDERATION, federation_id, RoleBits.EDITOR
     )
     invalid_entry.principalId = None  # Simulate invalid entry
 
@@ -2015,10 +2016,10 @@ async def test_federation_acl_inheritance_validates_principal_id(
     inserted_entries = []
 
     # Create a mock class that has both class methods and constructor
-    class MockExtendedAclEntry:
+    class MockRegistryAclEntry:
         @staticmethod
         def find(query, **kwargs):
-            if query.get("resourceType") == ExtendedResourceType.FEDERATION:
+            if query.get("resourceType") == RegistryResourceType.FEDERATION:
                 return _FakeQuery(federation_acl_entries)
             if "$or" in query or "resourceId" in query:
                 return _FakeQuery([])
@@ -2032,7 +2033,7 @@ async def test_federation_acl_inheritance_validates_principal_id(
             for key, value in kwargs.items():
                 setattr(self, key, value)
 
-    monkeypatch.setattr("registry.services.federation_sync_service.ExtendedAclEntry", MockExtendedAclEntry)
+    monkeypatch.setattr("registry.services.federation_sync_service.RegistryAclEntry", MockRegistryAclEntry)
 
     await federation_sync_service._batch_inherit_federation_acl(
         federation_acl_entries=federation_acl_entries,
@@ -2054,9 +2055,9 @@ async def test_batch_inherit_acl_uses_batched_insert(federation_sync_service: Fe
 
     # Create 3 federation ACL entries
     federation_acl_entries = [
-        _make_acl_entry(PrincipalType.USER, "user1", ExtendedResourceType.FEDERATION, federation_id, RoleBits.OWNER),
-        _make_acl_entry(PrincipalType.USER, "user2", ExtendedResourceType.FEDERATION, federation_id, RoleBits.EDITOR),
-        _make_acl_entry(PrincipalType.USER, "user3", ExtendedResourceType.FEDERATION, federation_id, RoleBits.VIEWER),
+        _make_acl_entry(PrincipalType.USER, "user1", RegistryResourceType.FEDERATION, federation_id, RoleBits.OWNER),
+        _make_acl_entry(PrincipalType.USER, "user2", RegistryResourceType.FEDERATION, federation_id, RoleBits.EDITOR),
+        _make_acl_entry(PrincipalType.USER, "user3", RegistryResourceType.FEDERATION, federation_id, RoleBits.VIEWER),
     ]
 
     # Create 200 resources (will generate 600 ACL entries, split into 2 batches)
@@ -2067,10 +2068,10 @@ async def test_batch_inherit_acl_uses_batched_insert(federation_sync_service: Fe
     insert_calls = []
 
     # Create a mock class that has both class methods and constructor
-    class MockExtendedAclEntry:
+    class MockRegistryAclEntry:
         @staticmethod
         def find(query, **kwargs):
-            if query.get("resourceType") == ExtendedResourceType.FEDERATION:
+            if query.get("resourceType") == RegistryResourceType.FEDERATION:
                 return _FakeQuery(federation_acl_entries)
             if "$or" in query or "resourceId" in query:
                 return _FakeQuery([])  # No existing ACL
@@ -2084,7 +2085,7 @@ async def test_batch_inherit_acl_uses_batched_insert(federation_sync_service: Fe
             for key, value in kwargs.items():
                 setattr(self, key, value)
 
-    monkeypatch.setattr("registry.services.federation_sync_service.ExtendedAclEntry", MockExtendedAclEntry)
+    monkeypatch.setattr("registry.services.federation_sync_service.RegistryAclEntry", MockRegistryAclEntry)
 
     await federation_sync_service._batch_inherit_federation_acl(
         federation_acl_entries=federation_acl_entries,
@@ -2108,17 +2109,17 @@ async def test_batch_inherit_acl_raises_after_failure(federation_sync_service: F
     server_id = PydanticObjectId()
 
     federation_acl_entries = [
-        _make_acl_entry(PrincipalType.USER, "kent", ExtendedResourceType.FEDERATION, federation_id, RoleBits.OWNER),
+        _make_acl_entry(PrincipalType.USER, "kent", RegistryResourceType.FEDERATION, federation_id, RoleBits.OWNER),
     ]
 
     monkeypatch.setattr("registry.services.federation_sync_service.get_current_session", lambda: None)
 
     def mock_find(query, **kwargs):
-        if query.get("resourceType") == ExtendedResourceType.FEDERATION:
+        if query.get("resourceType") == RegistryResourceType.FEDERATION:
             return _FakeQuery(federation_acl_entries)
         raise Exception("Database connection error")
 
-    monkeypatch.setattr("registry.services.federation_sync_service.ExtendedAclEntry.find", mock_find)
+    monkeypatch.setattr("registry.services.federation_sync_service.RegistryAclEntry.find", mock_find)
 
     with pytest.raises(RuntimeError, match="ACL inheritance failed"):
         await federation_sync_service._batch_inherit_federation_acl(

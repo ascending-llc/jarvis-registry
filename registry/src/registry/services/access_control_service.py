@@ -8,13 +8,13 @@ from fastapi import status as http_status
 
 from registry_pkgs.database.decorators import get_current_session
 from registry_pkgs.models import (
-    ExtendedAccessRole,
     PrincipalType,
+    RegistryAccessRole,
     User,
 )
 from registry_pkgs.models.enums import PermissionBits
-from registry_pkgs.models.extended_access_role import ExtendedAccessRoleResourceType
-from registry_pkgs.models.extended_acl_entry import ExtendedAclEntry, ExtendedResourceType
+from registry_pkgs.models.extended_access_role import RegistryResourceType
+from registry_pkgs.models.extended_acl_entry import RegistryAclEntry
 
 from ..schemas.acl_schema import PermissionPrincipalOut, PrincipalDetailOut, ResourcePermissions, RoleOut
 from .group_service import GroupService
@@ -22,14 +22,14 @@ from .user_service import UserService
 
 logger = logging.getLogger(__name__)
 
-_REGISTRY_ROLE_RESOURCE_TYPES = [rt.value for rt in ExtendedAccessRoleResourceType]
+_REGISTRY_ROLE_RESOURCE_TYPES = [rt.value for rt in RegistryResourceType]
 
 
 async def load_role_cache() -> dict[tuple[str, int], PydanticObjectId]:
     """Load the static ACL role catalog into an in-memory map keyed by (resourceType, permBits)."""
     cache: dict[tuple[str, int], PydanticObjectId] = {}
     try:
-        roles = await ExtendedAccessRole.find({"resourceType": {"$in": _REGISTRY_ROLE_RESOURCE_TYPES}}).to_list()
+        roles = await RegistryAccessRole.find({"resourceType": {"$in": _REGISTRY_ROLE_RESOURCE_TYPES}}).to_list()
         for role in roles:
             key = (str(role.resourceType), role.permBits)
             if key in cache:
@@ -90,10 +90,10 @@ class ACLService:
         resource_id: PydanticObjectId,
         role_id: PydanticObjectId | None,
         perm_bits: int,
-    ) -> ExtendedAclEntry:
+    ) -> RegistryAclEntry:
         session = get_current_session()
 
-        acl_entry = await ExtendedAclEntry.find_one(
+        acl_entry = await RegistryAclEntry.find_one(
             {
                 "principalType": principal_type,
                 "principalId": principal_id,
@@ -111,10 +111,10 @@ class ACLService:
             await acl_entry.save(session=session)
             return acl_entry
 
-        new_entry = ExtendedAclEntry(
+        new_entry = RegistryAclEntry(
             principalType=PrincipalType(principal_type),
             principalId=principal_id,
-            resourceType=ExtendedResourceType(resource_type),
+            resourceType=RegistryResourceType(resource_type),
             resourceId=resource_id,
             roleId=role_id,
             permBits=perm_bits,
@@ -143,7 +143,7 @@ class ACLService:
         resource_type: str,
         resource_id: PydanticObjectId,
         perm_bits: int,
-    ) -> ExtendedAclEntry:
+    ) -> RegistryAclEntry:
         """
         Grant ACL permission to a principal (user or group) for a specific resource.
 
@@ -160,7 +160,7 @@ class ACLService:
                 perm_bits (int): Permission bits to assign.
 
         Returns:
-                ExtendedAclEntry: The upserted or newly created ACL entry.
+                RegistryAclEntry: The upserted or newly created ACL entry.
 
         Raises:
                 ValueError: If required parameters are missing/invalid, if a PUBLIC
@@ -201,7 +201,7 @@ class ACLService:
             if perm_bits_to_delete:
                 query["permBits"] = {"$lte": perm_bits_to_delete}
 
-            result = await ExtendedAclEntry.find(query).delete(session=session)
+            result = await RegistryAclEntry.find(query).delete(session=session)
             if result is None:
                 return 0
 
@@ -240,7 +240,7 @@ class ACLService:
                 "principalType": principal_type,
                 "principalId": principal_id,
             }
-            result = await ExtendedAclEntry.find(query).delete(session=session)
+            result = await RegistryAclEntry.find(query).delete(session=session)
             if result is None:
                 return 0
 
@@ -293,7 +293,7 @@ class ACLService:
         Returns structured data including principal information and public status.
         """
         try:
-            acl_entries = await ExtendedAclEntry.find(
+            acl_entries = await RegistryAclEntry.find(
                 {"resourceType": resource_type, "resourceId": resource_id}
             ).to_list()
 
@@ -346,7 +346,7 @@ class ACLService:
         """
         try:
             acl_entries = (
-                await ExtendedAclEntry.find(
+                await RegistryAclEntry.find(
                     {
                         "resourceType": resource_type,
                         "resourceId": resource_id,
@@ -395,7 +395,7 @@ class ACLService:
             return result
         try:
             acl_entries = (
-                await ExtendedAclEntry.find(
+                await RegistryAclEntry.find(
                     {
                         "resourceType": resource_type,
                         "resourceId": {"$in": resource_ids},
@@ -483,7 +483,7 @@ class ACLService:
                 Returns an empty list on error.
         """
         try:
-            acl_entries = await ExtendedAclEntry.find(
+            acl_entries = await RegistryAclEntry.find(
                 {
                     "resourceType": resource_type,
                     "$or": [
@@ -517,7 +517,7 @@ class ACLService:
         Returns:
             List of roles (roleId, name, description) in ascending permission order
         """
-        roles = await ExtendedAccessRole.find({"resourceType": resource_type}).sort([("permBits", 1)]).to_list()
+        roles = await RegistryAccessRole.find({"resourceType": resource_type}).sort([("permBits", 1)]).to_list()
         return [
             RoleOut(
                 roleId=role.id,
@@ -540,7 +540,7 @@ class ACLService:
         Raises:
             HTTPException: 409 if the update would result in no owners remaining
         """
-        current_acl_entries = await ExtendedAclEntry.find(
+        current_acl_entries = await RegistryAclEntry.find(
             {"resourceType": resource_type, "resourceId": resource_id}
         ).to_list()
 
