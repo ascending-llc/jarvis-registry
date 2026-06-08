@@ -3,7 +3,7 @@ import { MagnifyingGlassIcon, QuestionMarkCircleIcon, UserIcon, XMarkIcon } from
 import type React from 'react';
 import { Fragment, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { HiOutlineCheck, HiOutlineChevronDown, HiOutlineShieldCheck, HiOutlineUsers } from 'react-icons/hi2';
+import { HiOutlineCheck, HiOutlineChevronDown, HiOutlineUsers } from 'react-icons/hi2';
 import { RiGlobalLine } from 'react-icons/ri';
 import IconButton from '@/components/IconButton';
 import type { Role } from '@/services/acl/type';
@@ -33,7 +33,7 @@ export const RoleDropdown: React.FC<RoleDropdownProps> = ({
   disabled = false,
 }) => {
   const selectedRoleName = getRoleDisplayName(
-    roles.find(r => r.accessRoleId === value),
+    roles.find(r => r.roleId === value),
     value,
   );
   const buttonRef = useRef<HTMLButtonElement>(null);
@@ -84,7 +84,7 @@ export const RoleDropdown: React.FC<RoleDropdownProps> = ({
                   >
                     {roles.map(option => (
                       <Listbox.Option
-                        key={option.accessRoleId}
+                        key={option.roleId}
                         className={({ active }) =>
                           `relative cursor-pointer select-none rounded-md py-2.5 pl-9 pr-3 transition-colors ${
                             active
@@ -92,7 +92,7 @@ export const RoleDropdown: React.FC<RoleDropdownProps> = ({
                               : 'text-[var(--jarvis-text)]'
                           }`
                         }
-                        value={option.accessRoleId}
+                        value={option.roleId}
                       >
                         {({ selected }) => (
                           <>
@@ -204,7 +204,7 @@ interface PermissionListProps {
 }
 
 export const PermissionList: React.FC<PermissionListProps> = ({ permissions, roles, resourceLabel = 'MCP Server' }) => {
-  const ownerRoleId = roles[roles.length - 1]?.accessRoleId ?? '';
+  const ownerRoleId = roles[roles.length - 1]?.roleId ?? '';
 
   return (
     <div className='rounded-xl border border-[color:var(--jarvis-border)] bg-[var(--jarvis-card)]'>
@@ -218,8 +218,7 @@ export const PermissionList: React.FC<PermissionListProps> = ({ permissions, rol
         <ul className='divide-y divide-[color:var(--jarvis-border)]'>
           {permissions.list.map(user => {
             const isLastOwner =
-              user.accessRoleId === ownerRoleId &&
-              permissions.list.filter(p => p.accessRoleId === ownerRoleId).length <= 1;
+              user.roleId === ownerRoleId && permissions.list.filter(p => p.roleId === ownerRoleId).length <= 1;
 
             return (
               <li key={`${user.principalType}:${user.principalId}`} className='flex items-center justify-between p-4'>
@@ -243,7 +242,7 @@ export const PermissionList: React.FC<PermissionListProps> = ({ permissions, rol
 
                 <div className='flex items-center gap-3 flex-shrink-0'>
                   <RoleDropdown
-                    value={user.accessRoleId}
+                    value={user.roleId}
                     onChange={(value: string) => permissions.changeRole(user.principalType, user.principalId, value)}
                     roles={roles}
                     resourceLabel={resourceLabel}
@@ -276,11 +275,10 @@ export const PermissionList: React.FC<PermissionListProps> = ({ permissions, rol
 
 interface PublicShareProps {
   publicShare: PublicShareState;
-  roles: Role[];
   resourceLabel?: string;
 }
 
-export const PublicShare: React.FC<PublicShareProps> = ({ publicShare, roles, resourceLabel = 'MCP Server' }) => {
+export const PublicShare: React.FC<PublicShareProps> = ({ publicShare, resourceLabel = 'MCP Server' }) => {
   return (
     <div className='flex flex-col gap-4 mb-6'>
       <div className='flex items-center justify-between'>
@@ -320,22 +318,6 @@ export const PublicShare: React.FC<PublicShareProps> = ({ publicShare, roles, re
           />
         </Switch>
       </div>
-
-      {publicShare.enabled && (
-        <div className='flex items-center justify-between'>
-          <div className='flex items-center gap-2'>
-            <HiOutlineShieldCheck className='h-5 w-5 text-[var(--jarvis-primary-text)]' />
-            <span className='font-semibold text-[var(--jarvis-text)]'>Permission level for everyone</span>
-          </div>
-          <RoleDropdown
-            value={publicShare.role}
-            onChange={publicShare.setRole}
-            roles={roles}
-            resourceLabel={resourceLabel}
-            direction='up'
-          />
-        </div>
-      )}
     </div>
   );
 };

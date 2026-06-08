@@ -11,7 +11,7 @@ export interface UserPermission {
   principalId: string;
   name: string;
   email: string;
-  accessRoleId: string;
+  roleId: string;
   source?: string | null;
   idOnTheSource?: string | null;
   isExisting: boolean;
@@ -35,8 +35,6 @@ export interface PermissionsState {
 export interface PublicShareState {
   enabled: boolean;
   setEnabled: (val: boolean) => void;
-  role: string;
-  setRole: (val: string) => void;
 }
 
 export interface ShareModalState {
@@ -51,7 +49,9 @@ export interface ShareModalState {
 // ── Utils ──
 
 export const getRoleDisplayName = (role?: Role, rawId?: string) => {
-  if (!role) return rawId || 'Unknown Role';
+  // An unmatched/empty roleId means the entry has no assigned role (historical
+  // null roleId). Show "Unassigned" rather than silently implying the lowest role.
+  if (!role) return rawId ? 'Unknown Role' : 'Unassigned';
   const nameLabel = role.name.toLowerCase();
   if (nameLabel.includes('owner')) return 'Owner';
   if (nameLabel.includes('editor')) return 'Editor';
@@ -69,12 +69,15 @@ export const getRoleDisplayDesc = (role?: Role) => {
   return role.description;
 };
 
-const toUserPermission = (principal: Principal, defaultRoleId: string): UserPermission => ({
+// A historical entry may have no roleId. Keep it empty ("Unassigned") instead of
+// coercing to the lowest role — coercing would both mislabel the row and, on save,
+// silently rewrite the principal down to that role (e.g. demote an owner to viewer).
+const toUserPermission = (principal: Principal): UserPermission => ({
   principalType: principal.type,
   principalId: principal.id,
   name: principal.name || principal.id,
   email: principal.email || '',
-  accessRoleId: principal.accessRoleId || defaultRoleId,
+  roleId: principal.roleId || '',
   source: principal.source,
   idOnTheSource: principal.idOnTheSource,
   isExisting: true,
@@ -96,8 +99,6 @@ export const useShareModal = ({
 
   const [shareWithEveryone, setShareWithEveryone] = useState(false);
   const initialShareRef = useRef(false);
-  const [publicRole, setPublicRole] = useState('');
-  const initialPublicRoleRef = useRef('');
 
   const [loadingPermissions, setLoadingPermissions] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -112,27 +113,12 @@ export const useShareModal = ({
         SERVICES.ACL.getResourcePermissions(resourceType, resourceId),
       ]);
 
-      const sortedRoles = [...rolesData].sort((a, b) => a.permBits - b.permBits);
-      setRoles(sortedRoles);
-      const defaultRoleId = sortedRoles[0]?.accessRoleId ?? '';
+      // Backend returns roles in ascending permission order; use as-is.
+      setRoles(rolesData);
 
       const list: UserPermission[] = [];
-      let foundPublicRole = false;
-
       for (const principal of permsData.principals || []) {
-        if (principal.type === 'public') {
-          const roleId = principal.accessRoleId || defaultRoleId;
-          setPublicRole(roleId);
-          initialPublicRoleRef.current = roleId;
-          foundPublicRole = true;
-          continue;
-        }
-        list.push(toUserPermission(principal, defaultRoleId));
-      }
-
-      if (!foundPublicRole) {
-        setPublicRole(defaultRoleId);
-        initialPublicRoleRef.current = defaultRoleId;
+        list.push(toUserPermission(principal));
       }
 
       const isPublic = Boolean(permsData.public);
@@ -164,7 +150,7 @@ export const useShareModal = ({
     (result: PrincipalSearchResult) => {
       const rawType = result.principalType || 'user';
       const rawId = result.principalId || '';
-      const defaultRoleId = roles[0]?.accessRoleId ?? '';
+      const defaultRoleId = roles[0]?.roleId ?? '';
 
       setPermissions(prev => [
         ...prev,
@@ -173,7 +159,7 @@ export const useShareModal = ({
           principalId: rawId,
           name: result.name || rawId,
           email: result.email || '',
-          accessRoleId: defaultRoleId,
+          roleId: defaultRoleId,
           source: result.source,
           idOnTheSource: result.idOnTheSource,
           isExisting: false,
@@ -206,7 +192,7 @@ export const useShareModal = ({
             email: target.email,
             source: target.source,
             idOnTheSource: target.idOnTheSource,
-            accessRoleId: target.accessRoleId,
+            roleId: target.roleId,
             isExisting: target.isExisting,
           },
         ]);
@@ -217,11 +203,11 @@ export const useShareModal = ({
 
   const handleRoleChange = useCallback(
     (principalType: string, principalId: string, newRoleId: string) => {
-      const ownerRoleId = roles[roles.length - 1]?.accessRoleId ?? '';
+      const ownerRoleId = roles[roles.length - 1]?.roleId ?? '';
 
       const target = permissions.find(p => p.principalType === principalType && p.principalId === principalId);
-      if (target?.accessRoleId === ownerRoleId && newRoleId !== ownerRoleId) {
-        const ownerCount = permissions.filter(p => p.accessRoleId === ownerRoleId).length;
+      if (target?.roleId === ownerRoleId && newRoleId !== ownerRoleId) {
+        const ownerCount = permissions.filter(p => p.roleId === ownerRoleId).length;
         if (ownerCount <= 1) {
           showToast?.('At least one owner is required.', 'error');
           return;
@@ -230,7 +216,7 @@ export const useShareModal = ({
 
       setPermissions(prev =>
         prev.map(p =>
-          p.principalType === principalType && p.principalId === principalId ? { ...p, accessRoleId: newRoleId } : p,
+          p.principalType === principalType && p.principalId === principalId ? { ...p, roleId: newRoleId } : p,
         ),
       );
     },
@@ -252,35 +238,36 @@ export const useShareModal = ({
   const handleSave = useCallback(async () => {
     setSaving(true);
     try {
-      const ownerRoleId = roles[roles.length - 1]?.accessRoleId ?? '';
-      const ownerCount = permissions.filter(p => p.accessRoleId === ownerRoleId).length;
-      if (ownerRoleId && ownerCount < 1) {
+      const ownerRoleId = roles[roles.length - 1]?.roleId ?? '';
+      const ownerCount = permissions.filter(p => p.roleId === ownerRoleId).length;
+      // Unassigned principals (historical null roleId) can't be counted client-side;
+      // defer the owner-retention decision to the server (returns 409) rather than
+      // false-blocking an otherwise valid save here.
+      const hasUnassigned = permissions.some(p => !p.roleId);
+      if (ownerRoleId && ownerCount < 1 && !hasUnassigned) {
         showToast?.('At least one owner is required.', 'error');
         return;
       }
 
-      const updated: UpdatePrincipal[] = permissions.map(p => ({
-        principalType: p.principalType,
-        principalId: p.principalId,
-        name: p.name,
-        email: p.email,
-        source: p.source,
-        idOnTheSource: p.idOnTheSource,
-        accessRoleId: p.accessRoleId,
-        isExisting: p.isExisting,
-      }));
+      // Skip principals with no assigned role so an untouched "Unassigned" row is
+      // not silently written down to a role it never had.
+      const updated: UpdatePrincipal[] = permissions
+        .filter(p => p.roleId)
+        .map(p => ({
+          principalType: p.principalType,
+          principalId: p.principalId,
+          name: p.name,
+          email: p.email,
+          source: p.source,
+          idOnTheSource: p.idOnTheSource,
+          roleId: p.roleId,
+          isExisting: p.isExisting,
+        }));
 
-      const publicChanged =
-        shareWithEveryone !== initialShareRef.current || publicRole !== initialPublicRoleRef.current;
-
-      if (shareWithEveryone && publicChanged) {
-        updated.push({
-          principalType: 'public',
-          principalId: '*',
-          name: 'public',
-          accessRoleId: publicRole,
-        });
-      }
+      // Public access is a binary toggle handled entirely by the `public` field
+      // (backend hard-wires it to VIEW). A public principal is never written into
+      // `updated` — doing so is rejected with 400.
+      const publicChanged = shareWithEveryone !== initialShareRef.current;
 
       await SERVICES.ACL.updateResourcePermissions(resourceType, resourceId, {
         ...(publicChanged ? { public: shareWithEveryone } : {}),
@@ -295,17 +282,7 @@ export const useShareModal = ({
     } finally {
       setSaving(false);
     }
-  }, [
-    permissions,
-    roles,
-    shareWithEveryone,
-    publicRole,
-    removedPermissions,
-    resourceType,
-    resourceId,
-    showToast,
-    onClose,
-  ]);
+  }, [permissions, roles, shareWithEveryone, removedPermissions, resourceType, resourceId, showToast, onClose]);
 
   return {
     search,
@@ -318,8 +295,6 @@ export const useShareModal = ({
     publicShare: {
       enabled: shareWithEveryone,
       setEnabled: setShareWithEveryone,
-      role: publicRole,
-      setRole: setPublicRole,
     },
     roles,
     saving,
