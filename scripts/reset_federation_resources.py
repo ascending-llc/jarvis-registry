@@ -34,8 +34,8 @@ from registry.container import RegistryContainer
 from registry.core.config import Settings
 from registry_pkgs.database import init_mongodb
 from registry_pkgs.database.redis_client import close_redis_client, create_redis_client
-from registry_pkgs.models import A2AAgent, ExtendedAclEntry, ExtendedMCPServer
-from registry_pkgs.models.extended_acl_entry import ExtendedResourceType
+from registry_pkgs.models import A2AAgent, ExtendedMCPServer, RegistryAclEntry
+from registry_pkgs.models.extended_access_role import RegistryResourceType
 from registry_pkgs.models.federation import Federation
 from registry_pkgs.vector.client import create_database_client
 
@@ -49,7 +49,7 @@ class ResetPlan:
     federation: Any
     mcp_servers: list[ExtendedMCPServer] = field(default_factory=list)
     a2a_agents: list[A2AAgent] = field(default_factory=list)
-    acl_entries: list[ExtendedAclEntry] = field(default_factory=list)
+    acl_entries: list[RegistryAclEntry] = field(default_factory=list)
 
     @property
     def total_resources(self) -> int:
@@ -78,26 +78,26 @@ async def collect_reset_plan(federation_id: str) -> ResetPlan:
     mcp_ids = [s.id for s in mcp_servers if s.id is not None]
     a2a_ids = [a.id for a in a2a_agents if a.id is not None]
 
-    acl_entries: list[ExtendedAclEntry] = []
+    acl_entries: list[RegistryAclEntry] = []
     if mcp_ids or a2a_ids:
         acl_filters: list[dict[str, Any]] = []
         if mcp_ids:
             acl_filters.append(
                 {
-                    "resourceType": ExtendedResourceType.MCPSERVER.value,
+                    "resourceType": RegistryResourceType.MCP_SERVER.value,
                     "resourceId": {"$in": mcp_ids},
                 }
             )
         if a2a_ids:
             acl_filters.append(
                 {
-                    "resourceType": ExtendedResourceType.REMOTE_AGENT.value,
+                    "resourceType": RegistryResourceType.REMOTE_AGENT.value,
                     "resourceId": {"$in": a2a_ids},
                 }
             )
         # `$or` with a single clause works fine in Mongo, but unwrap for clarity.
         query = acl_filters[0] if len(acl_filters) == 1 else {"$or": acl_filters}
-        acl_entries = await ExtendedAclEntry.find(query).to_list()
+        acl_entries = await RegistryAclEntry.find(query).to_list()
 
     return ResetPlan(
         federation=federation,
@@ -157,7 +157,7 @@ async def apply_reset(
         acl_ids = [entry.id for entry in plan.acl_entries if entry.id is not None]
         if acl_ids:
             try:
-                result = await ExtendedAclEntry.find({"_id": {"$in": acl_ids}}).delete()
+                result = await RegistryAclEntry.find({"_id": {"$in": acl_ids}}).delete()
                 outcome.acl_deleted = _coerce_deleted_count(result, fallback=len(acl_ids))
             except Exception as exc:
                 outcome.errors.append(f"acl bulk delete: {exc}")
