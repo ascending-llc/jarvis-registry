@@ -5,7 +5,8 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.routing import compile_path, get_route_path
 
-from registry_pkgs.core.jwt_utils import ExpiredSignatureError, InvalidTokenError, decode_jwt, get_token_kid
+from registry_pkgs.core.jwt_tokens import verify_managed_agent_token
+from registry_pkgs.core.jwt_utils import ExpiredSignatureError, InvalidTokenError
 from registry_pkgs.core.scopes import map_groups_to_scopes
 
 from ..auth.dependencies import UserContextDict
@@ -76,6 +77,10 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
         self.scopes_config = settings.scopes_config
         logger.info(f"Scopes config loaded with {len(self.scopes_config.get('group_mappings', {}))} group mappings")
 
+    def _is_proxy_route(self, path: str) -> bool:
+        """Single source of truth for the proxy/non-proxy split."""
+        return path.startswith("/proxy/")
+
     def _compile_patterns(self, patterns: list[str]) -> list[tuple]:
         """
         Compile path patterns into Starlette route matchers
@@ -108,7 +113,7 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
         # Use context manager for clean metrics tracking
         async with AuthMetricsContext() as auth_ctx:
             try:
-                user_context = await self._authenticate(request)
+                user_context = await self._authenticate(request, path)
                 request.state.user = user_context
                 request.state.is_authenticated = True
                 auth_source = user_context.get("auth_source", "unknown")
@@ -127,18 +132,19 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
 
                 headers = {"Connection": "close"}
 
-                if path.startswith("/proxy/"):
-                    # Add WWW-Authenticate header for MCP related routes (both `mcpgw` and dynamic catch-all),
-                    # so that AI agents can perform Dynamic Client Registration.
+                if self._is_proxy_route(path):
+                    # Proxy routes are Bearer-authenticated (managed-agent tokens). Advertise a
+                    # Bearer challenge with resource metadata so AI agents can perform Dynamic
+                    # Client Registration.
                     headers["WWW-Authenticate"] = (
                         f'Bearer realm="{settings.jarvis_realm}", '
                         f'resource_metadata="{settings.jwt_issuer}/.well-known/oauth-protected-resource{settings.service_base_path}{path}", '
                         'scope="mcp-proxy-ops"'
                     )
-                else:
-                    # For non-MCP related routes, the only caller is our frontend, which knows the auth-server routes.
-                    # Therefore we don't include resource_metadata here.
-                    headers["WWW-Authenticate"] = f'Bearer realm="{settings.jarvis_realm}"'
+                # Non-proxy routes are cookie-authenticated (CRUD-session cookie). Cookie/session
+                # auth has no RFC 7235 challenge scheme, and the only caller is our frontend, which
+                # handles a bare 401 by redirecting to login — so we deliberately advertise no
+                # (misleading) Bearer challenge here.
 
                 return JSONResponse(status_code=401, content={"detail": str(e)}, headers=headers)
 
@@ -160,73 +166,56 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
                 return True
         return False
 
-    async def _authenticate(self, request: Request) -> UserContextDict:
-        """
-        Unified authentication logic (simple and efficient)
+    async def _authenticate(self, request: Request, path: str) -> UserContextDict:
+        """Route-based authentication dispatch.
 
-        1. Authenticated paths (including /api/auth/me, /api/servers/*, /proxy/*, /api/mcp/*) → JWT or Session Auth
-        2. Other paths → Session Auth
+        - Proxy routes (``/proxy/*``): the ONLY accepted credential is a managed-agent
+          Bearer token in the Authorization header. The session cookie is never consulted.
+        - Every other authenticated route: the ONLY accepted credential is the
+          CRUD-session cookie. The Authorization header is never consulted.
+
+        This hard split is what stops a leaked managed-agent token (e.g. via the DCR-CSRF
+        path) from being replayed as a dashboard session cookie, and vice versa.
         """
-        # Try JWT first, then fall back to session auth
-        user_context = self._try_jwt_auth(request)
-        if user_context:
-            return user_context
+        if self._is_proxy_route(path):
+            user_context = self._try_jwt_auth(request)
+            if user_context:
+                return user_context
+            raise AuthenticationError("Managed-agent Bearer token required for proxy routes")
+
         user_context = await self._try_session_auth(request)
         if user_context:
             return user_context
-        raise AuthenticationError("JWT or session authentication required")
+        raise AuthenticationError("Session authentication required")
 
     def _try_jwt_auth(self, request: Request) -> UserContextDict | None:
-        """JWT token authentication for /api/servers endpoints"""
+        """Managed-agent Bearer-token authentication for proxy routes"""
         try:
             # Get Authorization header
             auth_header = request.headers.get("Authorization")
             if not auth_header:
-                logger.debug("Missing Authorization header for JWT auth")
+                logger.debug("Missing Authorization header for managed-agent auth")
                 return None
 
-            access_token = auth_header.split(" ")[1]
+            parts = auth_header.split(" ", 1)
+            access_token = parts[1].strip() if len(parts) == 2 else ""
             if not access_token:
-                logger.debug("Empty JWT token after split")
+                logger.debug("Empty Bearer token after split")
                 return None
 
-            # Extract kid from header first
+            # Validate as a managed-agent (proxy) token. Wrong class/audience/kid/client_id
+            # all raise InvalidTokenError.
             try:
-                kid = get_token_kid(access_token)
-            except Exception as e:
-                logger.debug(f"Failed to decode JWT header: {e}")
-                return None
-
-            # Check if this is our self-signed token; reject tokens with an unrecognised explicit kid
-            if kid and kid != settings.jwt_self_signed_kid:
-                logger.debug(f"JWT token has wrong kid: {kid}, expected: {settings.jwt_self_signed_kid}")
-                return None
-
-            # Validate and decode token
-            try:
-                # For self-signed tokens (kid='mcp-self-signed'), skip audience validation
-                # because the audience is now the resource URL (RFC 8707 Resource Indicators)
-                # which varies per endpoint (/proxy/mcpgw, /proxy/server2, etc.)
-                # Issuer validation provides sufficient security for self-signed tokens.
-                is_self_signed_token = kid == settings.jwt_self_signed_kid
-
-                if is_self_signed_token:
-                    logger.info("Skipping audience validation for self-signed token (RFC 8707 Resource Indicators)")
-
-                claims = decode_jwt(
-                    access_token,
-                    settings.jwt_public_key,
-                    issuer=settings.jwt_issuer,
-                    audience=None if is_self_signed_token else settings.jwt_audience,
-                )
+                claims = verify_managed_agent_token(settings.jwt_token_config, access_token)
                 logger.info(
-                    f"JWT claims validated: sub={claims.get('sub')}, aud={claims.get('aud')}, scope={claims.get('scope')}"
+                    f"Managed-agent token validated: sub={claims.get('sub')}, "
+                    f"aud={claims.get('aud')}, client_id={claims.get('client_id')}"
                 )
             except ExpiredSignatureError:
-                logger.debug("JWT token has expired")
+                logger.debug("Managed-agent token has expired")
                 return None
             except InvalidTokenError as e:
-                logger.debug(f"Invalid JWT token: {e}")
+                logger.debug(f"Invalid managed-agent token: {e}")
                 return None
 
             # Extract user information from claims
