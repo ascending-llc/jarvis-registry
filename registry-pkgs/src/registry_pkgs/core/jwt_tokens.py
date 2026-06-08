@@ -1,4 +1,3 @@
-import logging
 from typing import Any
 
 from .config import JwtTokenConfig
@@ -9,8 +8,6 @@ from .jwt_utils import (
     encode_jwt,
     get_token_kid,
 )
-
-logger = logging.getLogger(__name__)
 
 TOKEN_CLASS_CLAIM = "token_class"
 TOKEN_CLASS_MANAGED_AGENT = "managed_agent"
