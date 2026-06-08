@@ -1,5 +1,6 @@
 import logging
 from functools import lru_cache
+from threading import Lock
 from typing import Any
 
 from langchain_classic.retrievers.document_compressors.base import BaseDocumentCompressor
@@ -7,6 +8,7 @@ from langchain_classic.retrievers.document_compressors.base import BaseDocumentC
 logger = logging.getLogger(__name__)
 
 _DEFAULT_FLASHRANK_MODEL = "ms-marco-MiniLM-L-12-v2"
+_FLASHRANK_LOAD_LOCK = Lock()
 
 
 def create_reranker(reranker_type: str, **kwargs) -> BaseDocumentCompressor:
@@ -31,9 +33,15 @@ def create_reranker(reranker_type: str, **kwargs) -> BaseDocumentCompressor:
         raise ValueError(f"Unsupported reranker type: {reranker_type}. Supported types: flashrank")
 
 
-@lru_cache(maxsize=4)
 def _get_flashrank_ranker(model: str) -> Any:
-    """Load and cache the underlying FlashRank Ranker once per model."""
+    """Load and cache the underlying FlashRank Ranker."""
+    with _FLASHRANK_LOAD_LOCK:
+        return _load_flashrank_ranker(model)
+
+
+@lru_cache(maxsize=4)
+def _load_flashrank_ranker(model: str) -> Any:
+    """Create the underlying FlashRank Ranker."""
     try:
         from flashrank import Ranker
     except ImportError as e:
