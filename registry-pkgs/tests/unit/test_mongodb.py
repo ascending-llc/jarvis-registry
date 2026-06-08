@@ -114,9 +114,9 @@ class TestMongoDBConnection:
             model_names = [model.__name__ for model in document_models]
 
             assert "User" in model_names
-            assert "ExtendedAccessRole" in model_names
+            assert "RegistryAccessRole" in model_names
             assert "Group" in model_names
-            assert "ExtendedAclEntry" in model_names
+            assert "RegistryAclEntry" in model_names
             assert "ExtendedMCPServer" in model_names
             assert "Token" in model_names
             assert "Key" in model_names

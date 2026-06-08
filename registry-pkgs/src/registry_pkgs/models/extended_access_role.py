@@ -5,12 +5,12 @@ from pydantic import Field
 from ._generated import AccessRole
 
 
-class ExtendedAccessRoleResourceType(StrEnum):
+class RegistryResourceType(StrEnum):
     MCP_SERVER = "mcpServer"
     REMOTE_AGENT = "remoteAgent"
     FEDERATION = "federation"
     WORKFLOW = "workflow"
 
 
-class ExtendedAccessRole(AccessRole):
-    resourceType: ExtendedAccessRoleResourceType = Field(...)
+class RegistryAccessRole(AccessRole):
+    resourceType: RegistryResourceType = Field(...)
