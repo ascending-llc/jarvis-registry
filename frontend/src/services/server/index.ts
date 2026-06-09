@@ -26,16 +26,14 @@ const updateServer: (id: string, data: Partial<TYPE.Server>) => Promise<TYPE.Ser
 
 const deleteServer: (id: string) => Promise<void> = async id => await Request.delete(API.deleteServer(id));
 
-const toggleServerStatus: (
-  id: string,
-  data: { enabled: boolean },
-  config?: AxiosRequestConfig,
-) => Promise<void> = async (id, data, config) => await Request.post(API.toggleServerStatus(id), data, config);
+const toggleServerStatus: (id: string, data: { enabled: boolean }, config?: AxiosRequestConfig) => Promise<void> =
+  async (id, data, config) => await Request.post(API.toggleServerStatus(id), data, config);
 
 const getServerTools: (id: string) => Promise<TYPE.GetServerToolsResponse> = async id =>
   await Request.get(API.getServerTools(id));
 
-const refreshServer: (id: string) => Promise<TYPE.GetServersDetailResponse> = async id => await Request.post(API.refreshServer(id));
+const refreshServer: (id: string) => Promise<TYPE.GetServersDetailResponse> = async id =>
+  await Request.post(API.refreshServer(id));
 
 export default {
   getVersion,

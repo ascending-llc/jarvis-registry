@@ -5,10 +5,16 @@ import { useState } from 'react';
 
 import type { ServerInfo } from '@/contexts/ServerContext';
 import type { Agent as AgentType } from '@/services/agent/type';
-import type { SemanticAgentHit, SemanticServerHit, SemanticToolHit } from '../hooks/useSemanticSearch';
+import type {
+  SemanticAgentHit,
+  SemanticServerHit,
+  SemanticSkillHit,
+  SemanticToolHit,
+} from '../hooks/useSemanticSearch';
 import AgentDetailsModal from './AgentDetailsModal';
 import IconButton from './IconButton';
 import ServerConfigModal from './ServerConfigModal';
+import Tooltip from './Tooltip';
 
 interface SemanticSearchResultsProps {
   query: string;
@@ -17,6 +23,7 @@ interface SemanticSearchResultsProps {
   servers: SemanticServerHit[];
   tools: SemanticToolHit[];
   agents: SemanticAgentHit[];
+  skills: SemanticSkillHit[];
 }
 
 const formatPercent = (value: number) => `${Math.round(Math.min(value, 1) * 100)}%`;
@@ -28,8 +35,9 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
   servers,
   tools,
   agents,
+  skills,
 }) => {
-  const hasResults = servers.length > 0 || tools.length > 0 || agents.length > 0;
+  const hasResults = servers.length > 0 || tools.length > 0 || agents.length > 0 || skills.length > 0;
   const [configServer, setConfigServer] = useState<SemanticServerHit | null>(null);
   const [detailsAgent, setDetailsAgent] = useState<SemanticAgentHit | null>(null);
   const [agentDetailsData, setAgentDetailsData] = useState<any>(null);
@@ -146,9 +154,11 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
                       </span>
                     </div>
                   </div>
-                  <p className='mt-3 line-clamp-3 text-sm text-[var(--jarvis-muted)]'>
-                    {server.description || server.matchContext || 'No description available.'}
-                  </p>
+                  <Tooltip content={server.description || server.matchContext || 'No description available.'}>
+                    <p className='mt-3 line-clamp-3 text-sm text-[var(--jarvis-muted)]'>
+                      {server.description || server.matchContext || 'No description available.'}
+                    </p>
+                  </Tooltip>
 
                   {server.tags?.length > 0 && (
                     <div className='mt-4 flex flex-wrap gap-2'>
@@ -173,9 +183,11 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
                           <li key={tool.toolName} className='text-sm text-[var(--jarvis-text)]'>
                             <span className='font-medium text-[var(--jarvis-text-strong)]'>{tool.toolName}</span>
                             <span className='mx-2 text-[var(--jarvis-faint)]'>•</span>
-                            <span className='text-[var(--jarvis-muted)]'>
-                              {tool.description || tool.matchContext || 'No description'}
-                            </span>
+                            <Tooltip content={tool.description || tool.matchContext || 'No description'}>
+                              <span className='text-[var(--jarvis-muted)] line-clamp-3 mt-1'>
+                                {tool.description || tool.matchContext || 'No description'}
+                              </span>
+                            </Tooltip>
                           </li>
                         ))}
                       </ul>
@@ -208,9 +220,11 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
                       {tool.toolName}
                       <span className='ml-2 text-xs font-normal text-[var(--jarvis-muted)]'>({tool.serverName})</span>
                     </p>
-                    <p className='text-sm text-[var(--jarvis-muted)]'>
-                      {tool.description || tool.matchContext || 'No description available.'}
-                    </p>
+                    <Tooltip content={tool.description || tool.matchContext || 'No description available.'}>
+                      <p className='mt-1 text-sm text-[var(--jarvis-muted)] line-clamp-3'>
+                        {tool.description || tool.matchContext || 'No description available.'}
+                      </p>
+                    </Tooltip>
                   </div>
                   <span className='inline-flex items-center rounded-full border border-[var(--jarvis-border-soft)] bg-[var(--jarvis-surface)] px-3 py-1 text-xs font-semibold text-[var(--jarvis-text)]'>
                     {formatPercent(tool.relevanceScore)} match
@@ -261,9 +275,11 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
                     </div>
                   </div>
 
-                  <p className='mt-3 line-clamp-3 text-sm text-[var(--jarvis-muted)]'>
-                    {agent.description || agent.matchContext || 'No description available.'}
-                  </p>
+                  <Tooltip content={agent.description || agent.matchContext || 'No description available.'}>
+                    <p className='mt-3 line-clamp-3 text-sm text-[var(--jarvis-muted)]'>
+                      {agent.description || agent.matchContext || 'No description available.'}
+                    </p>
+                  </Tooltip>
 
                   {agent.skills?.length > 0 && (
                     <div className='mt-4'>
@@ -296,6 +312,43 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
                     </span>
                     <span>{agent.isEnabled ? 'Enabled' : 'Disabled'}</span>
                   </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {skills.length > 0 && (
+          <section className='space-y-4'>
+            <div className='flex items-center justify-between'>
+              <h4 className='text-lg font-semibold text-[var(--jarvis-text-strong)]'>
+                Matching Skills{' '}
+                <span className='text-sm font-normal text-[var(--jarvis-muted)]'>({skills.length})</span>
+              </h4>
+            </div>
+            <div
+              className='grid'
+              style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '1.25rem' }}
+            >
+              {skills.map(skill => (
+                <div
+                  key={`${skill.agentPath}-${skill.skillName}`}
+                  className='flex flex-col gap-2 rounded-2xl border border-[var(--jarvis-border)] bg-[var(--jarvis-card)] p-4 sm:flex-row sm:items-center sm:justify-between'
+                >
+                  <div>
+                    <p className='text-sm font-semibold text-[var(--jarvis-text-strong)]'>
+                      {skill.skillName}
+                      <span className='ml-2 text-xs font-normal text-[var(--jarvis-muted)]'>({skill.agentName})</span>
+                    </p>
+                    <Tooltip content={skill.description || skill.matchContext || 'No description available.'}>
+                      <p className='mt-1 text-sm text-[var(--jarvis-muted)] line-clamp-3'>
+                        {skill.description || skill.matchContext || 'No description available.'}
+                      </p>
+                    </Tooltip>
+                  </div>
+                  <span className='inline-flex items-center rounded-full border border-[var(--jarvis-info-text)]/20 bg-[var(--jarvis-info-soft)] px-3 py-1 text-xs font-semibold text-[var(--jarvis-info-text)]'>
+                    {formatPercent(skill.relevanceScore)} match
+                  </span>
                 </div>
               ))}
             </div>
