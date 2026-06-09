@@ -14,6 +14,7 @@ import type {
 import AgentDetailsModal from './AgentDetailsModal';
 import IconButton from './IconButton';
 import ServerConfigModal from './ServerConfigModal';
+import Tooltip from './Tooltip';
 
 interface SemanticSearchResultsProps {
   query: string;
@@ -153,9 +154,11 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
                       </span>
                     </div>
                   </div>
-                  <p className='mt-3 line-clamp-3 text-sm text-[var(--jarvis-muted)]'>
-                    {server.description || server.matchContext || 'No description available.'}
-                  </p>
+                  <Tooltip content={server.description || server.matchContext || 'No description available.'}>
+                    <p className='mt-3 line-clamp-3 text-sm text-[var(--jarvis-muted)]'>
+                      {server.description || server.matchContext || 'No description available.'}
+                    </p>
+                  </Tooltip>
 
                   {server.tags?.length > 0 && (
                     <div className='mt-4 flex flex-wrap gap-2'>
@@ -180,9 +183,11 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
                           <li key={tool.toolName} className='text-sm text-[var(--jarvis-text)]'>
                             <span className='font-medium text-[var(--jarvis-text-strong)]'>{tool.toolName}</span>
                             <span className='mx-2 text-[var(--jarvis-faint)]'>•</span>
-                            <span className='text-[var(--jarvis-muted)]'>
-                              {tool.description || tool.matchContext || 'No description'}
-                            </span>
+                            <Tooltip content={tool.description || tool.matchContext || 'No description'}>
+                              <span className='text-[var(--jarvis-muted)] line-clamp-3 mt-1'>
+                                {tool.description || tool.matchContext || 'No description'}
+                              </span>
+                            </Tooltip>
                           </li>
                         ))}
                       </ul>
@@ -215,9 +220,11 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
                       {tool.toolName}
                       <span className='ml-2 text-xs font-normal text-[var(--jarvis-muted)]'>({tool.serverName})</span>
                     </p>
-                    <p className='text-sm text-[var(--jarvis-muted)]'>
-                      {tool.description || tool.matchContext || 'No description available.'}
-                    </p>
+                    <Tooltip content={tool.description || tool.matchContext || 'No description available.'}>
+                      <p className='mt-1 text-sm text-[var(--jarvis-muted)] line-clamp-3'>
+                        {tool.description || tool.matchContext || 'No description available.'}
+                      </p>
+                    </Tooltip>
                   </div>
                   <span className='inline-flex items-center rounded-full border border-[var(--jarvis-border-soft)] bg-[var(--jarvis-surface)] px-3 py-1 text-xs font-semibold text-[var(--jarvis-text)]'>
                     {formatPercent(tool.relevanceScore)} match
@@ -268,9 +275,11 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
                     </div>
                   </div>
 
-                  <p className='mt-3 line-clamp-3 text-sm text-[var(--jarvis-muted)]'>
-                    {agent.description || agent.matchContext || 'No description available.'}
-                  </p>
+                  <Tooltip content={agent.description || agent.matchContext || 'No description available.'}>
+                    <p className='mt-3 line-clamp-3 text-sm text-[var(--jarvis-muted)]'>
+                      {agent.description || agent.matchContext || 'No description available.'}
+                    </p>
+                  </Tooltip>
 
                   {agent.skills?.length > 0 && (
                     <div className='mt-4'>
@@ -331,9 +340,11 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
                       {skill.skillName}
                       <span className='ml-2 text-xs font-normal text-[var(--jarvis-muted)]'>({skill.agentName})</span>
                     </p>
-                    <p className='text-sm text-[var(--jarvis-muted)]'>
-                      {skill.description || skill.matchContext || 'No description available.'}
-                    </p>
+                    <Tooltip content={skill.description || skill.matchContext || 'No description available.'}>
+                      <p className='mt-1 text-sm text-[var(--jarvis-muted)] line-clamp-3'>
+                        {skill.description || skill.matchContext || 'No description available.'}
+                      </p>
+                    </Tooltip>
                   </div>
                   <span className='inline-flex items-center rounded-full border border-[var(--jarvis-info-text)]/20 bg-[var(--jarvis-info-soft)] px-3 py-1 text-xs font-semibold text-[var(--jarvis-info-text)]'>
                     {formatPercent(skill.relevanceScore)} match
