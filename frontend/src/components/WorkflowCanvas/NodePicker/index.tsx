@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useServer } from '@/contexts/ServerContext';
 import type { LogicStep, NodePickerProps, PickerItem } from '../types';
 
@@ -71,6 +71,16 @@ const NodePicker: React.FC<NodePickerProps> = ({ onPick, onClose, agentOnly = fa
   const [internalTab, setInternalTab] = useState<TabType>('A2A Agents');
   const [query, setQuery] = useState('');
   const [hovered, setHovered] = useState<string | null>(null);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onClose]);
 
   const activeTab: string = tab ?? internalTab;
   const setActiveTab = (t: string) => {
