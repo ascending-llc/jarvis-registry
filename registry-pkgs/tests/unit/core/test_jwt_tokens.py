@@ -68,13 +68,26 @@ def test_crud_session_roundtrip(cfg):
     assert claims["token_type"] == "access_token"
 
 
-def test_crud_session_client_id_is_forced(cfg):
-    # Even if a caller tries to override client_id, the class-defining value wins.
-    token = mint_crud_session_token(
-        cfg, subject="bob", token_type="access_token", expires_in_seconds=3600, extra_claims={"client_id": "evil"}
-    )
-    claims = verify_crud_session_token(cfg, token)
-    assert claims["client_id"] == _REGISTRY_CLIENT_ID
+def test_crud_session_rejects_reserved_client_id_claim(cfg):
+    with pytest.raises(ValueError, match="client_id"):
+        mint_crud_session_token(
+            cfg,
+            subject="bob",
+            token_type="access_token",
+            expires_in_seconds=3600,
+            extra_claims={"client_id": "evil"},
+        )
+
+
+def test_managed_agent_rejects_reserved_standard_claims(cfg):
+    with pytest.raises(ValueError, match="aud"):
+        mint_managed_agent_token(
+            cfg,
+            subject="alice",
+            client_id="mcp-client-abc",
+            expires_in_seconds=3600,
+            extra_claims={"aud": "wrong-audience"},
+        )
 
 
 # --------------------------------------------------------------------------- #

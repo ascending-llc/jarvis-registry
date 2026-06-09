@@ -198,7 +198,11 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
                 return None
 
             parts = auth_header.split(" ", 1)
-            access_token = parts[1].strip() if len(parts) == 2 else ""
+            if len(parts) != 2 or parts[0].lower() != "bearer":
+                logger.debug("Authorization header is not a Bearer scheme")
+                return None
+
+            access_token = parts[1].strip()
             if not access_token:
                 logger.debug("Empty Bearer token after split")
                 return None

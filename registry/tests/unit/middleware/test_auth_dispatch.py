@@ -78,6 +78,16 @@ def test_proxy_rejects_registry_client_id_token(client):
     assert resp.status_code == 401
 
 
+def test_proxy_rejects_non_bearer_scheme(client):
+    resp = client.get("/proxy/mcpgw/mcp", headers={"Authorization": f"Basic {_managed_agent_token()}"})
+    assert resp.status_code == 401
+
+
+def test_proxy_accepts_bearer_scheme_case_insensitively(client):
+    resp = client.get("/proxy/mcpgw/mcp", headers={"Authorization": f"bearer {_managed_agent_token()}"})
+    assert resp.status_code == 200
+
+
 def test_crud_accepts_session_cookie(client):
     client.cookies.set(_COOKIE, _crud_cookie_token())
     resp = client.get("/api/v1/servers")

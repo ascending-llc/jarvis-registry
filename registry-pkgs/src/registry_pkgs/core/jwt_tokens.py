@@ -12,6 +12,18 @@ from .jwt_utils import (
 TOKEN_CLASS_CLAIM = "token_class"
 TOKEN_CLASS_MANAGED_AGENT = "managed_agent"
 TOKEN_CLASS_CRUD_SESSION = "crud_session"
+_RESERVED_EXTRA_CLAIMS = frozenset(
+    {
+        "sub",
+        "iss",
+        "aud",
+        "iat",
+        "exp",
+        "token_type",
+        "client_id",
+        TOKEN_CLASS_CLAIM,
+    }
+)
 
 __all__ = [
     "TOKEN_CLASS_CLAIM",
@@ -25,6 +37,11 @@ __all__ = [
 
 
 def _merge_class_claims(extra_claims: dict[str, Any] | None, token_class: str, client_id: str) -> dict[str, Any]:
+    reserved_claims = _RESERVED_EXTRA_CLAIMS.intersection(extra_claims or {})
+    if reserved_claims:
+        claims = ", ".join(sorted(reserved_claims))
+        raise ValueError(f"extra_claims cannot override reserved JWT claims: {claims}")
+
     claims: dict[str, Any] = dict(extra_claims or {})
     claims["client_id"] = client_id
     claims[TOKEN_CLASS_CLAIM] = token_class
