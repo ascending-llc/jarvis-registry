@@ -527,8 +527,12 @@ class ExtendedMCPServer(MCPServer):
             "server_id": metadata.get("server_id"),
             "server_name": metadata.get("server_name"),
             "entity_type": metadata.get("entity_type"),
+            "path": metadata.get("path"),
+            "is_enabled": metadata.get("enabled", False),
+            "tags": metadata.get("tags") or [],
             "relevance_score": round(float(raw_score), 3) if raw_score is not None else None,
             "description": document.page_content,
+            "match_context": (document.page_content or "")[:200],
         }
 
         entity_type = metadata.get("entity_type")

@@ -1,6 +1,8 @@
+import asyncio
 import logging
 from typing import Any
 
+from registry_pkgs.models.enums import MCPEntityType
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 from registry_pkgs.vector.enum.enums import RerankerProvider, SearchType
 from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRepository
@@ -15,12 +17,15 @@ class ExternalVectorSearchService(VectorSearchService):
     Vector search service with rerank support.
     """
 
+    DEFAULT_RERANKER_MODEL = "ms-marco-TinyBERT-L-2-v2"
+    _ALL_MCP_VECTOR_TYPES = [MCPEntityType.TOOL, MCPEntityType.RESOURCE, MCPEntityType.PROMPT]
+
     def __init__(
         self,
         mcp_server_repo: MCPServerRepository,
         enable_rerank: bool = True,
         search_type: SearchType = SearchType.HYBRID,
-        reranker_model: str = "ms-marco-TinyBERT-L-2-v2",
+        reranker_model: str | None = None,
     ):
         """
         Initialize vector search service with rerank support.
@@ -32,7 +37,7 @@ class ExternalVectorSearchService(VectorSearchService):
         """
         self.enable_rerank = enable_rerank
         self.search_type = search_type
-        self.reranker_model = reranker_model
+        self.reranker_model = reranker_model or self.DEFAULT_RERANKER_MODEL
 
         self.client = mcp_server_repo.db_client
         self.mcp_server_repo = mcp_server_repo
@@ -65,6 +70,20 @@ class ExternalVectorSearchService(VectorSearchService):
             logger.error(f"Initialization verification failed: {e}", exc_info=True)
             self._initialized = False
             raise Exception(f"Cannot verify vector search: {e}")
+
+        await self._prewarm_reranker()
+
+    async def _prewarm_reranker(self) -> None:
+        """Eagerly load the rerank model at startup to avoid a cold-download race."""
+        if not self.enable_rerank:
+            return
+        try:
+            from registry_pkgs.vector.retrievers.reranker import create_reranker
+
+            await asyncio.to_thread(create_reranker, RerankerProvider.FLASHRANK, model=self.reranker_model)
+            logger.info("Reranker model pre-warmed: %s", self.reranker_model)
+        except Exception as e:
+            logger.warning("Reranker pre-warm failed; will lazy-load on first search: %s", e)
 
     def get_retriever(self, search_type: SearchType | None = None, enable_rerank: bool | None = None, top_k: int = 10):
         """
@@ -370,6 +389,28 @@ class ExternalVectorSearchService(VectorSearchService):
         self._initialized = False
         logger.info("Registry vector search cleanup complete (shared connection preserved)")
 
+    @staticmethod
+    def _tool_doc_to_result(doc: dict[str, Any]) -> dict[str, Any]:
+        """Map a reranked tool document (from ExtendedMCPServer.from_document) to a tool result."""
+        description = doc.get("description") or ""
+        match_context = doc.get("match_context") or description[:200]
+        return {
+            "entity_type": "tool",
+            "server_path": doc.get("path") or "",
+            "server_name": doc.get("server_name") or "",
+            "tool_name": doc.get("tool_name") or "",
+            "description": description,
+            "relevance_score": doc.get("relevance_score") or 0.0,
+            "match_context": match_context,
+        }
+
+    @classmethod
+    def _mcp_search_entity_types(cls, want_servers: bool) -> list[MCPEntityType]:
+        """Choose vector document types needed for the requested MCP search shape."""
+        if want_servers:
+            return cls._ALL_MCP_VECTOR_TYPES
+        return [MCPEntityType.TOOL]
+
     async def search_mixed(
         self,
         query: str,
@@ -378,112 +419,136 @@ class ExternalVectorSearchService(VectorSearchService):
         search_type: SearchType | None = None,
     ) -> dict[str, list[dict[str, Any]]]:
         """
-        Search across multiple entity types with rerank support.
-
-        Searches servers and agents with improved relevance.
+        Search MCP servers and tools with rerank support.
 
         Args:
             query: Natural language query text
-            entity_types: List of entity types to search
-                Options: ["mcp_server", "a2a_agent"]
-                Default: all types
-            max_results: Maximum results per entity type (default: 20)
+            entity_types: Subset of ["mcp_server", "tool"]; default both.
+            max_results: Maximum results per result list (default: 20)
             search_type: Override default search type (NEAR_TEXT, BM25, HYBRID)
 
         Returns:
-            Dictionary with entity type keys and result lists
+            ``{"servers": [...], "tools": [...]}`` shaped for the /search route mappers.
         """
         if not self.mcp_server_repo:
             logger.warning("Vector search not initialized")
-            return {"servers": [], "agents": []}
+            return {"servers": [], "tools": []}
 
         if not query or not query.strip():
             raise ValueError("Query text is required for search_mixed")
 
-        # Validate and normalize entity types
         max_results = max(1, min(max_results, 50))
-        requested_types = set(entity_types or ["mcp_server", "a2a_agent"])
-        allowed_types = {"mcp_server", "a2a_agent"}
-        entity_filter = list(requested_types & allowed_types)
-
-        if not entity_filter:
-            entity_filter = list(allowed_types)
-
-        logger.info(
-            f"search_mixed: query='{query}', types={entity_filter}, "
-            f"max={max_results}, search_type={search_type or self.search_type}"
-        )
+        requested_types = set(entity_types or ["mcp_server", "tool"])
+        entity_filter = requested_types & {"mcp_server", "tool"} or {"mcp_server", "tool"}
+        want_servers = "mcp_server" in entity_filter
+        want_tools = "tool" in entity_filter
 
         use_search_type = search_type or self.search_type
-        results = {"servers": [], "agents": []}
+        logger.info(
+            f"search_mixed: query='{query}', types={sorted(entity_filter)}, "
+            f"max={max_results}, search_type={use_search_type.value}"
+        )
+
+        search_k = max_results * 2  # extra headroom so grouping still yields enough servers
+        filters = {"entity_type": self._mcp_search_entity_types(want_servers)}
 
         try:
-            # Calculate search parameters
-            search_k = max_results * 2  # Get 2x for entity filtering
-            candidate_k = min(search_k * 3, 100) if self.enable_rerank else search_k
-
-            # Use rerank if enabled
             if self.enable_rerank:
-                logger.info(
-                    f"Mixed search with rerank: type={use_search_type.value}, candidate_k={candidate_k}, k={search_k}"
-                )
-                servers = self.mcp_server_repo.search_with_rerank(
+                candidate_k = min(search_k * 3, 100)
+                docs = await self.mcp_server_repo.asearch_with_rerank(
                     query=query,
-                    search_type=use_search_type,
                     k=search_k,
                     candidate_k=candidate_k,
+                    search_type=use_search_type,
+                    filters=filters,
                     reranker_type=RerankerProvider.FLASHRANK,
                     reranker_kwargs={"model": self.reranker_model},
                 )
             else:
-                # Regular search without rerank
-                servers = self.mcp_server_repo.search(query=query, search_type=use_search_type, k=search_k)
+                docs = await self.mcp_server_repo.asearch(
+                    query=query,
+                    search_type=use_search_type,
+                    k=search_k,
+                    filters=filters,
+                )
 
-            # Filter and categorize results
-            for server in servers:
-                config = server.config or {}
-                description = config.get("description", "")
+            tools: list[dict[str, Any]] = []
+            servers_by_key: dict[str, dict[str, Any]] = {}
 
-                relevance_score = round(server.relevance_score, 4) if hasattr(server, "relevance_score") else 0.0
+            for doc in docs:
+                tool_result = None
+                if doc.get("entity_type") == MCPEntityType.TOOL:
+                    tool_result = self._tool_doc_to_result(doc)
+                if want_tools and tool_result is not None:
+                    tools.append(tool_result)
 
-                # Build result dict
-                result = {
-                    "server_path": server.path,
-                    "server_name": server.serverName,
-                    "path": server.path,
-                    "description": description,
-                    "match_context": description[:200] if description else "",
-                    "relevance_score": relevance_score,
-                    "tags": server.tags or [],
-                    "is_enabled": config.get("enabled", False),
-                }
+                if want_servers:
+                    self._accumulate_server(servers_by_key, doc, tool_result)
 
-                # Add to servers results
-                if "mcp_server" in entity_filter:
-                    results["servers"].append(result)
-
-                # Add to agents results if it's an agent
-                # (determine by checking if it has agent-specific config)
-                if "a2a_agent" in entity_filter:
-                    # You can add logic here to distinguish agents from servers
-                    # For now, treat all as potential agents
-                    agent_result = result.copy()
-                    agent_result["agent_name"] = server.serverName
-                    results["agents"].append(agent_result)
-
-            # Sort and limit results
-            for key in ["servers", "agents"]:
-                # Sort by relevance_score (with fallback to 0.0 for safety)
-                results[key].sort(key=lambda x: x.get("relevance_score", 0.0), reverse=True)
-                results[key] = results[key][:max_results]
+            servers = sorted(servers_by_key.values(), key=lambda s: s["relevance_score"], reverse=True)[:max_results]
+            self._limit_matching_tools(servers, max_results)
+            tools.sort(key=lambda t: t["relevance_score"], reverse=True)
+            tools = tools[:max_results]
 
             logger.info(
-                f"Found {len(results['servers'])} servers, "
-                f"{len(results['agents'])} agents "
-                f"(rerank={'ON' if self.enable_rerank else 'OFF'})"
+                f"Found {len(servers)} servers, {len(tools)} tools (rerank={'ON' if self.enable_rerank else 'OFF'})"
             )
-            return results
+            return {"servers": servers, "tools": tools}
 
-        except Exception as e:
+        except RuntimeError as e:
             logger.error(f"search_mixed failed: {e}", exc_info=True)
-            return {"servers": [], "agents": []}
+            return {"servers": [], "tools": []}
+
+    @staticmethod
+    def _limit_matching_tools(servers: list[dict[str, Any]], max_results: int) -> None:
+        """Keep matched tools bounded and sorted within each server result."""
+        for server in servers:
+            matching_tools = server.get("matching_tools", [])
+            matching_tools.sort(key=lambda tool: tool.get("relevance_score", 0.0), reverse=True)
+            server["matching_tools"] = matching_tools[:max_results]
+
+    @staticmethod
+    def _accumulate_server(
+        servers_by_key: dict[str, dict[str, Any]],
+        doc: dict[str, Any],
+        tool_result: dict[str, Any] | None,
+    ) -> None:
+        """Group a matched MCP document under its owning server, building a server result in place."""
+        key = doc.get("server_id") or doc.get("path")
+        if not key:
+            logger.warning("Skipping MCP search doc without server_id/path: %s", doc.get("server_name"))
+            return
+
+        score = doc.get("relevance_score") or 0.0
+        description = doc.get("description") or ""
+        match_context = doc.get("match_context") or description[:200]
+        server = servers_by_key.get(key)
+        if server is None:
+            server = {
+                "entity_type": "mcp_server",
+                "path": doc.get("path") or "",
+                "server_name": doc.get("server_name") or "",
+                "description": description,
+                "tags": doc.get("tags") or [],
+                "is_enabled": doc.get("is_enabled", False),
+                "num_tools": 0,
+                "relevance_score": score,
+                "match_context": match_context,
+                "matching_tools": [],
+            }
+            servers_by_key[key] = server
+        else:
+            if score > server["relevance_score"]:
+                server["relevance_score"] = score
+                server["description"] = description
+                server["match_context"] = match_context
+
+        if tool_result is not None:
+            server["matching_tools"].append(
+                {
+                    "tool_name": tool_result["tool_name"],
+                    "description": tool_result["description"],
+                    "relevance_score": score,
+                    "match_context": tool_result["match_context"],
+                }
+            )
