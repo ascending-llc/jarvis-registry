@@ -29,7 +29,7 @@ Incoming Request
 ┌─────────────────────────────────────────────────────────┐
 │ 3. Resource ACL (ACLService in service layer)            │
 │    Can you access this specific resource?                │
-│    Checks ExtendedAclEntry records in MongoDB.           │
+│    Checks RegistryAclEntry records in MongoDB.           │
 │    Filters or rejects based on VIEW/EDIT/DELETE bits.    │
 └────────────────────────┬────────────────────────────────┘
                          │ ACL permits
@@ -78,7 +78,7 @@ Full scope catalog and configuration guide: [RBAC & Scope System](scopes.md)
 
 Scopes control endpoint access. ACL controls **which specific resource instances** a user can see or modify.
 
-Every protected resource (MCP server, A2A agent, federation) has ACL entries in MongoDB (`ExtendedAclEntry`). Each entry records:
+Every protected resource (MCP server, A2A agent, federation) has ACL entries in MongoDB (`RegistryAclEntry`). Each entry records:
 
 - **Principal**: a user, a group, or `public`
 - **Resource**: type (`mcpServer`, `agent`, `federation`, …) + ObjectId

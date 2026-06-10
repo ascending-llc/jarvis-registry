@@ -6,7 +6,7 @@ from typing import Any
 from beanie import PydanticObjectId
 
 from registry_pkgs.database.decorators import get_current_session, use_transaction
-from registry_pkgs.models import A2AAgent, ExtendedAccessRole, ExtendedMCPServer, PrincipalType, ResourceType
+from registry_pkgs.models import A2AAgent, ExtendedMCPServer, PrincipalType, RegistryAccessRole, ResourceType
 from registry_pkgs.models.enums import (
     FederationJobPhase,
     FederationJobType,
@@ -14,7 +14,8 @@ from registry_pkgs.models.enums import (
     FederationSyncStatus,
     FederationTriggerType,
 )
-from registry_pkgs.models.extended_acl_entry import ExtendedAclEntry, ExtendedResourceType
+from registry_pkgs.models.extended_access_role import RegistryResourceType
+from registry_pkgs.models.extended_acl_entry import RegistryAclEntry
 from registry_pkgs.models.federation import (
     Federation,
     FederationLastSync,
@@ -848,20 +849,20 @@ class FederationSyncService:
 
         return mutation_result
 
-    async def _get_federation_acl_entries(self, federation_id: Any) -> tuple[list[ExtendedAclEntry], bool]:
+    async def _get_federation_acl_entries(self, federation_id: Any) -> tuple[list[RegistryAclEntry], bool]:
         """
         Get all ACL entries for a Federation (query once, use multiple times).
 
         Returns:
             Tuple of (entries, query_success):
-                - entries: List of ExtendedAclEntry for the Federation, excluding PUBLIC entries
+                - entries: List of RegistryAclEntry for the Federation, excluding PUBLIC entries
                 - query_success: True if query succeeded, False if query failed
         """
         try:
             session = get_current_session()
-            entries = await ExtendedAclEntry.find(
+            entries = await RegistryAclEntry.find(
                 {
-                    "resourceType": ExtendedResourceType.FEDERATION,
+                    "resourceType": RegistryResourceType.FEDERATION,
                     "resourceId": federation_id,
                     "principalType": {"$ne": PrincipalType.PUBLIC.value},
                     "principalId": {"$ne": None},
@@ -881,7 +882,7 @@ class FederationSyncService:
 
     async def _batch_inherit_federation_acl(
         self,
-        federation_acl_entries: list[ExtendedAclEntry],
+        federation_acl_entries: list[RegistryAclEntry],
         resources: list[tuple[str, Any]],
     ) -> None:
         """
@@ -925,11 +926,21 @@ class FederationSyncService:
             resource_lookup: set[tuple[str, str]] = {
                 (_acl_key_part(resource_type), str(resource_id)) for resource_type, resource_id in resources
             }
-            all_acl_entries = await ExtendedAclEntry.find(
-                {"resourceId": {"$in": [resource_id for _, resource_id in resources]}},
+            resource_types_in_scope = sorted({_acl_key_part(resource_type) for resource_type, _ in resources})
+            all_acl_entries = await RegistryAclEntry.find(
+                {
+                    "resourceType": {"$in": resource_types_in_scope},
+                    "resourceId": {"$in": [resource_id for _, resource_id in resources]},
+                },
                 session=session,
             ).to_list()
-            # Filter by resourceType in Python (safe since ObjectId collisions are negligible)
+            # The MongoDB query above pre-filters by resourceType and resourceId using separate
+            # $in clauses, but those are evaluated independently — it can return an entry whose
+            # resourceType is in scope but whose resourceId belongs to a *different* resource type
+            # (e.g., a remoteAgent entry whose resourceId happens to equal an mcpServer id).
+            # The Python filter below checks the exact (resourceType, resourceId) pair against
+            # resource_lookup to eliminate those false positives.  ObjectId collisions across
+            # resource types are negligible in practice, so this is purely a correctness guard.
             existing_acl_entries = [
                 entry
                 for entry in all_acl_entries
@@ -952,7 +963,7 @@ class FederationSyncService:
             # Pre-fetch target-scoped roles so inherited ACL entries do not
             # keep federation roleIds on mcpServer/remoteAgent resources.
             target_resource_types = {_acl_key_part(resource_type) for resource_type, _ in resources}
-            target_roles = await ExtendedAccessRole.find(
+            target_roles = await RegistryAccessRole.find(
                 {"resourceType": {"$in": sorted(target_resource_types)}},
                 session=session,
             ).to_list()
@@ -962,7 +973,7 @@ class FederationSyncService:
 
             # Step 2: Compute new ACL entries to INSERT
             now = datetime.now(UTC)
-            new_acl_entries: list[ExtendedAclEntry] = []
+            new_acl_entries: list[RegistryAclEntry] = []
 
             for resource_type, resource_id in resources:
                 for fed_entry in federation_acl_entries:
@@ -991,10 +1002,10 @@ class FederationSyncService:
                         continue
 
                     # Create new ACL entry to INSERT
-                    new_entry = ExtendedAclEntry(
+                    new_entry = RegistryAclEntry(
                         principalType=fed_entry.principalType,
                         principalId=fed_entry.principalId,
-                        resourceType=ExtendedResourceType(resource_type),
+                        resourceType=RegistryResourceType(resource_type),
                         resourceId=resource_id,
                         roleId=role_id_lookup.get((_acl_key_part(resource_type), fed_entry.permBits)),
                         permBits=fed_entry.permBits,
@@ -1010,7 +1021,7 @@ class FederationSyncService:
             if new_acl_entries:
                 for i in range(0, len(new_acl_entries), ACL_INHERITANCE_BATCH_SIZE):
                     batch = new_acl_entries[i : i + ACL_INHERITANCE_BATCH_SIZE]
-                    await ExtendedAclEntry.insert_many(batch, session=session, ordered=False)
+                    await RegistryAclEntry.insert_many(batch, session=session, ordered=False)
                     stats["inserted_count"] += len(batch)
 
                 logger.info(
@@ -1368,7 +1379,7 @@ class FederationSyncService:
 
         # Delete the federation's own ACL entries.
         await self.acl_service.delete_acl_entries_for_resource(
-            resource_type=ExtendedResourceType.FEDERATION,
+            resource_type=RegistryResourceType.FEDERATION,
             resource_id=federation.id,
         )
         await federation.delete(session=session)
