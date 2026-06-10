@@ -18,7 +18,8 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from pydantic import BaseModel
 
-from registry_pkgs.core.jwt_utils import build_jwt_payload, decode_jwt_unverified, encode_jwt, get_token_kid
+from registry_pkgs.core.jwt_tokens import mint_managed_agent_token
+from registry_pkgs.core.jwt_utils import decode_jwt_unverified, get_token_kid
 from registry_pkgs.core.scopes import map_groups_to_scopes
 
 from ..core.config import settings
@@ -51,10 +52,10 @@ router = APIRouter()
 
 
 # JWT / signer configuration (use settings)
-PRIVATE_KEY = settings.jwt_private_key
 JWT_ISSUER = settings.jwt_issuer
-JWT_AUDIENCE = settings.jwt_audience
 JWT_SELF_SIGNED_KID = settings.jwt_self_signed_kid
+# All access tokens issued by /oauth2/token (+ device flow) are managed-agent (proxy) tokens.
+JWT_TOKEN_CONFIG = settings.jwt_token_config
 
 # Refresh token expiry (14 days in seconds)
 REFRESH_TOKEN_EXPIRY_SECONDS = 1209600
@@ -295,21 +296,19 @@ async def approve_device(request: DeviceApprovalRequest):
     if device_data["status"] == "approved":
         return {"status": "already_approved", "message": "Device already approved"}
 
-    # Generate token
-    token_payload = build_jwt_payload(
+    # Generate token (managed-agent / proxy class)
+    access_token = mint_managed_agent_token(
+        JWT_TOKEN_CONFIG,
         subject="device_user",
-        issuer=JWT_ISSUER,
-        audience=JWT_AUDIENCE,
+        client_id=device_data["client_id"],
         expires_in_seconds=3600,
         iat=current_time,
         extra_claims={
-            "client_id": device_data["client_id"],
             "scope": device_data["scope"],
             "token_use": "access",
             "auth_provider": settings.auth_provider,
         },
     )
-    access_token = encode_jwt(token_payload, PRIVATE_KEY, kid=JWT_SELF_SIGNED_KID)
     device_data["status"] = "approved"
     device_data["token"] = access_token
     device_data["approved_at"] = current_time
@@ -471,31 +470,30 @@ async def device_token(request: Request, user_service: UserService = Depends(get
         # Resolve user_id from MongoDB
         user_id = await user_service.resolve_user_id(user_info)
 
-        token_payload = build_jwt_payload(
+        scope_claim = " ".join(resolved_scopes) if isinstance(resolved_scopes, list) else resolved_scopes
+        access_token = mint_managed_agent_token(
+            JWT_TOKEN_CONFIG,
             subject=user_info["username"],
-            issuer=JWT_ISSUER,
-            audience=JWT_AUDIENCE,
+            client_id=client_id,
             expires_in_seconds=3600,
             iat=current_time,
             extra_claims={
                 "name": user_info.get("name"),
                 "idp_id": user_info.get("idp_id"),
                 "user_id": user_id,
-                "client_id": client_id,
-                "scope": " ".join(resolved_scopes) if isinstance(resolved_scopes, list) else resolved_scopes,
+                "scope": scope_claim,
                 "groups": user_info.get("groups", []),
                 "token_use": "access",
                 "auth_provider": settings.auth_provider,
             },
         )
-        access_token = encode_jwt(token_payload, PRIVATE_KEY, kid=JWT_SELF_SIGNED_KID)
 
         rt = secrets.token_urlsafe(32)
         refresh_expires_at = current_time + REFRESH_TOKEN_EXPIRY_SECONDS
         refresh_tokens_storage[rt] = {
             "client_id": client_id,
             "user_info": user_info,
-            "scope": token_payload["scope"],
+            "scope": scope_claim,
             "expires_at": refresh_expires_at,
         }
 
@@ -505,7 +503,7 @@ async def device_token(request: Request, user_service: UserService = Depends(get
             access_token=access_token,
             token_type="Bearer",
             expires_in=3600,
-            scope=token_payload["scope"],
+            scope=scope_claim,
             refresh_token=rt,
         )
 
@@ -549,23 +547,20 @@ async def device_token(request: Request, user_service: UserService = Depends(get
         # Resolve user_id from MongoDB
         user_id = await user_service.resolve_user_id(user_info)
 
-        token_payload = build_jwt_payload(
+        access_token = mint_managed_agent_token(
+            JWT_TOKEN_CONFIG,
             subject=user_info["username"],
-            issuer=JWT_ISSUER,
-            audience=JWT_AUDIENCE,
+            client_id=client_id,
             expires_in_seconds=3600,
             iat=now,
             extra_claims={
                 "user_id": user_id,
-                "client_id": client_id,
                 "scope": rt_data.get("scope", ""),
                 "groups": user_info.get("groups", []),
                 "token_use": "access",
                 "auth_provider": settings.auth_provider,
             },
         )
-
-        access_token = encode_jwt(token_payload, PRIVATE_KEY, kid=JWT_SELF_SIGNED_KID)
 
         # Atomically remove old refresh token to prevent reuse and handle concurrent requests
         # IMPORTANT: popping of the old token must be BEFORE storing a new token.

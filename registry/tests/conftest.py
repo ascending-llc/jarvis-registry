@@ -237,7 +237,7 @@ def mock_auth_middleware():
         "provider": "test",
     }
 
-    async def mock_authenticate(self, request):
+    async def mock_authenticate(self, request, _path):
         """Mock authenticate method that always returns admin user."""
         return test_user_context
 
