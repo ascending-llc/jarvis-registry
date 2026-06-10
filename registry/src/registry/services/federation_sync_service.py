@@ -934,7 +934,13 @@ class FederationSyncService:
                 },
                 session=session,
             ).to_list()
-            # Filter by resourceType in Python (safe since ObjectId collisions are negligible)
+            # The MongoDB query above pre-filters by resourceType and resourceId using separate
+            # $in clauses, but those are evaluated independently — it can return an entry whose
+            # resourceType is in scope but whose resourceId belongs to a *different* resource type
+            # (e.g., a remoteAgent entry whose resourceId happens to equal an mcpServer id).
+            # The Python filter below checks the exact (resourceType, resourceId) pair against
+            # resource_lookup to eliminate those false positives.  ObjectId collisions across
+            # resource types are negligible in practice, so this is purely a correctness guard.
             existing_acl_entries = [
                 entry
                 for entry in all_acl_entries

@@ -476,7 +476,7 @@ class ACLService:
 
         Args:
                 user_id: The user's ID.
-                resource_type: The resource type string (e.g., ResourceType.MCPSERVER.value).
+                resource_type: The resource type string (e.g., RegistryResourceType.MCP_SERVER.value).
 
         Returns:
                 Deduplicated list of resource ID strings the user can VIEW.
