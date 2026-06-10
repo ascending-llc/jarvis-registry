@@ -246,9 +246,9 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
                 return None
 
             # Log token validation success with additional details
-            token_type = claims.get("token_type", "unknown")
+            token_class = claims.get("token_class", "unknown")
             description = claims.get("description", "")
-            logger.info(f"JWT token validated for user: {username}, type: {token_type}, scopes: {scopes}")
+            logger.info(f"Managed-agent token validated for user: {username}, class: {token_class}, scopes: {scopes}")
             if description:
                 logger.debug(f"Token description: {description}")
             user_id = claims.get("user_id")

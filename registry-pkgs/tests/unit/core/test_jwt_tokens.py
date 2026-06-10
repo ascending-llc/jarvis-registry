@@ -167,3 +167,33 @@ def test_missing_client_id_rejected(cfg):
     token = encode_jwt(payload, _PRIVATE_KEY, kid=_KID)
     with pytest.raises(InvalidTokenError):
         verify_managed_agent_token(cfg, token)
+
+
+def test_crud_session_missing_token_class_rejected(cfg):
+    from registry_pkgs.core.jwt_utils import build_jwt_payload
+
+    payload = build_jwt_payload(
+        subject="b",
+        issuer=cfg.jwt_issuer,
+        audience=cfg.crud_services_audience,
+        expires_in_seconds=3600,
+        extra_claims={"client_id": cfg.registry_client_id},  # no token_class
+    )
+    token = encode_jwt(payload, _PRIVATE_KEY, kid=_KID)
+    with pytest.raises(InvalidTokenError):
+        verify_crud_session_token(cfg, token)
+
+
+def test_crud_session_wrong_client_id_rejected(cfg):
+    from registry_pkgs.core.jwt_utils import build_jwt_payload
+
+    payload = build_jwt_payload(
+        subject="b",
+        issuer=cfg.jwt_issuer,
+        audience=cfg.crud_services_audience,
+        expires_in_seconds=3600,
+        extra_claims={TOKEN_CLASS_CLAIM: TOKEN_CLASS_CRUD_SESSION, "client_id": "some-other-client"},
+    )
+    token = encode_jwt(payload, _PRIVATE_KEY, kid=_KID)
+    with pytest.raises(InvalidTokenError):
+        verify_crud_session_token(cfg, token)

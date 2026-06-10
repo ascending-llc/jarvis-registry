@@ -39,8 +39,8 @@ __all__ = [
 def _merge_class_claims(extra_claims: dict[str, Any] | None, token_class: str, client_id: str) -> dict[str, Any]:
     reserved_claims = _RESERVED_EXTRA_CLAIMS.intersection(extra_claims or {})
     if reserved_claims:
-        claims = ", ".join(sorted(reserved_claims))
-        raise ValueError(f"extra_claims cannot override reserved JWT claims: {claims}")
+        bad_keys = ", ".join(sorted(reserved_claims))
+        raise ValueError(f"extra_claims cannot override reserved JWT claims: {bad_keys}")
 
     claims: dict[str, Any] = dict(extra_claims or {})
     claims["client_id"] = client_id
