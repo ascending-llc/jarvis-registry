@@ -230,7 +230,10 @@ All secrets must be populated **before** deploying the Helm chart.
 
 ## Phase 5 — Registry Helm Chart Deployment
 
-The Registry is deployed as a **single Helm release** into the `jarvis` namespace with the release name `jarvis-registry`. The Helm chart is on the roadmap to be released.
+The Registry is deployed as a **single Helm release**  with the release name `jarvis-registry`. 
+```
+helm install jarvis-registry oci://ghcr.io/ascending-llc/jarvis-chart/jarvis-registry -n jarvis-registry --create-namespace -f <my-values.yaml>
+```
 
 ### 5.1 Application Pods
 
@@ -258,20 +261,12 @@ These pods are the same on both platforms:
 | **ExternalSecret** | Pulls secrets from the cloud store and injects them as a Kubernetes `Secret` in the `jarvis` namespace |
 | **Service Account — Registry** | Annotated with the platform identity reference (IRSA role ARN or Workload Identity client ID + tenant ID) |
 | **Service Account — ESO SecretStore** | Annotated with the External Secrets platform identity reference |
-| **Ingress** | Routes traffic to the Registry Frontend with TLS |
 
 **AWS (EKS) only:**
 
 | Resource | Purpose |
 |---|---|
 | **StorageClass (EBS)** | gp3 encrypted EBS-backed storage class used as Persistent Volumes by MongoDB and Weaviate |
-| **ALB Ingress** | Internet-facing ALB. SSL terminates at the ALB using the ACM certificate ARN. Public subnet IDs must be specified in annotations. |
-
-**Azure (AKS) only:**
-
-| Resource | Purpose |
-|---|---|
-| **ALB Ingress (Application Gateway for Containers)** | TLS termination handled by cert-manager. Public subnet ID specified for ALB placement. |
 
 ### 5.3 Key Helm Values to Configure Per Client
 

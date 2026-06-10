@@ -50,6 +50,9 @@ service.interceptors.response.use(
     return response;
   },
   (error: AxiosError) => {
+    const key = (error.config as any)?.cancelTokenKey || '';
+    if (key && cancelSources[key]) delete cancelSources[key];
+
     if (axios.isCancel(error)) {
       return Promise.resolve({
         data: { Code: -200, message: 'Cancel request', cause: 'Cancel request' },
@@ -108,7 +111,11 @@ const request = async ({ url, method, data = {}, config = {} }: RequestType) => 
     if (error && typeof error === 'object' && '__refreshError' in error) {
       throw (error as { originalData?: unknown }).originalData;
     }
-    throw (error as AxiosError).response?.data;
+    const axiosError = error as AxiosError;
+    if (axiosError.response && axiosError.response.data) {
+      throw axiosError.response.data;
+    }
+    throw { detail: axiosError.message || 'Network Error' };
   }
 };
 

@@ -102,6 +102,7 @@ export const CanvasView: React.FC<CanvasViewProps> = ({ canvas, defaultViewport,
           nodeTypes={nodeTypes}
           defaultEdgeOptions={EDGE_CONFIG}
           isValidConnection={canvas.isValidConnection}
+          deleteKeyCode={['Backspace', 'Delete']}
           onDelete={({ nodes: nodesToDelete, edges: edgesToDelete }) => {
             const deletedNodeIds = new Set(nodesToDelete.map(n => n.id));
 

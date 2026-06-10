@@ -23,7 +23,7 @@ const API = {
   getDiscover: `${MCP_BASE_URL}/oauth/discover`,
 
   // server
-  getSemanticSearch: `${BASE_URL}/search/semantic`,
+  getSearch: `${BASE_URL}/search`,
   getVersion: '/api/version',
   getServers: `${SERVER_BASE_URL}`,
   getServerDetail: (id: string) => `${SERVER_BASE_URL}/${id}`,

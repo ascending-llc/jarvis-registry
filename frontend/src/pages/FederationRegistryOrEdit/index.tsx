@@ -170,10 +170,14 @@ const FederationRegistryOrEdit: React.FC = () => {
             resourceTagsFilter: parseTagsFilter(formData.resourceTagsFilter),
           };
 
-      const result = await SERVICES.FEDERATION.syncFederation(id, {
-        dryRun: true,
-        providerConfig,
-      }, { timeout: 120000 });
+      const result = await SERVICES.FEDERATION.syncFederation(
+        id,
+        {
+          dryRun: true,
+          providerConfig,
+        },
+        { timeout: 120000 },
+      );
 
       const discoveredMcp = result?.summary?.discoveredMcpServers ?? 0;
       const discoveredAgents = result?.summary?.discoveredAgents ?? 0;
