@@ -129,8 +129,8 @@ async def test_validate_executor_refs_passes_for_valid_mcp_server_and_a2a_agent(
         "mcp",
         {"serverName": {"$in": ["deep-intel", "github"]}, "config.enabled": True},
     )
-    assert captured_queries[1] == ("a2a", {"path": {"$in": ["deep-intel"]}, "isEnabled": True})
-    assert captured_queries[2] == ("a2a", {"path": {"$in": ["researcher"]}, "isEnabled": True})
+    assert captured_queries[1] == ("a2a", {"path": {"$in": ["deep-intel"]}, "config.enabled": True})
+    assert captured_queries[2] == ("a2a", {"path": {"$in": ["researcher"]}, "config.enabled": True})
 
 
 @pytest.mark.asyncio

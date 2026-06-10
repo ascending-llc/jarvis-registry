@@ -484,8 +484,8 @@ def _update_config_from_request(
     Update config dictionary from ServerUpdateRequest
 
     Important: Only updates MCP-specific config fields.
-    Registry fields (path, tags, scope, status) are updated at root level separately.
-    Note: enabled field is stored in BOTH config and used to update status at root level.
+    Registry fields (path, tags, scope) are updated at root level separately.
+    Note: enabled field is stored in config.
     """
     # Use to_db_dict() to get DB-compatible field names
     update_dict = data.to_db_dict(exclude_unset=True)
@@ -498,7 +498,6 @@ def _update_config_from_request(
     registry_fields = [
         "path",
         "tags",
-        "status",
         "serverName",
         "numStars",
         "enabled",
@@ -769,7 +768,6 @@ class ServerServiceV1:
             # Registry-specific root-level fields
             path=data.path,
             tags=[tag.lower() for tag in data.tags],  # Normalize tags to lowercase
-            status="active",  # Default status (independent of enabled field)
             numTools=num_tools,  # Store calculated numTools at root level
             numStars=data.numStars,
             # Initialize error tracking fields as None
@@ -816,7 +814,6 @@ class ServerServiceV1:
 
                 # Update server with health check results (root-level field)
                 server.lastConnected = _get_current_utc_time()
-                server.status = "active"
 
                 # 2. Retrieve capabilities (but skip tools - they will be fetched on-demand)
                 logger.info(f"Retrieving capabilities for {server.serverName} (skipping tools)")
@@ -969,8 +966,6 @@ class ServerServiceV1:
             server.path = data.path
         if data.tags is not None:
             server.tags = [tag.lower() for tag in data.tags]
-        if data.status is not None:
-            server.status = data.status
 
         # Update config with MCP-specific values only
         updated_config = _update_config_from_request(config, data, server_name=server.serverName)
@@ -1397,7 +1392,6 @@ class ServerServiceV1:
             # Capabilities refresh failed
             logger.error(f"Capabilities refresh failed for {server.serverName}: {tool_error}")
 
-            # Do NOT update server.status (status is no longer used for enabled/disabled logic)
             server.lastError = now
             server.errorMessage = tool_error or "Failed to retrieve capabilities"
             # Do NOT update lastConnected on failure - only update on success
@@ -1418,7 +1412,6 @@ class ServerServiceV1:
             f"Capabilities refresh succeeded for {server.serverName}: retrieved {len(tool_list)} tools, {len(resource_list or [])} resources, {len(prompt_list or [])} prompts, and capabilities"
         )
 
-        # Do NOT update server.status (status is no longer used for enabled/disabled logic)
         server.lastError = None
         server.errorMessage = None
         # ONLY update lastConnected on success
@@ -1484,12 +1477,11 @@ class ServerServiceV1:
         # 1. Server Statistics
         try:
             # Use facet to get multiple aggregations in one query
-            # Note: scope and status are now at root level
+            # Note: root-level registry fields are not part of config.
             server_pipeline = [
                 {
                     "$facet": {
                         "total": [{"$count": "count"}],
-                        "by_status": [{"$group": {"_id": "$status", "count": {"$sum": 1}}}],
                         "by_transport": [{"$group": {"_id": "$config.type", "count": {"$sum": 1}}}],
                         "total_tools": [
                             {
@@ -1518,13 +1510,6 @@ class ServerServiceV1:
                 # Total servers
                 stats["total_servers"] = result["total"][0]["count"] if result["total"] else 0
 
-                # Servers by status
-                servers_by_status = {}
-                for item in result.get("by_status", []):
-                    status = item["_id"] or "unknown"
-                    servers_by_status[status] = item["count"]
-                stats["servers_by_status"] = servers_by_status
-
                 # Servers by transport
                 servers_by_transport = {}
                 for item in result.get("by_transport", []):
@@ -1537,7 +1522,6 @@ class ServerServiceV1:
             else:
                 # No servers found
                 stats["total_servers"] = 0
-                stats["servers_by_status"] = {}
                 stats["servers_by_transport"] = {}
                 stats["total_tools"] = 0
 
@@ -1545,7 +1529,6 @@ class ServerServiceV1:
             logger.exception(f"Error gathering server statistics: {e}")
             stats["total_servers"] = 0
             stats["servers_by_scope"] = {}
-            stats["servers_by_status"] = {}
             stats["servers_by_transport"] = {}
             stats["total_tools"] = 0
 

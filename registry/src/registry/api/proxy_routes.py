@@ -532,7 +532,7 @@ async def jsonrpc_proxy(
         except HTTPException:
             return _jsonrpc_a2a_error_response(-32001, f"Access denied to A2A agent '{agent_path}'")
 
-        if not agent.isEnabled:
+        if not (agent.config and agent.config.enabled):
             return _jsonrpc_a2a_error_response(-32004, f"A2A agent '{agent_path}' is disabled")
 
         if (
@@ -595,7 +595,7 @@ async def http_json_proxy(
         except HTTPException:
             return JSONResponse(status_code=403, content={"error": f"Access denied to A2A agent '{agent_path}'"})
 
-        if not agent.isEnabled:
+        if not (agent.config and agent.config.enabled):
             return JSONResponse(status_code=403, content={"error": f"A2A agent '{agent_path}' is disabled"})
 
         if (

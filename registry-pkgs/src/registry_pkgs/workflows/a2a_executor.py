@@ -103,7 +103,7 @@ def make_a2a_pool_executor(
         if selected_path is None:
             paths = [k.lstrip("/") for k in pool_keys]
             agents = await A2AAgent.find(
-                {"path": {"$in": paths}, "isEnabled": True},
+                {"path": {"$in": paths}, "config.enabled": True},
             ).to_list()
 
             if accessible_agent_ids is not None:
@@ -124,7 +124,7 @@ def make_a2a_pool_executor(
             state[cache_key] = selected_path
             logger.info("pool %r → selected agent %r", node_name, selected_path)
         else:
-            selected_agent = await A2AAgent.find_one({"path": selected_path, "isEnabled": True})
+            selected_agent = await A2AAgent.find_one({"path": selected_path, "config.enabled": True})
             if selected_agent is None:
                 return StepOutput(
                     content=f"Selected agent {selected_path!r} is no longer enabled",

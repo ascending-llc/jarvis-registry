@@ -77,7 +77,7 @@ async def test_semantic_search_maps_service_result_to_response():
     assert response.totalAgents == 1
     assert response.agents[0].agentName == "deep-intel"
     assert response.agents[0].tags == ["research"]
-    assert response.agents[0].isEnabled is True
+    assert response.agents[0].enabled is True
     assert response.totalSkills == 1
     assert response.skills[0].skillName == "web_search"
 

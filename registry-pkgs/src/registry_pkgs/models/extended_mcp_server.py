@@ -26,7 +26,6 @@ Identity & Metadata Fields (stored at root level):
 - serverName: string - Unique server identifier
 - author: ObjectId - User who created this server
 - scope: string - Access level (shared_app, shared_user, private_user)
-- status: string - Server status (active, inactive, error)
 - createdAt: datetime - Creation timestamp
 - updatedAt: datetime - Last update timestamp
 
@@ -131,7 +130,6 @@ class ExtendedMCPServer(MCPServer):
         "initDuration": 170
       },
       "scope": "shared_app",  # Registry field (root level)
-      "status": "active",     # Registry field (root level)
       "path": "/mcp/github",  # Registry field (root level)
       "tags": ["github"],     # Registry field (root level)
       "numTools": 2,          # Registry field (root level)
@@ -160,7 +158,6 @@ class ExtendedMCPServer(MCPServer):
     path: str | None = Field(default=None, description="API path for this server (e.g., /mcp/github)")
     tags: list[str] = Field(default_factory=list, description="Tags for categorization")
     scope: str | None = Field(default=None, description="Deprecated. Access control is handled by ACL permissions.")
-    status: str = Field(default="active", description="Operational state: active, inactive, error")
     numTools: int = Field(default=0, alias="numTools", description="Number of tools (calculated from toolFunctions)")
     numStars: int = Field(default=0, alias="numStars", description="Number of stars/favorites")
 
@@ -204,7 +201,7 @@ class ExtendedMCPServer(MCPServer):
 
         Service layer captures the hash before .save() and compares after to decide whether to
         call sync_to_vector_db (full rebuild) or update_entity_metadata (metadata-only patch).
-        This contract holds as long as enabled/status are NOT included in page_content — if
+        This contract holds as long as config.enabled is NOT included in page_content — if
         to_documents() ever embeds those fields, toggle paths will incorrectly trigger full syncs.
         """
         docs = self.to_documents()
@@ -550,7 +547,7 @@ class ExtendedMCPServer(MCPServer):
 
         Args:
             server_info: Server information dictionary (must contain 'path' and 'server_name')
-            is_enabled: Whether the service is enabled (maps to status)
+            is_enabled: Whether the service is enabled
 
         Returns:
             ExtendedMCPServer instance
@@ -576,8 +573,6 @@ class ExtendedMCPServer(MCPServer):
                 "prompts": server_info.get("prompts", []),
             }
 
-        # Map is_enabled to status
-        status = "active" if is_enabled else "inactive"
         config["enabled"] = is_enabled
 
         # Extract server_id if available (for updates)
@@ -592,7 +587,6 @@ class ExtendedMCPServer(MCPServer):
             serverName=server_name,
             path=path,
             config=config,
-            status=status,
             tags=server_info.get("tags", []),
             author=author,
             federationRefId=server_info.get("federationRefId"),

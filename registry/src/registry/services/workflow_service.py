@@ -126,7 +126,7 @@ class WorkflowService:
         matched_a2a_executor_keys: set[str] = set()
         if unmatched_executor_keys:
             a2a_agents = await A2AAgent.find(
-                {"path": {"$in": sorted(unmatched_executor_keys)}, "isEnabled": True}
+                {"path": {"$in": sorted(unmatched_executor_keys)}, "config.enabled": True}
             ).to_list()
             matched_a2a_executor_keys = {agent.path for agent in a2a_agents}
 
@@ -140,7 +140,7 @@ class WorkflowService:
         if not pool_paths:
             return
 
-        pool_agents = await A2AAgent.find({"path": {"$in": sorted(pool_paths)}, "isEnabled": True}).to_list()
+        pool_agents = await A2AAgent.find({"path": {"$in": sorted(pool_paths)}, "config.enabled": True}).to_list()
         matched_pool_paths = {agent.path for agent in pool_agents}
         unknown_pool_paths = pool_paths - matched_pool_paths
         if unknown_pool_paths:

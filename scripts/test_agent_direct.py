@@ -62,7 +62,7 @@ async def _connect() -> None:
 
 
 async def _list_agents() -> None:
-    agents = await A2AAgent.find({"isEnabled": True}).to_list()
+    agents = await A2AAgent.find({"config.enabled": True}).to_list()
     if not agents:
         print("No enabled A2A agents found.")
         return
@@ -79,7 +79,7 @@ async def _list_agents() -> None:
 
 async def _resolve_agent(path: str) -> A2AAgent | None:
     normalized = path if path.startswith("/") else f"/{path}"
-    agent = await A2AAgent.find_one(A2AAgent.path == normalized, {"isEnabled": True})
+    agent = await A2AAgent.find_one(A2AAgent.path == normalized, {"config.enabled": True})
     if agent is None:
         print(f"ERROR: No enabled agent found with path={normalized!r}")
     return agent
