@@ -232,11 +232,15 @@ class SearchService:
             nonlocal servers, tools
             if not mcp_types:
                 return
-            mcp_results = await self.vector_service.search_mixed(
-                query=query,
-                entity_types=mcp_types,
-                max_results=max_results,
-            )
+            try:
+                mcp_results = await self.vector_service.search_mixed(
+                    query=query,
+                    entity_types=mcp_types,
+                    max_results=max_results,
+                )
+            except Exception:
+                logger.exception("MCP search failed unexpectedly")
+                return
             servers = mcp_results.get("servers", [])
             tools = mcp_results.get("tools", [])
 

@@ -22,6 +22,7 @@ def _tool_doc(*, server_id, server_name, path, tool_name, score, enabled=True, t
         "tags": tags or [],
         "relevance_score": score,
         "description": desc,
+        "match_context": desc[:200],
         "tool_name": tool_name,
     }
 
