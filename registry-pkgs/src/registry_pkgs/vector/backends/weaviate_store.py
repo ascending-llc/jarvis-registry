@@ -1,4 +1,5 @@
 import logging
+import threading
 from typing import Any
 
 import weaviate.classes.config as wvc
@@ -10,6 +11,8 @@ from ..enum.enums import EmbeddingProvider, SearchType
 from ..retrievers.reranker import create_reranker
 
 logger = logging.getLogger(__name__)
+
+_RERANK_SEMAPHORE = threading.Semaphore(2)
 
 
 class WeaviateStore(VectorStoreAdapter):
@@ -602,7 +605,8 @@ class WeaviateStore(VectorStoreAdapter):
             reranker = create_reranker(reranker_type=reranker_type, **reranker_kwargs)
 
             # Rerank and return top k
-            reranked = reranker.compress_documents(documents=candidates, query=query)
+            with _RERANK_SEMAPHORE:
+                reranked = reranker.compress_documents(documents=candidates, query=query)
 
             logger.info(f"Reranking complete: {len(candidates)} -> {len(reranked)} results")
             return reranked
