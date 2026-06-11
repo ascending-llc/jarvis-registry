@@ -465,7 +465,7 @@ class TestLoadAccessibleAgentIds:
         from beanie import PydanticObjectId
 
         from registry_pkgs.models.enums import PermissionBits
-        from registry_pkgs.models.extended_acl_entry import ExtendedAclEntry
+        from registry_pkgs.models.extended_acl_entry import RegistryAclEntry
 
         rid1 = PydanticObjectId()
         rid2 = PydanticObjectId()
@@ -482,14 +482,14 @@ class TestLoadAccessibleAgentIds:
 
             return FakeQuery()
 
-        monkeypatch.setattr(ExtendedAclEntry, "find", fake_find)
+        monkeypatch.setattr(RegistryAclEntry, "find", fake_find)
 
         result = await executor_resolver._load_accessible_agent_ids(str(PydanticObjectId()))
         assert result == {str(rid1), str(rid3)}
 
     @pytest.mark.asyncio
     async def test_returns_empty_set_when_no_entries(self, monkeypatch: pytest.MonkeyPatch):
-        from registry_pkgs.models.extended_acl_entry import ExtendedAclEntry
+        from registry_pkgs.models.extended_acl_entry import RegistryAclEntry
 
         def fake_find(query):
             class FakeQuery:
@@ -498,7 +498,7 @@ class TestLoadAccessibleAgentIds:
 
             return FakeQuery()
 
-        monkeypatch.setattr(ExtendedAclEntry, "find", fake_find)
+        monkeypatch.setattr(RegistryAclEntry, "find", fake_find)
 
         result = await executor_resolver._load_accessible_agent_ids(str(PydanticObjectId()))
         assert result == set()

@@ -312,6 +312,7 @@ class TestExtendedMCPServerStructure:
 
         result = ExtendedMCPServer.from_document(tool_doc)
         assert result["tool_name"] == "downstream_tool"
+        assert result["match_context"] == tool_doc.page_content[:200]
         assert "original_mcp_name" not in result
 
     def test_tool_doc_content_includes_server_prefix(self):

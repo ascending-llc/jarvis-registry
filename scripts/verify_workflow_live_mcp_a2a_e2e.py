@@ -46,7 +46,7 @@ from registry_pkgs.database.mongodb import MongoDB  # noqa: E402
 from registry_pkgs.models import PrincipalType  # noqa: E402
 from registry_pkgs.models.a2a_agent import A2AAgent  # noqa: E402
 from registry_pkgs.models.enums import RoleBits, WorkflowNodeType, WorkflowRunStatus  # noqa: E402
-from registry_pkgs.models.extended_acl_entry import ExtendedResourceType  # noqa: E402
+from registry_pkgs.models.extended_access_role import RegistryResourceType  # noqa: E402
 from registry_pkgs.models.workflow import (  # noqa: E402
     HumanReviewSpec,
     NodeRun,
@@ -138,7 +138,7 @@ async def _grant_owner(user_id: str, workflow_id: PydanticObjectId) -> None:
     await acl.grant_permission(
         principal_type=PrincipalType.USER,
         principal_id=PydanticObjectId(user_id),
-        resource_type=ExtendedResourceType.WORKFLOW,
+        resource_type=RegistryResourceType.WORKFLOW,
         resource_id=workflow_id,
         perm_bits=RoleBits.OWNER,
     )
@@ -164,7 +164,7 @@ async def _grant_agent_access(user_id: str, agent_keys: list[str]) -> None:
         await acl.grant_permission(
             principal_type=PrincipalType.USER,
             principal_id=PydanticObjectId(user_id),
-            resource_type=ExtendedResourceType.REMOTE_AGENT,
+            resource_type=RegistryResourceType.REMOTE_AGENT,
             resource_id=agent.id,
             perm_bits=RoleBits.VIEWER,
         )

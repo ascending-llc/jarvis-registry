@@ -632,10 +632,10 @@ class TestDeviceFlowRoutes:
 class TestDeviceFlowWithMocking:
     """Integration tests for device flow with JWT mocking."""
 
-    @patch("auth_server.routes.oauth_flow.encode_jwt")
-    def test_approve_device_success_with_token(self, mock_jwt_encode, test_client: TestClient, clear_device_storage):
+    @patch("auth_server.routes.oauth_flow.mint_managed_agent_token")
+    def test_approve_device_success_with_token(self, mock_mint_token, test_client: TestClient, clear_device_storage):
         """Test device approval generates access token."""
-        mock_jwt_encode.return_value = "mock-access-token"
+        mock_mint_token.return_value = "mock-access-token"
 
         # Create device code
         device_response = test_client.post(
@@ -652,13 +652,16 @@ class TestDeviceFlowWithMocking:
         assert data["status"] == "approved"
         assert "successfully" in data["message"].lower()
 
-        # Verify JWT token generated
-        mock_jwt_encode.assert_called_once()
+        # Verify access token generated
+        mock_mint_token.assert_called_once()
+        assert mock_mint_token.call_args.kwargs["subject"] == "device_user"
+        assert mock_mint_token.call_args.kwargs["client_id"] == "test-client"
+        assert mock_mint_token.call_args.kwargs["extra_claims"]["scope"] == "test-scope"
 
-    @patch("auth_server.routes.oauth_flow.encode_jwt")
-    def test_approve_device_already_approved(self, mock_jwt_encode, test_client: TestClient, clear_device_storage):
+    @patch("auth_server.routes.oauth_flow.mint_managed_agent_token")
+    def test_approve_device_already_approved(self, mock_mint_token, test_client: TestClient, clear_device_storage):
         """Test approving already-approved device returns success."""
-        mock_jwt_encode.return_value = "mock-access-token"
+        mock_mint_token.return_value = "mock-access-token"
 
         # Create and approve device
         device_response = test_client.post(f"{API_PREFIX}/oauth2/device/code", data={"client_id": "test-client"})
@@ -672,11 +675,12 @@ class TestDeviceFlowWithMocking:
 
         assert response.status_code == 200
         assert "already" in response.json()["message"].lower()
+        mock_mint_token.assert_called_once()
 
-    @patch("auth_server.routes.oauth_flow.encode_jwt")
-    def test_device_token_success_with_mocked_jwt(self, mock_jwt_encode, test_client: TestClient, clear_device_storage):
+    @patch("auth_server.routes.oauth_flow.mint_managed_agent_token")
+    def test_device_token_success_with_mocked_jwt(self, mock_mint_token, test_client: TestClient, clear_device_storage):
         """Test token endpoint returns mocked access token after approval."""
-        mock_jwt_encode.return_value = "mock-access-token"
+        mock_mint_token.return_value = "mock-access-token"
 
         # Create device code
         device_response = test_client.post(
@@ -709,8 +713,8 @@ class TestDeviceFlowWithMocking:
         assert token_data["scope"] == "test-scope"
         assert token_data["access_token"] == "mock-access-token"
 
-    @patch("auth_server.routes.oauth_flow.encode_jwt")
-    def test_device_token_expired_code(self, mock_jwt_encode, test_client: TestClient, clear_device_storage):
+    @patch("auth_server.routes.oauth_flow.mint_managed_agent_token")
+    def test_device_token_expired_code(self, mock_mint_token, test_client: TestClient, clear_device_storage):
         """Test token endpoint rejects expired device codes."""
         # Create device code
         device_response = test_client.post(f"{API_PREFIX}/oauth2/device/code", data={"client_id": "test-client"})
@@ -732,6 +736,7 @@ class TestDeviceFlowWithMocking:
         assert response.status_code == 400
         # After cleanup, expired codes may return invalid_grant or expired_token
         assert response.json()["error"] in ["expired_token", "invalid_grant"]
+        mock_mint_token.assert_not_called()
 
 
 @pytest.mark.integration
@@ -739,12 +744,12 @@ class TestDeviceFlowWithMocking:
 class TestEndToEndIntegration:
     """End-to-end integration tests combining client registration and device flow."""
 
-    @patch("auth_server.routes.oauth_flow.encode_jwt")
+    @patch("auth_server.routes.oauth_flow.mint_managed_agent_token")
     def test_full_device_flow_with_registered_client(
-        self, mock_jwt_encode, test_client: TestClient, clear_device_storage
+        self, mock_mint_token, test_client: TestClient, clear_device_storage
     ):
         """Test complete device flow with dynamically registered client."""
-        mock_jwt_encode.return_value = "integration-test-token"
+        mock_mint_token.return_value = "integration-test-token"
 
         # Step 1: Register client
         reg_response = test_client.post(
@@ -769,6 +774,7 @@ class TestEndToEndIntegration:
         # Step 3: User approves device
         approve_response = test_client.post(f"{API_PREFIX}/oauth2/device/approve", json={"user_code": user_code})
         assert approve_response.status_code == 200
+        mock_mint_token.assert_called_once()
 
         # Step 4: Client polls for token
         token_response = test_client.post(

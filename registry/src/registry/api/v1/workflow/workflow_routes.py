@@ -45,7 +45,7 @@ from registry.utils.crypto_utils import generate_service_jwt
 from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.models import PrincipalType
 from registry_pkgs.models.enums import RoleBits
-from registry_pkgs.models.extended_acl_entry import ExtendedResourceType
+from registry_pkgs.models.extended_access_role import RegistryResourceType
 from registry_pkgs.workflows.runner import WorkflowRunner
 
 logger = logging.getLogger(__name__)
@@ -68,7 +68,7 @@ async def _authorize_workflow(
     workflow = await workflow_service.get_workflow_by_id(workflow_id)
     permissions = await acl_service.check_user_permission(
         user_id=PydanticObjectId(user_context.get("user_id")),
-        resource_type=ExtendedResourceType.WORKFLOW,
+        resource_type=RegistryResourceType.WORKFLOW,
         resource_id=workflow.id,
         required_permission=required_permission,
     )
@@ -143,7 +143,7 @@ async def list_workflows(
         user_id = user_context.get("user_id")
         accessible_ids = await acl_service.get_accessible_resource_ids(
             user_id=PydanticObjectId(user_id),
-            resource_type=ExtendedResourceType.WORKFLOW.value,
+            resource_type=RegistryResourceType.WORKFLOW.value,
         )
 
         # List workflows restricted to ACL-accessible IDs
@@ -157,7 +157,7 @@ async def list_workflows(
         # Convert to response items with per-workflow permissions.
         perms_by_id = await acl_service.get_user_permissions_for_resources(
             user_id=PydanticObjectId(user_id),
-            resource_type=ExtendedResourceType.WORKFLOW.value,
+            resource_type=RegistryResourceType.WORKFLOW.value,
             resource_ids=[w.id for w in workflows],
         )
         workflow_items = [convert_to_list_item(w, acl_permission=perms_by_id[w.id]) for w in workflows]
@@ -261,7 +261,7 @@ async def create_workflow(
         await acl_service.grant_permission(
             principal_type=PrincipalType.USER,
             principal_id=PydanticObjectId(user_id),
-            resource_type=ExtendedResourceType.WORKFLOW,
+            resource_type=RegistryResourceType.WORKFLOW,
             resource_id=workflow.id,
             perm_bits=RoleBits.OWNER,
         )
@@ -371,7 +371,7 @@ async def delete_workflow(
 
         if successful_delete:
             await acl_service.delete_acl_entries_for_resource(
-                resource_type=ExtendedResourceType.WORKFLOW.value,
+                resource_type=RegistryResourceType.WORKFLOW.value,
                 resource_id=workflow.id,
             )
             logger.info(f"Deleted workflow {workflow_id} and its ACL entries")
@@ -424,7 +424,7 @@ async def toggle_workflow(
 
     await acl_service.check_user_permission(
         user_id=PydanticObjectId(user_context.get("user_id")),
-        resource_type=ExtendedResourceType.WORKFLOW,
+        resource_type=RegistryResourceType.WORKFLOW,
         resource_id=PydanticObjectId(workflow_id),
         required_permission="EDIT",
     )
@@ -777,7 +777,7 @@ async def get_workflow_run_status(
 
     await acl_service.check_user_permission(
         user_id=PydanticObjectId(user_context.get("user_id")),
-        resource_type=ExtendedResourceType.WORKFLOW,
+        resource_type=RegistryResourceType.WORKFLOW,
         resource_id=workflow_oid,
         required_permission="VIEW",
     )

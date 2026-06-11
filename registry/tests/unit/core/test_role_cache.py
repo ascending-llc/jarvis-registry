@@ -12,7 +12,7 @@ def _role(resource_type: str, perm_bits: int) -> MagicMock:
 
 
 @pytest.mark.asyncio
-@patch("registry.services.access_control_service.ExtendedAccessRole")
+@patch("registry.services.access_control_service.RegistryAccessRole")
 async def test_load_role_cache_builds_unique_map(mock_role):
     """load_role_cache keys roles by (resourceType, permBits) -> ObjectId."""
     roles = [_role("mcpServer", RoleBits.VIEWER), _role("workflow", RoleBits.OWNER)]
@@ -25,7 +25,7 @@ async def test_load_role_cache_builds_unique_map(mock_role):
 
 
 @pytest.mark.asyncio
-@patch("registry.services.access_control_service.ExtendedAccessRole")
+@patch("registry.services.access_control_service.RegistryAccessRole")
 async def test_load_role_cache_filters_to_registry_owned_resource_types(mock_role):
     """The startup query MUST filter to Registry-owned resource types."""
     mock_role.find.return_value.to_list = AsyncMock(return_value=[])
@@ -41,7 +41,7 @@ async def test_load_role_cache_filters_to_registry_owned_resource_types(mock_rol
 
 
 @pytest.mark.asyncio
-@patch("registry.services.access_control_service.ExtendedAccessRole")
+@patch("registry.services.access_control_service.RegistryAccessRole")
 async def test_load_role_cache_skips_duplicate_key(mock_role):
     """A duplicate resourceType+permBits is skipped (first wins), not fatal.
 
@@ -60,7 +60,7 @@ async def test_load_role_cache_skips_duplicate_key(mock_role):
 
 
 @pytest.mark.asyncio
-@patch("registry.services.access_control_service.ExtendedAccessRole")
+@patch("registry.services.access_control_service.RegistryAccessRole")
 async def test_load_role_cache_never_crashes_startup(mock_role):
     """A failure loading the catalog must not propagate — the registry must still boot."""
     mock_role.find.return_value.to_list = AsyncMock(side_effect=RuntimeError("boom"))

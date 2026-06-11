@@ -214,10 +214,7 @@ user-read:
   # Search functionality
   - action: search
     method: POST
-    endpoint: /search/semantic
-  - action: search_servers
-    method: POST
-    endpoint: /search/servers
+    endpoint: /search
   # MCP connection management
   - action: reinitialize_server
     method: POST

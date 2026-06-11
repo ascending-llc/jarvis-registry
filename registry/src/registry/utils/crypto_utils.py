@@ -20,13 +20,12 @@ from typing import Any
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
+from registry_pkgs.core.jwt_tokens import mint_crud_session_token, verify_crud_session_token
 from registry_pkgs.core.jwt_utils import (
     ExpiredSignatureError,
     InvalidTokenError,
     build_jwt_payload,
-    decode_jwt,
     encode_jwt,
-    get_token_kid,
 )
 
 from ..core.config import settings
@@ -451,19 +450,15 @@ def generate_access_token(
     if idp_id:
         extra_claims["idp_id"] = idp_id
 
-    # Build JWT payload using centralized helper
-    payload = build_jwt_payload(
+    # CRUD-session (cookie) class: audience, client_id and token_class are set by the layer.
+    token = mint_crud_session_token(
+        settings.jwt_token_config,
         subject=username,
-        issuer=settings.jwt_issuer,
-        audience=settings.jwt_audience,
-        expires_in_seconds=expires_in_seconds,
         token_type="access_token",
+        expires_in_seconds=expires_in_seconds,
         iat=iat,
         extra_claims=extra_claims,
     )
-
-    # Generate JWT
-    token = encode_jwt(payload, settings.jwt_private_key, kid=settings.jwt_self_signed_kid)
 
     logger.debug(f"Generated access token for user {username}, expires in {expires_hours}h")
     return token
@@ -513,17 +508,14 @@ def generate_refresh_token(
         "email": email,
     }
 
-    # Build JWT payload using centralized helper
-    payload = build_jwt_payload(
+    # CRUD-session (cookie) class: audience, client_id and token_class are set by the layer.
+    token = mint_crud_session_token(
+        settings.jwt_token_config,
         subject=username,
-        issuer=settings.jwt_issuer,
-        audience=settings.jwt_audience,
-        expires_in_seconds=expires_in_seconds,
         token_type="refresh_token",
+        expires_in_seconds=expires_in_seconds,
         extra_claims=extra_claims,
     )
-
-    token = encode_jwt(payload, settings.jwt_private_key, kid=settings.jwt_self_signed_kid)
 
     logger.debug(f"Generated refresh token for user {username}, expires in {expires_days} days")
     return token
@@ -540,27 +532,7 @@ def verify_access_token(token: str) -> dict[str, Any] | None:
         Decoded token claims if valid, None otherwise
     """
     try:
-        # Verify kid in header
-        kid = get_token_kid(token)
-
-        if kid != settings.jwt_self_signed_kid:
-            logger.debug(f"Invalid kid in token: {kid}")
-            return None
-
-        # Decode and verify token
-        claims = decode_jwt(
-            token,
-            settings.jwt_public_key,
-            issuer=settings.jwt_issuer,
-            audience=settings.jwt_audience,
-            leeway=30,
-        )
-
-        # Verify token type
-        if claims.get("token_type") != "access_token":
-            logger.warning(f"Wrong token type: {claims.get('token_type')}")
-            return None
-
+        claims = verify_crud_session_token(settings.jwt_token_config, token, expected_token_type="access_token")
         logger.debug(f"Access token verified for user: {claims.get('sub')}")
         return claims
 
@@ -586,27 +558,7 @@ def verify_refresh_token(token: str) -> dict[str, Any] | None:
         Decoded token claims if valid, None otherwise
     """
     try:
-        # Verify kid in header
-        kid = get_token_kid(token)
-
-        if kid != settings.jwt_self_signed_kid:
-            logger.debug(f"Invalid kid in refresh token: {kid}")
-            return None
-
-        # Decode and verify token
-        claims = decode_jwt(
-            token,
-            settings.jwt_public_key,
-            issuer=settings.jwt_issuer,
-            audience=settings.jwt_audience,
-            leeway=30,
-        )
-
-        # Verify token type
-        if claims.get("token_type") != "refresh_token":
-            logger.warning(f"Wrong token type in refresh: {claims.get('token_type')}")
-            return None
-
+        claims = verify_crud_session_token(settings.jwt_token_config, token, expected_token_type="refresh_token")
         logger.debug(f"Refresh token verified for user: {claims.get('sub')}")
         return claims
 

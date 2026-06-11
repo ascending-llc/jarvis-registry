@@ -15,7 +15,7 @@ from registry.schemas.workflow_schemas import (
 )
 from registry.services.access_control_service import ACLService
 from registry.services.workflow_control_service import WorkflowControlService
-from registry_pkgs.models.extended_acl_entry import ExtendedResourceType
+from registry_pkgs.models.extended_access_role import RegistryResourceType
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +41,7 @@ async def _require_workflow_view(
         raise HTTPException(status_code=404, detail=f"Workflow {workflow_id!r} not found") from exc
     await acl_service.check_user_permission(
         user_id=PydanticObjectId(user_context.get("user_id")),
-        resource_type=ExtendedResourceType.WORKFLOW,
+        resource_type=RegistryResourceType.WORKFLOW,
         resource_id=workflow_oid,
         required_permission="VIEW",
     )

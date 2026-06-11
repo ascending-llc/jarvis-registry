@@ -247,7 +247,7 @@ from bson import ObjectId
 
 from registry_pkgs.runtime.agno_workflow import CompiledWorkflow
 from registry_pkgs.models.workflow import WorkflowDefinition
-from registry_pkgs.models.enums import ExtendedResourceType
+from registry_pkgs.models.extended_access_role import RegistryResourceType
 from registry.services.run_service import RunService
 from registry.services.access_control_service import ACLService  # existing service
 from registry.auth.dependencies import CurrentUser                # existing type alias
@@ -481,15 +481,14 @@ def _ref_to_resolved(
 
 No new ACL service is written. The existing `access_control_service.ACLService` (in `registry/src/registry/services/access_control_service.py`) is reused directly via the existing DI container.
 
-**Step 1 — Add `workflow` to `ExtendedResourceType`** (in `registry-pkgs/src/registry_pkgs/models/extended_acl_entry.py`):
+**Step 1 — `workflow` is a member of `RegistryResourceType`** (in `registry-pkgs/src/registry_pkgs/models/extended_access_role.py`). This enum is narrowed to exactly the resource types this Registry's ACL owns:
 
 ```python
-class ExtendedResourceType(StrEnum):
-    AGENT        = "agent"
-    MCPSERVER    = "mcpServer"
+class RegistryResourceType(StrEnum):
+    MCP_SERVER   = "mcpServer"
     REMOTE_AGENT = "remoteAgent"
     FEDERATION   = "federation"
-    WORKFLOW     = "workflow"   # ← add this
+    WORKFLOW     = "workflow"
 ```
 
 **Step 2 — Permission bits** reuse the existing `PermissionBits` model:
@@ -509,7 +508,7 @@ class ExtendedResourceType(StrEnum):
 from registry.auth.dependencies import CurrentUser
 from registry.deps import get_acl_service
 from registry.services.access_control_service import ACLService
-from registry_pkgs.models.extended_acl_entry import ExtendedResourceType
+from registry_pkgs.models.extended_access_role import RegistryResourceType
 from bson import ObjectId
 
 async def trigger_workflow_run(
@@ -523,7 +522,7 @@ async def trigger_workflow_run(
     # Check caller has at least VIEW on this workflow
     await acl_service.check_user_permission(
         user_id=ObjectId(user_id),
-        resource_type=ExtendedResourceType.WORKFLOW,
+        resource_type=RegistryResourceType.WORKFLOW,
         resource_id=ObjectId(workflow_id),
         required_permission="VIEW",
     )
@@ -538,7 +537,7 @@ async def list_workflows(
     # Returns only workflow IDs the caller has VIEW access to
     accessible_ids = await acl_service.get_accessible_resource_ids(
         user_id=ObjectId(user_id),
-        resource_type=ExtendedResourceType.WORKFLOW,
+        resource_type=RegistryResourceType.WORKFLOW,
     )
     ...
 ```
@@ -953,6 +952,6 @@ asyncio.run(main())
 | Customer schema (`WorkflowDefinition`) | Pydantic models | Drag-and-drop output, permissions, node deps |
 | Protocol execution (MCP + A2A calls) | PydanticAI agents | Pool selection, tool binding, agent handoff |
 | Workflow runtime (step loop, pause, stream) | Agno `Workflow` | Operator controls, SSE streaming, approval gates |
-| Permission enforcement | Existing `access_control_service.ACLService` | `ExtendedResourceType.WORKFLOW` + `PermissionBits`; scopes via `scopes.yml` |
+| Permission enforcement | Existing `access_control_service.ACLService` | `RegistryResourceType.WORKFLOW` + `PermissionBits`; scopes via `scopes.yml` |
 | Persistence | MongoDB + `RunService` | `WorkflowRun` + `NodeRun` records per execution |
 | GUI surface | REST + SSE API | Graph topology, live status overlay, discovery UI |
