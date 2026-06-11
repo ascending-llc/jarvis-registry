@@ -14,15 +14,15 @@ class SystemRoles(StrEnum):
     USER = "USER"
 
 
-class Personalization(BaseModel):
-    memories: bool = True
-
-
 class Favorite(BaseModel):
     agentId: str | None = None
     model: str | None = None
     endpoint: str | None = None
     spec: str | None = None
+
+
+class Personalization(BaseModel):
+    memories: bool = True
 
 
 class User(Document):
@@ -36,6 +36,7 @@ class User(Document):
     googleId: str | None = None
     facebookId: str | None = None
     openidId: str | None = None
+    openidIssuer: str | None = None
     samlId: str | None = None
     ldapId: str | None = None
     githubId: str | None = None
@@ -47,6 +48,8 @@ class User(Document):
     termsAccepted: bool = False
     personalization: Personalization = Field(default_factory=Personalization)
     favorites: list[Favorite] = Field(default_factory=list)
+    skillStates: dict[str, bool] = Field(default_factory=dict)
+    storageKey: str | None = None
     idOnTheSource: str | None = None
     tenantId: str | None = None
     createdAt: datetime | None = None
