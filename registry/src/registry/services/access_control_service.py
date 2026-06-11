@@ -135,26 +135,6 @@ class ACLService:
             email=getattr(obj, "email", None),
         )
 
-    async def get_role_by_resource_and_permbits(
-        self,
-        resource_type: str,
-        perm_bits: int,
-        session: AsyncClientSession | None = None,
-    ) -> RegistryAccessRole | None:
-        """
-        Find the RegistryAccessRole for a given resource_type and perm_bits.
-        Used to automatically associate a roleId when only perm_bits is provided.
-        """
-        try:
-            role = await RegistryAccessRole.find_one(
-                {"resourceType": resource_type, "permBits": perm_bits},
-                session=session,
-            )
-            return role
-        except Exception as e:
-            logger.error(f"Error finding role for {resource_type} with permBits {perm_bits}: {e}")
-            return None
-
     async def grant_permission(
         self,
         principal_type: str,

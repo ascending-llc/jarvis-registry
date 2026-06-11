@@ -104,7 +104,7 @@ async def test_update_resource_permissions_uses_injected_acl_service(sample_user
         ],
     )
 
-    with _mock_transaction():
+    with _mock_transaction() as mock_session:
         result = await update_resource_permissions(
             resource_id=resource_id,
             resource_type=ResourceType.MCPSERVER.value,
@@ -114,9 +114,14 @@ async def test_update_resource_permissions_uses_injected_acl_service(sample_user
         )
 
     acl_service.check_user_permission.assert_awaited_once()
+    assert acl_service.check_user_permission.await_args.kwargs["session"] is mock_session
     acl_service.validate_at_least_one_owner_remains.assert_awaited_once()
+    assert acl_service.validate_at_least_one_owner_remains.await_args.kwargs["session"] is mock_session
     assert acl_service.delete_permission.await_count == 2
+    for call in acl_service.delete_permission.await_args_list:
+        assert call.kwargs["session"] is mock_session
     acl_service.grant_permission.assert_awaited_once()
+    assert acl_service.grant_permission.await_args.kwargs["session"] is mock_session
     assert result.results["resourceId"] == resource_id
 
 
@@ -290,7 +295,7 @@ async def test_remove_principal_without_role_id(sample_user_context):
         removed=[RemovePrincipalIn(principalType=PrincipalType.USER, principalId=principal_id)],
     )
 
-    with _mock_transaction():
+    with _mock_transaction() as mock_session:
         result = await update_resource_permissions(
             resource_id=resource_id,
             resource_type=ResourceType.MCPSERVER.value,
@@ -301,6 +306,10 @@ async def test_remove_principal_without_role_id(sample_user_context):
 
     # public=False also deletes the public entry, so the removed user is one of two deletes.
     assert acl_service.delete_permission.await_count == 2
+    for call in acl_service.delete_permission.await_args_list:
+        assert call.kwargs["session"] is mock_session
+    acl_service.check_user_permission.assert_awaited_once()
+    assert acl_service.check_user_permission.await_args.kwargs["session"] is mock_session
     acl_service.grant_permission.assert_not_awaited()
     assert result.results["resourceId"] == resource_id
 
