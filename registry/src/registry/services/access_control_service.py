@@ -5,8 +5,8 @@ from typing import Any
 from beanie import PydanticObjectId
 from fastapi import HTTPException
 from fastapi import status as http_status
+from pymongo.asynchronous.client_session import AsyncClientSession
 
-from registry_pkgs.database.decorators import get_current_session
 from registry_pkgs.models import (
     PrincipalType,
     RegistryAccessRole,
@@ -90,9 +90,8 @@ class ACLService:
         resource_id: PydanticObjectId,
         role_id: PydanticObjectId | None,
         perm_bits: int,
+        session: AsyncClientSession | None = None,
     ) -> RegistryAclEntry:
-        session = get_current_session()
-
         acl_entry = await RegistryAclEntry.find_one(
             {
                 "principalType": principal_type,
@@ -143,6 +142,7 @@ class ACLService:
         resource_type: str,
         resource_id: PydanticObjectId,
         perm_bits: int,
+        session: AsyncClientSession | None = None,
     ) -> RegistryAclEntry:
         """
         Grant ACL permission to a principal (user or group) for a specific resource.
@@ -183,10 +183,15 @@ class ACLService:
             resource_id=resource_id,
             role_id=role_id,
             perm_bits=perm_bits,
+            session=session,
         )
 
     async def delete_acl_entries_for_resource(
-        self, resource_type: str, resource_id: PydanticObjectId, perm_bits_to_delete: int | None = None
+        self,
+        resource_type: str,
+        resource_id: PydanticObjectId,
+        perm_bits_to_delete: int | None = None,
+        session: AsyncClientSession | None = None,
     ) -> int:
         """
         Bulk delete ACL entries for a given resource, optionally deleting all entries with permBits less than or equal to the specified value.
@@ -195,7 +200,6 @@ class ACLService:
             None (returns 0 on error).
         """
         try:
-            session = get_current_session()
             query = {"resourceType": resource_type, "resourceId": resource_id}
 
             if perm_bits_to_delete:
@@ -216,6 +220,7 @@ class ACLService:
         resource_id: PydanticObjectId,
         principal_type: str,
         principal_id: PydanticObjectId | str | None,
+        session: AsyncClientSession | None = None,
     ) -> int:
         """
         Remove a single ACL entry for a given resource, principal type, and principal ID.
@@ -233,7 +238,6 @@ class ACLService:
                 None (returns 0 on error).
         """
         try:
-            session = get_current_session()
             query = {
                 "resourceType": resource_type,
                 "resourceId": resource_id,
@@ -287,6 +291,7 @@ class ACLService:
         self,
         resource_type: str,
         resource_id: PydanticObjectId,
+        session: AsyncClientSession | None = None,
     ) -> dict[str, Any]:
         """
         Get all ACL permissions for a specific resource with full principal details.
@@ -294,7 +299,8 @@ class ACLService:
         """
         try:
             acl_entries = await RegistryAclEntry.find(
-                {"resourceType": resource_type, "resourceId": resource_id}
+                {"resourceType": resource_type, "resourceId": resource_id},
+                session=session,
             ).to_list()
 
             principals: list[PrincipalDetailOut] = []
@@ -306,7 +312,7 @@ class ACLService:
                     continue
 
                 if entry.principalType == PrincipalType.USER.value and entry.principalId:
-                    user = await User.get(entry.principalId)
+                    user = await User.get(entry.principalId, session=session)
                     if user:
                         principals.append(
                             PrincipalDetailOut(
@@ -336,6 +342,7 @@ class ACLService:
         user_id: PydanticObjectId,
         resource_type: str,
         resource_id: PydanticObjectId,
+        session: AsyncClientSession | None = None,
     ) -> ResourcePermissions:
         """
         Get the resolved permissions for a single user on a single resource.
@@ -354,7 +361,8 @@ class ACLService:
                             {"principalType": PrincipalType.USER.value, "principalId": user_id},
                             {"principalType": PrincipalType.PUBLIC.value, "principalId": None},
                         ],
-                    }
+                    },
+                    session=session,
                 )
                 .sort([("permBits", -1)])
                 .to_list()
@@ -379,6 +387,7 @@ class ACLService:
         user_id: PydanticObjectId,
         resource_type: str,
         resource_ids: list[PydanticObjectId],
+        session: AsyncClientSession | None = None,
     ) -> dict[PydanticObjectId, ResourcePermissions]:
         """Batch variant of ``get_user_permissions_for_resource``.
 
@@ -403,7 +412,8 @@ class ACLService:
                             {"principalType": PrincipalType.USER.value, "principalId": user_id},
                             {"principalType": PrincipalType.PUBLIC.value, "principalId": None},
                         ],
-                    }
+                    },
+                    session=session,
                 )
                 .sort([("permBits", -1)])
                 .to_list()
@@ -432,6 +442,7 @@ class ACLService:
         resource_type: str,
         resource_id: PydanticObjectId,
         required_permission: str,
+        session: AsyncClientSession | None = None,
     ) -> ResourcePermissions:
         """
         Verify a user holds a specific permission on a resource.
@@ -455,6 +466,7 @@ class ACLService:
             user_id=user_id,
             resource_type=resource_type,
             resource_id=resource_id,
+            session=session,
         )
         if not getattr(permissions, required_permission, False):
             raise HTTPException(
@@ -467,6 +479,7 @@ class ACLService:
         self,
         user_id: PydanticObjectId,
         resource_type: str,
+        session: AsyncClientSession | None = None,
     ) -> list[str]:
         """
         Return the IDs of all resources of a given type that the user can VIEW.
@@ -490,7 +503,8 @@ class ACLService:
                         {"principalType": PrincipalType.USER.value, "principalId": user_id},
                         {"principalType": PrincipalType.PUBLIC.value, "principalId": None},
                     ],
-                }
+                },
+                session=session,
             ).to_list()
 
             seen: set[str] = set()
@@ -507,7 +521,11 @@ class ACLService:
             logger.error(f"Error fetching accessible {resource_type} IDs for user {user_id}: {e}")
             return []
 
-    async def get_roles_by_resource_type(self, resource_type: str) -> list[RoleOut]:
+    async def get_roles_by_resource_type(
+        self,
+        resource_type: str,
+        session: AsyncClientSession | None = None,
+    ) -> list[RoleOut]:
         """
         Get all available roles for a specific resource type.
 
@@ -517,7 +535,11 @@ class ACLService:
         Returns:
             List of roles (roleId, name, description) in ascending permission order
         """
-        roles = await RegistryAccessRole.find({"resourceType": resource_type}).sort([("permBits", 1)]).to_list()
+        roles = (
+            await RegistryAccessRole.find({"resourceType": resource_type}, session=session)
+            .sort([("permBits", 1)])
+            .to_list()
+        )
         return [
             RoleOut(
                 roleId=role.id,
@@ -533,6 +555,7 @@ class ACLService:
         resource_id: PydanticObjectId,
         updated_principals: list[Any],
         removed_principals: list[Any],
+        session: AsyncClientSession | None = None,
     ) -> None:
         """
         Validate that after the update, at least one owner remains for the resource.
@@ -541,7 +564,8 @@ class ACLService:
             HTTPException: 409 if the update would result in no owners remaining
         """
         current_acl_entries = await RegistryAclEntry.find(
-            {"resourceType": resource_type, "resourceId": resource_id}
+            {"resourceType": resource_type, "resourceId": resource_id},
+            session=session,
         ).to_list()
 
         owner_perm_bits = PermissionBits.VIEW | PermissionBits.EDIT | PermissionBits.DELETE | PermissionBits.SHARE

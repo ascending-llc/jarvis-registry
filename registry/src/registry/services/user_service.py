@@ -2,6 +2,7 @@ import logging
 from datetime import UTC, datetime
 
 from beanie import PydanticObjectId
+from pymongo.asynchronous.client_session import AsyncClientSession
 
 from registry_pkgs.models import User
 
@@ -21,7 +22,11 @@ class UserService:
             logger.error(f"Error finding user by source_id '{source_id}': {e}")
             return None
 
-    async def get_user_by_user_id(self, user_id: str) -> User | None:
+    async def get_user_by_user_id(
+        self,
+        user_id: str,
+        session: AsyncClientSession | None = None,
+    ) -> User | None:
         """
         Find a user by user_id
         """
@@ -31,7 +36,7 @@ class UserService:
             except Exception:
                 logger.warning(f"Invalid user ID format: {user_id}")
                 return None
-            user = await User.get(obj_id)
+            user = await User.get(obj_id, session=session)
             return user
         except Exception as e:
             logger.error(f"Error finding user by user_id '{user_id}': {e}")

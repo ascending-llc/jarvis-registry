@@ -3,8 +3,8 @@ from datetime import UTC, datetime
 from typing import Any
 
 from beanie import PydanticObjectId
+from pymongo.asynchronous.client_session import AsyncClientSession
 
-from registry_pkgs.database.decorators import get_current_session
 from registry_pkgs.models.enums import (
     FederationJobPhase,
     FederationJobStateMachine,
@@ -22,7 +22,11 @@ logger = logging.getLogger(__name__)
 
 
 class FederationJobService:
-    async def get_active_job(self, federation_id: PydanticObjectId) -> FederationSyncJob | None:
+    async def get_active_job(
+        self,
+        federation_id: PydanticObjectId,
+        session: AsyncClientSession | None = None,
+    ) -> FederationSyncJob | None:
         return await FederationSyncJob.find_one(
             {
                 "federationId": federation_id,
@@ -34,6 +38,7 @@ class FederationJobService:
                 },
             },
             sort=[("createdAt", -1)],
+            session=session,
         )
 
     async def create_job(
@@ -43,6 +48,7 @@ class FederationJobService:
         trigger_type: FederationTriggerType,
         triggered_by: str | None,
         request_snapshot: dict[str, Any],
+        session: AsyncClientSession | None = None,
     ) -> FederationSyncJob:
         job = FederationSyncJob(
             federationId=federation_id,
@@ -55,14 +61,19 @@ class FederationJobService:
             discoverySummary=FederationDiscoverySummary(),
             applySummary=FederationApplySummary(),
         )
-        await job.insert(session=get_current_session())
+        await job.insert(session=session)
         return job
 
-    async def mark_syncing(self, job: FederationSyncJob, phase: FederationJobPhase) -> FederationSyncJob:
+    async def mark_syncing(
+        self,
+        job: FederationSyncJob,
+        phase: FederationJobPhase,
+        session: AsyncClientSession | None = None,
+    ) -> FederationSyncJob:
         job.status = FederationJobStateMachine.transition_to_syncing(job.status)
         job.phase = phase
         job.startedAt = job.startedAt or datetime.now(UTC)
-        await job.save(session=get_current_session())
+        await job.save(session=session)
         return job
 
     async def update_discovery_summary(
@@ -70,34 +81,46 @@ class FederationJobService:
         job: FederationSyncJob,
         discovered_mcp_servers: int,
         discovered_agents: int,
+        session: AsyncClientSession | None = None,
     ) -> FederationSyncJob:
         job.discoverySummary = FederationDiscoverySummary(
             discoveredMcpServers=discovered_mcp_servers,
             discoveredAgents=discovered_agents,
         )
-        await job.save(session=get_current_session())
+        await job.save(session=session)
         return job
 
     async def update_apply_summary(
         self,
         job: FederationSyncJob,
         apply_summary: FederationApplySummary,
+        session: AsyncClientSession | None = None,
     ) -> FederationSyncJob:
         job.applySummary = apply_summary
-        await job.save(session=get_current_session())
+        await job.save(session=session)
         return job
 
-    async def mark_success(self, job: FederationSyncJob) -> FederationSyncJob:
+    async def mark_success(
+        self,
+        job: FederationSyncJob,
+        session: AsyncClientSession | None = None,
+    ) -> FederationSyncJob:
         job.status = FederationJobStateMachine.transition_to_success(job.status)
         job.phase = FederationJobPhase.COMPLETED
         job.finishedAt = datetime.now(UTC)
-        await job.save(session=get_current_session())
+        await job.save(session=session)
         return job
 
-    async def mark_failed(self, job: FederationSyncJob, phase: FederationJobPhase, error: str) -> FederationSyncJob:
+    async def mark_failed(
+        self,
+        job: FederationSyncJob,
+        phase: FederationJobPhase,
+        error: str,
+        session: AsyncClientSession | None = None,
+    ) -> FederationSyncJob:
         job.status = FederationJobStateMachine.transition_to_failed(job.status)
         job.phase = phase
         job.error = error
         job.finishedAt = datetime.now(UTC)
-        await job.save(session=get_current_session())
+        await job.save(session=session)
         return job

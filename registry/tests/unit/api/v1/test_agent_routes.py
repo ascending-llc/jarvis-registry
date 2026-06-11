@@ -26,7 +26,7 @@ class _RecordingTxnCtx:
 
     async def __aexit__(self, exc_type, exc, tb):
         self.exit_exc_type = exc_type
-        return False  # do not suppress -> exception propagates out of @use_transaction
+        return False  # do not suppress -> exception propagates out of the explicit transaction block
 
 
 class _FakeTxnSession:
@@ -173,7 +173,7 @@ async def test_create_agent_uses_injected_services(sample_user_context):
         type="jsonrpc",
     )
 
-    with patch("registry_pkgs.database.decorators.MongoDB.get_client") as mock_get_client:
+    with patch("registry.api.v1.a2a.agent_routes.MongoDB.get_client") as mock_get_client:
         mock_session = AsyncMock()
         mock_client = MagicMock()
         mock_client.start_session.return_value.__aenter__.return_value = mock_session
@@ -187,12 +187,17 @@ async def test_create_agent_uses_injected_services(sample_user_context):
             a2a_agent_service=a2a_agent_service,
         )
 
-    a2a_agent_service.create_agent.assert_awaited_once_with(data=request, user_id=sample_user_context["user_id"])
+    a2a_agent_service.create_agent.assert_awaited_once_with(
+        data=request,
+        user_id=sample_user_context["user_id"],
+        session=mock_session,
+    )
     acl_service.grant_permission.assert_awaited_once()
     call_args = acl_service.grant_permission.call_args
     assert call_args.kwargs["principal_type"] == PrincipalType.USER
     assert call_args.kwargs["resource_type"] == ResourceType.REMOTE_AGENT
     assert call_args.kwargs["perm_bits"] == RoleBits.OWNER
+    assert call_args.kwargs["session"] is mock_session
     assert result.name == "Test Agent"
     # Assert config field is returned with correct values
     assert result.config is not None
@@ -221,7 +226,7 @@ async def test_create_agent_invalid_root_path_returns_400(sample_user_context):
         type="jsonrpc",
     )
 
-    with patch("registry_pkgs.database.decorators.MongoDB.get_client") as mock_get_client:
+    with patch("registry.api.v1.a2a.agent_routes.MongoDB.get_client") as mock_get_client:
         mock_session = AsyncMock()
         mock_client = MagicMock()
         mock_client.start_session.return_value.__aenter__.return_value = mock_session
@@ -256,7 +261,7 @@ async def test_update_agent_duplicate_path_returns_409(sample_user_context):
 
     request = AgentUpdateRequest(path="/Team A/CRM Agent")
 
-    with patch("registry_pkgs.database.decorators.MongoDB.get_client") as mock_get_client:
+    with patch("registry.api.v1.a2a.agent_routes.MongoDB.get_client") as mock_get_client:
         mock_session = AsyncMock()
         mock_client = MagicMock()
         mock_client.start_session.return_value.__aenter__.return_value = mock_session
@@ -291,7 +296,7 @@ async def test_update_agent_invalid_root_path_returns_400(sample_user_context):
 
     request = AgentUpdateRequest(path="/")
 
-    with patch("registry_pkgs.database.decorators.MongoDB.get_client") as mock_get_client:
+    with patch("registry.api.v1.a2a.agent_routes.MongoDB.get_client") as mock_get_client:
         mock_session = AsyncMock()
         mock_client = MagicMock()
         mock_client.start_session.return_value.__aenter__.return_value = mock_session
@@ -514,7 +519,7 @@ async def test_refresh_agent_capabilities_permission_denied():
 @pytest.mark.asyncio
 async def test_create_agent_rolls_back_when_grant_permission_fails(sample_user_context):
     """AC4: if grant_permission fails after create_agent succeeds, the failure
-    propagates out of the @use_transaction boundary (rollback path), so the
+    propagates out of the explicit transaction boundary (rollback path), so the
     agent insert is rolled back rather than left orphaned."""
     agent = _build_agent()
     a2a_agent_service = MagicMock()
@@ -534,7 +539,7 @@ async def test_create_agent_rolls_back_when_grant_permission_fails(sample_user_c
     ctx = _RecordingTxnCtx()
     fake_client = _FakeTxnClient(_FakeTxnSession(ctx))
 
-    with patch("registry_pkgs.database.decorators.MongoDB.get_client", return_value=fake_client):
+    with patch("registry.api.v1.a2a.agent_routes.MongoDB.get_client", return_value=fake_client):
         with pytest.raises(HTTPException) as exc_info:
             await create_agent(
                 data=request,
@@ -546,8 +551,8 @@ async def test_create_agent_rolls_back_when_grant_permission_fails(sample_user_c
     assert exc_info.value.status_code == 500
     a2a_agent_service.create_agent.assert_awaited_once()
     acl_service.grant_permission.assert_awaited_once()
-    # Transaction context manager exited via an exception -> rollback path taken.
-    assert ctx.exit_exc_type is HTTPException
+    # Transaction context manager sees the original exception before the route maps it to HTTPException.
+    assert ctx.exit_exc_type is RuntimeError
 
 
 @pytest.mark.asyncio
@@ -564,7 +569,7 @@ async def test_delete_agent_rolls_back_when_acl_cleanup_fails(sample_user_contex
     ctx = _RecordingTxnCtx()
     fake_client = _FakeTxnClient(_FakeTxnSession(ctx))
 
-    with patch("registry_pkgs.database.decorators.MongoDB.get_client", return_value=fake_client):
+    with patch("registry.api.v1.a2a.agent_routes.MongoDB.get_client", return_value=fake_client):
         with pytest.raises(HTTPException) as exc_info:
             await delete_agent(
                 agent_id=agent_id,
@@ -576,8 +581,8 @@ async def test_delete_agent_rolls_back_when_acl_cleanup_fails(sample_user_contex
     assert exc_info.value.status_code == 500
     a2a_agent_service.delete_agent.assert_awaited_once()
     acl_service.delete_acl_entries_for_resource.assert_awaited_once()
-    # Transaction context manager exited via an exception -> rollback path taken.
-    assert ctx.exit_exc_type is HTTPException
+    # Transaction context manager sees the original exception before the route maps it to HTTPException.
+    assert ctx.exit_exc_type is RuntimeError
 
 
 def test_convert_to_list_item_hardcodes_status_and_reads_isenabled():

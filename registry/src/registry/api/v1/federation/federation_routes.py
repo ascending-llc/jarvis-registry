@@ -6,7 +6,7 @@ from beanie import PydanticObjectId
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi import status as http_status
 
-from registry_pkgs.database.decorators import use_transaction
+from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.models import PrincipalType
 from registry_pkgs.models.enums import FederationStateMachine, FederationStatus, RoleBits
 from registry_pkgs.models.extended_access_role import RegistryResourceType
@@ -267,7 +267,6 @@ def _raise_conflict(message: str) -> None:
     status_code=http_status.HTTP_201_CREATED,
 )
 @track_registry_operation("create", resource_type="federation")
-@use_transaction
 async def create_federation(
     data: FederationCreateRequest,
     user_context: CurrentUser,
@@ -286,21 +285,25 @@ async def create_federation(
     user_id = user_context.get("user_id")
 
     try:
-        federation = await federation_crud_service.create_federation(
-            provider_type=data.providerType,
-            display_name=data.displayName,
-            description=data.description,
-            tags=data.tags,
-            provider_config=data.providerConfig,
-            created_by=user_id,
-        )
-        await acl_service.grant_permission(
-            principal_type=PrincipalType.USER,
-            principal_id=PydanticObjectId(user_id),
-            resource_type=RegistryResourceType.FEDERATION,
-            resource_id=federation.id,
-            perm_bits=RoleBits.OWNER,
-        )
+        async with MongoDB.get_client().start_session() as mongo_session:
+            async with await mongo_session.start_transaction():
+                federation = await federation_crud_service.create_federation(
+                    provider_type=data.providerType,
+                    display_name=data.displayName,
+                    description=data.description,
+                    tags=data.tags,
+                    provider_config=data.providerConfig,
+                    created_by=user_id,
+                    session=mongo_session,
+                )
+                await acl_service.grant_permission(
+                    principal_type=PrincipalType.USER,
+                    principal_id=PydanticObjectId(user_id),
+                    resource_type=RegistryResourceType.FEDERATION,
+                    resource_id=federation.id,
+                    perm_bits=RoleBits.OWNER,
+                    session=mongo_session,
+                )
     except ValueError as exc:
         _raise_federation_value_error(exc)
     logger.info(f"Created federation {federation.id}")
