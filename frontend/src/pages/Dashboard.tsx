@@ -43,6 +43,7 @@ const Dashboard: React.FC = () => {
     refreshWorkflowData,
 
     searchTerm,
+    setSearchTerm,
     committedQuery,
     setCommittedQuery,
   } = useServer();
@@ -57,7 +58,9 @@ const Dashboard: React.FC = () => {
     } else {
       setViewMode('servers');
     }
-  }, [urlTab, setViewMode]);
+    setSearchTerm('');
+    setCommittedQuery('');
+  }, [urlTab, setViewMode, setSearchTerm, setCommittedQuery]);
 
   // Semantic search
   const semanticEnabled = committedQuery.trim().length >= 1;
@@ -445,6 +448,7 @@ const Dashboard: React.FC = () => {
               tools={semanticTools}
               agents={semanticAgents}
               skills={semanticSkills}
+              viewMode={viewMode}
             />
 
             {shouldShowFallbackGrid && (

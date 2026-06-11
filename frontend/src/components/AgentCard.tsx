@@ -148,11 +148,11 @@ const AgentCard: React.FC<AgentCardProps> = ({ agent }) => {
                     className='max-w-[160px] cursor-pointer truncate text-base font-medium text-[var(--jarvis-text)] transition-colors hover:text-[var(--jarvis-text-strong)]'
                     onClick={() => navigate(`/agent-edit?id=${agent.id}&isReadOnly=true`)}
                   >
-                    {agent.name}
+                    {agent.card?.name || agent.config?.title || agent.name}
                   </h3>
                 ) : (
                   <h3 className='max-w-[160px] truncate text-base font-medium text-[var(--jarvis-text)]'>
-                    {agent.name}
+                    {agent.card?.name || agent.config?.title || agent.name}
                   </h3>
                 )}
               </div>

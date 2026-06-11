@@ -126,6 +126,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
                     onChange={e => setSearchTerm(e.target.value)}
                     onKeyDown={e => {
                       if (e.key === 'Enter') {
+                        if (viewMode === 'workflow' || viewMode === 'external') return;
                         e.preventDefault();
                         setCommittedQuery(searchTerm.trim());
                       }
