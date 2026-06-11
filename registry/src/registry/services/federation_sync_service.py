@@ -7,7 +7,7 @@ from beanie import PydanticObjectId
 from pymongo.asynchronous.client_session import AsyncClientSession
 
 from registry_pkgs.database.mongodb import MongoDB
-from registry_pkgs.models import A2AAgent, ExtendedAccessRole, ExtendedMCPServer, PrincipalType, RegistryAccessRole, ResourceType
+from registry_pkgs.models import A2AAgent, ExtendedMCPServer, PrincipalType, RegistryAccessRole, ResourceType
 from registry_pkgs.models.enums import (
     FederationJobPhase,
     FederationJobType,

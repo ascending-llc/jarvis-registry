@@ -140,13 +140,13 @@ class ACLService:
         resource_type: str,
         perm_bits: int,
         session: AsyncClientSession | None = None,
-    ) -> ExtendedAccessRole | None:
+    ) -> RegistryAccessRole | None:
         """
-        Find the ExtendedAccessRole for a given resource_type and perm_bits.
+        Find the RegistryAccessRole for a given resource_type and perm_bits.
         Used to automatically associate a roleId when only perm_bits is provided.
         """
         try:
-            role = await ExtendedAccessRole.find_one(
+            role = await RegistryAccessRole.find_one(
                 {"resourceType": resource_type, "permBits": perm_bits},
                 session=session,
             )
