@@ -13,14 +13,14 @@ from pymongo import AsyncMongoClient
 from ..core.config import MongoConfig
 from ..models import (
     A2AAgent,
-    ExtendedAccessRole,
-    ExtendedAclEntry,
     ExtendedMCPServer,
     Federation,
     FederationSyncJob,
     Group,
     Key,
     NodeRun,
+    RegistryAccessRole,
+    RegistryAclEntry,
     Token,
     User,
     WorkflowDefinition,
@@ -96,9 +96,9 @@ class MongoDB:
             # Pass the namespace containing all model classes so forward references can be resolved
             rebuild_namespace = {
                 "User": User,
-                "ExtendedAccessRole": ExtendedAccessRole,
+                "RegistryAccessRole": RegistryAccessRole,
                 "Group": Group,
-                "ExtendedAclEntry": ExtendedAclEntry,
+                "RegistryAclEntry": RegistryAclEntry,
                 "ExtendedMCPServer": ExtendedMCPServer,
                 "Token": Token,
                 "Key": Key,
@@ -107,9 +107,9 @@ class MongoDB:
                 "FederationSyncJob": FederationSyncJob,
             }
             User.model_rebuild(_types_namespace=rebuild_namespace)
-            ExtendedAccessRole.model_rebuild(_types_namespace=rebuild_namespace)
+            RegistryAccessRole.model_rebuild(_types_namespace=rebuild_namespace)
             Group.model_rebuild(_types_namespace=rebuild_namespace)
-            ExtendedAclEntry.model_rebuild(_types_namespace=rebuild_namespace)
+            RegistryAclEntry.model_rebuild(_types_namespace=rebuild_namespace)
             ExtendedMCPServer.model_rebuild(_types_namespace=rebuild_namespace)
             Token.model_rebuild(_types_namespace=rebuild_namespace)
             Key.model_rebuild(_types_namespace=rebuild_namespace)
@@ -122,9 +122,9 @@ class MongoDB:
                 database=db,
                 document_models=[
                     User,
-                    ExtendedAccessRole,
+                    RegistryAccessRole,
                     Group,
-                    ExtendedAclEntry,
+                    RegistryAclEntry,
                     ExtendedMCPServer,
                     Token,
                     Key,

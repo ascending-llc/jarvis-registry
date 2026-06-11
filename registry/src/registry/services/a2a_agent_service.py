@@ -15,6 +15,7 @@ import httpx
 from a2a.client import A2ACardResolver, A2AClientHTTPError
 from a2a.types import AgentCard
 from beanie import PydanticObjectId
+from pymongo.asynchronous.client_session import AsyncClientSession
 from pymongo.errors import DuplicateKeyError
 
 from registry.core.exceptions import (
@@ -24,7 +25,6 @@ from registry.core.exceptions import (
     A2AAgentCardUpstreamException,
 )
 from registry_pkgs.core.config import JwtSigningConfig
-from registry_pkgs.database.decorators import get_current_session
 from registry_pkgs.models.a2a_agent import A2AAgent, AgentConfig, normalize_a2a_agent_path
 from registry_pkgs.vector.repositories.a2a_agent_repository import A2AAgentRepository
 from registry_pkgs.workflows.a2a_client import build_headers
@@ -353,7 +353,12 @@ class A2AAgentService:
         """
         return await A2AAgent.find_one({"path": path})
 
-    async def create_agent(self, data: AgentCreateRequest, user_id: str) -> A2AAgent:
+    async def create_agent(
+        self,
+        data: AgentCreateRequest,
+        user_id: str,
+        session: AsyncClientSession | None = None,
+    ) -> A2AAgent:
         """
         Create a new agent. Automatically fetches agent card from provided URL.
 
@@ -379,7 +384,7 @@ class A2AAgentService:
             normalized_path = normalize_a2a_agent_path(data.path)
 
             # Check if path already exists
-            existing = await A2AAgent.find_one({"path": normalized_path})
+            existing = await A2AAgent.find_one({"path": normalized_path}, session=session)
             if existing:
                 raise ValueError(self._path_conflict_message(data.path, normalized_path))
 
@@ -420,7 +425,7 @@ class A2AAgentService:
                 lastSyncStatus="success",
                 lastSyncVersion=agent_card.version,
             )
-            await agent.insert(session=get_current_session())
+            await agent.insert(session=session)
             logger.info(
                 f"Created agent: {agent.config.title} (ID: {agent.id}, path: {agent.path}) with wellKnown sync enabled"
             )
@@ -439,7 +444,12 @@ class A2AAgentService:
             logger.error(f"Error creating agent: {e}", exc_info=True)
             raise ValueError(f"Failed to create agent: {str(e)}")
 
-    async def update_agent(self, agent_id: str, data: AgentUpdateRequest) -> A2AAgent:
+    async def update_agent(
+        self,
+        agent_id: str,
+        data: AgentUpdateRequest,
+        session: AsyncClientSession | None = None,
+    ) -> A2AAgent:
         """
         Update an existing agent. If URL is updated, automatically fetches new agent card.
 
@@ -454,7 +464,7 @@ class A2AAgentService:
             ValueError: If agent not found or validation fails
         """
         try:
-            agent = await A2AAgent.get(PydanticObjectId(agent_id))
+            agent = await A2AAgent.get(PydanticObjectId(agent_id), session=session)
             if not agent:
                 raise ValueError(f"Agent not found: {agent_id}")
 
@@ -550,7 +560,7 @@ class A2AAgentService:
             if "path" in update_data:
                 normalized_path = normalize_a2a_agent_path(update_data["path"])
                 # Check if new path conflicts with existing agent
-                existing = await A2AAgent.find_one({"path": normalized_path, "_id": {"$ne": agent.id}})
+                existing = await A2AAgent.find_one({"path": normalized_path, "_id": {"$ne": agent.id}}, session=session)
                 if existing:
                     raise ValueError(self._path_conflict_message(update_data["path"], normalized_path))
                 agent.path = normalized_path
@@ -564,7 +574,7 @@ class A2AAgentService:
 
             # Save changes
             old_hash = agent.vectorContentHash
-            await agent.save(session=get_current_session())
+            await agent.save(session=session)
             logger.info(f"Updated agent: {agent.config.title} (ID: {agent_id})")
 
             self._schedule_vector_sync(agent, old_hash)
@@ -583,7 +593,11 @@ class A2AAgentService:
             logger.error(f"Error updating agent {agent_id}: {e}", exc_info=True)
             raise ValueError(f"Failed to update agent: {str(e)}")
 
-    async def delete_agent(self, agent_id: str) -> bool:
+    async def delete_agent(
+        self,
+        agent_id: str,
+        session: AsyncClientSession | None = None,
+    ) -> bool:
         """
         Delete an agent.
 
@@ -597,12 +611,12 @@ class A2AAgentService:
             ValueError: If agent not found
         """
         try:
-            agent = await A2AAgent.get(PydanticObjectId(agent_id))
+            agent = await A2AAgent.get(PydanticObjectId(agent_id), session=session)
             if not agent:
                 raise ValueError(f"Agent not found: {agent_id}")
 
             agent_name = agent.card.name
-            await agent.delete(session=get_current_session())
+            await agent.delete(session=session)
             logger.info(f"Deleted agent: {agent_name} (ID: {agent_id})")
 
             self._schedule_delete(agent_id, agent_name)
@@ -614,7 +628,12 @@ class A2AAgentService:
             logger.error(f"Error deleting agent {agent_id}: {e}", exc_info=True)
             raise ValueError(f"Failed to delete agent: {str(e)}")
 
-    async def toggle_agent_status(self, agent_id: str, enabled: bool) -> A2AAgent:
+    async def toggle_agent_status(
+        self,
+        agent_id: str,
+        enabled: bool,
+        session: AsyncClientSession | None = None,
+    ) -> A2AAgent:
         """
         Toggle agent enabled/disabled status.
 
@@ -629,7 +648,7 @@ class A2AAgentService:
             ValueError: If agent not found
         """
         try:
-            agent = await A2AAgent.get(PydanticObjectId(agent_id))
+            agent = await A2AAgent.get(PydanticObjectId(agent_id), session=session)
             if not agent:
                 raise ValueError(f"Agent not found: {agent_id}")
 
@@ -637,7 +656,7 @@ class A2AAgentService:
             agent.updatedAt = datetime.now(UTC)
 
             old_hash = agent.vectorContentHash
-            await agent.save(session=get_current_session())
+            await agent.save(session=session)
 
             logger.info(f"Toggled agent {agent.card.name} to {'enabled' if enabled else 'disabled'}")
 
@@ -655,7 +674,11 @@ class A2AAgentService:
             logger.error(f"Error toggling agent {agent_id}: {e}", exc_info=True)
             raise ValueError(f"Failed to toggle agent: {str(e)}")
 
-    async def refresh_agent_capabilities(self, agent_id: str) -> A2AAgent:
+    async def refresh_agent_capabilities(
+        self,
+        agent_id: str,
+        session: AsyncClientSession | None = None,
+    ) -> A2AAgent:
         """
         Refresh agent capabilities by fetching latest agent card from well-known endpoint.
 
@@ -676,12 +699,16 @@ class A2AAgentService:
             A2AAgentCardParseException: If agent card cannot be parsed/validated
         """
         # Reuse the sync_wellknown implementation - it now returns the updated agent
-        result = await self.sync_wellknown(agent_id)
+        result = await self.sync_wellknown(agent_id, session=session)
 
         # Return the updated agent document from sync result (avoids redundant DB query)
         return result["agent"]
 
-    async def sync_wellknown(self, agent_id: str) -> dict[str, Any]:
+    async def sync_wellknown(
+        self,
+        agent_id: str,
+        session: AsyncClientSession | None = None,
+    ) -> dict[str, Any]:
         """
         Sync agent configuration from .well-known/agent-card.json endpoint using SDK.
 
@@ -695,10 +722,8 @@ class A2AAgentService:
             ValueError: If agent not found, well-known not enabled, or sync fails
         """
         agent: A2AAgent | None = None
-        session = get_current_session()
-
         try:
-            agent = await A2AAgent.get(PydanticObjectId(agent_id))
+            agent = await A2AAgent.get(PydanticObjectId(agent_id), session=session)
             if not agent:
                 raise ValueError(f"Agent not found: {agent_id}")
 

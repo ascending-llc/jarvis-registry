@@ -101,3 +101,22 @@ async def test_semantic_search_requires_authentication():
         )
 
     assert exc_info.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_semantic_search_wraps_unexpected_errors():
+    from fastapi import HTTPException
+
+    request = make_container(state=make_container(is_authenticated=True, user={"username": "tester"}))
+    search_service = MagicMock()
+    search_service.semantic_search = AsyncMock(side_effect=AttributeError("bad search mapping"))
+
+    with pytest.raises(HTTPException) as exc_info:
+        await semantic_search(
+            request=request,
+            search_request=SemanticSearchRequest(query="test"),
+            search_service=search_service,
+        )
+
+    assert exc_info.value.status_code == 500
+    assert exc_info.value.detail == "Internal server error"

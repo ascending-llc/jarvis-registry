@@ -1,5 +1,5 @@
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from beanie import PydanticObjectId
@@ -7,7 +7,7 @@ from fastapi import HTTPException, Request
 
 from registry.api.v1.workflow import workflow_routes
 from registry.schemas.acl_schema import ResourcePermissions
-from registry.schemas.workflow_api_schemas import WorkflowCreateRequest
+from registry.schemas.workflow_api_schemas import WorkflowCreateRequest, WorkflowUpdateRequest
 
 
 def _request_with_headers(headers: dict[str, str]) -> Request:
@@ -240,6 +240,51 @@ async def test_create_workflow_route_forwards_condition_request_to_service():
     assert detail_cond.nodeType == "condition"
     assert [n.name for n in detail_cond.trueSteps] == ["C"]
     assert [n.name for n in detail_cond.falseSteps] == ["D"]
+
+
+@pytest.mark.asyncio
+async def test_update_workflow_passes_session_to_service(monkeypatch: pytest.MonkeyPatch):
+    """update_workflow must open an explicit transaction and pass session=mongo_session
+    to workflow_service.update_workflow."""
+    workflow_id = str(PydanticObjectId())
+    mock_updated_workflow = MagicMock()
+
+    workflow_service = MagicMock()
+    workflow_service.update_workflow = AsyncMock(return_value=mock_updated_workflow)
+    acl_service = MagicMock()
+
+    user_context = {"user_id": str(PydanticObjectId()), "username": "tester"}
+
+    monkeypatch.setattr(
+        workflow_routes,
+        "_authorize_workflow",
+        AsyncMock(return_value=(MagicMock(), MagicMock())),
+    )
+
+    mock_session = AsyncMock()
+    mock_client = MagicMock()
+    mock_client.start_session.return_value.__aenter__.return_value = mock_session
+    mock_session.start_transaction.return_value.__aenter__.return_value = None
+
+    data = WorkflowUpdateRequest(name="Updated")
+
+    with (
+        patch("registry.api.v1.workflow.workflow_routes.MongoDB.get_client", return_value=mock_client),
+        patch("registry.api.v1.workflow.workflow_routes.convert_to_detail", return_value=MagicMock()),
+    ):
+        await workflow_routes.update_workflow(
+            workflow_id=workflow_id,
+            data=data,
+            user_context=user_context,
+            workflow_service=workflow_service,
+            acl_service=acl_service,
+        )
+
+    workflow_service.update_workflow.assert_awaited_once_with(
+        workflow_id=workflow_id,
+        data=data,
+        session=mock_session,
+    )
 
 
 def _fake_workflow(name: str = "wf", version: int = 1):

@@ -41,7 +41,8 @@ from registry_pkgs.core.jwt_utils import build_jwt_payload, encode_jwt
 from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.models.a2a_agent import A2AAgent
 from registry_pkgs.models.enums import WorkflowRunStatus
-from registry_pkgs.models.extended_acl_entry import ExtendedAclEntry
+from registry_pkgs.models.extended_access_role import RegistryResourceType
+from registry_pkgs.models.extended_acl_entry import RegistryAclEntry
 from registry_pkgs.models.workflow import NodeRun, WorkflowDefinition, WorkflowNode, WorkflowRun
 from registry_pkgs.workflows.runner import WorkflowRunner
 
@@ -109,7 +110,13 @@ async def _resolve_pool_user_id(a2a_pool: list[str]) -> str | None:
         agent = await A2AAgent.find_one({"path": f"/{key}"})
         if agent is None:
             continue
-        acls = await ExtendedAclEntry.find({"resourceId": agent.id, "principalType": "user"}).to_list()
+        acls = await RegistryAclEntry.find(
+            {
+                "resourceType": RegistryResourceType.REMOTE_AGENT.value,
+                "resourceId": agent.id,
+                "principalType": "user",
+            }
+        ).to_list()
         for acl in acls:
             if int(acl.permBits) & 1:  # VIEW bit
                 return str(acl.principalId)

@@ -1,29 +1,20 @@
 """
-Extended ACL Entry Model for Registry-Specific Flexibility
+Registry ACL Entry Model for Registry-Specific Flexibility
 
-This module extends the auto-generated AclEntry with a `resourceType` field that accepts one more Enum value.
-The base model (_generated/acl_entry.py) should NOT be modified as it's auto-generated.
+This module extends the auto-generated AclEntry with a `resourceType` field narrowed to the
+resource types this Registry system owns (`RegistryResourceType`). The base model
+(_generated/acl_entry.py) should NOT be modified as it's auto-generated.
 """
-
-from enum import StrEnum
 
 from pydantic import Field
 
 from ._generated import AclEntry
+from .extended_access_role import RegistryResourceType
 
 
-class ExtendedResourceType(StrEnum):
-    AGENT = "agent"
-    PROMPTGROUP = "promptGroup"
-    MCPSERVER = "mcpServer"
-    REMOTE_AGENT = "remoteAgent"
-    FEDERATION = "federation"
-    WORKFLOW = "workflow"
-
-
-class ExtendedAclEntry(AclEntry):
+class RegistryAclEntry(AclEntry):
     """
-    Extended ACL Entry Document
+    Registry ACL Entry Document
     """
 
-    resourceType: ExtendedResourceType = Field(...)  # type: ignore[assignment]
+    resourceType: RegistryResourceType = Field(...)  # type: ignore[assignment]

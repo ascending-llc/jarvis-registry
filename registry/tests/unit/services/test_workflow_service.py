@@ -56,12 +56,12 @@ def _patch_executor_ref_queries(
     mcp_names = mcp_names or set()
     a2a_paths = a2a_paths or set()
 
-    def fake_mcp_find(query: dict):
+    def fake_mcp_find(query: dict, **_kwargs):
         captured_queries.append(("mcp", query))
         requested = set(query["serverName"]["$in"])
         return _ListQuery([SimpleNamespace(serverName=name) for name in sorted(mcp_names & requested)])
 
-    def fake_a2a_find(query: dict):
+    def fake_a2a_find(query: dict, **_kwargs):
         captured_queries.append(("a2a", query))
         requested = set(query["path"]["$in"])
         return _ListQuery([SimpleNamespace(path=path) for path in sorted(a2a_paths & requested)])
@@ -335,7 +335,7 @@ class _FakeWorkflow:
         self.saved = True
 
 
-# ── Transaction + collection mocks for update_workflow (@use_transaction) ──────
+# ── Transaction + collection mocks for update_workflow ─────────────────────────
 
 
 class _FakeTxnCtx:
@@ -404,7 +404,7 @@ async def test_update_workflow_bumps_version_and_snapshots_history(monkeypatch: 
 
     fake_wf = _FakeWorkflow(version=4)
 
-    async def fake_get(self, workflow_id):
+    async def fake_get(self, workflow_id, session=None):
         return fake_wf
 
     monkeypatch.setattr(WorkflowService, "get_workflow_by_id", fake_get)
@@ -443,7 +443,7 @@ async def test_update_workflow_returns_409_on_concurrent_modification(monkeypatc
 
     fake_wf = _FakeWorkflow(version=4)
 
-    async def fake_get(self, workflow_id):
+    async def fake_get(self, workflow_id, session=None):
         return fake_wf
 
     monkeypatch.setattr(WorkflowService, "get_workflow_by_id", fake_get)
@@ -466,7 +466,7 @@ async def test_update_workflow_returns_409_on_duplicate_version(monkeypatch: pyt
 
     fake_wf = _FakeWorkflow(version=4)
 
-    async def fake_get(self, workflow_id):
+    async def fake_get(self, workflow_id, session=None):
         return fake_wf
 
     monkeypatch.setattr(WorkflowService, "get_workflow_by_id", fake_get)
@@ -492,7 +492,7 @@ async def test_update_workflow_invalid_nodes_writes_nothing(monkeypatch: pytest.
 
     fake_wf = _FakeWorkflow(version=4)
 
-    async def fake_get(self, workflow_id):
+    async def fake_get(self, workflow_id, session=None):
         return fake_wf
 
     monkeypatch.setattr(WorkflowService, "get_workflow_by_id", fake_get)
@@ -513,7 +513,7 @@ async def test_update_workflow_invalid_nodes_writes_nothing(monkeypatch: pytest.
 async def test_list_versions_includes_history_and_current(monkeypatch: pytest.MonkeyPatch):
     fake_wf = _FakeWorkflow(version=3)
 
-    async def fake_get(self, workflow_id):
+    async def fake_get(self, workflow_id, session=None):
         return fake_wf
 
     monkeypatch.setattr(WorkflowService, "get_workflow_by_id", fake_get)
@@ -547,7 +547,7 @@ async def test_trigger_run_resolves_requested_historical_version(monkeypatch: py
 
     fake_wf = _FakeWorkflow(version=3)
 
-    async def fake_get(self, workflow_id):
+    async def fake_get(self, workflow_id, session=None):
         return fake_wf
 
     monkeypatch.setattr(WorkflowService, "get_workflow_by_id", fake_get)
@@ -659,7 +659,7 @@ async def test_trigger_workflow_run_persists_triggering_identity(monkeypatch: py
     service JWT on their behalf."""
     fake_wf = _FakeWorkflow(version=3)
 
-    async def fake_get(self, workflow_id):
+    async def fake_get(self, workflow_id, session=None):
         return fake_wf
 
     monkeypatch.setattr(WorkflowService, "get_workflow_by_id", fake_get)

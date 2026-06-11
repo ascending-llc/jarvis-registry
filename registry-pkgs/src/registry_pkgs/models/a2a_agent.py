@@ -442,6 +442,7 @@ class A2AAgent(Document):
             "content": document.page_content,
             "relevance_score": round(float(raw_score), 3) if raw_score is not None else None,
             "description": document.page_content,
+            "match_context": (document.page_content or "")[:200],
             "tags": metadata.get("tags") or [],
         }
         return result

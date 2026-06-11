@@ -6,7 +6,7 @@ from typing import Any
 from fastapi import HTTPException
 from fastapi import status as http_status
 
-from registry_pkgs.models.extended_acl_entry import ExtendedResourceType
+from registry_pkgs.models.extended_access_role import RegistryResourceType
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +58,7 @@ def normalize_headers(config_headers: Any) -> dict[str, str]:
     return normalized
 
 
-_resource_types = tuple(rt.value for rt in ExtendedResourceType)
+_resource_types = tuple(rt.value for rt in RegistryResourceType)
 
 
 # ACL utility function

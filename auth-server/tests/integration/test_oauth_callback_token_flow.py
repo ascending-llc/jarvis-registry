@@ -430,6 +430,7 @@ class TestOAuth2TokenEndpoint:
             "expires_at": current_time + 600,
             "used": False,
             "redirect_uri": "http://localhost/callback",
+            "resolved_scope": ["servers-read", "agents-read"],
             "resource": None,
             "created_at": current_time,
         }
@@ -442,8 +443,8 @@ class TestOAuth2TokenEndpoint:
         }
 
         # Exchange code for token
-        with patch("auth_server.routes.oauth_flow.encode_jwt") as mock_jwt_encode:
-            mock_jwt_encode.return_value = "mock-jwt-token-with-user-id"
+        with patch("auth_server.routes.oauth_flow.mint_managed_agent_token") as mock_mint_token:
+            mock_mint_token.return_value = "mock-jwt-token-with-user-id"
 
             app.dependency_overrides = {}
 
@@ -462,12 +463,15 @@ class TestOAuth2TokenEndpoint:
             assert "expires_in" in token_data
             assert "refresh_token" in token_data
 
-            # Verify JWT was encoded with user_id
-            call_args = mock_jwt_encode.call_args[0]
-            token_payload = call_args[0]
-            assert token_payload["user_id"] == "507f1f77bcf86cd799439011"
-            assert token_payload["sub"] == "testuser"
-            assert token_payload["groups"] == ["user-group"]
+            # Verify managed-agent token was minted with resolved user identity
+            assert mock_mint_token.call_args.kwargs["subject"] == "testuser"
+            assert mock_mint_token.call_args.kwargs["client_id"] == "test-client"
+            token_claims = mock_mint_token.call_args.kwargs["extra_claims"]
+            assert token_claims["user_id"] == "507f1f77bcf86cd799439011"
+            assert token_claims["groups"] == ["user-group"]
+            assert token_claims["scope"] == "servers-read agents-read"
+            assert token_claims["token_use"] == "access"
+            assert token_claims["auth_provider"] is not None
 
             # Code should be deleted after successful exchange
             assert auth_code not in authorization_codes_storage
@@ -509,8 +513,8 @@ class TestOAuth2TokenEndpoint:
 
         basic_auth = base64.b64encode(b"test-client:test-secret").decode("ascii")
 
-        with patch("auth_server.routes.oauth_flow.encode_jwt") as mock_jwt_encode:
-            mock_jwt_encode.return_value = "mock-jwt-token-with-user-id"
+        with patch("auth_server.routes.oauth_flow.mint_managed_agent_token") as mock_mint_token:
+            mock_mint_token.return_value = "mock-jwt-token-with-user-id"
 
             app.dependency_overrides = {}
             app.dependency_overrides[get_user_service] = lambda: mock_user_service
@@ -530,9 +534,10 @@ class TestOAuth2TokenEndpoint:
             token_data = response.json()
             assert token_data["access_token"] == "mock-jwt-token-with-user-id"
 
-            call_args = mock_jwt_encode.call_args[0]
-            token_payload = call_args[0]
-            assert token_payload["client_id"] == "test-client"
+            assert mock_mint_token.call_args.kwargs["client_id"] == "test-client"
+            token_claims = mock_mint_token.call_args.kwargs["extra_claims"]
+            assert token_claims["user_id"] == "507f1f77bcf86cd799439011"
+            assert token_claims["token_use"] == "access"
 
             assert auth_code not in authorization_codes_storage
 
@@ -573,7 +578,7 @@ class TestOAuth2TokenEndpoint:
 
         basic_auth = base64.b64encode(b"test-client:test-secret").decode("ascii")
 
-        with patch("auth_server.routes.oauth_flow.encode_jwt") as mock_jwt_encode:
+        with patch("auth_server.routes.oauth_flow.mint_managed_agent_token") as mock_mint_token:
             app.dependency_overrides = {}
             app.dependency_overrides[get_user_service] = lambda: mock_user_service
 
@@ -591,7 +596,7 @@ class TestOAuth2TokenEndpoint:
             assert response.status_code == 400
             assert response.json()["error"] == "invalid_request"
             assert response.json()["error_description"] == "client_id is required"
-            mock_jwt_encode.assert_not_called()
+            mock_mint_token.assert_not_called()
 
             # Request should fail before code exchange, so code remains stored.
             assert auth_code in authorization_codes_storage

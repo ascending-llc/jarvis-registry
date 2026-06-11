@@ -30,13 +30,6 @@ def _service() -> A2AAgentService:
     return A2AAgentService(a2a_agent_repo=None)
 
 
-def _patch_session():
-    return patch(
-        "registry.services.a2a_agent_service.get_current_session",
-        return_value=_SENTINEL_SESSION,
-    )
-
-
 @pytest.mark.asyncio
 async def test_create_agent_passes_session_to_insert():
     service = _service()
@@ -50,7 +43,6 @@ async def test_create_agent_passes_session_to_insert():
     mock_card = SimpleNamespace(version="1.0.0", name="Test Agent", description="desc")
 
     with (
-        _patch_session(),
         patch("registry.services.a2a_agent_service.A2AAgent") as MockAgent,
         patch.object(service, "_fetch_agent_card_from_url", AsyncMock(return_value=mock_card)),
     ):
@@ -61,7 +53,7 @@ async def test_create_agent_passes_session_to_insert():
         agent_instance.config = SimpleNamespace(title="Test Agent")
         agent_instance.path = "/test-agent"
 
-        await service.create_agent(data=request, user_id=str(PydanticObjectId()))
+        await service.create_agent(data=request, user_id=str(PydanticObjectId()), session=_SENTINEL_SESSION)
 
     agent_instance.insert.assert_awaited_once()
     assert agent_instance.insert.await_args.kwargs["session"] is _SENTINEL_SESSION
@@ -78,12 +70,11 @@ async def test_update_agent_passes_session_to_save():
     data = AgentUpdateRequest(title="New Title")  # title-only -> no card fetch
 
     with (
-        _patch_session(),
         patch("registry.services.a2a_agent_service.A2AAgent") as MockAgent,
     ):
         MockAgent.get = AsyncMock(return_value=fake_agent)
 
-        await service.update_agent(agent_id=str(PydanticObjectId()), data=data)
+        await service.update_agent(agent_id=str(PydanticObjectId()), data=data, session=_SENTINEL_SESSION)
 
     fake_agent.save.assert_awaited_once()
     assert fake_agent.save.await_args.kwargs["session"] is _SENTINEL_SESSION
@@ -97,12 +88,11 @@ async def test_delete_agent_passes_session_to_delete():
     fake_agent.card = SimpleNamespace(name="Test Agent")
 
     with (
-        _patch_session(),
         patch("registry.services.a2a_agent_service.A2AAgent") as MockAgent,
     ):
         MockAgent.get = AsyncMock(return_value=fake_agent)
 
-        result = await service.delete_agent(agent_id=str(PydanticObjectId()))
+        result = await service.delete_agent(agent_id=str(PydanticObjectId()), session=_SENTINEL_SESSION)
 
     assert result is True
     fake_agent.delete.assert_awaited_once()
@@ -118,12 +108,11 @@ async def test_toggle_agent_status_passes_session_to_save():
     fake_agent.vectorContentHash = "hash"
 
     with (
-        _patch_session(),
         patch("registry.services.a2a_agent_service.A2AAgent") as MockAgent,
     ):
         MockAgent.get = AsyncMock(return_value=fake_agent)
 
-        await service.toggle_agent_status(agent_id=str(PydanticObjectId()), enabled=True)
+        await service.toggle_agent_status(agent_id=str(PydanticObjectId()), enabled=True, session=_SENTINEL_SESSION)
 
     fake_agent.save.assert_awaited_once()
     assert fake_agent.save.await_args.kwargs["session"] is _SENTINEL_SESSION
@@ -148,13 +137,12 @@ async def test_sync_wellknown_passes_session_to_save():
     )
 
     with (
-        _patch_session(),
         patch("registry.services.a2a_agent_service.A2AAgent") as MockAgent,
         patch.object(service, "_resolve_agent_card_with_fallback", AsyncMock(return_value=updated_card)),
     ):
         MockAgent.get = AsyncMock(return_value=fake_agent)
 
-        await service.sync_wellknown(agent_id=str(PydanticObjectId()))
+        await service.sync_wellknown(agent_id=str(PydanticObjectId()), session=_SENTINEL_SESSION)
 
     fake_agent.save.assert_awaited_once()
     assert fake_agent.save.await_args.kwargs["session"] is _SENTINEL_SESSION
@@ -199,7 +187,6 @@ async def test_create_agent_normalizes_config_url():
     fetch = AsyncMock(return_value=mock_card)
 
     with (
-        _patch_session(),
         patch("registry.services.a2a_agent_service.A2AAgent") as MockAgent,
         patch.object(service, "_fetch_agent_card_from_url", fetch),
     ):
@@ -287,7 +274,6 @@ async def test_sync_wellknown_builds_and_passes_auth_headers():
     resolve = AsyncMock(return_value=updated_card)
 
     with (
-        _patch_session(),
         patch("registry.services.a2a_agent_service.A2AAgent") as MockAgent,
         patch("registry.services.a2a_agent_service.build_headers", return_value=headers),
         patch.object(service, "_resolve_agent_card_with_fallback", resolve),

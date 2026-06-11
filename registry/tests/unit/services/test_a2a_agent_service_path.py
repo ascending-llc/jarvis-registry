@@ -69,7 +69,7 @@ async def test_create_agent_duplicate_check_uses_normalized_path(monkeypatch):
     with pytest.raises(ValueError, match="agentcore-a2a-my-agent"):
         await service.create_agent(request, str(PydanticObjectId()))
 
-    find_one.assert_awaited_once_with({"path": "agentcore-a2a-my-agent"})
+    find_one.assert_awaited_once_with({"path": "agentcore-a2a-my-agent"}, session=None)
     fetch_card.assert_not_awaited()
 
 
@@ -110,7 +110,10 @@ async def test_update_agent_normalizes_path_before_saving(monkeypatch, agent_doc
     result = await service.update_agent(str(agent_document.id), request)
 
     assert result.path == "team-a-crm-agent-v2"
-    find_one.assert_awaited_once_with({"path": "team-a-crm-agent-v2", "_id": {"$ne": agent_document.id}})
+    find_one.assert_awaited_once_with(
+        {"path": "team-a-crm-agent-v2", "_id": {"$ne": agent_document.id}},
+        session=None,
+    )
     agent_document.save.assert_awaited_once()
 
 

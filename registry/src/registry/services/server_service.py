@@ -19,9 +19,9 @@ from datetime import UTC, datetime
 from typing import Any
 
 from beanie import PydanticObjectId
+from pymongo.asynchronous.client_session import AsyncClientSession
 from redis import Redis
 
-from registry_pkgs.database.decorators import get_current_session
 from registry_pkgs.models import (
     ExtendedMCPServer,
     Token,
@@ -670,6 +670,7 @@ class ServerServiceV1:
         self,
         server_id: str,
         user_id: str | None = None,
+        session: AsyncClientSession | None = None,
     ) -> ExtendedMCPServer | None:
         """
         Get a server by its ID.
@@ -688,7 +689,7 @@ class ServerServiceV1:
             logger.warning(f"Invalid server ID format: {server_id}")
             return None
 
-        server = await ExtendedMCPServer.get(obj_id)
+        server = await ExtendedMCPServer.get(obj_id, session=session)
 
         return server
 
@@ -709,6 +710,7 @@ class ServerServiceV1:
         data: ServerCreateRequest,
         user_id: str,
         skip_post_registration_checks: bool = False,
+        session: AsyncClientSession | None = None,
     ) -> ExtendedMCPServer:
         """
         Create a new server.
@@ -723,7 +725,6 @@ class ServerServiceV1:
         Raises:
             ValueError: If path+url combination already exists, server_name already exists, or tags contain duplicates (case-insensitive)
         """
-        session = get_current_session()
         # Check if path+url combination already exists
         # Only reject if BOTH path AND url are the same (to allow same path for different services)
         existing_servers = await ExtendedMCPServer.find({"path": data.path}, session=session).to_list()
@@ -754,7 +755,7 @@ class ServerServiceV1:
         num_tools = len(tool_functions) if tool_functions else 0
 
         # Get author user reference - authentication required
-        author = await self.user_service.get_user_by_user_id(user_id)
+        author = await self.user_service.get_user_by_user_id(user_id, session=session)
 
         if not author:
             raise ValueError(f"Authentication required: User {user_id} not found")
@@ -931,6 +932,7 @@ class ServerServiceV1:
         server_id: str,
         data: ServerUpdateRequest,
         user_id: str | None = None,
+        session: AsyncClientSession | None = None,
     ) -> ExtendedMCPServer:
         """
         Update a server.
@@ -946,8 +948,7 @@ class ServerServiceV1:
         Raises:
             ValueError: If server not found
         """
-        session = get_current_session()
-        server = await self.get_server_by_id(server_id, user_id)
+        server = await self.get_server_by_id(server_id, user_id, session=session)
 
         if not server:
             raise ValueError("Server not found")
@@ -1007,6 +1008,7 @@ class ServerServiceV1:
         self,
         server_id: str,
         user_id: str | None = None,
+        session: AsyncClientSession | None = None,
     ) -> bool:
         """
         Delete a server.
@@ -1026,7 +1028,6 @@ class ServerServiceV1:
         except Exception:
             raise ValueError("Server not found")
 
-        session = get_current_session()
         server = await ExtendedMCPServer.get(obj_id, session=session)
 
         if not server:

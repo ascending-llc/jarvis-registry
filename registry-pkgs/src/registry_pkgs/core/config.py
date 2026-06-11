@@ -68,6 +68,19 @@ class JwtSigningConfig(BaseModel):
     jwt_audience: str = Field(description="Default audience (`aud`) claim")
 
 
+class JwtTokenConfig(BaseModel):
+    """Everything the token-class layer (``core.jwt_tokens``) needs to mint and verify
+    the two mutually-exclusive classes of self-signed JWT."""
+
+    jwt_private_key: str = Field(description="PEM-encoded RSA private key used to sign tokens")
+    jwt_public_key: str = Field(description="PEM-encoded RSA public key used to verify tokens")
+    jwt_issuer: str = Field(description="Issuer (`iss`) claim — the registry's public URL")
+    jwt_self_signed_kid: str = Field(description="`kid` header for self-signed JWKS lookup")
+    managed_agents_audience: str = Field(description="`aud` for managed-agent (proxy / Bearer) tokens")
+    crud_services_audience: str = Field(description="`aud` for CRUD session (cookie) tokens")
+    registry_client_id: str = Field(description="`client_id` of the registry backend (the first-party CRUD principal)")
+
+
 class TelemetryConfig(BaseModel):
     otel_metrics_config_path: str = Field(default="", description="Metrics config file path")
     otel_exporter_otlp_endpoint: str = Field(
@@ -105,7 +118,13 @@ class JarvisBaseSettings(BaseSettings):
     # ==================== JWT ====================
     jwt_private_key: str = ""  # PEM-encoded RSA private key (JWT_PRIVATE_KEY env var)
     jwt_public_key: str = ""  # PEM-encoded RSA public key (JWT_PUBLIC_KEY env var)
+    # Outbound / service-to-service audience (registry -> external MCP / AgentCore Runtime).
+    # Coupled to AgentCore-side config; do NOT reuse for inbound managed-agent / CRUD tokens.
     jwt_audience: str = "jarvis-services"
+    # Inbound token-class audiences (AS-1523): managed-agent tokens (Bearer -> /proxy) vs
+    # CRUD session tokens (jarvis_registry_session cookie -> non-proxy CRUD routes).
+    jwt_audience_managed_agents: str = "jarvis-managed-agents"
+    jwt_audience_crud_services: str = "jarvis-crud-services"
     jwt_self_signed_kid: str = "self-signed-key-v1"
 
     # ==================== RFC 9110 realm ====================
@@ -233,6 +252,18 @@ class JarvisBaseSettings(BaseSettings):
             jwt_issuer=self.jwt_issuer,
             jwt_self_signed_kid=self.jwt_self_signed_kid,
             jwt_audience=self.jwt_audience,
+        )
+
+    @cached_property
+    def jwt_token_config(self) -> JwtTokenConfig:
+        return JwtTokenConfig(
+            jwt_private_key=self.jwt_private_key,
+            jwt_public_key=self.jwt_public_key,
+            jwt_issuer=self.jwt_issuer,
+            jwt_self_signed_kid=self.jwt_self_signed_kid,
+            managed_agents_audience=self.jwt_audience_managed_agents,
+            crud_services_audience=self.jwt_audience_crud_services,
+            registry_client_id=self.registry_app_name,
         )
 
     @cached_property

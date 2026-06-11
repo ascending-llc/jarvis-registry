@@ -177,6 +177,9 @@ async def semantic_search(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Semantic search is temporarily unavailable. Please try again later.",
         ) from exc
+    except Exception as exc:
+        logger.error("Semantic search failed unexpectedly: %s", exc, exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error") from exc
 
     servers = [_map_server(s) for s in raw.get("servers", [])]
     tools = [_map_tool(t) for t in raw.get("tools", [])]
