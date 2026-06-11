@@ -413,7 +413,7 @@ def _build_config_from_request(data: ServerCreateRequest, server_name: str = Non
     """
     Build config dictionary from ServerCreateRequest
 
-    Important: Registry-specific fields (path, tags, scope, status, numStars, lastConnected, etc.)
+    Important: Registry-specific fields (path, tags, scope, numStars, lastConnected, etc.)
     are stored at root level in MongoDB, NOT in config.
     Config stores MCP-specific configuration only (title, description, type, url, oauth, apiKey, etc.)
     """
