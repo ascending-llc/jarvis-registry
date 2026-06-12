@@ -447,6 +447,7 @@ class A2AAgent(Document):
         result: dict[str, Any] = {
             "agent_id": metadata.get("agent_id"),
             "agent_name": metadata.get("agent_name"),
+            "card_name": metadata.get("card_name"),
             "path": metadata.get("path"),
             "entity_type": metadata.get("entity_type"),
             "skill_name": metadata.get("skill_name"),
