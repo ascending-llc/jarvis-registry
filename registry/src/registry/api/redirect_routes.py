@@ -10,7 +10,7 @@ from authlib.oauth2.rfc7636 import create_s256_code_challenge
 from fastapi import APIRouter, Cookie, Depends, Request, status
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 
-from registry_pkgs.core.jwt_utils import decode_jwt_unverified
+from registry_pkgs.core.jwt_utils import decode_jwt
 from registry_pkgs.core.scopes import map_groups_to_scopes
 
 from ..core.config import settings
@@ -168,7 +168,7 @@ async def oauth2_callback(
                         url=f"{settings.registry_client_url}/login?error=oauth2_invalid_response", status_code=302
                     )
 
-                user_claims = decode_jwt_unverified(access_token)
+                user_claims = decode_jwt(access_token, settings.jwt_public_key, settings.jwt_issuer)
 
                 logger.info(f"OAuth2 callback exchanged code for JWT token: {user_claims.get('sub')}")
 

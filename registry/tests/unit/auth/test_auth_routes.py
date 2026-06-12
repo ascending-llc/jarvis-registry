@@ -11,6 +11,7 @@ from fastapi import Request
 from fastapi.responses import RedirectResponse
 
 from registry.api.redirect_routes import get_oauth2_providers, oauth2_callback, oauth2_login_redirect
+from registry_pkgs.core.jwt_utils import InvalidSignatureError
 
 
 @pytest.mark.unit
@@ -41,6 +42,8 @@ class TestAuthRoutes:
             mock_settings.templates_dir = "/templates"
             mock_settings.registry_client_url = "http://localhost:8000"
             mock_settings.registry_redirect_uri = "http://localhost:8000"
+            mock_settings.jwt_public_key = "test-public-key"
+            mock_settings.jwt_issuer = "test-issuer"
             yield mock_settings
 
     @pytest.fixture
@@ -177,7 +180,7 @@ class TestAuthRoutes:
         with (
             patch("registry.api.redirect_routes.httpx.AsyncClient") as mock_client,
             patch("registry.api.redirect_routes.decrypt_value") as mock_decrypter,
-            patch("registry.api.redirect_routes.decode_jwt_unverified") as mock_decoder,
+            patch("registry.api.redirect_routes.decode_jwt") as mock_decoder,
             patch(
                 "registry.api.redirect_routes.generate_token_pair",
                 return_value=("mock-access-token", "mock-refresh-token"),
@@ -198,6 +201,45 @@ class TestAuthRoutes:
         assert isinstance(response, RedirectResponse)
         assert response.status_code == 302
         assert response.headers["location"] == f"{mock_settings.registry_client_url}"
+
+    @pytest.mark.asyncio
+    async def test_oauth2_callback_rejects_invalid_access_token_signature(self, mock_request, mock_settings, mock_code):
+        """Reject auth-server access tokens that fail signature verification."""
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"access_token": "tampered-access-token"}
+
+        mock_user_service = Mock()
+        mock_user_service.create_user = AsyncMock()
+        mock_user_service.get_user_by_user_id = AsyncMock()
+
+        with (
+            patch("registry.api.redirect_routes.httpx.AsyncClient") as mock_client,
+            patch("registry.api.redirect_routes.decrypt_value") as mock_decrypter,
+            patch("registry.api.redirect_routes.decode_jwt") as mock_decoder,
+        ):
+            mock_client_instance = mock_client.return_value.__aenter__.return_value
+            mock_client_instance.post = AsyncMock(return_value=mock_response)
+            mock_decrypter.return_value = "123"
+            mock_decoder.side_effect = InvalidSignatureError("bad signature")
+
+            response = await oauth2_callback(
+                mock_request,
+                code=mock_code,
+                registry_oauth2_code_verifier="a-cookie",
+                user_service=mock_user_service,
+            )
+
+        assert isinstance(response, RedirectResponse)
+        assert response.status_code == 302
+        assert "oauth2_exchange_error" in response.headers["location"]
+        mock_decoder.assert_called_once_with(
+            "tampered-access-token",
+            mock_settings.jwt_public_key,
+            mock_settings.jwt_issuer,
+        )
+        mock_user_service.create_user.assert_not_called()
+        mock_user_service.get_user_by_user_id.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_oauth2_callback_user_not_found(self, mock_request, mock_code, mock_settings):
@@ -222,7 +264,7 @@ class TestAuthRoutes:
         mock_user_service = Mock()
         with (
             patch("registry.api.redirect_routes.httpx.AsyncClient") as mock_client,
-            patch("registry.api.redirect_routes.decode_jwt_unverified") as mock_decoder,
+            patch("registry.api.redirect_routes.decode_jwt") as mock_decoder,
             patch("registry.api.redirect_routes.decrypt_value") as mock_decrypter,
         ):
             mock_client_instance = mock_client.return_value.__aenter__.return_value
@@ -237,6 +279,7 @@ class TestAuthRoutes:
             response = await oauth2_callback(
                 mock_request,
                 code=mock_code,
+                registry_oauth2_code_verifier="a-cookie",
                 user_service=mock_user_service,
             )
 
@@ -295,7 +338,7 @@ class TestAuthRoutes:
 
             with (
                 patch("registry.api.redirect_routes.httpx.AsyncClient") as mock_client,
-                patch("registry.api.redirect_routes.decode_jwt_unverified") as mock_decoder,
+                patch("registry.api.redirect_routes.decode_jwt") as mock_decoder,
                 patch("registry.api.redirect_routes.decrypt_value") as mock_decrypter,
             ):
                 mock_client_instance = mock_client.return_value.__aenter__.return_value
