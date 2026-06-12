@@ -360,6 +360,7 @@ class A2AAgent(Document):
             "collection": self.COLLECTION_NAME,
             "agent_id": agent_id,
             "agent_name": agent_name,  # Keep key stable for backward compatibility
+            "card_name": self.card.name,
             "path": self.path,
             "enabled": self.isEnabled,
             "tags": self.tags,
