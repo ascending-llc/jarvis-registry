@@ -36,6 +36,17 @@ def mock_user_service():
     return mock_service
 
 
+def _mock_keycloak_provider() -> MagicMock:
+    provider = MagicMock()
+    provider.get_jwks = AsyncMock(return_value={"keys": [{"kid": "test-kid"}]})
+    provider.client_id = "test-client"
+    provider.m2m_client_id = "test-client"
+    provider.realm = "test-realm"
+    provider.realm_url = "http://localhost:8888/realms/test-realm"
+    provider.external_realm_url = "http://localhost:8888/realms/test-realm"
+    return provider
+
+
 @pytest.fixture
 def test_client_with_user_service(mock_user_service):
     """Create test client with user_service dependency override."""
@@ -158,7 +169,8 @@ class TestAccessTokenScoping:
         assert "servers-write" not in jwt_payload["scope"]
         assert "agents-write" not in jwt_payload["scope"]
 
-    @patch("auth_server.routes.oauth_flow.decode_jwt_unverified")
+    @patch("auth_server.routes.oauth_flow.get_token_kid")
+    @patch("auth_server.routes.oauth_flow.decode_jwt_with_jwk")
     @patch("auth_server.routes.oauth_flow.map_groups_to_scopes")
     @patch("auth_server.routes.oauth_flow.get_user_info")
     @patch("auth_server.routes.oauth_flow.exchange_code_for_token")
@@ -168,6 +180,7 @@ class TestAccessTokenScoping:
         mock_get_user_info,
         mock_map_groups,
         mock_decode_jwt,
+        mock_get_token_kid,
         clear_device_storage,
         mock_user_service,
     ):
@@ -186,6 +199,7 @@ class TestAccessTokenScoping:
             "access_token": "provider_access_token",
             "id_token": "provider_id_token",
         }
+        mock_get_token_kid.return_value = "test-kid"
 
         # Mock JWT decode to return valid claims (prevents DecodeError)
         mock_decode_jwt.return_value = {
@@ -232,7 +246,7 @@ class TestAccessTokenScoping:
             app.dependency_overrides[get_oauth2_config] = lambda: oauth2_config
             app.dependency_overrides[get_user_service] = lambda: mock_user_service
             app.dependency_overrides[get_signer] = lambda: test_signer
-            app.dependency_overrides[get_auth_provider] = lambda: MagicMock()
+            app.dependency_overrides[get_auth_provider] = _mock_keycloak_provider
 
             test_client = TestClient(app)
 
@@ -284,7 +298,8 @@ class TestAccessTokenScoping:
             # Cleanup
             app.dependency_overrides = {}
 
-    @patch("auth_server.routes.oauth_flow.decode_jwt_unverified")
+    @patch("auth_server.routes.oauth_flow.get_token_kid")
+    @patch("auth_server.routes.oauth_flow.decode_jwt_with_jwk")
     @patch("auth_server.routes.oauth_flow.map_groups_to_scopes")
     @patch("auth_server.routes.oauth_flow.get_user_info")
     @patch("auth_server.routes.oauth_flow.exchange_code_for_token")
@@ -294,6 +309,7 @@ class TestAccessTokenScoping:
         mock_get_user_info,
         mock_map_groups,
         mock_decode_jwt,
+        mock_get_token_kid,
         clear_device_storage,
         mock_user_service,
     ):
@@ -312,6 +328,7 @@ class TestAccessTokenScoping:
             "access_token": "provider_access_token",
             "id_token": "provider_id_token",
         }
+        mock_get_token_kid.return_value = "test-kid"
 
         # Mock JWT decode to return valid claims (prevents DecodeError)
         mock_decode_jwt.return_value = {
@@ -358,7 +375,7 @@ class TestAccessTokenScoping:
             app.dependency_overrides[get_oauth2_config] = lambda: oauth2_config
             app.dependency_overrides[get_user_service] = lambda: mock_user_service
             app.dependency_overrides[get_signer] = lambda: test_signer
-            app.dependency_overrides[get_auth_provider] = lambda: MagicMock()
+            app.dependency_overrides[get_auth_provider] = _mock_keycloak_provider
 
             test_client = TestClient(app)
 

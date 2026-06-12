@@ -16,6 +16,7 @@ from itsdangerous import URLSafeTimedSerializer
 from auth_server.core.state import authorization_codes_storage
 from auth_server.deps import get_auth_provider, get_oauth2_config, get_signer, get_user_service
 from auth_server.server import app
+from registry_pkgs.core.jwt_utils import InvalidSignatureError
 
 API_PREFIX = "/auth"
 
@@ -31,6 +32,17 @@ def mock_user_service():
     yield mock_service
 
 
+def _mock_keycloak_provider() -> MagicMock:
+    provider = MagicMock()
+    provider.get_jwks = AsyncMock(return_value={"keys": [{"kid": "test-kid"}]})
+    provider.client_id = "test-client"
+    provider.m2m_client_id = "test-client"
+    provider.realm = "test-realm"
+    provider.realm_url = "http://localhost:8888/realms/test-realm"
+    provider.external_realm_url = "http://localhost:8888/realms/test-realm"
+    return provider
+
+
 @pytest.mark.integration
 @pytest.mark.oauth_callback
 class TestOAuth2CallbackStandardFlow:
@@ -38,8 +50,12 @@ class TestOAuth2CallbackStandardFlow:
 
     @patch("auth_server.routes.oauth_flow.exchange_code_for_token")
     @patch("auth_server.routes.oauth_flow.get_user_info")
+    @patch("auth_server.routes.oauth_flow.get_token_kid")
+    @patch("auth_server.routes.oauth_flow.decode_jwt_with_jwk")
     def test_oauth_callback_always_generates_authorization_code(
         self,
+        mock_decode_jwt,
+        mock_get_token_kid,
         mock_get_user_info,
         mock_exchange_token,
         clear_device_storage,
@@ -48,8 +64,16 @@ class TestOAuth2CallbackStandardFlow:
         """Test that oauth2_callback always generates authorization code (for both external clients and registry)."""
         # Mock provider token exchange
         mock_exchange_token.return_value = {"access_token": "provider_access_token", "id_token": "provider_id_token"}
+        mock_get_token_kid.return_value = "test-kid"
 
         # Mock user info from provider
+        mock_decode_jwt.return_value = {
+            "sub": "provider-user-123",
+            "preferred_username": "testuser",
+            "email": "test@example.com",
+            "name": "Test User",
+            "groups": ["user-group"],
+        }
         mock_get_user_info.return_value = {
             "sub": "provider-user-123",
             "preferred_username": "testuser",
@@ -90,7 +114,7 @@ class TestOAuth2CallbackStandardFlow:
             app.dependency_overrides[get_oauth2_config] = lambda: oauth2_config
             app.dependency_overrides[get_user_service] = lambda: mock_user_service
             app.dependency_overrides[get_signer] = lambda: test_signer
-            app.dependency_overrides[get_auth_provider] = lambda: MagicMock()
+            app.dependency_overrides[get_auth_provider] = _mock_keycloak_provider
 
             test_client = TestClient(app)
 
@@ -145,8 +169,12 @@ class TestOAuth2CallbackStandardFlow:
 
     @patch("auth_server.routes.oauth_flow.exchange_code_for_token")
     @patch("auth_server.routes.oauth_flow.get_user_info")
+    @patch("auth_server.routes.oauth_flow.get_token_kid")
+    @patch("auth_server.routes.oauth_flow.decode_jwt_with_jwk")
     def test_oauth_callback_external_client_with_client_id(
         self,
+        mock_decode_jwt,
+        mock_get_token_kid,
         mock_get_user_info,
         mock_exchange_token,
         clear_device_storage,
@@ -154,7 +182,15 @@ class TestOAuth2CallbackStandardFlow:
     ):
         """Test oauth2_callback with explicit client_id (external OAuth client)."""
         mock_exchange_token.return_value = {"access_token": "provider_access_token", "id_token": "provider_id_token"}
+        mock_get_token_kid.return_value = "test-kid"
 
+        mock_decode_jwt.return_value = {
+            "sub": "provider-user-456",
+            "preferred_username": "externaluser",
+            "email": "external@example.com",
+            "name": "External User",
+            "groups": ["external-group"],
+        }
         mock_get_user_info.return_value = {
             "sub": "provider-user-456",
             "preferred_username": "externaluser",
@@ -193,7 +229,7 @@ class TestOAuth2CallbackStandardFlow:
             app.dependency_overrides[get_oauth2_config] = lambda: oauth2_config
             app.dependency_overrides[get_user_service] = lambda: mock_user_service
             app.dependency_overrides[get_signer] = lambda: test_signer
-            app.dependency_overrides[get_auth_provider] = lambda: MagicMock()
+            app.dependency_overrides[get_auth_provider] = _mock_keycloak_provider
 
             test_client = TestClient(app)
 
@@ -238,14 +274,16 @@ class TestOAuth2CallbackStandardFlow:
             assert code_data["code_challenge_method"] == "S256"
 
     @patch("auth_server.routes.oauth_flow.exchange_code_for_token")
-    @patch("auth_server.routes.oauth_flow.decode_jwt_unverified")
+    @patch("auth_server.routes.oauth_flow.get_token_kid")
+    @patch("auth_server.routes.oauth_flow.decode_jwt_with_jwk")
     def test_oauth_callback_keycloak_id_token_parsing(
-        self, mock_jwt_decode, mock_exchange_token, clear_device_storage, mock_user_service
+        self, mock_jwt_decode, mock_get_token_kid, mock_exchange_token, clear_device_storage, mock_user_service
     ):
         """Test that Keycloak ID token is properly parsed."""
         mock_exchange_token.return_value = {"access_token": "keycloak_access", "id_token": "keycloak_id_token"}
+        mock_get_token_kid.return_value = "test-kid"
 
-        # Mock JWT decode for ID token
+        # Mock verified JWT claims for ID token
         mock_jwt_decode.return_value = {
             "sub": "keycloak-sub-789",
             "preferred_username": "keycloakuser",
@@ -281,7 +319,7 @@ class TestOAuth2CallbackStandardFlow:
             app.dependency_overrides[get_oauth2_config] = lambda: oauth2_config
             app.dependency_overrides[get_user_service] = lambda: mock_user_service
             app.dependency_overrides[get_signer] = lambda: test_signer
-            app.dependency_overrides[get_auth_provider] = lambda: MagicMock()
+            app.dependency_overrides[get_auth_provider] = _mock_keycloak_provider
 
             test_client = TestClient(app)
 
@@ -319,6 +357,163 @@ class TestOAuth2CallbackStandardFlow:
             assert user_info["email"] == "keycloak@example.com"
             assert user_info["groups"] == ["/admin", "/users"]
             assert user_info["idp_id"] == "keycloak-sub-789"
+
+    @patch("auth_server.routes.oauth_flow.exchange_code_for_token")
+    @patch("auth_server.routes.oauth_flow.get_user_info")
+    @patch("auth_server.routes.oauth_flow.get_token_kid")
+    @patch("auth_server.routes.oauth_flow.decode_jwt_with_jwk")
+    def test_oauth_callback_rejects_invalid_token_signature(
+        self,
+        mock_decode_jwt,
+        mock_get_token_kid,
+        mock_get_user_info,
+        mock_exchange_token,
+        clear_device_storage,
+        mock_user_service,
+    ):
+        """Invalid OIDC token signatures must not fall back to userInfo."""
+        mock_exchange_token.return_value = {"access_token": "keycloak_access", "id_token": "keycloak_id_token"}
+        mock_get_token_kid.return_value = "test-kid"
+        mock_decode_jwt.side_effect = InvalidSignatureError("bad signature")
+
+        oauth2_config = {
+            "providers": {
+                "keycloak": {
+                    "enabled": True,
+                    "client_id": "test-client",
+                    "client_secret": "test-secret",
+                    "token_url": "http://keycloak/token",
+                    "user_info_url": "http://keycloak/userinfo",
+                    "username_claim": "preferred_username",
+                    "email_claim": "email",
+                    "name_claim": "name",
+                    "groups_claim": "groups",
+                }
+            }
+        }
+
+        with patch("auth_server.routes.oauth_flow.settings") as mock_settings:
+            mock_settings.registry_url = "http://localhost:3000"
+            mock_settings.auth_server_external_url = "http://localhost:8888"
+            mock_settings.auth_server_url = "http://localhost:8888"
+            mock_settings.oauth_session_ttl_seconds = 600
+            mock_settings.secret_key = "test-secret-key"
+
+            test_signer = URLSafeTimedSerializer("test-secret-key")
+            app.dependency_overrides = {}
+            app.dependency_overrides[get_oauth2_config] = lambda: oauth2_config
+            app.dependency_overrides[get_user_service] = lambda: mock_user_service
+            app.dependency_overrides[get_signer] = lambda: test_signer
+            app.dependency_overrides[get_auth_provider] = _mock_keycloak_provider
+
+            test_client = TestClient(app)
+            session_data = {
+                "state": "test-state-invalid-signature",
+                "client_state": None,
+                "provider": "keycloak",
+                "redirect_uri": "http://localhost:3000/redirect",
+                "client_id": "mock-client-id",
+                "code_challenge": "123",
+                "code_challenge_method": "S256",
+                "client_redirect_uri": "http://localhost:3000/redirect",
+            }
+            temp_session = test_signer.dumps(session_data)
+
+            response = test_client.get(
+                f"{API_PREFIX}/oauth2/callback/keycloak",
+                params={"code": "keycloak_code", "state": "test-state-invalid-signature"},
+                cookies={"oauth2_temp_session": temp_session},
+                follow_redirects=False,
+            )
+
+        assert response.status_code == 302
+        assert "oauth2_callback_failed" in response.headers["location"]
+        mock_get_user_info.assert_not_called()
+
+    @patch("auth_server.routes.oauth_flow.exchange_code_for_token")
+    @patch("auth_server.routes.oauth_flow.get_token_kid")
+    @patch("auth_server.routes.oauth_flow.decode_jwt_with_jwk")
+    def test_oauth_callback_verifies_access_token_when_id_token_missing(
+        self,
+        mock_decode_jwt,
+        mock_get_token_kid,
+        mock_exchange_token,
+        clear_device_storage,
+        mock_user_service,
+    ):
+        """Access-token-only provider responses are verified before claim mapping."""
+        mock_exchange_token.return_value = {"access_token": "keycloak_access"}
+        mock_get_token_kid.return_value = "test-kid"
+        mock_decode_jwt.return_value = {
+            "sub": "access-sub-123",
+            "username": "accessuser",
+            "email": "access@example.com",
+            "name": "Access User",
+            "groups": ["/access-users"],
+        }
+
+        oauth2_config = {
+            "providers": {
+                "keycloak": {
+                    "enabled": True,
+                    "client_id": "test-client",
+                    "client_secret": "test-secret",
+                    "token_url": "http://keycloak/token",
+                    "user_info_url": "http://keycloak/userinfo",
+                    "username_claim": "preferred_username",
+                    "email_claim": "email",
+                    "name_claim": "name",
+                    "groups_claim": "groups",
+                }
+            }
+        }
+
+        with patch("auth_server.routes.oauth_flow.settings") as mock_settings:
+            mock_settings.registry_url = "http://localhost:3000"
+            mock_settings.auth_server_external_url = "http://localhost:8888"
+            mock_settings.auth_server_url = "http://localhost:8888"
+            mock_settings.oauth_session_ttl_seconds = 600
+            mock_settings.secret_key = "test-secret-key"
+
+            test_signer = URLSafeTimedSerializer("test-secret-key")
+            app.dependency_overrides = {}
+            app.dependency_overrides[get_oauth2_config] = lambda: oauth2_config
+            app.dependency_overrides[get_user_service] = lambda: mock_user_service
+            app.dependency_overrides[get_signer] = lambda: test_signer
+            app.dependency_overrides[get_auth_provider] = _mock_keycloak_provider
+
+            test_client = TestClient(app)
+            session_data = {
+                "state": "test-state-access-token-only",
+                "client_state": None,
+                "provider": "keycloak",
+                "redirect_uri": "http://localhost:3000/redirect",
+                "client_id": "mock-client-id",
+                "code_challenge": "123",
+                "code_challenge_method": "S256",
+                "client_redirect_uri": "http://localhost:3000/redirect",
+            }
+            temp_session = test_signer.dumps(session_data)
+
+            response = test_client.get(
+                f"{API_PREFIX}/oauth2/callback/keycloak",
+                params={"code": "keycloak_code", "state": "test-state-access-token-only"},
+                cookies={"oauth2_temp_session": temp_session},
+                follow_redirects=False,
+            )
+
+        assert response.status_code == 302
+        location = response.headers["location"]
+        assert "code=" in location
+
+        import urllib.parse
+
+        parsed_url = urllib.parse.urlparse(location)
+        query_params = urllib.parse.parse_qs(parsed_url.query)
+        auth_code = query_params.get("code", [None])[0]
+        user_info = authorization_codes_storage[auth_code]["user_info"]
+        assert user_info["username"] == "accessuser"
+        assert user_info["idp_id"] == "access-sub-123"
 
     def test_oauth_callback_user_id_not_resolved(self, clear_device_storage):
         """Test oauth2_callback when user_id cannot be resolved (user not in MongoDB)."""
