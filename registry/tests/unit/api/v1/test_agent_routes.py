@@ -75,10 +75,9 @@ def _build_agent(agent_id: PydanticObjectId | None = None):
             description="Agent description",
             url="https://agent.example.com",
             type="jsonrpc",
+            enabled=True,
         ),
         tags=["test"],
-        isEnabled=True,
-        status="active",
         author=PydanticObjectId(),
         createdAt=now,
         updatedAt=now,
@@ -139,7 +138,6 @@ async def test_get_agent_stats_uses_injected_service(sample_user_context):
             "total_agents": 3,
             "enabled_agents": 2,
             "disabled_agents": 1,
-            "by_status": {"active": 2, "inactive": 1},
             "by_transport": {"HTTP+JSON": 3},
             "total_skills": 5,
             "average_skills_per_agent": 1.7,
@@ -585,20 +583,17 @@ async def test_delete_agent_rolls_back_when_acl_cleanup_fails(sample_user_contex
     assert ctx.exit_exc_type is RuntimeError
 
 
-def test_convert_to_list_item_hardcodes_status_and_reads_isenabled():
+def test_convert_to_list_item_uses_config_enabled_without_status():
     agent = _build_agent()
-    agent.status = "inactive"  # deprecated field — must be ignored by the converter
-    agent.isEnabled = False
+    agent.config.enabled = False
     item = convert_to_list_item(agent, 15)
-    assert item.status == "active"
-    # enablement comes from isEnabled, not status
+    assert not hasattr(item, "status")
     assert item.enabled is False
 
 
-def test_convert_to_detail_hardcodes_status_active():
+def test_convert_to_detail_uses_config_enabled_without_status():
     agent = _build_agent()
-    agent.status = "error"
-    agent.isEnabled = True
+    agent.config.enabled = True
     detail = convert_to_detail(agent, 15)
-    assert detail.status == "active"
+    assert not hasattr(detail, "status")
     assert detail.enabled is True

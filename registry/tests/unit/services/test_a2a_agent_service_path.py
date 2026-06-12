@@ -14,10 +14,9 @@ def agent_document() -> SimpleNamespace:
     agent = SimpleNamespace(
         id=PydanticObjectId(),
         path="existing-agent",
-        config=SimpleNamespace(title="Existing Agent", url="https://agent.example.com", type="jsonrpc"),
+        config=SimpleNamespace(title="Existing Agent", url="https://agent.example.com", type="jsonrpc", enabled=False),
         card=SimpleNamespace(url="https://agent.example.com", name="Existing Agent", description="desc"),
         wellKnown=None,
-        isEnabled=False,
         updatedAt=None,
         vectorContentHash="old-hash",
     )

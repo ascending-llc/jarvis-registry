@@ -32,14 +32,12 @@ Storage Structure:
     "title": "My Custom Agent Name",  # User-provided display title
     "description": "My custom description",  # User-provided description
     "url": "https://strandsagents.com/agents/deep-intel",  # User-provided agent URL (where card was fetched)
-    "type": "jsonrpc"  # Transport type: jsonrpc, grpc, http_json
+    "type": "jsonrpc",  # Transport type: jsonrpc, grpc, http_json
+    "enabled": true
   },
 
   # Registry Metadata
   "tags": ["ai", "research"],
-  "status": "active",
-  "isEnabled": true,
-
   # Well-known Configuration (sync state only, URL is in config.url)
   "wellKnown": {
     "enabled": true,
@@ -75,12 +73,6 @@ from .federation import AgentCoreRuntimeAccessConfig
 logger = logging.getLogger(__name__)
 
 # ========== Constants ==========
-
-# Registry Status Values
-STATUS_ACTIVE = "active"
-STATUS_INACTIVE = "inactive"
-STATUS_ERROR = "error"
-VALID_STATUSES: set[str] = {STATUS_ACTIVE, STATUS_INACTIVE, STATUS_ERROR}
 
 # Transport Type Values
 TRANSPORT_JSONRPC = "jsonrpc"
@@ -122,6 +114,7 @@ class AgentConfig(BaseModel):
 
     title: str = Field(description="User-provided display title for the agent")
     description: str = Field(default="", description="User-provided description of the agent")
+    enabled: bool = Field(default=False, description="Whether agent is enabled in registry")
     # Service root supplied by the user for card DISCOVERY only. The registry appends
     # /.well-known/agent-card.json (and fallbacks) to this to fetch the card.
     url: HttpUrl | str | None = Field(
@@ -162,7 +155,7 @@ class A2AAgent(Document):
 
     Design Principles:
     - SDK-powered: Uses a2a-sdk's AgentCard for protocol compliance
-    - Registry aware: Adds registry-specific metadata (tags, status, etc.)
+    - Registry aware: Adds registry-specific metadata (tags, config, etc.)
     - Well-known support: Manual sync configuration for .well-known endpoints
     - ACL integration: Uses author field for ownership and ACLService for permissions
 
@@ -191,8 +184,6 @@ class A2AAgent(Document):
 
     # ========== Registry Metadata ==========
     tags: list[str] = Field(default_factory=list, description="Registry categorization tags")
-    status: str = Field(default=STATUS_ACTIVE, description="Operational state: active, inactive, error")
-    isEnabled: bool = Field(default=False, description="Whether agent is enabled in registry")
 
     # ========== Well-known Configuration ==========
     wellKnown: WellKnownConfig | None = Field(None, description="Manual .well-known sync configuration")
@@ -222,8 +213,6 @@ class A2AAgent(Document):
         indexes = [
             IndexModel([("path", 1)], unique=True),
             "tags",
-            "isEnabled",
-            "status",
             [("card.name", "text")],
             [("author", 1)],
             [("registeredBy", 1)],
@@ -270,7 +259,7 @@ class A2AAgent(Document):
 
         Service layer captures the hash before .save() and compares after to decide whether to
         call sync_to_vector_db (full rebuild) or update_entity_metadata (metadata-only patch).
-        This contract holds as long as isEnabled/status are NOT included in page_content — if
+        This contract holds as long as config.enabled is NOT included in page_content — if
         to_documents() ever embeds those fields, toggle paths will incorrectly trigger full syncs.
         """
         docs = self.to_documents()
@@ -362,7 +351,7 @@ class A2AAgent(Document):
             "agent_name": agent_name,  # Keep key stable for backward compatibility
             "card_name": self.card.name,
             "path": self.path,
-            "enabled": self.isEnabled,
+            "enabled": self.config.enabled if self.config else False,
             "tags": self.tags,
         }
         # Federation metadata lets vector sync target one federated A2A runtime precisely.
@@ -429,7 +418,7 @@ class A2AAgent(Document):
         so changing either always changes vectorContentHash and triggers a full rebuild.
         """
         meta: dict[str, Any] = {
-            "enabled": self.isEnabled,
+            "enabled": self.config.enabled if self.config else False,
             "tags": self.tags or [],
         }
         fed = self.federationMetadata or {}
@@ -494,7 +483,6 @@ class A2AAgent(Document):
             **registry_fields: Additional registry metadata such as:
                 - author: User ID who created this agent (required for ACL)
                 - config: AgentConfig with title, description, type (required; registry display metadata, distinct from the protocol card `name`)
-                - isEnabled: Enabled state (default: False)
                 - registeredBy: Username or service account
                 - tags: List of tags
 
@@ -534,9 +522,7 @@ class A2AAgent(Document):
             card=agent_card,
             config=config,
             author=registry_fields["author"],
-            isEnabled=registry_fields.get("isEnabled", False),
             tags=registry_fields.get("tags", []),
-            status=registry_fields.get("status", STATUS_ACTIVE),
             registeredBy=registry_fields.get("registeredBy"),
             registeredAt=registry_fields.get("registeredAt"),
             wellKnown=registry_fields.get("wellKnown"),
@@ -559,7 +545,7 @@ class A2AAgent(Document):
         """String representation for debugging."""
         return (
             f"A2AAgent(id={self.id}, path='{self.path}', name='{self.card.name}', "
-            f"version='{self.card.version}', isEnabled={self.isEnabled})"
+            f"version='{self.card.version}', enabled={self.config.enabled if self.config else False})"
         )
 
     def __str__(self) -> str:
@@ -579,10 +565,6 @@ __all__ = [
     "AgentProvider",
     "AgentConfig",
     "WellKnownConfig",
-    "STATUS_ACTIVE",
-    "STATUS_INACTIVE",
-    "STATUS_ERROR",
-    "VALID_STATUSES",
     "TRANSPORT_JSONRPC",
     "TRANSPORT_GRPC",
     "TRANSPORT_HTTP_JSON",

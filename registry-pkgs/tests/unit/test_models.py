@@ -46,7 +46,6 @@ class TestExtendedMCPServerStructure:
             "author": str(PydanticObjectId()),
             "path": "/mcp/test",
             "tags": ["test", "demo"],
-            "status": "active",
             "numTools": 2,
             "numStars": 5,
         }
@@ -55,7 +54,6 @@ class TestExtendedMCPServerStructure:
         server = ExtendedMCPServer.model_construct(**server_dict)
 
         # Root-level fields should NOT be in config
-        assert "status" not in server.config
         assert "path" not in server.config
         assert "tags" not in server.config
         assert "numTools" not in server.config
@@ -65,7 +63,7 @@ class TestExtendedMCPServerStructure:
         assert "errorMessage" not in server.config
 
         # Root-level fields should be accessible directly
-        assert server.status == "active"
+        assert not hasattr(server, "status")
         assert server.path == "/mcp/test"
         assert server.tags == ["test", "demo"]
         assert server.numTools == 2
@@ -133,7 +131,7 @@ class TestExtendedMCPServerStructure:
         # Verify defaults (model_construct doesn't apply defaults, so we need to check field definitions)
         # These would be set by Pydantic during normal instantiation
         assert hasattr(server, "scope")
-        assert hasattr(server, "status")
+        assert not hasattr(server, "status")
         assert hasattr(server, "tags")
 
     def test_optional_monitoring_fields(self):
@@ -156,20 +154,16 @@ class TestExtendedMCPServerStructure:
         assert server.lastError == now
         assert server.errorMessage == "Connection timeout"
 
-    def test_status_values(self):
-        """Test valid status values."""
-        valid_statuses = ["active", "inactive", "error"]
+    def test_status_field_removed(self):
+        """The deprecated health status field is no longer part of the model."""
+        server = ExtendedMCPServer.model_construct(
+            serverName="test",
+            config={"title": "Test", "type": "sse", "url": "http://test:8000"},
+            author=str(PydanticObjectId()),
+            path="/mcp/test",
+        )
 
-        for status in valid_statuses:
-            server_dict = {
-                "serverName": f"test-{status}",
-                "config": {"title": "Test", "type": "sse", "url": "http://test:8000"},
-                "author": str(PydanticObjectId()),
-                "path": f"/mcp/{status}",
-                "status": status,
-            }
-            server = ExtendedMCPServer.model_construct(**server_dict)
-            assert server.status == status
+        assert not hasattr(server, "status")
 
     def test_tags_array(self):
         """Test tags field accepts array of strings."""
@@ -264,7 +258,6 @@ class TestExtendedMCPServerStructure:
             },
             author=PydanticObjectId(),
             path="/agentcore/mcp/versioned-server",
-            status="active",
             federationId="arn:aws:bedrock-agentcore:us-east-1:1:runtime/versioned",
             federationMetadata={"providerType": FederationProviderType.AWS_AGENTCORE, "runtimeVersion": "7"},
         )
@@ -298,7 +291,6 @@ class TestExtendedMCPServerStructure:
             },
             author=PydanticObjectId(),
             path="/mcp/tool-server",
-            status="active",
         )
 
         docs = server.to_documents()
@@ -342,7 +334,6 @@ class TestExtendedMCPServerStructure:
             },
             author=PydanticObjectId(),
             path="/mcp/github",
-            status="active",
         )
 
         docs = server.to_documents()
@@ -376,7 +367,6 @@ class TestExtendedMCPServerStructure:
             },
             author=PydanticObjectId(),
             path="/mcp/github",
-            status="active",
         )
 
         docs = server.to_documents()
@@ -408,7 +398,6 @@ class TestExtendedMCPServerStructure:
             },
             author=PydanticObjectId(),
             path="/mcp/github",
-            status="active",
         )
 
         docs = server.to_documents()
@@ -437,11 +426,10 @@ class TestExtendedMCPServerStructure:
             config=AgentConfig(
                 title="Versioned Agent",
                 description="A test A2A agent",
+                enabled=True,
                 type="jsonrpc",
             ),
             tags=["agentcore"],
-            status="active",
-            isEnabled=True,
             author=PydanticObjectId(),
             federationMetadata={"providerType": FederationProviderType.AWS_AGENTCORE, "runtimeVersion": "11"},
         )

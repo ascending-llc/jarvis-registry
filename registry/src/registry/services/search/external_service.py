@@ -264,7 +264,6 @@ class ExternalVectorSearchService(VectorSearchService):
                 "title": config.get("title", server.serverName),
                 "tags": server.tags or [],
                 "is_enabled": config.get("enabled", False),
-                "status": "active",
                 "numTools": server.numTools,
                 "numStars": server.numStars,
             }

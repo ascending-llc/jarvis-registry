@@ -183,7 +183,7 @@ async def _resolve_executor(
     path = key.lstrip("/")
     a2a_agent = await A2AAgent.find_one(
         A2AAgent.path == path,
-        {"isEnabled": True},
+        {"config.enabled": True},
     )
     if a2a_agent is not None:
         if accessible_agent_ids is not None and str(a2a_agent.id) not in accessible_agent_ids:
