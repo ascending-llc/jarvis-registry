@@ -19,7 +19,15 @@ from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from pydantic import BaseModel
 
 from registry_pkgs.core.jwt_tokens import mint_managed_agent_token
-from registry_pkgs.core.jwt_utils import decode_jwt_unverified, get_token_kid
+from registry_pkgs.core.jwt_utils import (
+    InvalidAudienceError,
+    InvalidIssuerError,
+    InvalidSignatureError,
+    InvalidTokenError,
+    decode_jwt_unverified,
+    decode_jwt_with_jwk,
+    get_token_kid,
+)
 from registry_pkgs.core.scopes import map_groups_to_scopes
 
 from ..core.config import settings
@@ -59,6 +67,7 @@ JWT_TOKEN_CONFIG = settings.jwt_token_config
 
 # Refresh token expiry (14 days in seconds)
 REFRESH_TOKEN_EXPIRY_SECONDS = 1209600
+_OIDC_TOKEN_ALGORITHMS = ["RS256"]
 
 
 def oauth_error_response(error: str, error_description: str | None = None, status_code: int = 400) -> JSONResponse:
@@ -66,6 +75,70 @@ def oauth_error_response(error: str, error_description: str | None = None, statu
     if error_description:
         content["error_description"] = error_description
     return JSONResponse(status_code=status_code, content=content)
+
+
+def _find_matching_jwk(jwks: dict[str, Any], kid: str | None) -> dict[str, Any]:
+    if not kid:
+        raise InvalidTokenError("Token missing 'kid' in header")
+
+    matching_key = next((key for key in jwks.get("keys", []) if key.get("kid") == kid), None)
+    if not matching_key:
+        raise InvalidTokenError(f"No matching JWKS key for kid: {kid}")
+
+    return matching_key
+
+
+def _provider_token_issuers(provider: AllowedProvider, auth_provider: AuthProvider) -> list[str]:
+    if provider == "keycloak":
+        issuer_candidates = [
+            getattr(auth_provider, "external_realm_url", None),
+            getattr(auth_provider, "realm_url", None),
+            f"http://localhost:8080/realms/{getattr(auth_provider, 'realm', '')}",
+        ]
+        return [issuer for issuer in issuer_candidates if issuer]
+
+    issuer = getattr(auth_provider, "issuer", None)
+    if not issuer:
+        raise ValueError(f"Provider {provider} does not expose an issuer for token verification")
+
+    return [issuer]
+
+
+def _provider_token_audience(provider: AllowedProvider, auth_provider: AuthProvider) -> str | list[str]:
+    client_id = getattr(auth_provider, "client_id", None)
+    if not client_id:
+        raise ValueError(f"Provider {provider} does not expose a client_id for token verification")
+
+    if provider == "keycloak":
+        audiences = ["account", client_id, getattr(auth_provider, "m2m_client_id", client_id)]
+        return list(dict.fromkeys(audiences))
+
+    return client_id
+
+
+async def _decode_oidc_provider_token(
+    token: str,
+    provider: AllowedProvider,
+    auth_provider: AuthProvider,
+) -> dict[str, Any]:
+    jwks = await auth_provider.get_jwks()
+    matching_key = _find_matching_jwk(jwks, get_token_kid(token))
+    audience = _provider_token_audience(provider, auth_provider)
+
+    last_issuer_error: InvalidIssuerError | None = None
+    for issuer in _provider_token_issuers(provider, auth_provider):
+        try:
+            return decode_jwt_with_jwk(
+                token,
+                matching_key,
+                algorithms=_OIDC_TOKEN_ALGORITHMS,
+                issuer=issuer,
+                audience=audience,
+            )
+        except InvalidIssuerError as e:
+            last_issuer_error = e
+
+    raise last_issuer_error or ValueError(f"Token issuer is not trusted for provider {provider}")
 
 
 class ClientRegistrationRequest(BaseModel):
@@ -761,7 +834,7 @@ async def oauth2_callback(
         try:
             if provider in ["cognito", "keycloak"]:
                 if "id_token" in token_data:
-                    id_claims = decode_jwt_unverified(token_data["id_token"])
+                    id_claims = await _decode_oidc_provider_token(token_data["id_token"], provider, auth_provider)
                     mapped_user = {
                         "username": id_claims.get("preferred_username") or id_claims.get("sub"),
                         "email": id_claims.get("email"),
@@ -770,8 +843,7 @@ async def oauth2_callback(
                         "groups": id_claims.get("groups", []),
                     }
                 elif "access_token" in token_data:
-                    # Try to decode access_token without verification to extract claims
-                    access_claims = decode_jwt_unverified(token_data["access_token"])
+                    access_claims = await _decode_oidc_provider_token(token_data["access_token"], provider, auth_provider)
                     mapped_user = {
                         "username": access_claims.get("username") or access_claims.get("sub"),
                         "email": access_claims.get("email"),
@@ -794,6 +866,8 @@ async def oauth2_callback(
                 }
             else:
                 raise ValueError(f"Unsupported provider {provider}")
+        except (InvalidSignatureError, InvalidTokenError, InvalidIssuerError, InvalidAudienceError):
+            raise
         except Exception:
             logger.exception("Falling back to userInfo on token parsing error")
 
