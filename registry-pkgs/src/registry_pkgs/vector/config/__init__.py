@@ -3,6 +3,7 @@ from .config import (
     BackendConfig,
     BedrockEmbeddingConfig,
     OpenAIEmbeddingConfig,
+    RerankConfig,
     WeaviateConfig,
     get_embedding_model_config_class,
     get_registered_embedding_models,
@@ -20,4 +21,5 @@ __all__ = [
     "OpenAIEmbeddingConfig",
     "BedrockEmbeddingConfig",
     "AzureOpenAIEmbeddingConfig",
+    "RerankConfig",
 ]
