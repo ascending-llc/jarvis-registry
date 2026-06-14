@@ -517,7 +517,7 @@ class ExtendedMCPServer(MCPServer):
         Extract metadata from any document type.
 
         Returns execution-ready fields for LLM consumption.
-        relevance_score is populated by the reranker (FlashRank sets it in metadata);
+        relevance_score is populated by the reranker (Bedrock rerank sets it in metadata);
         None for filter-only results where no semantic score is available.
         """
         metadata = document.metadata

@@ -1,4 +1,3 @@
-import asyncio
 import logging
 from typing import Any
 
@@ -17,7 +16,6 @@ class ExternalVectorSearchService(VectorSearchService):
     Vector search service with rerank support.
     """
 
-    DEFAULT_RERANKER_MODEL = "ms-marco-TinyBERT-L-2-v2"
     _ALL_MCP_VECTOR_TYPES = [MCPEntityType.TOOL, MCPEntityType.RESOURCE, MCPEntityType.PROMPT]
 
     def __init__(
@@ -25,19 +23,16 @@ class ExternalVectorSearchService(VectorSearchService):
         mcp_server_repo: MCPServerRepository,
         enable_rerank: bool = True,
         search_type: SearchType = SearchType.HYBRID,
-        reranker_model: str | None = None,
     ):
         """
         Initialize vector search service with rerank support.
 
         Args:
-            enable_rerank: Enable reranking (default: True)
+            enable_rerank: Enable Bedrock reranking (default: True)
             search_type: Default search type (NEAR_TEXT, BM25, HYBRID)
-            reranker_model: FlashRank model name
         """
         self.enable_rerank = enable_rerank
         self.search_type = search_type
-        self.reranker_model = reranker_model or self.DEFAULT_RERANKER_MODEL
 
         self.client = mcp_server_repo.db_client
         self.mcp_server_repo = mcp_server_repo
@@ -70,55 +65,6 @@ class ExternalVectorSearchService(VectorSearchService):
             logger.error(f"Initialization verification failed: {e}", exc_info=True)
             self._initialized = False
             raise Exception(f"Cannot verify vector search: {e}")
-
-        await self._prewarm_reranker()
-
-    async def _prewarm_reranker(self) -> None:
-        """Eagerly load the rerank model at startup to avoid a cold-download race."""
-        if not self.enable_rerank:
-            return
-        try:
-            from registry_pkgs.vector.retrievers.reranker import create_reranker
-
-            await asyncio.to_thread(create_reranker, RerankerProvider.FLASHRANK, model=self.reranker_model)
-            logger.info("Reranker model pre-warmed: %s", self.reranker_model)
-        except Exception as e:
-            logger.warning("Reranker pre-warm failed; will lazy-load on first search: %s", e)
-
-    def get_retriever(self, search_type: SearchType | None = None, enable_rerank: bool | None = None, top_k: int = 10):
-        """
-        Get a LangChain retriever (with optional rerank) for RAG applications.
-
-        Similar to BedrockRerank usage:
-        - Creates base retriever
-        - Optionally wraps with ContextualCompressionRetriever for reranking
-
-        Args:
-            search_type: Search type (uses default if None)
-            enable_rerank: Enable rerank (uses instance setting if None)
-            top_k: Number of results to return
-
-        Returns:
-            BaseRetriever or ContextualCompressionRetriever
-
-        """
-        if not self._initialized:
-            raise Exception("Vector search service not initialized")
-
-        use_rerank = enable_rerank if enable_rerank is not None else self.enable_rerank
-        use_search_type = search_type or self.search_type
-
-        if use_rerank:
-            # Return compression retriever with rerank
-            return self.mcp_server_repo.get_compression_retriever(
-                reranker_type=RerankerProvider.FLASHRANK,
-                search_type=use_search_type,
-                search_kwargs={"k": top_k * 3},  # 3x candidates
-                reranker_kwargs={"top_k": top_k, "model": self.reranker_model},
-            )
-        else:
-            # Return base retriever without rerank
-            return self.mcp_server_repo.get_retriever(search_type=use_search_type, k=top_k)
 
     async def add_or_update_service(
         self, service_path: str, server_info: dict[str, Any], is_enabled: bool = False
@@ -207,8 +153,7 @@ class ExternalVectorSearchService(VectorSearchService):
                     k=top_k * 2 if tags else top_k,
                     candidate_k=candidate_k,
                     filters=filters,
-                    reranker_type=RerankerProvider.FLASHRANK,
-                    reranker_kwargs={"model": self.reranker_model},
+                    reranker_type=RerankerProvider.BEDROCK_COHERE,
                 )
             else:
                 # Regular search without rerank
@@ -461,8 +406,7 @@ class ExternalVectorSearchService(VectorSearchService):
                     candidate_k=candidate_k,
                     search_type=use_search_type,
                     filters=filters,
-                    reranker_type=RerankerProvider.FLASHRANK,
-                    reranker_kwargs={"model": self.reranker_model},
+                    reranker_type=RerankerProvider.BEDROCK_COHERE,
                 )
             else:
                 docs = await self.mcp_server_repo.asearch(
