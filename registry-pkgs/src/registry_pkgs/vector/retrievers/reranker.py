@@ -2,6 +2,7 @@ import logging
 from typing import Any
 
 from langchain_classic.retrievers.document_compressors.base import BaseDocumentCompressor
+from pydantic import SecretStr
 
 logger = logging.getLogger(__name__)
 
@@ -76,12 +77,12 @@ def _create_bedrock_cohere_reranker(**kwargs) -> BaseDocumentCompressor:
     access_key_id = kwargs.get("access_key_id")
     secret_access_key = kwargs.get("secret_access_key")
     if access_key_id and secret_access_key:
-        rerank_kwargs["aws_access_key_id"] = access_key_id
-        rerank_kwargs["aws_secret_access_key"] = secret_access_key
+        rerank_kwargs["aws_access_key_id"] = SecretStr(access_key_id)
+        rerank_kwargs["aws_secret_access_key"] = SecretStr(secret_access_key)
 
     session_token = kwargs.get("session_token")
     if session_token:
-        rerank_kwargs["aws_session_token"] = session_token
+        rerank_kwargs["aws_session_token"] = SecretStr(session_token)
 
     logger.info("Creating Bedrock Cohere reranker: model_id=%s, region=%s", model_id, region)
     return BedrockRerank(**rerank_kwargs)

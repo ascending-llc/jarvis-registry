@@ -157,6 +157,7 @@ class BedrockEmbeddingConfig(EmbeddingModelConfig):
     model: str = Field(description="Bedrock model ID")
     access_key_id: str | None = Field(default=None, description="AWS access key ID")
     secret_access_key: str | None = Field(default=None, description="AWS secret access key")
+    session_token: str | None = Field(default=None, description="AWS session token")
 
     @classmethod
     def from_vector_config(cls, config: VectorConfig) -> "BedrockEmbeddingConfig":
@@ -188,6 +189,7 @@ class BedrockEmbeddingConfig(EmbeddingModelConfig):
             model=model.strip(),
             access_key_id=config.aws_access_key_id,
             secret_access_key=config.aws_secret_access_key,
+            session_token=config.aws_session_token,
         )
 
 
