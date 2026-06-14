@@ -265,11 +265,44 @@ class AzureOpenAIEmbeddingConfig(EmbeddingModelConfig):
         )
 
 
+class RerankConfig(BaseModel):
+    """Bedrock Cohere rerank configuration.
+
+    AWS region and credentials come from the top-level ``aws_*`` fields of
+    ``VectorConfig`` so reranking is independent of the embedding provider
+    (rerank can run on Bedrock even when embeddings use OpenAI/Azure). On EKS the
+    credentials are typically left empty so the default credential chain (IRSA) is used.
+    """
+
+    enabled: bool = Field(default=True, description="Enable reranking on vector search")
+    model_id: str = Field(default="cohere.rerank-v3-5:0", description="Bedrock Cohere rerank model ID")
+    region: str = Field(default="us-east-1", description="AWS region (used to build the model ARN)")
+    access_key_id: str | None = Field(default=None, description="AWS access key ID")
+    secret_access_key: str | None = Field(default=None, description="AWS secret access key")
+    session_token: str | None = Field(default=None, description="AWS session token")
+
+    @classmethod
+    def from_vector_config(cls, config: VectorConfig) -> "RerankConfig":
+        """Create rerank config from explicit vector config."""
+        model_id = config.rerank_model_id.strip() if config.rerank_model_id else ""
+        if not model_id:
+            model_id = "cohere.rerank-v3-5:0"
+        return cls(
+            enabled=config.rerank_enabled,
+            model_id=model_id,
+            region=config.aws_region,
+            access_key_id=config.aws_access_key_id,
+            secret_access_key=config.aws_secret_access_key,
+            session_token=config.aws_session_token,
+        )
+
+
 class BackendConfig(BaseModel):
     """Unified backend configuration."""
 
     vector_store_config: VectorStoreConfig
     embedding_model_config: EmbeddingModelConfig
+    rerank_config: RerankConfig = Field(default_factory=RerankConfig)
 
     @classmethod
     def from_vector_config(cls, config: VectorConfig) -> "BackendConfig":
@@ -322,6 +355,7 @@ class BackendConfig(BaseModel):
         return cls(
             vector_store_config=vector_store_class.from_vector_config(config),
             embedding_model_config=embedding_class.from_vector_config(config),
+            rerank_config=RerankConfig.from_vector_config(config),
         )
 
     @property
@@ -341,3 +375,7 @@ class BackendConfig(BaseModel):
     def get_embedding_model_config_dict(self) -> dict:
         """Get embedding model config as dictionary."""
         return self.embedding_model_config.model_dump()
+
+    def get_rerank_config_dict(self) -> dict:
+        """Get rerank config as dictionary."""
+        return self.rerank_config.model_dump()

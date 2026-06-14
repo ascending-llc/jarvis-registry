@@ -1,5 +1,4 @@
 import logging
-import threading
 from typing import Any
 
 import weaviate.classes.config as wvc
@@ -12,8 +11,6 @@ from ..retrievers.reranker import create_reranker
 
 logger = logging.getLogger(__name__)
 
-_RERANK_SEMAPHORE = threading.Semaphore(2)
-
 
 class WeaviateStore(VectorStoreAdapter):
     """
@@ -23,9 +20,15 @@ class WeaviateStore(VectorStoreAdapter):
     Extends with Weaviate-specific features.
     """
 
-    def __init__(self, embedding, config: dict[str, Any], embedding_config: dict[str, Any] = None):
+    def __init__(
+        self,
+        embedding,
+        config: dict[str, Any],
+        embedding_config: dict[str, Any] = None,
+        rerank_config: dict[str, Any] = None,
+    ):
         """Initialize Weaviate adapter."""
-        super().__init__(embedding, config, embedding_config)
+        super().__init__(embedding, config, embedding_config, rerank_config)
         self._client = None
 
     def _get_client(self):
@@ -553,7 +556,7 @@ class WeaviateStore(VectorStoreAdapter):
         candidate_k: int | None = None,
         search_type: SearchType = SearchType.HYBRID,
         filters: Any = None,
-        reranker_type: str = "flashrank",
+        reranker_type: str = "bedrock_cohere",
         reranker_kwargs: dict[str, Any] | None = None,
         collection_name: str | None = None,
         **kwargs,
@@ -561,7 +564,8 @@ class WeaviateStore(VectorStoreAdapter):
         """
         Search with reranking for improved relevance.
 
-        Fetches candidate_k results, reranks them, returns top k.
+        Fetches candidate_k results, reranks them via Bedrock, returns top k.
+        Reranking runs as a remote Bedrock API call — no local model inference.
 
         Args:
             query: Search query
@@ -576,6 +580,12 @@ class WeaviateStore(VectorStoreAdapter):
         Returns:
             List of reranked Documents
         """
+        if not self.rerank_enabled:
+            logger.debug("Reranking disabled; running plain search")
+            return self.search(
+                query=query, search_type=search_type, k=k, filters=filters, collection_name=collection_name, **kwargs
+            )
+
         try:
             filters = self.normalize_filters(filters)
             # Default candidate_k to 3x final k
@@ -597,16 +607,13 @@ class WeaviateStore(VectorStoreAdapter):
                 logger.warning("No candidates found for reranking")
                 return []
 
-            # Step 2: Rerank candidates
+            # Step 2: Rerank candidates via Bedrock (AWS config injected from store config)
             logger.debug(f"Reranking {len(candidates)} candidates to get top {k}")
-            reranker_kwargs = reranker_kwargs or {}
-            reranker_kwargs["top_n"] = k
+            merged_kwargs = self.build_bedrock_rerank_kwargs(top_n=k)
+            merged_kwargs.update(reranker_kwargs or {})
 
-            reranker = create_reranker(reranker_type=reranker_type, **reranker_kwargs)
-
-            # Rerank and return top k
-            with _RERANK_SEMAPHORE:
-                reranked = reranker.compress_documents(documents=candidates, query=query)
+            reranker = create_reranker(reranker_type=reranker_type, **merged_kwargs)
+            reranked = reranker.compress_documents(documents=candidates, query=query)
 
             logger.info(f"Reranking complete: {len(candidates)} -> {len(reranked)} results")
             return reranked
