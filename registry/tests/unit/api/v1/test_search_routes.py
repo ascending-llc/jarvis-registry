@@ -83,6 +83,55 @@ async def test_semantic_search_maps_service_result_to_response():
 
 
 @pytest.mark.asyncio
+async def test_semantic_search_prefers_card_name_with_agent_name_fallback():
+    """agentName uses card_name when present, falling back to agent_name otherwise."""
+    request = make_container(state=make_container(is_authenticated=True, user={"username": "tester"}))
+    search_service = MagicMock()
+    search_service.semantic_search = AsyncMock(
+        return_value={
+            "servers": [],
+            "tools": [],
+            "agents": [
+                {
+                    "agent_id": "agent-1",
+                    "path": "/calc",
+                    "agent_name": "A2a1ForFederationTesting",
+                    "card_name": "Calculator Agent",
+                    "relevance_score": 0.9,
+                },
+                {
+                    "agent_id": "agent-2",
+                    "path": "/legacy",
+                    "agent_name": "Legacy Title",  # no card_name (pre-reindex doc)
+                    "relevance_score": 0.8,
+                },
+            ],
+            "skills": [
+                {
+                    "agent_id": "agent-1",
+                    "path": "/calc",
+                    "agent_name": "A2a1ForFederationTesting",
+                    "card_name": "Calculator Agent",
+                    "skill_name": "add",
+                    "relevance_score": 0.7,
+                }
+            ],
+        }
+    )
+
+    response = await semantic_search(
+        request=request,
+        search_request=SemanticSearchRequest(query="calc", entityTypes=["a2a_agent", "skill"], maxResults=5),
+        search_service=search_service,
+    )
+
+    # card_name wins when present; agent_name is the fallback for legacy docs.
+    assert response.agents[0].agentName == "Calculator Agent"
+    assert response.agents[1].agentName == "Legacy Title"
+    assert response.skills[0].agentName == "Calculator Agent"
+
+
+@pytest.mark.asyncio
 async def test_semantic_search_requires_authentication():
     """Unauthenticated requests are rejected before reaching the service."""
     from fastapi import HTTPException

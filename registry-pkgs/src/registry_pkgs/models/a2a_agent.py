@@ -349,6 +349,7 @@ class A2AAgent(Document):
             "collection": self.COLLECTION_NAME,
             "agent_id": agent_id,
             "agent_name": agent_name,  # Keep key stable for backward compatibility
+            "card_name": self.card.name,
             "path": self.path,
             "enabled": self.config.enabled if self.config else False,
             "tags": self.tags,
@@ -435,6 +436,7 @@ class A2AAgent(Document):
         result: dict[str, Any] = {
             "agent_id": metadata.get("agent_id"),
             "agent_name": metadata.get("agent_name"),
+            "card_name": metadata.get("card_name"),
             "path": metadata.get("path"),
             "entity_type": metadata.get("entity_type"),
             "skill_name": metadata.get("skill_name"),

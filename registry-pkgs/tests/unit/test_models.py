@@ -3,8 +3,9 @@
 from datetime import UTC, datetime
 
 import pytest
-from a2a.types import AgentCard
+from a2a.types import AgentCard, AgentSkill
 from beanie import PydanticObjectId
+from langchain_core.documents import Document as LangChainDocument
 from pydantic import ValidationError
 
 from registry_pkgs.models.a2a_agent import A2AAgent
@@ -436,6 +437,70 @@ class TestExtendedMCPServerStructure:
         docs = agent.to_documents()
         assert docs
         assert docs[0].metadata.get("runtimeVersion") == "11"
+
+    def test_a2a_to_documents_includes_card_name_metadata(self):
+        """card_name carries the protocol card name, distinct from config.title, on every doc."""
+        from registry_pkgs.models.a2a_agent import AgentConfig
+
+        agent = A2AAgent.model_construct(
+            id=PydanticObjectId(),
+            path="a2a1forfederationtesting",
+            card=AgentCard(
+                name="Calculator Agent",  # protocol card name
+                description="A test A2A agent",
+                url="https://example.com/a2a",
+                version="1.0.0",
+                capabilities={"streaming": True},
+                defaultInputModes=["text/plain"],
+                defaultOutputModes=["application/json"],
+                skills=[
+                    AgentSkill(
+                        id="calc",
+                        name="Calculate",
+                        description="Performs calculations",
+                        tags=["math"],
+                    )
+                ],
+            ),
+            config=AgentConfig(
+                title="A2a1ForFederationTesting",  # user-provided title, differs from card.name
+                description="A test A2A agent",
+                type="jsonrpc",
+            ),
+            tags=["agentcore"],
+            status="active",
+            isEnabled=True,
+            author=PydanticObjectId(),
+        )
+
+        docs = agent.to_documents()
+
+        # One agent overview doc + one skill doc, both carrying card_name.
+        assert len(docs) == 2
+        for doc in docs:
+            assert doc.metadata.get("card_name") == "Calculator Agent"
+            # agent_name stays the user title for backward compatibility.
+            assert doc.metadata.get("agent_name") == "A2a1ForFederationTesting"
+
+    def test_a2a_from_document_extracts_card_name(self):
+        """from_document surfaces card_name so /search can prefer it over agent_name."""
+        doc = LangChainDocument(
+            page_content="Agent: A2a1ForFederationTesting\nName: Calculator Agent",
+            metadata={
+                "agent_id": "agent-1",
+                "agent_name": "A2a1ForFederationTesting",
+                "card_name": "Calculator Agent",
+                "path": "a2a1forfederationtesting",
+                "entity_type": "agent",
+                "enabled": True,
+                "tags": [],
+            },
+        )
+
+        result = A2AAgent.from_document(doc)
+
+        assert result["card_name"] == "Calculator Agent"
+        assert result["agent_name"] == "A2a1ForFederationTesting"
 
     def test_a2a_agent_uses_federation_metadata_for_remote_identity(self, monkeypatch):
         from registry_pkgs.models.a2a_agent import AgentConfig

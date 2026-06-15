@@ -125,7 +125,7 @@ def _map_agent(doc: dict) -> AgentSearchResult:
     return AgentSearchResult(
         agentId=doc.get("agent_id"),
         path=doc.get("path", ""),
-        agentName=doc.get("agent_name", ""),
+        agentName=doc.get("card_name") or doc.get("agent_name", ""),
         description=doc.get("description"),
         tags=doc.get("tags") or [],
         enabled=doc.get("enabled", False),
@@ -138,7 +138,7 @@ def _map_skill(doc: dict) -> SkillSearchResult:
     return SkillSearchResult(
         agentId=doc.get("agent_id"),
         agentPath=doc.get("path", ""),
-        agentName=doc.get("agent_name", ""),
+        agentName=doc.get("card_name") or doc.get("agent_name", ""),
         skillName=doc.get("skill_name", ""),
         description=doc.get("description"),
         relevanceScore=doc.get("relevance_score") or 0.0,
