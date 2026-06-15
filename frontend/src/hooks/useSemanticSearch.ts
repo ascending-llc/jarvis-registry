@@ -16,6 +16,7 @@ export interface MatchingToolHit {
 
 export interface SemanticServerHit {
   path: string;
+  serverId?: string;
   serverName: string;
   description?: string;
   tags: string[];
@@ -37,6 +38,7 @@ export interface SemanticToolHit {
 
 export interface SemanticAgentHit {
   path: string;
+  agentId?: string;
   agentName: string;
   description?: string;
   tags: string[];
