@@ -24,7 +24,7 @@ dependencies = [
     "cryptography>=40.0.0",
 
     # MCP and Agents
-    "mcp>=1.26.0",
+    "mcp>=1.26.0,<2.0.0",
     "langchain-mcp-adapters>=0.0.11",
     "langgraph>=0.4.3",
     "langchain-anthropic>=0.3.17",
