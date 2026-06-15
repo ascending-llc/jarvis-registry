@@ -79,9 +79,8 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
     wellKnown: { enabled: false, url: '', lastSyncAt: '', lastSyncStatus: '', lastSyncVersion: '' },
     createdAt: '',
     updatedAt: '',
-    enabled: hit.isEnabled ?? true,
+    enabled: hit.enabled ?? true,
     tags: hit.tags,
-    status: 'unknown' as any,
   });
 
   return (
@@ -316,7 +315,7 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
                       <span className='font-semibold text-[var(--jarvis-info-text)]'>
                         {agent.trustLevel || 'unverified'}
                       </span>
-                      <span>{agent.isEnabled ? 'Enabled' : 'Disabled'}</span>
+                      <span>{agent.enabled ? 'Enabled' : 'Disabled'}</span>
                     </div>
                   </div>
                 ))}
@@ -375,7 +374,7 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
               name: configServer.serverName,
               path: configServer.path,
               description: configServer.description,
-              enabled: configServer.isEnabled ?? true,
+              enabled: configServer.enabled ?? true,
               tags: configServer.tags,
               numTools: configServer.numTools,
             } as ServerInfo

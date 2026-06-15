@@ -2,7 +2,7 @@ import type { Edge, Node } from '@xyflow/react';
 import { useCallback } from 'react';
 import { ADD_NODE_MARGIN_X, BRANCH_SPACING, DASHED_EDGE, NODE_WIDTH } from '../constants';
 import { estimateNodeHeight } from '../layout';
-import type { AgentInfo, LogicStep, NodeData, PickerItem, WorkflowNode } from '../types';
+import type { AgentInfo, AgentNodeData, LogicStep, McpNodeData, NodeData, PickerItem, WorkflowNode } from '../types';
 
 const CATEGORY_TYPE: Record<string, (item: PickerItem | LogicStep) => string> = {
   agent: _item => 'agent',
