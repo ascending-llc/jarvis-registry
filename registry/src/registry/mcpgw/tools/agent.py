@@ -148,7 +148,7 @@ async def _user_can_view_agent(
 
 async def _resolve_enabled_agent(agent_id: str) -> tuple[A2AAgent | None, CallToolResult | None]:
     """
-    Parse `agent_id` and load the A2AAgent, gated on isEnabled.
+    Parse `agent_id` and load the A2AAgent, gated on config.enabled.
     """
     try:
         oid = PydanticObjectId(agent_id)
@@ -156,7 +156,7 @@ async def _resolve_enabled_agent(agent_id: str) -> tuple[A2AAgent | None, CallTo
         logger.warning("execute_agent: invalid agent_id format %r, e: %s", agent_id, e)
         return None, _error_result(f"Invalid agent_id format: {agent_id!r}. Use the agent_id from discover_agents.")
 
-    agent = await A2AAgent.find_one(A2AAgent.id == oid, {"isEnabled": True})
+    agent = await A2AAgent.find_one(A2AAgent.id == oid, {"config.enabled": True})
     if agent is None:
         logger.warning("execute_agent: agent not found or disabled agent_id=%s", agent_id)
         return None, _error_result(

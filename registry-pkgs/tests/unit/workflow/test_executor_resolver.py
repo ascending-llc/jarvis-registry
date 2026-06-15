@@ -34,7 +34,6 @@ def _mcp_server(name: str = "github") -> ExtendedMCPServer:
         serverName=name,
         config={"description": "server description"},
         author=PydanticObjectId(),
-        status="active",
     )
 
 
@@ -61,10 +60,10 @@ def _a2a_agent(
             title="Configured Agent",
             description="desc",
             url=HttpUrl(config_url),
+            enabled=True,
             type=transport,
         ),
         author=PydanticObjectId(),
-        status="active",
     )
 
 
@@ -178,7 +177,7 @@ class TestExecutorResolver:
         assert resolved == "a2a-executor"
         assert len(captured_agents) == 1
         assert captured_agents[0].path == "deep-intel"  # Path is now normalized (no slashes)
-        find_one.assert_awaited_once_with(("path", "==", "deep-intel"), {"isEnabled": True})
+        find_one.assert_awaited_once_with(("path", "==", "deep-intel"), {"config.enabled": True})
 
     @pytest.mark.asyncio
     async def test_resolve_executor_raises_when_key_is_unknown(self, monkeypatch: pytest.MonkeyPatch):
@@ -529,11 +528,11 @@ class TestLoadAccessibleAgentIds:
 
 @pytest.mark.unit
 class TestA2APoolExecutorQueries:
-    """Ensure make_a2a_pool_executor queries use isEnabled, not status."""
+    """Ensure make_a2a_pool_executor queries use config.enabled."""
 
     @pytest.mark.asyncio
-    async def test_pool_initial_selection_queries_by_is_enabled(self, monkeypatch: pytest.MonkeyPatch):
-        """Initial pool query must filter on isEnabled=True, not status='active'."""
+    async def test_pool_initial_selection_queries_by_config_enabled(self, monkeypatch: pytest.MonkeyPatch):
+        """Initial pool query must filter on config.enabled=True."""
         captured_queries: list = []
 
         async def fake_to_list():
@@ -564,12 +563,12 @@ class TestA2APoolExecutorQueries:
         assert len(captured_queries) == 1, "expected exactly one find() call"
         query = captured_queries[0]
         assert "status" not in query, f"status filter found in pool query: {query}"
-        assert query.get("isEnabled") is True, f"isEnabled=True not in pool query: {query}"
+        assert query.get("config.enabled") is True, f"config.enabled=True not in pool query: {query}"
         assert query.get("path") == {"$in": ["agent-a", "agent-b"]}
 
     @pytest.mark.asyncio
-    async def test_pool_retry_path_queries_by_is_enabled(self, monkeypatch: pytest.MonkeyPatch):
-        """Retry path (selected_path already cached) must filter on isEnabled=True."""
+    async def test_pool_retry_path_queries_by_config_enabled(self, monkeypatch: pytest.MonkeyPatch):
+        """Retry path (selected_path already cached) must filter on config.enabled=True."""
         captured_args: list = []
 
         async def fake_find_one(*args, **kwargs):
@@ -597,5 +596,5 @@ class TestA2APoolExecutorQueries:
         assert len(captured_args) >= 1
         args_str = str(captured_args)
         assert "status" not in args_str, f"status filter found in retry query: {captured_args}"
-        assert "isEnabled" in args_str, f"isEnabled not in retry query: {captured_args}"
-        assert captured_args[0] == {"path": "agent-a", "isEnabled": True}
+        assert "config.enabled" in args_str, f"config.enabled not in retry query: {captured_args}"
+        assert captured_args[0] == {"path": "agent-a", "config.enabled": True}

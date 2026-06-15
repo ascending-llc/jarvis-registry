@@ -21,7 +21,7 @@ export interface SemanticServerHit {
   description?: string;
   tags: string[];
   numTools: number;
-  isEnabled: boolean;
+  enabled: boolean;
   relevanceScore: number;
   matchContext?: string;
   matchingTools: MatchingToolHit[];
@@ -45,7 +45,7 @@ export interface SemanticAgentHit {
   skills: string[];
   trustLevel?: string;
   visibility?: string;
-  isEnabled?: boolean;
+  enabled?: boolean;
   url?: string;
   agentCard?: Record<string, any>;
   relevanceScore: number;

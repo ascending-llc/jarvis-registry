@@ -25,7 +25,7 @@ from registry.core.exceptions import (
     A2AAgentCardUpstreamException,
 )
 from registry_pkgs.core.config import JwtSigningConfig
-from registry_pkgs.models.a2a_agent import STATUS_ACTIVE, A2AAgent, normalize_a2a_agent_path
+from registry_pkgs.models.a2a_agent import A2AAgent, AgentConfig, normalize_a2a_agent_path
 from registry_pkgs.vector.repositories.a2a_agent_repository import A2AAgentRepository
 from registry_pkgs.workflows.a2a_client import build_headers
 
@@ -99,12 +99,24 @@ class A2AAgentService:
             async def _task():
                 try:
                     await self._a2a_agent_repo.update_entity_metadata(
-                        "agent_id", str(agent.id), {"enabled": agent.isEnabled}
+                        "agent_id", str(agent.id), {"enabled": agent.config.enabled if agent.config else False}
                     )
                 except Exception as e:
                     logger.error("Vector metadata update failed for agent %s: %s", agent.id, e, exc_info=True)
 
             asyncio.create_task(_task())
+
+    @staticmethod
+    def _ensure_agent_config(agent: A2AAgent) -> AgentConfig:
+        """Return an AgentConfig, creating one from card data for legacy documents."""
+        if agent.config is None:
+            agent.config = AgentConfig(
+                title=agent.card.name,
+                description=agent.card.description or "",
+                url=str(agent.card.url) if agent.card.url else None,
+                type="jsonrpc",
+            )
+        return agent.config
 
     async def _resolve_agent_card_with_fallback(
         self,
@@ -210,7 +222,7 @@ class A2AAgentService:
 
         Args:
             query: Free-text search across name, description, tags, skills
-            enabled_only: When True, return only enabled agents (isEnabled is True)
+            enabled_only: When True, return only enabled agents (config.enabled is True)
             page: Page number (validated by router)
             per_page: Items per page (validated by router)
             accessible_agent_ids: List of agent ID strings accessible to the user (from ACL)
@@ -227,9 +239,9 @@ class A2AAgentService:
                 object_ids = [PydanticObjectId(aid) for aid in accessible_agent_ids]
                 filters["_id"] = {"$in": object_ids}
 
-            # Filter by enabled flag (isEnabled is the source of truth for enablement)
+            # Filter by enabled flag (config.enabled is the source of truth for enablement)
             if enabled_only:
-                filters["isEnabled"] = True
+                filters["config.enabled"] = True
 
             # Build text search filter if query provided
             if query:
@@ -270,13 +282,8 @@ class A2AAgentService:
         try:
             # Total counts
             total_agents = await A2AAgent.count()
-            enabled_agents = await A2AAgent.find({"isEnabled": True}).count()
-            disabled_agents = await A2AAgent.find({"isEnabled": False}).count()
-
-            # Count by status
-            status_pipeline = [{"$group": {"_id": "$status", "count": {"$sum": 1}}}]
-            status_results = await A2AAgent.aggregate(status_pipeline).to_list()
-            by_status = {result["_id"]: result["count"] for result in status_results}
+            enabled_agents = await A2AAgent.find({"config.enabled": True}).count()
+            disabled_agents = total_agents - enabled_agents
 
             # Count by transport
             transport_pipeline = [{"$group": {"_id": "$card.preferred_transport", "count": {"$sum": 1}}}]
@@ -296,7 +303,6 @@ class A2AAgentService:
                 "total_agents": total_agents,
                 "enabled_agents": enabled_agents,
                 "disabled_agents": disabled_agents,
-                "by_status": by_status,
                 "by_transport": by_transport,
                 "total_skills": total_skills,
                 "average_skills_per_agent": average_skills,
@@ -392,7 +398,7 @@ class A2AAgentService:
 
             # DO NOT modify the agent_card - store it as-is
             # Store user-provided information in config field instead
-            from registry_pkgs.models.a2a_agent import AgentConfig, WellKnownConfig
+            from registry_pkgs.models.a2a_agent import WellKnownConfig
 
             agent_config = AgentConfig(
                 title=data.title,
@@ -407,8 +413,6 @@ class A2AAgentService:
                 card=agent_card,  # Original, unmodified card from third-party
                 config=agent_config,  # User-provided configuration including URL
                 tags=[],  # Initialize as empty list - tags are registry metadata, not derived from skills
-                isEnabled=False,  # Default to disabled for safety
-                status=STATUS_ACTIVE,
                 author=PydanticObjectId(user_id),
                 registeredBy=None,
                 registeredAt=datetime.now(UTC),
@@ -563,7 +567,7 @@ class A2AAgentService:
 
             # Update enabled state if provided
             if "enabled" in update_data:
-                agent.isEnabled = update_data["enabled"]
+                self._ensure_agent_config(agent).enabled = update_data["enabled"]
 
             # Update timestamp
             agent.updatedAt = datetime.now(UTC)
@@ -648,7 +652,7 @@ class A2AAgentService:
             if not agent:
                 raise ValueError(f"Agent not found: {agent_id}")
 
-            agent.isEnabled = enabled
+            self._ensure_agent_config(agent).enabled = enabled
             agent.updatedAt = datetime.now(UTC)
 
             old_hash = agent.vectorContentHash

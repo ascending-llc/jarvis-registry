@@ -38,10 +38,10 @@ _schedule_vector_sync(server, old_hash)      # routes based on change
 **Hash changed** → `sync_to_vector_db(is_delete=True)` — full Weaviate rebuild.
 
 **Hash unchanged** → `update_entity_metadata(...)` — metadata-only patch (no re-embedding).
-Used for toggle enable/disable where only `enabled`/`status` change.
+Used for toggle enable/disable where only `config.enabled` changes.
 
-> **Invariant**: `enabled`/`status`/`isEnabled` must NOT appear in `page_content` inside
-> `to_documents()`. If they do, toggle paths will incorrectly trigger full rebuilds.
+> **Invariant**: `config.enabled` must NOT appear in `page_content` inside
+> `to_documents()`. If it does, toggle paths will incorrectly trigger full rebuilds.
 
 ### Federation path
 
@@ -89,7 +89,7 @@ Patch metadata fields on all matching docs without re-embedding. Used for enable
 ```python
 result = await repo.update_entity_metadata(
     "server_id", str(server.id),
-    {"enabled": False, "status": "inactive"}
+    {"enabled": False}
 )
 # result.metadata_updated == number of docs patched
 ```

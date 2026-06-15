@@ -5,7 +5,6 @@ export type GetAgentsListRequest = {
   perPage?: string;
 };
 
-export type AgentStatus = 'active' | 'inactive' | 'error';
 export type AgentPermissionType = {
   VIEW: boolean;
   EDIT: boolean;
@@ -25,7 +24,6 @@ export type AgentItem = {
   numSkills: number;
   skills?: AgentSkillItem[];
   enabled: boolean;
-  status: AgentStatus;
   permissions: AgentPermissionType;
   author: string;
   createdAt: string;
@@ -98,7 +96,6 @@ export type Agent = {
   defaultOutputModes: string[];
   provider: AgentProvider;
   tags: string[];
-  status: AgentStatus;
   enabled: boolean;
   permissions: AgentPermissionType;
   author: string;
@@ -120,11 +117,6 @@ export type GetAgentStateResponse = {
   totalAgents: number;
   enabledAgents: number;
   disabledAgents: number;
-  byStatus: {
-    active: number;
-    inactive: number;
-    error: number;
-  };
   byTransport: {
     'HTTP+JSON': number;
     JSONRPC: number;

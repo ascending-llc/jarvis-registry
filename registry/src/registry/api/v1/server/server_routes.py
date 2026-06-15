@@ -198,7 +198,16 @@ async def get_server_stats(
         # Get statistics from service
         stats = await server_service.get_stats()
 
-        return ServerStatsResponse(**stats)
+        return ServerStatsResponse(
+            totalServers=stats["total_servers"],
+            serversByTransport=stats["servers_by_transport"],
+            totalTokens=stats["total_tokens"],
+            tokensByType=stats["tokens_by_type"],
+            activeTokens=stats["active_tokens"],
+            expiredTokens=stats["expired_tokens"],
+            activeUsers=stats["active_users"],
+            totalTools=stats["total_tools"],
+        )
 
     except HTTPException:
         raise

@@ -161,7 +161,6 @@ async def get_agent_stats(
 
     Returns comprehensive statistics about:
     - Total agents and breakdown by enabled/disabled
-    - Breakdown by status (active, inactive, error)
     - Breakdown by transport type
     - Total skills and average skills per agent
     """
@@ -181,7 +180,6 @@ async def get_agent_stats(
             totalAgents=stats["total_agents"],
             enabledAgents=stats["enabled_agents"],
             disabledAgents=stats["disabled_agents"],
-            byStatus=stats["by_status"],
             byTransport=stats["by_transport"],
             totalSkills=stats["total_skills"],
             averageSkillsPerAgent=stats["average_skills_per_agent"],

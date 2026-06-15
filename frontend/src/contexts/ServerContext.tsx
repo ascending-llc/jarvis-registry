@@ -21,7 +21,6 @@ export interface ServerInfo {
   lastCheckedTime?: string;
   usersCount?: number;
   rating?: number;
-  status?: 'active' | 'inactive' | 'error';
   numTools?: number;
   url?: string;
   numStars?: number;
@@ -179,20 +178,6 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
     [federations],
   );
 
-  // Helper function to map backend health status to frontend status
-  const mapHealthStatus = (healthStatus: string): Agent['status'] => {
-    if (!healthStatus || healthStatus === 'unknown') return 'unknown' as any;
-    if (healthStatus === 'active' || healthStatus === 'healthy') return 'active';
-    if (
-      healthStatus === 'inactive' ||
-      healthStatus.includes('unhealthy') ||
-      healthStatus.includes('error') ||
-      healthStatus.includes('timeout')
-    )
-      return 'inactive';
-    return 'unknown' as any;
-  };
-
   const handleServerUpdate = (id: string, updates: Partial<ServerInfo>) => {
     setServers(prevServers => prevServers.map(server => (server.id === id ? { ...server, ...updates } : server)));
   };
@@ -212,7 +197,6 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
         lastCheckedTime: serverInfo.lastConnected,
         usersCount: 0,
         rating: serverInfo.numStars || 0,
-        status: serverInfo.status || 'unknown', // undefined
         numTools: serverInfo.numTools || 0,
         url: serverInfo.url,
         numStars: serverInfo.numStars || 0,
@@ -266,7 +250,6 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
             : agentInfo.enabled !== undefined
               ? agentInfo.enabled
               : false,
-        status: mapHealthStatus(agentInfo.health_status || agentInfo.status || 'unknown'),
         permissions: agentInfo.permissions || { VIEW: false, EDIT: false, DELETE: false, SHARE: false },
         author: agentInfo.author || '',
         createdAt: agentInfo.createdAt || '',
@@ -401,7 +384,6 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
             handleServerUpdate(serverId, {
               lastCheckedTime: result.lastConnected,
               numTools: result.numTools,
-              status: result.status || 'unknown',
             });
           }
         }

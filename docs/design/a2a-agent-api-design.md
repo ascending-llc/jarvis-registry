@@ -25,6 +25,11 @@ The `config` object contains user-provided metadata:
 - `url`: User-configured agent endpoint URL
 - `type`: Transport type (jsonrpc, grpc, http_json)
 
+### Enabled State
+- Top-level response field `enabled` reports whether the agent is available for proxy/workflow execution.
+- The persisted source of truth is `A2AAgent.config.enabled`.
+- Deprecated root fields `status` and `isEnabled` are not returned by the API.
+
 ### Path Field
 - `path` is the unique registry identifier used by proxy routes.
 - API input may be path-like (for example `/team/a2a/agent-1`) and is normalized by the backend into a slash-free SEO-style slug (for example `team-a2a-agent-1`).
@@ -89,7 +94,6 @@ The `wellKnown` object contains sync status only (no URL):
         }
       ],
       "enabled": true,
-      "status": "active",
       "config": {
         "title": "Code Review Agent",
         "description": "AI-powered code review assistant",
@@ -133,11 +137,6 @@ The `wellKnown` object contains sync status only (no URL):
   "totalAgents": 150,
   "enabledAgents": 120,
   "disabledAgents": 30,
-  "byStatus": {
-    "active": 130,
-    "inactive": 15,
-    "error": 5
-  },
   "byTransport": {
     "HTTP+JSON": 100,
     "JSONRPC": 30,
@@ -195,7 +194,6 @@ The `wellKnown` object contains sync status only (no URL):
     "url": "https://ailabs.com"
   },
   "tags": ["code", "review"],
-  "status": "active",
   "enabled": true,
   "config": {
     "title": "Code Review Agent",
@@ -294,7 +292,6 @@ The `wellKnown` object contains sync status only (no URL):
     "url": "https://ailabs.com"
   },
   "tags": [],
-  "status": "active",
   "enabled": false,
   "config": {
     "title": "Code Review Agent",
@@ -400,7 +397,6 @@ The `wellKnown` object contains sync status only (no URL):
   "defaultOutputModes": ["application/json"],
   "provider": {...},
   "tags": ["new", "tags"],
-  "status": "active",
   "enabled": true,
   "config": {
     "title": "Updated Agent Name",
@@ -485,7 +481,6 @@ The `wellKnown` object contains sync status only (no URL):
   "defaultOutputModes": ["application/json"],
   "provider": {...},
   "tags": ["code", "review"],
-  "status": "active",
   "enabled": true,
   "config": {
     "title": "Code Review Agent",
@@ -601,7 +596,6 @@ The `wellKnown` object contains sync status only (no URL):
   "defaultOutputModes": ["application/json"],
   "provider": {...},
   "tags": ["code", "review"],
-  "status": "active",
   "enabled": true,
   "config": {
     "title": "Code Review Agent",

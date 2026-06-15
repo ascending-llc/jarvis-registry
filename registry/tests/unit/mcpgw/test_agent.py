@@ -117,7 +117,7 @@ async def test_execute_agent_invalid_id_returns_error():
 
 @pytest.mark.asyncio
 async def test_execute_agent_not_found_returns_error():
-    """The single 'not found / disabled' branch — `find_one(id == oid, {"isEnabled": True})`
+    """The single 'not found / disabled' branch — `find_one(id == oid, {"config.enabled": True})`
     returns None — should produce the combined error message."""
     ctx = _make_ctx()
     valid_id = str(PydanticObjectId())

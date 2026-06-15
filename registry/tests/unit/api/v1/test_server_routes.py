@@ -253,12 +253,8 @@ async def test_refresh_server_capabilities_server_not_found():
     assert "not_found" in str(exc_info.value.detail)
 
 
-def _fake_mcp_server(*, doc_status: str = "inactive", enabled: bool = True):
-    """Minimal ExtendedMCPServer stand-in for converter tests.
-
-    doc_status is intentionally NOT "active" so we can prove the converter ignores the
-    deprecated root-level status field and always reports "active".
-    """
+def _fake_mcp_server(*, enabled: bool = True):
+    """Minimal ExtendedMCPServer stand-in for converter tests."""
     now = datetime.now(UTC)
     return SimpleNamespace(
         id=PydanticObjectId(),
@@ -268,7 +264,6 @@ def _fake_mcp_server(*, doc_status: str = "inactive", enabled: bool = True):
         numStars=0,
         path="/test",
         tags=["t"],
-        status=doc_status,
         lastConnected=None,
         lastError=None,
         createdAt=now,
@@ -277,36 +272,34 @@ def _fake_mcp_server(*, doc_status: str = "inactive", enabled: bool = True):
     )
 
 
-def test_convert_to_list_item_hardcodes_status_and_reads_config_enabled():
-    server = _fake_mcp_server(doc_status="inactive", enabled=True)
+def test_convert_to_list_item_omits_status_and_reads_config_enabled():
+    server = _fake_mcp_server(enabled=True)
     item = convert_to_list_item(server)
-    # status is hard-coded; the deprecated doc.status="inactive" must be ignored
-    assert item.status == "active"
+    assert not hasattr(item, "status")
     # enablement comes from config.enabled, not status
     assert item.enabled is True
 
 
 def test_convert_to_list_item_reflects_disabled_config():
-    server = _fake_mcp_server(doc_status="active", enabled=False)
+    server = _fake_mcp_server(enabled=False)
     item = convert_to_list_item(server)
-    assert item.status == "active"
+    assert not hasattr(item, "status")
     assert item.enabled is False
 
 
-def test_convert_to_detail_hardcodes_status_active():
-    server = _fake_mcp_server(doc_status="error", enabled=True)
+def test_convert_to_detail_omits_status():
+    server = _fake_mcp_server(enabled=True)
     detail = convert_to_detail(server)
-    assert detail.status == "active"
+    assert not hasattr(detail, "status")
     assert detail.enabled is True
 
 
 @pytest.mark.asyncio
 async def test_list_servers_route_requests_all_servers_with_enabled_only_false(sample_user_context):
-    """The list endpoint dropped ?status: it must ask the service for ALL servers (enabled_only=False)
-    and the deprecated status field must surface as the hard-coded "active"."""
+    """The list endpoint dropped ?status and must ask the service for all servers."""
     from registry.api.v1.server.server_routes import list_servers as list_servers_route
 
-    server = _fake_mcp_server(doc_status="inactive", enabled=True)
+    server = _fake_mcp_server(enabled=True)
 
     acl_service = MagicMock()
     acl_service.get_accessible_resource_ids = AsyncMock(return_value=[str(server.id)])
@@ -333,4 +326,4 @@ async def test_list_servers_route_requests_all_servers_with_enabled_only_false(s
     assert server_service.list_servers.await_args.kwargs["enabled_only"] is False
     assert result.pagination.total == 1
     assert len(result.servers) == 1
-    assert result.servers[0].status == "active"
+    assert not hasattr(result.servers[0], "status")

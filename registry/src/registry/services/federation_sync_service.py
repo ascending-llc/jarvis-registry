@@ -833,7 +833,6 @@ class FederationSyncService:
             existing.path = item.path
             existing.tags = list(item.tags or [])
             existing.config = dict(item.config or {})
-            existing.status = item.status or existing.status
             existing.numTools = item.numTools
             existing.federationMetadata = item.federationMetadata
             await existing.save(session=session)
@@ -844,8 +843,6 @@ class FederationSyncService:
             existing.path = item.path
             existing.card = item.card
             existing.tags = list(item.tags or [])
-            existing.status = item.status
-            existing.isEnabled = item.isEnabled
             existing.wellKnown = item.wellKnown
             existing.federationMetadata = item.federationMetadata
             if item.config and existing.config:
@@ -857,6 +854,9 @@ class FederationSyncService:
                     existing.config.type = item.config.type
                 if hasattr(item.config, "runtimeAccess"):
                     existing.config.runtimeAccess = item.config.runtimeAccess
+                existing.config.enabled = item.config.enabled
+            elif item.config:
+                existing.config = item.config
             await existing.save(session=session)
             mutation_result.changed_a2a_runtime_arns.add(remote_id)
             resources_for_acl_inheritance.append((ResourceType.REMOTE_AGENT, existing.id))
@@ -1208,15 +1208,15 @@ class FederationSyncService:
         session: AsyncClientSession | None = None,
     ) -> FederationStats:
         mcp_count = await ExtendedMCPServer.find(
-            {"federationRefId": federation_id, "status": {"$ne": "deleted"}},
+            {"federationRefId": federation_id},
             session=session,
         ).count()
         agent_count = await A2AAgent.find(
-            {"federationRefId": federation_id, "status": {"$ne": "deleted"}},
+            {"federationRefId": federation_id},
             session=session,
         ).count()
         mcp_servers = await ExtendedMCPServer.find(
-            {"federationRefId": federation_id, "status": {"$ne": "deleted"}},
+            {"federationRefId": federation_id},
             session=session,
         ).to_list()
         tool_count = sum(int(server.numTools or 0) for server in mcp_servers)

@@ -214,7 +214,6 @@ All server endpoints return a **flattened response structure** for frontend conv
 
   },
   "scope": "shared_app",  # ← Root level
-  "status": "active",  # ← Root level
   "path": "/mcp/github",  # ← Root level
   "tags": ["github"],  # ← Root level
   "author": ObjectId("..."),
@@ -281,7 +280,6 @@ All server endpoints return a **flattened response structure** for frontend conv
     "initDuration": 49
   },
   "scope": "shared_app",  # ← Root level
-  "status": "active",  # ← Root level
   "path": "/mcp/github",  # ← Root level
   "tags": ["github"],  # ← Root level
   "author": ObjectId("..."),
@@ -303,7 +301,6 @@ All server endpoints return a **flattened response structure** for frontend conv
   # ↓ Fields stored at root level in DB
   "author": "507f1f77bcf86cd799439011",
   "scope": "shared_app",
-  "status": "active",
   "path": "/mcp/github",
   "tags": ["github"],
   "capabilities": "{...}",
@@ -327,7 +324,6 @@ All server endpoints return a **flattened response structure** for frontend conv
 - `serverName`: string - Unique server identifier
 - `author`: string - ObjectId of the user who created this server (as string)
 - `scope`: string - Access level (shared_app, shared_user, private_user) *[stored at root in DB]*
-- `status`: string - Server status (active, inactive, error) *[stored at root in DB]*
 - `createdAt`: string (ISO 8601) - Creation timestamp
 - `updatedAt`: string (ISO 8601) - Last update timestamp
 
@@ -362,7 +358,7 @@ All server endpoints return a **flattened response structure** for frontend conv
 
 **1. List Servers**
 ```http
-GET /api/v1/servers?query={search_term}&scope={scope}&status={status}&page={page}&per_page={per_page}
+GET /api/v1/servers?query={search_term}&scope={scope}&page={page}&per_page={per_page}
 Authorization: Bearer <token>
 
 Query Parameters:
@@ -373,10 +369,6 @@ Query Parameters:
 - scope (optional): Exact filter by access level
   * Values: shared_app, shared_user, private_user
   * Example: scope=private_user shows only user's private servers
-
-- status (optional): Exact filter by operational state
-  * Values: active, inactive, error
-  * Example: status=active shows only enabled servers
 
 - page (optional): Page number for pagination (default: 1, min: 1)
 - per_page (optional): Items per page (default: 20, min: 1, max: 100)
@@ -403,7 +395,6 @@ Response 200:
       "tools": "search_code, create_issue, list_repos, get_pull_requests",
       "author": "507f1f77bcf86cd799439011",
       "scope": "shared_app",
-      "status": "active",
       "path": "/mcp/github",
       "tags": ["github", "version-control", "collaboration", "development"],
       "numTools": 4,
@@ -430,7 +421,6 @@ Response 200:
       "capabilities": "{\"experimental\":{},\"prompts\":{\"listChanged\":true},\"resources\":{\"subscribe\":false,\"listChanged\":true},\"tools\":{\"listChanged\":true}}",
       "tools": "tavily_search, tavily_extract, tavily_crawl, tavily_map",
       "author": "507f1f77bcf86cd799439011",
-      "status": "active",
       "path": "/mcp/tavilysearchv1",
       "tags": ["search", "web", "tavily"],
       "numTools": 4,
@@ -534,7 +524,6 @@ Response 200:
   },
   "initDuration": 150,
   "author": "507f1f77bcf86cd799439011",
-  "status": "active",
   "path": "/mcp/github-copilot",
   "tags": ["github", "version-control"],
   "numTools": 4,
@@ -631,7 +620,6 @@ Response 201:
   },
   "initDuration": 80,
   "author": "507f1f77bcf86cd799439012",
-  "status": "active",
   "path": "/mcp/custom-api-server",
   "tags": ["api", "custom"],
   "numTools": 3,
@@ -663,8 +651,7 @@ Content-Type: application/json
 Request:
 {
   "description": "Updated - Enhanced GitHub integration with new features",
-  "tags": ["github", "version-control", "collaboration"],
-  "status": "active"
+  "tags": ["github", "version-control", "collaboration"]
 }
 
 Response 200:
@@ -688,7 +675,6 @@ Response 200:
   "initDuration": 49,
   "author": "69593baec59bdd2853ad0ff1",
   "scope": "shared_app",
-  "status": "active",
   "path": "/mcp/github-copilot",
   "tags": ["github", "version-control", "collaboration"],
   "numTools": 4,
@@ -745,7 +731,6 @@ Response 200:
   "id": "674e1a2b3c4d5e6f7a8b9c0d",
   "server_name": "github",
   "path": "/mcp/github",
-  "status": "active",
   "enabled": true,
   "updated_at": "2026-01-04T16:10:00Z"
 }
@@ -822,7 +807,6 @@ Response 200:
   "id": "674e1a2b3c4d5e6f7a8b9c0d",
   "serverName": "github",
   "path": "/mcp/github",
-  "status": "active",
   "lastConnected": "2026-01-04T16:20:00Z",
   "lastError": null,
   "errorMessage": null,
@@ -843,7 +827,7 @@ Response 400 (Refresh Failed):
 - Uses `ServerDetailResponse` schema with camelCase fields (via `response_model_by_alias=True`)
 - This endpoint refreshes server capabilities (prompts, resources, tools) by fetching them from the MCP server
 - Successfully retrieved data is saved to MongoDB and automatically synced to Weaviate vector database
-- The `status` field in the server document is NOT updated by this endpoint (it's deprecated for capability tracking)
+- The deprecated `status` field is not returned or updated by this endpoint
 - The `lastConnected` field is ONLY updated when the refresh succeeds (not updated on failure)
 - Returns the full server detail response on success, or an error response on failure
 - Frontend can show a success/error alert based on the HTTP status code (200 = success, 400 = failed)
@@ -1043,11 +1027,6 @@ Response 200:
     "shared_app": 10,
     "shared_user": 40,
     "private_user": 200
-  },
-  "servers_by_status": {
-    "active": 230,
-    "inactive": 15,
-    "error": 5
   },
   "servers_by_transport": {
     "streamable-http": 200,

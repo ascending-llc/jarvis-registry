@@ -242,7 +242,7 @@ const AgentRegistryOrEdit: React.FC = () => {
                 {isReadOnly &&
                   agentDetail &&
                   (() => {
-                    const { pill, dot, label } = getStatusStyle(agentDetail.status);
+                    const { pill, dot, label } = getStatusStyle('active');
                     return (
                       <span
                         className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium ${pill}`}
