@@ -38,7 +38,7 @@ const isSubPagePath = (pathname: string): boolean => {
 
 const Layout: React.FC<LayoutProps> = ({ children }) => {
   const { theme, toggleTheme } = useTheme();
-  const { viewMode, searchTerm, setSearchTerm, setCommittedQuery } = useServer();
+  const { viewMode, searchTerm, setSearchTerm, committedQuery, setCommittedQuery } = useServer();
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [version, setVersion] = useState<string | null>(null);
   const [showIntegrationGuide, setShowIntegrationGuide] = useState(false);
@@ -60,6 +60,44 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     if (viewMode === 'workflow') return 'Search workflows...';
     return 'Search...';
   };
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (searchTerm || committedQuery) {
+          setSearchTerm('');
+          setCommittedQuery('');
+        }
+      }
+    };
+
+    const handleMouseDown = (e: MouseEvent) => {
+      if (!searchTerm && !committedQuery) return;
+      
+      const target = e.target as Element;
+      if (!target || typeof target.closest !== 'function') return;
+
+      // Do not close if clicking inside search input
+      if (target.closest('#semantic-search-input-container')) return;
+      // Do not close if clicking inside search results
+      if (target.closest('#semantic-search-results-container')) return;
+      // Do not close if clicking inside fallback results
+      if (target.closest('#semantic-search-fallback-container')) return;
+      // Do not close if clicking inside a modal or portal
+      if (target.closest('[role="dialog"]') || target.closest('[id^="headlessui-portal"]')) return;
+      
+      setSearchTerm('');
+      setCommittedQuery('');
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('mousedown', handleMouseDown);
+    
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('mousedown', handleMouseDown);
+    };
+  }, [searchTerm, committedQuery, setSearchTerm, setCommittedQuery]);
 
   useEffect(() => {
     getVersion();
@@ -114,7 +152,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
             {/* Middle (Search) */}
             {showSearch && (
               <div className='hidden md:flex flex-1 justify-center px-6'>
-                <div className='relative w-full max-w-xl'>
+                <div className='relative w-full max-w-xl' id='semantic-search-input-container'>
                   <div className='absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none'>
                     <MagnifyingGlassIcon className='h-4 w-4 text-[var(--jarvis-subtle)]' />
                   </div>
