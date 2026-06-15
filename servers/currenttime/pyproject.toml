@@ -5,7 +5,7 @@ description = "MCP server to get current time from the timeapi.io API"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
-    "mcp>=1.9.3",
+    "mcp>=1.26.0, <2.0.0",
     "pydantic>=2.11.3",
     "requests>=2.32.3",
     "pytz>=2025.2",

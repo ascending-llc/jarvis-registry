@@ -177,12 +177,12 @@ class ScopePermissionMiddleware(BaseHTTPMiddleware):
                 if has_scope:
                     logger.debug(f"Permission granted: user has '{required_scope}' for {method} {path}")
                 else:
-                    logger.warning(f"Permission denied: user lacks '{required_scope}' for {method} {path}")
+                    logger.warning("Permission denied: user lacks '%s' for %s %s", required_scope, method, path)
 
                 return has_scope
 
         # No rules match - deny (authenticated paths must have explicit permissions)
-        logger.warning(f"No rules match path={path}, method={method} - denying")
+        logger.warning("No rules match path=%s, method=%s - denying", path, method)
         return False
 
     async def dispatch(self, request: Request, call_next):
