@@ -313,6 +313,12 @@ workflows-read:
   - action: list_workflow_versions
     method: GET
     endpoint: /workflows/{workflow_id}/versions
+  - action: list_node_runs
+    method: GET
+    endpoint: /workflows/{workflow_id}/runs/{run_id}/nodes
+  - action: get_node_run
+    method: GET
+    endpoint: /workflows/{workflow_id}/runs/{run_id}/nodes/{node_run_id}
 
 workflows-control:
   # Write directives to live or finished workflow runs. Requires workflows-read.
@@ -334,6 +340,12 @@ workflows-control:
   - action: approve_workflow_run
     method: POST
     endpoint: /workflows/{workflow_id}/runs/{run_id}/approve
+  - action: rerun_node
+    method: POST
+    endpoint: /workflows/{workflow_id}/runs/{run_id}/nodes/{node_id}/rerun
+  - action: replay_run
+    method: POST
+    endpoint: /workflows/{workflow_id}/runs/{run_id}/replay
 
 
 workflows-write:
