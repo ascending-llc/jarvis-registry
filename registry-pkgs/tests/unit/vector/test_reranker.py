@@ -1,6 +1,7 @@
 from unittest.mock import patch
 
 import pytest
+from pydantic import SecretStr
 
 from registry_pkgs.vector.retrievers.reranker import _build_rerank_arn, create_reranker
 
@@ -39,8 +40,8 @@ def test_create_reranker_bedrock_builds_compressor_with_credentials():
         model_arn="arn:aws:bedrock:us-east-1::foundation-model/cohere.rerank-v3-5:0",
         region_name="us-east-1",
         top_n=7,
-        aws_access_key_id="AKIA",
-        aws_secret_access_key="secret",
+        aws_access_key_id=SecretStr("AKIA"),
+        aws_secret_access_key=SecretStr("secret"),
     )
 
 
