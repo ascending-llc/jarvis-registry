@@ -28,7 +28,6 @@ from fastapi import HTTPException
 
 from registry.utils.crypto_utils import generate_service_jwt
 from registry_pkgs.database.mongodb import MongoDB
-from registry_pkgs.workflows.types import WorkflowConfigError
 from registry_pkgs.models.enums import (
     NodeRunStatus,
     RequirementResolution,
@@ -41,6 +40,7 @@ from registry_pkgs.models.enums import (
 from registry_pkgs.models.workflow import NodeRun, ResolvedDependency, WorkflowRun
 from registry_pkgs.workflows.compiler import flatten_workflow_nodes
 from registry_pkgs.workflows.control import DirectiveQueue
+from registry_pkgs.workflows.types import WorkflowConfigError
 
 logger = logging.getLogger(__name__)
 

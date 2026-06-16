@@ -5,7 +5,7 @@ import logging
 from beanie import PydanticObjectId
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from registry.api.v1.workflow._token_helpers import build_registry_token
+from registry.api.v1.workflow.token_helpers import build_registry_token
 from registry.auth.dependencies import CurrentUser, UserContextDict
 from registry.deps import get_acl_service, get_workflow_control_service
 from registry.schemas.workflow_schemas import (

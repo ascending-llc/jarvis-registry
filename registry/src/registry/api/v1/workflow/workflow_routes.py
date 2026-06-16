@@ -12,6 +12,7 @@ from beanie import PydanticObjectId
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from fastapi import status as http_status
 
+from registry.api.v1.workflow.token_helpers import build_registry_token
 from registry.auth.dependencies import CurrentUser, UserContextDict
 from registry.core.telemetry_decorators import track_registry_operation
 from registry.deps import get_acl_service, get_workflow_control_service, get_workflow_runner, get_workflow_service
@@ -41,7 +42,6 @@ from registry.services.access_control_service import ACLService
 from registry.services.workflow_control_service import WorkflowControlService
 from registry.services.workflow_executor import execute_workflow_run_background
 from registry.services.workflow_service import WorkflowService
-from registry.api.v1.workflow._token_helpers import build_registry_token
 from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.models import PrincipalType
 from registry_pkgs.models.enums import RoleBits
@@ -73,8 +73,6 @@ async def _authorize_workflow(
         required_permission=required_permission,
     )
     return workflow, permissions
-
-
 
 
 # ==================== Workflow Endpoints ====================
