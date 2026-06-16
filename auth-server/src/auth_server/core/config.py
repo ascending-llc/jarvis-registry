@@ -5,11 +5,12 @@ Centralized configuration management using Pydantic Settings.
 All environment variables are loaded here and accessed through the global `settings` instance.
 """
 
+from functools import cached_property
 from typing import Any
 
 from pydantic import field_validator
 
-from registry_pkgs.core.config import JarvisBaseSettings
+from registry_pkgs.core.config import JarvisBaseSettings, RedisConfig
 
 
 class AuthSettings(JarvisBaseSettings):
@@ -58,6 +59,14 @@ class AuthSettings(JarvisBaseSettings):
     # ==================== OAuth Device Flow Settings ====================
     device_code_expiry_seconds: int = 600  # 10 minutes
     device_code_poll_interval: int = 5  # Poll every 5 seconds
+
+    # ==================== Redis ====================
+    redis_uri: str = "redis://registry-redis:6379/1"
+    redis_key_prefix: str = "jarvis-auth-server"
+
+    @cached_property
+    def redis_config(self) -> RedisConfig:
+        return RedisConfig(redis_uri=self.redis_uri, redis_key_prefix=self.redis_key_prefix)
 
     @field_validator("auth_provider")
     @classmethod

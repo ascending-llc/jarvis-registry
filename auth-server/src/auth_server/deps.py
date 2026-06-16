@@ -1,5 +1,6 @@
 from fastapi import Depends, Request
 from itsdangerous import URLSafeTimedSerializer
+from redis import Redis
 
 from .container import AuthContainer
 from .core.types import AllowedProvider
@@ -31,6 +32,10 @@ def get_signer(container: AuthContainer = Depends(get_container)) -> URLSafeTime
 
 def get_auth_provider(provider: AllowedProvider, container: AuthContainer = Depends(get_container)) -> AuthProvider:
     return container.get_auth_provider(provider)
+
+
+def get_redis_client(container: AuthContainer = Depends(get_container)) -> Redis:
+    return container.redis_client
 
 
 def check_if_https(request: Request) -> bool:

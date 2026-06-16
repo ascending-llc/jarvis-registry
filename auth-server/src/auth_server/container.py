@@ -1,6 +1,7 @@
 from functools import cache, cached_property
 
 from itsdangerous import URLSafeTimedSerializer
+from redis import Redis
 
 from .core.config import AuthSettings
 from .core.types import AllowedProvider
@@ -13,8 +14,9 @@ from .utils.config_loader import AuthProviderConfig, EntraConfig, OAuth2Config, 
 class AuthContainer:
     """App-scoped dependencies for the auth server."""
 
-    def __init__(self, settings: AuthSettings):
+    def __init__(self, settings: AuthSettings, *, redis_client: Redis):
         self._settings = settings
+        self.redis_client = redis_client
         # Eagerly load OAuth2 config so app can fail early and loudly on start-up if config file is off.
         self._config_loader = OAuth2ConfigLoader(self._settings)
         self._oauth2_config = self._config_loader.get_config()

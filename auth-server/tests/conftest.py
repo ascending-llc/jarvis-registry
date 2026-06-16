@@ -4,7 +4,7 @@ Pytest configuration and shared fixtures for auth_server tests.
 
 import os
 from collections.abc import Generator
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -28,6 +28,24 @@ def jwt_rsa_key() -> rsa.RSAPrivateKey:
 
 
 @pytest.fixture
+def mock_redis_client() -> Mock:
+    """Mock Redis client used by auth-server lifespan tests."""
+    return Mock()
+
+
+@pytest.fixture(autouse=True)
+def mock_auth_server_infra(mock_redis_client: Mock) -> Generator[None, None, None]:
+    """Mock external infrastructure so tests do not require MongoDB or Redis."""
+    with (
+        patch("auth_server.server.init_mongodb", new_callable=AsyncMock),
+        patch("auth_server.server.close_mongodb", new_callable=AsyncMock),
+        patch("auth_server.server.create_redis_client", return_value=mock_redis_client),
+        patch("auth_server.server.close_redis_client"),
+    ):
+        yield
+
+
+@pytest.fixture
 def auth_server_app():
     """Import and return the auth server FastAPI app."""
     from auth_server.server import app
@@ -37,13 +55,8 @@ def auth_server_app():
 
 @pytest.fixture
 def test_client(auth_server_app) -> Generator[TestClient, None, None]:
-    """Create a test client for the auth server with mocked MongoDB."""
-    # Mock MongoDB initialization to prevent actual connection attempts
-    with (
-        patch("auth_server.server.init_mongodb"),
-        patch("registry_pkgs.database.mongodb.MongoDB.connect_db"),
-        TestClient(auth_server_app) as client,
-    ):
+    """Create a test client for the auth server."""
+    with TestClient(auth_server_app) as client:
         yield client
 
 
