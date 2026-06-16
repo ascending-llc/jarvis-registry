@@ -28,6 +28,7 @@ from fastapi import HTTPException
 
 from registry.utils.crypto_utils import generate_service_jwt
 from registry_pkgs.database.mongodb import MongoDB
+from registry_pkgs.workflows.types import WorkflowConfigError
 from registry_pkgs.models.enums import (
     NodeRunStatus,
     RequirementResolution,
@@ -52,7 +53,10 @@ def _log_task_exception(task: asyncio.Task) -> None:
     logged so the failure is visible in application logs.
     """
     if not task.cancelled() and (exc := task.exception()):
-        logger.error("Background workflow task raised unhandled exception: %s", exc, exc_info=exc)
+        if isinstance(exc, WorkflowConfigError):
+            logger.warning("Background workflow task aborted — configuration error: %s", exc)
+        else:
+            logger.error("Background workflow task raised unhandled exception: %s", exc, exc_info=exc)
 
 
 def _fire_background(coro: Any) -> asyncio.Task:
@@ -75,6 +79,7 @@ class _HasRun(Protocol):
         user_id: str | None,
         existing_run_id: str,
         injected_outputs: dict[str, dict[str, Any]] | None = None,
+        stop_after_node_id: str | None = None,
     ) -> tuple[WorkflowRun, list[NodeRun]]:
         pass
 
@@ -433,6 +438,184 @@ class WorkflowControlService:
             )
         )
         return child_run
+
+    async def rerun_single_node(
+        self,
+        workflow_definition_id: str,
+        run_id: str,
+        node_id: str,
+        *,
+        registry_token: str,
+        user_id: str | None,
+    ) -> WorkflowRun:
+        """Rerun a single node in isolation, using the parent node's last output as input.
+
+        Creates a child WorkflowRun (trigger_source="node_rerun") that:
+        - Injects cached outputs for all nodes before the target (no external calls).
+        - Executes only the target node.
+        - Does NOT run any downstream nodes (stop_after_node_id truncates the workflow).
+
+        Args:
+            workflow_definition_id: Must match run.workflow_definition_id.
+            run_id:                 The finished or failed parent run.
+            node_id:                Top-level WorkflowNode.id to rerun.
+            registry_token:         User-scoped Bearer token.
+            user_id:                User ID for ACL lookup.
+
+        Raises:
+            HTTPException(400): node_id not found or is not a top-level STEP node.
+            HTTPException(404): run_id not found.
+            HTTPException(501): runner_factory not configured.
+        """
+        if self._runner_factory is None:
+            raise HTTPException(status_code=501, detail="Workflow runner is not configured on this instance")
+
+        parent_run = await self._load_run(workflow_definition_id, run_id)
+
+        if not parent_run.definition_snapshot:
+            raise HTTPException(status_code=409, detail="Run has no definition snapshot; cannot rerun node")
+
+        from registry_pkgs.models.workflow import WorkflowDefinition  # local import
+
+        definition = WorkflowDefinition(**parent_run.definition_snapshot)
+        top_level_nodes = definition.nodes
+
+        top_level_ids = [n.id for n in top_level_nodes]
+        if node_id not in top_level_ids:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Node {node_id!r} not found as a top-level node in workflow definition. "
+                    "Nested node rerun is not supported."
+                ),
+            )
+
+        target_index = top_level_ids.index(node_id)
+        target_node = top_level_nodes[target_index]
+        if target_node.node_type != WorkflowNodeType.STEP:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Node {node_id!r} is of type {target_node.node_type.value!r}; "
+                    "only STEP nodes can be rerun individually."
+                ),
+            )
+
+        parent_node_runs = await NodeRun.find(NodeRun.workflow_run_id == parent_run.id).to_list()
+        node_run_by_id: dict[str, NodeRun] = {nr.node_id: nr for nr in parent_node_runs}
+
+        injected_outputs: dict[str, dict[str, Any]] = {}
+        resolved_deps: list[ResolvedDependency] = []
+
+        for i, node in enumerate(top_level_nodes):
+            if node.node_type != WorkflowNodeType.STEP:
+                continue
+            if i < target_index:
+                nr = node_run_by_id.get(node.id)
+                if nr and nr.output_snapshot:
+                    injected_outputs[node.id] = {
+                        "content": nr.output_snapshot.get("content", ""),
+                        "session_state": nr.session_state_snapshot or {},
+                    }
+                resolved_deps.append(
+                    ResolvedDependency(
+                        node_id=node.id,
+                        resolution=ResolvedDependencyResolution.REUSE_PREVIOUS_OUTPUT,
+                        source_node_run_id=node_run_by_id[node.id].id if node.id in node_run_by_id else None,
+                    )
+                )
+            elif node.id == node_id:
+                resolved_deps.append(
+                    ResolvedDependency(
+                        node_id=node.id,
+                        resolution=ResolvedDependencyResolution.RERUN,
+                    )
+                )
+
+        child_run = WorkflowRun(
+            workflow_definition_id=parent_run.workflow_definition_id,
+            workflow_version=parent_run.workflow_version,
+            status=WorkflowRunStatus.PENDING,
+            trigger_source="node_rerun",
+            initial_input=parent_run.initial_input,
+            definition_snapshot=parent_run.definition_snapshot,
+            parent_run_id=parent_run.id,
+            resolved_dependencies=resolved_deps,
+        )
+        await child_run.insert()
+        logger.info(
+            "WorkflowRun %s: created node_rerun child run %s for node %r",
+            run_id,
+            child_run.id,
+            node_id,
+        )
+
+        user_text: str = (parent_run.initial_input or {}).get("user_text", "")
+        runner = self._runner_factory()
+        _fire_background(
+            runner.run(
+                str(parent_run.workflow_definition_id),
+                user_text,
+                registry_token=registry_token,
+                user_id=user_id,
+                existing_run_id=str(child_run.id),
+                injected_outputs=injected_outputs,
+                stop_after_node_id=node_id,
+            )
+        )
+        return child_run
+
+    async def replay_run(
+        self,
+        workflow_definition_id: str,
+        run_id: str,
+        *,
+        registry_token: str,
+        user_id: str | None,
+    ) -> WorkflowRun:
+        """Replay a workflow run from scratch using the same initial_input.
+
+        Creates a new WorkflowRun (trigger_source="replay") that re-executes all
+        nodes using the current live workflow definition (not the snapshot from the
+        original run). The parent run can be in any status.
+
+        Args:
+            workflow_definition_id: Must match run.workflow_definition_id.
+            run_id:                 The source run to replay.
+            registry_token:         User-scoped Bearer token.
+            user_id:                User ID for ACL lookup.
+
+        Raises:
+            HTTPException(404): run_id not found.
+            HTTPException(501): runner_factory not configured.
+        """
+        if self._runner_factory is None:
+            raise HTTPException(status_code=501, detail="Workflow runner is not configured on this instance")
+
+        source_run = await self._load_run(workflow_definition_id, run_id)
+
+        replay_run = WorkflowRun(
+            workflow_definition_id=source_run.workflow_definition_id,
+            status=WorkflowRunStatus.PENDING,
+            trigger_source="replay",
+            initial_input=source_run.initial_input,
+            parent_run_id=source_run.id,
+        )
+        await replay_run.insert()
+        logger.info("WorkflowRun %s: created replay run %s", run_id, replay_run.id)
+
+        user_text: str = (source_run.initial_input or {}).get("user_text", "")
+        runner = self._runner_factory()
+        _fire_background(
+            runner.run(
+                workflow_definition_id,
+                user_text,
+                registry_token=registry_token,
+                user_id=user_id,
+                existing_run_id=str(replay_run.id),
+            )
+        )
+        return replay_run
 
     async def get_run_status(
         self,

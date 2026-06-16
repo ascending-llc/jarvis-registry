@@ -719,6 +719,32 @@ class WorkflowService:
             logger.exception("Error getting workflow run %s", run_id)
             raise
 
+    async def get_node_runs(self, workflow_run_id: str) -> list[NodeRun]:
+        """Return all NodeRuns for a WorkflowRun, ordered by started_at ascending."""
+        try:
+            run_oid = PydanticObjectId(workflow_run_id)
+        except Exception as exc:
+            raise ValueError(f"Invalid workflow_run_id {workflow_run_id!r}") from exc
+        return await NodeRun.find(NodeRun.workflow_run_id == run_oid).sort("started_at").to_list()
+
+    async def get_node_run(self, workflow_run_id: str, node_run_id: str) -> NodeRun:
+        """Return a single NodeRun by ID, verifying it belongs to the given run.
+
+        Raises:
+            ValueError: If node_run_id is invalid, not found, or belongs to a different run.
+        """
+        try:
+            nr_oid = PydanticObjectId(node_run_id)
+        except Exception as exc:
+            raise ValueError(f"NodeRun {node_run_id!r} not found") from exc
+
+        nr = await NodeRun.get(nr_oid)
+        if nr is None:
+            raise ValueError(f"NodeRun {node_run_id!r} not found")
+        if str(nr.workflow_run_id) != workflow_run_id:
+            raise ValueError(f"NodeRun {node_run_id!r} does not belong to run {workflow_run_id!r}")
+        return nr
+
     def _convert_api_canvas_to_model(self, api_canvas: Any) -> WorkflowCanvas:
         """Convert API canvas input to model WorkflowCanvas."""
         return WorkflowCanvas(
