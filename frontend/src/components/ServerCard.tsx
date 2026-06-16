@@ -137,7 +137,6 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
 
       if (handleServerUpdate && result) {
         const updates: Partial<ServerInfo> = {
-          status: result.status,
           lastCheckedTime: result.lastConnected,
           numTools: result.numTools,
         };

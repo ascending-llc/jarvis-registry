@@ -81,8 +81,7 @@ def test_servers_to_results_is_enabled_from_config_enabled():
 
     assert len(results) == 1
     assert results[0]["is_enabled"] is True
-    # status is hard-coded; never reflects the deprecated doc field
-    assert results[0]["status"] == "active"
+    assert "status" not in results[0]
 
 
 def test_servers_to_results_disabled_when_config_enabled_false():
@@ -91,7 +90,7 @@ def test_servers_to_results_disabled_when_config_enabled_false():
     results = service._servers_to_results([_fake_server(enabled=False)])
 
     assert results[0]["is_enabled"] is False
-    assert results[0]["status"] == "active"
+    assert "status" not in results[0]
 
 
 def test_servers_to_results_disabled_when_enabled_missing():

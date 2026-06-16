@@ -312,11 +312,10 @@ class AgentCoreFederationClient:
             config=AgentConfig(
                 title=runtime_name,
                 description=runtime_detail.get("description", f"AgentCore runtime {runtime_name}"),
+                enabled=status == "READY",
                 type=TRANSPORT_JSONRPC,
                 runtimeAccess=runtime_access,
             ),
-            isEnabled=status == "READY",
-            status="active" if status == "READY" else "inactive",
             tags=["agentcore", "a2a", "aws", "federated"],
             registeredBy="agentcore-federation",
             registeredAt=datetime.now(UTC),

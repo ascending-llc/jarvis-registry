@@ -16,11 +16,12 @@ export interface MatchingToolHit {
 
 export interface SemanticServerHit {
   path: string;
+  serverId?: string;
   serverName: string;
   description?: string;
   tags: string[];
   numTools: number;
-  isEnabled: boolean;
+  enabled: boolean;
   relevanceScore: number;
   matchContext?: string;
   matchingTools: MatchingToolHit[];
@@ -37,13 +38,14 @@ export interface SemanticToolHit {
 
 export interface SemanticAgentHit {
   path: string;
+  agentId?: string;
   agentName: string;
   description?: string;
   tags: string[];
   skills: string[];
   trustLevel?: string;
   visibility?: string;
-  isEnabled?: boolean;
+  enabled?: boolean;
   url?: string;
   agentCard?: Record<string, any>;
   relevanceScore: number;

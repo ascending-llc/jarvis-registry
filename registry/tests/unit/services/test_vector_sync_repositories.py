@@ -59,9 +59,8 @@ def _make_agent(page_content: str = "x") -> SimpleNamespace:
     agent = SimpleNamespace(
         id="agent-demo-id",
         card=SimpleNamespace(name="demo-agent", version="1.0.0", skills=[]),
+        config=SimpleNamespace(enabled=True),
         federationMetadata={"runtimeVersion": "7"},
-        isEnabled=True,
-        status="active",
         to_documents=lambda: [Document(page_content=page_content, metadata={})],
     )
     agent.vectorContentHash = None
@@ -73,7 +72,6 @@ def _make_server(page_content: str = "x") -> SimpleNamespace:
         id="server-demo-id",
         serverName="demo-server",
         federationMetadata={"runtimeVersion": "11"},
-        status="active",
         config={"enabled": True},
         to_documents=lambda: [Document(page_content=page_content, metadata={})],
     )

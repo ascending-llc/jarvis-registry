@@ -29,7 +29,7 @@ class ServerSearchResult(APIBaseModel):
     description: str | None = None
     tags: list[str] = Field(default_factory=list)
     numTools: int = 0
-    isEnabled: bool = False
+    enabled: bool = False
     relevanceScore: float = Field(..., ge=0.0, le=1.0)
     matchContext: str | None = None
     matchingTools: list[MatchingToolResult] = Field(default_factory=list)
@@ -50,7 +50,7 @@ class AgentSearchResult(APIBaseModel):
     agentName: str
     description: str | None = None
     tags: list[str] = Field(default_factory=list)
-    isEnabled: bool = False
+    enabled: bool = False
     relevanceScore: float = Field(..., ge=0.0, le=1.0)
     matchContext: str | None = None
 
@@ -103,7 +103,7 @@ def _map_server(server: dict) -> ServerSearchResult:
         description=server.get("description"),
         tags=server.get("tags", []),
         numTools=server.get("num_tools", 0),
-        isEnabled=server.get("is_enabled", False),
+        enabled=server.get("is_enabled", False),
         relevanceScore=server.get("relevance_score", 0.0),
         matchContext=server.get("match_context"),
         matchingTools=matching_tools,
@@ -125,10 +125,10 @@ def _map_agent(doc: dict) -> AgentSearchResult:
     return AgentSearchResult(
         agentId=doc.get("agent_id"),
         path=doc.get("path", ""),
-        agentName=doc.get("agent_name", ""),
+        agentName=doc.get("card_name") or doc.get("agent_name", ""),
         description=doc.get("description"),
         tags=doc.get("tags") or [],
-        isEnabled=doc.get("enabled", False),
+        enabled=doc.get("enabled", False),
         relevanceScore=doc.get("relevance_score") or 0.0,
         matchContext=doc.get("match_context"),
     )
@@ -138,7 +138,7 @@ def _map_skill(doc: dict) -> SkillSearchResult:
     return SkillSearchResult(
         agentId=doc.get("agent_id"),
         agentPath=doc.get("path", ""),
-        agentName=doc.get("agent_name", ""),
+        agentName=doc.get("card_name") or doc.get("agent_name", ""),
         skillName=doc.get("skill_name", ""),
         description=doc.get("description"),
         relevanceScore=doc.get("relevance_score") or 0.0,

@@ -2,6 +2,7 @@ import { ArrowPathIcon, CogIcon, InformationCircleIcon } from '@heroicons/react/
 import axios from 'axios';
 import type React from 'react';
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 
 import type { ServerInfo } from '@/contexts/ServerContext';
 import type { Agent as AgentType } from '@/services/agent/type';
@@ -44,6 +45,7 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
   const [detailsAgent, setDetailsAgent] = useState<SemanticAgentHit | null>(null);
   const [agentDetailsData, setAgentDetailsData] = useState<any>(null);
   const [agentDetailsLoading, setAgentDetailsLoading] = useState(false);
+  const navigate = useNavigate();
 
   const openAgentDetails = async (agentHit: SemanticAgentHit) => {
     setDetailsAgent(agentHit);
@@ -60,7 +62,7 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
   };
 
   const mapHitToAgent = (hit: SemanticAgentHit): AgentType => ({
-    id: hit.path || '',
+    id: hit.agentId || hit.path || '',
     name: hit.agentCard?.name || (hit as any).config?.title || hit.agentName,
     path: hit.path,
     url: hit.url || (hit.agentCard as any)?.url || '',
@@ -79,13 +81,12 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
     wellKnown: { enabled: false, url: '', lastSyncAt: '', lastSyncStatus: '', lastSyncVersion: '' },
     createdAt: '',
     updatedAt: '',
-    enabled: hit.isEnabled ?? true,
+    enabled: hit.enabled ?? true,
     tags: hit.tags,
-    status: 'unknown' as any,
   });
 
   return (
-    <>
+    <div id='semantic-search-results-container'>
       <div className='space-y-8'>
         <div className='flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between'>
           <div>
@@ -135,16 +136,20 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
                 {servers.map(server => (
                   <div
                     key={server.path}
-                    className='rounded-2xl border border-[var(--jarvis-border)] bg-[var(--jarvis-card)] p-5 shadow-sm transition-shadow hover:shadow-md'
+                    className='rounded-2xl border border-[var(--jarvis-border)] bg-[var(--jarvis-card)] p-5 shadow-sm transition-all hover:shadow-md cursor-pointer hover:border-[color:var(--jarvis-primary-soft)]'
+                    onClick={() => navigate(`/server-edit?id=${server.serverId || server.path}&isReadOnly=true`)}
                   >
                     <div className='flex items-start justify-between gap-4'>
-                      <div>
-                        <p className='text-base font-semibold text-[var(--jarvis-text-strong)]'>{server.serverName}</p>
-                        <p className='text-sm text-[var(--jarvis-muted)]'>{server.path}</p>
+                      <div className='flex-1 min-w-0'>
+                        <p className='text-base font-semibold text-[var(--jarvis-text-strong)] truncate'>{server.serverName}</p>
+                        <p className='text-sm text-[var(--jarvis-muted)] truncate'>{server.path}</p>
                       </div>
-                      <div className='flex items-center gap-2'>
+                      <div className='flex items-center gap-2 flex-shrink-0'>
                         <IconButton
-                          onClick={() => setConfigServer(server)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setConfigServer(server);
+                          }}
                           ariaLabel='Open MCP configuration'
                           tooltip='Open MCP configuration'
                           size='card'
@@ -219,8 +224,8 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
                     key={`${tool.serverPath}-${tool.toolName}`}
                     className='flex flex-col gap-2 rounded-2xl border border-[var(--jarvis-border)] bg-[var(--jarvis-card)] p-4 sm:flex-row sm:items-center sm:justify-between'
                   >
-                    <div>
-                      <p className='text-sm font-semibold text-[var(--jarvis-text-strong)]'>
+                    <div className='flex-1 min-w-0'>
+                      <p className='text-sm font-semibold text-[var(--jarvis-text-strong)] truncate'>
                         {tool.toolName}
                         <span className='ml-2 text-xs font-normal text-[var(--jarvis-muted)]'>({tool.serverName})</span>
                       </p>
@@ -230,7 +235,7 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
                         </p>
                       </Tooltip>
                     </div>
-                    <span className='inline-flex items-center rounded-full border border-[var(--jarvis-border-soft)] bg-[var(--jarvis-surface)] px-3 py-1 text-xs font-semibold text-[var(--jarvis-text)]'>
+                    <span className='inline-flex items-center flex-shrink-0 rounded-full border border-[var(--jarvis-border-soft)] bg-[var(--jarvis-surface)] px-3 py-1 text-xs font-semibold text-[var(--jarvis-text)]'>
                       {formatPercent(tool.relevanceScore)} match
                     </span>
                   </div>
@@ -254,20 +259,24 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
                 {agents.map(agent => (
                   <div
                     key={agent.path}
-                    className='rounded-2xl border border-[var(--jarvis-border)] bg-[var(--jarvis-card)] p-5 shadow-sm transition-shadow hover:shadow-md'
+                    className='rounded-2xl border border-[var(--jarvis-border)] bg-[var(--jarvis-card)] p-5 shadow-sm transition-all hover:shadow-md cursor-pointer hover:border-[color:var(--jarvis-primary-soft)]'
+                    onClick={() => navigate(`/agent-edit?id=${agent.agentId || agent.path}&isReadOnly=true`)}
                   >
                     <div className='flex items-start justify-between gap-4'>
-                      <div>
-                        <p className='text-base font-semibold text-[var(--jarvis-text-strong)]'>
+                      <div className='flex-1 min-w-0'>
+                        <p className='text-base font-semibold text-[var(--jarvis-text-strong)] truncate'>
                           {agent.agentCard?.name || (agent as any).config?.title || agent.agentName}
                         </p>
-                        <p className='text-xs uppercase tracking-wide text-[var(--jarvis-faint)]'>
+                        <p className='text-xs uppercase tracking-wide text-[var(--jarvis-faint)] truncate'>
                           {agent.visibility || 'public'}
                         </p>
                       </div>
-                      <div className='flex items-center gap-2'>
+                      <div className='flex items-center gap-2 flex-shrink-0'>
                         <IconButton
-                          onClick={() => openAgentDetails(agent)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openAgentDetails(agent);
+                          }}
                           ariaLabel='View full agent details'
                           tooltip='View full agent details'
                           size='card'
@@ -316,7 +325,7 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
                       <span className='font-semibold text-[var(--jarvis-info-text)]'>
                         {agent.trustLevel || 'unverified'}
                       </span>
-                      <span>{agent.isEnabled ? 'Enabled' : 'Disabled'}</span>
+                      <span>{agent.enabled ? 'Enabled' : 'Disabled'}</span>
                     </div>
                   </div>
                 ))}
@@ -341,8 +350,8 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
                     key={`${skill.agentPath}-${skill.skillName}`}
                     className='flex flex-col gap-2 rounded-2xl border border-[var(--jarvis-border)] bg-[var(--jarvis-card)] p-4 sm:flex-row sm:items-center sm:justify-between'
                   >
-                    <div>
-                      <p className='text-sm font-semibold text-[var(--jarvis-text-strong)]'>
+                    <div className='flex-1 min-w-0'>
+                      <p className='text-sm font-semibold text-[var(--jarvis-text-strong)] truncate'>
                         {skill.skillName}
                         <span className='ml-2 text-xs font-normal text-[var(--jarvis-muted)]'>({skill.agentName})</span>
                       </p>
@@ -352,7 +361,7 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
                         </p>
                       </Tooltip>
                     </div>
-                    <span className='inline-flex items-center rounded-full border border-[var(--jarvis-info-text)]/20 bg-[var(--jarvis-info-soft)] px-3 py-1 text-xs font-semibold text-[var(--jarvis-info-text)]'>
+                    <span className='inline-flex items-center flex-shrink-0 rounded-full border border-[var(--jarvis-info-text)]/20 bg-[var(--jarvis-info-soft)] px-3 py-1 text-xs font-semibold text-[var(--jarvis-info-text)]'>
                       {formatPercent(skill.relevanceScore)} match
                     </span>
                   </div>
@@ -362,9 +371,23 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
           );
 
           if (viewMode === 'agents') {
-            return [agentsSection, skillsSection, serversSection, toolsSection];
+            return (
+              <>
+                {agentsSection}
+                {skillsSection}
+                {serversSection}
+                {toolsSection}
+              </>
+            );
           }
-          return [serversSection, toolsSection, agentsSection, skillsSection];
+          return (
+            <>
+              {serversSection}
+              {toolsSection}
+              {agentsSection}
+              {skillsSection}
+            </>
+          );
         })()}
       </div>
 
@@ -375,7 +398,7 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
               name: configServer.serverName,
               path: configServer.path,
               description: configServer.description,
-              enabled: configServer.isEnabled ?? true,
+              enabled: configServer.enabled ?? true,
               tags: configServer.tags,
               numTools: configServer.numTools,
             } as ServerInfo
@@ -394,7 +417,7 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
           fullDetails={agentDetailsData}
         />
       )}
-    </>
+    </div>
   );
 };
 
