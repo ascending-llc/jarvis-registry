@@ -89,24 +89,29 @@ def compile_workflow(
     db_name: str | None = None,
     directive_queue: DirectiveQueue | None = None,
     injected_outputs: dict[str, dict[str, Any]] | None = None,
+    stop_after_node_id: str | None = None,
 ) -> Workflow:
     """Compile a WorkflowDefinition + WorkflowRun into an agno Workflow.
 
     Args:
-        definition:        The workflow definition loaded from MongoDB.
-        run:               The WorkflowRun document (already inserted).
-        executor_registry: Maps executor_key strings to async executor functions.
-        db_client:         pymongo AsyncMongoClient.  When provided (with db_name),
-                           a WorkflowRunSyncer is attached so agno's upsert_session
-                           automatically syncs run state to WorkflowRun / NodeRun.
-        db_name:           MongoDB database name (required when db_client is set).
-        directive_queue:   When provided, every STEP executor is wrapped with
-                           :func:`~registry_pkgs.workflows.control.with_control`
-                           to enable pause, cancel, and retry-backoff behaviour.
-        injected_outputs:  Mapping of ``node_id → output content`` for nodes that
-                           should be skipped by replaying a cached result.  Used
-                           when retrying a run from a specific node so that
-                           previously completed nodes are not re-executed.
+        definition:          The workflow definition loaded from MongoDB.
+        run:                 The WorkflowRun document (already inserted).
+        executor_registry:   Maps executor_key strings to async executor functions.
+        db_client:           pymongo AsyncMongoClient.  When provided (with db_name),
+                             a WorkflowRunSyncer is attached so agno's upsert_session
+                             automatically syncs run state to WorkflowRun / NodeRun.
+        db_name:             MongoDB database name (required when db_client is set).
+        directive_queue:     When provided, every STEP executor is wrapped with
+                             :func:`~registry_pkgs.workflows.control.with_control`
+                             to enable pause, cancel, and retry-backoff behaviour.
+        injected_outputs:    Mapping of ``node_id → output content`` for nodes that
+                             should be skipped by replaying a cached result.  Used
+                             when retrying a run from a specific node so that
+                             previously completed nodes are not re-executed.
+        stop_after_node_id:  When set, only compile top-level nodes up to and including
+                             this node ID.  Downstream nodes are excluded from the agno
+                             Workflow entirely, so they produce no NodeRun records.
+                             Only top-level (non-nested) nodes are supported.
     """
     if (db_client is None) != (db_name is None):
         raise ValueError("compile_workflow requires db_client and db_name together")
@@ -122,6 +127,17 @@ def compile_workflow(
         )
 
     _injected = injected_outputs or {}
+
+    nodes_to_compile = definition.nodes
+    if stop_after_node_id is not None:
+        top_level_ids = [n.id for n in definition.nodes]
+        if stop_after_node_id not in top_level_ids:
+            raise ValueError(
+                f"stop_after_node_id {stop_after_node_id!r} not found in top-level nodes "
+                f"(found: {top_level_ids}). Nested node rerun is not supported."
+            )
+        cut = top_level_ids.index(stop_after_node_id)
+        nodes_to_compile = definition.nodes[: cut + 1]
 
     def _make_injected_executor(data: dict[str, Any]) -> StepExecutor:
         """Return a pass-through executor that replays *content* and *session_state*."""
@@ -211,7 +227,7 @@ def compile_workflow(
 
         raise ValueError(f"Unknown node_type: {node.node_type!r}")
 
-    steps = [_build(n) for n in definition.nodes]
+    steps = [_build(n) for n in nodes_to_compile]
     workflow_kwargs: dict[str, Any] = {
         "id": str(definition.id),
         "name": definition.name,

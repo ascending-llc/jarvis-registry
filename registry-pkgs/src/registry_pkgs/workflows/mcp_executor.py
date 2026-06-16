@@ -12,6 +12,7 @@ from agno.workflow.step import StepExecutor
 
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 from registry_pkgs.workflows.helpers import build_prompt
+from registry_pkgs.workflows.types import MissingRegistryTokenError
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +40,7 @@ def make_mcp_executor(
         ValueError: When ``registry_token`` is empty.
     """
     if not registry_token:
-        raise ValueError(
+        raise MissingRegistryTokenError(
             "registry_token is required for MCP executors. "
             "Pass a user-scoped Registry access token so the gateway can resolve OAuth state."
         )

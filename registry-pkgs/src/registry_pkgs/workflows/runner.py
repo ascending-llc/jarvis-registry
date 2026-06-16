@@ -61,6 +61,7 @@ from registry_pkgs.workflows.compiler import StepExecutor, compile_workflow, fla
 from registry_pkgs.workflows.control import DirectiveQueue, WorkflowCancelledError
 from registry_pkgs.workflows.executor_resolver import build_executor_registry
 from registry_pkgs.workflows.hitl import hydrate_requirement, serialize_requirement
+from registry_pkgs.workflows.types import WorkflowConfigError
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +121,7 @@ class WorkflowRunner:
         user_id: str | None,
         existing_run_id: str,
         injected_outputs: dict[str, dict[str, Any]] | None = None,
+        stop_after_node_id: str | None = None,
     ) -> tuple[WorkflowRun, list[NodeRun]]:
         """Execute a workflow definition and return the completed run + per-node results.
 
@@ -136,6 +138,7 @@ class WorkflowRunner:
             existing_run_id:  ID of the pre-created ``WorkflowRun`` document to drive.
             injected_outputs: Mapping of ``node_id → {"content": ..., "session_state": ...}``
                               for nodes reused from a previous run (retry-from-node).
+            stop_after_node_id:
 
         Returns:
             A tuple of (WorkflowRun, list[NodeRun]) after the run completes.
@@ -172,6 +175,17 @@ class WorkflowRunner:
         try:
             try:
                 executor_registry = await self._build_registry(definition, registry_token, user_id)
+            except WorkflowConfigError as exc:
+                run.status = WorkflowRunStatus.FAILED
+                run.error_summary = str(exc)
+                run.finished_at = datetime.now(UTC)
+                await run.save()
+                logger.warning(
+                    "[run=%s] ✗ workflow cannot start — configuration error: %s",
+                    run.id,
+                    exc,
+                )
+                raise
             except Exception as exc:
                 run.status = WorkflowRunStatus.FAILED
                 run.error_summary = str(exc)
@@ -179,7 +193,7 @@ class WorkflowRunner:
                 await run.save()
                 logger.error("[run=%s] ✗ failed to build executor registry: %s", run.id, exc, exc_info=True)
                 raise
-            await self._execute(run, definition, user_text, executor_registry, injected_outputs)
+            await self._execute(run, definition, user_text, executor_registry, injected_outputs, stop_after_node_id)
         finally:
             # Always unregister — even on failure — so the queue slot is freed.
             if self._directive_queue is not None:
@@ -337,6 +351,7 @@ class WorkflowRunner:
         user_text: str,
         executor_registry: dict[str, StepExecutor],
         injected_outputs: dict[str, dict[str, Any]] | None = None,
+        stop_after_node_id: str | None = None,
     ) -> None:
         """Compile the workflow and run it via agno.
 
@@ -354,6 +369,7 @@ class WorkflowRunner:
             db_name=self._db_name,
             directive_queue=self._directive_queue,
             injected_outputs=injected_outputs,
+            stop_after_node_id=stop_after_node_id,
         )
         try:
             result = await workflow.arun(
