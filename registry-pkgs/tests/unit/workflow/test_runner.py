@@ -120,7 +120,7 @@ class TestWorkflowRunnerRun:
         assert actual_run is run_doc
         assert actual_nodes == node_runs
         runner.WorkflowRunner._build_registry.assert_awaited_once_with(definition, "user-tok", user_id)
-        runner.WorkflowRunner._execute.assert_awaited_once_with(run_doc, definition, "hello", fake_registry, None)
+        runner.WorkflowRunner._execute.assert_awaited_once_with(run_doc, definition, "hello", fake_registry, None, None)
 
     @pytest.mark.asyncio
     async def test_run_executes_existing_run_without_creating_new_run(self, monkeypatch: pytest.MonkeyPatch):
@@ -166,7 +166,9 @@ class TestWorkflowRunnerRun:
             "user-tok",
             "user-1",
         )
-        runner.WorkflowRunner._execute.assert_awaited_once_with(existing_run, definition, "hello", fake_registry, None)
+        runner.WorkflowRunner._execute.assert_awaited_once_with(
+            existing_run, definition, "hello", fake_registry, None, None
+        )
 
 
 @pytest.mark.unit

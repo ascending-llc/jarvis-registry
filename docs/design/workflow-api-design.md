@@ -866,7 +866,7 @@ node type does not use them. This lets clients access any field without null che
 
 ---
 
-### 9. Resolve HITL Requirement (Approve / Reject / Edit / etc.)
+### 10. Resolve HITL Requirement (Approve / Reject / Edit / etc.)
 
 **Endpoint**: `POST /api/v1/workflows/{workflow_id}/runs/{run_id}/approve`
 
@@ -947,6 +947,178 @@ pod handles it (CAS-protected so only one wins). Frontend should poll
 
 ---
 
+### 11. List Node Runs
+
+**Endpoint**: `GET /api/v1/workflows/{workflow_id}/runs/{run_id}/nodes`
+
+**Description**: Return all `NodeRun` records for a given workflow run, including full I/O snapshots. Results are ordered by `started_at` ascending.
+
+**Required Permission**: VIEW on the workflow (enforced via resource ACL).
+
+**Required Scope**: `workflows-read`
+
+**Response**: `200 OK`
+```json
+{
+  "run_id": "run-demo-id",
+  "workflow_id": "wf-demo-id",
+  "node_runs": [
+    {
+      "node_run_id": "nr-demo-id",
+      "node_id": "node-1",
+      "node_name": "Validate Customer Data",
+      "workflow_run_id": "run-demo-id",
+      "status": "completed",
+      "attempt": 1,
+      "input_snapshot": {
+        "customerEmail": "john.doe@company.com"
+      },
+      "output_snapshot": {
+        "valid": true
+      },
+      "error": null,
+      "started_at": "2024-01-25T10:00:05Z",
+      "finished_at": "2024-01-25T10:00:10Z"
+    }
+  ]
+}
+```
+
+**Notes**:
+- `input_snapshot` / `output_snapshot` may be `null` for runs created before snapshot capture was introduced.
+- Returns an empty `node_runs` list (not 404) if the run exists but has not yet started any nodes.
+
+**Error**:
+- `400` Invalid workflow ID or run ID
+- `403` Caller lacks VIEW permission on the workflow
+- `404` Workflow or run not found
+- `500` Internal server error
+
+---
+
+### 12. Get Node Run Detail
+
+**Endpoint**: `GET /api/v1/workflows/{workflow_id}/runs/{run_id}/nodes/{node_run_id}`
+
+**Description**: Return the full detail of a single `NodeRun` by its ID, including I/O snapshots.
+
+**Required Permission**: VIEW on the workflow (enforced via resource ACL).
+
+**Required Scope**: `workflows-read`
+
+**Response**: `200 OK`
+```json
+{
+  "node_run_id": "nr-demo-id",
+  "node_id": "node-1",
+  "node_name": "Validate Customer Data",
+  "workflow_run_id": "run-demo-id",
+  "status": "completed",
+  "attempt": 1,
+  "input_snapshot": {
+    "customerEmail": "john.doe@company.com"
+  },
+  "output_snapshot": {
+    "valid": true
+  },
+  "error": null,
+  "started_at": "2024-01-25T10:00:05Z",
+  "finished_at": "2024-01-25T10:00:10Z"
+}
+```
+
+**Error**:
+- `400` Invalid workflow ID, run ID, or node run ID
+- `403` Caller lacks VIEW permission on the workflow
+- `404` Workflow, run, or node run not found
+- `500` Internal server error
+
+---
+
+### 13. Rerun Single Node
+
+**Endpoint**: `POST /api/v1/workflows/{workflow_id}/runs/{run_id}/nodes/{node_id}/rerun`
+
+**Description**: Rerun a single top-level step node in isolation. All upstream nodes are replayed from their cached `output_snapshot`; downstream nodes do **not** run. A new child `WorkflowRun` (with `trigger_source="node_rerun"`) is created and returned immediately.
+
+**Required Permission**: VIEW on the workflow (enforced via resource ACL).
+
+**Required Scope**: `workflows-control`
+
+**Request Body**: Empty (no fields required).
+
+**Path Parameters**:
+- `workflow_id`: Parent workflow definition ID
+- `run_id`: Source run ID (must be in a terminal state: `completed` or `failed`)
+- `node_id`: The `WorkflowNode.id` (from the workflow definition) to rerun
+
+**Response**: `202 Accepted`
+```json
+{
+  "run_id": "child-run-id",
+  "status": "pending",
+  "message": "Node 'node-1' rerun queued as run child-run-id"
+}
+```
+
+**Business Rules**:
+- Only **top-level step nodes** are supported. Nodes nested inside `parallel`, `condition`, or `router` containers return `400 "Nested node rerun is not supported."`.
+- The source run must be in a terminal state (`completed` or `failed`). Passing a still-running or paused run returns `400`.
+- Input to the target node is taken from the previous node's `output_snapshot` in the source run.
+- The child run executes asynchronously; poll `GET /runs/{child_run_id}` to observe completion.
+
+**Error**:
+- `400` Invalid IDs, non-terminal source run, or nested node targeted
+- `403` Caller lacks VIEW permission on the workflow
+- `404` Workflow, run, or node ID not found
+- `500` Internal server error
+
+---
+
+### 14. Replay Workflow Run
+
+**Endpoint**: `POST /api/v1/workflows/{workflow_id}/runs/{run_id}/replay`
+
+**Description**: Re-execute a workflow run from scratch using the same `initial_input` as the source run. Unlike `/retry`, replay does not reuse any cached node outputs — all nodes execute fresh. Uses the **current live workflow definition** (not the snapshot), so any definition updates since the original run are picked up.
+
+**Required Permission**: VIEW on the workflow (enforced via resource ACL).
+
+**Required Scope**: `workflows-control`
+
+**Request Body**: None.
+
+**Response**: `202 Accepted`
+```json
+{
+  "run_id": "new-run-id",
+  "status": "pending",
+  "message": "Replay queued as run new-run-id"
+}
+```
+
+**Business Rules**:
+- The new run is independent (no `parent_run_id`); it is a fresh sibling, not a child.
+- `trigger_source` is set to `"replay"`.
+- The source run's `initial_input` is forwarded verbatim; no additional input is accepted.
+- The new run executes asynchronously; poll `GET /runs/{new_run_id}` to observe completion.
+
+**Difference from `/retry`**:
+
+| | `/retry` | `/replay` |
+|---|---|---|
+| Creates | Child run (linked via `parent_run_id`) | Independent sibling run |
+| Nodes | Selective: some cached, some re-executed | All nodes re-executed |
+| Definition | Uses source run's `definition_snapshot` | Uses **current live** definition |
+| Input | Same `initial_input` | Same `initial_input` |
+
+**Error**:
+- `400` Invalid workflow ID or run ID
+- `403` Caller lacks VIEW permission on the workflow
+- `404` Workflow or source run not found
+- `500` Internal server error
+
+---
+
 ## Internal Data Flow — Control Endpoints
 
 The five control endpoints (`/pause`, `/resume`, `/cancel`, `/retry`, `/approve`)
@@ -978,6 +1150,31 @@ cached outputs vs. re-execute → `asyncio.create_task(runner.run(child_run_id))
 - The original run is unchanged.
 - The child run starts at `PENDING` and proceeds normally.
 - Background task runs on the pod that handled the HTTP request.
+
+### `/nodes/{node_id}/rerun`
+
+**Path**: route → `WorkflowControlService.rerun_single_node` → validates the
+target node is a top-level step (400 if nested) → builds a child `WorkflowRun`
+with `resolved_dependencies` that replays every node *before* the target from
+cached outputs and marks every node *after* the target as `reuse_previous_output`
+with no source (effectively skipped) → `asyncio.create_task(runner.run(child_run_id))`
+→ HTTP 202 returned immediately.
+
+- `trigger_source` is set to `"node_rerun"`.
+- Only top-level step nodes are supported; returns 400 for nested nodes.
+- The child run is linked to the source via `parent_run_id`.
+
+### `/replay`
+
+**Path**: route → `WorkflowControlService.replay_run` → reads `initial_input`
+from the source run → creates a **new independent** `WorkflowRun` (no
+`parent_run_id`, no `resolved_dependencies`) with the same `initial_input` and
+the current live workflow definition → `asyncio.create_task(runner.run(new_run_id))`
+→ HTTP 202 returned immediately.
+
+- `trigger_source` is set to `"replay"`.
+- Uses the live definition, not the source run's `definition_snapshot`.
+- All nodes execute fresh — no cached outputs are reused.
 
 ### `/approve` (HITL resolution)
 
@@ -1232,6 +1429,38 @@ The `userInputSchema` inside a `StepRequirementSummary` is **not** the authoring
 {
   maxIterations: number;         // Max iterations (min: 1)
   endConditionCel?: string;      // CEL expression for loop termination
+}
+```
+
+### NodeRunDetail
+
+Full detail of a single node execution, including I/O snapshots. Returned by endpoints 11 and 12.
+
+```typescript
+{
+  node_run_id: string;           // NodeRun document ID
+  node_id: string;               // WorkflowNode.id from the workflow definition
+  node_name: string;             // Human-readable step name
+  workflow_run_id: string;       // Parent WorkflowRun ID
+  status: string;                // NodeRunStatus value (see below)
+  attempt: number;               // 1-based attempt counter (0 = not yet started)
+  input_snapshot: object | null; // Input fed to the executor; null for legacy runs
+  output_snapshot: object | null; // Output produced by the executor; null if not yet complete
+  error: string | null;          // Last error message if the node failed; otherwise null
+  started_at: string | null;     // ISO8601; null if not yet started
+  finished_at: string | null;    // ISO8601; null if not yet terminal
+}
+```
+
+### NodeRunListResponse
+
+Returned by `GET /workflows/{id}/runs/{run_id}/nodes`.
+
+```typescript
+{
+  run_id: string;                // WorkflowRun ID
+  workflow_id: string;           // WorkflowDefinition ID
+  node_runs: NodeRunDetail[];    // All NodeRuns for the run, ordered by started_at ascending
 }
 ```
 

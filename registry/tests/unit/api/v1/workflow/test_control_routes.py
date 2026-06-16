@@ -299,7 +299,12 @@ async def test_retry_run_strips_bearer_prefix(wf_id, sample_user_context, mock_s
 
 
 @pytest.mark.asyncio
-async def test_retry_run_empty_auth_header(wf_id, sample_user_context, mock_service, mock_acl):
+async def test_retry_run_empty_auth_header(monkeypatch, wf_id, sample_user_context, mock_service, mock_acl):
+    """Without a Bearer header, build_registry_token mints a service JWT from the user context."""
+    from registry.api.v1.workflow import _token_helpers
+
+    monkeypatch.setattr(_token_helpers, "generate_service_jwt", MagicMock(return_value="svc-jwt"))
+
     child_run = _make_run(WorkflowRunStatus.PENDING)
     mock_service.send_retry.return_value = child_run
 
@@ -319,7 +324,7 @@ async def test_retry_run_empty_auth_header(wf_id, sample_user_context, mock_serv
     )
 
     call_kwargs = mock_service.send_retry.call_args.kwargs
-    assert call_kwargs["registry_token"] == ""
+    assert call_kwargs["registry_token"] == "svc-jwt"
     assert call_kwargs["user_id"] == sample_user_context["user_id"]
 
 

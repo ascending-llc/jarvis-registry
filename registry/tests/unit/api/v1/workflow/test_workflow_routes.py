@@ -6,6 +6,7 @@ from beanie import PydanticObjectId
 from fastapi import HTTPException, Request
 
 from registry.api.v1.workflow import workflow_routes
+from registry.api.v1.workflow import _token_helpers
 from registry.schemas.acl_schema import ResourcePermissions
 from registry.schemas.workflow_api_schemas import WorkflowCreateRequest, WorkflowUpdateRequest
 
@@ -22,9 +23,9 @@ def _canvas() -> dict[str, dict[str, float]]:
 
 def test_build_registry_token_prefers_authorization_header(monkeypatch: pytest.MonkeyPatch):
     generate_service_jwt = MagicMock(return_value="generated-token")
-    monkeypatch.setattr(workflow_routes, "generate_service_jwt", generate_service_jwt)
+    monkeypatch.setattr(_token_helpers, "generate_service_jwt", generate_service_jwt)
 
-    token = workflow_routes._build_registry_token(
+    token = _token_helpers.build_registry_token(
         _request_with_headers({"Authorization": "Bearer header-token"}),
         {
             "user_id": "user-1",
@@ -43,9 +44,9 @@ def test_build_registry_token_prefers_authorization_header(monkeypatch: pytest.M
 
 def test_build_registry_token_generates_service_jwt_without_authorization_header(monkeypatch: pytest.MonkeyPatch):
     generate_service_jwt = MagicMock(return_value="generated-token")
-    monkeypatch.setattr(workflow_routes, "generate_service_jwt", generate_service_jwt)
+    monkeypatch.setattr(_token_helpers, "generate_service_jwt", generate_service_jwt)
 
-    token = workflow_routes._build_registry_token(
+    token = _token_helpers.build_registry_token(
         _request_with_headers({}),
         {
             "user_id": "user-1",
@@ -68,7 +69,7 @@ def test_build_registry_token_generates_service_jwt_without_authorization_header
 
 def test_build_registry_token_requires_user_id_without_authorization_header():
     with pytest.raises(HTTPException) as exc_info:
-        workflow_routes._build_registry_token(
+        _token_helpers.build_registry_token(
             _request_with_headers({}),
             {
                 "user_id": None,
@@ -386,7 +387,7 @@ async def test_trigger_run_forwards_requested_version(monkeypatch):
     from registry.schemas.workflow_api_schemas import WorkflowRunTriggerRequest
     from registry_pkgs.models.enums import WorkflowRunStatus
 
-    monkeypatch.setattr(workflow_routes, "generate_service_jwt", MagicMock(return_value="svc-token"))
+    monkeypatch.setattr(_token_helpers, "generate_service_jwt", MagicMock(return_value="svc-token"))
 
     user_context = {"user_id": str(PydanticObjectId()), "username": "u", "groups": [], "scopes": []}
 
