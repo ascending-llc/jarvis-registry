@@ -184,3 +184,35 @@ class WorkflowRunsStatusResponse(BaseModel):
     workflow_id: str
     total: int
     runs: list[RunSummary]
+
+
+class NodeRunDetail(BaseModel):
+    """
+        Full detail of a single NodeRun including I/O snapshots.
+    """
+
+    node_run_id: str
+    node_id: str
+    node_name: str
+    workflow_run_id: str
+    status: str
+    attempt: int
+    input_snapshot: dict[str, Any] | None
+    output_snapshot: dict[str, Any] | None
+    error: str | None
+    started_at: datetime | None
+    finished_at: datetime | None
+
+
+class NodeRunListResponse(BaseModel):
+    """All NodeRuns for a workflow run, ordered by started_at ascending."""
+
+    run_id: str
+    workflow_id: str
+    node_runs: list[NodeRunDetail]
+
+
+class NodeRerunRequest(BaseModel):
+    """Request body for POST /runs/{run_id}/nodes/{node_id}/rerun."""
+
+    pass

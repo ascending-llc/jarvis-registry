@@ -36,12 +36,12 @@ from registry.schemas.workflow_api_schemas import (
     convert_to_run_detail,
     convert_to_run_list_item,
 )
-from registry.schemas.workflow_schemas import NodeRunSummary, RunStatusResponse
+from registry.schemas.workflow_schemas import NodeRunDetail, NodeRunListResponse, NodeRunSummary, RunStatusResponse
 from registry.services.access_control_service import ACLService
 from registry.services.workflow_control_service import WorkflowControlService
 from registry.services.workflow_executor import execute_workflow_run_background
 from registry.services.workflow_service import WorkflowService
-from registry.utils.crypto_utils import generate_service_jwt
+from registry.api.v1.workflow._token_helpers import build_registry_token
 from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.models import PrincipalType
 from registry_pkgs.models.enums import RoleBits
@@ -75,39 +75,6 @@ async def _authorize_workflow(
     return workflow, permissions
 
 
-def _extract_bearer_token(request: Request) -> str:
-    auth_header = request.headers.get("Authorization", "")
-    if not auth_header.startswith("Bearer "):
-        return ""
-    return auth_header.removeprefix("Bearer ").strip()
-
-
-def _build_registry_token(
-    request: Request,
-    user_context: UserContextDict,
-) -> str:
-    header_token = _extract_bearer_token(request)
-    if header_token:
-        logger.debug("Extracted registry token from Authorization header (length: %s)", len(header_token))
-        return header_token
-
-    user_id = user_context.get("user_id")
-    if not user_id:
-        raise HTTPException(
-            status_code=http_status.HTTP_401_UNAUTHORIZED,
-            detail=create_error_detail(
-                ErrorCode.AUTHENTICATION_REQUIRED,
-                "Authenticated user context is missing user_id",
-            ),
-        )
-
-    token = generate_service_jwt(
-        user_id=user_id,
-        username=user_context.get("username"),
-        scopes=user_context.get("scopes", []),
-    )
-    logger.debug("Generated service JWT for workflow execution (length: %s)", len(token))
-    return token
 
 
 # ==================== Workflow Endpoints ====================
@@ -562,7 +529,7 @@ async def trigger_workflow_run(
             triggering_scopes=user_context.get("scopes", []),
         )
 
-        registry_token = _build_registry_token(request, user_context)
+        registry_token = build_registry_token(request, user_context)
         user_id = user_context.get("user_id")
 
         # Schedule background execution
@@ -824,3 +791,101 @@ async def get_workflow_run_status(
         ],
         pendingRequirements=[StepRequirementSummary.model_validate(req) for req in (run.pending_requirements or [])],
     )
+
+
+@router.get(
+    "/workflows/{workflow_id}/runs/{run_id}/nodes",
+    response_model=NodeRunListResponse,
+    summary="List Node Runs",
+    description="List all node runs for a workflow run with full I/O snapshots",
+)
+@track_registry_operation("list", resource_type="node_run")
+async def list_node_runs(
+    workflow_id: str,
+    run_id: str,
+    user_context: CurrentUser,
+    workflow_service: WorkflowService = Depends(get_workflow_service),
+    acl_service: ACLService = Depends(get_acl_service),
+):
+    """Return all NodeRuns for a WorkflowRun, including input/output snapshots (requires VIEW)."""
+    try:
+        await _authorize_workflow(acl_service, workflow_service, user_context, workflow_id, "VIEW")
+        node_runs = await workflow_service.get_node_runs(run_id)
+        return NodeRunListResponse(
+            run_id=run_id,
+            workflow_id=workflow_id,
+            node_runs=[
+                NodeRunDetail(
+                    node_run_id=str(nr.id),
+                    node_id=nr.node_id,
+                    node_name=nr.node_name,
+                    workflow_run_id=str(nr.workflow_run_id),
+                    status=nr.status.value if hasattr(nr.status, "value") else nr.status,
+                    attempt=nr.attempt,
+                    input_snapshot=nr.input_snapshot,
+                    output_snapshot=nr.output_snapshot,
+                    error=nr.error,
+                    started_at=nr.started_at,
+                    finished_at=nr.finished_at,
+                )
+                for nr in node_runs
+            ],
+        )
+    except ValueError as exc:
+        err = str(exc)
+        code = http_status.HTTP_404_NOT_FOUND if "not found" in err.lower() else http_status.HTTP_400_BAD_REQUEST
+        raise HTTPException(status_code=code, detail=create_error_detail(ErrorCode.RESOURCE_NOT_FOUND, err))
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Error listing node runs for run %s", run_id)
+        raise HTTPException(
+            status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=create_error_detail(ErrorCode.INTERNAL_ERROR, "Internal server error"),
+        )
+
+
+@router.get(
+    "/workflows/{workflow_id}/runs/{run_id}/nodes/{node_run_id}",
+    response_model=NodeRunDetail,
+    summary="Get Node Run Detail",
+    description="Get full detail of a single node run including I/O snapshots",
+)
+@track_registry_operation("read", resource_type="node_run")
+async def get_node_run(
+    workflow_id: str,
+    run_id: str,
+    node_run_id: str,
+    user_context: CurrentUser,
+    workflow_service: WorkflowService = Depends(get_workflow_service),
+    acl_service: ACLService = Depends(get_acl_service),
+):
+    """Return a single NodeRun by ID (requires VIEW on the workflow)."""
+    try:
+        await _authorize_workflow(acl_service, workflow_service, user_context, workflow_id, "VIEW")
+        nr = await workflow_service.get_node_run(run_id, node_run_id)
+        return NodeRunDetail(
+            node_run_id=str(nr.id),
+            node_id=nr.node_id,
+            node_name=nr.node_name,
+            workflow_run_id=str(nr.workflow_run_id),
+            status=nr.status.value if hasattr(nr.status, "value") else nr.status,
+            attempt=nr.attempt,
+            input_snapshot=nr.input_snapshot,
+            output_snapshot=nr.output_snapshot,
+            error=nr.error,
+            started_at=nr.started_at,
+            finished_at=nr.finished_at,
+        )
+    except ValueError as exc:
+        err = str(exc)
+        code = http_status.HTTP_404_NOT_FOUND if "not found" in err.lower() else http_status.HTTP_400_BAD_REQUEST
+        raise HTTPException(status_code=code, detail=create_error_detail(ErrorCode.RESOURCE_NOT_FOUND, err))
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Error getting node run %s", node_run_id)
+        raise HTTPException(
+            status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=create_error_detail(ErrorCode.INTERNAL_ERROR, "Internal server error"),
+        )
