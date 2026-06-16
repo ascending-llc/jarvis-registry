@@ -130,6 +130,7 @@ async def test_search_mixed_groups_tools_under_server():
     assert set(servers) == {"Email", "Weather"}
     # server score is the max of its matched tools; both matched tools are grouped under it
     assert servers["Email"]["relevance_score"] == 0.9
+    assert servers["Email"]["server_id"] == "s1"
     assert len(servers["Email"]["matching_tools"]) == 2
     assert servers["Email"]["tags"] == ["mail"]
     assert servers["Email"]["is_enabled"] is True
