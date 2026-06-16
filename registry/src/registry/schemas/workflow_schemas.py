@@ -213,6 +213,6 @@ class NodeRunListResponse(BaseModel):
 
 
 class NodeRerunRequest(BaseModel):
-    """Request body for POST /runs/{run_id}/nodes/{node_id}/rerun."""
+    """Request body for POST /workflows/{workflow_id}/runs/{run_id}/nodes/{node_id}/rerun."""
 
     pass
