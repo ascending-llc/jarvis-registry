@@ -525,6 +525,7 @@ class ExternalVectorSearchService(VectorSearchService):
         if server is None:
             server = {
                 "entity_type": "mcp_server",
+                "server_id": doc.get("server_id"),
                 "path": doc.get("path") or "",
                 "server_name": doc.get("server_name") or "",
                 "description": description,
