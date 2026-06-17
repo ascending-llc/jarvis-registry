@@ -310,6 +310,9 @@ workflows-read:
   - action: get_workflow_run
     method: GET
     endpoint: /workflows/{workflow_id}/runs/{run_id}
+  - action: list_child_runs
+    method: GET
+    endpoint: /workflows/{workflow_id}/runs/{run_id}/children
   - action: list_workflow_versions
     method: GET
     endpoint: /workflows/{workflow_id}/versions
