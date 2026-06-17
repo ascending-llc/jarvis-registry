@@ -26,7 +26,7 @@ def test_create_reranker_bedrock_requires_region():
 
 def test_create_reranker_bedrock_builds_compressor_with_credentials():
     """With creds present, they are passed through alongside the built ARN and top_n."""
-    with patch("langchain_aws.BedrockRerank") as mock_rerank:
+    with patch("registry_pkgs.vector.retrievers.reranker.BedrockRerank") as mock_rerank:
         create_reranker(
             "bedrock_cohere",
             region="us-east-1",
@@ -47,7 +47,7 @@ def test_create_reranker_bedrock_builds_compressor_with_credentials():
 
 def test_create_reranker_bedrock_omits_credentials_when_absent():
     """Without explicit creds, only ARN/region/top_n are passed (default credential chain)."""
-    with patch("langchain_aws.BedrockRerank") as mock_rerank:
+    with patch("registry_pkgs.vector.retrievers.reranker.BedrockRerank") as mock_rerank:
         create_reranker("bedrock_cohere", region="us-east-1")
 
     mock_rerank.assert_called_once_with(

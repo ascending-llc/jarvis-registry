@@ -2,8 +2,10 @@ import logging
 from typing import Any
 
 import weaviate.classes.config as wvc
+from langchain_aws.utils import create_aws_client
 from langchain_core.documents import Document
 from langchain_core.vectorstores import VectorStore
+from pydantic import SecretStr
 
 from ..adapters.adapter import VectorStoreAdapter
 from ..enum.enums import EmbeddingProvider, SearchType
@@ -30,6 +32,7 @@ class WeaviateStore(VectorStoreAdapter):
         """Initialize Weaviate adapter."""
         super().__init__(embedding, config, embedding_config, rerank_config)
         self._client = None
+        self._bedrock_client = None
 
     def _get_client(self):
         """Get or create Weaviate client."""
@@ -44,6 +47,35 @@ class WeaviateStore(VectorStoreAdapter):
                 auth_credentials=AuthApiKey(self.config.get("api_key")) if self.config.get("api_key") else None,
             )
         return self._client
+
+    def _get_bedrock_client(self):
+        """Get or create a cached ``bedrock-agent-runtime`` client for reranking.
+
+        The store is a process-level singleton, so caching the client here lets
+        concurrent searches share one connection pool and one credential resolver
+        instead of building a fresh boto3 client on every ``search_with_rerank``
+        call. Credential semantics match ``BedrockRerank``'s own setup: explicit
+        static creds when configured, otherwise the default chain (which yields
+        refreshable IRSA credentials on EKS).
+        """
+        if self._bedrock_client is None:
+            access_key_id = self.rerank_config.get("access_key_id")
+            secret_access_key = self.rerank_config.get("secret_access_key")
+            session_token = self.rerank_config.get("session_token")
+
+            cred_kwargs: dict[str, Any] = {}
+            if access_key_id and secret_access_key:
+                cred_kwargs["aws_access_key_id"] = SecretStr(access_key_id)
+                cred_kwargs["aws_secret_access_key"] = SecretStr(secret_access_key)
+                if session_token:
+                    cred_kwargs["aws_session_token"] = SecretStr(session_token)
+
+            self._bedrock_client = create_aws_client(
+                service_name="bedrock-agent-runtime",
+                region_name=self.rerank_config.get("region", "us-east-1"),
+                **cred_kwargs,
+            )
+        return self._bedrock_client
 
     def cosine_relevance_score_fn(self, distance: float) -> float:
         """Normalize the distance to a score on a scale [0, 1]."""
@@ -160,6 +192,7 @@ class WeaviateStore(VectorStoreAdapter):
             self._client.close()
             self._client = None
             self._stores.clear()
+        self._bedrock_client = None
 
     # ========================================
     # Filter normalization (Smart conversion)
@@ -586,33 +619,33 @@ class WeaviateStore(VectorStoreAdapter):
                 query=query, search_type=search_type, k=k, filters=filters, collection_name=collection_name, **kwargs
             )
 
+        filters = self.normalize_filters(filters)
+        # Default candidate_k to 3x final k
+        if candidate_k is None:
+            candidate_k = min(k * 3, 100)
+
+        # Step 1: Get candidate documents
+        logger.debug(f"Fetching {candidate_k} candidates for reranking")
+        candidates = self.search(
+            query=query,
+            search_type=search_type,
+            k=candidate_k,
+            filters=filters,
+            collection_name=collection_name,
+            **kwargs,
+        )
+
+        if not candidates:
+            logger.warning("No candidates found for reranking")
+            return []
+
+        # Step 2: Rerank candidates via Bedrock (AWS config injected from store config)
         try:
-            filters = self.normalize_filters(filters)
-            # Default candidate_k to 3x final k
-            if candidate_k is None:
-                candidate_k = min(k * 3, 100)
-
-            # Step 1: Get candidate documents
-            logger.debug(f"Fetching {candidate_k} candidates for reranking")
-            candidates = self.search(
-                query=query,
-                search_type=search_type,
-                k=candidate_k,
-                filters=filters,
-                collection_name=collection_name,
-                **kwargs,
-            )
-
-            if not candidates:
-                logger.warning("No candidates found for reranking")
-                return []
-
-            # Step 2: Rerank candidates via Bedrock (AWS config injected from store config)
             logger.debug(f"Reranking {len(candidates)} candidates to get top {k}")
             merged_kwargs = self.build_bedrock_rerank_kwargs(top_n=k)
             merged_kwargs.update(reranker_kwargs or {})
 
-            reranker = create_reranker(reranker_type=reranker_type, **merged_kwargs)
+            reranker = create_reranker(reranker_type=reranker_type, client=self._get_bedrock_client(), **merged_kwargs)
             reranked = reranker.compress_documents(documents=candidates, query=query)
 
             logger.info(f"Reranking complete: {len(candidates)} -> {len(reranked)} results")
@@ -620,11 +653,8 @@ class WeaviateStore(VectorStoreAdapter):
 
         except Exception as e:
             logger.error(f"Reranking failed: {e}", exc_info=True)
-            logger.warning("Falling back to regular search without reranking")
-            # Fallback to regular search
-            return self.search(
-                query=query, search_type=search_type, k=k, filters=filters, collection_name=collection_name, **kwargs
-            )
+            logger.warning("Falling back to top-k candidates without reranking")
+            return candidates[:k]
 
     def batch_update_properties(self, doc_ids: list[str], update_data: dict[str, Any], collection_name: str) -> int:
         """
