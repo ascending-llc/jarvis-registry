@@ -509,10 +509,7 @@ class WorkflowControlService:
                 ),
             )
 
-        # Sort ascending by attempt so that for retried nodes the highest-attempt
-        # record wins the dict (last-write-wins semantics of the comprehension).
-        parent_node_runs = await NodeRun.find(NodeRun.workflow_run_id == parent_run.id).sort("+attempt").to_list()
-        node_run_by_id: dict[str, NodeRun] = {nr.node_id: nr for nr in parent_node_runs}
+        parent_node_runs = await NodeRun.find(NodeRun.workflow_run_id == parent_run.id).sort("attempt").to_list()
 
         injected_outputs: dict[str, dict[str, Any]] = {}
         resolved_deps: list[ResolvedDependency] = []
