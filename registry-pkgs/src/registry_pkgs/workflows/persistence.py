@@ -13,6 +13,7 @@ from pymongo.asynchronous.client_session import AsyncClientSession
 
 from registry_pkgs.models.enums import NodeRunStatus, WorkflowRunStatus
 from registry_pkgs.models.workflow import NodeRun, WorkflowNode, WorkflowRun
+from registry_pkgs.workflows.types import NODE_INPUT_SNAPSHOTS_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -203,7 +204,13 @@ class WorkflowRunSyncer(AsyncMongoDb):
             node_run.output_snapshot = {"content": str(step_output.content)}
 
         if session_data is not None:
-            node_run.session_state_snapshot = dict(session_data)
+            input_snapshots = session_data.get(NODE_INPUT_SNAPSHOTS_KEY, {})
+            input_snapshot = input_snapshots.get(node_id)
+            if input_snapshot is not None:
+                node_run.input_snapshot = input_snapshot
+            session_state_snapshot = dict(session_data)
+            session_state_snapshot.pop(NODE_INPUT_SNAPSHOTS_KEY, None)
+            node_run.session_state_snapshot = session_state_snapshot
             # Read the same key written by make_a2a_pool_executor so the
             # selected agent is persisted for retry reconstruction.
             selected = session_data.get(f"a2a_target_{step_name}")

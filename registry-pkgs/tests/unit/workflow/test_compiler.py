@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import pytest
+from agno.workflow import StepInput
 from agno.workflow.step import OnError
 from beanie import PydanticObjectId
 
@@ -156,7 +157,7 @@ class TestWorkflowCompiler:
 
         first_step = workflow.steps[0]
         assert first_step.name == "fetch"
-        assert first_step.executor is _executor
+        assert first_step.executor is not _executor
         assert first_step.max_retries == 0
         assert first_step.skip_on_failure is False
 
@@ -202,6 +203,26 @@ class TestWorkflowCompiler:
             "route-a",
             "route-b",
         }
+
+    @pytest.mark.asyncio
+    async def test_step_executor_captures_input_snapshot_in_session_state(self):
+        node = _step_node("fetch", "fetcher")
+        definition = _workflow_definition([node])
+        workflow = compiler.compile_workflow(
+            definition,
+            _workflow_run(),
+            executor_registry={"fetcher": _executor},
+        )
+        session_state = {}
+
+        await workflow.steps[0].executor(
+            StepInput(input={"prompt": "hello"}, previous_step_content="prior"),
+            session_state,
+        )
+
+        snapshots = session_state[compiler.NODE_INPUT_SNAPSHOTS_KEY]
+        assert snapshots[node.id]["input"] == {"prompt": "hello"}
+        assert snapshots[node.id]["previous_step_content"] == "prior"
 
 
 @pytest.mark.unit
