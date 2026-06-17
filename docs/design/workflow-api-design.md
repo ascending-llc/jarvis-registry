@@ -786,6 +786,52 @@ node type does not use them. This lets clients access any field without null che
 
 ---
 
+### 8b. List Child Runs
+
+List runs spawned from a parent run via **node rerun**, **replay**, or **retry**. Each child run carries `parentRunId == run_id` and a `triggerSource` of `node_rerun`, `replay`, or `retry`. Use this to build a run-lineage / history view in the UI. Results are ordered newest-first.
+
+**Endpoint**: `GET /api/v1/workflows/{workflow_id}/runs/{run_id}/children`
+
+**Query Parameters**:
+```typescript
+{
+  page?: number;            // Page number (default: 1)
+  perPage?: number;         // Items per page (default: 20, max: 100)
+}
+```
+
+**Response**: `200 OK` — same shape as **List Workflow Runs**, filtered to children of `run_id`.
+```json
+{
+  "runs": [
+    {
+      "id": "child-run-id",
+      "workflowDefinitionId": "wf-demo-id",
+      "status": "completed",
+      "triggerSource": "replay",
+      "startedAt": "2024-01-25T12:00:00Z",
+      "finishedAt": "2024-01-25T12:00:30Z",
+      "parentRunId": "run-demo-id",
+      "errorSummary": null,
+      "nodeRuns": []
+    }
+  ],
+  "pagination": {
+    "total": 1,
+    "page": 1,
+    "perPage": 20,
+    "totalPages": 1
+  }
+}
+```
+
+**Error**:
+- `400` Invalid workflow or run ID
+- `404` Workflow or parent run not found
+- `500` Internal server error
+
+---
+
 ### 9. Get Workflow Run Detail
 
 **Endpoint**: `GET /api/v1/workflows/{workflow_id}/runs/{run_id}`
@@ -951,7 +997,7 @@ pod handles it (CAS-protected so only one wins). Frontend should poll
 
 **Endpoint**: `GET /api/v1/workflows/{workflow_id}/runs/{run_id}/nodes`
 
-**Description**: Return all `NodeRun` records for a given workflow run, including full I/O snapshots. Results are ordered by `started_at` ascending.
+**Description**: Return all `NodeRun` records for a given workflow run, including full I/O snapshots. Results are ordered by `startedAt` ascending.
 
 **Required Permission**: VIEW on the workflow (enforced via resource ACL).
 
@@ -960,33 +1006,33 @@ pod handles it (CAS-protected so only one wins). Frontend should poll
 **Response**: `200 OK`
 ```json
 {
-  "run_id": "run-demo-id",
-  "workflow_id": "wf-demo-id",
-  "node_runs": [
+  "runId": "run-demo-id",
+  "workflowId": "wf-demo-id",
+  "nodeRuns": [
     {
-      "node_run_id": "nr-demo-id",
-      "node_id": "node-1",
-      "node_name": "Validate Customer Data",
-      "workflow_run_id": "run-demo-id",
+      "id": "nr-demo-id",
+      "nodeId": "node-1",
+      "nodeName": "Validate Customer Data",
+      "workflowRunId": "run-demo-id",
       "status": "completed",
       "attempt": 1,
-      "input_snapshot": {
+      "inputSnapshot": {
         "customerEmail": "john.doe@company.com"
       },
-      "output_snapshot": {
+      "outputSnapshot": {
         "valid": true
       },
       "error": null,
-      "started_at": "2024-01-25T10:00:05Z",
-      "finished_at": "2024-01-25T10:00:10Z"
+      "startedAt": "2024-01-25T10:00:05Z",
+      "finishedAt": "2024-01-25T10:00:10Z"
     }
   ]
 }
 ```
 
 **Notes**:
-- `input_snapshot` / `output_snapshot` may be `null` for runs created before snapshot capture was introduced.
-- Returns an empty `node_runs` list (not 404) if the run exists but has not yet started any nodes.
+- `inputSnapshot` / `outputSnapshot` may be `null` for runs created before snapshot capture was introduced.
+- Returns an empty `nodeRuns` list (not 404) if the run exists but has not yet started any nodes.
 
 **Error**:
 - `400` Invalid workflow ID or run ID
@@ -1009,21 +1055,21 @@ pod handles it (CAS-protected so only one wins). Frontend should poll
 **Response**: `200 OK`
 ```json
 {
-  "node_run_id": "nr-demo-id",
-  "node_id": "node-1",
-  "node_name": "Validate Customer Data",
-  "workflow_run_id": "run-demo-id",
+  "id": "nr-demo-id",
+  "nodeId": "node-1",
+  "nodeName": "Validate Customer Data",
+  "workflowRunId": "run-demo-id",
   "status": "completed",
   "attempt": 1,
-  "input_snapshot": {
+  "inputSnapshot": {
     "customerEmail": "john.doe@company.com"
   },
-  "output_snapshot": {
+  "outputSnapshot": {
     "valid": true
   },
   "error": null,
-  "started_at": "2024-01-25T10:00:05Z",
-  "finished_at": "2024-01-25T10:00:10Z"
+  "startedAt": "2024-01-25T10:00:05Z",
+  "finishedAt": "2024-01-25T10:00:10Z"
 }
 ```
 
@@ -1438,17 +1484,17 @@ Full detail of a single node execution, including I/O snapshots. Returned by end
 
 ```typescript
 {
-  node_run_id: string;           // NodeRun document ID
-  node_id: string;               // WorkflowNode.id from the workflow definition
-  node_name: string;             // Human-readable step name
-  workflow_run_id: string;       // Parent WorkflowRun ID
+  id: string;                    // NodeRun document ID
+  nodeId: string;                // WorkflowNode.id from the workflow definition
+  nodeName: string;              // Human-readable step name
+  workflowRunId: string;         // Parent WorkflowRun ID
   status: string;                // NodeRunStatus value (see below)
   attempt: number;               // 1-based attempt counter (0 = not yet started)
-  input_snapshot: object | null; // Input fed to the executor; null for legacy runs
-  output_snapshot: object | null; // Output produced by the executor; null if not yet complete
+  inputSnapshot: object | null;  // Input fed to the executor; null for legacy runs
+  outputSnapshot: object | null; // Output produced by the executor; null if not yet complete
   error: string | null;          // Last error message if the node failed; otherwise null
-  started_at: string | null;     // ISO8601; null if not yet started
-  finished_at: string | null;    // ISO8601; null if not yet terminal
+  startedAt: string | null;      // ISO8601; null if not yet started
+  finishedAt: string | null;     // ISO8601; null if not yet terminal
 }
 ```
 
@@ -1458,9 +1504,9 @@ Returned by `GET /workflows/{id}/runs/{run_id}/nodes`.
 
 ```typescript
 {
-  run_id: string;                // WorkflowRun ID
-  workflow_id: string;           // WorkflowDefinition ID
-  node_runs: NodeRunDetail[];    // All NodeRuns for the run, ordered by started_at ascending
+  runId: string;                 // WorkflowRun ID
+  workflowId: string;            // WorkflowDefinition ID
+  nodeRuns: NodeRunDetail[];     // All NodeRuns for the run, ordered by startedAt ascending
 }
 ```
 

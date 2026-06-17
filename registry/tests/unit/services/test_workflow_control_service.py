@@ -52,12 +52,13 @@ async def test_send_retry_child_inherits_workflow_version(monkeypatch: pytest.Mo
     monkeypatch.setattr("registry_pkgs.models.workflow.WorkflowDefinition", _FakeDefinition)
 
     fake_node_run = MagicMock()
-    fake_node_run.find.return_value.to_list = AsyncMock(return_value=[])
+    fake_node_run.find.return_value.sort.return_value.to_list = AsyncMock(return_value=[])
     monkeypatch.setattr(wcs, "NodeRun", fake_node_run)
 
+    run_mock = AsyncMock()
     service = WorkflowControlService(
         directive_queue=DirectiveQueue(),
-        runner_factory=lambda: SimpleNamespace(run=AsyncMock()),
+        runner_factory=lambda: SimpleNamespace(run=run_mock),
     )
     service._load_run = AsyncMock(return_value=parent_run)
 
@@ -74,6 +75,7 @@ async def test_send_retry_child_inherits_workflow_version(monkeypatch: pytest.Mo
     assert captured["workflow_version"] == 2
     assert captured["parent_run_id"] == parent_run.id
     assert captured["definition_snapshot"] == parent_run.definition_snapshot
+    assert run_mock.await_args.kwargs["definition_snapshot"] == parent_run.definition_snapshot
 
 
 @pytest.mark.asyncio
@@ -275,3 +277,334 @@ async def test_get_run_status_does_not_nudge_when_not_timed_out(monkeypatch: pyt
     await asyncio.sleep(0)
 
     continue_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "non_terminal_status",
+    [
+        WorkflowRunStatus.RUNNING,
+        WorkflowRunStatus.PAUSED,
+        WorkflowRunStatus.AWAITING_APPROVAL,
+        WorkflowRunStatus.PENDING,
+    ],
+)
+async def test_rerun_single_node_rejects_non_terminal_run(non_terminal_status: WorkflowRunStatus):
+    """rerun_single_node must reject runs that are not completed or failed."""
+    from fastapi import HTTPException
+
+    run = SimpleNamespace(
+        id=PydanticObjectId(),
+        workflow_definition_id=PydanticObjectId(),
+        status=non_terminal_status,
+        definition_snapshot=None,
+    )
+
+    service = WorkflowControlService(
+        directive_queue=DirectiveQueue(),
+        runner_factory=lambda: MagicMock(),
+    )
+    service._load_run = AsyncMock(return_value=run)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await service.rerun_single_node(
+            str(run.workflow_definition_id),
+            str(run.id),
+            node_id="node-1",
+            registry_token="tok",
+            user_id="user-1",
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "terminal" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_rerun_single_node_rejects_missing_upstream_snapshot(monkeypatch: pytest.MonkeyPatch):
+    """rerun_single_node must fail with 409 when an upstream node has no output_snapshot."""
+    from fastapi import HTTPException
+
+    from registry_pkgs.models.workflow import WorkflowNode
+
+    wf_id = PydanticObjectId()
+    run_id = PydanticObjectId()
+
+    parent_run = SimpleNamespace(
+        id=run_id,
+        workflow_definition_id=wf_id,
+        status=WorkflowRunStatus.FAILED,
+        workflow_version=1,
+        initial_input={},
+        definition_snapshot={
+            "name": "test-workflow",
+            "nodes": [
+                {"id": "node-1", "name": "step-1", "node_type": "step", "executor_key": "tool"},
+                {"id": "node-2", "name": "step-2", "node_type": "step", "executor_key": "tool"},
+            ],
+        },
+    )
+
+    class _FakeDefinition:
+        def __init__(self, **kwargs):
+            self.nodes = [WorkflowNode(**n) for n in kwargs.get("nodes", [])]
+
+    monkeypatch.setattr("registry_pkgs.models.workflow.WorkflowDefinition", _FakeDefinition)
+
+    upstream_nr = SimpleNamespace(
+        id=PydanticObjectId(),
+        node_id="node-1",
+        workflow_run_id=run_id,
+        output_snapshot=None,
+    )
+
+    fake_node_run_model = MagicMock()
+    fake_node_run_model.find.return_value.sort.return_value.to_list = AsyncMock(return_value=[upstream_nr])
+    monkeypatch.setattr(wcs, "NodeRun", fake_node_run_model)
+
+    service = WorkflowControlService(
+        directive_queue=DirectiveQueue(),
+        runner_factory=lambda: MagicMock(),
+    )
+    service._load_run = AsyncMock(return_value=parent_run)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await service.rerun_single_node(
+            str(wf_id),
+            str(run_id),
+            node_id="node-2",
+            registry_token="tok",
+            user_id="user-1",
+        )
+
+    assert exc_info.value.status_code == 409
+    assert "node-1" in exc_info.value.detail
+    assert "output_snapshot" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_rerun_single_node_uses_highest_attempt_output_on_retry(monkeypatch: pytest.MonkeyPatch):
+    """When a node was retried, rerun_single_node must use the highest-attempt
+    NodeRun's output_snapshot — not an earlier failed attempt's record."""
+    from registry_pkgs.models.workflow import WorkflowNode
+
+    wf_id = PydanticObjectId()
+    run_id = PydanticObjectId()
+
+    parent_run = SimpleNamespace(
+        id=run_id,
+        workflow_definition_id=wf_id,
+        status=WorkflowRunStatus.COMPLETED,
+        workflow_version=1,
+        initial_input={"user_text": "hi"},
+        definition_snapshot={
+            "name": "wf",
+            "nodes": [
+                {"id": "node-1", "name": "step-1", "node_type": "step", "executor_key": "tool"},
+                {"id": "node-2", "name": "step-2", "node_type": "step", "executor_key": "tool"},
+            ],
+        },
+    )
+
+    class _FakeDefinition:
+        def __init__(self, **kwargs):
+            self.nodes = [WorkflowNode(**n) for n in kwargs.get("nodes", [])]
+
+    monkeypatch.setattr("registry_pkgs.models.workflow.WorkflowDefinition", _FakeDefinition)
+
+    # node-1 was retried: attempt=1 failed (no output), attempt=2 succeeded.
+    # Sort ascending by attempt → attempt=2 is last → wins the dict.
+    failed_nr = SimpleNamespace(
+        id=PydanticObjectId(),
+        node_id="node-1",
+        attempt=1,
+        output_snapshot=None,
+        session_state_snapshot=None,
+    )
+    success_nr = SimpleNamespace(
+        id=PydanticObjectId(),
+        node_id="node-1",
+        attempt=2,
+        output_snapshot={"content": "ok"},
+        session_state_snapshot=None,
+    )
+
+    captured_injected: dict = {}
+
+    class _FakeChildRun:
+        def __init__(self, **kwargs):
+            self.id = PydanticObjectId()
+            self.status = WorkflowRunStatus.PENDING
+
+        async def insert(self):
+            return None
+
+    monkeypatch.setattr(wcs, "WorkflowRun", _FakeChildRun)
+
+    fake_node_run_model = MagicMock()
+    # sorted ascending: failed_nr (attempt=1) first, success_nr (attempt=2) last
+    fake_node_run_model.find.return_value.sort.return_value.to_list = AsyncMock(return_value=[failed_nr, success_nr])
+    monkeypatch.setattr(wcs, "NodeRun", fake_node_run_model)
+
+    def capture_runner(*args, **kwargs):
+        captured_injected.update(kwargs.get("injected_outputs", {}))
+        return AsyncMock()()
+
+    service = WorkflowControlService(
+        directive_queue=DirectiveQueue(),
+        runner_factory=lambda: SimpleNamespace(run=AsyncMock(side_effect=capture_runner)),
+    )
+    service._load_run = AsyncMock(return_value=parent_run)
+
+    # Should succeed — highest attempt of node-1 has output_snapshot
+    child = await service.rerun_single_node(
+        str(wf_id),
+        str(run_id),
+        node_id="node-2",
+        registry_token="tok",
+        user_id="user-1",
+    )
+    await asyncio.sleep(0)
+
+    assert child is not None
+    assert "node-1" in captured_injected
+    assert captured_injected["node-1"]["content"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_rerun_single_node_injects_nested_step_outputs_for_container_nodes(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Non-STEP top-level nodes (CONDITION/PARALLEL/LOOP/ROUTER) before the target
+    must have their descendant STEP outputs injected so those child steps don't
+    execute for real during the node rerun."""
+    from registry_pkgs.models.workflow import WorkflowNode
+
+    wf_id = PydanticObjectId()
+    run_id = PydanticObjectId()
+
+    # Workflow: [condition-block (CONDITION with child step-A), target-step (STEP)]
+    step_a_id = "step-a"
+    target_id = "target"
+
+    parent_run = SimpleNamespace(
+        id=run_id,
+        workflow_definition_id=wf_id,
+        status=WorkflowRunStatus.COMPLETED,
+        workflow_version=1,
+        initial_input={"user_text": "hi"},
+        definition_snapshot={
+            "name": "wf",
+            "nodes": [
+                {
+                    "id": "cond-1",
+                    "name": "condition-block",
+                    "node_type": "condition",
+                    "condition_cel": "true",
+                    "true_steps": [{"id": step_a_id, "name": "step-a", "node_type": "step", "executor_key": "tool"}],
+                },
+                {"id": target_id, "name": "target-step", "node_type": "step", "executor_key": "tool"},
+            ],
+        },
+    )
+
+    class _FakeDefinition:
+        def __init__(self, **kwargs):
+            self.nodes = [WorkflowNode(**n) for n in kwargs.get("nodes", [])]
+
+    monkeypatch.setattr("registry_pkgs.models.workflow.WorkflowDefinition", _FakeDefinition)
+
+    # step-a ran and produced output
+    step_a_nr = SimpleNamespace(
+        id=PydanticObjectId(),
+        node_id=step_a_id,
+        attempt=1,
+        output_snapshot={"content": "branch-result"},
+        session_state_snapshot=None,
+    )
+
+    captured_injected: dict = {}
+
+    class _FakeChildRun:
+        def __init__(self, **kwargs):
+            self.id = PydanticObjectId()
+            self.status = WorkflowRunStatus.PENDING
+
+        async def insert(self):
+            return None
+
+    monkeypatch.setattr(wcs, "WorkflowRun", _FakeChildRun)
+
+    fake_node_run_model = MagicMock()
+    fake_node_run_model.find.return_value.sort.return_value.to_list = AsyncMock(return_value=[step_a_nr])
+    monkeypatch.setattr(wcs, "NodeRun", fake_node_run_model)
+
+    def capture_runner(*args, **kwargs):
+        captured_injected.update(kwargs.get("injected_outputs", {}))
+        return AsyncMock()()
+
+    service = WorkflowControlService(
+        directive_queue=DirectiveQueue(),
+        runner_factory=lambda: SimpleNamespace(run=AsyncMock(side_effect=capture_runner)),
+    )
+    service._load_run = AsyncMock(return_value=parent_run)
+
+    child = await service.rerun_single_node(
+        str(wf_id),
+        str(run_id),
+        node_id=target_id,
+        registry_token="tok",
+        user_id="user-1",
+    )
+    await asyncio.sleep(0)
+
+    assert child is not None
+    # Nested step-a inside condition-block must have its output injected
+    assert step_a_id in captured_injected, "Expected nested step-a output to be injected"
+    assert captured_injected[step_a_id]["content"] == "branch-result"
+    # Target node must NOT be in injected_outputs (it runs for real)
+    assert target_id not in captured_injected
+
+
+@pytest.mark.asyncio
+async def test_replay_run_sets_parent_run_id(monkeypatch: pytest.MonkeyPatch):
+    """replay_run must set parent_run_id on the new WorkflowRun so the lineage
+    is traceable in the UI."""
+    source_run = SimpleNamespace(
+        id=PydanticObjectId(),
+        workflow_definition_id=PydanticObjectId(),
+        status=WorkflowRunStatus.COMPLETED,
+        initial_input={"user_text": "hi"},
+    )
+
+    captured: dict = {}
+
+    class _FakeRun:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self.id = PydanticObjectId()
+            self.status = WorkflowRunStatus.PENDING
+
+        async def insert(self):
+            return None
+
+    monkeypatch.setattr(wcs, "WorkflowRun", _FakeRun)
+
+    service = WorkflowControlService(
+        directive_queue=DirectiveQueue(),
+        runner_factory=lambda: SimpleNamespace(run=AsyncMock(return_value=None)),
+    )
+    service._load_run = AsyncMock(return_value=source_run)
+
+    new_run = await service.replay_run(
+        str(source_run.workflow_definition_id),
+        str(source_run.id),
+        registry_token="tok",
+        user_id="user-1",
+    )
+
+    assert new_run is not None
+    assert captured.get("parent_run_id") == source_run.id, (
+        f"replay_run must forward parent_run_id so the lineage is traceable; got {captured.get('parent_run_id')!r}"
+    )
+    assert captured.get("trigger_source") == "replay"
+    assert captured.get("initial_input") == {"user_text": "hi"}
