@@ -661,3 +661,295 @@ def test_workflow_create_request_parses_human_review_with_retry():
     node = request.nodes[0]
     assert node.humanReview is not None
     assert node.humanReview.onReject.value == "retry"
+
+
+@pytest.mark.asyncio
+async def test_list_node_runs_returns_node_run_details():
+    from types import SimpleNamespace
+
+    from registry.api.v1.workflow.workflow_routes import list_node_runs
+    from registry.schemas.workflow_schemas import NodeRunListResponse
+    from registry_pkgs.models.enums import WorkflowRunStatus
+
+    wf_id = str(PydanticObjectId())
+    run_id = str(PydanticObjectId())
+    nr_id = PydanticObjectId()
+
+    fake_run = SimpleNamespace(id=PydanticObjectId(run_id))
+    fake_nr = SimpleNamespace(
+        id=nr_id,
+        node_id="n1",
+        node_name="step-1",
+        workflow_run_id=PydanticObjectId(run_id),
+        status=WorkflowRunStatus.COMPLETED,
+        attempt=1,
+        input_snapshot={"x": 1},
+        output_snapshot={"y": 2},
+        error=None,
+        started_at=None,
+        finished_at=None,
+    )
+
+    mock_service = MagicMock()
+    mock_service.get_workflow_by_id = AsyncMock(return_value=MagicMock(id=PydanticObjectId(wf_id)))
+    mock_service.get_workflow_run = AsyncMock(return_value=(fake_run, [fake_nr]))
+
+    mock_acl = MagicMock()
+    mock_acl.check_user_permission = AsyncMock(return_value=None)
+
+    user_context = {"user_id": str(PydanticObjectId()), "username": "u", "groups": [], "scopes": []}
+
+    response = await list_node_runs(
+        workflow_id=wf_id,
+        run_id=run_id,
+        user_context=user_context,
+        workflow_service=mock_service,
+        acl_service=mock_acl,
+    )
+
+    assert isinstance(response, NodeRunListResponse)
+    assert response.runId == run_id
+    assert response.workflowId == wf_id
+    assert len(response.nodeRuns) == 1
+    assert response.nodeRuns[0].id == str(nr_id)
+    assert response.nodeRuns[0].nodeId == "n1"
+    assert response.nodeRuns[0].inputSnapshot == {"x": 1}
+    assert response.nodeRuns[0].outputSnapshot == {"y": 2}
+    mock_service.get_workflow_run.assert_awaited_once_with(workflow_id=wf_id, run_id=run_id)
+
+
+@pytest.mark.asyncio
+async def test_list_node_runs_forbidden_without_view():
+    from registry.api.v1.workflow.workflow_routes import list_node_runs
+
+    mock_acl = MagicMock()
+    mock_acl.check_user_permission = AsyncMock(side_effect=HTTPException(status_code=403, detail="Forbidden"))
+
+    mock_service = MagicMock()
+    mock_service.get_workflow_by_id = AsyncMock(return_value=MagicMock())
+
+    user_context = {"user_id": str(PydanticObjectId()), "username": "u", "groups": [], "scopes": []}
+
+    with pytest.raises(HTTPException) as exc_info:
+        await list_node_runs(
+            workflow_id=str(PydanticObjectId()),
+            run_id=str(PydanticObjectId()),
+            user_context=user_context,
+            workflow_service=mock_service,
+            acl_service=mock_acl,
+        )
+
+    assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_list_node_runs_run_not_found_returns_404():
+    from registry.api.v1.workflow.workflow_routes import list_node_runs
+
+    wf_id = str(PydanticObjectId())
+    run_id = str(PydanticObjectId())
+
+    mock_service = MagicMock()
+    mock_service.get_workflow_by_id = AsyncMock(return_value=MagicMock(id=PydanticObjectId(wf_id)))
+    mock_service.get_workflow_run = AsyncMock(side_effect=ValueError(f"Workflow run {run_id} not found"))
+
+    mock_acl = MagicMock()
+    mock_acl.check_user_permission = AsyncMock(return_value=None)
+
+    user_context = {"user_id": str(PydanticObjectId()), "username": "u", "groups": [], "scopes": []}
+
+    with pytest.raises(HTTPException) as exc_info:
+        await list_node_runs(
+            workflow_id=wf_id,
+            run_id=run_id,
+            user_context=user_context,
+            workflow_service=mock_service,
+            acl_service=mock_acl,
+        )
+
+    assert exc_info.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_list_node_runs_run_wrong_workflow_returns_400():
+    from registry.api.v1.workflow.workflow_routes import list_node_runs
+
+    wf_id = str(PydanticObjectId())
+    run_id = str(PydanticObjectId())
+
+    mock_service = MagicMock()
+    mock_service.get_workflow_by_id = AsyncMock(return_value=MagicMock(id=PydanticObjectId(wf_id)))
+    mock_service.get_workflow_run = AsyncMock(
+        side_effect=ValueError(f"Workflow run {run_id} does not belong to workflow {wf_id}")
+    )
+
+    mock_acl = MagicMock()
+    mock_acl.check_user_permission = AsyncMock(return_value=None)
+
+    user_context = {"user_id": str(PydanticObjectId()), "username": "u", "groups": [], "scopes": []}
+
+    with pytest.raises(HTTPException) as exc_info:
+        await list_node_runs(
+            workflow_id=wf_id,
+            run_id=run_id,
+            user_context=user_context,
+            workflow_service=mock_service,
+            acl_service=mock_acl,
+        )
+
+    assert exc_info.value.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# get_node_run: GET /workflows/{workflow_id}/runs/{run_id}/nodes/{node_run_id}
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_get_node_run_returns_detail():
+    from types import SimpleNamespace
+
+    from registry.api.v1.workflow.workflow_routes import get_node_run
+    from registry.schemas.workflow_api_schemas import NodeRunOutput
+    from registry_pkgs.models.enums import WorkflowRunStatus
+
+    wf_id = str(PydanticObjectId())
+    run_id = str(PydanticObjectId())
+    nr_id = str(PydanticObjectId())
+
+    fake_run = SimpleNamespace(id=PydanticObjectId(run_id))
+    fake_nr = SimpleNamespace(
+        id=PydanticObjectId(nr_id),
+        node_id="n1",
+        node_name="step-1",
+        workflow_run_id=PydanticObjectId(run_id),
+        status=WorkflowRunStatus.COMPLETED,
+        attempt=1,
+        input_snapshot={"a": 1},
+        output_snapshot={"b": 2},
+        error=None,
+        started_at=None,
+        finished_at=None,
+    )
+
+    mock_service = MagicMock()
+    mock_service.get_workflow_by_id = AsyncMock(return_value=MagicMock(id=PydanticObjectId(wf_id)))
+    mock_service.get_workflow_run = AsyncMock(return_value=(fake_run, []))
+    mock_service.get_node_run = AsyncMock(return_value=fake_nr)
+
+    mock_acl = MagicMock()
+    mock_acl.check_user_permission = AsyncMock(return_value=None)
+
+    user_context = {"user_id": str(PydanticObjectId()), "username": "u", "groups": [], "scopes": []}
+
+    response = await get_node_run(
+        workflow_id=wf_id,
+        run_id=run_id,
+        node_run_id=nr_id,
+        user_context=user_context,
+        workflow_service=mock_service,
+        acl_service=mock_acl,
+    )
+
+    assert isinstance(response, NodeRunOutput)
+    assert response.id == nr_id
+    assert response.nodeId == "n1"
+    assert response.inputSnapshot == {"a": 1}
+    assert response.outputSnapshot == {"b": 2}
+    mock_service.get_workflow_run.assert_awaited_once_with(workflow_id=wf_id, run_id=run_id)
+    mock_service.get_node_run.assert_awaited_once_with(run_id, nr_id)
+
+
+@pytest.mark.asyncio
+async def test_get_node_run_forbidden_without_view():
+    from registry.api.v1.workflow.workflow_routes import get_node_run
+
+    mock_acl = MagicMock()
+    mock_acl.check_user_permission = AsyncMock(side_effect=HTTPException(status_code=403, detail="Forbidden"))
+
+    mock_service = MagicMock()
+    mock_service.get_workflow_by_id = AsyncMock(return_value=MagicMock())
+
+    user_context = {"user_id": str(PydanticObjectId()), "username": "u", "groups": [], "scopes": []}
+
+    with pytest.raises(HTTPException) as exc_info:
+        await get_node_run(
+            workflow_id=str(PydanticObjectId()),
+            run_id=str(PydanticObjectId()),
+            node_run_id=str(PydanticObjectId()),
+            user_context=user_context,
+            workflow_service=mock_service,
+            acl_service=mock_acl,
+        )
+
+    assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_get_node_run_node_not_found_returns_404():
+    from types import SimpleNamespace
+
+    from registry.api.v1.workflow.workflow_routes import get_node_run
+
+    wf_id = str(PydanticObjectId())
+    run_id = str(PydanticObjectId())
+    nr_id = str(PydanticObjectId())
+
+    fake_run = SimpleNamespace(id=PydanticObjectId(run_id))
+
+    mock_service = MagicMock()
+    mock_service.get_workflow_by_id = AsyncMock(return_value=MagicMock(id=PydanticObjectId(wf_id)))
+    mock_service.get_workflow_run = AsyncMock(return_value=(fake_run, []))
+    mock_service.get_node_run = AsyncMock(side_effect=ValueError(f"NodeRun {nr_id!r} not found"))
+
+    mock_acl = MagicMock()
+    mock_acl.check_user_permission = AsyncMock(return_value=None)
+
+    user_context = {"user_id": str(PydanticObjectId()), "username": "u", "groups": [], "scopes": []}
+
+    with pytest.raises(HTTPException) as exc_info:
+        await get_node_run(
+            workflow_id=wf_id,
+            run_id=run_id,
+            node_run_id=nr_id,
+            user_context=user_context,
+            workflow_service=mock_service,
+            acl_service=mock_acl,
+        )
+
+    assert exc_info.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_get_node_run_node_wrong_run_returns_400():
+    from types import SimpleNamespace
+
+    from registry.api.v1.workflow.workflow_routes import get_node_run
+
+    wf_id = str(PydanticObjectId())
+    run_id = str(PydanticObjectId())
+    nr_id = str(PydanticObjectId())
+
+    fake_run = SimpleNamespace(id=PydanticObjectId(run_id))
+
+    mock_service = MagicMock()
+    mock_service.get_workflow_by_id = AsyncMock(return_value=MagicMock(id=PydanticObjectId(wf_id)))
+    mock_service.get_workflow_run = AsyncMock(return_value=(fake_run, []))
+    mock_service.get_node_run = AsyncMock(
+        side_effect=ValueError(f"NodeRun {nr_id!r} does not belong to run {run_id!r}")
+    )
+
+    mock_acl = MagicMock()
+    mock_acl.check_user_permission = AsyncMock(return_value=None)
+
+    user_context = {"user_id": str(PydanticObjectId()), "username": "u", "groups": [], "scopes": []}
+
+    with pytest.raises(HTTPException) as exc_info:
+        await get_node_run(
+            workflow_id=wf_id,
+            run_id=run_id,
+            node_run_id=nr_id,
+            user_context=user_context,
+            workflow_service=mock_service,
+            acl_service=mock_acl,
+        )
+
+    assert exc_info.value.status_code == 400

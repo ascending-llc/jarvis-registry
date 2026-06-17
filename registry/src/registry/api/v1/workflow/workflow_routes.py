@@ -19,6 +19,7 @@ from registry.deps import get_acl_service, get_workflow_control_service, get_wor
 from registry.schemas.acl_schema import ResourcePermissions
 from registry.schemas.errors import ErrorCode, create_error_detail
 from registry.schemas.workflow_api_schemas import (
+    NodeRunOutput,
     PaginationMetadata,
     StepRequirementSummary,
     WorkflowCreateRequest,
@@ -32,12 +33,13 @@ from registry.schemas.workflow_api_schemas import (
     WorkflowUpdateRequest,
     WorkflowVersionItem,
     WorkflowVersionListResponse,
+    convert_node_run_to_output,
     convert_to_detail,
     convert_to_list_item,
     convert_to_run_detail,
     convert_to_run_list_item,
 )
-from registry.schemas.workflow_schemas import NodeRunDetail, NodeRunListResponse, NodeRunSummary, RunStatusResponse
+from registry.schemas.workflow_schemas import NodeRunListResponse, NodeRunSummary, RunStatusResponse
 from registry.services.access_control_service import ACLService
 from registry.services.workflow_control_service import WorkflowControlService
 from registry.services.workflow_executor import execute_workflow_run_background
@@ -660,6 +662,79 @@ async def list_workflow_runs(
 
 
 @router.get(
+    "/workflows/{workflow_id}/runs/{run_id}/children",
+    response_model=WorkflowRunListResponse,
+    response_model_by_alias=True,
+    summary="List Child Runs",
+    description="List runs spawned from a parent run via node rerun, replay, or retry (by parent_run_id)",
+)
+@track_registry_operation("list", resource_type="workflow_run")
+async def list_child_runs(
+    workflow_id: str,
+    run_id: str,
+    user_context: CurrentUser,
+    page: Annotated[int, Query(ge=1)] = 1,
+    per_page: Annotated[int, Query(ge=1, le=100)] = 20,
+    workflow_service: WorkflowService = Depends(get_workflow_service),
+    acl_service: ACLService = Depends(get_acl_service),
+):
+    """List child runs of a parent run (requires VIEW on the workflow).
+
+    Child runs are created by node rerun (``trigger_source="node_rerun"``),
+    replay (``"replay"``), or retry (``"retry"``); each carries
+    ``parentRunId == run_id``. Ordered newest-first.
+
+    Query Parameters:
+    - page: Page number (default: 1, min: 1)
+    - per_page: Items per page (default: 20, min: 1, max: 100)
+    """
+    try:
+        await _authorize_workflow(acl_service, workflow_service, user_context, workflow_id, "VIEW")
+
+        runs_with_nodes, total = await workflow_service.list_child_runs(
+            workflow_id=workflow_id,
+            parent_run_id=run_id,
+            page=page,
+            per_page=per_page,
+        )
+
+        run_items = [convert_to_run_list_item(run, node_runs) for run, node_runs in runs_with_nodes]
+        total_pages = math.ceil(total / per_page) if total > 0 else 0
+
+        return WorkflowRunListResponse(
+            runs=run_items,
+            pagination=PaginationMetadata(
+                total=total,
+                page=page,
+                perPage=per_page,
+                totalPages=total_pages,
+            ),
+        )
+
+    except ValueError as e:
+        error_msg = str(e)
+        if "not found" in error_msg.lower():
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail=create_error_detail(ErrorCode.RESOURCE_NOT_FOUND, error_msg),
+            )
+        raise HTTPException(
+            status_code=http_status.HTTP_400_BAD_REQUEST,
+            detail=create_error_detail(ErrorCode.INVALID_REQUEST, error_msg),
+        )
+
+    except HTTPException:
+        logger.exception("HTTPException in list_child_runs")
+        raise
+    except Exception:
+        logger.exception("Error listing child runs for parent run %s", run_id)
+        raise HTTPException(
+            status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=create_error_detail(ErrorCode.INTERNAL_ERROR, "Internal server error while listing child runs"),
+        )
+
+
+@router.get(
     "/workflows/{workflow_id}/runs/{run_id}",
     response_model=WorkflowRunDetailResponse,
     response_model_by_alias=True,
@@ -808,31 +883,23 @@ async def list_node_runs(
     """Return all NodeRuns for a WorkflowRun, including input/output snapshots (requires VIEW)."""
     try:
         await _authorize_workflow(acl_service, workflow_service, user_context, workflow_id, "VIEW")
-        node_runs = await workflow_service.get_node_runs(run_id)
+        _, node_runs = await workflow_service.get_workflow_run(workflow_id=workflow_id, run_id=run_id)
         return NodeRunListResponse(
-            run_id=run_id,
-            workflow_id=workflow_id,
-            node_runs=[
-                NodeRunDetail(
-                    node_run_id=str(nr.id),
-                    node_id=nr.node_id,
-                    node_name=nr.node_name,
-                    workflow_run_id=str(nr.workflow_run_id),
-                    status=nr.status.value if hasattr(nr.status, "value") else nr.status,
-                    attempt=nr.attempt,
-                    input_snapshot=nr.input_snapshot,
-                    output_snapshot=nr.output_snapshot,
-                    error=nr.error,
-                    started_at=nr.started_at,
-                    finished_at=nr.finished_at,
-                )
-                for nr in node_runs
-            ],
+            runId=run_id,
+            workflowId=workflow_id,
+            nodeRuns=[convert_node_run_to_output(nr) for nr in node_runs],
         )
     except ValueError as exc:
         err = str(exc)
-        code = http_status.HTTP_404_NOT_FOUND if "not found" in err.lower() else http_status.HTTP_400_BAD_REQUEST
-        raise HTTPException(status_code=code, detail=create_error_detail(ErrorCode.RESOURCE_NOT_FOUND, err))
+        if "not found" in err.lower():
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail=create_error_detail(ErrorCode.RESOURCE_NOT_FOUND, err),
+            )
+        raise HTTPException(
+            status_code=http_status.HTTP_400_BAD_REQUEST,
+            detail=create_error_detail(ErrorCode.INVALID_REQUEST, err),
+        )
     except HTTPException:
         raise
     except Exception:
@@ -845,7 +912,7 @@ async def list_node_runs(
 
 @router.get(
     "/workflows/{workflow_id}/runs/{run_id}/nodes/{node_run_id}",
-    response_model=NodeRunDetail,
+    response_model=NodeRunOutput,
     summary="Get Node Run Detail",
     description="Get full detail of a single node run including I/O snapshots",
 )
@@ -861,24 +928,20 @@ async def get_node_run(
     """Return a single NodeRun by ID (requires VIEW on the workflow)."""
     try:
         await _authorize_workflow(acl_service, workflow_service, user_context, workflow_id, "VIEW")
-        nr = await workflow_service.get_node_run(run_id, node_run_id)
-        return NodeRunDetail(
-            node_run_id=str(nr.id),
-            node_id=nr.node_id,
-            node_name=nr.node_name,
-            workflow_run_id=str(nr.workflow_run_id),
-            status=nr.status.value if hasattr(nr.status, "value") else nr.status,
-            attempt=nr.attempt,
-            input_snapshot=nr.input_snapshot,
-            output_snapshot=nr.output_snapshot,
-            error=nr.error,
-            started_at=nr.started_at,
-            finished_at=nr.finished_at,
-        )
+        run, _ = await workflow_service.get_workflow_run(workflow_id=workflow_id, run_id=run_id)
+        nr = await workflow_service.get_node_run(str(run.id), node_run_id)
+        return convert_node_run_to_output(nr)
     except ValueError as exc:
         err = str(exc)
-        code = http_status.HTTP_404_NOT_FOUND if "not found" in err.lower() else http_status.HTTP_400_BAD_REQUEST
-        raise HTTPException(status_code=code, detail=create_error_detail(ErrorCode.RESOURCE_NOT_FOUND, err))
+        if "not found" in err.lower():
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail=create_error_detail(ErrorCode.RESOURCE_NOT_FOUND, err),
+            )
+        raise HTTPException(
+            status_code=http_status.HTTP_400_BAD_REQUEST,
+            detail=create_error_detail(ErrorCode.INVALID_REQUEST, err),
+        )
     except HTTPException:
         raise
     except Exception:

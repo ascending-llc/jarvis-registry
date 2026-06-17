@@ -227,7 +227,7 @@ async def rerun_node(
     node_id: str,
     request: Request,
     current_user: CurrentUser,
-    body: NodeRerunRequest = None,
+    body: NodeRerunRequest | None = None,
     service: WorkflowControlService = Depends(get_workflow_control_service),
     acl_service: ACLService = Depends(get_acl_service),
 ) -> DirectiveResponse:
