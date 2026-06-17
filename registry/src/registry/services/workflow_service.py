@@ -801,8 +801,7 @@ class WorkflowService:
         try:
             nr_oid = PydanticObjectId(node_run_id)
         except Exception as exc:
-            raise ValueError(f"NodeRun {node_run_id!r} not found") from exc
-
+            raise ValueError(f"Invalid node_run_id {node_run_id!r}") from exc
         nr = await NodeRun.get(nr_oid)
         if nr is None:
             raise ValueError(f"NodeRun {node_run_id!r} not found")
