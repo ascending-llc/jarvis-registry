@@ -266,7 +266,7 @@ async def rerun_node(
     response_model=DirectiveResponse,
     summary="Replay Workflow Run",
     description=(
-        "Replay a workflow run from scratch using the same initial input. Creates a new independent WorkflowRun."
+        "Replay a workflow run from scratch using the same initial input. Creates a new child WorkflowRun linked to the source run via parent_run_id."
     ),
     status_code=202,
 )
