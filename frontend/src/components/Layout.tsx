@@ -73,26 +73,24 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
 
     const handleMouseDown = (e: MouseEvent) => {
       if (!searchTerm && !committedQuery) return;
-      
+
       const target = e.target as Element;
       if (!target || typeof target.closest !== 'function') return;
 
       // Do not close if clicking inside search input
       if (target.closest('#semantic-search-input-container')) return;
-      // Do not close if clicking inside search results
-      if (target.closest('#semantic-search-results-container')) return;
-      // Do not close if clicking inside fallback results
-      if (target.closest('#semantic-search-fallback-container')) return;
+      // Do not close if clicking an interactive search result or its children
+      if (target.closest('.search-interactive-element')) return;
       // Do not close if clicking inside a modal or portal
       if (target.closest('[role="dialog"]') || target.closest('[id^="headlessui-portal"]')) return;
-      
+
       setSearchTerm('');
       setCommittedQuery('');
     };
 
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('mousedown', handleMouseDown);
-    
+
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('mousedown', handleMouseDown);
