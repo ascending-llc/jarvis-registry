@@ -186,7 +186,7 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
   return (
     <>
       <div
-        className={`group rounded-2xl shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all duration-300 h-full flex flex-col relative ${
+        className={`search-interactive-element group rounded-2xl shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all duration-300 h-full flex flex-col relative ${
           isAnthropicServer
             ? 'border border-[color:var(--jarvis-primary-soft)] bg-gradient-to-br from-[#1f2432] to-[#242b3f] hover:border-[var(--jarvis-primary-hover)]'
             : 'border border-[color:var(--jarvis-border)] bg-[var(--jarvis-card)] hover:border-[color:var(--jarvis-border-strong)]'

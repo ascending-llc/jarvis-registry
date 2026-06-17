@@ -86,9 +86,9 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
   });
 
   return (
-    <div id='semantic-search-results-container'>
+    <div>
       <div className='space-y-8'>
-        <div className='flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between'>
+        <div className='search-interactive-element flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between'>
           <div>
             <p className='text-sm font-medium uppercase tracking-wide text-[var(--jarvis-muted)]'>Semantic Search</p>
             <h3 className='text-xl font-semibold text-[var(--jarvis-text-strong)]'>
@@ -133,20 +133,22 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
                 className='grid'
                 style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '1.5rem' }}
               >
-                {servers.map(server => (
+                {servers.map((server, index) => (
                   <div
-                    key={server.path}
-                    className='rounded-2xl border border-[var(--jarvis-border)] bg-[var(--jarvis-card)] p-5 shadow-sm transition-all hover:shadow-md cursor-pointer hover:border-[color:var(--jarvis-primary-soft)]'
+                    key={`${server.path}-${index}`}
+                    className='search-interactive-element rounded-2xl border border-[var(--jarvis-border)] bg-[var(--jarvis-card)] p-5 shadow-sm transition-all hover:shadow-md cursor-pointer hover:border-[color:var(--jarvis-primary-soft)]'
                     onClick={() => navigate(`/server-edit?id=${server.serverId || server.path}&isReadOnly=true`)}
                   >
                     <div className='flex items-start justify-between gap-4'>
                       <div className='flex-1 min-w-0'>
-                        <p className='text-base font-semibold text-[var(--jarvis-text-strong)] truncate'>{server.serverName}</p>
+                        <p className='text-base font-semibold text-[var(--jarvis-text-strong)] truncate'>
+                          {server.serverName}
+                        </p>
                         <p className='text-sm text-[var(--jarvis-muted)] truncate'>{server.path}</p>
                       </div>
                       <div className='flex items-center gap-2 flex-shrink-0'>
                         <IconButton
-                          onClick={(e) => {
+                          onClick={e => {
                             e.stopPropagation();
                             setConfigServer(server);
                           }}
@@ -219,10 +221,10 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
                 className='grid'
                 style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '1.25rem' }}
               >
-                {tools.map(tool => (
+                {tools.map((tool, index) => (
                   <div
-                    key={`${tool.serverPath}-${tool.toolName}`}
-                    className='flex flex-col gap-2 rounded-2xl border border-[var(--jarvis-border)] bg-[var(--jarvis-card)] p-4 sm:flex-row sm:items-center sm:justify-between'
+                    key={`${tool.serverPath}-${tool.toolName}-${index}`}
+                    className='search-interactive-element flex flex-col gap-2 rounded-2xl border border-[var(--jarvis-border)] bg-[var(--jarvis-card)] p-4 sm:flex-row sm:items-center sm:justify-between'
                   >
                     <div className='flex-1 min-w-0'>
                       <p className='text-sm font-semibold text-[var(--jarvis-text-strong)] truncate'>
@@ -256,10 +258,10 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
                 className='grid'
                 style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '1.25rem' }}
               >
-                {agents.map(agent => (
+                {agents.map((agent, index) => (
                   <div
-                    key={agent.path}
-                    className='rounded-2xl border border-[var(--jarvis-border)] bg-[var(--jarvis-card)] p-5 shadow-sm transition-all hover:shadow-md cursor-pointer hover:border-[color:var(--jarvis-primary-soft)]'
+                    key={`${agent.path}-${index}`}
+                    className='search-interactive-element rounded-2xl border border-[var(--jarvis-border)] bg-[var(--jarvis-card)] p-5 shadow-sm transition-all hover:shadow-md cursor-pointer hover:border-[color:var(--jarvis-primary-soft)]'
                     onClick={() => navigate(`/agent-edit?id=${agent.agentId || agent.path}&isReadOnly=true`)}
                   >
                     <div className='flex items-start justify-between gap-4'>
@@ -273,7 +275,7 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
                       </div>
                       <div className='flex items-center gap-2 flex-shrink-0'>
                         <IconButton
-                          onClick={(e) => {
+                          onClick={e => {
                             e.stopPropagation();
                             openAgentDetails(agent);
                           }}
@@ -345,10 +347,10 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
                 className='grid'
                 style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '1.25rem' }}
               >
-                {skills.map(skill => (
+                {skills.map((skill, index) => (
                   <div
-                    key={`${skill.agentPath}-${skill.skillName}`}
-                    className='flex flex-col gap-2 rounded-2xl border border-[var(--jarvis-border)] bg-[var(--jarvis-card)] p-4 sm:flex-row sm:items-center sm:justify-between'
+                    key={`${skill.agentPath}-${skill.skillName}-${index}`}
+                    className='search-interactive-element flex flex-col gap-2 rounded-2xl border border-[var(--jarvis-border)] bg-[var(--jarvis-card)] p-4 sm:flex-row sm:items-center sm:justify-between'
                   >
                     <div className='flex-1 min-w-0'>
                       <p className='text-sm font-semibold text-[var(--jarvis-text-strong)] truncate'>
