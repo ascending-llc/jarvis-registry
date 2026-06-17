@@ -54,15 +54,15 @@ _ON_TIMEOUT_TO_AGNO: dict[OnTimeoutPolicy, str] = {
 
 def _json_safe(value: Any) -> Any:
     """Return a Mongo-safe, debug-friendly representation of workflow input values."""
-    if value is None or isinstance(value, str | int | float | bool):
+    if value is None or isinstance(value, (str, int, float, bool)):
         return value
-    if isinstance(value, datetime | date):
+    if isinstance(value, (datetime, date)):
         return value.isoformat()
     if isinstance(value, BaseModel):
         return value.model_dump(mode="json")
     if isinstance(value, dict):
         return {str(k): _json_safe(v) for k, v in value.items()}
-    if isinstance(value, list | tuple | set):
+    if isinstance(value, (list, tuple, set)):
         return [_json_safe(item) for item in value]
     if hasattr(value, "to_dict"):
         try:
