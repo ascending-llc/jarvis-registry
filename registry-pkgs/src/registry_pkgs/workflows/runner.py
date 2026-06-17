@@ -57,7 +57,13 @@ from beanie.exceptions import DocumentNotFound
 
 from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.models.enums import WorkflowRunStatus
-from registry_pkgs.models.workflow import NodeRun, WorkflowDefinition, WorkflowRun
+from registry_pkgs.models.workflow import (
+    NodeRun,
+    WorkflowCanvas,
+    WorkflowDefinition,
+    WorkflowNode,
+    WorkflowRun,
+)
 from registry_pkgs.workflows.compiler import StepExecutor, compile_workflow, flatten_workflow_nodes
 from registry_pkgs.workflows.control import DirectiveQueue, WorkflowCancelledError
 from registry_pkgs.workflows.executor_resolver import build_executor_registry
@@ -65,6 +71,31 @@ from registry_pkgs.workflows.hitl import hydrate_requirement, serialize_requirem
 from registry_pkgs.workflows.types import WorkflowConfigError
 
 logger = logging.getLogger(__name__)
+
+
+def _definition_from_snapshot(snapshot: dict[str, Any]) -> WorkflowDefinition:
+    """Rebuild a ``WorkflowDefinition`` from a persisted JSON snapshot.
+
+    Beanie 2.x's ``Document.__init__`` (and ``model_validate``) eagerly resolve
+    the pymongo collection, which couples deserialization to a live DB
+    connection. Snapshots are replayed in-memory only, so we validate the nested
+    non-Document fields explicitly and assemble the document via
+    ``model_construct`` to avoid touching the database layer.
+    """
+    data = dict(snapshot)
+    data["nodes"] = [WorkflowNode.model_validate(node) for node in data.get("nodes") or []]
+    if data.get("canvas") is not None:
+        data["canvas"] = WorkflowCanvas.model_validate(data["canvas"])
+    for ts_field in ("created_at", "updated_at"):
+        if isinstance(data.get(ts_field), str):
+            data[ts_field] = datetime.fromisoformat(data[ts_field])
+
+    raw_id = data.pop("id", None)
+    data.pop("_id", None)
+    definition = WorkflowDefinition.model_construct(**data)
+    if raw_id is not None:
+        definition.id = PydanticObjectId(raw_id)
+    return definition
 
 
 class WorkflowRunner:
@@ -159,7 +190,7 @@ class WorkflowRunner:
 
         snapshot = definition_snapshot or run.definition_snapshot
         if snapshot:
-            definition = WorkflowDefinition(**snapshot)
+            definition = _definition_from_snapshot(snapshot)
             if definition.id is None:
                 definition.id = PydanticObjectId(definition_id)
         else:
@@ -309,7 +340,7 @@ class WorkflowRunner:
             )
 
         # Reconstruct definition from the snapshot to guarantee version determinism
-        snapshot_def = WorkflowDefinition(**run.definition_snapshot)
+        snapshot_def = _definition_from_snapshot(run.definition_snapshot)
 
         # Pull the pending requirements out; hydration happens inside the try below.
         pending = list(run.pending_requirements)

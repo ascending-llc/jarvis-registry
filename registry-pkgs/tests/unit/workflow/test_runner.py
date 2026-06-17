@@ -395,7 +395,7 @@ class TestContinueRunHydrationFailure:
 
         monkeypatch.setattr(runner.WorkflowRun, "get_settings", lambda: SimpleNamespace(name="workflow_runs"))
         monkeypatch.setattr(runner.WorkflowRun, "get", AsyncMock(return_value=run_doc))
-        monkeypatch.setattr(runner, "WorkflowDefinition", lambda **kwargs: SimpleNamespace())
+        monkeypatch.setattr(runner, "_definition_from_snapshot", lambda snapshot: SimpleNamespace())
         monkeypatch.setattr(runner, "hydrate_requirement", Mock(side_effect=RuntimeError("schema drift")))
 
         r = _make_runner(db_client=_FakeClient())
