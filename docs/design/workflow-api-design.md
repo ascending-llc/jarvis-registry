@@ -1202,9 +1202,8 @@ cached outputs vs. re-execute → `asyncio.create_task(runner.run(child_run_id))
 **Path**: route → `WorkflowControlService.rerun_single_node` → validates the
 target node is a top-level step (400 if nested) → builds a child `WorkflowRun`
 with `resolved_dependencies` that replays every node *before* the target from
-cached outputs and marks every node *after* the target as `reuse_previous_output`
-with no source (effectively skipped) → `asyncio.create_task(runner.run(child_run_id))`
-→ HTTP 202 returned immediately.
+cached outputs → starts `runner.run(..., stop_after_node_id=<target>)` so only
+nodes up to and including the target are compiled/executed → HTTP 202 returned immediately.
 
 - `trigger_source` is set to `"node_rerun"`.
 - Only top-level step nodes are supported; returns 400 for nested nodes.
@@ -1213,10 +1212,9 @@ with no source (effectively skipped) → `asyncio.create_task(runner.run(child_r
 ### `/replay`
 
 **Path**: route → `WorkflowControlService.replay_run` → reads `initial_input`
-from the source run → creates a **new independent** `WorkflowRun` (no
-`parent_run_id`, no `resolved_dependencies`) with the same `initial_input` and
-the current live workflow definition → `asyncio.create_task(runner.run(new_run_id))`
-→ HTTP 202 returned immediately.
+from the source run → creates a *child* `WorkflowRun` (linked via `parent_run_id`)
+with the same `initial_input` and the current live workflow definition →
+`asyncio.create_task(runner.run(new_run_id))` → HTTP 202 returned immediately.
 
 - `trigger_source` is set to `"replay"`.
 - Uses the live definition, not the source run's `definition_snapshot`.
