@@ -37,7 +37,7 @@ def make_mcp_executor(
         returns a ``StepOutput``.
 
     Raises:
-        ValueError: When ``registry_token`` is empty.
+        MissingRegistryTokenError: When ``registry_token`` is empty.
     """
     if not registry_token:
         raise MissingRegistryTokenError(

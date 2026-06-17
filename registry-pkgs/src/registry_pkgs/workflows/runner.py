@@ -53,6 +53,7 @@ from agno.exceptions import RunCancelledException
 from agno.models.base import Model
 from agno.run.cancel import acancel_run as agno_acancel_run
 from beanie import PydanticObjectId
+from beanie.exceptions import DocumentNotFound
 
 from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.models.enums import WorkflowRunStatus
@@ -122,6 +123,7 @@ class WorkflowRunner:
         existing_run_id: str,
         injected_outputs: dict[str, dict[str, Any]] | None = None,
         stop_after_node_id: str | None = None,
+        definition_snapshot: dict[str, Any] | None = None,
     ) -> tuple[WorkflowRun, list[NodeRun]]:
         """Execute a workflow definition and return the completed run + per-node results.
 
@@ -138,7 +140,10 @@ class WorkflowRunner:
             existing_run_id:  ID of the pre-created ``WorkflowRun`` document to drive.
             injected_outputs: Mapping of ``node_id → {"content": ..., "session_state": ...}``
                               for nodes reused from a previous run (retry-from-node).
-            stop_after_node_id:
+            stop_after_node_id: When set, only nodes up to and including this node ID
+                              are compiled and executed; downstream nodes are excluded.
+            definition_snapshot: Optional WorkflowDefinition snapshot to execute
+                                 instead of the current live definition.
 
         Returns:
             A tuple of (WorkflowRun, list[NodeRun]) after the run completes.
@@ -148,13 +153,19 @@ class WorkflowRunner:
             PermissionError: If the workflow references an A2A agent the caller cannot access.
             Exception:       Re-raises any execution error after marking the run FAILED.
         """
-        definition = await WorkflowDefinition.get(definition_id)
-        if definition is None:
-            raise ValueError(f"WorkflowDefinition {definition_id!r} not found")
-
         run = await WorkflowRun.get(existing_run_id)
         if run is None:
             raise ValueError(f"WorkflowRun {existing_run_id!r} not found")
+
+        snapshot = definition_snapshot or run.definition_snapshot
+        if snapshot:
+            definition = WorkflowDefinition(**snapshot)
+            if definition.id is None:
+                definition.id = PydanticObjectId(definition_id)
+        else:
+            definition = await WorkflowDefinition.get(definition_id)
+            if definition is None:
+                raise ValueError(f"WorkflowDefinition {definition_id!r} not found")
 
         run.status = WorkflowRunStatus.RUNNING
         run.definition_snapshot = definition.model_dump(mode="json")
@@ -426,7 +437,13 @@ class WorkflowRunner:
             )
             return
 
-        await run.sync()
+        try:
+            await run.sync()
+        except DocumentNotFound:
+            # The document was deleted between workflow completion and this sync
+            # (e.g. concurrent cleanup). The run already reached a terminal state
+            # via WorkflowRunSyncer, so there is nothing left to do.
+            logger.warning("[run=%s] sync() skipped — document deleted before reload", run.id)
 
     async def _finalize_cancel(self, run: WorkflowRun, exc: BaseException) -> None:
         """Mark the run CANCELLED and reverse-notify agno (M2)."""

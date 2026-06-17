@@ -54,8 +54,8 @@ class MongoBackedCancellationManager(BaseRunCancellationManager):
     async def ais_cancelled(self, run_id: str) -> bool:
         try:
             oid = PydanticObjectId(run_id)
-        except Exception as exc:
-            logger.error(f"acancel_run: invalid run_id={run_id}: {exc}")
+        except Exception as e:
+            logger.warning(f"could not find run_id {run_id}: {e}")
             return False
         run = await WorkflowRun.find_one(
             WorkflowRun.id == oid,
