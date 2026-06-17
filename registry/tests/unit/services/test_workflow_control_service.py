@@ -363,7 +363,7 @@ async def test_rerun_single_node_rejects_missing_upstream_snapshot(monkeypatch: 
 
     service = WorkflowControlService(
         directive_queue=DirectiveQueue(),
-        runner_factory=lambda: MagicMock(),
+        runner_factory=MagicMock,
     )
     service._load_run = AsyncMock(return_value=parent_run)
 
