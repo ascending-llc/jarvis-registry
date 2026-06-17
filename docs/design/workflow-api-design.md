@@ -1143,7 +1143,7 @@ pod handles it (CAS-protected so only one wins). Frontend should poll
 ```
 
 **Business Rules**:
-- The new run is independent (no `parent_run_id`); it is a fresh sibling, not a child.
+- The new run is a child run linked via `parent_run_id` so run lineage is traceable in the UI.
 - `trigger_source` is set to `"replay"`.
 - The source run's `initial_input` is forwarded verbatim; no additional input is accepted.
 - The new run executes asynchronously; poll `GET /runs/{new_run_id}` to observe completion.
@@ -1152,8 +1152,10 @@ pod handles it (CAS-protected so only one wins). Frontend should poll
 
 | | `/retry` | `/replay` |
 |---|---|---|
-| Creates | Child run (linked via `parent_run_id`) | Independent sibling run |
+| Creates | Child run (linked via `parent_run_id`) | Child run (linked via `parent_run_id`) |
 | Nodes | Selective: some cached, some re-executed | All nodes re-executed |
+| Definition | Uses source run's `definition_snapshot` | Uses **current live** definition |
+| Input | Same `initial_input` | Same `initial_input`
 | Definition | Uses source run's `definition_snapshot` | Uses **current live** definition |
 | Input | Same `initial_input` | Same `initial_input` |
 
