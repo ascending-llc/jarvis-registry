@@ -745,32 +745,37 @@ class WorkflowService:
             logger.exception("Error listing child runs for parent run %s", parent_run_id)
             raise
 
-    async def get_workflow_run(self, workflow_id: str, run_id: str) -> tuple[WorkflowRun, list[NodeRun]]:
-        """
-        Get workflow run detail with all node runs.
+    async def _load_workflow_run(self, workflow_id: str, run_id: str) -> WorkflowRun:
+        """Load a WorkflowRun and verify it belongs to the requested workflow.
 
         Args:
             workflow_id: Workflow ID
             run_id: Run ID
 
         Returns:
-            Tuple of (WorkflowRun, list of NodeRuns)
+            The matching WorkflowRun document.
 
         Raises:
-            ValueError: If workflow or run not found
+            ValueError: If workflow or run not found, or run does not belong to workflow.
         """
+        # Verify workflow exists
+        await self.get_workflow_by_id(workflow_id)
+
+        # Get workflow run
+        run = await WorkflowRun.get(PydanticObjectId(run_id))
+        if not run:
+            raise ValueError(f"Workflow run {run_id} not found")
+
+        # Verify run belongs to workflow
+        if str(run.workflow_definition_id) != workflow_id:
+            raise ValueError(f"Workflow run {run_id} does not belong to workflow {workflow_id}")
+
+        return run
+
+    async def get_workflow_run(self, workflow_id: str, run_id: str) -> tuple[WorkflowRun, list[NodeRun]]:
+        """Get workflow run detail with all node runs."""
         try:
-            # Verify workflow exists
-            await self.get_workflow_by_id(workflow_id)
-
-            # Get workflow run
-            run = await WorkflowRun.get(PydanticObjectId(run_id))
-            if not run:
-                raise ValueError(f"Workflow run {run_id} not found")
-
-            # Verify run belongs to workflow
-            if str(run.workflow_definition_id) != workflow_id:
-                raise ValueError(f"Workflow run {run_id} does not belong to workflow {workflow_id}")
+            run = await self._load_workflow_run(workflow_id, run_id)
 
             # Get all node runs for this workflow run
             node_runs = await NodeRun.find(NodeRun.workflow_run_id == run.id).sort("started_at").to_list()
@@ -782,6 +787,16 @@ class WorkflowService:
             raise
         except Exception:
             logger.exception("Error getting workflow run %s", run_id)
+            raise
+
+    async def get_workflow_run_doc(self, workflow_id: str, run_id: str) -> WorkflowRun:
+        """Get a WorkflowRun document without loading its NodeRuns"""
+        try:
+            return await self._load_workflow_run(workflow_id, run_id)
+        except ValueError:
+            raise
+        except Exception:
+            logger.exception("Error getting workflow run doc %s", run_id)
             raise
 
     async def get_node_runs(self, workflow_run_id: str) -> list[NodeRun]:

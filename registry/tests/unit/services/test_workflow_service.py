@@ -788,3 +788,63 @@ async def test_list_child_runs_raises_when_parent_missing(monkeypatch: pytest.Mo
             workflow_id=str(workflow_oid),
             parent_run_id=str(parent_oid),
         )
+
+
+@pytest.mark.asyncio
+async def test_get_workflow_run_doc_returns_run_without_node_runs(monkeypatch: pytest.MonkeyPatch):
+    """get_workflow_run_doc must load the run and verify ownership without fetching NodeRuns."""
+    workflow_oid = PydanticObjectId()
+    run_oid = PydanticObjectId()
+
+    workflow = SimpleNamespace(id=workflow_oid, name="wf")
+    run = SimpleNamespace(id=run_oid, workflow_definition_id=workflow_oid)
+
+    monkeypatch.setattr(WorkflowService, "get_workflow_by_id", AsyncMock(return_value=workflow))
+    monkeypatch.setattr(workflow_service.WorkflowRun, "get", AsyncMock(return_value=run))
+
+    result = await WorkflowService().get_workflow_run_doc(
+        workflow_id=str(workflow_oid),
+        run_id=str(run_oid),
+    )
+
+    assert result is run
+
+
+@pytest.mark.asyncio
+async def test_get_workflow_run_doc_raises_when_run_not_found(monkeypatch: pytest.MonkeyPatch):
+    """get_workflow_run_doc must raise ValueError when the run does not exist."""
+    workflow_oid = PydanticObjectId()
+    run_oid = PydanticObjectId()
+
+    workflow = SimpleNamespace(id=workflow_oid, name="wf")
+
+    monkeypatch.setattr(WorkflowService, "get_workflow_by_id", AsyncMock(return_value=workflow))
+    monkeypatch.setattr(workflow_service.WorkflowRun, "get", AsyncMock(return_value=None))
+
+    with pytest.raises(ValueError, match="Workflow run .* not found"):
+        await WorkflowService().get_workflow_run_doc(
+            workflow_id=str(workflow_oid),
+            run_id=str(run_oid),
+        )
+
+
+@pytest.mark.asyncio
+async def test_get_workflow_run_doc_raises_when_run_belongs_to_other_workflow(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """get_workflow_run_doc must raise ValueError when the run belongs to a different workflow."""
+    workflow_oid = PydanticObjectId()
+    other_workflow_oid = PydanticObjectId()
+    run_oid = PydanticObjectId()
+
+    workflow = SimpleNamespace(id=workflow_oid, name="wf")
+    run = SimpleNamespace(id=run_oid, workflow_definition_id=other_workflow_oid)
+
+    monkeypatch.setattr(WorkflowService, "get_workflow_by_id", AsyncMock(return_value=workflow))
+    monkeypatch.setattr(workflow_service.WorkflowRun, "get", AsyncMock(return_value=run))
+
+    with pytest.raises(ValueError, match="does not belong to workflow"):
+        await WorkflowService().get_workflow_run_doc(
+            workflow_id=str(workflow_oid),
+            run_id=str(run_oid),
+        )

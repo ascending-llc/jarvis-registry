@@ -36,7 +36,7 @@ class MongoBackedCancellationManager(BaseRunCancellationManager):
         try:
             oid = PydanticObjectId(run_id)
         except Exception as exc:
-            logger.warning(f"Could not find run_id {run_id}: {exc}")
+            logger.warning("acancel_run: invalid run_id %s: %s", run_id, exc)
             return False
         result = await WorkflowRun.find_one(WorkflowRun.id == oid).update(
             {"$set": {"pending_directive": WorkflowDirective.CANCEL.value}}
@@ -55,7 +55,7 @@ class MongoBackedCancellationManager(BaseRunCancellationManager):
         try:
             oid = PydanticObjectId(run_id)
         except Exception as e:
-            logger.warning(f"could not find run_id {run_id}: {e}")
+            logger.warning("ais_cancelled: invalid run_id %s: %s", run_id, e)
             return False
         run = await WorkflowRun.find_one(
             WorkflowRun.id == oid,

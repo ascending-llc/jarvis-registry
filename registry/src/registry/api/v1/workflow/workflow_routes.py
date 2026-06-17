@@ -928,7 +928,7 @@ async def get_node_run(
     """Return a single NodeRun by ID (requires VIEW on the workflow)."""
     try:
         await _authorize_workflow(acl_service, workflow_service, user_context, workflow_id, "VIEW")
-        run, _ = await workflow_service.get_workflow_run(workflow_id=workflow_id, run_id=run_id)
+        run = await workflow_service.get_workflow_run_doc(workflow_id=workflow_id, run_id=run_id)
         nr = await workflow_service.get_node_run(str(run.id), node_run_id)
         return convert_node_run_to_output(nr)
     except ValueError as exc:

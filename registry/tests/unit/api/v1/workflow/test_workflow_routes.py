@@ -832,7 +832,7 @@ async def test_get_node_run_returns_detail():
 
     mock_service = MagicMock()
     mock_service.get_workflow_by_id = AsyncMock(return_value=MagicMock(id=PydanticObjectId(wf_id)))
-    mock_service.get_workflow_run = AsyncMock(return_value=(fake_run, []))
+    mock_service.get_workflow_run_doc = AsyncMock(return_value=fake_run)
     mock_service.get_node_run = AsyncMock(return_value=fake_nr)
 
     mock_acl = MagicMock()
@@ -854,7 +854,7 @@ async def test_get_node_run_returns_detail():
     assert response.nodeId == "n1"
     assert response.inputSnapshot == {"a": 1}
     assert response.outputSnapshot == {"b": 2}
-    mock_service.get_workflow_run.assert_awaited_once_with(workflow_id=wf_id, run_id=run_id)
+    mock_service.get_workflow_run_doc.assert_awaited_once_with(workflow_id=wf_id, run_id=run_id)
     mock_service.get_node_run.assert_awaited_once_with(run_id, nr_id)
 
 
@@ -897,7 +897,7 @@ async def test_get_node_run_node_not_found_returns_404():
 
     mock_service = MagicMock()
     mock_service.get_workflow_by_id = AsyncMock(return_value=MagicMock(id=PydanticObjectId(wf_id)))
-    mock_service.get_workflow_run = AsyncMock(return_value=(fake_run, []))
+    mock_service.get_workflow_run_doc = AsyncMock(return_value=fake_run)
     mock_service.get_node_run = AsyncMock(side_effect=ValueError(f"NodeRun {nr_id!r} not found"))
 
     mock_acl = MagicMock()
@@ -932,7 +932,7 @@ async def test_get_node_run_node_wrong_run_returns_400():
 
     mock_service = MagicMock()
     mock_service.get_workflow_by_id = AsyncMock(return_value=MagicMock(id=PydanticObjectId(wf_id)))
-    mock_service.get_workflow_run = AsyncMock(return_value=(fake_run, []))
+    mock_service.get_workflow_run_doc = AsyncMock(return_value=fake_run)
     mock_service.get_node_run = AsyncMock(
         side_effect=ValueError(f"NodeRun {nr_id!r} does not belong to run {run_id!r}")
     )
