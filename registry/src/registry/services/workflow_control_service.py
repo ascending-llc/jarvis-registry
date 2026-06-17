@@ -80,6 +80,7 @@ class _HasRun(Protocol):
         existing_run_id: str,
         injected_outputs: dict[str, dict[str, Any]] | None = None,
         stop_after_node_id: str | None = None,
+        definition_snapshot: dict[str, Any] | None = None,
     ) -> tuple[WorkflowRun, list[NodeRun]]:
         pass
 
@@ -374,7 +375,7 @@ class WorkflowControlService:
                 detail=f"Node {from_node_id!r} not found in workflow definition",
             )
 
-        parent_node_runs = await NodeRun.find(NodeRun.workflow_run_id == parent_run.id).to_list()
+        parent_node_runs = await NodeRun.find(NodeRun.workflow_run_id == parent_run.id).sort("+attempt").to_list()
         node_run_by_id: dict[str, NodeRun] = {nr.node_id: nr for nr in parent_node_runs}
 
         resolved_deps: list[ResolvedDependency] = []
@@ -435,6 +436,7 @@ class WorkflowControlService:
                 user_id=user_id,
                 existing_run_id=str(child_run.id),
                 injected_outputs=injected_outputs,
+                definition_snapshot=parent_run.definition_snapshot,
             )
         )
         return child_run
@@ -472,6 +474,12 @@ class WorkflowControlService:
 
         parent_run = await self._load_run(workflow_definition_id, run_id)
 
+        if parent_run.status not in {WorkflowRunStatus.COMPLETED, WorkflowRunStatus.FAILED}:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Run must be in a terminal state (completed or failed) to rerun a node; current status: {parent_run.status.value}",
+            )
+
         if not parent_run.definition_snapshot:
             raise HTTPException(status_code=409, detail="Run has no definition snapshot; cannot rerun node")
 
@@ -501,29 +509,58 @@ class WorkflowControlService:
                 ),
             )
 
-        parent_node_runs = await NodeRun.find(NodeRun.workflow_run_id == parent_run.id).to_list()
+        # Sort ascending by attempt so that for retried nodes the highest-attempt
+        # record wins the dict (last-write-wins semantics of the comprehension).
+        parent_node_runs = await NodeRun.find(NodeRun.workflow_run_id == parent_run.id).sort("+attempt").to_list()
         node_run_by_id: dict[str, NodeRun] = {nr.node_id: nr for nr in parent_node_runs}
 
         injected_outputs: dict[str, dict[str, Any]] = {}
         resolved_deps: list[ResolvedDependency] = []
 
         for i, node in enumerate(top_level_nodes):
-            if node.node_type != WorkflowNodeType.STEP:
-                continue
             if i < target_index:
-                nr = node_run_by_id.get(node.id)
-                if nr and nr.output_snapshot:
+                if node.node_type == WorkflowNodeType.STEP:
+                    nr = node_run_by_id.get(node.id)
+                    if not (nr and nr.output_snapshot):
+                        raise HTTPException(
+                            status_code=409,
+                            detail=(
+                                f"Cannot rerun node {node_id!r}: upstream node {node.id!r} has no cached output_snapshot. "
+                                "All upstream nodes must have completed successfully."
+                            ),
+                        )
                     injected_outputs[node.id] = {
                         "content": nr.output_snapshot.get("content", ""),
                         "session_state": nr.session_state_snapshot or {},
                     }
-                resolved_deps.append(
-                    ResolvedDependency(
-                        node_id=node.id,
-                        resolution=ResolvedDependencyResolution.REUSE_PREVIOUS_OUTPUT,
-                        source_node_run_id=node_run_by_id[node.id].id if node.id in node_run_by_id else None,
+                    resolved_deps.append(
+                        ResolvedDependency(
+                            node_id=node.id,
+                            resolution=ResolvedDependencyResolution.REUSE_PREVIOUS_OUTPUT,
+                            source_node_run_id=nr.id,
+                        )
                     )
-                )
+                else:
+                    # Container node (CONDITION / PARALLEL / LOOP / ROUTER): inject cached
+                    # outputs for any descendant STEP that ran.  Nodes on branches that were
+                    # not taken have no NodeRun and are intentionally skipped — if the
+                    # container re-routes to them the executor will be live, which is correct.
+                    for nested in flatten_workflow_nodes([node]):
+                        if nested.node_type != WorkflowNodeType.STEP:
+                            continue
+                        nested_nr = node_run_by_id.get(nested.id)
+                        if nested_nr and nested_nr.output_snapshot:
+                            injected_outputs[nested.id] = {
+                                "content": nested_nr.output_snapshot.get("content", ""),
+                                "session_state": nested_nr.session_state_snapshot or {},
+                            }
+                    resolved_deps.append(
+                        ResolvedDependency(
+                            node_id=node.id,
+                            resolution=ResolvedDependencyResolution.REUSE_PREVIOUS_OUTPUT,
+                            source_node_run_id=None,
+                        )
+                    )
             elif node.id == node_id:
                 resolved_deps.append(
                     ResolvedDependency(
@@ -561,6 +598,7 @@ class WorkflowControlService:
                 existing_run_id=str(child_run.id),
                 injected_outputs=injected_outputs,
                 stop_after_node_id=node_id,
+                definition_snapshot=parent_run.definition_snapshot,
             )
         )
         return child_run

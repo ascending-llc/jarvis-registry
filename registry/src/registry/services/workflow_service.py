@@ -680,6 +680,71 @@ class WorkflowService:
             logger.exception("Error listing workflow runs for %s", workflow_id)
             raise
 
+    async def list_child_runs(
+        self,
+        workflow_id: str,
+        parent_run_id: str,
+        page: int = 1,
+        per_page: int = 20,
+    ) -> tuple[list[tuple[WorkflowRun, list[NodeRun]]], int]:
+        """List child runs spawned from a given parent run (rerun / replay / retry).
+
+        Args:
+            workflow_id:    Parent workflow ID (used to verify ownership).
+            parent_run_id:  The source WorkflowRun whose children we want.
+            page:           Page number (1-based).
+            per_page:       Items per page.
+
+        Returns:
+            Tuple of ((run, node_runs) list, total count).
+
+        Raises:
+            ValueError: If workflow or parent run not found.
+        """
+        try:
+            workflow = await self.get_workflow_by_id(workflow_id)
+            try:
+                parent_oid = PydanticObjectId(parent_run_id)
+            except Exception as exc:
+                raise ValueError(f"Invalid run ID: {parent_run_id!r}") from exc
+
+            parent_run = await WorkflowRun.find_one(
+                WorkflowRun.id == parent_oid,
+                WorkflowRun.workflow_definition_id == workflow.id,
+            )
+            if parent_run is None:
+                raise ValueError(f"Run {parent_run_id!r} not found in workflow {workflow_id!r}")
+
+            filters: dict[str, Any] = {
+                "workflow_definition_id": workflow.id,
+                "parent_run_id": parent_oid,
+            }
+            total = await WorkflowRun.find(filters).count()
+            skip = (page - 1) * per_page
+            runs = await WorkflowRun.find(filters).sort("-started_at").skip(skip).limit(per_page).to_list()
+            run_ids = [run.id for run in runs]
+            node_runs_by_run_id: dict[str, list[NodeRun]] = {str(run_id): [] for run_id in run_ids}
+            if run_ids:
+                node_runs = await NodeRun.find({"workflow_run_id": {"$in": run_ids}}).sort("started_at").to_list()
+                for node_run in node_runs:
+                    node_runs_by_run_id.setdefault(str(node_run.workflow_run_id), []).append(node_run)
+
+            runs_with_nodes = [(run, node_runs_by_run_id.get(str(run.id), [])) for run in runs]
+            logger.info(
+                "Listed %d child run(s) for parent run %s (workflow: %s, total: %d)",
+                len(runs),
+                parent_run_id,
+                workflow_id,
+                total,
+            )
+            return runs_with_nodes, total
+
+        except ValueError:
+            raise
+        except Exception:
+            logger.exception("Error listing child runs for parent run %s", parent_run_id)
+            raise
+
     async def get_workflow_run(self, workflow_id: str, run_id: str) -> tuple[WorkflowRun, list[NodeRun]]:
         """
         Get workflow run detail with all node runs.

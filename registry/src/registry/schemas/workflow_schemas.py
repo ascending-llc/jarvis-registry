@@ -5,7 +5,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from registry.schemas.workflow_api_schemas import StepRequirementSummary
+from registry.schemas.workflow_api_schemas import APIBaseModel, NodeRunOutput, StepRequirementSummary
 from registry_pkgs.models.enums import RequirementResolution
 
 
@@ -186,33 +186,17 @@ class WorkflowRunsStatusResponse(BaseModel):
     runs: list[RunSummary]
 
 
-class NodeRunDetail(BaseModel):
-    """
-        Full detail of a single NodeRun including I/O snapshots.
-    """
-
-    node_run_id: str
-    node_id: str
-    node_name: str
-    workflow_run_id: str
-    status: str
-    attempt: int
-    input_snapshot: dict[str, Any] | None
-    output_snapshot: dict[str, Any] | None
-    error: str | None
-    started_at: datetime | None
-    finished_at: datetime | None
-
-
-class NodeRunListResponse(BaseModel):
+class NodeRunListResponse(APIBaseModel):
     """All NodeRuns for a workflow run, ordered by started_at ascending."""
 
-    run_id: str
-    workflow_id: str
-    node_runs: list[NodeRunDetail]
+    runId: str
+    workflowId: str
+    nodeRuns: list[NodeRunOutput]
 
 
 class NodeRerunRequest(BaseModel):
-    """Request body for POST /runs/{run_id}/nodes/{node_id}/rerun."""
+    """Request body for POST /runs/{run_id}/nodes/{node_id}/rerun.
 
-    pass
+    Currently empty — the target node always uses the upstream node's last
+    output_snapshot as input (no manual injection supported yet).
+    """
