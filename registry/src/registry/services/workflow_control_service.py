@@ -375,8 +375,7 @@ class WorkflowControlService:
                 detail=f"Node {from_node_id!r} not found in workflow definition",
             )
 
-        parent_node_runs = await NodeRun.find(NodeRun.workflow_run_id == parent_run.id).sort("+attempt").to_list()
-        node_run_by_id: dict[str, NodeRun] = {nr.node_id: nr for nr in parent_node_runs}
+        node_run_by_id = await self._load_node_run_by_id(parent_run)
 
         resolved_deps: list[ResolvedDependency] = []
         injected_outputs: dict[str, dict[str, Any]] = {}
@@ -509,7 +508,7 @@ class WorkflowControlService:
                 ),
             )
 
-        parent_node_runs = await NodeRun.find(NodeRun.workflow_run_id == parent_run.id).sort("attempt").to_list()
+        node_run_by_id = await self._load_node_run_by_id(parent_run)
 
         injected_outputs: dict[str, dict[str, Any]] = {}
         resolved_deps: list[ResolvedDependency] = []
@@ -719,6 +718,16 @@ class WorkflowControlService:
                 detail=f"WorkflowRun {run_id!r} does not belong to workflow {workflow_definition_id!r}",
             )
         return run
+
+    @staticmethod
+    async def _load_node_run_by_id(parent_run: WorkflowRun) -> dict[str, NodeRun]:
+        """Map each node id to its latest NodeRun for a parent run.
+
+        Sorted by attempt ascending, so the dict comprehension overwrites earlier
+        attempts and keeps the highest-attempt (latest) NodeRun per node.
+        """
+        node_runs = await NodeRun.find(NodeRun.workflow_run_id == parent_run.id).sort("attempt").to_list()
+        return {nr.node_id: nr for nr in node_runs}
 
 
 def _apply(run: WorkflowRun, directive: WorkflowDirective) -> WorkflowRunStatus:
