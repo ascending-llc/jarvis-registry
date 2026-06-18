@@ -6,6 +6,7 @@ from .container import AuthContainer
 from .core.types import AllowedProvider
 from .providers.base import AuthProvider
 from .services.cognito_validator_service import SimplifiedCognitoValidator
+from .services.oauth_state_store import OAuthStateStore
 from .services.user_service import UserService
 from .utils.config_loader import OAuth2Config
 
@@ -36,6 +37,10 @@ def get_auth_provider(provider: AllowedProvider, container: AuthContainer = Depe
 
 def get_redis_client(container: AuthContainer = Depends(get_container)) -> Redis:
     return container.redis_client
+
+
+def get_oauth_state_store(container: AuthContainer = Depends(get_container)) -> OAuthStateStore:
+    return container.oauth_state_store
 
 
 def check_if_https(request: Request) -> bool:

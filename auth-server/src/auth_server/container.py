@@ -7,6 +7,7 @@ from .core.config import AuthSettings
 from .core.types import AllowedProvider
 from .providers.factory import get_auth_provider
 from .services.cognito_validator_service import SimplifiedCognitoValidator
+from .services.oauth_state_store import OAuthStateStore
 from .services.user_service import UserService
 from .utils.config_loader import AuthProviderConfig, EntraConfig, OAuth2Config, OAuth2ConfigLoader
 
@@ -36,6 +37,14 @@ class AuthContainer:
     @cached_property
     def signer(self) -> URLSafeTimedSerializer:
         return URLSafeTimedSerializer(self._settings.secret_key)
+
+    @cached_property
+    def oauth_state_store(self) -> OAuthStateStore:
+        return OAuthStateStore(
+            redis_client=self.redis_client,
+            key_prefix=self._settings.redis_key_prefix,
+            client_secret_hash_key=self._settings.secret_key,
+        )
 
     @cache
     def get_provider_config(self, provider: AllowedProvider) -> AuthProviderConfig | EntraConfig:
