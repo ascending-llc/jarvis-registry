@@ -23,6 +23,7 @@ async def test_semantic_search_maps_service_result_to_response():
         return_value={
             "servers": [
                 {
+                    "server_id": "server-1",
                     "path": "/test-server",
                     "server_name": "test-server",
                     "description": "Test server",
@@ -72,6 +73,7 @@ async def test_semantic_search_maps_service_result_to_response():
         include_disabled=False,
     )
     assert response.totalServers == 1
+    assert response.servers[0].serverId == "server-1"
     assert response.servers[0].serverName == "test-server"
     assert response.totalTools == 0
     assert response.totalAgents == 1
