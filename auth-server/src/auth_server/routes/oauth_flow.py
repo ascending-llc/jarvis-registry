@@ -99,7 +99,7 @@ def _provider_token_issuers(provider: AllowedProvider, auth_provider: AuthProvid
 
     issuer = getattr(auth_provider, "issuer", None)
     if not issuer:
-        raise ValueError(f"Provider {provider} does not expose an issuer for token verification")
+        raise InvalidTokenError(f"Provider {provider} does not expose an issuer for token verification")
 
     return [issuer]
 
@@ -107,7 +107,7 @@ def _provider_token_issuers(provider: AllowedProvider, auth_provider: AuthProvid
 def _provider_token_audience(provider: AllowedProvider, auth_provider: AuthProvider) -> str | list[str]:
     client_id = getattr(auth_provider, "client_id", None)
     if not client_id:
-        raise ValueError(f"Provider {provider} does not expose a client_id for token verification")
+        raise InvalidTokenError(f"Provider {provider} does not expose a client_id for token verification")
 
     if provider == "keycloak":
         audiences = ["account", client_id, getattr(auth_provider, "m2m_client_id", client_id)]
