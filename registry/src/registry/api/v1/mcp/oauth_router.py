@@ -1,13 +1,20 @@
+import json
 import logging
 import time
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from fastapi.responses import RedirectResponse
+from authlib.oauth2.rfc7636 import create_s256_code_challenge
+from bson import ObjectId
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, status
+from fastapi.responses import JSONResponse, RedirectResponse
 from mcp.server.session import ServerSession
+from redis import Redis
+
+from registry_pkgs.core.downstream_oauth import downstream_mcp_code_key
 
 from ....auth.dependencies import CurrentUser
+from ....auth.downstream_token import DOWNSTREAM_MCP_TOKEN_TTL_SECONDS, mint_downstream_mcp_token
 from ....auth.oauth.reconnection import OAuthReconnectionManager
 from ....auth.oauth.types import ClientBranding
 from ....core.config import settings
@@ -16,6 +23,7 @@ from ....core.session_store import SessionStore
 from ....deps import (
     get_mcp_service,
     get_reconnection_manager,
+    get_redis_client,
     get_server_service,
     get_session_store,
     get_token_service,
@@ -27,10 +35,12 @@ from ....schemas.common_api_schemas import (
     OAuthTokensResponse,
 )
 from ....schemas.enums import ConnectionState, OAuthFlowStatus
+from ....schemas.oauth_schema import MCPClientContext, OAuthFlow
 from ....services.oauth.mcp_service import MCPService
 from ....services.oauth.token_service import TokenService
 from ....services.server_service import ServerServiceV1
 from ....utils.schema_converter import convert_dict_keys_to_camel
+from ...proxy_routes import extract_server_path_from_request
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +49,7 @@ router = APIRouter(prefix="/mcp", tags=["oauth"])
 
 @router.get("/oauth/discover", response_model=OAuthMetadataDiscoverResponse, response_model_by_alias=True)
 async def discover_oauth_metadata(
-    url: str = Query(..., description="MCP server URL to discover OAuth metadata from"),
+        url: str = Query(..., description="MCP server URL to discover OAuth metadata from"),
 ) -> OAuthMetadataDiscoverResponse:
     """
     Discover OAuth metadata from MCP server's well-known endpoints.
@@ -112,10 +122,10 @@ async def discover_oauth_metadata(
 
 @router.get("/{server_id}/oauth/initiate", response_model=OAuthInitiateResponse, response_model_by_alias=True)
 async def initiate_oauth_flow(
-    server_id: str,
-    user_context: CurrentUser,
-    mcp_service: MCPService = Depends(get_mcp_service),
-    server_service: ServerServiceV1 = Depends(get_server_service),
+        server_id: str,
+        user_context: CurrentUser,
+        mcp_service: MCPService = Depends(get_mcp_service),
+        server_service: ServerServiceV1 = Depends(get_server_service),
 ) -> OAuthInitiateResponse:
     """
     Initialize OAuth flow
@@ -156,16 +166,117 @@ async def initiate_oauth_flow(
         )
 
 
+async def _reconnect_after_oauth(
+    mcp_service: MCPService,
+    reconnection_manager: OAuthReconnectionManager,
+    flow: OAuthFlow | None,
+    server_path: str,
+) -> None:
+    """Best-effort: mark the user's connection CONNECTED and clear reconnection attempts.
+
+    Failures here never block the callback redirect — the tokens are already saved.
+    """
+    if not (flow and flow.user_id):
+        return
+    user_id, server_id = flow.user_id, flow.server_id
+    try:
+        await mcp_service.connection_service.create_user_connection(
+            user_id=user_id,
+            server_id=server_id,
+            initial_state=ConnectionState.CONNECTED,
+            details={"oauth_completed": True, "flow_id": flow.flow_id, "created_at": time.time()},
+        )
+        logger.info(f"[MCP OAuth] Reconnected {server_path} (server_id: {server_id}) for user {user_id}")
+        try:
+            reconnection_manager.clear_reconnection(user_id, server_id)
+        except Exception as e:
+            logger.error(f"[MCP OAuth] Could not clear reconnection (manager not initialized): {e}")
+    except Exception as e:
+        logger.error(f"[MCP OAuth] Failed to reconnect {server_path} after OAuth, but tokens are saved: {e}")
+
+
+async def _notify_elicitation_complete(
+    state_dict: dict[str, Any],
+    session_store: SessionStore,
+) -> ClientBranding | None:
+    """Best-effort ``elicitation/complete`` notification for mcpgw-initiated flows.
+
+    Returns the client branding carried in the flow state (used to deep-link the user back to their
+    AI app), or None. Never raises.
+    """
+    meta = state_dict.get("meta")
+    if not meta or "elicitation_id" not in meta:
+        return None
+
+    client_branding: ClientBranding | None = meta.get("client_branding")
+    try:
+        elicitation_id = meta["elicitation_id"]
+        if not meta["notify_elicitation_complete"]:
+            # Client connected via the dynamic catch-all route; no live session to notify.
+            logger.info("MCP client connected via dynamic catch-all route. Not sending elicitation/complete.")
+            return client_branding
+
+        session: ServerSession | None = session_store.pop(elicitation_id)
+        if session is None:
+            logger.warning(f"could not find session object for elicitation_id {elicitation_id}")
+            return client_branding
+
+        await session.send_elicit_complete(elicitation_id)
+        logger.info(f"scheduled elicitation/complete notification for elicitation_id {elicitation_id}")
+    except Exception:
+        logger.exception("failed to send elicitation/complete notification to client.")
+    return client_branding
+
+
+def _build_downstream_client_redirect(
+    flow: OAuthFlow | None,
+    code: str,
+    redis_client: Redis,
+) -> RedirectResponse | None:
+    """For an MCP-client-initiated (Layer B) flow, stash the PKCE/binding context and build the
+    redirect back to the client's ``redirect_uri``. Returns None for registry-frontend flows.
+
+    The confirmation token is NOT minted here — it is minted fresh at ``/token`` exchange time so its
+    short TTL is not eaten by any delay before the exchange (AS-1545 review #2).
+
+    NOTE (AS-1545 review, deferred): ``code`` is the upstream provider's authorization code, reused
+    verbatim as the Layer B code / Redis key. Minting a distinct Layer B code is tracked separately.
+    """
+    ctx = flow.metadata.mcp_client_context if (flow and flow.metadata) else None
+    if ctx is None or not (flow and flow.user_id):
+        return None
+
+    # Synchronous redis client (see note in the /token handler): assign to `_` to avoid the
+    # redis-py dual-typed "unused coroutine" false positive; .setex returns a bool, not a coroutine.
+    _ = redis_client.setex(
+        downstream_mcp_code_key(code),
+        _DOWNSTREAM_CODE_TTL_SECONDS,
+        json.dumps(
+            {
+                "code_challenge": ctx["code_challenge"],
+                "client_id": ctx["client_id"],
+                "redirect_uri": ctx["redirect_uri"],
+                # Bound at /token time against the request URL to stop a code minted for one
+                # user/server being redeemed under another's token endpoint.
+                "user_id": flow.user_id,
+                "server_path": ctx["server_path"],
+            }
+        ),
+    )
+    return RedirectResponse(url=_append_query_params(ctx["redirect_uri"], code=code, state=ctx["state"]))
+
+
 @router.get("/{server_path}/oauth/callback")
 async def oauth_callback(
-    server_path: str,
-    request: Request,
-    code: str | None = Query(None, description="OAuth authorization code"),
-    state: str | None = Query(None, description="State parameter (format: flow_id##security_token)"),
-    error: str | None = Query(None, description="OAuth error message"),
-    mcp_service: MCPService = Depends(get_mcp_service),
-    reconnection_manager: OAuthReconnectionManager = Depends(get_reconnection_manager),
-    session_store: SessionStore = Depends(get_session_store),
+        server_path: str,
+        request: Request,
+        code: str | None = Query(None, description="OAuth authorization code"),
+        state: str | None = Query(None, description="State parameter (format: flow_id##security_token)"),
+        error: str | None = Query(None, description="OAuth error message"),
+        mcp_service: MCPService = Depends(get_mcp_service),
+        reconnection_manager: OAuthReconnectionManager = Depends(get_reconnection_manager),
+        session_store: SessionStore = Depends(get_session_store),
+        redis_client: Redis = Depends(get_redis_client),
 ) -> RedirectResponse:
     """
     OAuth callback handler
@@ -180,116 +291,54 @@ async def oauth_callback(
     5. Redirect to success/failure page
     """
     try:
-        # 1. Check for errors returned by OAuth provider
+        # 1. Provider returned an error, or required params are missing.
         if error:
             logger.error(f"[MCP OAuth] OAuth error received from provider: {error}")
             return _redirect_to_page(request, server_path, error_msg=error)
-
-        # 2. Validate required parameters
         if not code or not isinstance(code, str):
             logger.error("[MCP OAuth] Missing or invalid authorization code")
             return _redirect_to_page(request, server_path, error_msg="missing_code")
-
         if not state or not isinstance(state, str):
             logger.error("[MCP OAuth] Missing or invalid state parameter")
             return _redirect_to_page(request, server_path, error_msg="missing_state")
 
-        # 3. Decode flow_id from state
+        # 2. Decode flow_id from state.
         try:
             state_dict = mcp_service.oauth_service.flow_manager.decode_state(state)
-            flow_id, security_token = state_dict["flow_id"], state_dict["security_token"]
-            logger.info(
-                f"[MCP OAuth] Callback received: server={server_path}, "
-                f"flow_id={flow_id}, code={'present' if code else 'missing'}, "
-                f"security_token_length={len(security_token)}"
-            )
+            flow_id = state_dict["flow_id"]
         except ValueError as e:
             logger.error(f"[MCP OAuth] Failed to decode state: {e}")
             return _redirect_to_page(request, server_path, error_msg="invalid_state_format")
+        logger.info(f"[MCP OAuth] Callback received: server={server_path}, flow_id={flow_id}")
 
-        # Check if flow is already completed
+        # 3. Short-circuit a duplicate callback for an already-completed flow.
         flow = mcp_service.oauth_service.flow_manager.get_flow(flow_id)
         if flow and flow.status == OAuthFlowStatus.COMPLETED:
             logger.warning(f"[MCP OAuth] Flow already completed, preventing duplicate token exchange: {flow_id}")
             return _redirect_to_page(request, server_path, flag="success")
 
-        # 4. Complete OAuth flow (validate state + exchange tokens)
-        logger.debug(f"[MCP OAuth] Completing OAuth flow for {server_path}")
+        # 4. Complete the flow (validate state + exchange tokens for downstream MCP tokens).
         success, error_msg = await mcp_service.oauth_service.complete_oauth_flow(
             flow_id=flow_id, authorization_code=code, state=state
         )
-
         if not success:
             logger.error(f"[MCP OAuth] Failed to complete OAuth flow: {error_msg}")
             return _redirect_to_page(request, server_path, error_msg=error_msg or "unknown_error")
-
         logger.info(f"[MCP OAuth] OAuth flow completed successfully for {server_path}")
 
-        # 5. Create user connection and setup server
-        try:
-            # Get user_id and server_id from flow
-            flow = mcp_service.oauth_service.flow_manager.get_flow(flow_id)
-            if flow and flow.user_id:
-                user_id = flow.user_id
-                server_id = flow.server_id  # Extract server_id from flow
-                logger.debug(
-                    f"[MCP OAuth] Attempting to reconnect {server_path} (server_id: {server_id}) with new OAuth tokens"
-                )
+        flow = mcp_service.oauth_service.flow_manager.get_flow(flow_id)
 
-                # Create user connection with CONNECTED state
-                await mcp_service.connection_service.create_user_connection(
-                    user_id=user_id,
-                    server_id=server_id,  # Use server_id instead of server_name
-                    initial_state=ConnectionState.CONNECTED,
-                    details={"oauth_completed": True, "flow_id": flow_id, "created_at": time.time()},
-                )
-                logger.info(
-                    f"[MCP OAuth] Successfully reconnected {server_path} (server_id: {server_id}) for user {user_id}"
-                )
+        # 5. Best-effort post-completion side effects (never block the redirect).
+        await _reconnect_after_oauth(mcp_service, reconnection_manager, flow, server_path)
+        client_branding = await _notify_elicitation_complete(state_dict, session_store)
 
-                # Clear any reconnection attempts
-                try:
-                    reconnection_manager.clear_reconnection(user_id, server_id)  # Use server_id instead of server_name
-                    logger.debug(
-                        f"[MCP OAuth] Cleared reconnection attempts for {server_path} (server_id: {server_id})"
-                    )
-                except Exception as e:
-                    logger.error(f"[MCP OAuth] Could not clear reconnection (manager not initialized): {e}")
+        # 6. MCP-client-initiated (Layer B) flows redirect back to the client; otherwise show the
+        # registry success page.
+        downstream_redirect = _build_downstream_client_redirect(flow, code, redis_client)
+        if downstream_redirect is not None:
+            logger.info(f"[MCP OAuth] Downstream MCP-client flow complete for {server_path}; redirecting to client")
+            return downstream_redirect
 
-                logger.debug(f"[MCP OAuth] User connection created for {server_path}")
-
-        except Exception as error:
-            logger.error(f"[MCP OAuth] Failed to reconnect {server_path} after OAuth, but tokens are saved: {error}")
-
-        # 6. If the flow started from an URL mode elicitation by mcpgw, make a best-effort notification to client.
-        client_branding: ClientBranding | None = None
-        try:
-            if "meta" in state_dict and "elicitation_id" in state_dict["meta"]:
-                client_branding = state_dict["meta"].get("client_branding", None)
-
-                elicitation_id = state_dict["meta"]["elicitation_id"]
-
-                session: ServerSession | None = None
-
-                if state_dict["meta"]["notify_elicitation_complete"]:
-                    session = session_store.pop(elicitation_id)
-
-                if session is not None:
-                    await session.send_elicit_complete(elicitation_id)
-
-                    logger.info(
-                        f"successfully scheduled sending elicitation/complete notification for elicitation_id {elicitation_id}"
-                    )
-                elif not state_dict["meta"]["notify_elicitation_complete"]:
-                    logger.info(
-                        "MCP client connected via dynamic catch-all route. Not sending elicitation/complete notification."
-                    )
-                else:
-                    logger.warning(f"could not find session object for elicitation_id {elicitation_id}")
-        except Exception:
-            logger.exception("failed to send elicitation/complete notification to client.")
-
-        # 7. Redirect to success page
         return _redirect_to_page(request, server_path, flag="success", client_branding=client_branding)
 
     except Exception as e:
@@ -299,7 +348,8 @@ async def oauth_callback(
 
 @router.get("/oauth/tokens/{flow_id}", response_model=OAuthTokensResponse, response_model_by_alias=True)
 async def get_oauth_tokens(
-    flow_id: str, current_user: CurrentUser, mcp_service: MCPService = Depends(get_mcp_service)
+        flow_id: str, current_user: CurrentUser,
+        mcp_service: MCPService = Depends(get_mcp_service)
 ) -> OAuthTokensResponse:
     """
     Get OAuth tokens
@@ -360,10 +410,10 @@ async def get_oauth_status(flow_id: str, mcp_service: MCPService = Depends(get_m
 
 @router.post("/oauth/cancel/{server_id}", response_model=OAuthOperationResponse, response_model_by_alias=True)
 async def cancel_oauth_flow(
-    server_id: str,
-    current_user: CurrentUser,
-    mcp_service: MCPService = Depends(get_mcp_service),
-    server_service: ServerServiceV1 = Depends(get_server_service),
+        server_id: str,
+        current_user: CurrentUser,
+        mcp_service: MCPService = Depends(get_mcp_service),
+        server_service: ServerServiceV1 = Depends(get_server_service),
 ) -> OAuthOperationResponse:
     """
     Cancel OAuth flow
@@ -421,11 +471,11 @@ async def cancel_oauth_flow(
 
 @router.post("/oauth/refresh/{server_id}", response_model=OAuthOperationResponse, response_model_by_alias=True)
 async def refresh_oauth_tokens(
-    server_id: str,
-    current_user: CurrentUser,
-    mcp_service: MCPService = Depends(get_mcp_service),
-    server_service: ServerServiceV1 = Depends(get_server_service),
-    reconnection_manager: OAuthReconnectionManager = Depends(get_reconnection_manager),
+        server_id: str,
+        current_user: CurrentUser,
+        mcp_service: MCPService = Depends(get_mcp_service),
+        server_service: ServerServiceV1 = Depends(get_server_service),
+        reconnection_manager: OAuthReconnectionManager = Depends(get_reconnection_manager),
 ) -> OAuthOperationResponse:
     """
     Refresh OAuth tokens
@@ -503,11 +553,11 @@ async def refresh_oauth_tokens(
 
 @router.delete("/oauth/token/{server_id}", response_model=OAuthOperationResponse, response_model_by_alias=True)
 async def delete_oauth_tokens(
-    server_id: str,
-    current_user: CurrentUser,
-    mcp_service: MCPService = Depends(get_mcp_service),
-    server_service: ServerServiceV1 = Depends(get_server_service),
-    token_service: TokenService = Depends(get_token_service),
+        server_id: str,
+        current_user: CurrentUser,
+        mcp_service: MCPService = Depends(get_mcp_service),
+        server_service: ServerServiceV1 = Depends(get_server_service),
+        token_service: TokenService = Depends(get_token_service),
 ) -> OAuthOperationResponse:
     """
     Delete the OAuth token for this user
@@ -537,16 +587,142 @@ async def delete_oauth_tokens(
         )
 
 
+_DOWNSTREAM_CODE_TTL_SECONDS = 600
+
+
+def _append_query_params(url: str, **params: str) -> str:
+    """Append query params to a URL, preserving any query string it already carries."""
+    parts = urlsplit(url)
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
+    query.update(params)
+    return str(urlunsplit(parts._replace(query=urlencode(query))))
+
+
+@router.get("/downstream/oauth/authorize/{user_id}/{server_path:path}")
+async def downstream_oauth_authorize(
+        user_id: str,
+        server_path: str,
+        response_type: str = Query("code"),
+        client_id: str = Query(...),
+        redirect_uri: str = Query(...),
+        code_challenge: str = Query(...),
+        code_challenge_method: str = Query("S256"),
+        state: str = Query(""),
+        mcp_service: MCPService = Depends(get_mcp_service),
+        server_service: ServerServiceV1 = Depends(get_server_service),
+) -> RedirectResponse:
+    """Per-server downstream OAuth authorization endpoint (Layer B: registry-as-AS).
+
+    Called by an MCP client (via browser redirect) after it discovers this endpoint through the
+    RFC 8414 authorization-server metadata. No registry Bearer token is required — OAuth
+    authorization endpoints are reached without one. Captures the client's PKCE/redirect context,
+    kicks off the Layer A flow against the upstream provider, and 302-redirects the browser there.
+    """
+    if not ObjectId.is_valid(user_id):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid user_id: {user_id}")
+
+    # Resolve the registered server by prefix (same as the proxy), so a sub-path the client appends
+    # still finds its server. The confirmation token binds to the raw URL `server_path`, not the
+    # registered prefix, so mint and verify agree on whatever path the client actually uses.
+    registered_path = await extract_server_path_from_request(f"/{server_path}", server_service)
+    server = await server_service.get_server_by_path(registered_path) if registered_path else None
+    if not server:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Server not found for path '{server_path}'")
+
+    ctx: MCPClientContext = {
+        "redirect_uri": redirect_uri,
+        "client_id": client_id,
+        "code_challenge": code_challenge,
+        "state": state,
+        "server_path": server_path,
+    }
+
+    flow_id, auth_url, error = await mcp_service.oauth_service.initiate_oauth_flow(
+        user_id=user_id, server=server, mcp_client_context=ctx
+    )
+    if error or not auth_url:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=error or "Failed to initiate downstream OAuth flow",
+        )
+
+    logger.info(f"[Downstream OAuth] authorize: user={user_id} server={server_path} flow={flow_id}")
+    return RedirectResponse(url=auth_url)
+
+
+@router.post("/downstream/oauth/token/{user_id}/{server_path:path}")
+async def downstream_oauth_token(
+        user_id: str,
+        server_path: str,
+        grant_type: str = Form(...),
+        code: str = Form(...),
+        client_id: str = Form(...),
+        code_verifier: str = Form(...),
+        redirect_uri: str = Form(""),
+        redis_client: Redis = Depends(get_redis_client),
+) -> JSONResponse:
+    """Per-server downstream OAuth token endpoint (Layer B: registry-as-AS).
+
+    Exchanges the Layer B authorization code (issued by the callback) plus the PKCE verifier for
+    the downstream confirmation token. No registry Bearer token is required.
+    """
+    if grant_type != "authorization_code":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="unsupported grant_type")
+
+    raw = redis_client.get(downstream_mcp_code_key(code))
+    if not raw:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid or expired code")
+
+    try:
+        entry = json.loads(raw)
+        stored_challenge = entry["code_challenge"]
+        stored_client_id = entry["client_id"]
+        bound_user_id = entry["user_id"]
+        bound_server_path = entry["server_path"]
+    except (json.JSONDecodeError, KeyError, TypeError) as e:
+        logger.error(f"[Downstream OAuth] corrupt code entry for code exchange: {e}")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid or expired code")
+
+    if create_s256_code_challenge(code_verifier) != stored_challenge:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="PKCE verification failed")
+
+    if client_id != stored_client_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="client_id mismatch")
+
+    # Bind the code to the (user_id, server_path) it was issued for, so a leaked code cannot be
+    # redeemed under a different token endpoint URL.
+    if user_id != bound_user_id or server_path != bound_server_path:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="code does not match this endpoint")
+
+    # One-time use: drop the code so it cannot be replayed. The redis client is synchronous
+    _ = redis_client.delete(downstream_mcp_code_key(code))
+
+    # Mint the confirmation token now (not at callback time) so its TTL starts at exchange.
+    confirmation_token = mint_downstream_mcp_token(
+        settings.jwt_token_config, user_id=bound_user_id, server_path=bound_server_path
+    )
+
+    logger.info(f"[Downstream OAuth] token issued: user={user_id} server={server_path}")
+    return JSONResponse(
+        status_code=200,
+        content={
+            "access_token": confirmation_token,
+            "token_type": "Bearer",
+            "expires_in": DOWNSTREAM_MCP_TOKEN_TTL_SECONDS,
+        },
+    )
+
+
 # ==================== Helper Functions ====================
 
 
 def _redirect_to_page(
-    request: Request,
-    server_path: str,
-    flag: str = "error",
-    error_msg: str | None = None,
-    *,
-    client_branding: ClientBranding | None = None,
+        request: Request,
+        server_path: str,
+        flag: str = "error",
+        error_msg: str | None = None,
+        *,
+        client_branding: ClientBranding | None = None,
 ) -> RedirectResponse:
     """
     Generate a response that redirects to frontend OAuth callback page.
