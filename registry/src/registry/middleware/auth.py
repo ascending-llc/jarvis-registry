@@ -10,11 +10,25 @@ from registry_pkgs.core.jwt_utils import ExpiredSignatureError, InvalidTokenErro
 from registry_pkgs.core.scopes import map_groups_to_scopes
 
 from ..auth.dependencies import UserContextDict
+from ..auth.downstream_token import DIRECT_CONNECT_RE, verify_downstream_mcp_token
 from ..core.config import settings
 from ..core.telemetry_decorators import AuthMetricsContext
 from ..utils.crypto_utils import verify_access_token
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_bearer_token(request: Request) -> str | None:
+    """Extract a non-empty Bearer token from the Authorization header, or None."""
+    auth_header = request.headers.get("Authorization")
+    if not auth_header:
+        return None
+
+    scheme, _, token = auth_header.partition(" ")
+    if scheme.lower() != "bearer":
+        return None
+
+    return token.strip() or None
 
 
 class UnifiedAuthMiddleware(BaseHTTPMiddleware):
@@ -44,15 +58,6 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
 
     def __init__(self, app):
         super().__init__(app)
-        # Paths that require authentication (checked before public paths)
-        # self.authenticated_paths_compiled = self._compile_patterns([
-        #     "/api/auth/me",
-        #     "/api/{versions}/servers/{path:path}",
-        #     "/api/{versions}/servers",
-        #     "/proxy/{path:path}",
-        #     "/api/{versions}/mcp/{path:path}",
-        #     "/api/search/{path:path}",
-        # ])
         self.public_paths_compiled = self._compile_patterns(
             [
                 "/",
@@ -67,6 +72,8 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
                 "/api/auth/providers",
                 "/api/auth/config",
                 f"/api/{settings.api_version}/mcp/{{server_name}}/oauth/callback",  # OAuth callback is public
+                f"/api/{settings.api_version}/mcp/downstream/oauth/authorize/{{user_id}}/{{server_path:path}}",
+                f"/api/{settings.api_version}/mcp/downstream/oauth/token/{{user_id}}/{{server_path:path}}",
                 "/.well-known/{path:path}",  # OAuth discovery endpoints must be public
             ]
         )
@@ -178,7 +185,7 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
         path) from being replayed as a dashboard session cookie, and vice versa.
         """
         if self._is_proxy_route(path):
-            user_context = self._try_jwt_auth(request)
+            user_context = self._try_jwt_auth(request, path)
             if user_context:
                 return user_context
             raise AuthenticationError("Managed-agent Bearer token required for proxy routes")
@@ -188,84 +195,109 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
             return user_context
         raise AuthenticationError("Session authentication required")
 
-    def _try_jwt_auth(self, request: Request) -> UserContextDict | None:
-        """Managed-agent Bearer-token authentication for proxy routes"""
+    def _try_jwt_auth(self, request: Request, path: str) -> UserContextDict | None:
+        """Bearer-token authentication for proxy routes.
+
+        Accepts either a managed-agent token (the normal proxy credential) or a downstream
+        confirmation token (the one-time entry ticket issued after a direct-connect downstream
+        OAuth flow). On direct-connect routes that carry a ``user_id`` segment, the token's
+        ``user_id`` must match the URL's ``user_id``.
+        """
+        access_token = _parse_bearer_token(request)
+        if access_token is None:
+            return None
+
         try:
-            # Get Authorization header
-            auth_header = request.headers.get("Authorization")
-            if not auth_header:
-                logger.debug("Missing Authorization header for managed-agent auth")
-                return None
+            claims = self._verify_managed_agent_claims(access_token)
+            if claims is not None:
+                return self._build_managed_agent_context(claims, path)
 
-            parts = auth_header.split(" ", 1)
-            if len(parts) != 2 or parts[0].lower() != "bearer":
-                logger.debug("Authorization header is not a Bearer scheme")
-                return None
-
-            access_token = parts[1].strip()
-            if not access_token:
-                logger.debug("Empty Bearer token after split")
-                return None
-
-            # Validate as a managed-agent (proxy) token. Wrong class/audience/kid/client_id
-            # all raise InvalidTokenError.
-            try:
-                claims = verify_managed_agent_token(settings.jwt_token_config, access_token)
-                logger.info(
-                    f"Managed-agent token validated: sub={claims.get('sub')}, "
-                    f"aud={claims.get('aud')}, client_id={claims.get('client_id')}"
-                )
-            except ExpiredSignatureError:
-                logger.debug("Managed-agent token has expired")
-                return None
-            except InvalidTokenError as e:
-                logger.debug(f"Invalid managed-agent token: {e}")
-                return None
-
-            # Extract user information from claims
-            username = claims.get("sub", "")
-            if not username:
-                logger.debug("JWT token missing 'sub' claim")
-                return None
-
-            # Extract groups first
-            groups = claims.get("groups", [])
-
-            # Extract scopes from space-separated string
-            scope_string = claims.get("scope", "")
-            scopes = scope_string.split() if scope_string else []
-
-            # If no scopes but has groups, map groups to scopes
-            if not scopes and groups:
-                scopes = map_groups_to_scopes(groups, settings.scopes_file_config)
-                logger.info(f"Mapped JWT groups {groups} to scopes: {scopes}")
-
-            # Verify we have at least some scopes
-            if not scopes:
-                logger.debug(f"JWT token has no scopes and groups mapping failed. Groups: {groups}")
-                return None
-
-            # Log token validation success with additional details
-            token_class = claims.get("token_class", "unknown")
-            description = claims.get("description", "")
-            logger.info(f"Managed-agent token validated for user: {username}, class: {token_class}, scopes: {scopes}")
-            if description:
-                logger.debug(f"Token description: {description}")
-            user_id = claims.get("user_id")
-            logger.debug(f"jwt enhencement user id {user_id}")
-
-            return self._build_user_context(
-                user_id=user_id,
-                username=username,
-                groups=groups,
-                scopes=scopes,
-                auth_method="jwt",
-                provider="jwt",
-                auth_source="jwt_auth",
-            )
+            # Fallback: a downstream confirmation token (Layer B entry ticket).
+            return self._build_downstream_token_context(access_token, path)
         except Exception as e:
             logger.debug(f"JWT auth failed: {e}")
             return None
+
+    @staticmethod
+    def _verify_managed_agent_claims(access_token: str) -> dict | None:
+        """Validate a managed-agent (proxy) token. Returns its claims, or None if it is not one.
+
+        Wrong class/audience/kid/client_id all raise InvalidTokenError; a downstream confirmation
+        token also fails here (different iss + token_class) and is handled by the caller's fallback.
+        """
+        try:
+            claims = verify_managed_agent_token(settings.jwt_token_config, access_token)
+        except (ExpiredSignatureError, InvalidTokenError) as e:
+            logger.debug(f"Not a valid managed-agent token: {e}")
+            return None
+
+        logger.info(
+            f"Managed-agent token validated: sub={claims.get('sub')}, "
+            f"aud={claims.get('aud')}, client_id={claims.get('client_id')}"
+        )
+        return claims
+
+    def _build_downstream_token_context(self, access_token: str, path: str) -> UserContextDict | None:
+        """Build a context from a downstream confirmation token, or None if it is not valid here.
+
+        ``verify_downstream_mcp_token`` enforces the user_id / server_path binding against the path.
+        """
+        user_id = verify_downstream_mcp_token(access_token, path, settings.jwt_public_key)
+        if user_id is None:
+            return None
+
+        logger.info(f"Downstream confirmation token validated for user {user_id}")
+        return self._build_user_context(
+            user_id=user_id,
+            username=user_id,
+            groups=[],
+            scopes=["mcp-proxy-ops"],
+            auth_method="downstream_mcp_token",
+            provider="registry",
+            auth_source="downstream_mcp_token",
+        )
+
+    def _build_managed_agent_context(self, claims: dict, path: str) -> UserContextDict | None:
+        """Build a user context from validated managed-agent claims, enforcing user_id binding."""
+        username = claims.get("sub", "")
+        if not username:
+            logger.debug("JWT token missing 'sub' claim")
+            return None
+
+        groups = claims.get("groups", [])
+
+        scope_string = claims.get("scope", "")
+        scopes = scope_string.split() if scope_string else []
+
+        if not scopes and groups:
+            scopes = map_groups_to_scopes(groups, settings.scopes_file_config)
+            logger.info(f"Mapped JWT groups {groups} to scopes: {scopes}")
+
+        if not scopes:
+            logger.debug(f"JWT token has no scopes and groups mapping failed. Groups: {groups}")
+            return None
+
+        user_id = claims.get("user_id")
+
+        binding = DIRECT_CONNECT_RE.match(path)
+        if binding is not None:
+            url_user_id = binding.group(1)
+            if user_id != url_user_id:
+                logger.warning(f"user_id mismatch: token has {user_id}, URL has {url_user_id}")
+                return None
+
+        token_class = claims.get("token_class", "unknown")
+        logger.info(f"Managed-agent token validated for user: {username}, class: {token_class}, scopes: {scopes}")
+
+        return self._build_user_context(
+            user_id=user_id,
+            username=username,
+            groups=groups,
+            scopes=scopes,
+            auth_method="jwt",
+            provider="jwt",
+            auth_source="jwt_auth",
+        )
 
     async def _try_session_auth(self, request: Request) -> UserContextDict | None:
         """JWT-based session authentication from httpOnly cookie"""
