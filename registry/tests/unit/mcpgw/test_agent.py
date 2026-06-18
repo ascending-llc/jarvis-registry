@@ -332,6 +332,21 @@ def test_convert_response_message_image_file_with_bytes():
     assert items[0].mimeType == "image/png"
 
 
+def test_convert_response_image_mimetype_case_and_params_normalized():
+    """Image dispatch normalizes the mime for matching (case-insensitive, strips RFC 6838
+    parameters) yet preserves the original declared mimeType on the ImageContent."""
+    declared = "IMAGE/PNG; charset=binary"
+    artifact = _text_artifact(
+        "Diagram",
+        "",
+        extra_parts=[Part(root=FilePart(kind="file", file=FileWithBytes(bytes="iVBORw0KGgo=", mimeType=declared)))],
+    )
+    items = _convert_response(_result_with_task(artifact))
+    assert len(items) == 1
+    assert isinstance(items[0], ImageContent)
+    assert items[0].mimeType == declared
+
+
 def test_convert_response_task_file_with_uri():
     artifact = _text_artifact(
         "Report",
