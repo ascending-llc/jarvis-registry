@@ -452,7 +452,10 @@ const Dashboard: React.FC = () => {
             />
 
             {shouldShowFallbackGrid && (
-              <div id='semantic-search-fallback-container' className='border-t border-[color:var(--jarvis-border)] pt-6'>
+              <div
+                id='semantic-search-fallback-container'
+                className='border-t border-[color:var(--jarvis-border)] pt-6'
+              >
                 <div className='flex items-center justify-between mb-4'>
                   <h4 className='text-base font-semibold text-[var(--jarvis-text-strong)]'>Keyword search fallback</h4>
                   {semanticError && (
@@ -466,7 +469,7 @@ const Dashboard: React.FC = () => {
             )}
           </>
         ) : (
-          renderDashboardCollections()
+          <div id={searchTerm ? 'semantic-search-fallback-container' : undefined}>{renderDashboardCollections()}</div>
         )}
       </div>
     </div>

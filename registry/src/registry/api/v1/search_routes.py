@@ -24,6 +24,7 @@ class MatchingToolResult(APIBaseModel):
 
 
 class ServerSearchResult(APIBaseModel):
+    serverId: str | None = None
     path: str
     serverName: str
     description: str | None = None
@@ -98,6 +99,7 @@ def _map_server(server: dict) -> ServerSearchResult:
         for tool in server.get("matching_tools", [])
     ]
     return ServerSearchResult(
+        serverId=server.get("server_id"),
         path=server.get("path", ""),
         serverName=server.get("server_name", ""),
         description=server.get("description"),
