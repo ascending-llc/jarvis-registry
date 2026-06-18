@@ -6,6 +6,7 @@ from .core.config import AuthSettings
 from .core.types import AllowedProvider
 from .providers.factory import get_auth_provider
 from .services.cognito_validator_service import SimplifiedCognitoValidator
+from .services.downstream_token_service import DownstreamTokenCheckService
 from .services.user_service import UserService
 from .utils.config_loader import AuthProviderConfig, EntraConfig, OAuth2Config, OAuth2ConfigLoader
 
@@ -26,6 +27,10 @@ class AuthContainer:
     @cached_property
     def user_service(self) -> UserService:
         return UserService()
+
+    @cached_property
+    def downstream_token_check(self) -> DownstreamTokenCheckService:
+        return DownstreamTokenCheckService()
 
     @cached_property
     def validator(self) -> SimplifiedCognitoValidator:

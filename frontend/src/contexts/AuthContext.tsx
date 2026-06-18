@@ -6,6 +6,7 @@ import SERVICES from '@/services';
 
 interface User {
   username: string;
+  userId?: string;
   email?: string;
   scopes?: string[];
   groups?: string[];
@@ -54,6 +55,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       const userData = await SERVICES.AUTH.getAuthMe();
       setUser({
         username: userData.username,
+        userId: userData.userId,
         email: userData.email,
         scopes: userData.scopes || [],
         groups: userData.groups || [],

@@ -3,6 +3,7 @@ import type React from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import IconButton from '@/components/IconButton';
 import { getBasePath } from '@/config';
+import { useAuth } from '@/contexts/AuthContext';
 import { useGlobal } from '@/contexts/GlobalContext';
 import type { ServerInfo } from '@/contexts/ServerContext';
 
@@ -64,6 +65,7 @@ const joinUrlPath = (...segments: string[]) =>
 
 const ServerConfigModal: React.FC<ServerConfigModalProps> = ({ server, isOpen, onClose, configScope = 'server' }) => {
   const { showToast } = useGlobal();
+  const { user } = useAuth();
   const [selectedIDE, setSelectedIDE] = useState<IDE>('vscode');
 
   useEffect(() => {
@@ -97,10 +99,13 @@ const ServerConfigModal: React.FC<ServerConfigModalProps> = ({ server, isOpen, o
     const currentUrl = new URL(window.location.origin);
     const basePath = getBasePath();
     const normalizedPath = server?.path || '';
+    // The direct-connect URL embeds the connecting user's id so the downstream OAuth discovery
+    // chain can thread user identity through URLs alone (see proxy_routes.dynamic_mcp_post_proxy).
+    const userId = user?.userId || '';
     const url =
       configScope === 'registry'
         ? REGISTRY_SERVER_URL
-        : `${currentUrl.protocol}//${currentUrl.host}/${joinUrlPath(basePath, 'proxy/server', normalizedPath)}`;
+        : `${currentUrl.protocol}//${currentUrl.host}/${joinUrlPath(basePath, 'proxy/server', userId, normalizedPath)}`;
 
     return {
       [selectedOption.rootKey]: {
@@ -110,7 +115,7 @@ const ServerConfigModal: React.FC<ServerConfigModalProps> = ({ server, isOpen, o
         },
       },
     };
-  }, [configScope, selectedOption.rootKey, server?.path, serverName]);
+  }, [configScope, selectedOption.rootKey, server?.path, serverName, user?.userId]);
 
   const configText = useMemo(() => JSON.stringify(generateMCPConfig(), null, 2), [generateMCPConfig]);
 
