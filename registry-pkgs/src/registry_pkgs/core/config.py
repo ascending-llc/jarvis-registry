@@ -39,6 +39,10 @@ class VectorConfig(BaseModel):
     azure_openai_embedding_deployment: str = Field(default="", description="Azure OpenAI embedding deployment name")
     azure_openai_llm_deployment: str = Field(default="", description="Azure OpenAI LLM deployment name")
     llm_model: str = Field(default="gpt-4", description="LLM model name")
+    rerank_enabled: bool = Field(default=True, description="Enable Bedrock Cohere reranking on vector search")
+    rerank_model_id: str = Field(
+        default="cohere.rerank-v3-5:0", description="Bedrock Cohere rerank model ID (ARN is built from region + ID)"
+    )
 
 
 class MongoConfig(BaseModel):
