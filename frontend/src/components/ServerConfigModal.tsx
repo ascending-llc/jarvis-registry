@@ -65,7 +65,7 @@ const joinUrlPath = (...segments: string[]) =>
 
 const ServerConfigModal: React.FC<ServerConfigModalProps> = ({ server, isOpen, onClose, configScope = 'server' }) => {
   const { showToast } = useGlobal();
-  const { user } = useAuth();
+  const { user, loading } = useAuth();
   const [selectedIDE, setSelectedIDE] = useState<IDE>('vscode');
 
   useEffect(() => {
@@ -95,13 +95,14 @@ const ServerConfigModal: React.FC<ServerConfigModalProps> = ({ server, isOpen, o
       ? 'Connect to Jarvis Registry from your preferred Copilot environment.'
       : `Connect to ${serverName} from your preferred Copilot environment.`;
 
+  const userId = user?.userId || '';
+  const isDirectConnect = configScope !== 'registry';
+  const configReady = !isDirectConnect || userId !== '';
+
   const generateMCPConfig = useCallback(() => {
     const currentUrl = new URL(window.location.origin);
     const basePath = getBasePath();
     const normalizedPath = server?.path || '';
-    // The direct-connect URL embeds the connecting user's id so the downstream OAuth discovery
-    // chain can thread user identity through URLs alone (see proxy_routes.dynamic_mcp_post_proxy).
-    const userId = user?.userId || '';
     const url =
       configScope === 'registry'
         ? REGISTRY_SERVER_URL
@@ -115,11 +116,17 @@ const ServerConfigModal: React.FC<ServerConfigModalProps> = ({ server, isOpen, o
         },
       },
     };
-  }, [configScope, selectedOption.rootKey, server?.path, serverName, user?.userId]);
+  }, [configScope, selectedOption.rootKey, server?.path, serverName, userId]);
 
-  const configText = useMemo(() => JSON.stringify(generateMCPConfig(), null, 2), [generateMCPConfig]);
+  const configText = useMemo(
+    () => (configReady ? JSON.stringify(generateMCPConfig(), null, 2) : ''),
+    [configReady, generateMCPConfig],
+  );
 
   const copyConfigToClipboard = useCallback(async () => {
+    if (!configReady) {
+      return;
+    }
     try {
       await navigator.clipboard.writeText(configText);
       showToast?.('Configuration copied to clipboard', 'success');
@@ -127,7 +134,7 @@ const ServerConfigModal: React.FC<ServerConfigModalProps> = ({ server, isOpen, o
       console.error('Failed to copy to clipboard:', error);
       showToast?.('Failed to copy configuration', 'error');
     }
-  }, [configText, showToast]);
+  }, [configReady, configText, showToast]);
 
   if (!isOpen) {
     return null;
@@ -205,16 +212,25 @@ const ServerConfigModal: React.FC<ServerConfigModalProps> = ({ server, isOpen, o
           <button
             type='button'
             onClick={copyConfigToClipboard}
-            className='inline-flex flex-shrink-0 items-center gap-1.5 rounded-md border border-[color:var(--jarvis-border)] bg-white/[0.04] px-3 py-1.5 text-xs font-medium text-[var(--jarvis-text)] transition hover:border-[var(--jarvis-primary)] hover:bg-[var(--jarvis-primary-soft)] hover:text-[var(--jarvis-primary-text-hover)]'
+            disabled={!configReady}
+            className='inline-flex flex-shrink-0 items-center gap-1.5 rounded-md border border-[color:var(--jarvis-border)] bg-white/[0.04] px-3 py-1.5 text-xs font-medium text-[var(--jarvis-text)] transition hover:border-[var(--jarvis-primary)] hover:bg-[var(--jarvis-primary-soft)] hover:text-[var(--jarvis-primary-text-hover)] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-[color:var(--jarvis-border)] disabled:hover:bg-white/[0.04] disabled:hover:text-[var(--jarvis-text)]'
           >
             <ClipboardDocumentIcon className='h-4 w-4' />
             Copy
           </button>
         </div>
 
-        <pre className='overflow-x-auto rounded-lg border border-white/5 bg-[#0d1117] px-4 py-4 text-xs leading-6 text-[#c9d1d9]'>
-          <code>{configText}</code>
-        </pre>
+        {configReady ? (
+          <pre className='overflow-x-auto rounded-lg border border-white/5 bg-[#0d1117] px-4 py-4 text-xs leading-6 text-[#c9d1d9]'>
+            <code>{configText}</code>
+          </pre>
+        ) : (
+          <div className='rounded-lg border border-white/5 bg-[#0d1117] px-4 py-6 text-xs leading-6 text-[var(--jarvis-muted)]'>
+            {loading
+              ? 'Loading your account…'
+              : 'Your account isn’t fully set up, so a direct-connect configuration can’t be generated. Please sign out and sign in again.'}
+          </div>
+        )}
 
         <div className='mt-4 rounded-lg border border-[rgba(124,58,237,0.15)] bg-[rgba(124,58,237,0.06)] p-3'>
           <div className='mb-1 flex items-center gap-2 text-xs font-semibold text-[var(--jarvis-primary-text)]'>

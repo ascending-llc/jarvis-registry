@@ -18,6 +18,7 @@ from ....auth.dependencies import CurrentUser
 from ....auth.downstream_token import DOWNSTREAM_MCP_TOKEN_TTL_SECONDS, mint_downstream_mcp_token
 from ....auth.oauth.reconnection import OAuthReconnectionManager
 from ....auth.oauth.types import ClientBranding
+from ....constants import DownstreamOAuthConstants
 from ....core.config import settings
 from ....core.mcp_client import get_oauth_metadata_from_server
 from ....core.session_store import SessionStore
@@ -248,7 +249,7 @@ def _build_downstream_client_redirect(
 
     _ = redis_client.setex(
         downstream_mcp_code_key(b_code),
-        _DOWNSTREAM_CODE_TTL_SECONDS,
+        DownstreamOAuthConstants.CODE_TTL_SECONDS,
         json.dumps(
             {
                 "code_challenge": ctx["code_challenge"],
@@ -581,15 +582,45 @@ async def delete_oauth_tokens(
         )
 
 
-_DOWNSTREAM_CODE_TTL_SECONDS = 600
-
-
 def _append_query_params(url: str, **params: str) -> str:
     """Append query params to a URL, preserving any query string it already carries."""
     parts = urlsplit(url)
     query = dict(parse_qsl(parts.query, keep_blank_values=True))
     query.update(params)
     return str(urlunsplit(parts._replace(query=urlencode(query))))
+
+
+def _validate_downstream_authorize_params(
+    response_type: str,
+    code_challenge_method: str,
+    redirect_uri: str,
+) -> None:
+    """Reject unsupported OAuth params before the captured ``redirect_uri`` becomes a redirect sink.
+
+    The registry only ever drives a ``code`` + S256 PKCE flow and later 302-redirects the browser to
+    ``redirect_uri`` with the authorization code attached, so reject non-http schemes
+    (``javascript:``, ``data:``) and malformed values before they reach that sink. The host itself is
+    NOT allowlisted yet (clients are deployed across many hosts) — pinning it requires downstream
+    client registration and is deferred.
+    """
+    if response_type != DownstreamOAuthConstants.SUPPORTED_RESPONSE_TYPE:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"unsupported response_type: {response_type}",
+        )
+
+    if code_challenge_method != DownstreamOAuthConstants.SUPPORTED_CODE_CHALLENGE_METHOD:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"unsupported code_challenge_method: {code_challenge_method}",
+        )
+
+    redirect_parts = urlsplit(redirect_uri)
+    if redirect_parts.scheme not in {"http", "https"} or not redirect_parts.netloc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="redirect_uri must be an absolute http(s) URL",
+        )
 
 
 @router.get("/downstream/oauth/authorize/{user_id}/{server_path:path}")
@@ -619,6 +650,8 @@ async def downstream_oauth_authorize(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="user_id does not match the authenticated session",
         )
+
+    _validate_downstream_authorize_params(response_type, code_challenge_method, redirect_uri)
 
     # Resolve the registered server by prefix (same as the proxy), so a sub-path the client appends
     # still finds its server. The confirmation token binds to the raw URL `server_path`, not the

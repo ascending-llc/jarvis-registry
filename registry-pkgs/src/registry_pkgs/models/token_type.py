@@ -2,8 +2,7 @@
 
 Lives in ``registry-pkgs`` (alongside the ``Token`` Beanie document) so both the registry and
 the auth-server can reference it within the allowed dependency direction
-(``registry`` → ``registry-pkgs`` ← ``auth-server``). ``registry.schemas.enums`` re-exports it
-for backward compatibility.
+(``registry`` → ``registry-pkgs`` ← ``auth-server``). Import it from ``registry_pkgs.models``.
 """
 
 from enum import StrEnum

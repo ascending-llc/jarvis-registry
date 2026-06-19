@@ -109,10 +109,55 @@ def test_authorize_unknown_server_returns_404(client, server_service_mock):
     server_service_mock.get_server_by_path = AsyncMock(return_value=None)
     resp = client.get(
         f"/mcp/downstream/oauth/authorize/{USER_A}/ghost",
-        params={"client_id": "claude", "redirect_uri": "http://x/cb", "code_challenge": "abc"},
+        params={"client_id": "claude", "redirect_uri": "https://x/cb", "code_challenge": "abc"},
         follow_redirects=False,
     )
     assert resp.status_code == 404
+
+
+def test_authorize_rejects_unsupported_response_type(client, mcp_service_mock):
+    resp = client.get(
+        f"/mcp/downstream/oauth/authorize/{USER_A}/github",
+        params={
+            "client_id": "claude",
+            "redirect_uri": "https://app.example.com/cb",
+            "code_challenge": "abc",
+            "response_type": "token",
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 400
+    mcp_service_mock.oauth_service.initiate_oauth_flow.assert_not_called()
+
+
+def test_authorize_rejects_non_s256_challenge_method(client, mcp_service_mock):
+    resp = client.get(
+        f"/mcp/downstream/oauth/authorize/{USER_A}/github",
+        params={
+            "client_id": "claude",
+            "redirect_uri": "https://app.example.com/cb",
+            "code_challenge": "abc",
+            "code_challenge_method": "plain",
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 400
+    mcp_service_mock.oauth_service.initiate_oauth_flow.assert_not_called()
+
+
+def test_authorize_rejects_non_http_redirect_scheme(client, mcp_service_mock):
+    # A non-http(s) scheme must never reach the redirect sink (open-redirect / exfil via javascript:).
+    resp = client.get(
+        f"/mcp/downstream/oauth/authorize/{USER_A}/github",
+        params={
+            "client_id": "claude",
+            "redirect_uri": "javascript:alert(1)",
+            "code_challenge": "abc",
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 400
+    mcp_service_mock.oauth_service.initiate_oauth_flow.assert_not_called()
 
 
 def test_authorize_session_user_mismatch_returns_403(client, mcp_service_mock):

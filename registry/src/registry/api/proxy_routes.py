@@ -702,7 +702,7 @@ async def dynamic_mcp_post_proxy(
     MCP protocol only uses GET and POST methods.
     """
     if not ObjectId.is_valid(user_id):
-        return JSONResponse(status_code=400, content={"detail": f"Invalid user_id: {user_id}"})
+        return JSONResponse(status_code=400, content={"error": f"Invalid user_id: {user_id}"})
 
     msg_body = await _parse_json_rpc_body(request)
     if msg_body is None:
