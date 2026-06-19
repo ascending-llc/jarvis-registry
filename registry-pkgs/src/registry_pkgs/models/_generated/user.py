@@ -14,15 +14,15 @@ class SystemRoles(StrEnum):
     USER = "USER"
 
 
+class Personalization(BaseModel):
+    memories: bool = True
+
+
 class Favorite(BaseModel):
     agentId: str | None = None
     model: str | None = None
     endpoint: str | None = None
     spec: str | None = None
-
-
-class Personalization(BaseModel):
-    memories: bool = True
 
 
 class User(Document):
