@@ -235,6 +235,9 @@ user-read:
   - action: oauth_initiate
     method: GET
     endpoint: /mcp/{server_id}/oauth/initiate
+  - action: downstream_oauth_authorize
+    method: GET
+    endpoint: /mcp/downstream/oauth/authorize/{user_id}/{path}
   - action: oauth_callback
     method: GET
     endpoint: /mcp/{server_path}/oauth/callback
