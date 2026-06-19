@@ -815,7 +815,10 @@ async def dynamic_mcp_get_proxy(
     MCP protocol only uses GET and POST methods.
     """
     if not ObjectId.is_valid(user_id):
-        return JSONResponse(status_code=400, content={"error": f"Invalid user_id: {user_id}"})
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "The URL contains an invalid user ID. Ensure the user ID segment matches your account identifier."},
+        )
 
     # Extract registered server path from request URL. The `user_id` prefix is never part of a
     # registered server path in MongoDB, so only the server's path segment is matched here.
@@ -824,7 +827,7 @@ async def dynamic_mcp_get_proxy(
     if matched_server_path is None:
         return JSONResponse(
             status_code=404,
-            content={"error": f"Unknown MCP server with path '{path}'."},
+            content={"detail": f"No MCP server is registered at path '{path}'. Verify the server path and try again."},
         )
 
     # Get server by the extracted path
@@ -832,7 +835,7 @@ async def dynamic_mcp_get_proxy(
     if server is None:
         return JSONResponse(
             status_code=404,
-            content={"error": f"Unknown MCP server with path '{server_path}'."},
+            content={"detail": f"No MCP server is registered at path '{server_path}'. Verify the server path and try again."},
         )
 
     # Check if server is enabled
@@ -840,12 +843,12 @@ async def dynamic_mcp_get_proxy(
     if not config.get("enabled", False):
         return JSONResponse(
             status_code=404,
-            content={"error": f"MCP server with path '{server_path}' is disabled."},
+            content={"detail": f"The MCP server at '{server_path}' is currently disabled. Contact the server owner to enable it."},
         )
     elif config.get("type", "") != "streamable-http":
         return JSONResponse(
             status_code=404,
-            content={"error": f"MCP server with path '{server_path}' is not on streamable-http transport."},
+            content={"detail": f"The MCP server at '{server_path}' does not support the streamable-http transport required for direct connections."},
         )
 
     # Get target URL
@@ -854,7 +857,8 @@ async def dynamic_mcp_get_proxy(
     except InternalServerException:
         # GET requests doesn't use JSON-RPC, so use HTTP status code 500.
         return JSONResponse(
-            status_code=500, content={"error": "Server URL is not configured. The MCP server is not reachable."}
+            status_code=500,
+            content={"detail": "The MCP server's backend URL is not configured and cannot be reached. Contact the administrator."},
         )
 
     # Proxy the request. At this point, auth_context must exist as UserContextDict. Otherwise the UnifiedAuthMiddleware
@@ -904,7 +908,7 @@ async def dynamic_mcp_get_proxy(
     except InternalServerException:
         logger.exception("Internal server exception")
 
-        return JSONResponse(status_code=500, content={"error": "internal server error"})
+        return JSONResponse(status_code=500, content={"detail": "An internal server error occurred. Please try again or contact support if the problem persists."})
 
     body = await request.body()
 
@@ -970,4 +974,4 @@ async def dynamic_mcp_get_proxy(
     except Exception:
         logger.exception(f"Error proxying to {target_url}")
 
-        return JSONResponse(status_code=500, content={"error": "internal server error"})
+        return JSONResponse(status_code=500, content={"detail": "An internal server error occurred. Please try again or contact support if the problem persists."})
