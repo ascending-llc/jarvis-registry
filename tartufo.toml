@@ -98,4 +98,5 @@ exclude-signatures = [
     {signature = '825ab751e8abc35b71f1a33d63fe5fa85ca647463334cf1f02051afe1536c582', reason = 'execute_agent ACL unit test uses a synthetic MongoDB ObjectId and mock base64 file blobs, not real credentials'},
     {signature = '36da6ea5898e1f2c93a7b27d083232c8bf77382183dd684040b8187ee63acf71', reason = 'proxied.py renamed to server.py — example MongoDB ObjectId in tool docstrings is not a credential'},
     {signature = '009966069305bd3305ca2391a2ec1e11bfc0ad98bf6d48a1f342ea01764a766e', reason = 'test_agent_invoke.py renamed to test_agent.py — synthetic ObjectIds and mock base64 file blobs are not credentials'},
+    {signature = '78d01adee21354e8a9067df8178b7a7627f8d23f7829c3519ab4de93e257daf4', reason = 'synthetic MongoDB ObjectId in downstream OAuth RBAC unit test is not a credential'},
 ]

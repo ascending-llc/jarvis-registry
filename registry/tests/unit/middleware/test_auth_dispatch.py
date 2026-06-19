@@ -24,12 +24,20 @@ def _build_app() -> FastAPI:
         return JSONResponse({"ok": "proxy"})
 
     @app.get("/proxy/server/{user_id}/{server_path:path}")
-    async def direct_connect_ep(user_id: str, server_path: str):  # pragma: no cover - body trivial
+    async def direct_connect_ep(user_id: str, server_path: str):
         return JSONResponse({"ok": "direct", "user_id": user_id, "server_path": server_path})
 
     @app.get("/api/v1/servers")
-    async def crud_ep():  # pragma: no cover - body trivial
+    async def crud_ep():
         return JSONResponse({"ok": "crud"})
+
+    @app.get("/api/v1/mcp/downstream/oauth/authorize/{user_id}/{server_path:path}")
+    async def ds_authorize_ep(user_id: str, server_path: str):
+        return JSONResponse({"ok": "authorize"})
+
+    @app.post("/api/v1/mcp/downstream/oauth/token/{user_id}/{server_path:path}")
+    async def ds_token_ep(user_id: str, server_path: str):
+        return JSONResponse({"ok": "token"})
 
     return app
 
@@ -168,6 +176,17 @@ def test_downstream_token_rejected_cross_user(client):
 def test_downstream_token_rejected_cross_server(client):
     token = _downstream_token(user_id=USER_A, server_path="github")
     resp = client.get(f"/proxy/server/{USER_A}/slack", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 401
+
+
+def test_downstream_token_endpoint_is_public(client):
+    # The PKCE-protected /token exchange carries no registry credential, so it must be public.
+    resp = client.post(f"/api/v1/mcp/downstream/oauth/token/{USER_A}/github")
+    assert resp.status_code == 200
+
+
+def test_downstream_authorize_endpoint_is_not_public(client):
+    resp = client.get(f"/api/v1/mcp/downstream/oauth/authorize/{USER_A}/github")
     assert resp.status_code == 401
 
 

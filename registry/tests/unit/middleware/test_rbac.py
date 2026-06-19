@@ -848,3 +848,26 @@ class TestIntegrationScenarios:
         client = TestClient(app)
         assert client.get("/workflows/abc").status_code == 200
         assert client.post("/workflows/abc/runs").status_code == 403
+
+
+@pytest.mark.unit
+class TestRealScopesConfigDownstreamOAuth:
+    """Validate the REAL scopes.yml (not a synthetic config) covers the Layer B /authorize endpoint."""
+
+    _USER_ID = "507f1f77bcf86cd799439011"
+
+    def test_authorize_granted_with_user_read(self):
+        mw = ScopePermissionMiddleware(FastAPI())
+        path = f"/mcp/downstream/oauth/authorize/{self._USER_ID}/github"
+        assert mw._has_permission(["user-read"], path, "GET") is True
+
+    def test_authorize_denied_without_user_read(self):
+        mw = ScopePermissionMiddleware(FastAPI())
+        path = f"/mcp/downstream/oauth/authorize/{self._USER_ID}/github"
+        assert mw._has_permission(["servers-read"], path, "GET") is False
+
+    def test_authorize_rule_matches_nested_server_path(self):
+        # server_path is a catch-all, so the rule's {path} must match slashes too.
+        mw = ScopePermissionMiddleware(FastAPI())
+        path = f"/mcp/downstream/oauth/authorize/{self._USER_ID}/github/sub/path"
+        assert mw._has_permission(["user-read"], path, "GET") is True
