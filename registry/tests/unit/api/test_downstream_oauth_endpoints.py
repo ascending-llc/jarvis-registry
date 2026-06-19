@@ -11,6 +11,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from registry.api.v1.mcp.oauth_router import router
+from registry.auth.dependencies import get_current_user
 from registry.deps import get_mcp_service, get_redis_client, get_server_service
 from registry_pkgs.core.downstream_oauth import downstream_mcp_code_key
 
@@ -18,6 +19,18 @@ USER_A = "507f1f77bcf86cd799439011"
 USER_B = "507f1f77bcf86cd799439012"
 CODE = "upstream-auth-code-xyz"
 VERIFIER = "verifier-0123456789-0123456789-0123456789-0123456789"
+
+
+def _session_user(user_id: str = USER_A) -> dict:
+    return {
+        "user_id": user_id,
+        "username": "alice",
+        "groups": [],
+        "scopes": [],
+        "auth_method": "traditional",
+        "provider": "local",
+        "auth_source": "jwt_session_auth",
+    }
 
 
 @pytest.fixture
@@ -51,15 +64,22 @@ def client(redis_mock, mcp_service_mock, server_service_mock) -> TestClient:
     app.dependency_overrides[get_redis_client] = lambda: redis_mock
     app.dependency_overrides[get_mcp_service] = lambda: mcp_service_mock
     app.dependency_overrides[get_server_service] = lambda: server_service_mock
+    # By default the authorize endpoint sees a session for USER_A (matches the URL user_id).
+    app.dependency_overrides[get_current_user] = lambda: _session_user(USER_A)
     return TestClient(app)
 
 
-def _stored_entry(user_id: str = USER_A, server_path: str = "github", client_id: str = "claude") -> str:
+def _stored_entry(
+    user_id: str = USER_A,
+    server_path: str = "github",
+    client_id: str = "claude",
+    redirect_uri: str = "http://localhost:33418/cb",
+) -> str:
     return json.dumps(
         {
             "code_challenge": create_s256_code_challenge(VERIFIER),
             "client_id": client_id,
-            "redirect_uri": "http://localhost:33418/cb",
+            "redirect_uri": redirect_uri,
             "user_id": user_id,
             "server_path": server_path,
         }
@@ -95,7 +115,44 @@ def test_authorize_unknown_server_returns_404(client, server_service_mock):
     assert resp.status_code == 404
 
 
-def _post_token(client, *, user_id=USER_A, server_path="github", code=CODE, client_id="claude", verifier=VERIFIER):
+def test_authorize_session_user_mismatch_returns_403(client, mcp_service_mock):
+    # AS-1545 review #3: a logged-in user (USER_B) cannot initiate a downstream flow for another
+    # user's account (USER_A in the URL) — that would inject a token into the victim's account.
+    client.app.dependency_overrides[get_current_user] = lambda: _session_user(USER_B)
+    resp = client.get(
+        f"/mcp/downstream/oauth/authorize/{USER_A}/github",
+        params={"client_id": "claude", "redirect_uri": "http://localhost:33418/cb", "code_challenge": "abc"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 403
+    # The Layer A flow must never be initiated for a mismatched session.
+    mcp_service_mock.oauth_service.initiate_oauth_flow.assert_not_called()
+
+
+def test_authorize_unauthenticated_is_not_public(client, mcp_service_mock):
+    # AS-1545 review #3: with no session, the real get_current_user dependency rejects the request
+    # (401). In production the UnifiedAuthMiddleware 401s first; either way authorize is not public
+    # and the downstream flow is never initiated.
+    client.app.dependency_overrides.pop(get_current_user)
+    resp = client.get(
+        f"/mcp/downstream/oauth/authorize/{USER_A}/github",
+        params={"client_id": "claude", "redirect_uri": "http://localhost:33418/cb", "code_challenge": "abc"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 401
+    mcp_service_mock.oauth_service.initiate_oauth_flow.assert_not_called()
+
+
+def _post_token(
+    client,
+    *,
+    user_id=USER_A,
+    server_path="github",
+    code=CODE,
+    client_id="claude",
+    verifier=VERIFIER,
+    redirect_uri="http://localhost:33418/cb",
+):
     return client.post(
         f"/mcp/downstream/oauth/token/{user_id}/{server_path}",
         data={
@@ -103,7 +160,7 @@ def _post_token(client, *, user_id=USER_A, server_path="github", code=CODE, clie
             "code": code,
             "client_id": client_id,
             "code_verifier": verifier,
-            "redirect_uri": "http://localhost:33418/cb",
+            "redirect_uri": redirect_uri,
         },
     )
 
@@ -138,6 +195,11 @@ def test_token_pkce_mismatch_returns_400(client, redis_mock):
 def test_token_client_id_mismatch_returns_400(client, redis_mock):
     redis_mock.get.return_value = _stored_entry(client_id="claude")
     assert _post_token(client, client_id="someone-else").status_code == 400
+
+
+def test_token_redirect_uri_mismatch_returns_400(client, redis_mock):
+    redis_mock.get.return_value = _stored_entry(redirect_uri="http://localhost:33418/cb")
+    assert _post_token(client, redirect_uri="http://evil.localhost/cb").status_code == 400
 
 
 def test_token_rejects_cross_user_binding(client, redis_mock):

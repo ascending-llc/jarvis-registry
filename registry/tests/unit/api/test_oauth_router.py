@@ -316,8 +316,12 @@ class TestOAuthRouter:
         assert response.status_code == 307
         location = response.headers["location"]
         assert location.startswith("http://localhost:33418/cb")
-        assert "code=GHCODE" in location
-        assert "state=st123" in location
+        from urllib.parse import parse_qs, urlsplit
+
+        query = parse_qs(urlsplit(location).query)
+        assert query["state"] == ["st123"]
+        assert query["code"][0] and query["code"][0] != "GHCODE"
+        assert "GHCODE" not in location
         # Must NOT fall through to the registry success page.
         assert "oauth-callback?type=success" not in location
 
