@@ -40,6 +40,7 @@ from registry_pkgs.models.enums import (
 from registry_pkgs.models.workflow import NodeRun, ResolvedDependency, WorkflowRun
 from registry_pkgs.workflows.compiler import flatten_workflow_nodes
 from registry_pkgs.workflows.control import DirectiveQueue
+from registry_pkgs.workflows.helpers import extract_user_text
 from registry_pkgs.workflows.types import WorkflowConfigError
 
 logger = logging.getLogger(__name__)
@@ -425,7 +426,7 @@ class WorkflowControlService:
             from_node_id,
         )
 
-        user_text: str = (parent_run.initial_input or {}).get("user_text", "")
+        user_text: str = extract_user_text(parent_run.initial_input)
         runner = self._runner_factory()
         _fire_background(
             runner.run(
@@ -583,7 +584,7 @@ class WorkflowControlService:
             node_id,
         )
 
-        user_text: str = (parent_run.initial_input or {}).get("user_text", "")
+        user_text: str = extract_user_text(parent_run.initial_input)
         runner = self._runner_factory()
         _fire_background(
             runner.run(
@@ -638,7 +639,7 @@ class WorkflowControlService:
         await replay_run.insert()
         logger.info("WorkflowRun %s: created replay run %s", run_id, replay_run.id)
 
-        user_text: str = (source_run.initial_input or {}).get("user_text", "")
+        user_text: str = extract_user_text(source_run.initial_input)
         runner = self._runner_factory()
         _fire_background(
             runner.run(

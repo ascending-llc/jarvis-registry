@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -608,3 +609,48 @@ async def test_replay_run_sets_parent_run_id(monkeypatch: pytest.MonkeyPatch):
     )
     assert captured.get("trigger_source") == "replay"
     assert captured.get("initial_input") == {"user_text": "hi"}
+
+
+async def test_replay_run_forwards_json_fallback_for_non_user_text_input(monkeypatch: pytest.MonkeyPatch):
+    """Regression guard (bug AS-1656): when the source run's initial_input has no
+    ``user_text`` key, replay must still forward the whole payload as JSON to the
+    runner — not an empty string — so the replayed first node receives the same
+    input as the original run.
+    """
+    payload = {"foo": "bar", "n": 3}
+    source_run = SimpleNamespace(
+        id=PydanticObjectId(),
+        workflow_definition_id=PydanticObjectId(),
+        status=WorkflowRunStatus.COMPLETED,
+        initial_input=payload,
+    )
+
+    class _FakeRun:
+        def __init__(self, **kwargs):
+            self.id = PydanticObjectId()
+            self.status = WorkflowRunStatus.PENDING
+
+        async def insert(self):
+            return None
+
+    monkeypatch.setattr(wcs, "WorkflowRun", _FakeRun)
+
+    run_mock = AsyncMock(return_value=None)
+    service = WorkflowControlService(
+        directive_queue=DirectiveQueue(),
+        runner_factory=lambda: SimpleNamespace(run=run_mock),
+    )
+    service._load_run = AsyncMock(return_value=source_run)
+
+    await service.replay_run(
+        str(source_run.workflow_definition_id),
+        str(source_run.id),
+        registry_token="tok",
+        user_id="user-1",
+    )
+
+    run_mock.assert_called_once()
+    forwarded_user_text = run_mock.call_args.args[1]
+    assert json.loads(forwarded_user_text) == payload, (
+        f"replay must forward the full payload as JSON, not drop it; got {forwarded_user_text!r}"
+    )
