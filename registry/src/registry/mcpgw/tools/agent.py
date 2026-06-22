@@ -17,6 +17,7 @@ from mcp.types import (
     BlobResourceContents,
     CallToolResult,
     EmbeddedResource,
+    ImageContent,
     TextContent,
     TextResourceContents,
 )
@@ -31,16 +32,32 @@ from ..core.types import McpAppContext
 
 logger = logging.getLogger(__name__)
 
+# MCP content blocks an A2A response can render to: text, inline image, or embedded resource.
+_AgentContent = TextContent | ImageContent | EmbeddedResource
 
-def _file_to_resource(f: FileWithBytes | FileWithUri) -> EmbeddedResource | None:
-    """Convert one A2A file payload to an MCP EmbeddedResource. None for unsupported."""
+
+def _file_to_resource(f: FileWithBytes | FileWithUri) -> ImageContent | EmbeddedResource | None:
+    """Convert one A2A file payload to its most faithful MCP content type.
+
+    image/* FileWithBytes -> ImageContent  (MCP hosts render this inline)
+    other   FileWithBytes -> EmbeddedResource(BlobResourceContents)  (lossless fallback)
+    FileWithUri           -> EmbeddedResource(TextResourceContents)
+    None for unsupported payload types.
+    """
     if isinstance(f, FileWithBytes):
+        mime = f.mime_type or "application/octet-stream"
+        # MIME types are case-insensitive and may carry parameters (RFC 6838); normalize for dispatch.
+        media_type = mime.split(";", 1)[0].strip().lower()
+        if media_type.startswith("image/"):
+            # f.bytes is already base64-encoded by the a2a SDK and is passed through verbatim into
+            # ImageContent.data — no decode/re-encode. The original mimeType is preserved.
+            return ImageContent(type="image", data=f.bytes, mimeType=mime)
         return EmbeddedResource(
             type="resource",
             resource=BlobResourceContents(
                 uri=AnyUrl(f"urn:a2a:file:{uuid.uuid4().hex}"),
                 blob=f.bytes,  # already base64-encoded by the a2a SDK
-                mimeType=f.mime_type or "application/octet-stream",
+                mimeType=mime,
             ),
         )
     if isinstance(f, FileWithUri):
@@ -56,9 +73,9 @@ def _file_to_resource(f: FileWithBytes | FileWithUri) -> EmbeddedResource | None
     return None
 
 
-def _render_artifact(artifact: Artifact) -> list[TextContent | EmbeddedResource]:
+def _render_artifact(artifact: Artifact) -> list[_AgentContent]:
     """Render one artifact as text (with `[<name>]` label) + files + data."""
-    items: list[TextContent | EmbeddedResource] = []
+    items: list[_AgentContent] = []
     text = get_artifact_text(artifact, delimiter="")
     if text:
         labelled = f"[{artifact.name}]\n{text}" if artifact.name else text
@@ -72,9 +89,9 @@ def _render_artifact(artifact: Artifact) -> list[TextContent | EmbeddedResource]
     return items
 
 
-def _render_message(message: Message) -> list[TextContent | EmbeddedResource]:
+def _render_message(message: Message) -> list[_AgentContent]:
     """Render a Message reply as text + files + data (no label — single block)."""
-    items: list[TextContent | EmbeddedResource] = []
+    items: list[_AgentContent] = []
     text = get_message_text(message)
     if text:
         items.append(TextContent(type="text", text=text))
@@ -88,11 +105,11 @@ def _render_message(message: Message) -> list[TextContent | EmbeddedResource]:
     return items
 
 
-def _render_task(task: Task) -> list[TextContent | EmbeddedResource]:
+def _render_task(task: Task) -> list[_AgentContent]:
     """Render a Task's content. Per the A2A spec, both `task.status.message`
     and `task.artifacts` carry content — surface both in that order
     (matches a2a-samples host_agent.py)."""
-    items: list[TextContent | EmbeddedResource] = []
+    items: list[_AgentContent] = []
     if task.status.message is not None:
         items.extend(_render_message(task.status.message))
     for artifact in task.artifacts or []:
@@ -100,7 +117,7 @@ def _render_task(task: Task) -> list[TextContent | EmbeddedResource]:
     return items
 
 
-def _convert_response(result: A2ACallResult) -> list[TextContent | EmbeddedResource]:
+def _convert_response(result: A2ACallResult) -> list[_AgentContent]:
     """Render the successful A2ACallResult into MCP content items."""
     if result.message is not None:
         return _render_message(result.message)

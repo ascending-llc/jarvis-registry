@@ -187,13 +187,6 @@ class SearchService:
                 tools_count=tools_count,
             )
 
-    def _semantic_reranker_kwargs(self) -> dict[str, str]:
-        """Reuse the MCP vector service reranker model for structured A2A search when available."""
-        model = getattr(self.vector_service, "reranker_model", None)
-        if isinstance(model, str) and model:
-            return {"model": model}
-        return {}
-
     async def semantic_search(
         self,
         query: str,
@@ -281,7 +274,6 @@ class SearchService:
                 candidate_k=_candidate_k(max_results),
                 search_type=SearchType.HYBRID,
                 filters=filters,
-                reranker_kwargs=self._semantic_reranker_kwargs(),
             )
         except RuntimeError as exc:
             logger.warning("A2A vector search unavailable, skipping A2A results: %s", exc)
