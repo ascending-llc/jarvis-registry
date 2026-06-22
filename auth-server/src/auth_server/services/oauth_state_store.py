@@ -123,6 +123,9 @@ class OAuthStateStore:
     def save_authcode(self, code: str, data: dict[str, Any]) -> None:
         self._set_json(self._authcode_key(code), data, AUTH_CODE_TTL_SECONDS)
 
+    def get_authcode(self, code: str) -> dict[str, Any] | None:
+        return self._get_json(self._authcode_key(code))
+
     def consume_authcode(self, code: str) -> dict[str, Any] | None:
         try:
             raw_data = self._redis.eval(_CONSUME_AUTHCODE_SCRIPT, 1, self._authcode_key(code))
@@ -136,6 +139,9 @@ class OAuthStateStore:
         stored_data = dict(data)
         stored_data.setdefault("expires_at", int(time.time()) + REFRESH_TOKEN_TTL_SECONDS)
         self._set_json(self._refresh_key(token), stored_data, REFRESH_TOKEN_TTL_SECONDS)
+
+    def get_refresh_token(self, token: str) -> dict[str, Any] | None:
+        return self._get_json(self._refresh_key(token))
 
     def rotate_refresh_token(
         self,

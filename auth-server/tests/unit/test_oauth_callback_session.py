@@ -12,8 +12,9 @@ import pytest
 from fastapi.testclient import TestClient
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
-from auth_server.deps import get_oauth2_config, get_signer
+from auth_server.deps import get_oauth2_config, get_oauth_state_store, get_signer
 from auth_server.server import app
+from tests.support.oauth_state_store import test_oauth_state_store
 
 
 @pytest.fixture
@@ -57,6 +58,7 @@ class TestStateEncoding:
 
         app.dependency_overrides = {}
 
+        app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
         app.dependency_overrides[get_oauth2_config] = lambda: mock_oauth_config
         app.dependency_overrides[get_signer] = lambda: mock_signer
 
@@ -118,6 +120,7 @@ class TestStateEncoding:
         """Test that OAuth login works without resource parameter"""
         app.dependency_overrides = {}
 
+        app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
         app.dependency_overrides[get_oauth2_config] = lambda: mock_oauth_config
         app.dependency_overrides[get_signer] = lambda: mock_signer
 
@@ -172,6 +175,7 @@ class TestSessionExpiration:
 
         app.dependency_overrides = {}
 
+        app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
         app.dependency_overrides[get_oauth2_config] = lambda: mock_oauth_config
         app.dependency_overrides[get_signer] = lambda: mock_signer
 
@@ -205,6 +209,7 @@ class TestSessionExpiration:
 
         app.dependency_overrides = {}
 
+        app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
         app.dependency_overrides[get_oauth2_config] = lambda: mock_oauth_config
         app.dependency_overrides[get_signer] = lambda: mock_signer
 
@@ -236,6 +241,7 @@ class TestMissingParameters:
 
         app.dependency_overrides = {}
 
+        app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
         app.dependency_overrides[get_oauth2_config] = lambda: mock_oauth_config
         app.dependency_overrides[get_signer] = lambda: mock_signer
 
@@ -253,6 +259,7 @@ class TestMissingParameters:
 
         app.dependency_overrides = {}
 
+        app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
         app.dependency_overrides[get_oauth2_config] = lambda: mock_oauth_config
         app.dependency_overrides[get_signer] = lambda: mock_signer
 
@@ -269,6 +276,7 @@ class TestMissingParameters:
         """Test that missing session cookie returns 400"""
         app.dependency_overrides = {}
 
+        app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
         app.dependency_overrides[get_oauth2_config] = lambda: mock_oauth_config
         app.dependency_overrides[get_signer] = lambda: mock_signer
 

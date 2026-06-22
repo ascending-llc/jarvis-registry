@@ -201,6 +201,7 @@ def test_consume_authcode_is_single_use(
     store.save_authcode("code-1", {"client_id": "client-1"})
 
     assert fake_redis.ttls["jarvis-auth-server-test:oauth:authcode:code-1"] == AUTH_CODE_TTL_SECONDS
+    assert store.get_authcode("code-1") == {"client_id": "client-1"}
     assert store.consume_authcode("code-1") == {"client_id": "client-1"}
     assert store.consume_authcode("code-1") is None
 
@@ -218,6 +219,13 @@ def test_rotate_refresh_token_consumes_old_token_and_creates_new_token(
             "expires_at": 100,
         },
     )
+
+    assert store.get_refresh_token("old-token") == {
+        "client_id": "client-1",
+        "user_info": {"username": "user-1"},
+        "scope": "servers-read",
+        "expires_at": 100,
+    }
 
     old_data = store.rotate_refresh_token("old-token", "new-token")
 

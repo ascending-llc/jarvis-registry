@@ -13,9 +13,9 @@ import pytest
 from fastapi.testclient import TestClient
 from itsdangerous import URLSafeTimedSerializer
 
-from auth_server.core.state import authorization_codes_storage
-from auth_server.deps import get_auth_provider, get_oauth2_config, get_signer, get_user_service
+from auth_server.deps import get_auth_provider, get_oauth2_config, get_oauth_state_store, get_signer, get_user_service
 from auth_server.server import app
+from tests.support.oauth_state_store import authorization_codes_storage, test_oauth_state_store
 
 API_PREFIX = "/auth"
 
@@ -87,6 +87,7 @@ class TestOAuth2CallbackStandardFlow:
 
             app.dependency_overrides = {}
 
+            app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
             app.dependency_overrides[get_oauth2_config] = lambda: oauth2_config
             app.dependency_overrides[get_user_service] = lambda: mock_user_service
             app.dependency_overrides[get_signer] = lambda: test_signer
@@ -141,7 +142,7 @@ class TestOAuth2CallbackStandardFlow:
             assert "user_info" in code_data
             assert code_data["user_info"]["username"] == "testuser"
             assert code_data["user_info"]["user_id"] == "507f1f77bcf86cd799439011"
-            assert code_data["used"] is False
+            assert "used" not in code_data
 
     @patch("auth_server.routes.oauth_flow.exchange_code_for_token")
     @patch("auth_server.routes.oauth_flow.get_user_info")
@@ -190,6 +191,7 @@ class TestOAuth2CallbackStandardFlow:
 
             app.dependency_overrides = {}
 
+            app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
             app.dependency_overrides[get_oauth2_config] = lambda: oauth2_config
             app.dependency_overrides[get_user_service] = lambda: mock_user_service
             app.dependency_overrides[get_signer] = lambda: test_signer
@@ -278,6 +280,7 @@ class TestOAuth2CallbackStandardFlow:
 
             app.dependency_overrides = {}
 
+            app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
             app.dependency_overrides[get_oauth2_config] = lambda: oauth2_config
             app.dependency_overrides[get_user_service] = lambda: mock_user_service
             app.dependency_overrides[get_signer] = lambda: test_signer
@@ -361,6 +364,7 @@ class TestOAuth2CallbackStandardFlow:
 
                     app.dependency_overrides = {}
 
+                    app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
                     mock_user_service = MagicMock()
                     mock_user_service.resolve_user_id = AsyncMock(return_value=None)
 
@@ -448,6 +452,7 @@ class TestOAuth2TokenEndpoint:
 
             app.dependency_overrides = {}
 
+            app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
             app.dependency_overrides[get_user_service] = lambda: mock_user_service
 
             test_client = TestClient(app)
@@ -475,6 +480,56 @@ class TestOAuth2TokenEndpoint:
 
             # Code should be deleted after successful exchange
             assert auth_code not in authorization_codes_storage
+
+    def test_token_endpoint_rejects_invalid_client_secret(self, clear_device_storage, mock_user_service):
+        """Test client_secret_post DCR clients must provide the registered secret."""
+        client_id = "secret-client"
+        test_oauth_state_store.save_client(
+            client_id,
+            {
+                "client_id": client_id,
+                "client_secret": "correct-secret",
+                "token_endpoint_auth_method": "client_secret_post",
+                "redirect_uris": ["http://localhost/callback"],
+            },
+        )
+
+        auth_code = secrets.token_urlsafe(32)
+        authorization_codes_storage[auth_code] = {
+            "token_data": {},
+            "user_info": {
+                "user_id": "507f1f77bcf86cd799439011",
+                "username": "testuser",
+                "email": "test@example.com",
+                "groups": [],
+            },
+            "client_id": client_id,
+            "expires_at": int(__import__("time").time()) + 600,
+            "redirect_uri": "http://localhost/callback",
+            "resolved_scope": ["servers-read"],
+            "resource": None,
+            "created_at": int(__import__("time").time()),
+        }
+
+        app.dependency_overrides = {}
+        app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
+        app.dependency_overrides[get_user_service] = lambda: mock_user_service
+
+        test_client = TestClient(app)
+        response = test_client.post(
+            f"{API_PREFIX}/oauth2/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": auth_code,
+                "client_id": client_id,
+                "client_secret": "wrong-secret",
+                "redirect_uri": "http://localhost/callback",
+            },
+        )
+
+        assert response.status_code == 400
+        assert response.json()["error"] == "invalid_client"
+        assert auth_code in authorization_codes_storage
 
     @pytest.mark.parametrize("content_type", ["form", "json"])
     def test_token_endpoint_quick_suite_basic_auth_fallback(
@@ -517,6 +572,7 @@ class TestOAuth2TokenEndpoint:
             mock_mint_token.return_value = "mock-jwt-token-with-user-id"
 
             app.dependency_overrides = {}
+            app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
             app.dependency_overrides[get_user_service] = lambda: mock_user_service
 
             test_client = TestClient(app)
@@ -580,6 +636,7 @@ class TestOAuth2TokenEndpoint:
 
         with patch("auth_server.routes.oauth_flow.mint_managed_agent_token") as mock_mint_token:
             app.dependency_overrides = {}
+            app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
             app.dependency_overrides[get_user_service] = lambda: mock_user_service
 
             test_client = TestClient(app)
@@ -602,19 +659,19 @@ class TestOAuth2TokenEndpoint:
             assert auth_code in authorization_codes_storage
 
     @pytest.mark.parametrize("content_type", ["form", "json"])
-    def test_token_endpoint_code_already_used(self, test_client, clear_device_storage, content_type):
-        """Test token endpoint rejects already-used authorization code."""
+    def test_token_endpoint_code_already_used(self, clear_device_storage, mock_user_service, content_type):
+        """Test token endpoint rejects an authorization code consumed by a prior request."""
         auth_code = secrets.token_urlsafe(32)
         current_time = int(__import__("time").time())
 
         authorization_codes_storage[auth_code] = {
             "token_data": {},
-            "user_info": {"username": "testuser"},
+            "user_info": {"username": "testuser", "groups": []},
             "client_id": "test-client",
             "expires_at": current_time + 600,
-            "used": True,  # Already used
             "redirect_uri": "http://localhost/callback",
             "created_at": current_time,
+            "resolved_scope": ["servers-read"],
         }
 
         payload = {
@@ -626,24 +683,29 @@ class TestOAuth2TokenEndpoint:
 
         app.dependency_overrides = {}
 
+        app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
         app.dependency_overrides[get_user_service] = lambda: mock_user_service
 
         test_client = TestClient(app)
 
         kwargs = {"json": payload} if content_type == "json" else {"data": payload}
-        response = test_client.post(f"{API_PREFIX}/oauth2/token", **kwargs)
+        with patch("auth_server.routes.oauth_flow.mint_managed_agent_token") as mock_mint_token:
+            mock_mint_token.return_value = "mock-jwt-token"
+            first_response = test_client.post(f"{API_PREFIX}/oauth2/token", **kwargs)
+            response = test_client.post(f"{API_PREFIX}/oauth2/token", **kwargs)
 
+        assert first_response.status_code == 200
         assert response.status_code == 400
         assert response.json()["error"] == "invalid_grant"
-        assert "already used" in response.json()["error_description"]
 
         # Code should be deleted
         assert auth_code not in authorization_codes_storage
 
-    def test_token_endpoint_unsupported_content_type(self):
+    def test_token_endpoint_unsupported_content_type(self, mock_user_service):
         """Test token endpoint rejects unsupported content-type with 415."""
         app.dependency_overrides = {}
 
+        app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
         app.dependency_overrides[get_user_service] = lambda: mock_user_service
 
         test_client = TestClient(app)
