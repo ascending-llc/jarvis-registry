@@ -112,6 +112,7 @@ nav:
     - AgentCore Federation: features/agentcore-federation.md
     - FoundryAI Federation: features/foundry-ai-federation.md
     - Registry Endpoint: features/registry-endpoint.md
+    - Observability: features/observability.md
   - Architecture & Design:
     - Security Control Design: design/security-design.md
     - RBAC & Scopes: design/scopes.md

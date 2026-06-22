@@ -1,10 +1,9 @@
 # AgentCore Federation
-
-<div style="text-align: center; margin: 0.5rem 0 1.25rem;">
-	<img src="../../img/agentcore-logo.png" alt="Amazon Bedrock AgentCore">
-</div>
-
 AgentCore Federation connects an external Amazon Bedrock AgentCore gateway to Jarvis Registry so platform admins can import and govern resources from one control plane.
+
+<div style="text-align: center; margin: 1.5rem 0;">
+	<iframe width="560" height="315" src="https://www.youtube.com/embed/JTziFEg1vg0?si=a9sk-xjsflr1C6W7" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
+</div>
 
 This page focuses on the operational flow:
 
