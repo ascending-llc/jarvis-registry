@@ -93,7 +93,10 @@ class RegistryContainer:
             from .services.search.external_service import ExternalVectorSearchService
 
             logger.info("Initializing Weaviate-based vector search service for MCP tools")
-            return ExternalVectorSearchService(mcp_server_repo=self.mcp_server_repo)
+            return ExternalVectorSearchService(
+                mcp_server_repo=self.mcp_server_repo,
+                enable_rerank=self.settings.rerank_enabled,
+            )
 
         from .services.search.embedded_service import EmbeddedFaissService
 

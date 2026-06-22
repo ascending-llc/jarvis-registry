@@ -27,6 +27,7 @@ def create_weaviate_adapter(config: BackendConfig, embedding) -> VectorStoreAdap
                 "embedding_provider": config.embedding_provider,
             },
             "embedding_config": config.get_embedding_model_config_dict(),
+            "rerank_config": config.get_rerank_config_dict(),
         }
 
         return WeaviateStore(**adapter_config)

@@ -44,4 +44,4 @@ class SearchType(Enum):
 class RerankerProvider(StrEnum):
     """Supported reranker providers."""
 
-    FLASHRANK = "flashrank"
+    BEDROCK_COHERE = "bedrock_cohere"

@@ -26,7 +26,6 @@ dependencies = [
     "langchain-community>=0.4.1",
     "langchain-weaviate>=0.0.6",
     "weaviate-client>=4.18.1",
-    "flashrank>=0.2.10",
     "async-lru>=2.0.5",
     # Workflow runtime
     "agno>=2.5.17",

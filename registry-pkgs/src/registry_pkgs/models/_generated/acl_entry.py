@@ -36,6 +36,7 @@ class AclEntry(Document):
     inheritedFrom: PydanticObjectId | None = None
     grantedBy: PydanticObjectId | None = None
     grantedAt: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    expiredAt: datetime | None = None
     tenantId: str | None = None
     createdAt: datetime | None = None
     updatedAt: datetime | None = None
