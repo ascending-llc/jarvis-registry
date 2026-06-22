@@ -24,7 +24,13 @@ class VectorStoreAdapter(ABC):
     5. Provide unified interface for Repository
     """
 
-    def __init__(self, embedding, config: dict[str, Any], embedding_config: dict[str, Any] = None):
+    def __init__(
+        self,
+        embedding,
+        config: dict[str, Any],
+        embedding_config: dict[str, Any] = None,
+        rerank_config: dict[str, Any] = None,
+    ):
         """
         Initialize adapter with embedding and config.
 
@@ -32,14 +38,36 @@ class VectorStoreAdapter(ABC):
             embedding: LangChain embedding instance
             config: Database configuration
             embedding_config: Optional embedding-specific config
+            rerank_config: Optional rerank config (enabled, model_id)
         """
         self.embedding = embedding
         self.config = config
         self.embedding_config = embedding_config or {}
+        self.rerank_config = rerank_config or {}
 
         # Collection management
         self._default_collection = config.get("collection_name", "Default")
         self._stores: dict[str, VectorStore] = {}  # collection_name -> LangChain VectorStore
+
+    def build_bedrock_rerank_kwargs(self, top_n: int) -> dict[str, Any]:
+        """Build kwargs for ``create_reranker`` from the rerank config.
+
+        Region, credentials and model ID all come from the rerank config, which is
+        independent of the embedding provider.
+        """
+        return {
+            "region": self.rerank_config.get("region"),
+            "model_id": self.rerank_config.get("model_id"),
+            "access_key_id": self.rerank_config.get("access_key_id"),
+            "secret_access_key": self.rerank_config.get("secret_access_key"),
+            "session_token": self.rerank_config.get("session_token"),
+            "top_n": top_n,
+        }
+
+    @property
+    def rerank_enabled(self) -> bool:
+        """Whether reranking is enabled (defaults to True when unset)."""
+        return self.rerank_config.get("enabled", True)
 
     def __enter__(self):
         """Enter context manager."""
@@ -340,7 +368,7 @@ class VectorStoreAdapter(ABC):
         candidate_k: int | None = None,
         search_type: SearchType = SearchType.HYBRID,
         filters: Any = None,
-        reranker_type: str = "flashrank",
+        reranker_type: str = "bedrock_cohere",
         reranker_kwargs: dict[str, Any] | None = None,
         collection_name: str | None = None,
         **kwargs,

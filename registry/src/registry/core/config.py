@@ -113,6 +113,8 @@ class Settings(JarvisBaseSettings):
     weaviate_collection_prefix: str = ""
     openai_api_key: str | None = None
     openai_model: str = "text-embedding-3-small"
+    rerank_enabled: bool = True
+    rerank_model_id: str = "cohere.rerank-v3-5:0"
 
     # ==================== AWS ====================
     aws_region: str = "us-east-1"
@@ -285,6 +287,8 @@ class Settings(JarvisBaseSettings):
             weaviate_collection_prefix=self.weaviate_collection_prefix,
             openai_api_key=self.openai_api_key,
             openai_model=self.openai_model,
+            rerank_enabled=self.rerank_enabled,
+            rerank_model_id=self.rerank_model_id,
             aws_region=self.aws_region,
             embedding_model=self.embedding_model,
             aws_access_key_id=self.aws_access_key_id,

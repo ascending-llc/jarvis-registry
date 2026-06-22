@@ -1,29 +1,30 @@
 import logging
-from functools import lru_cache
-from threading import Lock
 from typing import Any
 
+from langchain_aws import BedrockRerank
 from langchain_classic.retrievers.document_compressors.base import BaseDocumentCompressor
+from pydantic import SecretStr
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_FLASHRANK_MODEL = "ms-marco-MiniLM-L-12-v2"
-_FLASHRANK_LOAD_LOCK = Lock()
-_FLASHRANK_IMPORT_ERROR = "FlashRank is required for reranking. Install with: uv sync"
+_DEFAULT_RERANK_MODEL_ID = "cohere.rerank-v3-5:0"
+_BEDROCK_COHERE = "bedrock_cohere"
+_SUPPORTED_RERANKERS = (_BEDROCK_COHERE,)
 
 
-def _flashrank_import_error() -> ImportError:
-    """Log and build a consistent ImportError for any missing FlashRank import."""
-    logger.error(_FLASHRANK_IMPORT_ERROR)
-    return ImportError(_FLASHRANK_IMPORT_ERROR)
+def _build_rerank_arn(region: str, model_id: str) -> str:
+    """Build a Bedrock foundation-model ARN from region and model ID."""
+    return f"arn:aws:bedrock:{region}::foundation-model/{model_id}"
 
 
-def create_reranker(reranker_type: str, **kwargs) -> BaseDocumentCompressor:
+def create_reranker(reranker_type: str, client: Any = None, **kwargs) -> BaseDocumentCompressor:
     """
     Create reranker instance based on provider type.
 
     Args:
-        reranker_type: Reranker provider (e.g., "flashrank")
+        reranker_type: Reranker provider (e.g., "bedrock_cohere")
+        client: Optional pre-built AWS client to reuse. When provided, the
+            reranker skips per-call client creation and credential resolution.
         **kwargs: Additional reranker parameters
 
     Returns:
@@ -34,50 +35,57 @@ def create_reranker(reranker_type: str, **kwargs) -> BaseDocumentCompressor:
     """
     reranker_type = reranker_type.lower()
 
-    if reranker_type == "flashrank":
-        return _create_flashrank_reranker(**kwargs)
-    else:
-        raise ValueError(f"Unsupported reranker type: {reranker_type}. Supported types: flashrank")
+    if reranker_type == _BEDROCK_COHERE:
+        return _create_bedrock_cohere_reranker(client=client, **kwargs)
+
+    raise ValueError(f"Unsupported reranker type: {reranker_type}. Supported types: {', '.join(_SUPPORTED_RERANKERS)}")
 
 
-def _get_flashrank_ranker(model: str) -> Any:
-    """Load and cache the underlying FlashRank Ranker."""
-    with _FLASHRANK_LOAD_LOCK:
-        return _load_flashrank_ranker(model)
-
-
-@lru_cache(maxsize=4)
-def _load_flashrank_ranker(model: str) -> Any:
-    """Create the underlying FlashRank Ranker."""
-    try:
-        from flashrank import Ranker
-    except ImportError as e:
-        raise _flashrank_import_error() from e
-
-    logger.info(f"Loading FlashRank model: {model}")
-    return Ranker(model_name=model)
-
-
-def _create_flashrank_reranker(**kwargs) -> BaseDocumentCompressor:
+def _create_bedrock_cohere_reranker(client: Any = None, **kwargs) -> BaseDocumentCompressor:
     """
-    Create FlashRank reranker.
+    Create an AWS Bedrock Cohere reranker.
+
+    Reranking runs as a remote Bedrock API call, so there is no local model
+    to load and no per-inference activation memory in the pod.
 
     Args:
-        **kwargs: FlashRank parameters
-            - model: Model name (default: "ms-marco-MiniLM-L-12-v2")
-            - top_n: Number of results to return (handled by caller)
+        client: Optional pre-built ``bedrock-agent-runtime`` boto3 client. When
+            supplied, ``BedrockRerank.initialize_client`` short-circuits, so no
+            new client is created and explicit credential kwargs are skipped.
+        **kwargs: Reranker parameters
+            - region: AWS region (required, used to build the model ARN)
+            - model_id: Bedrock Cohere model ID (default: "cohere.rerank-v3-5:0")
+            - access_key_id / secret_access_key / session_token: optional AWS creds
+              (ignored when ``client`` is provided)
+            - top_n: Number of results to return
 
     Returns:
-        FlashRankRerank instance
+        BedrockRerank instance
     """
-    try:
-        from langchain_community.document_compressors.flashrank_rerank import FlashrankRerank
-    except ImportError as e:
-        raise _flashrank_import_error() from e
+    region = kwargs.get("region")
+    if not region:
+        raise ValueError("Bedrock reranker requires 'region' to build the model ARN")
 
-    # Extract model name (default to MiniLM model)
-    model = kwargs.get("model", _DEFAULT_FLASHRANK_MODEL)
+    model_id = kwargs.get("model_id") or _DEFAULT_RERANK_MODEL_ID
 
-    # Create reranker
-    ranker = _get_flashrank_ranker(model)
-    return FlashrankRerank(client=ranker, top_n=kwargs.get("top_n", 10))
+    rerank_kwargs: dict[str, Any] = {
+        "model_arn": _build_rerank_arn(region, model_id),
+        "region_name": region,
+        "top_n": kwargs.get("top_n", 10),
+    }
+
+    if client is not None:
+        rerank_kwargs["client"] = client
+    else:
+        access_key_id = kwargs.get("access_key_id")
+        secret_access_key = kwargs.get("secret_access_key")
+        if access_key_id and secret_access_key:
+            rerank_kwargs["aws_access_key_id"] = SecretStr(access_key_id)
+            rerank_kwargs["aws_secret_access_key"] = SecretStr(secret_access_key)
+
+        session_token = kwargs.get("session_token")
+        if session_token:
+            rerank_kwargs["aws_session_token"] = SecretStr(session_token)
+
+    logger.info("Creating Bedrock Cohere reranker: model_id=%s, region=%s", model_id, region)
+    return BedrockRerank(**rerank_kwargs)

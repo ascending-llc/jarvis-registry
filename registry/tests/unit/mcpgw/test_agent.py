@@ -17,7 +17,7 @@ from a2a.types import (
     TextPart,
 )
 from beanie import PydanticObjectId
-from mcp.types import BlobResourceContents, EmbeddedResource, TextContent, TextResourceContents
+from mcp.types import BlobResourceContents, EmbeddedResource, ImageContent, TextContent, TextResourceContents
 
 from registry.mcpgw.tools import agent
 from registry.mcpgw.tools.agent import AgentMessageInput, _convert_response, execute_agent_impl
@@ -299,6 +299,54 @@ def test_convert_response_task_file_with_bytes():
     assert "urn:a2a:file:" in str(resource.uri)
 
 
+def test_convert_response_task_image_file_with_bytes():
+    """image/* FileWithBytes render as inline ImageContent (not an opaque blob resource),
+    preserving the base64 payload verbatim. This is the reported image_agent path."""
+    b64_data = "iVBORw0KGgo="
+    artifact = _text_artifact(
+        "Diagram",
+        "",
+        extra_parts=[Part(root=FilePart(kind="file", file=FileWithBytes(bytes=b64_data, mimeType="image/png")))],
+    )
+    items = _convert_response(_result_with_task(artifact))
+    assert len(items) == 1
+    assert isinstance(items[0], ImageContent)
+    assert items[0].data == b64_data
+    assert items[0].mimeType == "image/png"
+
+
+def test_convert_response_message_image_file_with_bytes():
+    """`_file_to_resource` is shared by `_render_message`, so an image carried on a
+    Message reply (not a Task artifact) must also become inline ImageContent."""
+    b64_data = "iVBORw0KGgo="
+    msg = Message(
+        kind="message",
+        role=Role.user,
+        message_id="m",
+        parts=[Part(root=FilePart(kind="file", file=FileWithBytes(bytes=b64_data, mimeType="image/png")))],
+    )
+    items = _convert_response(A2ACallResult(message=msg, success=True))
+    assert len(items) == 1
+    assert isinstance(items[0], ImageContent)
+    assert items[0].data == b64_data
+    assert items[0].mimeType == "image/png"
+
+
+def test_convert_response_image_mimetype_case_and_params_normalized():
+    """Image dispatch normalizes the mime for matching (case-insensitive, strips RFC 6838
+    parameters) yet preserves the original declared mimeType on the ImageContent."""
+    declared = "IMAGE/PNG; charset=binary"
+    artifact = _text_artifact(
+        "Diagram",
+        "",
+        extra_parts=[Part(root=FilePart(kind="file", file=FileWithBytes(bytes="iVBORw0KGgo=", mimeType=declared)))],
+    )
+    items = _convert_response(_result_with_task(artifact))
+    assert len(items) == 1
+    assert isinstance(items[0], ImageContent)
+    assert items[0].mimeType == declared
+
+
 def test_convert_response_task_file_with_uri():
     artifact = _text_artifact(
         "Report",
@@ -338,8 +386,8 @@ def test_convert_response_task_multiple_files_get_unique_uris():
         "Bundle",
         "",
         extra_parts=[
-            Part(root=FilePart(kind="file", file=FileWithBytes(bytes=b64_data, mimeType="image/png"))),
-            Part(root=FilePart(kind="file", file=FileWithBytes(bytes=b64_data, mimeType="image/png"))),
+            Part(root=FilePart(kind="file", file=FileWithBytes(bytes=b64_data, mimeType="application/pdf"))),
+            Part(root=FilePart(kind="file", file=FileWithBytes(bytes=b64_data, mimeType="application/pdf"))),
         ],
     )
     items = _convert_response(_result_with_task(artifact))
