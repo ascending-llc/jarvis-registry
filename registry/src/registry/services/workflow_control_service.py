@@ -364,9 +364,9 @@ class WorkflowControlService:
             raise HTTPException(status_code=409, detail="Run has no definition snapshot; cannot retry")
 
         # Build resolved_dependencies and collect outputs to inject.
-        from registry_pkgs.models.workflow import WorkflowDefinition  # local import
+        from registry_pkgs.workflows.runner import definition_from_snapshot
 
-        definition = WorkflowDefinition(**parent_run.definition_snapshot)
+        definition = definition_from_snapshot(parent_run.definition_snapshot)
         all_nodes = flatten_workflow_nodes(definition.nodes)
 
         from_index = next((i for i, n in enumerate(all_nodes) if n.id == from_node_id), None)
@@ -483,9 +483,9 @@ class WorkflowControlService:
         if not parent_run.definition_snapshot:
             raise HTTPException(status_code=409, detail="Run has no definition snapshot; cannot rerun node")
 
-        from registry_pkgs.workflows.runner import _definition_from_snapshot
+        from registry_pkgs.workflows.runner import definition_from_snapshot
 
-        definition = _definition_from_snapshot(parent_run.definition_snapshot)
+        definition = definition_from_snapshot(parent_run.definition_snapshot)
         top_level_nodes = definition.nodes
 
         top_level_ids = [n.id for n in top_level_nodes]

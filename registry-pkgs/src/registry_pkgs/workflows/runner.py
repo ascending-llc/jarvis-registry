@@ -73,7 +73,7 @@ from registry_pkgs.workflows.types import WorkflowConfigError
 logger = logging.getLogger(__name__)
 
 
-def _definition_from_snapshot(snapshot: dict[str, Any]) -> WorkflowDefinition:
+def definition_from_snapshot(snapshot: dict[str, Any]) -> WorkflowDefinition:
     """Rebuild a ``WorkflowDefinition`` from a persisted JSON snapshot.
 
     Beanie 2.x's ``Document.__init__`` (and ``model_validate``) eagerly resolve
@@ -190,7 +190,7 @@ class WorkflowRunner:
 
         snapshot = definition_snapshot or run.definition_snapshot
         if snapshot:
-            definition = _definition_from_snapshot(snapshot)
+            definition = definition_from_snapshot(snapshot)
             if definition.id is None:
                 definition.id = PydanticObjectId(definition_id)
         else:
@@ -340,7 +340,7 @@ class WorkflowRunner:
             )
 
         # Reconstruct definition from the snapshot to guarantee version determinism
-        snapshot_def = _definition_from_snapshot(run.definition_snapshot)
+        snapshot_def = definition_from_snapshot(run.definition_snapshot)
 
         # Pull the pending requirements out; hydration happens inside the try below.
         pending = list(run.pending_requirements)
