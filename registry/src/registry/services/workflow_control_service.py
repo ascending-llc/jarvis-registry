@@ -483,9 +483,9 @@ class WorkflowControlService:
         if not parent_run.definition_snapshot:
             raise HTTPException(status_code=409, detail="Run has no definition snapshot; cannot rerun node")
 
-        from registry_pkgs.models.workflow import WorkflowDefinition  # local import
+        from registry_pkgs.workflows.runner import _definition_from_snapshot
 
-        definition = WorkflowDefinition(**parent_run.definition_snapshot)
+        definition = _definition_from_snapshot(parent_run.definition_snapshot)
         top_level_nodes = definition.nodes
 
         top_level_ids = [n.id for n in top_level_nodes]
@@ -629,8 +629,18 @@ class WorkflowControlService:
 
         source_run = await self._load_run(workflow_definition_id, run_id)
 
+        from registry_pkgs.models.workflow import WorkflowDefinition  # local import avoids circular deps
+
+        live_definition = await WorkflowDefinition.get(source_run.workflow_definition_id)
+        if live_definition is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"WorkflowDefinition {workflow_definition_id!r} not found; cannot replay",
+            )
+
         replay_run = WorkflowRun(
             workflow_definition_id=source_run.workflow_definition_id,
+            workflow_version=live_definition.version,
             status=WorkflowRunStatus.PENDING,
             trigger_source="replay",
             initial_input=source_run.initial_input,

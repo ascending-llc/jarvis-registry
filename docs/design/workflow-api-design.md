@@ -1155,8 +1155,6 @@ pod handles it (CAS-protected so only one wins). Frontend should poll
 | Creates | Child run (linked via `parent_run_id`) | Child run (linked via `parent_run_id`) |
 | Nodes | Selective: some cached, some re-executed | All nodes re-executed |
 | Definition | Uses source run's `definition_snapshot` | Uses **current live** definition |
-| Input | Same `initial_input` | Same `initial_input`
-| Definition | Uses source run's `definition_snapshot` | Uses **current live** definition |
 | Input | Same `initial_input` | Same `initial_input` |
 
 **Error**:

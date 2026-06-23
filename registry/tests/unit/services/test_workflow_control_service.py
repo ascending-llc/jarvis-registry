@@ -589,6 +589,10 @@ async def test_replay_run_sets_parent_run_id(monkeypatch: pytest.MonkeyPatch):
             return None
 
     monkeypatch.setattr(wcs, "WorkflowRun", _FakeRun)
+    monkeypatch.setattr(
+        "registry_pkgs.models.workflow.WorkflowDefinition.get",
+        AsyncMock(return_value=SimpleNamespace(version=1)),
+    )
 
     service = WorkflowControlService(
         directive_queue=DirectiveQueue(),
@@ -634,6 +638,10 @@ async def test_replay_run_forwards_json_fallback_for_non_user_text_input(monkeyp
             return None
 
     monkeypatch.setattr(wcs, "WorkflowRun", _FakeRun)
+    monkeypatch.setattr(
+        "registry_pkgs.models.workflow.WorkflowDefinition.get",
+        AsyncMock(return_value=SimpleNamespace(version=1)),
+    )
 
     run_mock = AsyncMock(return_value=None)
     service = WorkflowControlService(
