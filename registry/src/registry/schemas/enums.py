@@ -42,12 +42,3 @@ class HealthStatus(StrEnum):
     def is_healthy(cls, status: str) -> bool:
         """Check if a status should be considered healthy."""
         return status in cls.get_healthy_statuses()
-
-
-class TokenType(StrEnum):
-    """Token type enumeration"""
-
-    MCP_OAUTH_ACCESS = "mcp_oauth"  # Access token (canonical name, value unchanged for DB compatibility)
-    MCP_OAUTH = MCP_OAUTH_ACCESS  # Deprecated: backward-compatible alias, use MCP_OAUTH_ACCESS instead
-    MCP_OAUTH_REFRESH = "mcp_oauth_refresh"  # Refresh token
-    MCP_OAUTH_CLIENT = "mcp_oauth_client"  # Client credentials (client_id, client_secret)

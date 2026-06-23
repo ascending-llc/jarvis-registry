@@ -705,6 +705,19 @@ class ServerServiceV1:
         """
         return await ExtendedMCPServer.find_one({"path": path})
 
+    async def extract_server_path(self, request_path: str) -> str | None:
+        """Return the longest registered path prefix that matches ``request_path``.
+
+        Tries progressively shorter segments so a sub-path like ``/github/repos/list``
+        resolves to the registered server at ``/github``.
+        """
+        segments = [s for s in request_path.split("/") if s]
+        for i in range(len(segments), 0, -1):
+            candidate_path = "/" + "/".join(segments[:i])
+            if await self.get_server_by_path(candidate_path):
+                return candidate_path
+        return None
+
     async def create_server(
         self,
         data: ServerCreateRequest,

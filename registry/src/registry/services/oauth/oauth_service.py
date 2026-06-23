@@ -9,6 +9,7 @@ from ...auth.oauth.oauth_utils import get_default_redirect_uri
 from ...auth.oauth.types import StateMetadata
 from ...schemas.enums import OAuthFlowStatus
 from ...schemas.oauth_schema import (
+    MCPClientContext,
     OAuthTokens,
 )
 from ...services.oauth.token_service import TokenService
@@ -114,6 +115,7 @@ class MCPOAuthService:
         server: ExtendedMCPServer,
         *,
         state_metadata: StateMetadata | None = None,
+        mcp_client_context: MCPClientContext | None = None,
     ) -> tuple[str | None, str | None, str | None]:
         """
         Initialize OAuth flow with automatic DCR support.
@@ -277,6 +279,7 @@ class MCPOAuthService:
                 oauth_config=oauth_config,
                 flow_id=flow_id,
                 state_metadata=state_metadata,
+                mcp_client_context=mcp_client_context,
             )
 
             # Create OAuth flow

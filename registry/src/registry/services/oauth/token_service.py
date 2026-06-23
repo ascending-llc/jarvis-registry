@@ -5,9 +5,8 @@ from typing import Any
 
 from beanie import PydanticObjectId
 
-from registry_pkgs.models import Token, User
+from registry_pkgs.models import Token, TokenType, User
 
-from ...schemas.enums import TokenType
 from ...schemas.oauth_schema import OAuthClientInformation, OAuthTokens
 from ...services.user_service import UserService
 from ...utils.crypto_utils import decrypt_value, encrypt_value
