@@ -370,35 +370,6 @@ async def proxy_to_mcp_server(
         return JSONResponse(status_code=200, content=_build_jsonrpc_error(request_id, -32603, "gateway internal error"))
 
 
-async def extract_server_path_from_request(request_path: str, server_service) -> str | None:
-    """
-    Extract registered server path prefix from request URL.
-
-    Tries progressively shorter path segments until finding a registered server.
-    For example, "/github/repos/list" will check:
-    1. /github/repos/list
-    2. /github/repos
-    3. /github
-
-    Args:
-        request_path: Full incoming request path (e.g., /github/repos/list)
-        server_service: Server service instance
-
-    Returns:
-        Registered server path if found, None otherwise
-    """
-    segments = [s for s in request_path.split("/") if s]
-
-    for i in range(len(segments), 0, -1):
-        candidate_path = "/" + "/".join(segments[:i])
-
-        server = await server_service.get_server_by_path(candidate_path)
-        if server:
-            return candidate_path
-
-    return None
-
-
 @router.delete("/sessions/{server_id}")
 async def clear_session_endpoint(request: Request, server_id: str, user_context: CurrentUser) -> JSONResponse:
     """
@@ -702,7 +673,12 @@ async def dynamic_mcp_post_proxy(
     MCP protocol only uses GET and POST methods.
     """
     if not ObjectId.is_valid(user_id):
-        return JSONResponse(status_code=400, content={"error": f"Invalid user_id: {user_id}"})
+        return JSONResponse(
+            status_code=400,
+            content={
+                "detail": "The URL contains an invalid user ID. Ensure the user ID segment matches your account identifier."
+            },
+        )
 
     msg_body = await _parse_json_rpc_body(request)
     if msg_body is None:
@@ -726,7 +702,7 @@ async def dynamic_mcp_post_proxy(
     # Extract registered server path from request URL. The `user_id` prefix is never part of a
     # registered server path in MongoDB, so only the server's path segment is matched here.
     path = f"/{server_path}"
-    matched_server_path = await extract_server_path_from_request(path, server_service)
+    matched_server_path = await server_service.extract_server_path(path)
     if matched_server_path is None:
         return JSONResponse(
             status_code=200,
@@ -825,7 +801,7 @@ async def dynamic_mcp_get_proxy(
     # Extract registered server path from request URL. The `user_id` prefix is never part of a
     # registered server path in MongoDB, so only the server's path segment is matched here.
     path = f"/{server_path}"
-    matched_server_path = await extract_server_path_from_request(path, server_service)
+    matched_server_path = await server_service.extract_server_path(path)
     if matched_server_path is None:
         return JSONResponse(
             status_code=404,

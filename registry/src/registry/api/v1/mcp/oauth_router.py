@@ -42,7 +42,6 @@ from ....services.oauth.mcp_service import MCPService
 from ....services.oauth.token_service import TokenService
 from ....services.server_service import ServerServiceV1
 from ....utils.schema_converter import convert_dict_keys_to_camel
-from ...proxy_routes import extract_server_path_from_request
 
 logger = logging.getLogger(__name__)
 
@@ -656,7 +655,7 @@ async def downstream_oauth_authorize(
     # Resolve the registered server by prefix (same as the proxy), so a sub-path the client appends
     # still finds its server. The confirmation token binds to the raw URL `server_path`, not the
     # registered prefix, so mint and verify agree on whatever path the client actually uses.
-    registered_path = await extract_server_path_from_request(f"/{server_path}", server_service)
+    registered_path = await server_service.extract_server_path(f"/{server_path}")
     server = await server_service.get_server_by_path(registered_path) if registered_path else None
     if not server:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Server not found for path '{server_path}'")
@@ -690,7 +689,7 @@ async def downstream_oauth_token(
     code: str = Form(...),
     client_id: str = Form(...),
     code_verifier: str = Form(...),
-    redirect_uri: str = Form(""),
+    redirect_uri: str = Form(...),
     redis_client: Redis = Depends(get_redis_client),
 ) -> JSONResponse:
     """Per-server downstream OAuth token endpoint (Layer B: registry-as-AS).
@@ -701,7 +700,7 @@ async def downstream_oauth_token(
     if grant_type != "authorization_code":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="unsupported grant_type")
 
-    raw = redis_client.get(downstream_mcp_code_key(code))
+    raw = redis_client.getdel(downstream_mcp_code_key(code))
     if not raw:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid or expired code")
 
@@ -729,8 +728,6 @@ async def downstream_oauth_token(
     # redeemed under a different token endpoint URL.
     if user_id != bound_user_id or server_path != bound_server_path:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="code does not match this endpoint")
-
-    _ = redis_client.delete(downstream_mcp_code_key(code))
 
     confirmation_token = mint_downstream_mcp_token(
         settings.jwt_token_config, user_id=bound_user_id, server_path=bound_server_path

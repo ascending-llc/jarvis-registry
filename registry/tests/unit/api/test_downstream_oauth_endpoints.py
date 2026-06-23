@@ -54,6 +54,7 @@ def server_service_mock() -> Mock:
     server.path = "/github"
     server.serverName = "github"
     svc.get_server_by_path = AsyncMock(return_value=server)
+    svc.extract_server_path = AsyncMock(return_value="/github")
     return svc
 
 
@@ -106,7 +107,7 @@ def test_authorize_invalid_user_id_returns_400(client):
 
 
 def test_authorize_unknown_server_returns_404(client, server_service_mock):
-    server_service_mock.get_server_by_path = AsyncMock(return_value=None)
+    server_service_mock.extract_server_path = AsyncMock(return_value=None)
     resp = client.get(
         f"/mcp/downstream/oauth/authorize/{USER_A}/ghost",
         params={"client_id": "claude", "redirect_uri": "https://x/cb", "code_challenge": "abc"},
@@ -211,15 +212,15 @@ def _post_token(
 
 
 def test_token_happy_path_returns_confirmation_token(client, redis_mock):
-    redis_mock.get.return_value = _stored_entry()
+    redis_mock.getdel.return_value = _stored_entry()
     resp = _post_token(client)
     assert resp.status_code == 200
     body = resp.json()
     assert body["token_type"] == "Bearer"
     assert body["expires_in"] == 300
     assert body["access_token"]
-    # One-time use: the code is deleted from Redis.
-    redis_mock.delete.assert_called_once_with(downstream_mcp_code_key(CODE))
+    # One-time use: the code is atomically fetched-and-deleted in a single GETDEL call.
+    redis_mock.getdel.assert_called_once_with(downstream_mcp_code_key(CODE))
 
 
 def test_token_unknown_code_returns_400(client, redis_mock):
@@ -259,9 +260,15 @@ def test_token_rejects_cross_server_binding(client, redis_mock):
 
 
 def test_token_unsupported_grant_type_returns_400(client, redis_mock):
-    redis_mock.get.return_value = _stored_entry()
+    redis_mock.getdel.return_value = _stored_entry()
     resp = client.post(
         f"/mcp/downstream/oauth/token/{USER_A}/github",
-        data={"grant_type": "client_credentials", "code": CODE, "client_id": "claude", "code_verifier": VERIFIER},
+        data={
+            "grant_type": "client_credentials",
+            "code": CODE,
+            "client_id": "claude",
+            "code_verifier": VERIFIER,
+            "redirect_uri": "http://localhost:33418/cb",
+        },
     )
     assert resp.status_code == 400
