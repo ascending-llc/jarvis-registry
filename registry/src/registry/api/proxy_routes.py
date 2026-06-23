@@ -243,7 +243,7 @@ async def proxy_to_mcp_server(
 
         user_msg = (
             f"The tokens for the '{exc.server_name}' MCP server managed by Jarvis Registry have expired. "
-            "Please follow the URL to perform re-authorization in a browser window and come back again.",
+            "Please follow the URL to perform re-authorization in a browser window and come back again."
         )
 
         elicitation_id = _get_elicitation_id(exc.auth_url)
