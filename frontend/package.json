@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "dependencies": {
-    "@ascending-inc/jarvis-embed": "0.1.4",
+    "@ascending-inc/jarvis-embed": "0.1.5",
     "@dagrejs/dagre": "^3.0.0",
     "@headlessui/react": "^1.7.17",
     "@heroicons/react": "^2.0.18",
