@@ -79,10 +79,12 @@ async def downstream_authorization_server_metadata(user_id: str, server_path: st
     """
     issuer = downstream_mcp_issuer(settings.jwt_issuer, user_id, server_path)
     registry_url = settings.registry_url.rstrip("/")
+    auth_server_url = settings.auth_server_external_url.rstrip("/")
     return {
         "issuer": issuer,
         "authorization_endpoint": f"{registry_url}/api/v1/mcp/downstream/oauth/authorize/{user_id}/{server_path}",
         "token_endpoint": f"{registry_url}/api/v1/mcp/downstream/oauth/token/{user_id}/{server_path}",
+        "registration_endpoint": f"{auth_server_url}/oauth2/register",
         "jwks_uri": f"{settings.jwt_issuer}/.well-known/jwks.json",
         "response_types_supported": ["code"],
         "code_challenge_methods_supported": ["S256"],
