@@ -217,7 +217,7 @@ def test_token_happy_path_returns_confirmation_token(client, redis_mock):
     assert resp.status_code == 200
     body = resp.json()
     assert body["token_type"] == "Bearer"
-    assert body["expires_in"] == 300
+    assert body["expires_in"] == 3600
     assert body["access_token"]
     # One-time use: the code is atomically fetched-and-deleted in a single GETDEL call.
     redis_mock.getdel.assert_called_once_with(downstream_mcp_code_key(CODE))

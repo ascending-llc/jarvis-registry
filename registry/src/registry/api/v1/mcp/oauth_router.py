@@ -13,9 +13,9 @@ from mcp.server.session import ServerSession
 from redis import Redis
 
 from registry_pkgs.core.downstream_oauth import downstream_mcp_code_key
+from registry_pkgs.core.jwt_tokens import mint_managed_agent_token
 
 from ....auth.dependencies import CurrentUser
-from ....auth.downstream_token import DOWNSTREAM_MCP_TOKEN_TTL_SECONDS, mint_downstream_mcp_token
 from ....auth.oauth.reconnection import OAuthReconnectionManager
 from ....auth.oauth.types import ClientBranding
 from ....constants import DownstreamOAuthConstants
@@ -729,17 +729,26 @@ async def downstream_oauth_token(
     if user_id != bound_user_id or server_path != bound_server_path:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="code does not match this endpoint")
 
-    confirmation_token = mint_downstream_mcp_token(
-        settings.jwt_token_config, user_id=bound_user_id, server_path=bound_server_path
+    current_time = int(time.time())
+    access_token = mint_managed_agent_token(
+        settings.jwt_token_config,
+        subject=bound_user_id,
+        client_id=client_id,
+        expires_in_seconds=3600,
+        iat=current_time,
+        extra_claims={
+            "user_id": bound_user_id,
+            "scope": "mcp-proxy-ops",
+        },
     )
 
     logger.info(f"[Downstream OAuth] token issued: user={user_id} server={server_path}")
     return JSONResponse(
         status_code=200,
         content={
-            "access_token": confirmation_token,
+            "access_token": access_token,
             "token_type": "Bearer",
-            "expires_in": DOWNSTREAM_MCP_TOKEN_TTL_SECONDS,
+            "expires_in": 3600,
         },
     )
 

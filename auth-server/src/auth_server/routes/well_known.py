@@ -7,15 +7,13 @@ Also implements RFC 9728 Protected Resource Metadata.
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException
 
 from registry_pkgs.core.downstream_oauth import DOWNSTREAM_OAUTH_NAMESPACE, downstream_mcp_issuer
 from registry_pkgs.core.jwt_utils import build_jwks
 
 # Import settings
 from ..core.config import settings
-from ..deps import get_downstream_token_check
-from ..services.downstream_token_service import DownstreamTokenCheckService
 
 logger = logging.getLogger(__name__)
 
@@ -161,10 +159,7 @@ async def jwks_endpoint():
 
 
 @router.get(f"/.well-known/oauth-protected-resource{settings.service_base_path}/proxy/{{server_path:path}}")
-async def protected_resource_metadata(
-    server_path: str,
-    downstream_token_check: DownstreamTokenCheckService = Depends(get_downstream_token_check),
-):
+async def protected_resource_metadata(server_path: str):
     """
     `resource` lives on the registry backend, so we use `settings.registry_url`.
     `authorization_servers` includes our auth-server, so we use `settings.jwt_issuer`,
@@ -175,12 +170,11 @@ async def protected_resource_metadata(
     where registry backend and auth-server live on different ports of localhost.
 
     Direct-connect resources have the shape ``server/{user_id}/{actual_server_path}``. For those, the
-    advertised authorization server depends on whether the user already holds valid downstream tokens:
-    the standard registry issuer when they do, the per-server downstream issuer (which the MCP client
-    follows into the new /authorize + /token flow) when they don't.
+    advertised authorization server is always the per-server downstream issuer, so that MCP clients
+    (e.g. VS Code) always go through the downstream OAuth flow and receive a managed-agent token
+    bound to that specific (user_id, server_path) pair.
+    **MCP client such as VS Code caches the discovered AS metadata URL, so it only uses the first-time discovered URL no matter what.**
     """
-    # Default: advertise the standard registry issuer. Direct-connect resources without valid
-    # downstream tokens override this with the per-server downstream issuer below.
     authorization_servers = [settings.jwt_issuer]
 
     if server_path.startswith("server/"):
@@ -188,16 +182,7 @@ async def protected_resource_metadata(
         parts = rest.split("/", 1)
         if len(parts) == 2 and parts[0] and parts[1]:
             user_id, actual_server_path = parts[0], parts[1]
-            try:
-                has_tokens = await downstream_token_check.has_valid_downstream_token(
-                    user_id=user_id, server_path=actual_server_path
-                )
-            except Exception as e:
-                logger.warning(f"downstream token check failed for {server_path}: {e}")
-                has_tokens = False
-
-            if not has_tokens:
-                authorization_servers = [downstream_mcp_issuer(settings.jwt_issuer, user_id, actual_server_path)]
+            authorization_servers = [downstream_mcp_issuer(settings.jwt_issuer, user_id, actual_server_path)]
 
     return {
         "resource": f"{settings.registry_url}/proxy/{server_path}",
