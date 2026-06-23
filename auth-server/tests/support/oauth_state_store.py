@@ -3,10 +3,10 @@
 import time
 from typing import Any
 
-from auth_server.services.oauth_state_store import REFRESH_TOKEN_TTL_SECONDS
+from auth_server.services.oauth_state_store import REFRESH_TOKEN_TTL_SECONDS, OAuthStateStoreProtocol
 
 
-class InMemoryOAuthStateStore:
+class InMemoryOAuthStateStore(OAuthStateStoreProtocol):
     def __init__(self) -> None:
         self.registered_clients: dict[str, dict[str, Any]] = {}
         self.authorization_codes_storage: dict[str, dict[str, Any]] = {}

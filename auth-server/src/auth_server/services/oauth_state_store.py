@@ -5,7 +5,7 @@ import hmac
 import json
 import logging
 import time
-from typing import Any
+from typing import Any, Protocol
 
 from redis import Redis
 from redis.exceptions import RedisError
@@ -35,6 +35,70 @@ redis.call('DEL', old_key)
 redis.call('SET', new_key, val, 'EX', ttl)
 return val
 """
+
+
+class OAuthStateStoreProtocol(Protocol):
+    def save_client(self, client_id: str, metadata: dict[str, Any]) -> None: ...
+
+    def get_client(self, client_id: str) -> dict[str, Any] | None: ...
+
+    def validate_client_credentials(
+        self,
+        client_id: str,
+        client_secret: str | None = None,
+    ) -> bool: ...
+
+    def list_clients(self) -> list[dict[str, Any]]: ...
+
+    def save_authcode(self, code: str, data: dict[str, Any]) -> None: ...
+
+    def get_authcode(self, code: str) -> dict[str, Any] | None: ...
+
+    def consume_authcode(self, code: str) -> dict[str, Any] | None: ...
+
+    def save_refresh_token(self, token: str, data: dict[str, Any]) -> None: ...
+
+    def get_refresh_token(self, token: str) -> dict[str, Any] | None: ...
+
+    def rotate_refresh_token(
+        self,
+        old_token: str,
+        new_token: str,
+    ) -> dict[str, Any] | None: ...
+
+    def save_device_authorization(
+        self,
+        device_code: str,
+        user_code: str,
+        data: dict[str, Any],
+        ttl_seconds: int,
+    ) -> None: ...
+
+    def save_device_code(
+        self,
+        device_code: str,
+        data: dict[str, Any],
+        ttl_seconds: int,
+    ) -> None: ...
+
+    def get_device_code(self, device_code: str) -> dict[str, Any] | None: ...
+
+    def update_device_code(
+        self,
+        device_code: str,
+        data: dict[str, Any],
+    ) -> bool: ...
+
+    def save_user_code(
+        self,
+        user_code: str,
+        device_code: str,
+        ttl_seconds: int,
+    ) -> None: ...
+
+    def get_user_code(self, user_code: str) -> str | None: ...
+
+    def delete_user_code(self, user_code: str) -> None: ...
 
 
 def _decode_redis_value(value: Any) -> str | None:

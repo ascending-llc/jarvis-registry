@@ -36,7 +36,7 @@ from ..deps import (
 from ..models.device_flow import DeviceApprovalRequest, DeviceCodeResponse, DeviceTokenResponse
 from ..providers.base import AuthProvider
 from ..services.cognito_validator_service import SimplifiedCognitoValidator
-from ..services.oauth_state_store import OAuthStateStore
+from ..services.oauth_state_store import OAuthStateStoreProtocol
 from ..services.user_service import UserService
 from ..utils.security_mask import (
     anonymize_ip,
@@ -114,7 +114,7 @@ def _get_unknown_client_response() -> JSONResponse:
 def _validate_known_client_for_redirect(
     client_id: str,
     redirect_uri: str,
-    store: OAuthStateStore,
+    store: OAuthStateStoreProtocol,
 ) -> JSONResponse | None:
     if _is_registry_client(client_id):
         return None
@@ -131,7 +131,7 @@ def _validate_known_client_for_redirect(
 
 def _validate_known_client(
     client_id: str,
-    store: OAuthStateStore,
+    store: OAuthStateStoreProtocol,
 ) -> JSONResponse | None:
     if _is_registry_client(client_id):
         return None
@@ -146,7 +146,7 @@ def _validate_known_client(
 async def register_client(
     registration: ClientRegistrationRequest,
     request: Request,
-    store: OAuthStateStore = Depends(get_oauth_state_store),
+    store: OAuthStateStoreProtocol = Depends(get_oauth_state_store),
 ) -> ClientRegistrationResponse:
     try:
         logger.info(
@@ -230,7 +230,7 @@ async def device_authorization(
     client_id: str = Form(...),
     scope: str | None = Form(None),
     resource: str | None = Form(None),
-    store: OAuthStateStore = Depends(get_oauth_state_store),
+    store: OAuthStateStoreProtocol = Depends(get_oauth_state_store),
 ):
     client_error = _validate_known_client(client_id, store)
     if client_error is not None:
@@ -297,7 +297,7 @@ async def device_verification_page(user_code: str | None = None):
 @router.post("/oauth2/device/approve")
 async def approve_device(
     request: DeviceApprovalRequest,
-    store: OAuthStateStore = Depends(get_oauth_state_store),
+    store: OAuthStateStoreProtocol = Depends(get_oauth_state_store),
 ):
     device_code = store.get_user_code(request.user_code)
     if not device_code:
@@ -419,7 +419,7 @@ async def _parse_device_token_params(request: Request) -> dict:
 async def device_token(
     request: Request,
     user_service: UserService = Depends(get_user_service),
-    store: OAuthStateStore = Depends(get_oauth_state_store),
+    store: OAuthStateStoreProtocol = Depends(get_oauth_state_store),
 ):
     params = await _parse_device_token_params(request)
     grant_type: str | None = params["grant_type"]
@@ -633,7 +633,7 @@ async def oauth2_login(
     oauth2_config: OAuth2Config = Depends(get_oauth2_config),
     signer: URLSafeTimedSerializer = Depends(get_signer),
     is_https: bool = Depends(check_if_https),
-    store: OAuthStateStore = Depends(get_oauth_state_store),
+    store: OAuthStateStoreProtocol = Depends(get_oauth_state_store),
 ):
     error_url = settings.registry_error_redirect
     try:
@@ -722,7 +722,7 @@ async def oauth2_callback(
     user_service: UserService = Depends(get_user_service),
     signer: URLSafeTimedSerializer = Depends(get_signer),
     auth_provider: AuthProvider = Depends(get_auth_provider),
-    store: OAuthStateStore = Depends(get_oauth_state_store),
+    store: OAuthStateStoreProtocol = Depends(get_oauth_state_store),
 ):
     error_url = settings.registry_error_redirect
 
