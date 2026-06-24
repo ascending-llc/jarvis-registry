@@ -3,7 +3,7 @@
 import time
 from typing import Any
 
-from auth_server.services.oauth_state_store import REFRESH_TOKEN_TTL_SECONDS, OAuthStateStoreProtocol
+from registry_pkgs.core.oauth_state_store import REFRESH_TOKEN_TTL_SECONDS, OAuthStateStoreProtocol
 
 
 class InMemoryOAuthStateStore(OAuthStateStoreProtocol):
