@@ -2,6 +2,7 @@ import httpx
 from fastapi import Depends, Request
 from redis import Redis
 
+from registry_pkgs.core.oauth_state_store import OAuthStateStore
 from registry_pkgs.workflows.runner import WorkflowRunner
 
 from .auth.oauth.reconnection import OAuthReconnectionManager
@@ -115,6 +116,11 @@ def get_a2a_proxy_client_registry(container: RegistryContainer = Depends(get_con
 def get_redis_client(container: RegistryContainer = Depends(get_container)) -> Redis:
     """Get Redis client for caching."""
     return container.redis_client
+
+
+def get_oauth_state_store(container: RegistryContainer = Depends(get_container)) -> OAuthStateStore:
+    """Redis-backed OAuth state store for the direct-connect downstream flow."""
+    return container.oauth_state_store
 
 
 def get_workflow_control_service(

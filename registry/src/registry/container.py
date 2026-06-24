@@ -9,6 +9,7 @@ from agno.models.aws import AwsBedrock
 from beanie import PydanticObjectId
 from redis import Redis
 
+from registry_pkgs.core.oauth_state_store import OAuthStateStore
 from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.vector.client import DatabaseClient
 from registry_pkgs.vector.repositories.a2a_agent_repository import A2AAgentRepository
@@ -143,6 +144,21 @@ class RegistryContainer:
     @cached_property
     def flow_state_manager(self) -> FlowStateManager:
         return FlowStateManager(redis_client=self.redis_client)
+
+    @cached_property
+    def oauth_state_store(self) -> OAuthStateStore:
+        """Redis-backed OAuth state for the direct-connect downstream flow.
+
+        Direct-connect refresh tokens live under registry's own ``redis_key_prefix`` (isolated from
+        auth-server's mcpgw tokens), while DCR client records are read from the shared auth-server
+        namespace (clients register against auth-server's ``/oauth2/register``).
+        """
+        return OAuthStateStore(
+            redis_client=self.redis_client,
+            key_prefix=self.settings.redis_key_prefix,
+            client_secret_hash_key=self.settings.secret_key,
+            client_key_prefix=self.settings.auth_server_redis_key_prefix,
+        )
 
     @cached_property
     def oauth_service(self) -> MCPOAuthService:

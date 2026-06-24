@@ -99,6 +99,9 @@ class Settings(JarvisBaseSettings):
     # ==================== Redis ====================
     redis_uri: str = "redis://registry-redis:6379/1"
     redis_key_prefix: str = "jarvis-registry"
+    # auth-server's Redis namespace. Direct-connect MCP clients perform DCR against auth-server, so
+    # their client records live here; registry reads them to validate redirect_uri at /authorize.
+    auth_server_redis_key_prefix: str = "jarvis-auth-server"
 
     # ==================== Chunking ====================
     max_chunk_size: int = 2048
