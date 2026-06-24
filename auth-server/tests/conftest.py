@@ -4,7 +4,7 @@ Pytest configuration and shared fixtures for auth_server tests.
 
 import os
 from collections.abc import Generator
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -22,29 +22,74 @@ from registry_pkgs.testing.fixtures import setup_test_rsa_keys
 _test_rsa_key = setup_test_rsa_keys()
 
 
+def _seed_default_oauth_state() -> None:
+    from tests.support.oauth_state_store import test_oauth_state_store
+
+    test_oauth_state_store.clear()
+    test_oauth_state_store.save_client(
+        "test-client",
+        {
+            "client_id": "test-client",
+            "client_secret": "test-secret",
+            "client_name": "Default Test Client",
+            "redirect_uris": [
+                "http://localhost/callback",
+                "https://example.com/callback",
+                "https://us-east-1.quicksight.aws.amazon.com/sn/oauthcallback",
+            ],
+            "grant_types": ["authorization_code", "refresh_token", "urn:ietf:params:oauth:grant-type:device_code"],
+            "response_types": ["code"],
+            "scope": "servers-read agents-read",
+            "token_endpoint_auth_method": "none",
+            "registered_at": 0,
+            "ip_address": "127.0.0.1",
+        },
+    )
+
+
 @pytest.fixture
 def jwt_rsa_key() -> rsa.RSAPrivateKey:
     return _test_rsa_key
 
 
 @pytest.fixture
+def mock_redis_client() -> Mock:
+    """Mock Redis client used by auth-server lifespan tests."""
+    return Mock()
+
+
+@pytest.fixture(autouse=True)
+def mock_auth_server_infra(mock_redis_client: Mock) -> Generator[None, None, None]:
+    """Mock external infrastructure so tests do not require MongoDB or Redis."""
+    with (
+        patch("auth_server.server.init_mongodb", new_callable=AsyncMock),
+        patch("auth_server.server.close_mongodb", new_callable=AsyncMock),
+        patch("auth_server.server.create_redis_client", return_value=mock_redis_client),
+        patch("auth_server.server.close_redis_client"),
+    ):
+        yield
+
+
+@pytest.fixture
 def auth_server_app():
     """Import and return the auth server FastAPI app."""
+    from auth_server.deps import get_oauth_state_store
     from auth_server.server import app
+    from tests.support.oauth_state_store import test_oauth_state_store
 
+    app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
     return app
 
 
 @pytest.fixture
 def test_client(auth_server_app) -> Generator[TestClient, None, None]:
-    """Create a test client for the auth server with mocked MongoDB."""
-    # Mock MongoDB initialization to prevent actual connection attempts
-    with (
-        patch("auth_server.server.init_mongodb"),
-        patch("registry_pkgs.database.mongodb.MongoDB.connect_db"),
-        TestClient(auth_server_app) as client,
-    ):
+    """Create a test client for the auth server."""
+    _seed_default_oauth_state()
+    with TestClient(auth_server_app) as client:
         yield client
+    from tests.support.oauth_state_store import test_oauth_state_store
+
+    test_oauth_state_store.clear()
 
 
 @pytest.fixture
@@ -62,27 +107,13 @@ def mock_auth_provider():
 @pytest.fixture
 def clear_device_storage():
     """Clear device flow, client registration, authorization code, and refresh token storage before and after each test."""
-    from auth_server.core.state import (
-        authorization_codes_storage,
-        device_codes_storage,
-        refresh_tokens_storage,
-        registered_clients,
-        user_codes_storage,
-    )
+    from tests.support.oauth_state_store import test_oauth_state_store
 
-    device_codes_storage.clear()
-    user_codes_storage.clear()
-    registered_clients.clear()
-    authorization_codes_storage.clear()
-    refresh_tokens_storage.clear()
+    _seed_default_oauth_state()
 
     yield
 
-    device_codes_storage.clear()
-    user_codes_storage.clear()
-    registered_clients.clear()
-    authorization_codes_storage.clear()
-    refresh_tokens_storage.clear()
+    test_oauth_state_store.clear()
 
 
 # Test markers

@@ -1,12 +1,14 @@
 from functools import cache, cached_property
 
 from itsdangerous import URLSafeTimedSerializer
+from redis import Redis
 
 from .core.config import AuthSettings
 from .core.types import AllowedProvider
 from .providers.factory import get_auth_provider
 from .services.cognito_validator_service import SimplifiedCognitoValidator
 from .services.downstream_token_service import DownstreamTokenCheckService
+from .services.oauth_state_store import OAuthStateStore
 from .services.user_service import UserService
 from .utils.config_loader import AuthProviderConfig, EntraConfig, OAuth2Config, OAuth2ConfigLoader
 
@@ -14,8 +16,9 @@ from .utils.config_loader import AuthProviderConfig, EntraConfig, OAuth2Config, 
 class AuthContainer:
     """App-scoped dependencies for the auth server."""
 
-    def __init__(self, settings: AuthSettings):
+    def __init__(self, settings: AuthSettings, *, redis_client: Redis):
         self._settings = settings
+        self.redis_client = redis_client
         # Eagerly load OAuth2 config so app can fail early and loudly on start-up if config file is off.
         self._config_loader = OAuth2ConfigLoader(self._settings)
         self._oauth2_config = self._config_loader.get_config()
@@ -39,6 +42,14 @@ class AuthContainer:
     @cached_property
     def signer(self) -> URLSafeTimedSerializer:
         return URLSafeTimedSerializer(self._settings.secret_key)
+
+    @cached_property
+    def oauth_state_store(self) -> OAuthStateStore:
+        return OAuthStateStore(
+            redis_client=self.redis_client,
+            key_prefix=self._settings.redis_key_prefix,
+            client_secret_hash_key=self._settings.secret_key,
+        )
 
     @cache
     def get_provider_config(self, provider: AllowedProvider) -> AuthProviderConfig | EntraConfig:

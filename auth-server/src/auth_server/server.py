@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 # Import database utilities
 from registry_pkgs.database import close_mongodb, init_mongodb
+from registry_pkgs.database.redis_client import close_redis_client, create_redis_client
 from registry_pkgs.telemetry import setup_metrics
 
 from .container import AuthContainer
@@ -37,6 +38,8 @@ DEFAULT_TOKEN_LIFETIME_HOURS = settings.default_token_lifetime_hours
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application startup and shutdown lifecycle management."""
+    mongo_initialized = False
+    redis_client = None
 
     # Set the level on the root logger to WARNING to avoid noise. This must be done in the lifespan function
     # because uvicorn does something about logging on start up.
@@ -48,12 +51,23 @@ async def lifespan(app: FastAPI):
         # Initialize MongoDB connection
         logger.info("🗄️  Initializing MongoDB connection...")
         await init_mongodb(settings.mongo_config)
-        app.state.container = AuthContainer(settings=settings)
+        mongo_initialized = True
         logger.info("✅ MongoDB connection established")
+
+        logger.info("Initializing Redis connection...")
+        redis_client = create_redis_client(settings.redis_config)
+
+        app.state.container = AuthContainer(settings=settings, redis_client=redis_client)
         logger.info("✅ Auth server initialized successfully!")
 
     except Exception as e:
         logger.error(f"❌ Failed to initialize services: {e}", exc_info=True)
+        try:
+            close_redis_client(redis_client)
+            if mongo_initialized:
+                await close_mongodb()
+        except Exception as cleanup_error:
+            logger.error(f"❌ Error during failed-startup cleanup: {cleanup_error}", exc_info=True)
         raise
 
     # Application is ready
@@ -64,6 +78,8 @@ async def lifespan(app: FastAPI):
     try:
         if hasattr(app.state, "container"):
             del app.state.container
+        logger.info("Closing Redis connection...")
+        close_redis_client(redis_client)
         # Close MongoDB connection
         logger.info("🗄️  Closing MongoDB connection...")
         await close_mongodb()
