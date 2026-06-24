@@ -9,6 +9,7 @@ import logging
 
 from fastapi import APIRouter, HTTPException
 
+from registry_pkgs.core.downstream_oauth import DOWNSTREAM_OAUTH_NAMESPACE, downstream_mcp_issuer
 from registry_pkgs.core.jwt_utils import build_jwks
 
 # Import settings
@@ -59,6 +60,32 @@ async def oauth_authorization_server_metadata():
         "code_challenge_methods_supported": ["S256"],
         "scopes_supported": scope_names,
         "service_documentation": f"{auth_server_url}/docs",
+    }
+
+
+@router.get(f"/.well-known/oauth-authorization-server/{DOWNSTREAM_OAUTH_NAMESPACE}/{{user_id}}/{{server_path:path}}")
+async def downstream_authorization_server_metadata(user_id: str, server_path: str):
+    """Per-user, per-server downstream OAuth authorization server metadata (RFC 8414).
+
+    The MCP client reaches this by RFC 8414 path-insertion from the issuer identifier
+    ``{jwt_issuer}/proxy/server/oauth/{user_id}/{server_path}`` advertised in the protected
+    resource metadata. The ``issuer`` MUST exactly equal that identifier (RFC 8414 §3.3).
+
+    No ``service_base_path`` prefix here: the issuer is rooted at ``jwt_issuer`` (origin-only),
+    so the well-known path is ``/proxy/server/oauth/...`` directly after ``/.well-known/``.
+    The functional ``authorization_endpoint`` / ``token_endpoint`` live on the registry backend.
+    """
+    issuer = downstream_mcp_issuer(settings.jwt_issuer, user_id, server_path)
+    registry_url = settings.registry_url.rstrip("/")
+    auth_server_url = settings.auth_server_external_url.rstrip("/")
+    return {
+        "issuer": issuer,
+        "authorization_endpoint": f"{registry_url}/api/v1/mcp/downstream/oauth/authorize/{user_id}/{server_path}",
+        "token_endpoint": f"{registry_url}/api/v1/mcp/downstream/oauth/token/{user_id}/{server_path}",
+        "registration_endpoint": f"{auth_server_url}/oauth2/register",
+        "jwks_uri": f"{settings.jwt_issuer}/.well-known/jwks.json",
+        "response_types_supported": ["code"],
+        "code_challenge_methods_supported": ["S256"],
     }
 
 
@@ -141,11 +168,25 @@ async def protected_resource_metadata(server_path: str):
     In EKS all URLs use the same domain name and traffic is handled by k8s Ingress.
     The current way of writing it only makes a difference when running services locally in Docker Compose,
     where registry backend and auth-server live on different ports of localhost.
+
+    Direct-connect resources have the shape ``server/{user_id}/{actual_server_path}``. For those, the
+    advertised authorization server is always the per-server downstream issuer, so that MCP clients
+    (e.g. VS Code) always go through the downstream OAuth flow and receive a managed-agent token
+    bound to that specific (user_id, server_path) pair.
+    **MCP client such as VS Code caches the discovered AS metadata URL, so it only uses the first-time discovered URL no matter what.**
     """
+    authorization_servers = [settings.jwt_issuer]
+
+    if server_path.startswith("server/"):
+        rest = server_path.removeprefix("server/")
+        parts = rest.split("/", 1)
+        if len(parts) == 2 and parts[0] and parts[1]:
+            user_id, actual_server_path = parts[0], parts[1]
+            authorization_servers = [downstream_mcp_issuer(settings.jwt_issuer, user_id, actual_server_path)]
 
     return {
         "resource": f"{settings.registry_url}/proxy/{server_path}",
-        "authorization_servers": [settings.jwt_issuer],
+        "authorization_servers": authorization_servers,
         "scopes_supported": settings.scopes_list,
         "bearer_methods_supported": ["header"],
     }

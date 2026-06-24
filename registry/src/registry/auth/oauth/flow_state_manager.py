@@ -15,6 +15,7 @@ from ...auth.oauth.types import OAuthFlowState, StateMetadata
 from ...core.config import settings
 from ...schemas.enums import OAuthFlowStatus
 from ...schemas.oauth_schema import (
+    MCPClientContext,
     MCPOAuthFlowMetadata,
     OAuthClientInformation,
     OAuthFlow,
@@ -146,6 +147,7 @@ class FlowStateManager:
         flow_id: str,
         *,
         state_metadata: StateMetadata | None = None,
+        mcp_client_context: MCPClientContext | None = None,
     ) -> MCPOAuthFlowMetadata:
         """Create OAuth flow metadata"""
         # Generate secure state parameter (base64url encoded JSON string)
@@ -168,6 +170,7 @@ class FlowStateManager:
             client_info=self._create_client_info(oauth_config, server_path),
             metadata=self._create_oauth_metadata(oauth_config),
             resource_metadata=resource_metadata,
+            mcp_client_context=mcp_client_context,
         )
 
     def create_flow(

@@ -680,32 +680,102 @@ class WorkflowService:
             logger.exception("Error listing workflow runs for %s", workflow_id)
             raise
 
-    async def get_workflow_run(self, workflow_id: str, run_id: str) -> tuple[WorkflowRun, list[NodeRun]]:
+    async def list_child_runs(
+        self,
+        workflow_id: str,
+        parent_run_id: str,
+        page: int = 1,
+        per_page: int = 20,
+    ) -> tuple[list[tuple[WorkflowRun, list[NodeRun]]], int]:
+        """List child runs spawned from a given parent run (rerun / replay / retry).
+
+        Args:
+            workflow_id:    Parent workflow ID (used to verify ownership).
+            parent_run_id:  The source WorkflowRun whose children we want.
+            page:           Page number (1-based).
+            per_page:       Items per page.
+
+        Returns:
+            Tuple of ((run, node_runs) list, total count).
+
+        Raises:
+            ValueError: If workflow or parent run not found.
         """
-        Get workflow run detail with all node runs.
+        try:
+            workflow = await self.get_workflow_by_id(workflow_id)
+            try:
+                parent_oid = PydanticObjectId(parent_run_id)
+            except Exception as exc:
+                raise ValueError(f"Invalid run ID: {parent_run_id!r}") from exc
+
+            parent_run = await WorkflowRun.find_one(
+                WorkflowRun.id == parent_oid,
+                WorkflowRun.workflow_definition_id == workflow.id,
+            )
+            if parent_run is None:
+                raise ValueError(f"Run {parent_run_id!r} not found in workflow {workflow_id!r}")
+
+            filters: dict[str, Any] = {
+                "workflow_definition_id": workflow.id,
+                "parent_run_id": parent_oid,
+            }
+            total = await WorkflowRun.find(filters).count()
+            skip = (page - 1) * per_page
+            runs = await WorkflowRun.find(filters).sort("-started_at").skip(skip).limit(per_page).to_list()
+            run_ids = [run.id for run in runs]
+            node_runs_by_run_id: dict[str, list[NodeRun]] = {str(run_id): [] for run_id in run_ids}
+            if run_ids:
+                node_runs = await NodeRun.find({"workflow_run_id": {"$in": run_ids}}).sort("started_at").to_list()
+                for node_run in node_runs:
+                    node_runs_by_run_id.setdefault(str(node_run.workflow_run_id), []).append(node_run)
+
+            runs_with_nodes = [(run, node_runs_by_run_id.get(str(run.id), [])) for run in runs]
+            logger.info(
+                "Listed %d child run(s) for parent run %s (workflow: %s, total: %d)",
+                len(runs),
+                parent_run_id,
+                workflow_id,
+                total,
+            )
+            return runs_with_nodes, total
+
+        except ValueError:
+            raise
+        except Exception:
+            logger.exception("Error listing child runs for parent run %s", parent_run_id)
+            raise
+
+    async def _load_workflow_run(self, workflow_id: str, run_id: str) -> WorkflowRun:
+        """Load a WorkflowRun and verify it belongs to the requested workflow.
 
         Args:
             workflow_id: Workflow ID
             run_id: Run ID
 
         Returns:
-            Tuple of (WorkflowRun, list of NodeRuns)
+            The matching WorkflowRun document.
 
         Raises:
-            ValueError: If workflow or run not found
+            ValueError: If workflow or run not found, or run does not belong to workflow.
         """
+        # Verify workflow exists
+        await self.get_workflow_by_id(workflow_id)
+
+        # Get workflow run
+        run = await WorkflowRun.get(PydanticObjectId(run_id))
+        if not run:
+            raise ValueError(f"Workflow run {run_id} not found")
+
+        # Verify run belongs to workflow
+        if str(run.workflow_definition_id) != workflow_id:
+            raise ValueError(f"Workflow run {run_id} does not belong to workflow {workflow_id}")
+
+        return run
+
+    async def get_workflow_run(self, workflow_id: str, run_id: str) -> tuple[WorkflowRun, list[NodeRun]]:
+        """Get workflow run detail with all node runs."""
         try:
-            # Verify workflow exists
-            await self.get_workflow_by_id(workflow_id)
-
-            # Get workflow run
-            run = await WorkflowRun.get(PydanticObjectId(run_id))
-            if not run:
-                raise ValueError(f"Workflow run {run_id} not found")
-
-            # Verify run belongs to workflow
-            if str(run.workflow_definition_id) != workflow_id:
-                raise ValueError(f"Workflow run {run_id} does not belong to workflow {workflow_id}")
+            run = await self._load_workflow_run(workflow_id, run_id)
 
             # Get all node runs for this workflow run
             node_runs = await NodeRun.find(NodeRun.workflow_run_id == run.id).sort("started_at").to_list()
@@ -718,6 +788,41 @@ class WorkflowService:
         except Exception:
             logger.exception("Error getting workflow run %s", run_id)
             raise
+
+    async def get_workflow_run_doc(self, workflow_id: str, run_id: str) -> WorkflowRun:
+        """Get a WorkflowRun document without loading its NodeRuns"""
+        try:
+            return await self._load_workflow_run(workflow_id, run_id)
+        except ValueError:
+            raise
+        except Exception:
+            logger.exception("Error getting workflow run doc %s", run_id)
+            raise
+
+    async def get_node_runs(self, workflow_run_id: str) -> list[NodeRun]:
+        """Return all NodeRuns for a WorkflowRun, ordered by started_at ascending."""
+        try:
+            run_oid = PydanticObjectId(workflow_run_id)
+        except Exception as exc:
+            raise ValueError(f"Invalid workflow_run_id {workflow_run_id!r}") from exc
+        return await NodeRun.find(NodeRun.workflow_run_id == run_oid).sort("started_at").to_list()
+
+    async def get_node_run(self, workflow_run_id: str, node_run_id: str) -> NodeRun:
+        """Return a single NodeRun by ID, verifying it belongs to the given run.
+
+        Raises:
+            ValueError: If node_run_id is invalid, not found, or belongs to a different run.
+        """
+        try:
+            nr_oid = PydanticObjectId(node_run_id)
+        except Exception as exc:
+            raise ValueError(f"Invalid node_run_id {node_run_id!r}") from exc
+        nr = await NodeRun.get(nr_oid)
+        if nr is None:
+            raise ValueError(f"NodeRun {node_run_id!r} not found")
+        if str(nr.workflow_run_id) != workflow_run_id:
+            raise ValueError(f"NodeRun {node_run_id!r} does not belong to run {workflow_run_id!r}")
+        return nr
 
     def _convert_api_canvas_to_model(self, api_canvas: Any) -> WorkflowCanvas:
         """Convert API canvas input to model WorkflowCanvas."""

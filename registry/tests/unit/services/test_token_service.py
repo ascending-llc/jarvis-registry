@@ -7,10 +7,9 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 from beanie import PydanticObjectId
 
-from registry.schemas.enums import TokenType
 from registry.schemas.oauth_schema import OAuthClientInformation, OAuthTokens
 from registry.services.oauth.token_service import TokenService
-from registry_pkgs.models import Token
+from registry_pkgs.models import Token, TokenType
 
 
 class TestTokenServiceBasicMethods:

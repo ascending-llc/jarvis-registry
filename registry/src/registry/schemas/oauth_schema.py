@@ -1,10 +1,29 @@
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TypedDict
 
 from pydantic import BaseModel, Field, ValidationInfo, field_validator
 
 from .enums import OAuthFlowStatus
+
+
+class MCPClientContext(TypedDict):
+    """OAuth 2.0 / PKCE parameters of an MCP client that initiated a downstream OAuth flow via
+    the per-server `/downstream/oauth/authorize` endpoint (Layer B: registry-as-AS).
+
+    Stored on the flow metadata so the callback can redirect the browser back to the MCP client
+    (`redirect_uri`) and the `/token` endpoint can complete PKCE. Distinct from the Layer A PKCE
+    the registry runs against the upstream provider.
+
+    Defined here (not in ``auth/oauth/types.py``) because ``schemas`` must not import the
+    ``auth.oauth`` package — doing so creates a circular import via the package ``__init__``.
+    """
+
+    redirect_uri: str
+    client_id: str
+    code_challenge: str
+    state: str
+    server_path: str
 
 
 class OAuthTokens(BaseModel):
@@ -80,6 +99,10 @@ class MCPOAuthFlowMetadata(BaseModel):
     client_info: OAuthClientInformation = Field(..., description="Client information")
     metadata: OAuthMetadata = Field(..., description="OAuth metadata")
     resource_metadata: OAuthProtectedResourceMetadata | None = Field(None, description="Resource metadata")
+    mcp_client_context: MCPClientContext | None = Field(
+        None,
+        description="OAuth/PKCE context of an MCP client that initiated a downstream OAuth flow (Layer B)",
+    )
 
 
 @dataclass

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import date, datetime
 from typing import TYPE_CHECKING, Any
 
 from agno.workflow import (
@@ -16,6 +17,7 @@ from agno.workflow import (
 )
 from agno.workflow.step import OnError, StepExecutor
 from agno.workflow.types import HumanReview
+from pydantic import BaseModel
 
 from registry_pkgs.models.enums import OnRejectPolicy, OnTimeoutPolicy, WorkflowNodeType
 from registry_pkgs.models.workflow import (
@@ -27,7 +29,7 @@ from registry_pkgs.models.workflow import (
 )
 from registry_pkgs.workflows.hitl.field_types import field_type_to_agno
 from registry_pkgs.workflows.persistence import WorkflowRunSyncer
-from registry_pkgs.workflows.types import POOL_KEY_PREFIX
+from registry_pkgs.workflows.types import NODE_INPUT_SNAPSHOTS_KEY, POOL_KEY_PREFIX
 
 if TYPE_CHECKING:
     from registry_pkgs.workflows.control import DirectiveQueue
@@ -48,6 +50,69 @@ _ON_TIMEOUT_TO_AGNO: dict[OnTimeoutPolicy, str] = {
     OnTimeoutPolicy.SKIP: "skip",
     OnTimeoutPolicy.CANCEL: "cancel",
 }
+
+
+def _json_safe(value: Any) -> Any:
+    """Return a Mongo-safe, debug-friendly representation of workflow input values."""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode="json")
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(item) for item in value]
+    if hasattr(value, "to_dict"):
+        try:
+            return _json_safe(value.to_dict())
+        except Exception:
+            return str(value)
+    return str(value)
+
+
+def _serialize_step_output(value: StepOutput) -> dict[str, Any]:
+    """Serialize a previous StepOutput without recursively storing full internals."""
+    return {
+        "step_name": value.step_name,
+        "step_id": value.step_id,
+        "content": _json_safe(value.content),
+        "success": value.success,
+        "error": value.error,
+    }
+
+
+def _serialize_step_input(step_input: StepInput) -> dict[str, Any]:
+    """Serialize the fields users need to debug how a node was invoked."""
+    previous_outputs = step_input.previous_step_outputs or {}
+    return {
+        "input": _json_safe(step_input.input),
+        "previous_step_content": _json_safe(step_input.previous_step_content),
+        "previous_step_outputs": {
+            str(name): _serialize_step_output(output) for name, output in previous_outputs.items()
+        },
+        "additional_data": _json_safe(step_input.additional_data),
+        "images": _json_safe(step_input.images),
+        "videos": _json_safe(step_input.videos),
+        "audio": _json_safe(step_input.audio),
+        "files": _json_safe(step_input.files),
+    }
+
+
+def _with_input_capture(
+    node: WorkflowNode,
+    executor: StepExecutor,
+) -> StepExecutor:
+    """Wrap a step executor so NodeRun.input_snapshot can be persisted later."""
+
+    async def _capturing(step_input: StepInput, session_state: dict | None = None) -> StepOutput:
+        if session_state is not None:
+            snapshots = session_state.setdefault(NODE_INPUT_SNAPSHOTS_KEY, {})
+            snapshots[node.id] = _serialize_step_input(step_input)
+        return await executor(step_input, session_state)
+
+    return _capturing
 
 
 def _to_agno_human_review(spec: HumanReviewSpec | None) -> HumanReview | None:
@@ -89,24 +154,29 @@ def compile_workflow(
     db_name: str | None = None,
     directive_queue: DirectiveQueue | None = None,
     injected_outputs: dict[str, dict[str, Any]] | None = None,
+    stop_after_node_id: str | None = None,
 ) -> Workflow:
     """Compile a WorkflowDefinition + WorkflowRun into an agno Workflow.
 
     Args:
-        definition:        The workflow definition loaded from MongoDB.
-        run:               The WorkflowRun document (already inserted).
-        executor_registry: Maps executor_key strings to async executor functions.
-        db_client:         pymongo AsyncMongoClient.  When provided (with db_name),
-                           a WorkflowRunSyncer is attached so agno's upsert_session
-                           automatically syncs run state to WorkflowRun / NodeRun.
-        db_name:           MongoDB database name (required when db_client is set).
-        directive_queue:   When provided, every STEP executor is wrapped with
-                           :func:`~registry_pkgs.workflows.control.with_control`
-                           to enable pause, cancel, and retry-backoff behaviour.
-        injected_outputs:  Mapping of ``node_id → output content`` for nodes that
-                           should be skipped by replaying a cached result.  Used
-                           when retrying a run from a specific node so that
-                           previously completed nodes are not re-executed.
+        definition:          The workflow definition loaded from MongoDB.
+        run:                 The WorkflowRun document (already inserted).
+        executor_registry:   Maps executor_key strings to async executor functions.
+        db_client:           pymongo AsyncMongoClient.  When provided (with db_name),
+                             a WorkflowRunSyncer is attached so agno's upsert_session
+                             automatically syncs run state to WorkflowRun / NodeRun.
+        db_name:             MongoDB database name (required when db_client is set).
+        directive_queue:     When provided, every STEP executor is wrapped with
+                             :func:`~registry_pkgs.workflows.control.with_control`
+                             to enable pause, cancel, and retry-backoff behaviour.
+        injected_outputs:    Mapping of ``node_id → output content`` for nodes that
+                             should be skipped by replaying a cached result.  Used
+                             when retrying a run from a specific node so that
+                             previously completed nodes are not re-executed.
+        stop_after_node_id:  When set, only compile top-level nodes up to and including
+                             this node ID.  Downstream nodes are excluded from the agno
+                             Workflow entirely, so they produce no NodeRun records.
+                             Only top-level (non-nested) nodes are supported.
     """
     if (db_client is None) != (db_name is None):
         raise ValueError("compile_workflow requires db_client and db_name together")
@@ -122,6 +192,17 @@ def compile_workflow(
         )
 
     _injected = injected_outputs or {}
+
+    nodes_to_compile = definition.nodes
+    if stop_after_node_id is not None:
+        top_level_ids = [n.id for n in definition.nodes]
+        if stop_after_node_id not in top_level_ids:
+            raise ValueError(
+                f"stop_after_node_id {stop_after_node_id!r} not found in top-level nodes "
+                f"(found: {top_level_ids}). Nested node rerun is not supported."
+            )
+        cut = top_level_ids.index(stop_after_node_id)
+        nodes_to_compile = definition.nodes[: cut + 1]
 
     def _make_injected_executor(data: dict[str, Any]) -> StepExecutor:
         """Return a pass-through executor that replays *content* and *session_state*."""
@@ -153,6 +234,8 @@ def compile_workflow(
                         f"executor key {lookup_key!r} not found in executor_registry "
                         f"(registered: {list(executor_registry)})"
                     )
+
+            executor = _with_input_capture(node, executor)
 
             # Wrap with directive checking and retry backoff when a queue is present.
             if directive_queue is not None:
@@ -211,7 +294,7 @@ def compile_workflow(
 
         raise ValueError(f"Unknown node_type: {node.node_type!r}")
 
-    steps = [_build(n) for n in definition.nodes]
+    steps = [_build(n) for n in nodes_to_compile]
     workflow_kwargs: dict[str, Any] = {
         "id": str(definition.id),
         "name": definition.name,

@@ -43,7 +43,6 @@ const McpPlaygroundModal = ({ serverName, onClose }: Props) => {
         const embed = new JarvisEmbed({
           provider: 'direct',
           token,
-          model: 'anthropic-claude-sonnet-4-6',
           apiUrl: JARVIS_URL,
           container,
           artifactsButton: true,
