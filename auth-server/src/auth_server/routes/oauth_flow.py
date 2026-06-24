@@ -19,7 +19,16 @@ from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from pydantic import BaseModel
 
 from registry_pkgs.core.jwt_tokens import mint_managed_agent_token
-from registry_pkgs.core.jwt_utils import decode_jwt_unverified, get_token_kid
+from registry_pkgs.core.jwt_utils import (
+    InvalidAudienceError,
+    InvalidIssuerError,
+    InvalidSignatureError,
+    InvalidTokenError,
+    decode_jwt_unverified,
+    decode_jwt_with_jwk,
+    find_matching_jwk,
+    get_token_kid,
+)
 from registry_pkgs.core.scopes import map_groups_to_scopes
 
 from ..core.config import settings
@@ -57,12 +66,69 @@ JWT_SELF_SIGNED_KID = settings.jwt_self_signed_kid
 # All access tokens issued by /oauth2/token (+ device flow) are managed-agent (proxy) tokens.
 JWT_TOKEN_CONFIG = settings.jwt_token_config
 
+_OIDC_TOKEN_ALGORITHMS = ["RS256"]
+
 
 def oauth_error_response(error: str, error_description: str | None = None, status_code: int = 400) -> JSONResponse:
     content = {"error": error}
     if error_description:
         content["error_description"] = error_description
     return JSONResponse(status_code=status_code, content=content)
+
+
+def _provider_token_issuers(provider: AllowedProvider, auth_provider: AuthProvider) -> list[str]:
+    if provider == "keycloak":
+        issuer_candidates = [
+            getattr(auth_provider, "external_realm_url", None),
+            getattr(auth_provider, "realm_url", None),
+            f"http://localhost:8080/realms/{getattr(auth_provider, 'realm', '')}",
+        ]
+        return [issuer for issuer in issuer_candidates if issuer]
+
+    issuer = getattr(auth_provider, "issuer", None)
+    if not issuer:
+        raise InvalidTokenError(f"Provider {provider} does not expose an issuer for token verification")
+
+    return [issuer]
+
+
+def _provider_token_audience(provider: AllowedProvider, auth_provider: AuthProvider) -> str | list[str] | None:
+    client_id = getattr(auth_provider, "client_id", None)
+    if not client_id:
+        raise InvalidTokenError(f"Provider {provider} does not expose a client_id for token verification")
+
+    if provider == "keycloak":
+        audiences = ["account", client_id, getattr(auth_provider, "m2m_client_id", client_id)]
+        return list(dict.fromkeys(audiences))
+
+    # Cognito access tokens omit the standard 'aud' claim; skipping audience
+    # verification avoids InvalidAudienceError for both id_token and access_token flows.
+    return None
+
+
+async def _decode_oidc_provider_token(
+    token: str,
+    provider: AllowedProvider,
+    auth_provider: AuthProvider,
+) -> dict[str, Any]:
+    jwks = await auth_provider.get_jwks()
+    matching_key = find_matching_jwk(jwks, get_token_kid(token))
+    audience = _provider_token_audience(provider, auth_provider)
+
+    last_issuer_error: InvalidIssuerError | None = None
+    for issuer in _provider_token_issuers(provider, auth_provider):
+        try:
+            return decode_jwt_with_jwk(
+                token,
+                matching_key,
+                algorithms=_OIDC_TOKEN_ALGORITHMS,
+                issuer=issuer,
+                audience=audience,
+            )
+        except InvalidIssuerError as e:
+            last_issuer_error = e
+
+    raise last_issuer_error or ValueError(f"Token issuer is not trusted for provider {provider}")
 
 
 class ClientRegistrationRequest(BaseModel):
@@ -798,7 +864,7 @@ async def oauth2_callback(
         try:
             if provider in ["cognito", "keycloak"]:
                 if "id_token" in token_data:
-                    id_claims = decode_jwt_unverified(token_data["id_token"])
+                    id_claims = await _decode_oidc_provider_token(token_data["id_token"], provider, auth_provider)
                     mapped_user = {
                         "username": id_claims.get("preferred_username") or id_claims.get("sub"),
                         "email": id_claims.get("email"),
@@ -807,8 +873,9 @@ async def oauth2_callback(
                         "groups": id_claims.get("groups", []),
                     }
                 elif "access_token" in token_data:
-                    # Try to decode access_token without verification to extract claims
-                    access_claims = decode_jwt_unverified(token_data["access_token"])
+                    access_claims = await _decode_oidc_provider_token(
+                        token_data["access_token"], provider, auth_provider
+                    )
                     mapped_user = {
                         "username": access_claims.get("username") or access_claims.get("sub"),
                         "email": access_claims.get("email"),
@@ -831,6 +898,8 @@ async def oauth2_callback(
                 }
             else:
                 raise ValueError(f"Unsupported provider {provider}")
+        except (InvalidSignatureError, InvalidTokenError, InvalidIssuerError, InvalidAudienceError):
+            raise
         except Exception:
             logger.exception("Falling back to userInfo on token parsing error")
 

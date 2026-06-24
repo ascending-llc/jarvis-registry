@@ -1,5 +1,6 @@
 export type GetAuthMeResponse = {
   username: string;
+  userId?: string;
   email: string;
   scopes: string[];
   groups: string[];

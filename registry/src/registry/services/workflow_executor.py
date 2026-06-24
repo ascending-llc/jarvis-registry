@@ -10,6 +10,7 @@ from beanie import PydanticObjectId
 
 from registry_pkgs.models.enums import WorkflowRunStatus
 from registry_pkgs.models.workflow import NodeRun, WorkflowRun
+from registry_pkgs.workflows.helpers import extract_user_text
 from registry_pkgs.workflows.runner import WorkflowRunner
 
 logger = logging.getLogger(__name__)
@@ -44,16 +45,7 @@ async def execute_workflow_run_background(
             logger.error(f"Workflow run {run_id_str} not found")
             return
 
-        # Extract user input
-        user_text = ""
-        if run.initial_input:
-            # Try to extract user_text from initial_input
-            user_text = run.initial_input.get("user_text", "")
-            if not user_text and run.initial_input:
-                # If no user_text, use the entire input as JSON string
-                import json
-
-                user_text = json.dumps(run.initial_input)
+        user_text = extract_user_text(run.initial_input)
 
         logger.info(f"Starting execution for run {run_id_str} (workflow: {run.workflow_definition_id})")
 

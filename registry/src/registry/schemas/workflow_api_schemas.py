@@ -708,13 +708,8 @@ def convert_to_run_detail(run: Any, node_runs: list[Any]) -> WorkflowRunDetailRe
     )
 
 
-def _convert_node_run_to_output(node_run: Any) -> NodeRunOutput:
+def convert_node_run_to_output(node_run: Any) -> NodeRunOutput:
     """Convert NodeRun to NodeRunOutput"""
-    from registry_pkgs.models.workflow import NodeRun
-
-    if not isinstance(node_run, NodeRun):
-        raise ValueError("Expected NodeRun instance")
-
     return NodeRunOutput(
         id=str(node_run.id),
         workflowRunId=str(node_run.workflow_run_id),
@@ -728,3 +723,8 @@ def _convert_node_run_to_output(node_run: Any) -> NodeRunOutput:
         startedAt=node_run.started_at,
         finishedAt=node_run.finished_at,
     )
+
+
+def _convert_node_run_to_output(node_run: Any) -> NodeRunOutput:
+    """Backward-compatible private alias for existing converter call sites."""
+    return convert_node_run_to_output(node_run)

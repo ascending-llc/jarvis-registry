@@ -6,6 +6,7 @@ from .container import AuthContainer
 from .core.types import AllowedProvider
 from .providers.base import AuthProvider
 from .services.cognito_validator_service import SimplifiedCognitoValidator
+from .services.downstream_token_service import DownstreamTokenCheckService
 from .services.oauth_state_store import OAuthStateStore
 from .services.user_service import UserService
 from .utils.config_loader import OAuth2Config
@@ -17,6 +18,10 @@ def get_container(request: Request) -> AuthContainer:
 
 def get_user_service(container: AuthContainer = Depends(get_container)) -> UserService:
     return container.user_service
+
+
+def get_downstream_token_check(container: AuthContainer = Depends(get_container)) -> DownstreamTokenCheckService:
+    return container.downstream_token_check
 
 
 def get_validator(container: AuthContainer = Depends(get_container)) -> SimplifiedCognitoValidator:

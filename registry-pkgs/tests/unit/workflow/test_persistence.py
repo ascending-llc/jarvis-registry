@@ -157,7 +157,9 @@ class TestWorkflowPersistence:
                 self.__dict__.update(kwargs)
                 self.attempt = 0
                 self.status = NodeRunStatus.PENDING
+                self.input_snapshot = None
                 self.output_snapshot = None
+                self.session_state_snapshot = None
                 self.finished_at = None
                 self.error = None
                 self.selected_a2a_key = None
@@ -175,14 +177,24 @@ class TestWorkflowPersistence:
         sync = _sync_with_fake_run()
         sync._node_by_name = {"fetch": WorkflowNode(name="fetch", executor_key="tool")}
 
-        await sync._upsert_node_run(StepOutput(step_name="fetch", content="ok", success=True))
+        await sync._upsert_node_run(
+            StepOutput(step_name="fetch", content="ok", success=True),
+            session_data={
+                persistence.NODE_INPUT_SNAPSHOTS_KEY: {
+                    sync._node_by_name["fetch"].id: {"input": "hello"},
+                },
+                "kept": "state",
+            },
+        )
 
         assert find_one_calls[0][1] == {"session": None}
         node_run, save_kwargs = saved[0]
         assert node_run.node_name == "fetch"
         assert node_run.status == NodeRunStatus.COMPLETED
         assert node_run.attempt == 1
+        assert node_run.input_snapshot == {"input": "hello"}
         assert node_run.output_snapshot == {"content": "ok"}
+        assert node_run.session_state_snapshot == {"kept": "state"}
         assert node_run.finished_at is not None
         assert save_kwargs == {"session": None}
 

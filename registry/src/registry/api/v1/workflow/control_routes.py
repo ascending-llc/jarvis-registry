@@ -5,10 +5,12 @@ import logging
 from beanie import PydanticObjectId
 from fastapi import APIRouter, Depends, HTTPException, Request
 
+from registry.api.v1.workflow.token_helpers import build_registry_token
 from registry.auth.dependencies import CurrentUser, UserContextDict
 from registry.deps import get_acl_service, get_workflow_control_service
 from registry.schemas.workflow_schemas import (
     DirectiveResponse,
+    NodeRerunRequest,
     ResolveRequirementRequest,
     ResolveRequirementResponse,
     RetryRequest,
@@ -138,8 +140,7 @@ async def retry_run(
     Returns 400 if the run has not yet finished (still RUNNING or PAUSED).
     Returns 400 if *from_node_id* does not exist in the workflow definition.
     """
-    auth_header = request.headers.get("Authorization", "")
-    registry_token = auth_header.removeprefix("Bearer ").strip()
+    registry_token = build_registry_token(request, current_user)
     user_id = current_user.get("user_id")
 
     try:
@@ -207,4 +208,99 @@ async def approve_run(
         raise
     except Exception as exc:
         logger.exception("Approve request failed for run %s", run_id)
+        raise HTTPException(status_code=500, detail="Internal server error") from exc
+
+
+@router.post(
+    "/nodes/{node_id}/rerun",
+    response_model=DirectiveResponse,
+    summary="Rerun Single Node",
+    description=(
+        "Rerun a single workflow node in isolation. Upstream nodes are replayed from cache; "
+        "downstream nodes do NOT run. Creates a new child WorkflowRun."
+    ),
+    status_code=202,
+)
+async def rerun_node(
+    workflow_id: str,
+    run_id: str,
+    node_id: str,
+    request: Request,
+    current_user: CurrentUser,
+    body: NodeRerunRequest | None = None,
+    service: WorkflowControlService = Depends(get_workflow_control_service),
+    acl_service: ACLService = Depends(get_acl_service),
+) -> DirectiveResponse:
+    """Rerun a single node of a completed/failed run (requires VIEW on the workflow).
+
+    - Only top-level STEP nodes are supported.
+    - Input to the target node comes from the previous node's last output_snapshot.
+    - A new child WorkflowRun (trigger_source="node_rerun") is returned immediately.
+    """
+    registry_token = build_registry_token(request, current_user)
+    user_id = current_user.get("user_id")
+
+    try:
+        await _require_workflow_view(acl_service, current_user, workflow_id)
+        child_run = await service.rerun_single_node(
+            workflow_id,
+            run_id,
+            node_id,
+            registry_token=registry_token,
+            user_id=user_id,
+        )
+        return DirectiveResponse(
+            run_id=str(child_run.id),
+            status=child_run.status,
+            message=f"Node {node_id!r} rerun queued as run {child_run.id}",
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Node rerun request failed for run %s node %s", run_id, node_id)
+        raise HTTPException(status_code=500, detail="Internal server error") from exc
+
+
+@router.post(
+    "/replay",
+    response_model=DirectiveResponse,
+    summary="Replay Workflow Run",
+    description=(
+        "Replay a workflow run from scratch using the same initial input. Creates a new child WorkflowRun linked to the source run via parent_run_id."
+    ),
+    status_code=202,
+)
+async def replay_run(
+    workflow_id: str,
+    run_id: str,
+    request: Request,
+    current_user: CurrentUser,
+    service: WorkflowControlService = Depends(get_workflow_control_service),
+    acl_service: ACLService = Depends(get_acl_service),
+) -> DirectiveResponse:
+    """Replay a workflow run (requires VIEW on the workflow).
+
+    Uses the same initial_input as the source run. Runs the current live workflow
+    definition (not the snapshot), so definition updates are picked up.
+    """
+    registry_token = build_registry_token(request, current_user)
+    user_id = current_user.get("user_id")
+
+    try:
+        await _require_workflow_view(acl_service, current_user, workflow_id)
+        new_run = await service.replay_run(
+            workflow_id,
+            run_id,
+            registry_token=registry_token,
+            user_id=user_id,
+        )
+        return DirectiveResponse(
+            run_id=str(new_run.id),
+            status=new_run.status,
+            message=f"Replay queued as run {new_run.id}",
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Replay request failed for run %s", run_id)
         raise HTTPException(status_code=500, detail="Internal server error") from exc

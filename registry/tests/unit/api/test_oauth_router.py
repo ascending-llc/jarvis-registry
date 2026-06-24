@@ -114,6 +114,7 @@ def client():
         token_service=mock_container.token_service,
         mcp_service=mock_container.mcp_service,
         session_store=SessionStore(),
+        redis_client=Mock(),
     )
     yield TestClient(app)
 
@@ -260,6 +261,8 @@ class TestOAuthRouter:
         mock_flow.user_id = "test_user"
         mock_flow.server_id = TEST_SERVER_ID
         mock_flow.status = "pending"
+        # Registry-frontend-initiated flow (not an MCP client) → no downstream redirect branch.
+        mock_flow.metadata.mcp_client_context = None
         mock_mcp_service.oauth_service.flow_manager.get_flow = lambda flow_id: mock_flow
 
         # Mock successful completion
@@ -281,6 +284,46 @@ class TestOAuthRouter:
         assert "oauth-callback?type=success" in response.headers["location"]
         # The serverPath query parameter should contain the server_path from the URL
         assert "serverPath=test_server" in response.headers["location"]
+
+    def test_oauth_callback_mcp_client_redirect(self, client):
+        """MCP-client-initiated (Layer B) flow: callback redirects to the client's redirect_uri
+        with a code + state instead of the registry success page."""
+        mock_mcp_service.oauth_service.flow_manager.decode_state = lambda _: {
+            "flow_id": "test_user-flow123",
+            "security_token": "security_token",
+        }
+
+        mock_flow = Mock()
+        mock_flow.user_id = "test_user"
+        mock_flow.server_id = TEST_SERVER_ID
+        mock_flow.status = "pending"
+        mock_flow.metadata.mcp_client_context = {
+            "redirect_uri": "http://localhost:33418/cb",
+            "client_id": "claude",
+            "code_challenge": "cc",
+            "state": "st123",
+            "server_path": "github",
+        }
+        mock_mcp_service.oauth_service.flow_manager.get_flow = lambda flow_id: mock_flow
+        mock_mcp_service.oauth_service.complete_oauth_flow = make_async(lambda *args, **kwargs: (True, None))
+        mock_mcp_service.connection_service.create_user_connection = AsyncMock(return_value=None)
+
+        response = client.get(
+            "/mcp/github/oauth/callback?code=GHCODE&state=test_user-flow123##security_token",
+            follow_redirects=False,
+        )
+
+        assert response.status_code == 307
+        location = response.headers["location"]
+        assert location.startswith("http://localhost:33418/cb")
+        from urllib.parse import parse_qs, urlsplit
+
+        query = parse_qs(urlsplit(location).query)
+        assert query["state"] == ["st123"]
+        assert query["code"][0] and query["code"][0] != "GHCODE"
+        assert "GHCODE" not in location
+        # Must NOT fall through to the registry success page.
+        assert "oauth-callback?type=success" not in location
 
     def test_oauth_callback_missing_code(self, client):
         """Test OAuth callback with missing code parameter"""

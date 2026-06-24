@@ -78,11 +78,13 @@ class TestWorkflowRunnerInit:
 class TestWorkflowRunnerRun:
     @pytest.mark.asyncio
     async def test_raises_when_definition_not_found(self, monkeypatch: pytest.MonkeyPatch):
+        run_doc = SimpleNamespace(id=PydanticObjectId(), definition_snapshot=None)
+        monkeypatch.setattr(runner.WorkflowRun, "get", AsyncMock(return_value=run_doc))
         monkeypatch.setattr(runner.WorkflowDefinition, "get", AsyncMock(return_value=None))
         r = _make_runner()
 
         with pytest.raises(ValueError, match="not found"):
-            await r.run("missing-id", "hello", registry_token="tok", user_id=None, existing_run_id="any-id")
+            await r.run(str(PydanticObjectId()), "hello", registry_token="tok", user_id=None, existing_run_id="any-id")
 
     @pytest.mark.asyncio
     async def test_orchestrates_build_registry_execute_and_returns_node_runs(self, monkeypatch: pytest.MonkeyPatch):
@@ -120,7 +122,46 @@ class TestWorkflowRunnerRun:
         assert actual_run is run_doc
         assert actual_nodes == node_runs
         runner.WorkflowRunner._build_registry.assert_awaited_once_with(definition, "user-tok", user_id)
-        runner.WorkflowRunner._execute.assert_awaited_once_with(run_doc, definition, "hello", fake_registry, None)
+        runner.WorkflowRunner._execute.assert_awaited_once_with(run_doc, definition, "hello", fake_registry, None, None)
+
+    @pytest.mark.asyncio
+    async def test_run_uses_existing_definition_snapshot_instead_of_live_definition(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """run() must honor a pre-created run snapshot for deterministic replay."""
+        snapshot_definition = _definition()
+        run_doc = SimpleNamespace(
+            id=PydanticObjectId(),
+            status=WorkflowRunStatus.PENDING,
+            definition_snapshot=snapshot_definition.model_dump(mode="json"),
+            save=AsyncMock(),
+        )
+        node_runs = [SimpleNamespace(node_name="fetch")]
+        fake_registry = {"tool": object()}
+
+        get_live_definition = AsyncMock(side_effect=AssertionError("live definition should not be loaded"))
+        monkeypatch.setattr(runner.WorkflowDefinition, "get", get_live_definition)
+        monkeypatch.setattr(runner.WorkflowRun, "get", AsyncMock(return_value=run_doc))
+        monkeypatch.setattr(runner.WorkflowRunner, "_build_registry", AsyncMock(return_value=fake_registry))
+        monkeypatch.setattr(runner.WorkflowRunner, "_execute", AsyncMock())
+
+        monkeypatch.setattr(runner.NodeRun, "workflow_run_id", _FieldExpr("workflow_run_id"), raising=False)
+        find_query = SimpleNamespace(to_list=AsyncMock(return_value=node_runs))
+        monkeypatch.setattr(runner.NodeRun, "find", lambda *args, **kwargs: find_query)
+
+        r = _make_runner()
+        await r.run(
+            str(snapshot_definition.id),
+            "hello",
+            registry_token="user-tok",
+            user_id="user-1",
+            existing_run_id=str(run_doc.id),
+        )
+
+        get_live_definition.assert_not_awaited()
+        built_definition = runner.WorkflowRunner._build_registry.await_args.args[0]
+        assert built_definition.name == snapshot_definition.name
+        assert built_definition.nodes[0].id == snapshot_definition.nodes[0].id
 
     @pytest.mark.asyncio
     async def test_run_executes_existing_run_without_creating_new_run(self, monkeypatch: pytest.MonkeyPatch):
@@ -166,7 +207,9 @@ class TestWorkflowRunnerRun:
             "user-tok",
             "user-1",
         )
-        runner.WorkflowRunner._execute.assert_awaited_once_with(existing_run, definition, "hello", fake_registry, None)
+        runner.WorkflowRunner._execute.assert_awaited_once_with(
+            existing_run, definition, "hello", fake_registry, None, None
+        )
 
 
 @pytest.mark.unit
@@ -352,7 +395,7 @@ class TestContinueRunHydrationFailure:
 
         monkeypatch.setattr(runner.WorkflowRun, "get_settings", lambda: SimpleNamespace(name="workflow_runs"))
         monkeypatch.setattr(runner.WorkflowRun, "get", AsyncMock(return_value=run_doc))
-        monkeypatch.setattr(runner, "WorkflowDefinition", lambda **kwargs: SimpleNamespace())
+        monkeypatch.setattr(runner, "definition_from_snapshot", lambda snapshot: SimpleNamespace())
         monkeypatch.setattr(runner, "hydrate_requirement", Mock(side_effect=RuntimeError("schema drift")))
 
         r = _make_runner(db_client=_FakeClient())

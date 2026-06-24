@@ -15,6 +15,8 @@ from itsdangerous import URLSafeTimedSerializer
 
 from auth_server.deps import get_auth_provider, get_oauth2_config, get_oauth_state_store, get_signer, get_user_service
 from auth_server.server import app
+from registry_pkgs.core.jwt_utils import InvalidSignatureError, InvalidTokenError
+from tests.integration.conftest import _mock_keycloak_provider
 from tests.support.oauth_state_store import authorization_codes_storage, test_oauth_state_store
 
 API_PREFIX = "/auth"
@@ -38,8 +40,12 @@ class TestOAuth2CallbackStandardFlow:
 
     @patch("auth_server.routes.oauth_flow.exchange_code_for_token")
     @patch("auth_server.routes.oauth_flow.get_user_info")
+    @patch("auth_server.routes.oauth_flow.get_token_kid")
+    @patch("auth_server.routes.oauth_flow.decode_jwt_with_jwk")
     def test_oauth_callback_always_generates_authorization_code(
         self,
+        mock_decode_jwt,
+        mock_get_token_kid,
         mock_get_user_info,
         mock_exchange_token,
         clear_device_storage,
@@ -48,8 +54,16 @@ class TestOAuth2CallbackStandardFlow:
         """Test that oauth2_callback always generates authorization code (for both external clients and registry)."""
         # Mock provider token exchange
         mock_exchange_token.return_value = {"access_token": "provider_access_token", "id_token": "provider_id_token"}
+        mock_get_token_kid.return_value = "test-kid"
 
         # Mock user info from provider
+        mock_decode_jwt.return_value = {
+            "sub": "provider-user-123",
+            "preferred_username": "testuser",
+            "email": "test@example.com",
+            "name": "Test User",
+            "groups": ["user-group"],
+        }
         mock_get_user_info.return_value = {
             "sub": "provider-user-123",
             "preferred_username": "testuser",
@@ -91,7 +105,7 @@ class TestOAuth2CallbackStandardFlow:
             app.dependency_overrides[get_oauth2_config] = lambda: oauth2_config
             app.dependency_overrides[get_user_service] = lambda: mock_user_service
             app.dependency_overrides[get_signer] = lambda: test_signer
-            app.dependency_overrides[get_auth_provider] = lambda: MagicMock()
+            app.dependency_overrides[get_auth_provider] = _mock_keycloak_provider
 
             test_client = TestClient(app)
 
@@ -146,8 +160,12 @@ class TestOAuth2CallbackStandardFlow:
 
     @patch("auth_server.routes.oauth_flow.exchange_code_for_token")
     @patch("auth_server.routes.oauth_flow.get_user_info")
+    @patch("auth_server.routes.oauth_flow.get_token_kid")
+    @patch("auth_server.routes.oauth_flow.decode_jwt_with_jwk")
     def test_oauth_callback_external_client_with_client_id(
         self,
+        mock_decode_jwt,
+        mock_get_token_kid,
         mock_get_user_info,
         mock_exchange_token,
         clear_device_storage,
@@ -155,7 +173,15 @@ class TestOAuth2CallbackStandardFlow:
     ):
         """Test oauth2_callback with explicit client_id (external OAuth client)."""
         mock_exchange_token.return_value = {"access_token": "provider_access_token", "id_token": "provider_id_token"}
+        mock_get_token_kid.return_value = "test-kid"
 
+        mock_decode_jwt.return_value = {
+            "sub": "provider-user-456",
+            "preferred_username": "externaluser",
+            "email": "external@example.com",
+            "name": "External User",
+            "groups": ["external-group"],
+        }
         mock_get_user_info.return_value = {
             "sub": "provider-user-456",
             "preferred_username": "externaluser",
@@ -195,7 +221,7 @@ class TestOAuth2CallbackStandardFlow:
             app.dependency_overrides[get_oauth2_config] = lambda: oauth2_config
             app.dependency_overrides[get_user_service] = lambda: mock_user_service
             app.dependency_overrides[get_signer] = lambda: test_signer
-            app.dependency_overrides[get_auth_provider] = lambda: MagicMock()
+            app.dependency_overrides[get_auth_provider] = _mock_keycloak_provider
 
             test_client = TestClient(app)
 
@@ -240,14 +266,16 @@ class TestOAuth2CallbackStandardFlow:
             assert code_data["code_challenge_method"] == "S256"
 
     @patch("auth_server.routes.oauth_flow.exchange_code_for_token")
-    @patch("auth_server.routes.oauth_flow.decode_jwt_unverified")
+    @patch("auth_server.routes.oauth_flow.get_token_kid")
+    @patch("auth_server.routes.oauth_flow.decode_jwt_with_jwk")
     def test_oauth_callback_keycloak_id_token_parsing(
-        self, mock_jwt_decode, mock_exchange_token, clear_device_storage, mock_user_service
+        self, mock_jwt_decode, mock_get_token_kid, mock_exchange_token, clear_device_storage, mock_user_service
     ):
         """Test that Keycloak ID token is properly parsed."""
         mock_exchange_token.return_value = {"access_token": "keycloak_access", "id_token": "keycloak_id_token"}
+        mock_get_token_kid.return_value = "test-kid"
 
-        # Mock JWT decode for ID token
+        # Mock verified JWT claims for ID token
         mock_jwt_decode.return_value = {
             "sub": "keycloak-sub-789",
             "preferred_username": "keycloakuser",
@@ -284,7 +312,7 @@ class TestOAuth2CallbackStandardFlow:
             app.dependency_overrides[get_oauth2_config] = lambda: oauth2_config
             app.dependency_overrides[get_user_service] = lambda: mock_user_service
             app.dependency_overrides[get_signer] = lambda: test_signer
-            app.dependency_overrides[get_auth_provider] = lambda: MagicMock()
+            app.dependency_overrides[get_auth_provider] = _mock_keycloak_provider
 
             test_client = TestClient(app)
 
@@ -323,90 +351,326 @@ class TestOAuth2CallbackStandardFlow:
             assert user_info["groups"] == ["/admin", "/users"]
             assert user_info["idp_id"] == "keycloak-sub-789"
 
-    def test_oauth_callback_user_id_not_resolved(self, clear_device_storage):
-        """Test oauth2_callback when user_id cannot be resolved (user not in MongoDB)."""
-        with patch("auth_server.routes.oauth_flow.exchange_code_for_token") as mock_exchange:
-            with patch("auth_server.routes.oauth_flow.get_user_info") as mock_get_user:
-                mock_exchange.return_value = {"access_token": "token", "id_token": "id"}
-                mock_get_user.return_value = {
-                    "sub": "new-user",
-                    "preferred_username": "newuser",
-                    "email": "new@example.com",
-                    "name": "New User",
-                    "groups": [],
+    @patch("auth_server.routes.oauth_flow.exchange_code_for_token")
+    @patch("auth_server.routes.oauth_flow.get_user_info")
+    @patch("auth_server.routes.oauth_flow.get_token_kid")
+    @patch("auth_server.routes.oauth_flow.decode_jwt_with_jwk")
+    def test_oauth_callback_rejects_invalid_token_signature(
+        self,
+        mock_decode_jwt,
+        mock_get_token_kid,
+        mock_get_user_info,
+        mock_exchange_token,
+        clear_device_storage,
+        mock_user_service,
+    ):
+        """Invalid OIDC token signatures must not fall back to userInfo."""
+        mock_exchange_token.return_value = {"access_token": "keycloak_access", "id_token": "keycloak_id_token"}
+        mock_get_token_kid.return_value = "test-kid"
+        mock_decode_jwt.side_effect = InvalidSignatureError("bad signature")
+
+        oauth2_config = {
+            "providers": {
+                "keycloak": {
+                    "enabled": True,
+                    "client_id": "test-client",
+                    "client_secret": "test-secret",
+                    "token_url": "http://keycloak/token",
+                    "user_info_url": "http://keycloak/userinfo",
+                    "username_claim": "preferred_username",
+                    "email_claim": "email",
+                    "name_claim": "name",
+                    "groups_claim": "groups",
                 }
+            }
+        }
 
-                oauth2_config = {
-                    "providers": {
-                        "keycloak": {
-                            "enabled": True,
-                            "client_id": "test",
-                            "client_secret": "secret",
-                            "token_url": "http://keycloak/token",
-                            "user_info_url": "http://keycloak/userinfo",
-                            "username_claim": "preferred_username",
-                            "email_claim": "email",
-                            "name_claim": "name",
-                            "groups_claim": "groups",
-                        }
-                    }
+        with patch("auth_server.routes.oauth_flow.settings") as mock_settings:
+            mock_settings.registry_url = "http://localhost:3000"
+            mock_settings.auth_server_external_url = "http://localhost:8888"
+            mock_settings.auth_server_url = "http://localhost:8888"
+            mock_settings.oauth_session_ttl_seconds = 600
+            mock_settings.secret_key = "test-secret-key"
+
+            test_signer = URLSafeTimedSerializer("test-secret-key")
+            app.dependency_overrides = {}
+            app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
+            app.dependency_overrides[get_oauth2_config] = lambda: oauth2_config
+            app.dependency_overrides[get_user_service] = lambda: mock_user_service
+            app.dependency_overrides[get_signer] = lambda: test_signer
+            app.dependency_overrides[get_auth_provider] = _mock_keycloak_provider
+
+            test_client = TestClient(app)
+            session_data = {
+                "state": "test-state-invalid-signature",
+                "client_state": None,
+                "provider": "keycloak",
+                "redirect_uri": "http://localhost:3000/redirect",
+                "client_id": "mock-client-id",
+                "code_challenge": "123",
+                "code_challenge_method": "S256",
+                "client_redirect_uri": "http://localhost:3000/redirect",
+            }
+            temp_session = test_signer.dumps(session_data)
+
+            response = test_client.get(
+                f"{API_PREFIX}/oauth2/callback/keycloak",
+                params={"code": "keycloak_code", "state": "test-state-invalid-signature"},
+                cookies={"oauth2_temp_session": temp_session},
+                follow_redirects=False,
+            )
+
+        assert response.status_code == 302
+        assert "oauth2_callback_failed" in response.headers["location"]
+        mock_get_user_info.assert_not_called()
+
+    @patch("auth_server.routes.oauth_flow.exchange_code_for_token")
+    @patch("auth_server.routes.oauth_flow.get_user_info")
+    def test_oauth_callback_rejects_invalid_token_signature_entra(
+        self,
+        mock_get_user_info,
+        mock_exchange_token,
+        clear_device_storage,
+        mock_user_service,
+    ):
+        """Entra invalid token must not fall back to userInfo."""
+        mock_exchange_token.return_value = {"access_token": "entra_access", "id_token": "entra_id_token"}
+
+        mock_entra_provider = MagicMock()
+        mock_entra_provider.get_user_info = AsyncMock(side_effect=InvalidTokenError("bad signature"))
+
+        oauth2_config = {
+            "providers": {
+                "entra": {
+                    "enabled": True,
+                    "client_id": "test-client",
+                    "client_secret": "test-secret",
+                    "token_url": "http://entra/token",
+                    "user_info_url": "http://entra/userinfo",
+                    "username_claim": "preferred_username",
+                    "email_claim": "email",
+                    "name_claim": "name",
+                    "groups_claim": "groups",
                 }
+            }
+        }
 
-                with patch("auth_server.routes.oauth_flow.settings") as mock_settings:
-                    mock_settings.registry_url = "http://localhost:3000"
-                    mock_settings.registry_app_name = "registry-internal-client"
-                    mock_settings.auth_server_external_url = "http://localhost:8888"
-                    mock_settings.auth_server_url = "http://localhost:8888"
-                    mock_settings.oauth_session_ttl_seconds = 600
-                    mock_settings.secret_key = "test-secret-key"
+        with patch("auth_server.routes.oauth_flow.settings") as mock_settings:
+            mock_settings.registry_url = "http://localhost:3000"
+            mock_settings.auth_server_external_url = "http://localhost:8888"
+            mock_settings.auth_server_url = "http://localhost:8888"
+            mock_settings.oauth_session_ttl_seconds = 600
+            mock_settings.secret_key = "test-secret-key"
 
-                    test_signer = URLSafeTimedSerializer("test-secret-key")
+            test_signer = URLSafeTimedSerializer("test-secret-key")
+            app.dependency_overrides = {}
+            app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
+            app.dependency_overrides[get_oauth2_config] = lambda: oauth2_config
+            app.dependency_overrides[get_user_service] = lambda: mock_user_service
+            app.dependency_overrides[get_signer] = lambda: test_signer
+            app.dependency_overrides[get_auth_provider] = lambda: mock_entra_provider
 
-                    app.dependency_overrides = {}
+            test_client = TestClient(app)
+            session_data = {
+                "state": "test-state-entra-invalid-sig",
+                "client_state": None,
+                "provider": "entra",
+                "redirect_uri": "http://localhost:3000/redirect",
+                "client_id": "mock-client-id",
+                "code_challenge": "123",
+                "code_challenge_method": "S256",
+                "client_redirect_uri": "http://localhost:3000/redirect",
+            }
+            temp_session = test_signer.dumps(session_data)
 
-                    app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
-                    mock_user_service = MagicMock()
-                    mock_user_service.resolve_user_id = AsyncMock(return_value=None)
+            response = test_client.get(
+                f"{API_PREFIX}/oauth2/callback/entra",
+                params={"code": "entra_code", "state": "test-state-entra-invalid-sig"},
+                cookies={"oauth2_temp_session": temp_session},
+                follow_redirects=False,
+            )
 
-                    app.dependency_overrides[get_oauth2_config] = lambda: oauth2_config
-                    app.dependency_overrides[get_user_service] = lambda: mock_user_service
-                    app.dependency_overrides[get_signer] = lambda: test_signer
-                    app.dependency_overrides[get_auth_provider] = lambda: MagicMock()
+        assert response.status_code == 302
+        assert "oauth2_callback_failed" in response.headers["location"]
+        mock_get_user_info.assert_not_called()
 
-                    test_client = TestClient(app)
+    @patch("auth_server.routes.oauth_flow.exchange_code_for_token")
+    @patch("auth_server.routes.oauth_flow.get_token_kid")
+    @patch("auth_server.routes.oauth_flow.decode_jwt_with_jwk")
+    def test_oauth_callback_verifies_access_token_when_id_token_missing(
+        self,
+        mock_decode_jwt,
+        mock_get_token_kid,
+        mock_exchange_token,
+        clear_device_storage,
+        mock_user_service,
+    ):
+        """Access-token-only provider responses are verified before claim mapping."""
+        mock_exchange_token.return_value = {"access_token": "keycloak_access"}
+        mock_get_token_kid.return_value = "test-kid"
+        mock_decode_jwt.return_value = {
+            "sub": "access-sub-123",
+            "username": "accessuser",
+            "email": "access@example.com",
+            "name": "Access User",
+            "groups": ["/access-users"],
+        }
 
-                    session_data = {
-                        "state": "test-state",
-                        "client_state": None,
-                        "provider": "keycloak",
-                        "redirect_uri": "http://localhost:3000/redirect",
-                        "client_id": "mock-client-id",
-                        "code_challenge": "123",
-                        "code_challenge_method": "S256",
-                        "client_redirect_uri": "http://localhost:3000/redirect",
-                    }
-                    temp_session = test_signer.dumps(session_data)
+        oauth2_config = {
+            "providers": {
+                "keycloak": {
+                    "enabled": True,
+                    "client_id": "test-client",
+                    "client_secret": "test-secret",
+                    "token_url": "http://keycloak/token",
+                    "user_info_url": "http://keycloak/userinfo",
+                    "username_claim": "preferred_username",
+                    "email_claim": "email",
+                    "name_claim": "name",
+                    "groups_claim": "groups",
+                }
+            }
+        }
 
-                    response = test_client.get(
-                        f"{API_PREFIX}/oauth2/callback/keycloak",
-                        params={"code": "code", "state": "test-state"},
-                        cookies={"oauth2_temp_session": temp_session},
-                        follow_redirects=False,
-                    )
+        with patch("auth_server.routes.oauth_flow.settings") as mock_settings:
+            mock_settings.registry_url = "http://localhost:3000"
+            mock_settings.auth_server_external_url = "http://localhost:8888"
+            mock_settings.auth_server_url = "http://localhost:8888"
+            mock_settings.oauth_session_ttl_seconds = 600
+            mock_settings.secret_key = "test-secret-key"
 
-                    # Still should generate authorization code (user_id is None)
-                    assert response.status_code == 302
-                    location = response.headers["location"]
+            test_signer = URLSafeTimedSerializer("test-secret-key")
+            app.dependency_overrides = {}
+            app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
+            app.dependency_overrides[get_oauth2_config] = lambda: oauth2_config
+            app.dependency_overrides[get_user_service] = lambda: mock_user_service
+            app.dependency_overrides[get_signer] = lambda: test_signer
+            app.dependency_overrides[get_auth_provider] = _mock_keycloak_provider
 
-                    import urllib.parse
+            test_client = TestClient(app)
+            session_data = {
+                "state": "test-state-access-token-only",
+                "client_state": None,
+                "provider": "keycloak",
+                "redirect_uri": "http://localhost:3000/redirect",
+                "client_id": "mock-client-id",
+                "code_challenge": "123",
+                "code_challenge_method": "S256",
+                "client_redirect_uri": "http://localhost:3000/redirect",
+            }
+            temp_session = test_signer.dumps(session_data)
 
-                    parsed_url = urllib.parse.urlparse(location)
-                    query_params = urllib.parse.parse_qs(parsed_url.query)
-                    auth_code = query_params.get("code", [None])[0]
+            response = test_client.get(
+                f"{API_PREFIX}/oauth2/callback/keycloak",
+                params={"code": "keycloak_code", "state": "test-state-access-token-only"},
+                cookies={"oauth2_temp_session": temp_session},
+                follow_redirects=False,
+            )
 
-                    code_data = authorization_codes_storage[auth_code]
-                    # user_id will be None when not found
-                    assert "user_info" in code_data
+        assert response.status_code == 302
+        location = response.headers["location"]
+        assert "code=" in location
+
+        import urllib.parse
+
+        parsed_url = urllib.parse.urlparse(location)
+        query_params = urllib.parse.parse_qs(parsed_url.query)
+        auth_code = query_params.get("code", [None])[0]
+        user_info = authorization_codes_storage[auth_code]["user_info"]
+        assert user_info["username"] == "accessuser"
+        assert user_info["idp_id"] == "access-sub-123"
+
+    @patch("auth_server.routes.oauth_flow.exchange_code_for_token")
+    @patch("auth_server.routes.oauth_flow.get_user_info")
+    @patch("auth_server.routes.oauth_flow.get_token_kid")
+    @patch("auth_server.routes.oauth_flow.decode_jwt_with_jwk")
+    def test_oauth_callback_user_id_not_resolved(
+        self,
+        mock_decode_jwt,
+        mock_get_token_kid,
+        mock_get_user_info,
+        mock_exchange,
+        clear_device_storage,
+    ):
+        """User not yet in MongoDB: JWKS verification succeeds; auth code is issued with user_id=None."""
+        mock_exchange.return_value = {"access_token": "token", "id_token": "id"}
+        mock_get_token_kid.return_value = "test-kid"
+        mock_decode_jwt.return_value = {
+            "sub": "new-user",
+            "preferred_username": "newuser",
+            "email": "new@example.com",
+            "name": "New User",
+            "groups": [],
+        }
+
+        oauth2_config = {
+            "providers": {
+                "keycloak": {
+                    "enabled": True,
+                    "client_id": "test",
+                    "client_secret": "secret",
+                    "token_url": "http://keycloak/token",
+                    "user_info_url": "http://keycloak/userinfo",
+                    "username_claim": "preferred_username",
+                    "email_claim": "email",
+                    "name_claim": "name",
+                    "groups_claim": "groups",
+                }
+            }
+        }
+
+        with patch("auth_server.routes.oauth_flow.settings") as mock_settings:
+            mock_settings.registry_url = "http://localhost:3000"
+            mock_settings.auth_server_external_url = "http://localhost:8888"
+            mock_settings.auth_server_url = "http://localhost:8888"
+            mock_settings.oauth_session_ttl_seconds = 600
+            mock_settings.secret_key = "test-secret-key"
+
+            test_signer = URLSafeTimedSerializer("test-secret-key")
+
+            app.dependency_overrides = {}
+
+            mock_user_service = MagicMock()
+            mock_user_service.resolve_user_id = AsyncMock(return_value=None)
+
+            app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
+            app.dependency_overrides[get_oauth2_config] = lambda: oauth2_config
+            app.dependency_overrides[get_user_service] = lambda: mock_user_service
+            app.dependency_overrides[get_signer] = lambda: test_signer
+            app.dependency_overrides[get_auth_provider] = _mock_keycloak_provider
+
+            test_client = TestClient(app)
+
+            session_data = {
+                "state": "test-state",
+                "client_state": None,
+                "provider": "keycloak",
+                "redirect_uri": "http://localhost:3000/redirect",
+                "client_id": "mock-client-id",
+                "code_challenge": "123",
+                "code_challenge_method": "S256",
+                "client_redirect_uri": "http://localhost:3000/redirect",
+            }
+            temp_session = test_signer.dumps(session_data)
+
+            response = test_client.get(
+                f"{API_PREFIX}/oauth2/callback/keycloak",
+                params={"code": "code", "state": "test-state"},
+                cookies={"oauth2_temp_session": temp_session},
+                follow_redirects=False,
+            )
+
+        import urllib.parse
+
+        assert response.status_code == 302
+        location = response.headers["location"]
+        parsed_url = urllib.parse.urlparse(location)
+        query_params = urllib.parse.parse_qs(parsed_url.query)
+        auth_code = query_params.get("code", [None])[0]
+
+        code_data = authorization_codes_storage[auth_code]
+        assert "user_info" in code_data
+        mock_get_user_info.assert_not_called()
 
 
 @pytest.mark.integration
