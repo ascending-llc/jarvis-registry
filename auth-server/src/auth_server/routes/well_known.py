@@ -182,7 +182,14 @@ async def protected_resource_metadata(server_path: str):
         parts = rest.split("/", 1)
         if len(parts) == 2 and parts[0] and parts[1]:
             user_id, actual_server_path = parts[0], parts[1]
-            authorization_servers = [downstream_mcp_issuer(settings.jwt_issuer, user_id, actual_server_path)]
+            # MCPs on AgentCore Runtime use the root AS metadata document—because we don't need to store
+            # access and refresh tokens of such MCPs in MongoDB—instead, Registry mints a JWT token for AgentCore Runtime
+            # at the point of invocation. Root AS metadata gives user access to Registry itself, and that's also sufficient.
+            # The condition in the `if` block below relies on the fact that MCPs on AgentCore Runtime have a `path` field
+            # of the format `/agentcore/mcp/***`, which is guaranteed by AgentCore federation code at
+            # @registry/src/registry/services/federation/agentcore_discovery.py#L377-377.
+            if not actual_server_path.startswith("agentcore/mcp/"):
+                authorization_servers = [downstream_mcp_issuer(settings.jwt_issuer, user_id, actual_server_path)]
 
     return {
         "resource": f"{settings.registry_url}/proxy/{server_path}",

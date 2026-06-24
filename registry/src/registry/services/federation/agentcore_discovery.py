@@ -372,6 +372,8 @@ class AgentCoreFederationClient:
 
         server_info = {
             "server_name": runtime_name,
+            # The `path` field of an MCP server federated from AWS AgentCore Runtime must be of the following format.
+            # In @auth-server/src/auth_server/routes/well_known.py, we use the path format to tell if an MCP is on AgentCore.
             "path": f"/agentcore/mcp/{self._slug(runtime_name)}",
             "tags": ["bedrock", "agentcore", "aws", "mcp-runtime", "federated"],
             "config": {

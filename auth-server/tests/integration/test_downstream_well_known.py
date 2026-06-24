@@ -27,6 +27,15 @@ def test_prm_non_direct_connect_unchanged(test_client: TestClient):
     assert resp.json()["authorization_servers"] == [settings.jwt_issuer]
 
 
+def test_prm_direct_connect_agentcore_points_to_root_issuer(test_client: TestClient):
+    # AgentCore Runtime MCPs don't need a downstream OAuth token — the registry mints a JWT at
+    # proxy time. Advertising the root issuer here sends the client through the registry's own
+    # auth flow instead of triggering a downstream OAuth browser popup.
+    resp = test_client.get(f"{_PRM_BASE}/server/{USER_ID}/agentcore/mcp/myserver")
+    assert resp.status_code == 200
+    assert resp.json()["authorization_servers"] == [settings.jwt_issuer]
+
+
 def test_downstream_as_metadata_issuer_and_endpoints(test_client: TestClient):
     resp = test_client.get(f"/.well-known/oauth-authorization-server/proxy/server/oauth/{USER_ID}/github")
     assert resp.status_code == 200
