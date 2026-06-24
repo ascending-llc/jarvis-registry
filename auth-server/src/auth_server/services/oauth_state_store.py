@@ -27,12 +27,13 @@ _ROTATE_REFRESH_TOKEN_SCRIPT = """
 local old_key = KEYS[1]
 local new_key = KEYS[2]
 local ttl = tonumber(ARGV[1])
+local new_val = ARGV[2]
 
 local val = redis.call('GET', old_key)
 if not val then return nil end
 
 redis.call('DEL', old_key)
-redis.call('SET', new_key, val, 'EX', ttl)
+redis.call('SET', new_key, new_val, 'EX', ttl)
 return val
 """
 
@@ -64,6 +65,7 @@ class OAuthStateStoreProtocol(Protocol):
         self,
         old_token: str,
         new_token: str,
+        new_data: dict[str, Any],
     ) -> dict[str, Any] | None: ...
 
     def save_device_authorization(
@@ -211,6 +213,7 @@ class OAuthStateStore:
         self,
         old_token: str,
         new_token: str,
+        new_data: dict[str, Any],
     ) -> dict[str, Any] | None:
         try:
             raw_old_data = self._redis.eval(
@@ -219,6 +222,7 @@ class OAuthStateStore:
                 self._refresh_key(old_token),
                 self._refresh_key(new_token),
                 REFRESH_TOKEN_TTL_SECONDS,
+                self._dumps_json(new_data),
             )
         except RedisError:
             logger.exception("Failed to rotate OAuth refresh token")

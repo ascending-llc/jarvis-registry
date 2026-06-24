@@ -39,10 +39,12 @@ def setup_registry_test_env() -> rsa.RSAPrivateKey:
     Covers:
     - ``JWT_PRIVATE_KEY`` / ``JWT_PUBLIC_KEY`` (RSA key pair)
     - ``CREDS_KEY`` (hex-encoded encryption key)
+    - ``SECRET_KEY`` (HMAC / signing key)
     - ``TOOL_DISCOVERY_MODE`` (required validator value)
 
     Returns the RSA private key for reuse in test fixtures.
     """
     os.environ["TOOL_DISCOVERY_MODE"] = "external"
     os.environ["CREDS_KEY"] = os.urandom(32).hex()
+    os.environ["SECRET_KEY"] = os.urandom(32).hex()
     return setup_test_rsa_keys()

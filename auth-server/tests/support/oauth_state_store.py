@@ -79,11 +79,12 @@ class InMemoryOAuthStateStore(OAuthStateStoreProtocol):
         self,
         old_token: str,
         new_token: str,
+        new_data: dict[str, Any],
     ) -> dict[str, Any] | None:
         old_data = self.refresh_tokens_storage.pop(old_token, None)
         if old_data is None:
             return None
-        self.refresh_tokens_storage[new_token] = dict(old_data)
+        self.refresh_tokens_storage[new_token] = dict(new_data)
         return old_data
 
     def save_device_authorization(

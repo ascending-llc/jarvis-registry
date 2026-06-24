@@ -87,13 +87,14 @@ class _FakeRedis:
         old_key = str(args[0])
         new_key = str(args[1])
         ttl_seconds = int(args[2])
+        new_value = str(args[3])
 
         old_value = self.get(old_key)
         if old_value is None:
             return None
 
         self.delete(old_key)
-        self.set(new_key, old_value, ex=ttl_seconds)
+        self.set(new_key, new_value, ex=ttl_seconds)
         return old_value
 
 
@@ -227,7 +228,13 @@ def test_rotate_refresh_token_consumes_old_token_and_creates_new_token(
         "expires_at": 100,
     }
 
-    old_data = store.rotate_refresh_token("old-token", "new-token")
+    new_token_data = {
+        "client_id": "client-1",
+        "user_info": {"username": "user-1"},
+        "scope": "servers-read",
+        "expires_at": 200,
+    }
+    old_data = store.rotate_refresh_token("old-token", "new-token", new_data=new_token_data)
 
     assert old_data == {
         "client_id": "client-1",
@@ -242,9 +249,9 @@ def test_rotate_refresh_token_consumes_old_token_and_creates_new_token(
     assert new_data["client_id"] == "client-1"
     assert new_data["user_info"] == {"username": "user-1"}
     assert new_data["scope"] == "servers-read"
-    assert new_data["expires_at"] == 100
+    assert new_data["expires_at"] == 200
     assert fake_redis.ttls[new_key] == REFRESH_TOKEN_TTL_SECONDS
-    assert store.rotate_refresh_token("old-token", "another-token") is None
+    assert store.rotate_refresh_token("old-token", "another-token", new_data=new_token_data) is None
 
 
 def test_rotate_refresh_token_preserves_json_array_shapes(
@@ -260,7 +267,11 @@ def test_rotate_refresh_token_preserves_json_array_shapes(
         },
     )
 
-    store.rotate_refresh_token("old-token", "new-token")
+    store.rotate_refresh_token(
+        "old-token",
+        "new-token",
+        new_data={"client_id": "client-1", "user_info": {"username": "user-1", "groups": []}, "scope": "servers-read"},
+    )
 
     new_key = "jarvis-auth-server-test:oauth:refresh:new-token"
     new_data = json.loads(fake_redis.values[new_key])

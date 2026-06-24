@@ -15,8 +15,8 @@ from authlib.oauth2.rfc7636 import create_s256_code_challenge
 from fastapi.testclient import TestClient
 
 from auth_server.deps import get_auth_provider, get_oauth2_config, get_oauth_state_store, get_signer, get_user_service
-from auth_server.routes.oauth_flow import REFRESH_TOKEN_EXPIRY_SECONDS
 from auth_server.server import app
+from auth_server.services.oauth_state_store import REFRESH_TOKEN_TTL_SECONDS as REFRESH_TOKEN_EXPIRY_SECONDS
 from registry_pkgs.core.jwt_utils import decode_jwt_unverified
 from tests.support.oauth_state_store import authorization_codes_storage, refresh_tokens_storage, test_oauth_state_store
 

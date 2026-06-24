@@ -36,7 +36,7 @@ from ..deps import (
 from ..models.device_flow import DeviceApprovalRequest, DeviceCodeResponse, DeviceTokenResponse
 from ..providers.base import AuthProvider
 from ..services.cognito_validator_service import SimplifiedCognitoValidator
-from ..services.oauth_state_store import OAuthStateStoreProtocol
+from ..services.oauth_state_store import REFRESH_TOKEN_TTL_SECONDS, OAuthStateStoreProtocol
 from ..services.user_service import UserService
 from ..utils.security_mask import (
     anonymize_ip,
@@ -56,9 +56,6 @@ JWT_ISSUER = settings.jwt_issuer
 JWT_SELF_SIGNED_KID = settings.jwt_self_signed_kid
 # All access tokens issued by /oauth2/token (+ device flow) are managed-agent (proxy) tokens.
 JWT_TOKEN_CONFIG = settings.jwt_token_config
-
-# Refresh token expiry (14 days in seconds)
-REFRESH_TOKEN_EXPIRY_SECONDS = 1209600
 
 
 def oauth_error_response(error: str, error_description: str | None = None, status_code: int = 400) -> JSONResponse:
@@ -232,53 +229,59 @@ async def device_authorization(
     resource: str | None = Form(None),
     store: OAuthStateStoreProtocol = Depends(get_oauth_state_store),
 ):
-    client_error = _validate_known_client(client_id, store)
-    if client_error is not None:
-        return client_error
+    try:
+        client_error = _validate_known_client(client_id, store)
+        if client_error is not None:
+            return client_error
 
-    device_code = secrets.token_urlsafe(32)
-    user_code = generate_user_code()
+        device_code = secrets.token_urlsafe(32)
+        user_code = generate_user_code()
 
-    auth_server_url = settings.auth_server_external_url
-    if not auth_server_url:
-        host = req.headers.get("host", "localhost:8888")
-        scheme = "https" if req.headers.get("x-forwarded-proto") == "https" or req.url.scheme == "https" else "http"
-        auth_server_url = f"{scheme}://{host}"
+        auth_server_url = settings.auth_server_external_url
+        if not auth_server_url:
+            host = req.headers.get("host", "localhost:8888")
+            scheme = "https" if req.headers.get("x-forwarded-proto") == "https" or req.url.scheme == "https" else "http"
+            auth_server_url = f"{scheme}://{host}"
 
-    verification_uri = f"{auth_server_url}/oauth2/device/verify"
-    verification_uri_complete = f"{verification_uri}?user_code={user_code}"
+        verification_uri = f"{auth_server_url}/oauth2/device/verify"
+        verification_uri_complete = f"{verification_uri}?user_code={user_code}"
 
-    current_time = int(time.time())
-    expires_at = current_time + settings.device_code_expiry_seconds
+        current_time = int(time.time())
+        expires_at = current_time + settings.device_code_expiry_seconds
 
-    device_data = {
-        "user_code": user_code,
-        "client_id": client_id,
-        "scope": scope or "",
-        "resource": resource,
-        "status": "pending",
-        "created_at": current_time,
-        "expires_at": expires_at,
-        "token": None,
-    }
+        device_data = {
+            "user_code": user_code,
+            "client_id": client_id,
+            "scope": scope or "",
+            "resource": resource,
+            "status": "pending",
+            "created_at": current_time,
+            "expires_at": expires_at,
+            "token": None,
+        }
 
-    store.save_device_authorization(
-        device_code=device_code,
-        user_code=user_code,
-        data=device_data,
-        ttl_seconds=settings.device_code_expiry_seconds,
-    )
+        store.save_device_authorization(
+            device_code=device_code,
+            user_code=user_code,
+            data=device_data,
+            ttl_seconds=settings.device_code_expiry_seconds,
+        )
 
-    logger.info(f"Generated device code for client_id: {client_id}, user_code: {user_code}, resource: {resource}")
+        logger.info(f"Generated device code for client_id: {client_id}, user_code: {user_code}, resource: {resource}")
 
-    return DeviceCodeResponse(
-        device_code=device_code,
-        user_code=user_code,
-        verification_uri=verification_uri,
-        verification_uri_complete=verification_uri_complete,
-        expires_in=settings.device_code_expiry_seconds,
-        interval=settings.device_code_poll_interval,
-    )
+        return DeviceCodeResponse(
+            device_code=device_code,
+            user_code=user_code,
+            verification_uri=verification_uri,
+            verification_uri_complete=verification_uri_complete,
+            expires_in=settings.device_code_expiry_seconds,
+            interval=settings.device_code_poll_interval,
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Device authorization request failed for client_id=%s", client_id)
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/oauth2/device/verify", response_class=HTMLResponse)
@@ -299,39 +302,45 @@ async def approve_device(
     request: DeviceApprovalRequest,
     store: OAuthStateStoreProtocol = Depends(get_oauth_state_store),
 ):
-    device_code = store.get_user_code(request.user_code)
-    if not device_code:
-        raise HTTPException(status_code=404, detail="Invalid or expired user code")
-    device_data = store.get_device_code(device_code)
-    if not device_data:
-        raise HTTPException(status_code=404, detail="Device code not found")
-    current_time = int(time.time())
-    if current_time > device_data["expires_at"]:
-        raise HTTPException(status_code=400, detail="Device code expired")
-    if device_data["status"] == "approved":
-        return {"status": "already_approved", "message": "Device already approved"}
+    try:
+        device_code = store.get_user_code(request.user_code)
+        if not device_code:
+            raise HTTPException(status_code=404, detail="Invalid or expired user code")
+        device_data = store.get_device_code(device_code)
+        if not device_data:
+            raise HTTPException(status_code=404, detail="Device code not found")
+        current_time = int(time.time())
+        if current_time > device_data["expires_at"]:
+            raise HTTPException(status_code=400, detail="Device code expired")
+        if device_data["status"] == "approved":
+            return {"status": "already_approved", "message": "Device already approved"}
 
-    # Generate token (managed-agent / proxy class)
-    access_token = mint_managed_agent_token(
-        JWT_TOKEN_CONFIG,
-        subject="device_user",
-        client_id=device_data["client_id"],
-        expires_in_seconds=3600,
-        iat=current_time,
-        extra_claims={
-            "scope": device_data["scope"],
-            "token_use": "access",
-            "auth_provider": settings.auth_provider,
-        },
-    )
-    updated_device_data = dict(device_data)
-    updated_device_data["status"] = "approved"
-    updated_device_data["token"] = access_token
-    updated_device_data["approved_at"] = current_time
-    if not store.update_device_code(device_code, updated_device_data):
-        raise HTTPException(status_code=400, detail="Device code expired")
-    logger.info(f"Device approved for user_code: {request.user_code}")
-    return {"status": "approved", "message": "Device verified successfully"}
+        # Generate token (managed-agent / proxy class)
+        access_token = mint_managed_agent_token(
+            JWT_TOKEN_CONFIG,
+            subject="device_user",
+            client_id=device_data["client_id"],
+            expires_in_seconds=3600,
+            iat=current_time,
+            extra_claims={
+                "scope": device_data["scope"],
+                "token_use": "access",
+                "auth_provider": settings.auth_provider,
+            },
+        )
+        updated_device_data = dict(device_data)
+        updated_device_data["status"] = "approved"
+        updated_device_data["token"] = access_token
+        updated_device_data["approved_at"] = current_time
+        if not store.update_device_code(device_code, updated_device_data):
+            raise HTTPException(status_code=400, detail="Device code expired")
+        logger.info(f"Device approved for user_code: {request.user_code}")
+        return {"status": "approved", "message": "Device verified successfully"}
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Device approval failed for user_code=%s", request.user_code)
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 async def _parse_device_token_params(request: Request) -> dict:
@@ -421,6 +430,20 @@ async def device_token(
     user_service: UserService = Depends(get_user_service),
     store: OAuthStateStoreProtocol = Depends(get_oauth_state_store),
 ):
+    try:
+        return await _device_token_handler(request, user_service, store)
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Token endpoint failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+async def _device_token_handler(
+    request: Request,
+    user_service: UserService,
+    store: OAuthStateStoreProtocol,
+) -> DeviceTokenResponse | JSONResponse:
     params = await _parse_device_token_params(request)
     grant_type: str | None = params["grant_type"]
     device_code: str | None = params["device_code"]
@@ -511,7 +534,7 @@ async def device_token(
         )
 
         rt = secrets.token_urlsafe(32)
-        refresh_expires_at = current_time + REFRESH_TOKEN_EXPIRY_SECONDS
+        refresh_expires_at = current_time + REFRESH_TOKEN_TTL_SECONDS
         store.save_refresh_token(
             rt,
             {
@@ -566,7 +589,17 @@ async def device_token(
 
         now = int(time.time())
         new_refresh_token = secrets.token_urlsafe(32)
-        rt_data = store.rotate_refresh_token(old_token=refresh_token, new_token=new_refresh_token)
+        new_refresh_data = {
+            "client_id": client_id,
+            "user_info": refresh_token_data["user_info"],
+            "scope": refresh_token_data.get("scope", ""),
+            "expires_at": now + REFRESH_TOKEN_TTL_SECONDS,
+        }
+        rt_data = store.rotate_refresh_token(
+            old_token=refresh_token,
+            new_token=new_refresh_token,
+            new_data=new_refresh_data,
+        )
         if rt_data is None:
             return oauth_error_response("invalid_grant", "refresh token already used")
 

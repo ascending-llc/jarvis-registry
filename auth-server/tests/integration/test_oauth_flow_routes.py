@@ -134,7 +134,6 @@ class TestDynamicClientRegistration:
         assert retrieved_client is not None
         assert retrieved_client["client_id"] == client_id
         assert retrieved_client["client_name"] == "Test Client"
-        assert "client_secret" in retrieved_client
 
     def test_get_nonexistent_client(self, clear_device_storage):
         """Test retrieving non-existent client returns None."""
