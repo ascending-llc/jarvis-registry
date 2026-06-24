@@ -11,6 +11,7 @@ from registry_pkgs.core.jwt_utils import (
     InvalidTokenError,
     decode_jwt_unverified,
     decode_jwt_with_jwk,
+    find_matching_jwk,
     get_token_kid,
     get_token_unverified_header,
 )
@@ -252,13 +253,7 @@ class EntraIdProvider(AuthProvider):
     async def _verify_user_info_token(self, token: str) -> dict[str, Any]:
         """Verify a JWT before using it as an identity source."""
         jwks = await self.get_jwks()
-        kid = get_token_kid(token)
-        if not kid:
-            raise InvalidTokenError("Token missing 'kid' in header")
-
-        matching_key = next((key for key in jwks.get("keys", []) if key.get("kid") == kid), None)
-        if not matching_key:
-            raise InvalidTokenError(f"No matching JWKS key for kid: {kid}")
+        matching_key = find_matching_jwk(jwks, get_token_kid(token))
 
         # Unverified issuer inspection is only used to select the expected issuer
         # before the cryptographic verification below.

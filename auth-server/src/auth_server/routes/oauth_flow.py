@@ -26,6 +26,7 @@ from registry_pkgs.core.jwt_utils import (
     InvalidTokenError,
     decode_jwt_unverified,
     decode_jwt_with_jwk,
+    find_matching_jwk,
     get_token_kid,
 )
 from registry_pkgs.core.scopes import map_groups_to_scopes
@@ -77,17 +78,6 @@ def oauth_error_response(error: str, error_description: str | None = None, statu
     return JSONResponse(status_code=status_code, content=content)
 
 
-def _find_matching_jwk(jwks: dict[str, Any], kid: str | None) -> dict[str, Any]:
-    if not kid:
-        raise InvalidTokenError("Token missing 'kid' in header")
-
-    matching_key = next((key for key in jwks.get("keys", []) if key.get("kid") == kid), None)
-    if not matching_key:
-        raise InvalidTokenError(f"No matching JWKS key for kid: {kid}")
-
-    return matching_key
-
-
 def _provider_token_issuers(provider: AllowedProvider, auth_provider: AuthProvider) -> list[str]:
     if provider == "keycloak":
         issuer_candidates = [
@@ -104,7 +94,7 @@ def _provider_token_issuers(provider: AllowedProvider, auth_provider: AuthProvid
     return [issuer]
 
 
-def _provider_token_audience(provider: AllowedProvider, auth_provider: AuthProvider) -> str | list[str]:
+def _provider_token_audience(provider: AllowedProvider, auth_provider: AuthProvider) -> str | list[str] | None:
     client_id = getattr(auth_provider, "client_id", None)
     if not client_id:
         raise InvalidTokenError(f"Provider {provider} does not expose a client_id for token verification")
@@ -113,7 +103,9 @@ def _provider_token_audience(provider: AllowedProvider, auth_provider: AuthProvi
         audiences = ["account", client_id, getattr(auth_provider, "m2m_client_id", client_id)]
         return list(dict.fromkeys(audiences))
 
-    return client_id
+    # Cognito access tokens omit the standard 'aud' claim; skipping audience
+    # verification avoids InvalidAudienceError for both id_token and access_token flows.
+    return None
 
 
 async def _decode_oidc_provider_token(
@@ -122,7 +114,7 @@ async def _decode_oidc_provider_token(
     auth_provider: AuthProvider,
 ) -> dict[str, Any]:
     jwks = await auth_provider.get_jwks()
-    matching_key = _find_matching_jwk(jwks, get_token_kid(token))
+    matching_key = find_matching_jwk(jwks, get_token_kid(token))
     audience = _provider_token_audience(provider, auth_provider)
 
     last_issuer_error: InvalidIssuerError | None = None

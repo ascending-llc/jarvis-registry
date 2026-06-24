@@ -19,6 +19,7 @@ from auth_server.deps import get_auth_provider, get_oauth2_config, get_signer, g
 from auth_server.routes.oauth_flow import REFRESH_TOKEN_EXPIRY_SECONDS
 from auth_server.server import app
 from registry_pkgs.core.jwt_utils import decode_jwt_unverified
+from tests.integration.conftest import _mock_keycloak_provider
 
 # API prefix for OAuth endpoints (set in conftest.py via AUTH_SERVER_API_PREFIX env var)
 API_PREFIX = "/auth"
@@ -34,17 +35,6 @@ def mock_user_service():
     mock_service = MagicMock()
     mock_service.resolve_user_id = AsyncMock(return_value="user-id-123")
     return mock_service
-
-
-def _mock_keycloak_provider() -> MagicMock:
-    provider = MagicMock()
-    provider.get_jwks = AsyncMock(return_value={"keys": [{"kid": "test-kid"}]})
-    provider.client_id = "test-client"
-    provider.m2m_client_id = "test-client"
-    provider.realm = "test-realm"
-    provider.realm_url = "http://localhost:8888/realms/test-realm"
-    provider.external_realm_url = "http://localhost:8888/realms/test-realm"
-    return provider
 
 
 @pytest.fixture
