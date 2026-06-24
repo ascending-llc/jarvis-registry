@@ -316,10 +316,12 @@ def _result_from_task(task: Task) -> A2ACallResult:
         )
 
     # Remaining: failed / canceled / rejected / unknown.
+    detail = get_message_text(task.status.message) if task.status.message is not None else ""
+    base = f"task terminated in non-completed state: {state.value}"
     return A2ACallResult(
         task=task,
         success=False,
-        error=f"task terminated in non-completed state: {state.value}",
+        error=f"{base} — {detail}" if detail else base,
     )
 
 

@@ -478,6 +478,32 @@ async def test_call_a2a_non_completed_terminal_state_returns_failure_with_task()
 
 
 @pytest.mark.asyncio
+async def test_call_a2a_failed_surfaces_status_message_detail():
+    """Failed Task with a status.message → reason text surfaces in error; success=False."""
+    agent = _make_agent()
+    reason = "agent overloaded (HTTP 503), retryable, retry in a few minutes"
+    failed_task = Task(
+        id="t",
+        context_id="c",
+        kind="task",
+        status=TaskStatus(state=TaskState.failed, message=_msg(reason)),
+        artifacts=None,
+    )
+    mock_factory, _ = _mock_client([(failed_task, None)])
+
+    with (
+        patch("registry_pkgs.workflows.a2a_client.build_headers", return_value={}),
+        patch("registry_pkgs.workflows.a2a_client.ClientFactory", return_value=mock_factory),
+    ):
+        result = await call_a2a(agent, "test", jwt_config=_jwt_config())
+
+    assert result.success is False
+    assert result.task_state == TaskState.failed
+    assert "non-completed" in result.error
+    assert reason in result.error
+
+
+@pytest.mark.asyncio
 async def test_call_a2a_uses_http_json_protocol_for_rest_transport():
     """ClientConfig must receive TransportProtocol.http_json for http_json agents."""
     agent = _make_agent(transport="http_json")
