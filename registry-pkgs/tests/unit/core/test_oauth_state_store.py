@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from auth_server.services.oauth_state_store import (
+from registry_pkgs.core.oauth_state_store import (
     AUTH_CODE_TTL_SECONDS,
     CLIENT_TTL_SECONDS,
     REFRESH_TOKEN_TTL_SECONDS,

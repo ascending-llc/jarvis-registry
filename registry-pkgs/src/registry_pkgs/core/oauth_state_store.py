@@ -123,10 +123,12 @@ class OAuthStateStore:
         redis_client: Redis,
         key_prefix: str,
         client_secret_hash_key: str,
+        client_key_prefix: str | None = None,
     ) -> None:
         self._redis = redis_client
         self._key_prefix = key_prefix
         self._client_secret_hash_key = client_secret_hash_key
+        self._client_key_prefix = client_key_prefix or key_prefix
 
     def save_client(self, client_id: str, metadata: dict[str, Any]) -> None:
         stored_metadata = self._prepare_client_metadata(metadata)
@@ -304,7 +306,7 @@ class OAuthStateStore:
             raise
 
     def _client_key(self, client_id: str) -> str:
-        return self._key("client", client_id)
+        return f"{self._client_key_prefix}:oauth:client:{client_id}"
 
     def _authcode_key(self, code: str) -> str:
         return self._key("authcode", code)
