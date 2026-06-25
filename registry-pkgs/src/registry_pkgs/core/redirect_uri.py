@@ -8,8 +8,9 @@ of truth lives here in ``registry-pkgs`` where both workspaces can import it.
 Two validation phases with different rules:
 
 * **Registration** (``validate_registration_redirect_uri``): structural allow/deny applied once when a
-  client registers a ``redirect_uri``. Rejects non-loopback ``http://``, ``https://`` to
-  private/loopback/link-local/unspecified IPs, and any URI carrying a fragment.
+  client registers a ``redirect_uri``. Rejects dangerous schemes (``javascript:``, ``data:`` …),
+  non-loopback ``http://``, ``https://`` to private/loopback/link-local/unspecified IPs, and any URI
+  carrying a fragment. Native-app private-use schemes (RFC 8252 §7.1, e.g. ``vscode://``) are allowed.
 * **Authorization** (``redirect_uri_matches``): compares a request-time ``redirect_uri`` against a
   previously registered one. Exact match for normal URIs; loopback URIs match on scheme+host+path and
   ignore the port (RFC 8252 §7.3 — native apps bind an ephemeral loopback port per launch).
@@ -19,6 +20,8 @@ import ipaddress
 from urllib.parse import urlsplit
 
 LOOPBACK_HOSTNAMES = frozenset({"localhost", "127.0.0.1", "::1"})
+
+BLOCKED_REDIRECT_SCHEMES = frozenset({"javascript", "data", "vbscript", "file", "blob", "about"})
 
 
 def is_loopback_host(host: str | None) -> bool:
@@ -41,33 +44,67 @@ def _is_blocked_https_ip(host: str) -> bool:
     return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_unspecified
 
 
-def validate_registration_redirect_uri(redirect_uri: str) -> None:
-    """Validate a ``redirect_uri`` at client-registration time. Raise ``ValueError`` if disallowed.
+def _validate_web_redirect_host(scheme: str, hostname: str | None) -> None:
+    """Vet the host of an ``http`` / ``https`` redirect_uri. Raise ``ValueError`` if disallowed.
 
-    Rules:
-      * must be an absolute ``http``/``https`` URL with a host;
-      * must not carry a fragment (``#...``);
-      * ``http`` is allowed only for loopback hosts;
-      * ``https`` is rejected when the host is a private / loopback / link-local / unspecified IP.
+    PASS: ``https`` to any public host; ``http`` to a loopback host.
+    FAIL: missing host; plaintext ``http`` to a non-loopback host; ``https`` to an internal IP.
+    """
+    host = (hostname or "").lower()
+
+    # No host at all (e.g. "https:///cb"): not a usable callback target.
+    if not host:
+        raise ValueError("http(s) redirect_uri must include a host")
+
+    if scheme == "http" and not is_loopback_host(host):
+        raise ValueError("http redirect_uri is only allowed for loopback hosts (localhost / 127.0.0.1 / [::1])")
+
+    if scheme == "https" and _is_blocked_https_ip(host):
+        raise ValueError("https redirect_uri must not target a private, loopback, or link-local address")
+
+
+def validate_registration_redirect_uri(redirect_uri: str) -> None:
+    """Validate a client-supplied ``redirect_uri`` at DCR registration time.
+
+    Returns ``None`` when the URI is acceptable; raises ``ValueError`` (with a human-readable reason)
+    otherwise. The URI later becomes a 302 redirect sink that carries the authorization code, so this
+    is the anti-open-redirect / anti-SSRF / anti-phishing gate.
+
+    A redirect_uri is ACCEPTED only if it is one of the three forms a real client legitimately uses
+    (RFC 6749 §3.1.2 for web apps, RFC 8252 §7 for native apps):
+
+      1. ``https://<public-host>/...``     web / claimed-https callback
+      2. ``http://<loopback>/...``         native app loopback listener (localhost / 127.0.0.1 / [::1])
+      3. ``<private-use-scheme>:/...``     native app custom scheme, e.g. ``vscode://`` (Cline / VS Code)
+
+    Rules are applied in this order — first match wins:
+
+      | check                                              | result                          |
+      |----------------------------------------------------|---------------------------------|
+      | no scheme (not an absolute URI)                    | FAIL (RFC 6749 §3.1.2)          |
+      | contains a ``#fragment``                           | FAIL (RFC 6749 §3.1.2)          |
+      | dangerous scheme: javascript/data/file/...         | FAIL (would execute in browser) |
+      | any non-http(s) scheme                             | PASS — native private-use scheme|
+      | http(s): host vetted by ``_validate_web_redirect_host`` | PASS or FAIL               |
     """
     parts = urlsplit(redirect_uri)
     scheme = parts.scheme.lower()
 
-    if scheme not in {"http", "https"} or not parts.netloc:
-        raise ValueError("redirect_uri must be an absolute http(s) URL")
-
+    if not scheme:
+        raise ValueError("redirect_uri must be an absolute URI (no scheme found)")
     if parts.fragment:
-        raise ValueError("redirect_uri must not contain a fragment")
+        raise ValueError("redirect_uri must not contain a fragment (#...)")
+    if scheme in BLOCKED_REDIRECT_SCHEMES:
+        raise ValueError(f"redirect_uri scheme '{scheme}:' is not allowed")
 
-    host = (parts.hostname or "").lower()
-    if not host:
-        raise ValueError("redirect_uri must include a host")
+    # --- Native-app private-use scheme (RFC 8252 §7.1), e.g. vscode:// ---
+    # Hands off to a local app, never to a network host, so the host rules below do not apply.
+    # Cross-client abuse is prevented by the exact registered==received match at authorization time.
+    if scheme not in {"http", "https"}:
+        return
 
-    if scheme == "http" and not is_loopback_host(host):
-        raise ValueError("http redirect_uri is only allowed for loopback hosts")
-
-    if scheme == "https" and _is_blocked_https_ip(host):
-        raise ValueError("https redirect_uri must not target a private, loopback, or link-local address")
+    # --- http / https: must point at a vetted host ---
+    _validate_web_redirect_host(scheme, parts.hostname)
 
 
 def redirect_uri_matches(received: str, registered: str) -> bool:
