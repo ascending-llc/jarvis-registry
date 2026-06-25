@@ -1,6 +1,3 @@
-import hashlib
-import hmac
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -11,6 +8,7 @@ from registry.core.config import settings
 from registry.middleware.auth import UnifiedAuthMiddleware
 from registry.middleware.csrf import CSRFMiddleware
 from registry.middleware.rbac import ScopePermissionMiddleware
+from registry.utils.csrf import compute_csrf_token
 
 
 def _build_app() -> FastAPI:
@@ -22,14 +20,6 @@ def _build_app() -> FastAPI:
         return JSONResponse({"ok": True})
 
     return app
-
-
-def _csrf_token(session_cookie: str) -> str:
-    return hmac.new(
-        key=settings.secret_key.encode(),
-        msg=session_cookie.encode(),
-        digestmod=hashlib.sha256,
-    ).hexdigest()
 
 
 def test_get_with_session_cookie_no_csrf_header_returns_200():
@@ -54,7 +44,7 @@ def test_post_with_session_cookie_correct_csrf_header_returns_200():
     session_cookie = "session-token"
     client.cookies.set(settings.session_cookie_name, session_cookie)
 
-    response = client.post("/resource", headers={settings.csrf_header_name: _csrf_token(session_cookie)})
+    response = client.post("/resource", headers={settings.csrf_header_name: compute_csrf_token(session_cookie)})
 
     assert response.status_code == 200
 
@@ -84,7 +74,9 @@ def test_post_with_tampered_session_cookie_returns_403():
     original_session_cookie = "session-token"
     client.cookies.set(settings.session_cookie_name, "tampered-session-token")
 
-    response = client.post("/resource", headers={settings.csrf_header_name: _csrf_token(original_session_cookie)})
+    response = client.post(
+        "/resource", headers={settings.csrf_header_name: compute_csrf_token(original_session_cookie)}
+    )
 
     assert response.status_code == 403
     assert response.json() == {"detail": "CSRF token invalid"}

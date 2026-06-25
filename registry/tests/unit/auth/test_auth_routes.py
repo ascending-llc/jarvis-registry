@@ -11,7 +11,13 @@ from bson import ObjectId
 from fastapi import Request
 from fastapi.responses import RedirectResponse
 
-from registry.api.redirect_routes import get_oauth2_providers, oauth2_callback, oauth2_login_redirect
+from registry.api.redirect_routes import (
+    get_oauth2_providers,
+    logout_post,
+    oauth2_callback,
+    oauth2_login_redirect,
+    refresh_token,
+)
 from registry.utils.csrf import compute_csrf_token
 from registry_pkgs.core.jwt_utils import InvalidSignatureError
 
@@ -369,3 +375,107 @@ class TestAuthRoutes:
                 assert response.status_code == 302
                 # When status_code != 200, it returns oauth2_token_exchange_failed
                 assert "oauth2_token_exchange_failed" in response.headers["location"]
+
+    @pytest.mark.asyncio
+    async def test_logout_post_clears_csrf_cookie(self, mock_settings):
+        """Logout must clear the CSRF cookie alongside session and refresh cookies."""
+        response = await logout_post()
+
+        assert response.status_code == 204
+
+        cookies = SimpleCookie()
+        for key, value in response.raw_headers:
+            if key == b"set-cookie":
+                cookies.load(value.decode())
+
+        assert mock_settings.csrf_cookie_name in cookies
+        assert cookies[mock_settings.csrf_cookie_name].value == ""
+        assert cookies[mock_settings.csrf_cookie_name]["max-age"] == "0"
+
+    @pytest.mark.asyncio
+    async def test_refresh_token_success_sets_csrf_cookie(self, mock_request, mock_settings):
+        """Successful token refresh must issue a new CSRF cookie bound to the new access token."""
+        claims = {
+            "user_id": "123",
+            "sub": "testuser",
+            "auth_method": "oauth2",
+            "provider": "entra",
+            "groups": ["admin"],
+            "scope": "read write",
+            "role": "user",
+            "email": "test@example.com",
+        }
+
+        with (
+            patch("registry.api.redirect_routes.verify_refresh_token", return_value=claims),
+            patch("registry.api.redirect_routes.generate_access_token", return_value="new-access-token"),
+        ):
+            response = await refresh_token(mock_request, refresh="valid-refresh-token", is_https=False)
+
+        assert response.status_code == 200
+
+        cookies = SimpleCookie()
+        for key, value in response.raw_headers:
+            if key == b"set-cookie":
+                cookies.load(value.decode())
+
+        assert cookies[mock_settings.session_cookie_name].value == "new-access-token"
+        assert cookies[mock_settings.csrf_cookie_name].value == compute_csrf_token("new-access-token")
+
+    @pytest.mark.asyncio
+    async def test_refresh_token_no_refresh_cookie_clears_csrf_cookie(self, mock_request, mock_settings):
+        """No refresh cookie must clear the CSRF cookie and return 401."""
+        response = await refresh_token(mock_request, refresh=None, is_https=False)
+
+        assert response.status_code == 401
+
+        cookies = SimpleCookie()
+        for key, value in response.raw_headers:
+            if key == b"set-cookie":
+                cookies.load(value.decode())
+
+        assert cookies[mock_settings.csrf_cookie_name].value == ""
+        assert cookies[mock_settings.csrf_cookie_name]["max-age"] == "0"
+
+    @pytest.mark.asyncio
+    async def test_refresh_token_invalid_token_clears_csrf_cookie(self, mock_request, mock_settings):
+        """An invalid or expired refresh token must clear the CSRF cookie and return 401."""
+        with patch("registry.api.redirect_routes.verify_refresh_token", return_value=None):
+            response = await refresh_token(mock_request, refresh="expired-token", is_https=False)
+
+        assert response.status_code == 401
+
+        cookies = SimpleCookie()
+        for key, value in response.raw_headers:
+            if key == b"set-cookie":
+                cookies.load(value.decode())
+
+        assert cookies[mock_settings.csrf_cookie_name].value == ""
+        assert cookies[mock_settings.csrf_cookie_name]["max-age"] == "0"
+
+    @pytest.mark.asyncio
+    async def test_refresh_token_missing_scopes_clears_csrf_cookie(self, mock_request, mock_settings):
+        """A refresh token with no resolvable scopes must clear the CSRF cookie and return 401."""
+        claims = {
+            "user_id": "123",
+            "sub": "testuser",
+            "auth_method": "oauth2",
+            "provider": "entra",
+            "groups": [],
+            "scope": "",
+            "role": "user",
+            "email": "test@example.com",
+        }
+
+        with patch("registry.api.redirect_routes.verify_refresh_token", return_value=claims):
+            response = await refresh_token(mock_request, refresh="valid-refresh-token", is_https=False)
+
+        assert response.status_code == 401
+
+        cookies = SimpleCookie()
+        for key, value in response.raw_headers:
+            if key == b"set-cookie":
+                cookies.load(value.decode())
+
+        assert cookies[mock_settings.csrf_cookie_name].value == ""
+        assert cookies[mock_settings.csrf_cookie_name]["max-age"] == "0"
