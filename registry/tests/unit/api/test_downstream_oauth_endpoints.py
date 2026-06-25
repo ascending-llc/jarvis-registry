@@ -12,8 +12,10 @@ from fastapi.testclient import TestClient
 
 from registry.api.v1.mcp.oauth_router import router
 from registry.auth.dependencies import get_current_user
+from registry.core.config import settings
 from registry.deps import get_mcp_service, get_oauth_state_store, get_redis_client, get_server_service
 from registry_pkgs.core.downstream_oauth import downstream_mcp_code_key
+from registry_pkgs.core.jwt_tokens import verify_managed_agent_token
 
 REGISTERED_REDIRECT_URIS = ["http://localhost:33418/cb", "https://app.example.com/cb"]
 
@@ -257,6 +259,9 @@ def test_token_happy_path_returns_access_and_refresh_token(client, redis_mock, s
     assert body["access_token"]
     assert body["refresh_token"]
     assert body["scope"] == "mcp-proxy-ops"
+    claims = verify_managed_agent_token(settings.jwt_token_config, body["access_token"])
+    assert claims["user_id"] == USER_A
+    assert claims["server_path"] == "github"
     # One-time use: the code is atomically fetched-and-deleted in a single GETDEL call.
     redis_mock.getdel.assert_called_once_with(downstream_mcp_code_key(CODE))
     # The issued refresh token is persisted bound to (user_id, server_path).
@@ -267,40 +272,56 @@ def test_token_happy_path_returns_access_and_refresh_token(client, redis_mock, s
     assert saved["client_id"] == "claude"
 
 
+def _assert_token_error(resp, error: str, description: str) -> None:
+    assert resp.status_code == 400
+    body = resp.json()
+    assert body["error"] == error
+    assert body["error_description"] == description
+    assert "detail" not in body
+
+
 def test_token_unknown_code_returns_400(client, redis_mock):
-    redis_mock.get.return_value = None
-    assert _post_token(client).status_code == 400
+    redis_mock.getdel.return_value = None
+    resp = _post_token(client)
+    _assert_token_error(resp, "invalid_grant", "invalid or expired code")
+    redis_mock.getdel.assert_called_once_with(downstream_mcp_code_key(CODE))
 
 
 def test_token_corrupt_entry_returns_400(client, redis_mock):
-    redis_mock.get.return_value = "not-json"
-    assert _post_token(client).status_code == 400
+    redis_mock.getdel.return_value = "not-json"
+    resp = _post_token(client)
+    _assert_token_error(resp, "invalid_grant", "invalid or expired code")
 
 
 def test_token_pkce_mismatch_returns_400(client, redis_mock):
-    redis_mock.get.return_value = _stored_entry()
-    assert _post_token(client, verifier="wrong-verifier").status_code == 400
+    redis_mock.getdel.return_value = _stored_entry()
+    resp = _post_token(client, verifier="wrong-verifier")
+    _assert_token_error(resp, "invalid_grant", "PKCE verification failed")
 
 
 def test_token_client_id_mismatch_returns_400(client, redis_mock):
-    redis_mock.get.return_value = _stored_entry(client_id="claude")
-    assert _post_token(client, client_id="someone-else").status_code == 400
+    redis_mock.getdel.return_value = _stored_entry(client_id="claude")
+    resp = _post_token(client, client_id="someone-else")
+    _assert_token_error(resp, "invalid_client", "client_id mismatch")
 
 
 def test_token_redirect_uri_mismatch_returns_400(client, redis_mock):
-    redis_mock.get.return_value = _stored_entry(redirect_uri="http://localhost:33418/cb")
-    assert _post_token(client, redirect_uri="http://evil.localhost/cb").status_code == 400
+    redis_mock.getdel.return_value = _stored_entry(redirect_uri="http://localhost:33418/cb")
+    resp = _post_token(client, redirect_uri="http://evil.localhost/cb")
+    _assert_token_error(resp, "invalid_grant", "redirect_uri mismatch")
 
 
 def test_token_rejects_cross_user_binding(client, redis_mock):
     # Code minted for USER_A, redeemed under USER_B's token endpoint URL → rejected.
-    redis_mock.get.return_value = _stored_entry(user_id=USER_A)
-    assert _post_token(client, user_id=USER_B).status_code == 400
+    redis_mock.getdel.return_value = _stored_entry(user_id=USER_A)
+    resp = _post_token(client, user_id=USER_B)
+    _assert_token_error(resp, "invalid_grant", "code does not match this endpoint")
 
 
 def test_token_rejects_cross_server_binding(client, redis_mock):
-    redis_mock.get.return_value = _stored_entry(server_path="github")
-    assert _post_token(client, server_path="slack").status_code == 400
+    redis_mock.getdel.return_value = _stored_entry(server_path="github")
+    resp = _post_token(client, server_path="slack")
+    _assert_token_error(resp, "invalid_grant", "code does not match this endpoint")
 
 
 def test_token_unsupported_grant_type_returns_400(client, redis_mock):
@@ -347,6 +368,9 @@ def test_refresh_happy_path_rotates_token(client, store_mock):
     assert body["access_token"]
     assert body["refresh_token"]
     assert body["scope"] == "mcp-proxy-ops"
+    claims = verify_managed_agent_token(settings.jwt_token_config, body["access_token"])
+    assert claims["user_id"] == USER_A
+    assert claims["server_path"] == "github"
     store_mock.rotate_refresh_token.assert_called_once()
 
 

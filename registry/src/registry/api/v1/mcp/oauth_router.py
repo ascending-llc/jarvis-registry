@@ -12,9 +12,9 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from mcp.server.session import ServerSession
 from redis import Redis
 
-from registry_pkgs.core.downstream_oauth import downstream_mcp_code_key
+from registry_pkgs.core.downstream_oauth import downstream_mcp_code_key, oauth_error_payload
 from registry_pkgs.core.jwt_tokens import mint_managed_agent_token
-from registry_pkgs.core.oauth_state_store import OAuthStateStore
+from registry_pkgs.core.oauth_state_store import DownstreamOAuthStoreProtocol
 from registry_pkgs.core.redirect_uri import redirect_uri_matches, validate_registration_redirect_uri
 
 from ....auth.dependencies import CurrentUser
@@ -236,12 +236,12 @@ def _build_downstream_client_redirect(
     flow: OAuthFlow | None,
     redis_client: Redis,
 ) -> RedirectResponse | None:
-    """For an MCP-client-initiated (Layer B) flow, stash the PKCE/binding context and build the
-    redirect back to the client's ``redirect_uri``. Returns None for registry-frontend flows.
+    """For an MCP-client-initiated (Layer B) flow, stash the PKCE/binding context under a fresh
+    authorization code and build the redirect back to the client's ``redirect_uri``. Returns None
+    for registry-frontend flows.
 
-    The confirmation token is NOT minted here — it is minted fresh at ``/token`` exchange time so its
-    short TTL is not eaten by any delay before the exchange (AS-1545 review #2).
-
+    The access/refresh tokens are NOT minted here — they are issued at ``/token`` exchange time once
+    the client redeems this code with its PKCE verifier.
     """
     ctx = flow.metadata.mcp_client_context if (flow and flow.metadata) else None
     if ctx is None or not (flow and flow.user_id):
@@ -641,26 +641,22 @@ def _validate_registered_redirect_uri(client_metadata: dict[str, Any] | None, re
         )
 
 
-@router.get("/downstream/oauth/authorize/{user_id}/{server_path:path}")
-async def downstream_oauth_authorize(
+async def _build_downstream_authorize_redirect(
+    *,
     user_id: str,
     server_path: str,
     user_context: CurrentUser,
-    response_type: str = Query("code"),
-    client_id: str = Query(...),
-    redirect_uri: str = Query(...),
-    code_challenge: str = Query(...),
-    code_challenge_method: str = Query("S256"),
-    state: str = Query(""),
-    mcp_service: MCPService = Depends(get_mcp_service),
-    server_service: ServerServiceV1 = Depends(get_server_service),
-    store: OAuthStateStore = Depends(get_oauth_state_store),
+    response_type: str,
+    client_id: str,
+    redirect_uri: str,
+    code_challenge: str,
+    code_challenge_method: str,
+    state: str,
+    mcp_service: MCPService,
+    server_service: ServerServiceV1,
+    store: DownstreamOAuthStoreProtocol,
 ) -> RedirectResponse:
-    """Per-server downstream OAuth authorization endpoint (Layer B: registry-as-AS).
-
-    Captures the client's PKCE/redirect context, kicks off the Layer A flow against the upstream
-    provider, and 302-redirects the browser there.
-    """
+    """Validate and initiate the per-server downstream authorization flow."""
     if not ObjectId.is_valid(user_id):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid user_id: {user_id}")
 
@@ -672,9 +668,6 @@ async def downstream_oauth_authorize(
 
     _validate_downstream_authorize_params(response_type, code_challenge_method, redirect_uri)
 
-    # Resolve the registered server by prefix (same as the proxy), so a sub-path the client appends
-    # still finds its server. The token binds to the raw URL `server_path`, not the registered
-    # prefix, so issuance and verification agree on whatever path the client actually uses.
     registered_path = await server_service.extract_server_path(f"/{server_path}")
     server = await server_service.get_server_by_path(registered_path) if registered_path else None
     if not server:
@@ -689,9 +682,10 @@ async def downstream_oauth_authorize(
         "state": state,
         "server_path": server_path,
     }
-
     flow_id, auth_url, error = await mcp_service.oauth_service.initiate_oauth_flow(
-        user_id=user_id, server=server, mcp_client_context=ctx
+        user_id=user_id,
+        server=server,
+        mcp_client_context=ctx,
     )
     if error or not auth_url:
         raise HTTPException(
@@ -703,6 +697,48 @@ async def downstream_oauth_authorize(
     return RedirectResponse(url=auth_url)
 
 
+@router.get("/downstream/oauth/authorize/{user_id}/{server_path:path}")
+async def downstream_oauth_authorize(
+    user_id: str,
+    server_path: str,
+    user_context: CurrentUser,
+    response_type: str = Query("code"),
+    client_id: str = Query(...),
+    redirect_uri: str = Query(...),
+    code_challenge: str = Query(...),
+    code_challenge_method: str = Query("S256"),
+    state: str = Query(""),
+    mcp_service: MCPService = Depends(get_mcp_service),
+    server_service: ServerServiceV1 = Depends(get_server_service),
+    store: DownstreamOAuthStoreProtocol = Depends(get_oauth_state_store),
+) -> RedirectResponse:
+    """Per-server downstream OAuth authorization endpoint (Layer B: registry-as-AS).
+
+    Captures the client's PKCE/redirect context, kicks off the Layer A flow against the upstream
+    provider, and 302-redirects the browser there.
+    """
+    try:
+        return await _build_downstream_authorize_redirect(
+            user_id=user_id,
+            server_path=server_path,
+            user_context=user_context,
+            response_type=response_type,
+            client_id=client_id,
+            redirect_uri=redirect_uri,
+            code_challenge=code_challenge,
+            code_challenge_method=code_challenge_method,
+            state=state,
+            mcp_service=mcp_service,
+            server_service=server_service,
+            store=store,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"[Downstream OAuth] authorize failed: user={user_id} server={server_path}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error") from e
+
+
 def _oauth_token_error(error: str, description: str, status_code: int = status.HTTP_400_BAD_REQUEST) -> JSONResponse:
     """Build an RFC 6749 §5.2 token-endpoint error response.
 
@@ -710,11 +746,25 @@ def _oauth_token_error(error: str, description: str, status_code: int = status.H
     ``invalid_grant`` tells them to drop a stale refresh token and re-authorize — so token-endpoint
     failures MUST use this shape rather than the generic ``{"detail": ...}``.
     """
-    return JSONResponse(status_code=status_code, content={"error": error, "error_description": description})
+    return JSONResponse(status_code=status_code, content=oauth_error_payload(error, description))
 
 
-def _mint_downstream_access_token(user_id: str, client_id: str) -> str:
-    """Mint a managed-agent access token scoped to the direct-connect proxy for ``user_id``."""
+def _downstream_refresh_data(client_id: str, user_id: str, server_path: str) -> dict[str, str]:
+    """Build the refresh-token payload persisted for a direct-connect ``(user_id, server_path)``.
+
+    Both the ``authorization_code`` grant (initial issuance) and the ``refresh_token`` grant
+    (rotation) persist the same shape; keep it in one place so the bound fields cannot drift apart.
+    """
+    return {
+        "client_id": client_id,
+        "user_id": user_id,
+        "server_path": server_path,
+        "scope": DownstreamOAuthConstants.PROXY_OPS_SCOPE,
+    }
+
+
+def _mint_downstream_access_token(user_id: str, client_id: str, server_path: str) -> str:
+    """Mint a managed-agent access token scoped to one direct-connect ``(user_id, server_path)``."""
     return mint_managed_agent_token(
         settings.jwt_token_config,
         subject=user_id,
@@ -723,6 +773,7 @@ def _mint_downstream_access_token(user_id: str, client_id: str) -> str:
         iat=int(time.time()),
         extra_claims={
             "user_id": user_id,
+            "server_path": server_path,
             "scope": DownstreamOAuthConstants.PROXY_OPS_SCOPE,
         },
     )
@@ -743,7 +794,7 @@ def _downstream_token_response(access_token: str, refresh_token: str) -> JSONRes
 
 def _downstream_authorization_code_grant(
     *,
-    store: OAuthStateStore,
+    store: DownstreamOAuthStoreProtocol,
     redis_client: Redis,
     user_id: str,
     server_path: str,
@@ -785,16 +836,11 @@ def _downstream_authorization_code_grant(
     if user_id != bound_user_id or server_path != bound_server_path:
         return _oauth_token_error("invalid_grant", "code does not match this endpoint")
 
-    access_token = _mint_downstream_access_token(bound_user_id, client_id)
+    access_token = _mint_downstream_access_token(bound_user_id, client_id, bound_server_path)
     refresh_token = secrets.token_urlsafe(32)
     store.save_refresh_token(
         refresh_token,
-        {
-            "client_id": client_id,
-            "user_id": bound_user_id,
-            "server_path": bound_server_path,
-            "scope": DownstreamOAuthConstants.PROXY_OPS_SCOPE,
-        },
+        _downstream_refresh_data(client_id, bound_user_id, bound_server_path),
     )
 
     logger.info(f"[Downstream OAuth] token issued: user={user_id} server={server_path}")
@@ -803,7 +849,7 @@ def _downstream_authorization_code_grant(
 
 def _downstream_refresh_token_grant(
     *,
-    store: OAuthStateStore,
+    store: DownstreamOAuthStoreProtocol,
     user_id: str,
     server_path: str,
     client_id: str,
@@ -831,17 +877,12 @@ def _downstream_refresh_token_grant(
     rotated = store.rotate_refresh_token(
         old_token=refresh_token,
         new_token=new_refresh_token,
-        new_data={
-            "client_id": client_id,
-            "user_id": user_id,
-            "server_path": server_path,
-            "scope": DownstreamOAuthConstants.PROXY_OPS_SCOPE,
-        },
+        new_data=_downstream_refresh_data(client_id, user_id, server_path),
     )
     if rotated is None:
         return _oauth_token_error("invalid_grant", "refresh token already used")
 
-    access_token = _mint_downstream_access_token(user_id, client_id)
+    access_token = _mint_downstream_access_token(user_id, client_id, server_path)
     logger.info(f"[Downstream OAuth] refresh rotated: user={user_id} server={server_path}")
     return _downstream_token_response(access_token, new_refresh_token)
 
@@ -857,7 +898,7 @@ async def downstream_oauth_token(
     redirect_uri: str | None = Form(None),
     refresh_token: str | None = Form(None),
     redis_client: Redis = Depends(get_redis_client),
-    store: OAuthStateStore = Depends(get_oauth_state_store),
+    store: DownstreamOAuthStoreProtocol = Depends(get_oauth_state_store),
 ) -> JSONResponse:
     """Per-server downstream OAuth token endpoint (Layer B: registry-as-AS).
 
@@ -865,28 +906,34 @@ async def downstream_oauth_token(
     (rotate a stored refresh token). Both mint a managed-agent access token scoped to this
     ``(user_id, server_path)`` direct-connect proxy. No registry Bearer token is required.
     """
-    if grant_type == "authorization_code":
-        return _downstream_authorization_code_grant(
-            store=store,
-            redis_client=redis_client,
-            user_id=user_id,
-            server_path=server_path,
-            code=code,
-            client_id=client_id,
-            code_verifier=code_verifier,
-            redirect_uri=redirect_uri,
-        )
+    try:
+        if grant_type == "authorization_code":
+            return _downstream_authorization_code_grant(
+                store=store,
+                redis_client=redis_client,
+                user_id=user_id,
+                server_path=server_path,
+                code=code,
+                client_id=client_id,
+                code_verifier=code_verifier,
+                redirect_uri=redirect_uri,
+            )
 
-    if grant_type == "refresh_token":
-        return _downstream_refresh_token_grant(
-            store=store,
-            user_id=user_id,
-            server_path=server_path,
-            client_id=client_id,
-            refresh_token=refresh_token,
-        )
+        if grant_type == "refresh_token":
+            return _downstream_refresh_token_grant(
+                store=store,
+                user_id=user_id,
+                server_path=server_path,
+                client_id=client_id,
+                refresh_token=refresh_token,
+            )
 
-    return _oauth_token_error("unsupported_grant_type", f"grant_type '{grant_type}' is not supported")
+        return _oauth_token_error("unsupported_grant_type", f"grant_type '{grant_type}' is not supported")
+    except Exception:
+        # A dependency failure (e.g. Redis) must still return the RFC 6749 §5.2 error shape, not a
+        # bare FastAPI 500 — OAuth clients branch on the JSON ``error`` code, not on ``{"detail"}``.
+        logger.exception(f"[Downstream OAuth] token endpoint failed: user={user_id} server={server_path}")
+        return _oauth_token_error("server_error", "internal server error", status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 # ==================== Helper Functions ====================
