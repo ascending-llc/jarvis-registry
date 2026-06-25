@@ -47,6 +47,7 @@ def store_mock() -> Mock:
     store = Mock()
     # The direct-connect client registered (via DCR against auth-server) these redirect_uris.
     store.get_client = Mock(return_value={"redirect_uris": list(REGISTERED_REDIRECT_URIS)})
+    store.validate_client_credentials = Mock(return_value=True)
     store.save_refresh_token = Mock()
     store.get_refresh_token = Mock(return_value=None)
     store.rotate_refresh_token = Mock(return_value=None)
@@ -379,27 +380,31 @@ def test_refresh_missing_token_returns_400(client, store_mock):
         f"/mcp/downstream/oauth/token/{USER_A}/github",
         data={"grant_type": "refresh_token", "client_id": "claude"},
     )
-    assert resp.status_code == 400
+    _assert_token_error(resp, "invalid_request", "refresh_token is required")
 
 
 def test_refresh_unknown_token_returns_400(client, store_mock):
     store_mock.get_refresh_token.return_value = None
-    assert _post_refresh(client).status_code == 400
+    _assert_token_error(_post_refresh(client), "invalid_grant", "invalid or expired refresh_token")
 
 
 def test_refresh_client_id_mismatch_returns_400(client, store_mock):
     store_mock.get_refresh_token.return_value = _refresh_data(client_id="claude")
-    assert _post_refresh(client, client_id="someone-else").status_code == 400
+    _assert_token_error(_post_refresh(client, client_id="someone-else"), "invalid_client", "client_id mismatch")
 
 
 def test_refresh_rejects_cross_user_binding(client, store_mock):
     store_mock.get_refresh_token.return_value = _refresh_data(user_id=USER_A)
-    assert _post_refresh(client, user_id=USER_B).status_code == 400
+    _assert_token_error(
+        _post_refresh(client, user_id=USER_B), "invalid_grant", "refresh_token does not match this endpoint"
+    )
 
 
 def test_refresh_rejects_cross_server_binding(client, store_mock):
     store_mock.get_refresh_token.return_value = _refresh_data(server_path="github")
-    assert _post_refresh(client, server_path="slack").status_code == 400
+    _assert_token_error(
+        _post_refresh(client, server_path="slack"), "invalid_grant", "refresh_token does not match this endpoint"
+    )
 
 
 def test_refresh_replayed_token_returns_400(client, store_mock):
@@ -418,3 +423,22 @@ def test_token_errors_use_oauth_error_shape(client, store_mock):
     assert body["error"] == "invalid_grant"
     assert "error_description" in body
     assert "detail" not in body
+
+
+# ---- client_secret validation (M4) ----
+
+
+def test_token_invalid_client_secret_returns_invalid_client(client, redis_mock, store_mock):
+    store_mock.validate_client_credentials.return_value = False
+    redis_mock.getdel.return_value = _stored_entry()
+    _assert_token_error(_post_token(client), "invalid_client", "invalid client credentials")
+    # The code must NOT be consumed when client auth fails.
+    redis_mock.getdel.assert_not_called()
+
+
+def test_refresh_invalid_client_secret_returns_invalid_client(client, store_mock):
+    store_mock.validate_client_credentials.return_value = False
+    store_mock.get_refresh_token.return_value = _refresh_data()
+    _assert_token_error(_post_refresh(client), "invalid_client", "invalid client credentials")
+    # The refresh token must NOT be touched when client auth fails.
+    store_mock.get_refresh_token.assert_not_called()

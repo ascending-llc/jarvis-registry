@@ -36,3 +36,19 @@ def test_downstream_as_metadata_issuer_and_endpoints(test_client: TestClient):
     assert body["token_endpoint"].endswith(f"/downstream/oauth/token/{USER_ID}/github")
     assert body["jwks_uri"] == f"{settings.jwt_issuer}/.well-known/jwks.json"
     assert body["code_challenge_methods_supported"] == ["S256"]
+
+
+def test_downstream_as_metadata_advertises_refresh_token_grant(test_client: TestClient):
+    # RFC 8414 §2: absent grant_types_supported implies authorization_code only — a strict MCP
+    # client would not attempt refresh_token. The field must be present and include refresh_token.
+    body = test_client.get(f"/.well-known/oauth-authorization-server/proxy/server/oauth/{USER_ID}/github").json()
+    assert "refresh_token" in body["grant_types_supported"]
+    assert "authorization_code" in body["grant_types_supported"]
+
+
+def test_downstream_as_metadata_advertises_public_client_auth_method(test_client: TestClient):
+    # RFC 8414 §2: absent token_endpoint_auth_methods_supported implies client_secret_basic — a
+    # strict client would refuse to send a token request without a client secret. The field must
+    # be present and include "none" (PKCE public client, the only supported auth method here).
+    body = test_client.get(f"/.well-known/oauth-authorization-server/proxy/server/oauth/{USER_ID}/github").json()
+    assert body["token_endpoint_auth_methods_supported"] == ["none"]

@@ -85,6 +85,8 @@ async def downstream_authorization_server_metadata(user_id: str, server_path: st
         "registration_endpoint": f"{auth_server_url}/oauth2/register",
         "jwks_uri": f"{settings.jwt_issuer}/.well-known/jwks.json",
         "response_types_supported": ["code"],
+        "grant_types_supported": ["authorization_code", "refresh_token"],
+        "token_endpoint_auth_methods_supported": ["none"],
         "code_challenge_methods_supported": ["S256"],
     }
 
