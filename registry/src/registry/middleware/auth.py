@@ -1,4 +1,5 @@
 import logging
+import re
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
@@ -10,12 +11,15 @@ from registry_pkgs.core.jwt_utils import ExpiredSignatureError, InvalidTokenErro
 from registry_pkgs.core.scopes import map_groups_to_scopes
 
 from ..auth.dependencies import UserContextDict
-from ..auth.downstream_token import DIRECT_CONNECT_RE, verify_downstream_mcp_token
 from ..core.config import settings
 from ..core.telemetry_decorators import AuthMetricsContext
 from ..utils.crypto_utils import verify_access_token
 
 logger = logging.getLogger(__name__)
+
+# Direct-connect proxy path: /proxy/server/{user_id}/{server_path}. Used to bind a managed-agent
+# token's direct-connect claims to the URL.
+DIRECT_CONNECT_RE = re.compile(r"^/proxy/server/([^/]+)/(.+)$")
 
 
 def _parse_bearer_token(request: Request) -> str | None:
@@ -197,10 +201,9 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
     def _try_jwt_auth(self, request: Request, path: str) -> UserContextDict | None:
         """Bearer-token authentication for proxy routes.
 
-        Accepts either a managed-agent token (the normal proxy credential) or a downstream
-        confirmation token (the one-time entry ticket issued after a direct-connect downstream
-        OAuth flow). On direct-connect routes that carry a ``user_id`` segment, the token's
-        ``user_id`` must match the URL's ``user_id``.
+        Accepts a managed-agent token (the proxy credential, including the access token issued by the
+        direct-connect downstream ``/token`` endpoint). On direct-connect routes, the token's
+        ``user_id`` and ``server_path`` must match the URL.
         """
         access_token = _parse_bearer_token(request)
         if access_token is None:
@@ -210,9 +213,7 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
             claims = self._verify_managed_agent_claims(access_token)
             if claims is not None:
                 return self._build_managed_agent_context(claims, path)
-
-            # Fallback: a downstream confirmation token (Layer B entry ticket).
-            return self._build_downstream_token_context(access_token, path)
+            return None
         except Exception as e:
             logger.debug(f"JWT auth failed: {e}")
             return None
@@ -221,8 +222,8 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
     def _verify_managed_agent_claims(access_token: str) -> dict | None:
         """Validate a managed-agent (proxy) token. Returns its claims, or None if it is not one.
 
-        Wrong class/audience/kid/client_id all raise InvalidTokenError; a downstream confirmation
-        token also fails here (different iss + token_class) and is handled by the caller's fallback.
+        Wrong class/audience/kid/client_id all raise InvalidTokenError and are treated as "not a
+        usable token here".
         """
         try:
             claims = verify_managed_agent_token(settings.jwt_token_config, access_token)
@@ -236,28 +237,8 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
         )
         return claims
 
-    def _build_downstream_token_context(self, access_token: str, path: str) -> UserContextDict | None:
-        """Build a context from a downstream confirmation token, or None if it is not valid here.
-
-        ``verify_downstream_mcp_token`` enforces the user_id / server_path binding against the path.
-        """
-        user_id = verify_downstream_mcp_token(access_token, path, settings.jwt_public_key)
-        if user_id is None:
-            return None
-
-        logger.info(f"Downstream confirmation token validated for user {user_id}")
-        return self._build_user_context(
-            user_id=user_id,
-            username=user_id,
-            groups=[],
-            scopes=["mcp-proxy-ops"],
-            auth_method="downstream_mcp_token",
-            provider="registry",
-            auth_source="downstream_mcp_token",
-        )
-
     def _build_managed_agent_context(self, claims: dict, path: str) -> UserContextDict | None:
-        """Build a user context from validated managed-agent claims, enforcing user_id binding."""
+        """Build a user context from validated managed-agent claims, enforcing direct-connect binding."""
         username = claims.get("sub", "")
         if not username:
             logger.debug("JWT token missing 'sub' claim")
@@ -283,6 +264,14 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
             url_user_id = binding.group(1)
             if user_id != url_user_id:
                 logger.warning(f"user_id mismatch: token has {user_id}, URL has {url_user_id}")
+                return None
+            url_server_path = binding.group(2)
+            token_server_path = claims.get("server_path")
+            # Root-AS tokens (requiresOAuth=False servers) carry no server_path claim; only
+            # downstream-AS tokens (requiresOAuth=True) embed one. Skip the binding check when
+            # absent so non-OAuth direct-connect servers still work with a root-AS token.
+            if token_server_path is not None and token_server_path != url_server_path:
+                logger.warning(f"server_path mismatch: token has {token_server_path}, URL has {url_server_path}")
                 return None
 
         token_class = claims.get("token_class", "unknown")

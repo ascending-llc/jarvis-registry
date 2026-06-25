@@ -18,6 +18,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from pydantic import BaseModel
 
+from registry_pkgs.core.downstream_oauth import oauth_error_payload
 from registry_pkgs.core.jwt_tokens import mint_managed_agent_token
 from registry_pkgs.core.jwt_utils import (
     InvalidAudienceError,
@@ -29,6 +30,8 @@ from registry_pkgs.core.jwt_utils import (
     find_matching_jwk,
     get_token_kid,
 )
+from registry_pkgs.core.oauth_state_store import REFRESH_TOKEN_TTL_SECONDS, OAuthStateStoreProtocol
+from registry_pkgs.core.redirect_uri import redirect_uri_matches, validate_registration_redirect_uri
 from registry_pkgs.core.scopes import map_groups_to_scopes
 
 from ..core.config import settings
@@ -45,7 +48,6 @@ from ..deps import (
 from ..models.device_flow import DeviceApprovalRequest, DeviceCodeResponse, DeviceTokenResponse
 from ..providers.base import AuthProvider
 from ..services.cognito_validator_service import SimplifiedCognitoValidator
-from ..services.oauth_state_store import REFRESH_TOKEN_TTL_SECONDS, OAuthStateStoreProtocol
 from ..services.user_service import UserService
 from ..utils.security_mask import (
     anonymize_ip,
@@ -70,10 +72,7 @@ _OIDC_TOKEN_ALGORITHMS = ["RS256"]
 
 
 def oauth_error_response(error: str, error_description: str | None = None, status_code: int = 400) -> JSONResponse:
-    content = {"error": error}
-    if error_description:
-        content["error_description"] = error_description
-    return JSONResponse(status_code=status_code, content=content)
+    return JSONResponse(status_code=status_code, content=oauth_error_payload(error, error_description))
 
 
 def _provider_token_issuers(provider: AllowedProvider, auth_provider: AuthProvider) -> list[str]:
@@ -165,13 +164,26 @@ def _is_registry_client(client_id: str) -> bool:
 
 def _is_registered_redirect_uri(client_metadata: dict[str, Any], redirect_uri: str) -> bool:
     registered_redirect_uris = client_metadata.get("redirect_uris") or []
-    if not registered_redirect_uris:
-        return True
-    return redirect_uri in registered_redirect_uris
+    return any(redirect_uri_matches(redirect_uri, registered) for registered in registered_redirect_uris)
 
 
 def _get_unknown_client_response() -> JSONResponse:
     return oauth_error_response("invalid_client", "Unknown client_id")
+
+
+def _validate_registration_redirect_uris(redirect_uris: list[str] | None) -> None:
+    """Reject a DCR request whose redirect_uris are missing or structurally unsafe.
+
+    Raises HTTPException(400) so the route's HTTPException re-raise surfaces it as a 4xx.
+    """
+    uris = redirect_uris or []
+    if not uris:
+        raise HTTPException(status_code=400, detail="at least one redirect_uri is required")
+    for uri in uris:
+        try:
+            validate_registration_redirect_uri(uri)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 def _validate_known_client_for_redirect(
@@ -217,6 +229,8 @@ async def register_client(
             f"response_types: {registration.response_types}, scope: {registration.scope}, "
             f"token_endpoint_auth_method: {registration.token_endpoint_auth_method}."
         )
+
+        _validate_registration_redirect_uris(registration.redirect_uris)
 
         client_id = f"mcp-client-{secrets.token_urlsafe(16)}"
 
@@ -271,6 +285,8 @@ async def register_client(
             scope=client_metadata["scope"],
             token_endpoint_auth_method=client_metadata["token_endpoint_auth_method"],
         )
+    except HTTPException:
+        raise
     except Exception:
         logger.exception("Client registration failed")
 

@@ -9,6 +9,7 @@ from agno.models.aws import AwsBedrock
 from beanie import PydanticObjectId
 from redis import Redis
 
+from registry_pkgs.core.oauth_state_store import DownstreamOAuthStateStore, OAuthClientStore, OAuthStateStore
 from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.vector.client import DatabaseClient
 from registry_pkgs.vector.repositories.a2a_agent_repository import A2AAgentRepository
@@ -143,6 +144,36 @@ class RegistryContainer:
     @cached_property
     def flow_state_manager(self) -> FlowStateManager:
         return FlowStateManager(redis_client=self.redis_client)
+
+    @cached_property
+    def oauth_client_store(self) -> OAuthClientStore:
+        """Read DCR client metadata from auth-server's Redis namespace."""
+        return OAuthClientStore(
+            redis_client=self.redis_client,
+            key_prefix=self.settings.auth_server_redis_key_prefix,
+            client_secret_hash_key=self.settings.secret_key,
+        )
+
+    @cached_property
+    def downstream_refresh_token_store(self) -> OAuthStateStore:
+        """Persist registry-owned direct-connect refresh tokens under registry's Redis namespace."""
+        return OAuthStateStore(
+            redis_client=self.redis_client,
+            key_prefix=self.settings.redis_key_prefix,
+            client_secret_hash_key=self.settings.secret_key,
+        )
+
+    @cached_property
+    def oauth_state_store(self) -> DownstreamOAuthStateStore:
+        """Redis-backed OAuth state for the direct-connect downstream flow.
+
+        Direct-connect refresh tokens live under registry's own ``redis_key_prefix``; DCR client
+        records are read through an explicit client facade over auth-server's namespace.
+        """
+        return DownstreamOAuthStateStore(
+            client_store=self.oauth_client_store,
+            refresh_token_store=self.downstream_refresh_token_store,
+        )
 
     @cached_property
     def oauth_service(self) -> MCPOAuthService:

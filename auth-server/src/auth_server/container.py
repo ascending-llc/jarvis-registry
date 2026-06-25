@@ -3,12 +3,13 @@ from functools import cache, cached_property
 from itsdangerous import URLSafeTimedSerializer
 from redis import Redis
 
+from registry_pkgs.core.oauth_state_store import OAuthStateStore
+
 from .core.config import AuthSettings
 from .core.types import AllowedProvider
 from .providers.factory import get_auth_provider
 from .services.cognito_validator_service import SimplifiedCognitoValidator
 from .services.downstream_token_service import DownstreamTokenCheckService
-from .services.oauth_state_store import OAuthStateStore
 from .services.server_service import ServerService
 from .services.user_service import UserService
 from .utils.config_loader import AuthProviderConfig, EntraConfig, OAuth2Config, OAuth2ConfigLoader
