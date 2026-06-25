@@ -4,8 +4,9 @@ from auth_server.routes.oauth_flow import _is_registered_redirect_uri
 
 
 class TestIsRegisteredRedirectUri:
-    def test_no_registered_uris_allows_any(self) -> None:
-        assert _is_registered_redirect_uri({}, "https://anything.example.com/cb") is True
+    def test_no_registered_uris_rejected(self) -> None:
+        assert _is_registered_redirect_uri({}, "https://anything.example.com/cb") is False
+        assert _is_registered_redirect_uri({"redirect_uris": []}, "https://anything.example.com/cb") is False
 
     def test_exact_match_non_loopback(self) -> None:
         meta = {"redirect_uris": ["https://app.example.com/cb"]}

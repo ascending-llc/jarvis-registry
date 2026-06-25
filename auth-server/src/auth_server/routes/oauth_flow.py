@@ -18,6 +18,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from pydantic import BaseModel
 
+from registry_pkgs.core.downstream_oauth import oauth_error_payload
 from registry_pkgs.core.jwt_tokens import mint_managed_agent_token
 from registry_pkgs.core.jwt_utils import (
     InvalidAudienceError,
@@ -71,10 +72,7 @@ _OIDC_TOKEN_ALGORITHMS = ["RS256"]
 
 
 def oauth_error_response(error: str, error_description: str | None = None, status_code: int = 400) -> JSONResponse:
-    content = {"error": error}
-    if error_description:
-        content["error_description"] = error_description
-    return JSONResponse(status_code=status_code, content=content)
+    return JSONResponse(status_code=status_code, content=oauth_error_payload(error, error_description))
 
 
 def _provider_token_issuers(provider: AllowedProvider, auth_provider: AuthProvider) -> list[str]:
@@ -166,8 +164,6 @@ def _is_registry_client(client_id: str) -> bool:
 
 def _is_registered_redirect_uri(client_metadata: dict[str, Any], redirect_uri: str) -> bool:
     registered_redirect_uris = client_metadata.get("redirect_uris") or []
-    if not registered_redirect_uris:
-        return True
     return any(redirect_uri_matches(redirect_uri, registered) for registered in registered_redirect_uris)
 
 
