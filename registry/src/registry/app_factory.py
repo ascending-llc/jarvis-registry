@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .core.config import settings
 from .core.exception_handler import register_validation_exception_handler
-from .middleware import ScopePermissionMiddleware, UnifiedAuthMiddleware
+from .middleware import CSRFMiddleware, ScopePermissionMiddleware, UnifiedAuthMiddleware
 from .routers import register_routers
 
 if TYPE_CHECKING:
@@ -76,6 +76,7 @@ def create_app(*, lifespan, gateway_mcp_app: FastMCP[McpAppContext]) -> FastAPI:
 def _configure_middleware(app: FastAPI) -> None:
     app.add_middleware(ScopePermissionMiddleware)
     app.add_middleware(UnifiedAuthMiddleware)
+    app.add_middleware(CSRFMiddleware)
 
     # CORSMiddleware should be added late so that it executes first on incoming requests.
     app.add_middleware(

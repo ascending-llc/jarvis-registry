@@ -2,6 +2,7 @@
 Unit tests for authentication routes.
 """
 
+from http.cookies import SimpleCookie
 from unittest.mock import AsyncMock, Mock, patch
 from urllib.parse import parse_qs, urlparse
 
@@ -11,6 +12,7 @@ from fastapi import Request
 from fastapi.responses import RedirectResponse
 
 from registry.api.redirect_routes import get_oauth2_providers, oauth2_callback, oauth2_login_redirect
+from registry.utils.csrf import compute_csrf_token
 from registry_pkgs.core.jwt_utils import InvalidSignatureError
 
 
@@ -38,7 +40,9 @@ class TestAuthRoutes:
             mock_settings.auth_server_external_url = "http://auth.example.com"
             mock_settings.session_cookie_name = "session"
             mock_settings.refresh_cookie_name = "refresh"
+            mock_settings.csrf_cookie_name = "csrf"
             mock_settings.session_max_age_seconds = 3600
+            mock_settings.session_cookie_secure = False
             mock_settings.templates_dir = "/templates"
             mock_settings.registry_client_url = "http://localhost:8000"
             mock_settings.registry_redirect_uri = "http://localhost:8000"
@@ -201,6 +205,15 @@ class TestAuthRoutes:
         assert isinstance(response, RedirectResponse)
         assert response.status_code == 302
         assert response.headers["location"] == f"{mock_settings.registry_client_url}"
+
+        cookies = SimpleCookie()
+        for key, value in response.raw_headers:
+            if key == b"set-cookie":
+                cookies.load(value.decode())
+
+        assert cookies[mock_settings.session_cookie_name].value == "mock-access-token"
+        assert cookies[mock_settings.refresh_cookie_name].value == "mock-refresh-token"
+        assert cookies[mock_settings.csrf_cookie_name].value == compute_csrf_token("mock-access-token")
 
     @pytest.mark.asyncio
     async def test_oauth2_callback_rejects_invalid_access_token_signature(self, mock_request, mock_settings, mock_code):
