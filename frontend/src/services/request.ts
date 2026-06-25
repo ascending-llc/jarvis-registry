@@ -5,7 +5,12 @@ import API from '@/services/api';
 import type { GetTokenResponse } from './auth/type';
 
 const cancelSources: Record<string, () => void> = {};
-const service = axios.create({ baseURL: getBasePath() || '/', timeout: 20000 });
+const service = axios.create({
+  baseURL: getBasePath() || '/',
+  timeout: 20000,
+  xsrfCookieName: 'jarvis_registry_csrf',
+  xsrfHeaderName: 'X-Jarvis-CSRF',
+});
 
 type RequestConfig = AxiosRequestConfig & {
   cancelTokenKey?: string;
