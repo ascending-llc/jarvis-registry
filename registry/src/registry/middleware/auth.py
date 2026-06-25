@@ -18,7 +18,7 @@ from ..utils.crypto_utils import verify_access_token
 logger = logging.getLogger(__name__)
 
 # Direct-connect proxy path: /proxy/server/{user_id}/{server_path}. Used to bind a managed-agent
-# token's user_id to the URL's user_id segment.
+# token's direct-connect claims to the URL.
 DIRECT_CONNECT_RE = re.compile(r"^/proxy/server/([^/]+)/(.+)$")
 
 
@@ -202,8 +202,8 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
         """Bearer-token authentication for proxy routes.
 
         Accepts a managed-agent token (the proxy credential, including the access token issued by the
-        direct-connect downstream ``/token`` endpoint). On direct-connect routes that carry a
-        ``user_id`` segment, the token's ``user_id`` must match the URL's ``user_id``.
+        direct-connect downstream ``/token`` endpoint). On direct-connect routes, the token's
+        ``user_id`` and ``server_path`` must match the URL.
         """
         access_token = _parse_bearer_token(request)
         if access_token is None:
@@ -238,7 +238,7 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
         return claims
 
     def _build_managed_agent_context(self, claims: dict, path: str) -> UserContextDict | None:
-        """Build a user context from validated managed-agent claims, enforcing user_id binding."""
+        """Build a user context from validated managed-agent claims, enforcing direct-connect binding."""
         username = claims.get("sub", "")
         if not username:
             logger.debug("JWT token missing 'sub' claim")
@@ -264,6 +264,11 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
             url_user_id = binding.group(1)
             if user_id != url_user_id:
                 logger.warning(f"user_id mismatch: token has {user_id}, URL has {url_user_id}")
+                return None
+            url_server_path = binding.group(2)
+            token_server_path = claims.get("server_path")
+            if token_server_path != url_server_path:
+                logger.warning(f"server_path mismatch: token has {token_server_path}, URL has {url_server_path}")
                 return None
 
         token_class = claims.get("token_class", "unknown")
