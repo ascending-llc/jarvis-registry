@@ -7,13 +7,15 @@ Also implements RFC 9728 Protected Resource Metadata.
 
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from registry_pkgs.core.downstream_oauth import DOWNSTREAM_OAUTH_NAMESPACE, downstream_mcp_issuer
 from registry_pkgs.core.jwt_utils import build_jwks
 
 # Import settings
 from ..core.config import settings
+from ..deps import get_server_service
+from ..services.server_service import ServerService
 
 logger = logging.getLogger(__name__)
 
@@ -159,7 +161,10 @@ async def jwks_endpoint():
 
 
 @router.get(f"/.well-known/oauth-protected-resource{settings.service_base_path}/proxy/{{server_path:path}}")
-async def protected_resource_metadata(server_path: str):
+async def protected_resource_metadata(
+    server_path: str,
+    server_service: ServerService = Depends(get_server_service),
+):
     """
     `resource` lives on the registry backend, so we use `settings.registry_url`.
     `authorization_servers` includes our auth-server, so we use `settings.jwt_issuer`,
@@ -169,11 +174,13 @@ async def protected_resource_metadata(server_path: str):
     The current way of writing it only makes a difference when running services locally in Docker Compose,
     where registry backend and auth-server live on different ports of localhost.
 
-    Direct-connect resources have the shape ``server/{user_id}/{actual_server_path}``. For MCPs NOT on AgentCore Runtime,
-    the advertised authorization server is the per-server downstream issuer, so that MCP clients (e.g. VS Code) go through
-    the downstream OAuth flow and receive a managed-agent token bound to that specific (user_id, server_path) pair.
-    MCP client such as VS Code caches the discovered AS metadata URL, so it only uses the first-time discovered URL no matter what.
-    For AgentCore Runtime MCPs, the root Authorization Server metadata is advertised.
+    Direct-connect resources have the shape ``server/{user_id}/{actual_server_path}``. The advertised authorization server
+    is the per-server downstream issuer only when the server has `$.config.requiresOAuth=True` — so that MCP clients
+    (e.g. VS Code) go through the downstream OAuth flow and receive a managed-agent token bound to that specific
+    (user_id, server_path) pair. MCP client such as VS Code caches the discovered AS metadata URL, so it only uses
+    the first-time discovered URL no matter what.
+    For servers that do not require downstream OAuth (e.g. AgentCore Runtime MCPs, API key based server, public server),
+    the root AS metadata is advertised.
     """
     authorization_servers = [settings.jwt_issuer]
 
@@ -182,13 +189,7 @@ async def protected_resource_metadata(server_path: str):
         parts = rest.split("/", 1)
         if len(parts) == 2 and parts[0] and parts[1]:
             user_id, actual_server_path = parts[0], parts[1]
-            # MCPs on AgentCore Runtime use the root AS metadata document—because we don't need to store
-            # access and refresh tokens of such MCPs in MongoDB—instead, Registry mints a JWT token for AgentCore Runtime
-            # at the point of invocation. Root AS metadata gives user access to Registry itself, and that's also sufficient.
-            # The condition in the `if` block below relies on the fact that MCPs on AgentCore Runtime have a `path` field
-            # of the format `/agentcore/mcp/***`, which is guaranteed by AgentCore federation code at
-            # @registry/src/registry/services/federation/agentcore_discovery.py#L377-377.
-            if not actual_server_path.startswith("agentcore/mcp/"):
+            if await server_service.requires_oauth(actual_server_path):
                 authorization_servers = [downstream_mcp_issuer(settings.jwt_issuer, user_id, actual_server_path)]
 
     return {

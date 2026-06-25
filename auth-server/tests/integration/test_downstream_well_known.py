@@ -3,16 +3,31 @@
 - per-server authorization server metadata (RFC 8414)
 """
 
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 from fastapi.testclient import TestClient
 
 from auth_server.core.config import settings
+from auth_server.deps import get_server_service
 from registry_pkgs.core.downstream_oauth import downstream_mcp_issuer
 
 USER_ID = "507f1f77bcf86cd799439011"
 _PRM_BASE = f"/.well-known/oauth-protected-resource{settings.service_base_path}/proxy"
 
 
-def test_prm_direct_connect_points_to_downstream_issuer(test_client: TestClient):
+@pytest.fixture
+def mock_server_service(auth_server_app):
+    """Override get_server_service so tests don't hit MongoDB. Default: server does not require OAuth."""
+    svc = MagicMock()
+    svc.requires_oauth = AsyncMock(return_value=False)
+    auth_server_app.dependency_overrides[get_server_service] = lambda: svc
+    yield svc
+    auth_server_app.dependency_overrides.pop(get_server_service, None)
+
+
+def test_prm_direct_connect_points_to_downstream_issuer(test_client: TestClient, mock_server_service):
+    mock_server_service.requires_oauth = AsyncMock(return_value=True)
     resp = test_client.get(f"{_PRM_BASE}/server/{USER_ID}/github")
     assert resp.status_code == 200
     body = resp.json()
@@ -27,10 +42,8 @@ def test_prm_non_direct_connect_unchanged(test_client: TestClient):
     assert resp.json()["authorization_servers"] == [settings.jwt_issuer]
 
 
-def test_prm_direct_connect_agentcore_points_to_root_issuer(test_client: TestClient):
-    # AgentCore Runtime MCPs don't need a downstream OAuth token — the registry mints a JWT at
-    # proxy time. Advertising the root issuer here sends the client through the registry's own
-    # auth flow instead of triggering a downstream OAuth browser popup.
+def test_prm_direct_connect_no_oauth_points_to_root_issuer(test_client: TestClient, mock_server_service):
+    # Servers with requiresOAuth=False (including AgentCore Runtime MCPs) advertise the root issuer.
     resp = test_client.get(f"{_PRM_BASE}/server/{USER_ID}/agentcore/mcp/myserver")
     assert resp.status_code == 200
     assert resp.json()["authorization_servers"] == [settings.jwt_issuer]
