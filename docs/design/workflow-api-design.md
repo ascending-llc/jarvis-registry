@@ -2,56 +2,56 @@
 
 ## Table of Contents
 
-1. [API Route Prefix](#api-route-prefix)
-2. [API Endpoints](#api-endpoints)
-   - 2.1. [List Workflows](#1-list-workflows)
-   - 2.2. [Get Workflow Detail](#2-get-workflow-detail)
-   - 2.3. [Create Workflow](#3-create-workflow)
-   - 2.4. [Update Workflow](#4-update-workflow)
-   - 2.5. [Delete Workflow](#5-delete-workflow)
-   - 2.6. [Toggle Workflow Status](#6-toggle-workflow-status)
-   - 2.7. [Trigger Workflow Run](#7-trigger-workflow-run)
-   - 2.8. [List Workflow Runs](#8-list-workflow-runs)
-   - 2.9. [List Child Runs](#8b-list-child-runs)
-   - 2.10. [Get Workflow Run Detail](#9-get-workflow-run-detail)
-   - 2.11. [Resolve HITL Requirement (Approve / Reject / Edit / etc.)](#10-resolve-hitl-requirement-approve--reject--edit--etc)
-   - 2.12. [List Node Runs](#11-list-node-runs)
-   - 2.13. [Get Node Run Detail](#12-get-node-run-detail)
-   - 2.14. [Rerun Single Node](#13-rerun-single-node)
-   - 2.15. [Replay Workflow Run](#14-replay-workflow-run)
-3. [Internal Data Flow — Control Endpoints](#internal-data-flow--control-endpoints)
-   - 3.1. [`/pause`, `/resume`, `/cancel`](#pause-resume-cancel)
-   - 3.2. [`/retry`](#retry)
-   - 3.3. [`/nodes/{node_id}/rerun`](#nodesnode_idrerun)
-   - 3.4. [`/replay`](#replay)
-   - 3.5. [`/approve` (HITL resolution)](#approve-hitl-resolution)
-   - 3.6. [Failure modes shared across endpoints](#failure-modes-shared-across-endpoints)
-4. [Error Response Format](#error-response-format)
-5. [Data Models](#data-models)
-   - 5.1. [WorkflowCanvas](#workflowcanvas)
-   - 5.2. [WorkflowNode](#workflownode)
-   - 5.3. [HumanReview](#humanreview)
-   - 5.4. [UserInputField](#userinputfield)
-   - 5.5. [StepRequirementSummary](#steprequirementsummary)
-   - 5.6. [PendingUserInputField](#pendinguserinputfield)
-   - 5.7. [RouterChoice](#routerchoice)
-   - 5.8. [StepConfig](#stepconfig)
-   - 5.9. [LoopConfig](#loopconfig)
-   - 5.10. [NodeRunDetail](#noderundetail)
-   - 5.11. [NodeRunListResponse](#noderunlistresponse)
-6. [Tree-Shaped Workflow Example (Multi-Step Branches)](#tree-shaped-workflow-example-multi-step-branches)
-   - 6.1. [WorkflowRunStatus](#workflowrunstatus)
-   - 6.2. [NodeRunStatus](#noderunstatus)
-   - 6.3. [ResolvedDependencyResolution](#resolveddependencyresolution)
-7. [Naming Conventions](#naming-conventions)
-8. [HITL v2 Notes (Backward Compatibility & Internal Fields)](#hitl-v2-notes-backward-compatibility--internal-fields)
-   - 8.1. [Backward Compatibility — Legacy `require_approval` Fields](#backward-compatibility--legacy-require_approval-fields)
-   - 8.2. [Internal WorkflowRun Fields (Not API-Exposed)](#internal-workflowrun-fields-not-api-exposed)
-   - 8.3. [Known Limitations](#known-limitations)
+1. [API Route Prefix](#1-api-route-prefix)
+2. [API Endpoints](#2-api-endpoints)
+   - 2.1. [List Workflows](#21-list-workflows)
+   - 2.2. [Get Workflow Detail](#22-get-workflow-detail)
+   - 2.3. [Create Workflow](#23-create-workflow)
+   - 2.4. [Update Workflow](#24-update-workflow)
+   - 2.5. [Delete Workflow](#25-delete-workflow)
+   - 2.6. [Toggle Workflow Status](#26-toggle-workflow-status)
+   - 2.7. [Trigger Workflow Run](#27-trigger-workflow-run)
+   - 2.8. [List Workflow Runs](#28-list-workflow-runs)
+   - 2.9. [List Child Runs](#29-list-child-runs)
+   - 2.10. [Get Workflow Run Detail](#210-get-workflow-run-detail)
+   - 2.11. [Resolve HITL Requirement (Approve / Reject / Edit / etc.)](#211-resolve-hitl-requirement-approve--reject--edit--etc)
+   - 2.12. [List Node Runs](#212-list-node-runs)
+   - 2.13. [Get Node Run Detail](#213-get-node-run-detail)
+   - 2.14. [Rerun Single Node](#214-rerun-single-node)
+   - 2.15. [Replay Workflow Run](#215-replay-workflow-run)
+3. [Internal Data Flow — Control Endpoints](#3-internal-data-flow--control-endpoints)
+   - 3.1. [`/pause`, `/resume`, `/cancel`](#31-pause-resume-cancel)
+   - 3.2. [`/retry`](#32-retry)
+   - 3.3. [`/nodes/{node_id}/rerun`](#33-nodesnode_idrerun)
+   - 3.4. [`/replay`](#34-replay)
+   - 3.5. [`/approve` (HITL resolution)](#35-approve-hitl-resolution)
+   - 3.6. [Failure modes shared across endpoints](#36-failure-modes-shared-across-endpoints)
+4. [Error Response Format](#4-error-response-format)
+5. [Data Models](#5-data-models)
+   - 5.1. [WorkflowCanvas](#51-workflowcanvas)
+   - 5.2. [WorkflowNode](#52-workflownode)
+   - 5.3. [HumanReview](#53-humanreview)
+   - 5.4. [UserInputField](#54-userinputfield)
+   - 5.5. [StepRequirementSummary](#55-steprequirementsummary)
+   - 5.6. [PendingUserInputField](#56-pendinguserinputfield)
+   - 5.7. [RouterChoice](#57-routerchoice)
+   - 5.8. [StepConfig](#58-stepconfig)
+   - 5.9. [LoopConfig](#59-loopconfig)
+   - 5.10. [NodeRunDetail](#510-noderundetail)
+   - 5.11. [NodeRunListResponse](#511-noderunlistresponse)
+6. [Tree-Shaped Workflow Example (Multi-Step Branches)](#6-tree-shaped-workflow-example-multi-step-branches)
+   - 6.1. [WorkflowRunStatus](#61-workflowrunstatus)
+   - 6.2. [NodeRunStatus](#62-noderunstatus)
+   - 6.3. [ResolvedDependencyResolution](#63-resolveddependencyresolution)
+7. [Naming Conventions](#7-naming-conventions)
+8. [HITL v2 Notes (Backward Compatibility & Internal Fields)](#8-hitl-v2-notes-backward-compatibility--internal-fields)
+   - 8.1. [Backward Compatibility — Legacy `require_approval` Fields](#81-backward-compatibility--legacy-require_approval-fields)
+   - 8.2. [Internal WorkflowRun Fields (Not API-Exposed)](#82-internal-workflowrun-fields-not-api-exposed)
+   - 8.3. [Known Limitations](#83-known-limitations)
 
 ---
 
-## API Route Prefix
+## 1. API Route Prefix
 
 ```
 /api/v1/workflows
@@ -59,9 +59,9 @@
 
 ---
 
-## API Endpoints
+## 2. API Endpoints
 
-### 1. List Workflows
+### 2.1. List Workflows
 
 **Endpoint**: `GET /api/v1/workflows`
 
@@ -102,7 +102,7 @@
 
 ---
 
-### 2. Get Workflow Detail
+### 2.2. Get Workflow Detail
 
 **Endpoint**: `GET /api/v1/workflows/{workflow_id}`
 
@@ -263,7 +263,7 @@ node type does not use them. This lets clients access any field without null che
 
 ---
 
-### 3. Create Workflow
+### 2.3. Create Workflow
 
 **Endpoint**: `POST /api/v1/workflows`
 
@@ -446,7 +446,7 @@ node type does not use them. This lets clients access any field without null che
 
 ---
 
-### 4. Update Workflow
+### 2.4. Update Workflow
 
 **Endpoint**: `PUT /api/v1/workflows/{workflow_id}`
 
@@ -601,7 +601,7 @@ node type does not use them. This lets clients access any field without null che
 
 ---
 
-### 5. Delete Workflow
+### 2.5. Delete Workflow
 
 **Endpoint**: `DELETE /api/v1/workflows/{workflow_id}`
 
@@ -616,7 +616,7 @@ node type does not use them. This lets clients access any field without null che
 
 ---
 
-### 6. Toggle Workflow Status
+### 2.6. Toggle Workflow Status
 
 **Endpoint**: `POST /api/v1/workflows/{workflow_id}/toggle`
 
@@ -667,7 +667,7 @@ node type does not use them. This lets clients access any field without null che
 
 ---
 
-### 7. Trigger Workflow Run
+### 2.7. Trigger Workflow Run
 
 **Endpoint**: `POST /api/v1/workflows/{workflow_id}/runs`
 
@@ -751,7 +751,7 @@ node type does not use them. This lets clients access any field without null che
 
 ---
 
-### 8. List Workflow Runs
+### 2.8. List Workflow Runs
 
 **Endpoint**: `GET /api/v1/workflows/{workflow_id}/runs`
 
@@ -837,7 +837,7 @@ node type does not use them. This lets clients access any field without null che
 
 ---
 
-### 8b. List Child Runs
+### 2.9. List Child Runs
 
 List runs spawned from a parent run via **node rerun**, **replay**, or **retry**. Each child run carries `parentRunId == run_id` and a `triggerSource` of `node_rerun`, `replay`, or `retry`. Use this to build a run-lineage / history view in the UI. Results are ordered newest-first.
 
@@ -883,7 +883,7 @@ List runs spawned from a parent run via **node rerun**, **replay**, or **retry**
 
 ---
 
-### 9. Get Workflow Run Detail
+### 2.10. Get Workflow Run Detail
 
 **Endpoint**: `GET /api/v1/workflows/{workflow_id}/runs/{run_id}`
 
@@ -954,7 +954,7 @@ List runs spawned from a parent run via **node rerun**, **replay**, or **retry**
 - `workflowVersion`: the WorkflowDefinition version snapshot this run is replaying against (HITL v2)
 - `pendingRequirements`: non-empty iff `status == "awaiting_approval"`. Each element is one
   HITL gate awaiting decision; the frontend renders a decision UI per element (see
-  [StepRequirementSummary](#steprequirementsummary)).
+  [StepRequirementSummary](#55-steprequirementsummary)).
 
 **Error**:
 - `400` Invalid workflow ID or run ID
@@ -963,7 +963,7 @@ List runs spawned from a parent run via **node rerun**, **replay**, or **retry**
 
 ---
 
-### 10. Resolve HITL Requirement (Approve / Reject / Edit / etc.)
+### 2.11. Resolve HITL Requirement (Approve / Reject / Edit / etc.)
 
 **Endpoint**: `POST /api/v1/workflows/{workflow_id}/runs/{run_id}/approve`
 
@@ -1044,7 +1044,7 @@ pod handles it (CAS-protected so only one wins). Frontend should poll
 
 ---
 
-### 11. List Node Runs
+### 2.12. List Node Runs
 
 **Endpoint**: `GET /api/v1/workflows/{workflow_id}/runs/{run_id}/nodes`
 
@@ -1093,7 +1093,7 @@ pod handles it (CAS-protected so only one wins). Frontend should poll
 
 ---
 
-### 12. Get Node Run Detail
+### 2.13. Get Node Run Detail
 
 **Endpoint**: `GET /api/v1/workflows/{workflow_id}/runs/{run_id}/nodes/{node_run_id}`
 
@@ -1132,7 +1132,7 @@ pod handles it (CAS-protected so only one wins). Frontend should poll
 
 ---
 
-### 13. Rerun Single Node
+### 2.14. Rerun Single Node
 
 **Endpoint**: `POST /api/v1/workflows/{workflow_id}/runs/{run_id}/nodes/{node_id}/rerun`
 
@@ -1172,7 +1172,7 @@ pod handles it (CAS-protected so only one wins). Frontend should poll
 
 ---
 
-### 14. Replay Workflow Run
+### 2.15. Replay Workflow Run
 
 **Endpoint**: `POST /api/v1/workflows/{workflow_id}/runs/{run_id}/replay`
 
@@ -1216,14 +1216,14 @@ pod handles it (CAS-protected so only one wins). Frontend should poll
 
 ---
 
-## Internal Data Flow — Control Endpoints
+## 3. Internal Data Flow — Control Endpoints
 
 The five control endpoints (`/pause`, `/resume`, `/cancel`, `/retry`, `/approve`)
 look similar from the outside but take different internal paths and therefore
 have different latency / persistence characteristics.  The frontend should not
 treat them as interchangeable.
 
-### `/pause`, `/resume`, `/cancel`
+### 3.1. `/pause`, `/resume`, `/cancel`
 
 **Path**: route → `WorkflowControlService.send_*` → MongoDB write + in-process
 `DirectiveQueue.put(...)` → HTTP 200 returned.
@@ -1237,7 +1237,7 @@ treat them as interchangeable.
   `MongoBackedCancellationManager`, so any agno-internal code path that checks
   `raise_if_cancelled` also stops.
 
-### `/retry`
+### 3.2. `/retry`
 
 **Path**: route → `WorkflowControlService.send_retry` → builds a *child*
 `WorkflowRun` with `resolved_dependencies` describing which nodes replay from
@@ -1248,7 +1248,7 @@ cached outputs vs. re-execute → `asyncio.create_task(runner.run(child_run_id))
 - The child run starts at `PENDING` and proceeds normally.
 - Background task runs on the pod that handled the HTTP request.
 
-### `/nodes/{node_id}/rerun`
+### 3.3. `/nodes/{node_id}/rerun`
 
 **Path**: route → `WorkflowControlService.rerun_single_node` → validates the
 target node is a top-level step (400 if nested) → builds a child `WorkflowRun`
@@ -1260,7 +1260,7 @@ nodes up to and including the target are compiled/executed → HTTP 202 returned
 - Only top-level step nodes are supported; returns 400 for nested nodes.
 - The child run is linked to the source via `parent_run_id`.
 
-### `/replay`
+### 3.4. `/replay`
 
 **Path**: route → `WorkflowControlService.replay_run` → reads `initial_input`
 from the source run → creates a *child* `WorkflowRun` (linked via `parent_run_id`)
@@ -1271,7 +1271,7 @@ with the same `initial_input` and the current live workflow definition →
 - Uses the live definition, not the source run's `definition_snapshot`.
 - All nodes execute fresh — no cached outputs are reused.
 
-### `/approve` (HITL resolution)
+### 3.5. `/approve` (HITL resolution)
 
 **Path**: route → `WorkflowControlService.resolve_requirement`:
 
@@ -1301,7 +1301,7 @@ execution.
   time; agno only proceeds when *all* outstanding requirements on the current
   step are resolved.
 
-### Failure modes shared across endpoints
+### 3.6. Failure modes shared across endpoints
 
 If the pod that started a background `continue_run` / `runner.run` task dies
 mid-execution, the run stays at `RUNNING` past its expected duration.  An
@@ -1310,7 +1310,7 @@ operator currently has to mark such runs `FAILED` manually (e.g. via mongosh)
 
 ---
 
-## Error Response Format
+## 4. Error Response Format
 
 All endpoints return errors in the following format:
 
@@ -1333,9 +1333,9 @@ All endpoints return errors in the following format:
 
 ---
 
-## Data Models
+## 5. Data Models
 
-### WorkflowCanvas
+### 5.1. WorkflowCanvas
 
 ```typescript
 {
@@ -1347,7 +1347,7 @@ All endpoints return errors in the following format:
 }
 ```
 
-### WorkflowNode
+### 5.2. WorkflowNode
 
 ```typescript
 {
@@ -1377,9 +1377,9 @@ All endpoints return errors in the following format:
 > auto-migrated, or upgraded on read — with the current `APIBaseModel` config
 > (`extra` at Pydantic's default `ignore`), unknown legacy fields are silently
 > ignored. New clients must use `humanReview` exclusively. See
-> [Backward Compatibility](#backward-compatibility--legacy-require_approval-fields).
+> [Backward Compatibility](#81-backward-compatibility--legacy-require_approval-fields).
 
-### HumanReview
+### 5.3. HumanReview
 
 Per-node HITL configuration (translated 1:1 to agno's `HumanReview`).
 Field × node-type compatibility is enforced server-side; sending an unsupported
@@ -1415,7 +1415,7 @@ combination returns 400.
 PARALLEL nodes reject any HITL field (agno itself forbids it because parallel
 branches execute concurrently and cannot be individually paused).
 
-### UserInputField
+### 5.4. UserInputField
 
 ```typescript
 {
@@ -1427,7 +1427,7 @@ branches execute concurrently and cannot be individually paused).
 }
 ```
 
-### StepRequirementSummary
+### 5.5. StepRequirementSummary
 
 Returned inside `WorkflowRun.pendingRequirements` (see Get Workflow Run Detail
 response). Each element represents one HITL gate awaiting user decision. The
@@ -1475,10 +1475,10 @@ frontend chooses which decision UI to render based on the `requires*` flags.
 }
 ```
 
-### PendingUserInputField
+### 5.6. PendingUserInputField
 
 The `userInputSchema` inside a `StepRequirementSummary` is **not** the authoring
-[`UserInputField`](#userinputfield). It is the live agno runtime payload
+[`UserInputField`](#54-userinputfield). It is the live agno runtime payload
 (`StepRequirement.to_dict()`), so its shape differs deliberately:
 
 - `fieldType` is passed through verbatim as agno's Python type name
@@ -1498,7 +1498,7 @@ The `userInputSchema` inside a `StepRequirementSummary` is **not** the authoring
 }
 ```
 
-### RouterChoice
+### 5.7. RouterChoice
 
 ```typescript
 {
@@ -1507,7 +1507,7 @@ The `userInputSchema` inside a `StepRequirementSummary` is **not** the authoring
 }
 ```
 
-### StepConfig
+### 5.8. StepConfig
 
 ```typescript
 {
@@ -1518,7 +1518,7 @@ The `userInputSchema` inside a `StepRequirementSummary` is **not** the authoring
 }
 ```
 
-### LoopConfig
+### 5.9. LoopConfig
 
 ```typescript
 {
@@ -1527,9 +1527,9 @@ The `userInputSchema` inside a `StepRequirementSummary` is **not** the authoring
 }
 ```
 
-### NodeRunDetail
+### 5.10. NodeRunDetail
 
-Full detail of a single node execution, including I/O snapshots. Returned by endpoints 11 and 12.
+Full detail of a single node execution, including I/O snapshots. Returned by endpoints 2.12 and 2.13.
 
 ```typescript
 {
@@ -1547,7 +1547,7 @@ Full detail of a single node execution, including I/O snapshots. Returned by end
 }
 ```
 
-### NodeRunListResponse
+### 5.11. NodeRunListResponse
 
 Returned by `GET /workflows/{id}/runs/{run_id}/nodes`.
 
@@ -1561,7 +1561,7 @@ Returned by `GET /workflows/{id}/runs/{run_id}/nodes`.
 
 ---
 
-## Tree-Shaped Workflow Example (Multi-Step Branches)
+## 6. Tree-Shaped Workflow Example (Multi-Step Branches)
 
 Both `condition` and `router` nodes support sequential multi-step branches. The
 canonical motivating example — node A followed by a CONDITION B that runs
@@ -1636,7 +1636,7 @@ Notes on the selector semantics:
 
 ---
 
-### WorkflowRunStatus
+### 6.1. WorkflowRunStatus
 
 - `pending`: Run is queued
 - `running`: Run is in progress
@@ -1646,7 +1646,7 @@ Notes on the selector semantics:
 - `failed`: Run failed
 - `cancelled`: Run was cancelled
 
-### NodeRunStatus
+### 6.2. NodeRunStatus
 
 - `pending`: Node execution is queued
 - `running`: Node is executing
@@ -1656,14 +1656,14 @@ Notes on the selector semantics:
 - `skipped`: Node was skipped
 - `cancelled`: Node execution was cancelled
 
-### ResolvedDependencyResolution
+### 6.3. ResolvedDependencyResolution
 
 - `reuse_previous_output`: Reuse output from previous run
 - `rerun`: Re-execute the node
 
 ---
 
-## Naming Conventions
+## 7. Naming Conventions
 
 - All field names use **camelCase** in API requests and responses
 - MongoDB document field names use **snake_case** internally
@@ -1671,14 +1671,14 @@ Notes on the selector semantics:
 
 ---
 
-## HITL v2 Notes (Backward Compatibility & Internal Fields)
+## 8. HITL v2 Notes (Backward Compatibility & Internal Fields)
 
 This section documents implementation-level details introduced by the HITL v2
 migration (agno-native HumanReview). Frontend clients generally do not need
 these details, but they're documented here for operators and integration
 partners.
 
-### Backward Compatibility — Legacy `require_approval` Fields
+### 8.1. Backward Compatibility — Legacy `require_approval` Fields
 
 The path-A `require_approval: bool` and `approval_timeout_seconds: int` fields on
 WorkflowNode have been **removed** from the v2 API/model.
@@ -1701,7 +1701,7 @@ If compatibility handling is added in the future, this section must be updated t
 document the exact request-validation and document-migration behavior actually
 implemented.
 
-### Internal WorkflowRun Fields (Not API-Exposed)
+### 8.2. Internal WorkflowRun Fields (Not API-Exposed)
 
 The following fields exist on the persisted `WorkflowRun` document but are not
 returned in API responses. They are documented here for operators reading
@@ -1716,7 +1716,7 @@ MongoDB directly or building admin tooling.
 | `pending_directive`                    | enum   | Runtime intervention signal for pause/resume/cancel/retry (separate from HITL decisions, which go via `/approve`) |
 | `paused_at`                            | datetime | Set when run enters `paused` via user `/pause` directive (separate from HITL `awaiting_approval`) |
 
-### Known Limitations
+### 8.3. Known Limitations
 
 - **Authorization can drift during long HITL pauses**: resume does not reuse the
   original bearer token (which would have expired anyway). Instead it re-mints a
