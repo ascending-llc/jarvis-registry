@@ -9,6 +9,7 @@ from .providers.factory import get_auth_provider
 from .services.cognito_validator_service import SimplifiedCognitoValidator
 from .services.downstream_token_service import DownstreamTokenCheckService
 from .services.oauth_state_store import OAuthStateStore
+from .services.server_service import ServerService
 from .services.user_service import UserService
 from .utils.config_loader import AuthProviderConfig, EntraConfig, OAuth2Config, OAuth2ConfigLoader
 
@@ -26,6 +27,10 @@ class AuthContainer:
     @property
     def oauth2_config(self) -> OAuth2Config:
         return self._oauth2_config
+
+    @cached_property
+    def server_service(self) -> ServerService:
+        return ServerService()
 
     @cached_property
     def user_service(self) -> UserService:
