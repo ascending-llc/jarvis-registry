@@ -169,11 +169,11 @@ async def protected_resource_metadata(server_path: str):
     The current way of writing it only makes a difference when running services locally in Docker Compose,
     where registry backend and auth-server live on different ports of localhost.
 
-    Direct-connect resources have the shape ``server/{user_id}/{actual_server_path}``. For those, the
-    advertised authorization server is always the per-server downstream issuer, so that MCP clients
-    (e.g. VS Code) always go through the downstream OAuth flow and receive a managed-agent token
-    bound to that specific (user_id, server_path) pair.
-    **MCP client such as VS Code caches the discovered AS metadata URL, so it only uses the first-time discovered URL no matter what.**
+    Direct-connect resources have the shape ``server/{user_id}/{actual_server_path}``. For MCPs NOT on AgentCore Runtime,
+    the advertised authorization server is the per-server downstream issuer, so that MCP clients (e.g. VS Code) go through
+    the downstream OAuth flow and receive a managed-agent token bound to that specific (user_id, server_path) pair.
+    MCP client such as VS Code caches the discovered AS metadata URL, so it only uses the first-time discovered URL no matter what.
+    For AgentCore Runtime MCPs, the root Authorization Server metadata is advertised.
     """
     authorization_servers = [settings.jwt_issuer]
 
