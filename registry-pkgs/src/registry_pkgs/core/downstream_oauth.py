@@ -25,3 +25,15 @@ def downstream_mcp_code_key(code: str) -> str:
     """Redis key under which a Layer B authorization code's context is stashed between the
     OAuth callback and the ``/token`` exchange."""
     return f"{DOWNSTREAM_OAUTH_CODE_PREFIX}{code}"
+
+
+def oauth_error_payload(error: str, error_description: str | None = None) -> dict[str, str]:
+    """Build the body of an RFC 6749 §5.2 OAuth error response.
+
+    ``error_description`` is included only when truthy, matching RFC 6749 (the field is OPTIONAL).
+    Kept framework-free so auth-server and registry can wrap it in their own response types.
+    """
+    payload = {"error": error}
+    if error_description:
+        payload["error_description"] = error_description
+    return payload

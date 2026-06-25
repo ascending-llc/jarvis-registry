@@ -10,6 +10,8 @@ from registry_pkgs.core.oauth_state_store import (
     AUTH_CODE_TTL_SECONDS,
     CLIENT_TTL_SECONDS,
     REFRESH_TOKEN_TTL_SECONDS,
+    DownstreamOAuthStateStore,
+    OAuthClientStore,
     OAuthStateStore,
 )
 
@@ -328,3 +330,57 @@ def test_update_device_code_returns_false_when_ttl_is_not_positive(
         fake_redis.ttls[key] = None if ttl_value == -1 else ttl_value
 
     assert store.update_device_code("device-1", {"status": "approved"}) is False
+
+
+def test_oauth_state_store_keeps_all_state_under_one_prefix(fake_redis: _FakeRedis) -> None:
+    store = OAuthStateStore(
+        redis_client=fake_redis,
+        key_prefix="jarvis-auth-server",
+        client_secret_hash_key="hash-key",
+    )
+
+    store.save_client("client-1", {"client_id": "client-1", "token_endpoint_auth_method": "none"})
+    store.save_refresh_token("rt-1", {"client_id": "client-1", "user_id": "u1"})
+    store.save_authcode("code-1", {"client_id": "client-1"})
+
+    assert "jarvis-auth-server:oauth:client:client-1" in fake_redis.values
+    assert "jarvis-auth-server:oauth:refresh:rt-1" in fake_redis.values
+    assert "jarvis-auth-server:oauth:authcode:code-1" in fake_redis.values
+
+
+def test_oauth_client_store_is_explicit_client_facade(fake_redis: _FakeRedis) -> None:
+    client_store = OAuthClientStore(
+        redis_client=fake_redis,
+        key_prefix="jarvis-auth-server",
+        client_secret_hash_key="hash-key",
+    )
+
+    client_store.save_client("client-1", {"client_id": "client-1", "token_endpoint_auth_method": "none"})
+
+    assert client_store.get_client("client-1") == {"client_id": "client-1", "token_endpoint_auth_method": "none"}
+    assert "jarvis-auth-server:oauth:client:client-1" in fake_redis.values
+
+
+def test_downstream_oauth_state_store_composes_client_and_refresh_stores(fake_redis: _FakeRedis) -> None:
+    client_store = OAuthClientStore(
+        redis_client=fake_redis,
+        key_prefix="jarvis-auth-server",
+        client_secret_hash_key="hash-key",
+    )
+    refresh_store = OAuthStateStore(
+        redis_client=fake_redis,
+        key_prefix="jarvis-registry",
+        client_secret_hash_key="hash-key",
+    )
+    downstream_store = DownstreamOAuthStateStore(
+        client_store=client_store,
+        refresh_token_store=refresh_store,
+    )
+
+    client_store.save_client("client-1", {"client_id": "client-1", "token_endpoint_auth_method": "none"})
+    downstream_store.save_refresh_token("rt-1", {"client_id": "client-1", "user_id": "u1"})
+
+    assert downstream_store.get_client("client-1") is not None
+    assert downstream_store.get_refresh_token("rt-1")["user_id"] == "u1"
+    assert "jarvis-auth-server:oauth:client:client-1" in fake_redis.values
+    assert "jarvis-registry:oauth:refresh:rt-1" in fake_redis.values

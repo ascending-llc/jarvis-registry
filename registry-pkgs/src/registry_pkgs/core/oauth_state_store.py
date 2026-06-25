@@ -1,4 +1,4 @@
-"""Redis-backed OAuth state storage for auth-server."""
+"""Redis-backed OAuth state storage shared by registry and auth-server."""
 
 import hashlib
 import hmac
@@ -38,10 +38,12 @@ return val
 """
 
 
-class OAuthStateStoreProtocol(Protocol):
-    def save_client(self, client_id: str, metadata: dict[str, Any]) -> None: ...
-
+class OAuthClientReader(Protocol):
     def get_client(self, client_id: str) -> dict[str, Any] | None: ...
+
+
+class OAuthClientStoreProtocol(OAuthClientReader, Protocol):
+    def save_client(self, client_id: str, metadata: dict[str, Any]) -> None: ...
 
     def validate_client_credentials(
         self,
@@ -51,12 +53,16 @@ class OAuthStateStoreProtocol(Protocol):
 
     def list_clients(self) -> list[dict[str, Any]]: ...
 
+
+class AuthCodeStore(Protocol):
     def save_authcode(self, code: str, data: dict[str, Any]) -> None: ...
 
     def get_authcode(self, code: str) -> dict[str, Any] | None: ...
 
     def consume_authcode(self, code: str) -> dict[str, Any] | None: ...
 
+
+class RefreshTokenStore(Protocol):
     def save_refresh_token(self, token: str, data: dict[str, Any]) -> None: ...
 
     def get_refresh_token(self, token: str) -> dict[str, Any] | None: ...
@@ -68,6 +74,8 @@ class OAuthStateStoreProtocol(Protocol):
         new_data: dict[str, Any],
     ) -> dict[str, Any] | None: ...
 
+
+class DeviceCodeStore(Protocol):
     def save_device_authorization(
         self,
         device_code: str,
@@ -103,6 +111,20 @@ class OAuthStateStoreProtocol(Protocol):
     def delete_user_code(self, user_code: str) -> None: ...
 
 
+class DownstreamOAuthStoreProtocol(OAuthClientReader, RefreshTokenStore, Protocol):
+    """Narrow store surface required by registry's per-server downstream OAuth flow."""
+
+
+class OAuthStateStoreProtocol(
+    OAuthClientStoreProtocol,
+    AuthCodeStore,
+    RefreshTokenStore,
+    DeviceCodeStore,
+    Protocol,
+):
+    """Full OAuth state surface used by auth-server."""
+
+
 def _decode_redis_value(value: Any) -> str | None:
     if value is None:
         return None
@@ -111,8 +133,52 @@ def _decode_redis_value(value: Any) -> str | None:
     return str(value)
 
 
-class OAuthStateStore:
-    """Persist OAuth flow state in Redis.
+class _RedisJsonStore:
+    """Small Redis JSON helper shared by client and OAuth state stores."""
+
+    def __init__(self, redis_client: Redis) -> None:
+        self._redis = redis_client
+
+    def set_json(
+        self,
+        key: str,
+        data: dict[str, Any],
+        ttl_seconds: int,
+    ) -> None:
+        try:
+            self._redis.set(key, self.dumps_json(data), ex=ttl_seconds)
+        except RedisError:
+            logger.exception("Failed to save OAuth state to Redis key=%s", key)
+            raise
+
+    def get_json(self, key: str) -> dict[str, Any] | None:
+        try:
+            return self.loads_json(self._redis.get(key))
+        except RedisError:
+            logger.exception("Failed to get OAuth state from Redis key=%s", key)
+            raise
+
+    def get_json_without_ttl_slide(self, key: str | bytes) -> dict[str, Any] | None:
+        redis_key = _decode_redis_value(key)
+        if redis_key is None:
+            return None
+        return self.get_json(redis_key)
+
+    def dumps_json(self, data: dict[str, Any]) -> str:
+        return json.dumps(data, separators=(",", ":"))
+
+    def loads_json(self, raw_data: Any) -> dict[str, Any] | None:
+        decoded = _decode_redis_value(raw_data)
+        if decoded is None:
+            return None
+        loaded = json.loads(decoded)
+        if not isinstance(loaded, dict):
+            raise TypeError("OAuth Redis state payload must be a JSON object")
+        return loaded
+
+
+class OAuthClientStore:
+    """Persist DCR client metadata in Redis behind a narrow client-store facade.
 
     Client listing scans Redis keys and is intended for admin/debug use only.
     Do not call it from request hot paths.
@@ -123,20 +189,19 @@ class OAuthStateStore:
         redis_client: Redis,
         key_prefix: str,
         client_secret_hash_key: str,
-        client_key_prefix: str | None = None,
     ) -> None:
         self._redis = redis_client
         self._key_prefix = key_prefix
         self._client_secret_hash_key = client_secret_hash_key
-        self._client_key_prefix = client_key_prefix or key_prefix
+        self._json_store = _RedisJsonStore(redis_client)
 
     def save_client(self, client_id: str, metadata: dict[str, Any]) -> None:
         stored_metadata = self._prepare_client_metadata(metadata)
-        self._set_json(self._client_key(client_id), stored_metadata, CLIENT_TTL_SECONDS)
+        self._json_store.set_json(self._client_key(client_id), stored_metadata, CLIENT_TTL_SECONDS)
 
     def get_client(self, client_id: str) -> dict[str, Any] | None:
         key = self._client_key(client_id)
-        client_metadata = self._get_json(key)
+        client_metadata = self._json_store.get_json(key)
         if client_metadata is None:
             return None
 
@@ -171,7 +236,7 @@ class OAuthStateStore:
         try:
             clients = []
             for key in self._redis.scan_iter(match=self._client_key("*"), count=100):
-                client_metadata = self._get_json_without_ttl_slide(key)
+                client_metadata = self._json_store.get_json_without_ttl_slide(key)
                 if client_metadata is None:
                     continue
                 clients.append(
@@ -188,11 +253,69 @@ class OAuthStateStore:
             logger.exception("Failed to list OAuth clients from Redis")
             return []
 
+    def _client_key(self, client_id: str) -> str:
+        return f"{self._key_prefix}:oauth:client:{client_id}"
+
+    def _prepare_client_metadata(self, metadata: dict[str, Any]) -> dict[str, Any]:
+        stored_metadata = dict(metadata)
+        client_secret = stored_metadata.pop("client_secret", None)
+
+        if isinstance(client_secret, str):
+            stored_metadata["client_secret_hash"] = self._hash_client_secret(client_secret)
+
+        return stored_metadata
+
+    def _hash_client_secret(self, client_secret: str) -> str:
+        return hmac.new(
+            self._client_secret_hash_key.encode("utf-8"),
+            client_secret.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+
+
+class OAuthStateStore:
+    """Persist full OAuth flow state in Redis.
+
+    Client metadata is delegated to ``OAuthClientStore`` so registry can depend on a narrow client
+    facade while auth-server keeps its full state-store API.
+    """
+
+    def __init__(
+        self,
+        redis_client: Redis,
+        key_prefix: str,
+        client_secret_hash_key: str,
+    ) -> None:
+        self._redis = redis_client
+        self._key_prefix = key_prefix
+        self._json_store = _RedisJsonStore(redis_client)
+        self._client_store = OAuthClientStore(
+            redis_client=redis_client,
+            key_prefix=key_prefix,
+            client_secret_hash_key=client_secret_hash_key,
+        )
+
+    def save_client(self, client_id: str, metadata: dict[str, Any]) -> None:
+        self._client_store.save_client(client_id, metadata)
+
+    def get_client(self, client_id: str) -> dict[str, Any] | None:
+        return self._client_store.get_client(client_id)
+
+    def validate_client_credentials(
+        self,
+        client_id: str,
+        client_secret: str | None = None,
+    ) -> bool:
+        return self._client_store.validate_client_credentials(client_id, client_secret)
+
+    def list_clients(self) -> list[dict[str, Any]]:
+        return self._client_store.list_clients()
+
     def save_authcode(self, code: str, data: dict[str, Any]) -> None:
-        self._set_json(self._authcode_key(code), data, AUTH_CODE_TTL_SECONDS)
+        self._json_store.set_json(self._authcode_key(code), data, AUTH_CODE_TTL_SECONDS)
 
     def get_authcode(self, code: str) -> dict[str, Any] | None:
-        return self._get_json(self._authcode_key(code))
+        return self._json_store.get_json(self._authcode_key(code))
 
     def consume_authcode(self, code: str) -> dict[str, Any] | None:
         try:
@@ -201,15 +324,15 @@ class OAuthStateStore:
             logger.exception("Failed to consume OAuth authorization code")
             raise
 
-        return self._loads_json(raw_data)
+        return self._json_store.loads_json(raw_data)
 
     def save_refresh_token(self, token: str, data: dict[str, Any]) -> None:
         stored_data = dict(data)
         stored_data.setdefault("expires_at", int(time.time()) + REFRESH_TOKEN_TTL_SECONDS)
-        self._set_json(self._refresh_key(token), stored_data, REFRESH_TOKEN_TTL_SECONDS)
+        self._json_store.set_json(self._refresh_key(token), stored_data, REFRESH_TOKEN_TTL_SECONDS)
 
     def get_refresh_token(self, token: str) -> dict[str, Any] | None:
-        return self._get_json(self._refresh_key(token))
+        return self._json_store.get_json(self._refresh_key(token))
 
     def rotate_refresh_token(
         self,
@@ -224,13 +347,13 @@ class OAuthStateStore:
                 self._refresh_key(old_token),
                 self._refresh_key(new_token),
                 REFRESH_TOKEN_TTL_SECONDS,
-                self._dumps_json(new_data),
+                self._json_store.dumps_json(new_data),
             )
         except RedisError:
             logger.exception("Failed to rotate OAuth refresh token")
             raise
 
-        return self._loads_json(raw_old_data)
+        return self._json_store.loads_json(raw_old_data)
 
     def save_device_authorization(
         self,
@@ -241,7 +364,7 @@ class OAuthStateStore:
     ) -> None:
         try:
             pipe = self._redis.pipeline(transaction=True)
-            pipe.set(self._device_key(device_code), self._dumps_json(data), ex=ttl_seconds)
+            pipe.set(self._device_key(device_code), self._json_store.dumps_json(data), ex=ttl_seconds)
             pipe.set(self._user_code_key(user_code), device_code, ex=ttl_seconds)
             pipe.execute()
         except RedisError:
@@ -254,10 +377,10 @@ class OAuthStateStore:
         data: dict[str, Any],
         ttl_seconds: int,
     ) -> None:
-        self._set_json(self._device_key(device_code), data, ttl_seconds)
+        self._json_store.set_json(self._device_key(device_code), data, ttl_seconds)
 
     def get_device_code(self, device_code: str) -> dict[str, Any] | None:
-        return self._get_json(self._device_key(device_code))
+        return self._json_store.get_json(self._device_key(device_code))
 
     def update_device_code(
         self,
@@ -273,7 +396,7 @@ class OAuthStateStore:
                     logger.warning("OAuth device code key exists without TTL: %s", key)
                 return False
 
-            self._redis.set(key, self._dumps_json(data), ex=remaining_ttl)
+            self._redis.set(key, self._json_store.dumps_json(data), ex=remaining_ttl)
             return True
         except RedisError:
             logger.exception("Failed to update OAuth device code")
@@ -305,9 +428,6 @@ class OAuthStateStore:
             logger.exception("Failed to delete OAuth user code")
             raise
 
-    def _client_key(self, client_id: str) -> str:
-        return f"{self._client_key_prefix}:oauth:client:{client_id}"
-
     def _authcode_key(self, code: str) -> str:
         return self._key("authcode", code)
 
@@ -323,55 +443,31 @@ class OAuthStateStore:
     def _key(self, state_type: str, state_id: str) -> str:
         return f"{self._key_prefix}:oauth:{state_type}:{state_id}"
 
-    def _prepare_client_metadata(self, metadata: dict[str, Any]) -> dict[str, Any]:
-        stored_metadata = dict(metadata)
-        client_secret = stored_metadata.pop("client_secret", None)
 
-        if isinstance(client_secret, str):
-            stored_metadata["client_secret_hash"] = self._hash_client_secret(client_secret)
+class DownstreamOAuthStateStore:
+    """Compose registry's downstream OAuth store from narrow client and refresh-token stores."""
 
-        return stored_metadata
-
-    def _hash_client_secret(self, client_secret: str) -> str:
-        return hmac.new(
-            self._client_secret_hash_key.encode("utf-8"),
-            client_secret.encode("utf-8"),
-            hashlib.sha256,
-        ).hexdigest()
-
-    def _set_json(
+    def __init__(
         self,
-        key: str,
-        data: dict[str, Any],
-        ttl_seconds: int,
+        client_store: OAuthClientReader,
+        refresh_token_store: RefreshTokenStore,
     ) -> None:
-        try:
-            self._redis.set(key, self._dumps_json(data), ex=ttl_seconds)
-        except RedisError:
-            logger.exception("Failed to save OAuth state to Redis key=%s", key)
-            raise
+        self._client_store = client_store
+        self._refresh_token_store = refresh_token_store
 
-    def _get_json(self, key: str) -> dict[str, Any] | None:
-        try:
-            return self._loads_json(self._redis.get(key))
-        except RedisError:
-            logger.exception("Failed to get OAuth state from Redis key=%s", key)
-            raise
+    def get_client(self, client_id: str) -> dict[str, Any] | None:
+        return self._client_store.get_client(client_id)
 
-    def _get_json_without_ttl_slide(self, key: str | bytes) -> dict[str, Any] | None:
-        redis_key = _decode_redis_value(key)
-        if redis_key is None:
-            return None
-        return self._get_json(redis_key)
+    def save_refresh_token(self, token: str, data: dict[str, Any]) -> None:
+        self._refresh_token_store.save_refresh_token(token, data)
 
-    def _dumps_json(self, data: dict[str, Any]) -> str:
-        return json.dumps(data, separators=(",", ":"))
+    def get_refresh_token(self, token: str) -> dict[str, Any] | None:
+        return self._refresh_token_store.get_refresh_token(token)
 
-    def _loads_json(self, raw_data: Any) -> dict[str, Any] | None:
-        decoded = _decode_redis_value(raw_data)
-        if decoded is None:
-            return None
-        loaded = json.loads(decoded)
-        if not isinstance(loaded, dict):
-            raise TypeError("OAuth Redis state payload must be a JSON object")
-        return loaded
+    def rotate_refresh_token(
+        self,
+        old_token: str,
+        new_token: str,
+        new_data: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        return self._refresh_token_store.rotate_refresh_token(old_token, new_token, new_data)
