@@ -247,6 +247,31 @@ async def test_execute_agent_a2a_failure_returns_error():
 
 
 @pytest.mark.asyncio
+async def test_execute_agent_a2a_failure_surfaces_status_message_detail():
+    """A terminal `failed` task surfaces its status.message reason to the caller."""
+    ctx = _make_ctx()
+    valid_id = str(PydanticObjectId())
+    agent = _make_agent(valid_id)
+    reason = "agent overloaded (HTTP 503), retryable, retry in a few minutes"
+
+    with (
+        patch("registry.mcpgw.tools.agent.A2AAgent") as mock_model,
+        patch("registry.mcpgw.tools.agent.call_a2a", new_callable=AsyncMock) as mock_call,
+    ):
+        mock_model.id = MagicMock()
+        mock_model.find_one = AsyncMock(return_value=agent)
+        mock_call.return_value = A2ACallResult(
+            success=False,
+            error=f"task terminated in non-completed state: failed — {reason}",
+        )
+
+        result = await execute_agent_impl(valid_id, _msg("Do something"), ctx)
+
+    assert result.isError is True
+    assert reason in result.content[0].text
+
+
+@pytest.mark.asyncio
 async def test_get_tools_returns_execute_agent():
     tools = agent.get_tools()
     names = [name for name, _ in tools]

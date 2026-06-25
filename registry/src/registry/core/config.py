@@ -28,6 +28,7 @@ class Settings(JarvisBaseSettings):
     # ==================== Session ====================
     session_cookie_name: str = "jarvis_registry_session"
     refresh_cookie_name: str = "jarvis_registry_refresh"
+    csrf_cookie_name: str = "jarvis_registry_csrf"
     session_max_age_seconds: int = 60 * 60 * 8
     session_cookie_domain: str | None = None
 
@@ -37,6 +38,7 @@ class Settings(JarvisBaseSettings):
     # ==================== Headers ====================
     auth_egress_header: str = "Authorization"
     internal_auth_header: str = "X-Jarvis-Auth"
+    csrf_header_name: str = "X-Jarvis-CSRF"
 
     # ==================== API ====================
     api_version: str = "v1"

@@ -9,12 +9,17 @@ from .core.types import AllowedProvider
 from .providers.base import AuthProvider
 from .services.cognito_validator_service import SimplifiedCognitoValidator
 from .services.downstream_token_service import DownstreamTokenCheckService
+from .services.server_service import ServerService
 from .services.user_service import UserService
 from .utils.config_loader import OAuth2Config
 
 
 def get_container(request: Request) -> AuthContainer:
     return request.app.state.container
+
+
+def get_server_service(container: AuthContainer = Depends(get_container)) -> ServerService:
+    return container.server_service
 
 
 def get_user_service(container: AuthContainer = Depends(get_container)) -> UserService:
