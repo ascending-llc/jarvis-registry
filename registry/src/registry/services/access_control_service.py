@@ -477,18 +477,18 @@ class ACLService:
 
     async def get_accessible_resource_ids(
         self,
-        user_id: PydanticObjectId,
+        user_id: PydanticObjectId | None,
         resource_type: str,
         session: AsyncClientSession | None = None,
     ) -> list[str]:
         """
         Return the IDs of all resources of a given type that the user can VIEW.
 
-        Performs a single MongoDB query matching user-specific and PUBLIC
-        ACL entries, filters by the VIEW bit, and deduplicates results.
+        When user_id is None (anonymous / unauthenticated), only PUBLIC ACL
+        entries are matched.
 
         Args:
-                user_id: The user's ID.
+                user_id: The user's ID, or None for anonymous/unauthenticated access.
                 resource_type: The resource type string (e.g., RegistryResourceType.MCP_SERVER.value).
 
         Returns:
@@ -496,13 +496,20 @@ class ACLService:
                 Returns an empty list on error.
         """
         try:
-            acl_entries = await RegistryAclEntry.find(
-                {
-                    "resourceType": resource_type,
+            if user_id is not None:
+                principal_filter = {
                     "$or": [
                         {"principalType": PrincipalType.USER.value, "principalId": user_id},
                         {"principalType": PrincipalType.PUBLIC.value, "principalId": None},
-                    ],
+                    ]
+                }
+            else:
+                principal_filter = {"principalType": PrincipalType.PUBLIC.value, "principalId": None}
+
+            acl_entries = await RegistryAclEntry.find(
+                {
+                    "resourceType": resource_type,
+                    **principal_filter,
                 },
                 session=session,
             ).to_list()
