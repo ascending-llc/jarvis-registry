@@ -163,8 +163,9 @@ def test_authorize_rejects_non_s256_challenge_method(client, mcp_service_mock):
     mcp_service_mock.oauth_service.initiate_oauth_flow.assert_not_called()
 
 
-def test_authorize_rejects_non_http_redirect_scheme(client, mcp_service_mock):
-    # A non-http(s) scheme must never reach the redirect sink (open-redirect / exfil via javascript:).
+def test_authorize_rejects_dangerous_redirect_scheme(client, mcp_service_mock):
+    # Dangerous browser-executing schemes (javascript:, data:, …) must be blocked before
+    # they reach the 302 redirect sink.  Native private-use schemes (vscode://, …) are allowed.
     resp = client.get(
         f"/mcp/downstream/oauth/authorize/{USER_A}/github",
         params={
@@ -176,6 +177,20 @@ def test_authorize_rejects_non_http_redirect_scheme(client, mcp_service_mock):
     )
     assert resp.status_code == 400
     mcp_service_mock.oauth_service.initiate_oauth_flow.assert_not_called()
+
+
+def test_authorize_accepts_native_scheme_redirect_uri(client, store_mock, mcp_service_mock):
+    # RFC 8252 §7.1 private-use schemes (e.g. vscode://) must be accepted structurally and
+    # proceed to the provider when the URI is registered for the client.
+    native_uri = "vscode://saoudrizwan.claude-dev/oauth"
+    store_mock.get_client.return_value = {"redirect_uris": [native_uri]}
+    resp = client.get(
+        f"/mcp/downstream/oauth/authorize/{USER_A}/github",
+        params={"client_id": "claude", "redirect_uri": native_uri, "code_challenge": "abc"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 307
+    mcp_service_mock.oauth_service.initiate_oauth_flow.assert_called_once()
 
 
 def test_authorize_rejects_unregistered_redirect_uri(client, store_mock, mcp_service_mock):

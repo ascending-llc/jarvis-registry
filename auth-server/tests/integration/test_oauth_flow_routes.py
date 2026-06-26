@@ -101,17 +101,39 @@ class TestDynamicClientRegistration:
             "http://example.com/cb",  # non-loopback http
             "https://10.0.0.1/cb",  # RFC-1918
             "https://example.com/cb#frag",  # fragment
+            "javascript:alert(1)",  # dangerous scheme
+            "data:text/html;base64,PHNjcmlwdD4=",  # dangerous scheme
         ],
     )
     def test_register_with_unsafe_redirect_uri_rejected(
         self, test_client: TestClient, clear_device_storage, bad_uri: str
     ):
-        """Registration must reject structurally unsafe redirect_uris."""
+        """Registration must reject structurally unsafe redirect_uris with an OAuth error shape."""
         response = test_client.post(
             f"{API_PREFIX}/oauth2/register",
             json={"client_name": "Unsafe", "redirect_uris": [bad_uri]},
         )
         assert response.status_code == 400
+        # RFC 7591 §3.2.2 error shape so clients (Cline, VS Code) can parse it.
+        assert response.json()["error"] == "invalid_redirect_uri"
+
+    @pytest.mark.parametrize(
+        "native_uri",
+        [
+            "vscode://saoudrizwan.claude-dev/oauth",  # Cline / VS Code extension callback
+            "com.example.app:/oauth2redirect",  # RFC 8252 private-use scheme
+        ],
+    )
+    def test_register_with_native_scheme_redirect_uri_succeeds(
+        self, test_client: TestClient, clear_device_storage, native_uri: str
+    ):
+        """Native-app private-use schemes (RFC 8252 §7.1) must be accepted at registration."""
+        response = test_client.post(
+            f"{API_PREFIX}/oauth2/register",
+            json={"client_name": "Native", "redirect_uris": [native_uri]},
+        )
+        assert response.status_code == 200
+        assert response.json()["redirect_uris"] == [native_uri]
 
     def test_register_multiple_clients(self, test_client: TestClient, clear_device_storage):
         """Test registering multiple clients generates unique credentials."""

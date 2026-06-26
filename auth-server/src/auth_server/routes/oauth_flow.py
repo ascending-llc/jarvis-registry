@@ -171,19 +171,21 @@ def _get_unknown_client_response() -> JSONResponse:
     return oauth_error_response("invalid_client", "Unknown client_id")
 
 
-def _validate_registration_redirect_uris(redirect_uris: list[str] | None) -> None:
+def _validate_registration_redirect_uris(redirect_uris: list[str] | None) -> JSONResponse | None:
     """Reject a DCR request whose redirect_uris are missing or structurally unsafe.
 
-    Raises HTTPException(400) so the route's HTTPException re-raise surfaces it as a 4xx.
+    Returns an RFC 7591 §3.2.2 ``invalid_redirect_uri`` OAuth error response (not a ``{"detail": …}``
+    body) so spec-compliant clients (Cline, VS Code) can parse the failure; ``None`` when valid.
     """
     uris = redirect_uris or []
     if not uris:
-        raise HTTPException(status_code=400, detail="at least one redirect_uri is required")
+        return oauth_error_response("invalid_redirect_uri", "at least one redirect_uri is required")
     for uri in uris:
         try:
             validate_registration_redirect_uri(uri)
         except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e)) from e
+            return oauth_error_response("invalid_redirect_uri", str(e))
+    return None
 
 
 def _validate_known_client_for_redirect(
@@ -222,7 +224,7 @@ async def register_client(
     registration: ClientRegistrationRequest,
     request: Request,
     store: OAuthStateStoreProtocol = Depends(get_oauth_state_store),
-) -> ClientRegistrationResponse:
+) -> ClientRegistrationResponse | JSONResponse:
     try:
         logger.info(
             f"incoming DCR request. client_name: {registration.client_name}, grant_types: {registration.grant_types}, "
@@ -230,7 +232,14 @@ async def register_client(
             f"token_endpoint_auth_method: {registration.token_endpoint_auth_method}."
         )
 
-        _validate_registration_redirect_uris(registration.redirect_uris)
+        redirect_uri_error = _validate_registration_redirect_uris(registration.redirect_uris)
+        if redirect_uri_error is not None:
+            logger.warning(
+                "DCR request rejected: invalid redirect_uri. client_name=%s, redirect_uris=%s",
+                registration.client_name,
+                registration.redirect_uris,
+            )
+            return redirect_uri_error
 
         client_id = f"mcp-client-{secrets.token_urlsafe(16)}"
 

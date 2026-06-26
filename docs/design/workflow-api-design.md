@@ -1,5 +1,56 @@
 # Workflow Management API
 
+## Table of Contents
+
+1. [API Route Prefix](#api-route-prefix)
+2. [API Endpoints](#api-endpoints)
+   - 2.1. [List Workflows](#1-list-workflows)
+   - 2.2. [Get Workflow Detail](#2-get-workflow-detail)
+   - 2.3. [Create Workflow](#3-create-workflow)
+   - 2.4. [Update Workflow](#4-update-workflow)
+   - 2.5. [Delete Workflow](#5-delete-workflow)
+   - 2.6. [Toggle Workflow Status](#6-toggle-workflow-status)
+   - 2.7. [Trigger Workflow Run](#7-trigger-workflow-run)
+   - 2.8. [List Workflow Runs](#8-list-workflow-runs)
+   - 2.9. [List Child Runs](#8b-list-child-runs)
+   - 2.10. [Get Workflow Run Detail](#9-get-workflow-run-detail)
+   - 2.11. [Resolve HITL Requirement (Approve / Reject / Edit / etc.)](#10-resolve-hitl-requirement-approve--reject--edit--etc)
+   - 2.12. [List Node Runs](#11-list-node-runs)
+   - 2.13. [Get Node Run Detail](#12-get-node-run-detail)
+   - 2.14. [Rerun Single Node](#13-rerun-single-node)
+   - 2.15. [Replay Workflow Run](#14-replay-workflow-run)
+3. [Internal Data Flow — Control Endpoints](#internal-data-flow--control-endpoints)
+   - 3.1. [`/pause`, `/resume`, `/cancel`](#pause-resume-cancel)
+   - 3.2. [`/retry`](#retry)
+   - 3.3. [`/nodes/{node_id}/rerun`](#nodesnode_idrerun)
+   - 3.4. [`/replay`](#replay)
+   - 3.5. [`/approve` (HITL resolution)](#approve-hitl-resolution)
+   - 3.6. [Failure modes shared across endpoints](#failure-modes-shared-across-endpoints)
+4. [Error Response Format](#error-response-format)
+5. [Data Models](#data-models)
+   - 5.1. [WorkflowCanvas](#workflowcanvas)
+   - 5.2. [WorkflowNode](#workflownode)
+   - 5.3. [HumanReview](#humanreview)
+   - 5.4. [UserInputField](#userinputfield)
+   - 5.5. [StepRequirementSummary](#steprequirementsummary)
+   - 5.6. [PendingUserInputField](#pendinguserinputfield)
+   - 5.7. [RouterChoice](#routerchoice)
+   - 5.8. [StepConfig](#stepconfig)
+   - 5.9. [LoopConfig](#loopconfig)
+   - 5.10. [NodeRunDetail](#noderundetail)
+   - 5.11. [NodeRunListResponse](#noderunlistresponse)
+6. [Tree-Shaped Workflow Example (Multi-Step Branches)](#tree-shaped-workflow-example-multi-step-branches)
+   - 6.1. [WorkflowRunStatus](#workflowrunstatus)
+   - 6.2. [NodeRunStatus](#noderunstatus)
+   - 6.3. [ResolvedDependencyResolution](#resolveddependencyresolution)
+7. [Naming Conventions](#naming-conventions)
+8. [HITL v2 Notes (Backward Compatibility & Internal Fields)](#hitl-v2-notes-backward-compatibility--internal-fields)
+   - 8.1. [Backward Compatibility — Legacy `require_approval` Fields](#backward-compatibility--legacy-require_approval-fields)
+   - 8.2. [Internal WorkflowRun Fields (Not API-Exposed)](#internal-workflowrun-fields-not-api-exposed)
+   - 8.3. [Known Limitations](#known-limitations)
+
+---
+
 ## API Route Prefix
 
 ```
