@@ -54,6 +54,15 @@ class TestValidateRegistrationRedirectUri:
             "javascript:alert(1)",
             "data:text/html;base64,PHNjcmlwdD4=",
             "file:///etc/passwd",
+            # Network / remote-transport schemes would leak the code off-device — rejected.
+            "ftp://attacker.example.com/cb",
+            "ftps://attacker.example.com/cb",
+            "gopher://attacker.example.com/cb",
+            "ws://attacker.example.com/cb",
+            "wss://attacker.example.com/cb",
+            "mailto:attacker@example.com",
+            "sms:+15551234567",
+            "tel:+15551234567",
             "cb-only",  # no scheme
         ],
     )

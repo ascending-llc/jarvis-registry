@@ -21,7 +21,26 @@ from urllib.parse import urlsplit
 
 LOOPBACK_HOSTNAMES = frozenset({"localhost", "127.0.0.1", "::1"})
 
-BLOCKED_REDIRECT_SCHEMES = frozenset({"javascript", "data", "vbscript", "file", "blob", "about"})
+BLOCKED_REDIRECT_SCHEMES = frozenset(
+    {
+        # Browser-executing schemes.
+        "javascript",
+        "data",
+        "vbscript",
+        "file",
+        "blob",
+        "about",
+        # Network / remote-transport schemes — would exfiltrate the code off the local device.
+        "ftp",
+        "ftps",
+        "gopher",
+        "ws",
+        "wss",
+        "mailto",
+        "sms",
+        "tel",
+    }
+)
 
 
 def is_loopback_host(host: str | None) -> bool:
@@ -83,8 +102,9 @@ def validate_registration_redirect_uri(redirect_uri: str) -> None:
       |----------------------------------------------------|---------------------------------|
       | no scheme (not an absolute URI)                    | FAIL (RFC 6749 §3.1.2)          |
       | contains a ``#fragment``                           | FAIL (RFC 6749 §3.1.2)          |
-      | dangerous scheme: javascript/data/file/...         | FAIL (would execute in browser) |
-      | any non-http(s) scheme                             | PASS — native private-use scheme|
+      | blocked scheme: javascript/data/ftp/ws/mailto/...  | FAIL (executes in browser, or  |
+      |                                                    | leaks code to a remote endpoint)|
+      | any other non-http(s) scheme                       | PASS — native private-use scheme|
       | http(s): host vetted by ``_validate_web_redirect_host`` | PASS or FAIL               |
     """
     parts = urlsplit(redirect_uri)
