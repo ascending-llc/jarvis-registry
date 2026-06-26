@@ -234,6 +234,11 @@ async def register_client(
 
         redirect_uri_error = _validate_registration_redirect_uris(registration.redirect_uris)
         if redirect_uri_error is not None:
+            logger.warning(
+                "DCR request rejected: invalid redirect_uri. client_name=%s, redirect_uris=%s",
+                registration.client_name,
+                registration.redirect_uris,
+            )
             return redirect_uri_error
 
         client_id = f"mcp-client-{secrets.token_urlsafe(16)}"
