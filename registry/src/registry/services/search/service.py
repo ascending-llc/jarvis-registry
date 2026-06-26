@@ -96,7 +96,7 @@ class SearchService:
         raw_user_id: str | None = user_context.get("user_id")
         try:
             user_id = PydanticObjectId(raw_user_id) if raw_user_id else None
-        except Exception:
+        except (ValueError, TypeError):
             logger.warning("Invalid user_id format in context: %r — treating as anonymous", raw_user_id)
             user_id = None
 

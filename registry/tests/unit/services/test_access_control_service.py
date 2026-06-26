@@ -382,16 +382,11 @@ class TestACLService:
         """When user_id is None, only PUBLIC ACL entries are matched."""
         service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
 
-        # Build mock ACL entries: one public and one user-specific
         public_entry = MagicMock()
         public_entry.permBits = RoleBits.VIEWER  # 1 = VIEW
         public_entry.resourceId = PydanticObjectId("507f1f77bcf86cd799439011")
 
-        user_entry = MagicMock()
-        user_entry.permBits = RoleBits.VIEWER
-        user_entry.resourceId = PydanticObjectId("507f1f77bcf86cd799439012")
-
-        # Mock to return only public_entry when user_id is None
+        # Mock to return only the public entry — when user_id is None the query must not match USER entries
         mock_acl_entry.find.return_value.to_list = AsyncMock(return_value=[public_entry])
 
         result = await service.get_accessible_resource_ids(user_id=None, resource_type="mcpServer")
