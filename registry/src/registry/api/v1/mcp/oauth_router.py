@@ -600,10 +600,11 @@ def _validate_downstream_authorize_params(
     """Reject unsupported OAuth params before the captured ``redirect_uri`` becomes a redirect sink.
 
     The registry only ever drives a ``code`` + S256 PKCE flow and later 302-redirects the browser to
-    ``redirect_uri`` with the authorization code attached, so reject non-http schemes
-    (``javascript:``, ``data:``) and malformed values before they reach that sink. The host itself is
-    NOT allowlisted yet (clients are deployed across many hosts) — pinning it requires downstream
-    client registration and is deferred.
+    ``redirect_uri`` with the authorization code attached, so reject dangerous browser-executing
+    schemes (``javascript:``, ``data:``) and malformed values before they reach that sink. Native-app
+    private-use schemes (RFC 8252 §7.1, e.g. ``vscode://``) are allowed structurally — cross-client
+    abuse is then prevented because ``_validate_registered_redirect_uri`` requires the value to match a
+    redirect_uri the client already registered via DCR, which also enforces host allowlisting.
     """
     if response_type != DownstreamOAuthConstants.SUPPORTED_RESPONSE_TYPE:
         raise HTTPException(
@@ -800,12 +801,16 @@ def _downstream_authorization_code_grant(
     server_path: str,
     code: str | None,
     client_id: str,
+    client_secret: str | None,
     code_verifier: str | None,
     redirect_uri: str | None,
 ) -> JSONResponse:
     """Exchange a Layer B authorization code + PKCE verifier for an access + refresh token pair."""
     if not code or not code_verifier or not redirect_uri:
         return _oauth_token_error("invalid_request", "code, code_verifier and redirect_uri are required")
+
+    if not store.validate_client_credentials(client_id, client_secret):
+        return _oauth_token_error("invalid_client", "invalid client credentials")
 
     raw = redis_client.getdel(downstream_mcp_code_key(code))
     if not raw:
@@ -853,6 +858,7 @@ def _downstream_refresh_token_grant(
     user_id: str,
     server_path: str,
     client_id: str,
+    client_secret: str | None,
     refresh_token: str | None,
 ) -> JSONResponse:
     """Rotate a direct-connect refresh token and mint a fresh access token.
@@ -862,6 +868,9 @@ def _downstream_refresh_token_grant(
     """
     if not refresh_token:
         return _oauth_token_error("invalid_request", "refresh_token is required")
+
+    if not store.validate_client_credentials(client_id, client_secret):
+        return _oauth_token_error("invalid_client", "invalid client credentials")
 
     token_data = store.get_refresh_token(refresh_token)
     if token_data is None:
@@ -893,6 +902,7 @@ async def downstream_oauth_token(
     server_path: str,
     grant_type: str = Form(...),
     client_id: str = Form(...),
+    client_secret: str | None = Form(None),
     code: str | None = Form(None),
     code_verifier: str | None = Form(None),
     redirect_uri: str | None = Form(None),
@@ -915,6 +925,7 @@ async def downstream_oauth_token(
                 server_path=server_path,
                 code=code,
                 client_id=client_id,
+                client_secret=client_secret,
                 code_verifier=code_verifier,
                 redirect_uri=redirect_uri,
             )
@@ -925,6 +936,7 @@ async def downstream_oauth_token(
                 user_id=user_id,
                 server_path=server_path,
                 client_id=client_id,
+                client_secret=client_secret,
                 refresh_token=refresh_token,
             )
 

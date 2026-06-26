@@ -41,15 +41,15 @@ return val
 class OAuthClientReader(Protocol):
     def get_client(self, client_id: str) -> dict[str, Any] | None: ...
 
-
-class OAuthClientStoreProtocol(OAuthClientReader, Protocol):
-    def save_client(self, client_id: str, metadata: dict[str, Any]) -> None: ...
-
     def validate_client_credentials(
         self,
         client_id: str,
         client_secret: str | None = None,
     ) -> bool: ...
+
+
+class OAuthClientStoreProtocol(OAuthClientReader, Protocol):
+    def save_client(self, client_id: str, metadata: dict[str, Any]) -> None: ...
 
     def list_clients(self) -> list[dict[str, Any]]: ...
 
@@ -457,6 +457,13 @@ class DownstreamOAuthStateStore:
 
     def get_client(self, client_id: str) -> dict[str, Any] | None:
         return self._client_store.get_client(client_id)
+
+    def validate_client_credentials(
+        self,
+        client_id: str,
+        client_secret: str | None = None,
+    ) -> bool:
+        return self._client_store.validate_client_credentials(client_id, client_secret)
 
     def save_refresh_token(self, token: str, data: dict[str, Any]) -> None:
         self._refresh_token_store.save_refresh_token(token, data)

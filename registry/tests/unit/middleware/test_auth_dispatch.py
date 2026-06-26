@@ -168,10 +168,12 @@ def test_direct_connect_rejects_server_path_mismatch(client):
     assert resp.status_code == 401
 
 
-def test_direct_connect_rejects_token_without_server_path(client):
+def test_direct_connect_accepts_root_as_token_without_server_path(client):
+    # Root-AS tokens (issued for requiresOAuth=False servers) carry no server_path claim.
+    # The middleware should accept them on any direct-connect URL provided the user_id matches.
     token = _managed_agent_token(user_id=USER_A)
     resp = client.get(f"/proxy/server/{USER_A}/github", headers={"Authorization": f"Bearer {token}"})
-    assert resp.status_code == 401
+    assert resp.status_code == 200
 
 
 def test_downstream_token_endpoint_is_public(client):

@@ -267,7 +267,10 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
                 return None
             url_server_path = binding.group(2)
             token_server_path = claims.get("server_path")
-            if token_server_path != url_server_path:
+            # Root-AS tokens (requiresOAuth=False servers) carry no server_path claim; only
+            # downstream-AS tokens (requiresOAuth=True) embed one. Skip the binding check when
+            # absent so non-OAuth direct-connect servers still work with a root-AS token.
+            if token_server_path is not None and token_server_path != url_server_path:
                 logger.warning(f"server_path mismatch: token has {token_server_path}, URL has {url_server_path}")
                 return None
 
