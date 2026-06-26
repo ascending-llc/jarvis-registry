@@ -68,6 +68,7 @@ async def test_semantic_search_maps_service_result_to_response():
 
     search_service.semantic_search.assert_awaited_once_with(
         query="test",
+        user_context={"username": "tester"},
         entity_types=["mcp_server", "a2a_agent", "skill"],
         max_results=5,
         include_disabled=False,
