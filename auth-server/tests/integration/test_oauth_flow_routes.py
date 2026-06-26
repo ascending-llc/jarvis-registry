@@ -34,7 +34,10 @@ class TestDynamicClientRegistration:
 
     def test_register_client_minimal(self, test_client: TestClient, clear_device_storage):
         """Test client registration with minimal required fields."""
-        response = test_client.post(f"{API_PREFIX}/oauth2/register", json={})
+        response = test_client.post(
+            f"{API_PREFIX}/oauth2/register",
+            json={"redirect_uris": ["https://example.com/callback"]},
+        )
 
         assert response.status_code == 200
         data = response.json()
@@ -87,12 +90,36 @@ class TestDynamicClientRegistration:
         assert data["scope"] == registration_data["scope"]
         assert data["token_endpoint_auth_method"] == registration_data["token_endpoint_auth_method"]
 
+    def test_register_without_redirect_uris_rejected(self, test_client: TestClient, clear_device_storage):
+        """Registration must include at least one redirect_uri (anti-open-redirect)."""
+        response = test_client.post(f"{API_PREFIX}/oauth2/register", json={"client_name": "No Redirect"})
+        assert response.status_code == 400
+
+    @pytest.mark.parametrize(
+        "bad_uri",
+        [
+            "http://example.com/cb",  # non-loopback http
+            "https://10.0.0.1/cb",  # RFC-1918
+            "https://example.com/cb#frag",  # fragment
+        ],
+    )
+    def test_register_with_unsafe_redirect_uri_rejected(
+        self, test_client: TestClient, clear_device_storage, bad_uri: str
+    ):
+        """Registration must reject structurally unsafe redirect_uris."""
+        response = test_client.post(
+            f"{API_PREFIX}/oauth2/register",
+            json={"client_name": "Unsafe", "redirect_uris": [bad_uri]},
+        )
+        assert response.status_code == 400
+
     def test_register_multiple_clients(self, test_client: TestClient, clear_device_storage):
         """Test registering multiple clients generates unique credentials."""
         response1 = test_client.post(
             f"{API_PREFIX}/oauth2/register",
             json={
                 "client_name": "Client 1",
+                "redirect_uris": ["https://example.com/callback"],
                 "token_endpoint_auth_method": "client_secret_post",
             },
         )
@@ -100,6 +127,7 @@ class TestDynamicClientRegistration:
             f"{API_PREFIX}/oauth2/register",
             json={
                 "client_name": "Client 2",
+                "redirect_uris": ["https://example.com/callback"],
                 "token_endpoint_auth_method": "client_secret_post",
             },
         )
@@ -123,7 +151,10 @@ class TestDynamicClientRegistration:
     def test_get_client(self, test_client: TestClient, clear_device_storage):
         """Test retrieving registered client by ID."""
         # Register a client
-        response = test_client.post(f"{API_PREFIX}/oauth2/register", json={"client_name": "Test Client"})
+        response = test_client.post(
+            f"{API_PREFIX}/oauth2/register",
+            json={"client_name": "Test Client", "redirect_uris": ["https://example.com/callback"]},
+        )
         assert response.status_code == 200
 
         client_id = response.json()["client_id"]
@@ -147,6 +178,7 @@ class TestDynamicClientRegistration:
             f"{API_PREFIX}/oauth2/register",
             json={
                 "client_name": "Test Client",
+                "redirect_uris": ["https://example.com/callback"],
                 "token_endpoint_auth_method": "client_secret_post",
             },
         )
@@ -166,6 +198,7 @@ class TestDynamicClientRegistration:
             f"{API_PREFIX}/oauth2/register",
             json={
                 "client_name": "Test Client",
+                "redirect_uris": ["https://example.com/callback"],
                 "token_endpoint_auth_method": "client_secret_post",
             },
         )
@@ -222,9 +255,16 @@ class TestDynamicClientRegistration:
     def test_list_registered_clients(self, test_client: TestClient, clear_device_storage):
         """Test listing all registered clients (admin function)."""
         # Register multiple clients
-        test_client.post(f"{API_PREFIX}/oauth2/register", json={"client_name": "Client 1"})
-        test_client.post(f"{API_PREFIX}/oauth2/register", json={"client_name": "Client 2"})
-        test_client.post(f"{API_PREFIX}/oauth2/register", json={"client_name": "Client 3"})
+        redirect_uris = ["https://example.com/callback"]
+        test_client.post(
+            f"{API_PREFIX}/oauth2/register", json={"client_name": "Client 1", "redirect_uris": redirect_uris}
+        )
+        test_client.post(
+            f"{API_PREFIX}/oauth2/register", json={"client_name": "Client 2", "redirect_uris": redirect_uris}
+        )
+        test_client.post(
+            f"{API_PREFIX}/oauth2/register", json={"client_name": "Client 3", "redirect_uris": redirect_uris}
+        )
 
         # List clients
         clients_list = test_oauth_state_store.list_clients()
@@ -824,6 +864,7 @@ class TestEndToEndIntegration:
             f"{API_PREFIX}/oauth2/register",
             json={
                 "client_name": "Integration Test Client",
+                "redirect_uris": ["https://example.com/callback"],
                 "grant_types": ["urn:ietf:params:oauth:grant-type:device_code"],
             },
         )

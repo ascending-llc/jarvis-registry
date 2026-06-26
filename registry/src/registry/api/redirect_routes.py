@@ -23,10 +23,31 @@ from ..utils.crypto_utils import (
     generate_token_pair,
     verify_refresh_token,
 )
+from ..utils.csrf import compute_csrf_token
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+ACCESS_TOKEN_COOKIE_MAX_AGE_SECONDS = 86400
+
+
+def _set_csrf_cookie(response: Response, access_token: str, cookie_secure: bool) -> None:
+    response.set_cookie(
+        key=settings.csrf_cookie_name,
+        value=compute_csrf_token(access_token),
+        max_age=ACCESS_TOKEN_COOKIE_MAX_AGE_SECONDS,
+        httponly=False,
+        samesite="lax",
+        secure=cookie_secure,
+        path="/",
+    )
+
+
+def _delete_auth_cookies(response: Response) -> None:
+    response.delete_cookie(key=settings.session_cookie_name, path="/")
+    response.delete_cookie(key=settings.refresh_cookie_name, path="/")
+    response.delete_cookie(key=settings.csrf_cookie_name, path="/")
 
 
 async def get_oauth2_providers():
@@ -225,12 +246,13 @@ async def oauth2_callback(
         resp.set_cookie(
             key=settings.session_cookie_name,  # jarvis_registry_session
             value=access_token,
-            max_age=86400,  # 1 day in seconds
+            max_age=ACCESS_TOKEN_COOKIE_MAX_AGE_SECONDS,  # 1 day in seconds
             httponly=True,
             samesite="lax",
             secure=cookie_secure,
             path="/",
         )
+        _set_csrf_cookie(resp, access_token, cookie_secure)
 
         # Set refresh token cookie (7 days)
         resp.set_cookie(
@@ -259,8 +281,7 @@ async def oauth2_callback(
 @router.post("/redirect/logout")
 async def logout_post():
     response = Response(status_code=status.HTTP_204_NO_CONTENT)
-    response.delete_cookie(settings.session_cookie_name, path="/")
-    response.delete_cookie(settings.refresh_cookie_name, path="/")
+    _delete_auth_cookies(response)
 
     return response
 
@@ -268,7 +289,7 @@ async def logout_post():
 @router.post("/redirect/refresh")
 async def refresh_token(
     request: Request,
-    refresh: Annotated[str | None, Cookie(alias="jarvis_registry_refresh")] = None,
+    refresh: Annotated[str | None, Cookie(alias=settings.refresh_cookie_name)] = None,
     is_https: bool = Depends(check_if_https),
 ):
     """
@@ -283,8 +304,7 @@ async def refresh_token(
             logger.debug("No refresh token in cookie")
             response = JSONResponse(status_code=401, content={"detail": "No refresh token available"})
             # Clear cookies when no refresh token
-            response.delete_cookie(key=settings.session_cookie_name, path="/")
-            response.delete_cookie(key=settings.refresh_cookie_name, path="/")
+            _delete_auth_cookies(response)
             return response
 
         # Verify refresh token
@@ -293,8 +313,7 @@ async def refresh_token(
             logger.debug("Refresh token invalid or expired")
             response = JSONResponse(status_code=401, content={"detail": "Invalid or expired refresh token"})
             # Clear cookies when refresh token is invalid or expired
-            response.delete_cookie(key=settings.session_cookie_name, path="/")
-            response.delete_cookie(key=settings.refresh_cookie_name, path="/")
+            _delete_auth_cookies(response)
             return response
 
         # Extract user info from refresh token claims
@@ -326,8 +345,7 @@ async def refresh_token(
                 status_code=401, content={"detail": "Refresh token missing required scopes information"}
             )
             # Clear cookies when refresh token is missing required information
-            response.delete_cookie(key=settings.session_cookie_name, path="/")
-            response.delete_cookie(key=settings.refresh_cookie_name, path="/")
+            _delete_auth_cookies(response)
             return response
 
         # Generate new access token using information from refresh token
@@ -353,12 +371,13 @@ async def refresh_token(
             response.set_cookie(
                 key=settings.session_cookie_name,  # jarvis_registry_session
                 value=new_access_token,
-                max_age=86400,  # 1 day in seconds
+                max_age=ACCESS_TOKEN_COOKIE_MAX_AGE_SECONDS,  # 1 day in seconds
                 httponly=True,
                 samesite="lax",
                 secure=cookie_secure,
                 path="/",
             )
+            _set_csrf_cookie(response, new_access_token, cookie_secure)
 
             logger.info(f"Successfully refreshed access token for user {username}")
             return response

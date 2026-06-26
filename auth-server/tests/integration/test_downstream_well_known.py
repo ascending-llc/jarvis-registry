@@ -3,16 +3,31 @@
 - per-server authorization server metadata (RFC 8414)
 """
 
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 from fastapi.testclient import TestClient
 
 from auth_server.core.config import settings
+from auth_server.deps import get_server_service
 from registry_pkgs.core.downstream_oauth import downstream_mcp_issuer
 
 USER_ID = "507f1f77bcf86cd799439011"
 _PRM_BASE = f"/.well-known/oauth-protected-resource{settings.service_base_path}/proxy"
 
 
-def test_prm_direct_connect_points_to_downstream_issuer(test_client: TestClient):
+@pytest.fixture
+def mock_server_service(auth_server_app):
+    """Override get_server_service so tests don't hit MongoDB. Default: server does not require OAuth."""
+    svc = MagicMock()
+    svc.requires_oauth = AsyncMock(return_value=False)
+    auth_server_app.dependency_overrides[get_server_service] = lambda: svc
+    yield svc
+    auth_server_app.dependency_overrides.pop(get_server_service, None)
+
+
+def test_prm_direct_connect_points_to_downstream_issuer(test_client: TestClient, mock_server_service):
+    mock_server_service.requires_oauth = AsyncMock(return_value=True)
     resp = test_client.get(f"{_PRM_BASE}/server/{USER_ID}/github")
     assert resp.status_code == 200
     body = resp.json()
@@ -27,6 +42,13 @@ def test_prm_non_direct_connect_unchanged(test_client: TestClient):
     assert resp.json()["authorization_servers"] == [settings.jwt_issuer]
 
 
+def test_prm_direct_connect_no_oauth_points_to_root_issuer(test_client: TestClient, mock_server_service):
+    # Servers with requiresOAuth=False (including AgentCore Runtime MCPs) advertise the root issuer.
+    resp = test_client.get(f"{_PRM_BASE}/server/{USER_ID}/agentcore/mcp/myserver")
+    assert resp.status_code == 200
+    assert resp.json()["authorization_servers"] == [settings.jwt_issuer]
+
+
 def test_downstream_as_metadata_issuer_and_endpoints(test_client: TestClient):
     resp = test_client.get(f"/.well-known/oauth-authorization-server/proxy/server/oauth/{USER_ID}/github")
     assert resp.status_code == 200
@@ -36,3 +58,19 @@ def test_downstream_as_metadata_issuer_and_endpoints(test_client: TestClient):
     assert body["token_endpoint"].endswith(f"/downstream/oauth/token/{USER_ID}/github")
     assert body["jwks_uri"] == f"{settings.jwt_issuer}/.well-known/jwks.json"
     assert body["code_challenge_methods_supported"] == ["S256"]
+
+
+def test_downstream_as_metadata_advertises_refresh_token_grant(test_client: TestClient):
+    # RFC 8414 §2: absent grant_types_supported implies authorization_code only — a strict MCP
+    # client would not attempt refresh_token. The field must be present and include refresh_token.
+    body = test_client.get(f"/.well-known/oauth-authorization-server/proxy/server/oauth/{USER_ID}/github").json()
+    assert "refresh_token" in body["grant_types_supported"]
+    assert "authorization_code" in body["grant_types_supported"]
+
+
+def test_downstream_as_metadata_advertises_public_client_auth_method(test_client: TestClient):
+    # RFC 8414 §2: absent token_endpoint_auth_methods_supported implies client_secret_basic — a
+    # strict client would refuse to send a token request without a client secret. The field must
+    # be present and include "none" (PKCE public client, the only supported auth method here).
+    body = test_client.get(f"/.well-known/oauth-authorization-server/proxy/server/oauth/{USER_ID}/github").json()
+    assert body["token_endpoint_auth_methods_supported"] == ["none"]

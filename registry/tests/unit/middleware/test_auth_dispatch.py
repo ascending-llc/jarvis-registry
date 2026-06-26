@@ -3,7 +3,6 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from starlette.testclient import TestClient
 
-from registry.auth.downstream_token import mint_downstream_mcp_token
 from registry.core.config import settings
 from registry.middleware.auth import UnifiedAuthMiddleware
 from registry.utils.crypto_utils import generate_access_token
@@ -47,10 +46,16 @@ def client() -> TestClient:
     return TestClient(_build_app())
 
 
-def _managed_agent_token(client_id: str = "mcp-client-abc", user_id: str | None = None) -> str:
+def _managed_agent_token(
+    client_id: str = "mcp-client-abc",
+    user_id: str | None = None,
+    server_path: str | None = None,
+) -> str:
     extra: dict = {"scope": "mcp-proxy-ops"}
     if user_id is not None:
         extra["user_id"] = user_id
+    if server_path is not None:
+        extra["server_path"] = server_path
     return mint_managed_agent_token(
         settings.jwt_token_config,
         subject="alice",
@@ -137,46 +142,38 @@ def test_proxy_401_advertises_bearer_challenge(client):
     assert resp.headers.get("WWW-Authenticate", "").startswith("Bearer")
 
 
-def _downstream_token(user_id: str = USER_A, server_path: str = "github") -> str:
-    return mint_downstream_mcp_token(settings.jwt_token_config, user_id=user_id, server_path=server_path)
-
-
 def test_direct_connect_accepts_matching_user_id(client):
-    token = _managed_agent_token(user_id=USER_A)
+    token = _managed_agent_token(user_id=USER_A, server_path="github")
     resp = client.get(f"/proxy/server/{USER_A}/github", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 200
 
 
 def test_direct_connect_rejects_user_id_mismatch(client):
     # User A's managed-agent token on user B's direct-connect URL must be rejected.
-    token = _managed_agent_token(user_id=USER_A)
+    token = _managed_agent_token(user_id=USER_A, server_path="github")
     resp = client.get(f"/proxy/server/{USER_B}/github", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 401
 
 
 def test_direct_connect_rejects_token_without_user_id(client):
     # A managed-agent token carrying no user_id claim cannot satisfy the binding.
-    token = _managed_agent_token(user_id=None)
+    token = _managed_agent_token(user_id=None, server_path="github")
     resp = client.get(f"/proxy/server/{USER_A}/github", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 401
 
 
-def test_direct_connect_accepts_downstream_confirmation_token(client):
-    token = _downstream_token(user_id=USER_A, server_path="github")
-    resp = client.get(f"/proxy/server/{USER_A}/github", headers={"Authorization": f"Bearer {token}"})
-    assert resp.status_code == 200
-
-
-def test_downstream_token_rejected_cross_user(client):
-    token = _downstream_token(user_id=USER_A, server_path="github")
-    resp = client.get(f"/proxy/server/{USER_B}/github", headers={"Authorization": f"Bearer {token}"})
-    assert resp.status_code == 401
-
-
-def test_downstream_token_rejected_cross_server(client):
-    token = _downstream_token(user_id=USER_A, server_path="github")
+def test_direct_connect_rejects_server_path_mismatch(client):
+    token = _managed_agent_token(user_id=USER_A, server_path="github")
     resp = client.get(f"/proxy/server/{USER_A}/slack", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 401
+
+
+def test_direct_connect_accepts_root_as_token_without_server_path(client):
+    # Root-AS tokens (issued for requiresOAuth=False servers) carry no server_path claim.
+    # The middleware should accept them on any direct-connect URL provided the user_id matches.
+    token = _managed_agent_token(user_id=USER_A)
+    resp = client.get(f"/proxy/server/{USER_A}/github", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 200
 
 
 def test_downstream_token_endpoint_is_public(client):
