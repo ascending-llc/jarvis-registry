@@ -56,8 +56,8 @@ const mapNodeToApi = (
 
   if (branchData) {
     if (nodeType === 'condition') {
-      apiNode.trueSteps = branchData['true'] ?? [];
-      apiNode.falseSteps = branchData['false'] ?? [];
+      apiNode.trueSteps = branchData.true ?? [];
+      apiNode.falseSteps = branchData.false ?? [];
     } else if (nodeType === 'router') {
       const routerData = data as import('./types').RouterNodeData;
       const cases = routerData.cases ?? [];
@@ -65,8 +65,8 @@ const mapNodeToApi = (
         name: c,
         steps: branchData[`case-${i}`] ?? [],
       }));
-      if (branchData['default']?.length) {
-        apiNode.choices.push({ name: 'default', steps: branchData['default'] });
+      if (branchData.default?.length) {
+        apiNode.choices.push({ name: 'default', steps: branchData.default });
       }
     } else if (nodeType === 'parallel') {
       const pData = data as import('./types').ParallelNodeData;
@@ -74,7 +74,7 @@ const mapNodeToApi = (
       apiNode.children = branches.map((_, i) => branchData[`branch-${i}`]?.[0]).filter(Boolean);
     } else {
       // loop nodes expect the full sequence from the 'body' handle
-      apiNode.children = branchData['body'] ?? [];
+      apiNode.children = branchData.body ?? [];
     }
   }
 

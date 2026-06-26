@@ -35,6 +35,12 @@ const getWorkflowRunsList = async (
 const getWorkflowRunDetail = async (id: string, runId: string): Promise<TYPE.GetWorkflowRunDetailResponse> =>
   await Request.get(API.getWorkflowRunDetail(id, runId));
 
+const replayWorkflowRun = async (id: string, runId: string): Promise<TYPE.ReplayWorkflowRunResponse> =>
+  await Request.post(API.replayWorkflowRun(id, runId));
+
+const rerunWorkflowNode = async (id: string, runId: string, nodeId: string): Promise<TYPE.RerunWorkflowNodeResponse> =>
+  await Request.post(API.rerunWorkflowNode(id, runId, nodeId));
+
 const WORKFLOW = {
   getWorkflowsList,
   getWorkflowDetail,
@@ -45,6 +51,8 @@ const WORKFLOW = {
   triggerWorkflowRun,
   getWorkflowRunsList,
   getWorkflowRunDetail,
+  replayWorkflowRun,
+  rerunWorkflowNode,
 };
 
 export default WORKFLOW;
