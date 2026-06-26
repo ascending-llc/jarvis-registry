@@ -113,4 +113,5 @@ exclude-signatures = [
     {signature = 'f9329ddc08f69ab3da79578b91862ae069388567b5e0f94c6b33caaf540af8c2', reason = 'mock data in unit test is not a credential'},
     {signature = '8fed1a3d0f078928095f3ab51a563f8e1b10af0211c83234e293e68d984518f8', reason = 'synthetic MongoDB ObjectId in ACL service unit test is not a credential'},
     {signature = '5c38ca1f84a2bb4b3e45b8dfbfb6947105bfe70097a296ee8935649426f42cb7', reason = 'synthetic MongoDB ObjectId in ACL service unit test is not a credential'},
+    {signature = 'e206fce8281466ff2e83634ed64c54b2f0c0229c413cc76ebc68685076112b20', reason = 'synthetic MongoDB ObjectId in search service unit test is not a credential'},
 ]

@@ -12,14 +12,23 @@ import pytest
 
 from registry.services.search.service import SearchRequest, SearchService
 from registry_pkgs.models.enums import A2AEntityType, MCPEntityType
+from registry_pkgs.models.extended_access_role import RegistryResourceType
 from registry_pkgs.vector.enum.enums import SearchType
 
 
-def _make_service(*, vector_service=None, mcp_server_repo=None, a2a_agent_repo=None) -> SearchService:
+def _make_permissive_acl_service() -> MagicMock:
+    """Return an ACLService mock that allows all resources (for tests that don't care about ACL)."""
+    acl = MagicMock()
+    acl.get_accessible_resource_ids = AsyncMock(return_value=["id-1", "id-2", "agent-1", "agent-2"])
+    return acl
+
+
+def _make_service(*, vector_service=None, mcp_server_repo=None, a2a_agent_repo=None, acl_service=None) -> SearchService:
     return SearchService(
         vector_service=vector_service or MagicMock(),
         mcp_server_repo=mcp_server_repo or MagicMock(),
         a2a_agent_repo=a2a_agent_repo or MagicMock(),
+        acl_service=acl_service or _make_permissive_acl_service(),
     )
 
 
@@ -71,7 +80,11 @@ async def test_search_entities_filters_metadata_when_query_is_empty():
         {"username": "tester"},
     )
 
-    mcp_server_repo.afilter.assert_awaited_once_with(filters={"enabled": True, "entity_type": ["tool"]}, limit=5)
+    call_kwargs = mcp_server_repo.afilter.call_args.kwargs
+    assert call_kwargs["filters"]["enabled"] is True
+    assert call_kwargs["filters"]["entity_type"] == ["tool"]
+    assert "server_id" in call_kwargs["filters"]
+    assert call_kwargs["limit"] == 5
     assert response["query"] == ""
     assert response["total"] == 1
     assert response["results"] == filter_results
@@ -137,6 +150,10 @@ async def test_search_entities_skips_a2a_on_runtime_error():
 # ---------------------------------------------------------------------------
 
 
+_ANON_CTX = {"user_id": None, "username": None}
+_AUTH_CTX = {"user_id": "507f1f77bcf86cd799439011", "username": "tester"}
+
+
 @pytest.mark.asyncio
 async def test_semantic_search_mcp_uses_search_mixed():
     """MCP servers/tools come from vector_service.search_mixed unchanged."""
@@ -149,7 +166,9 @@ async def test_semantic_search_mcp_uses_search_mixed():
     )
     service = _make_service(vector_service=vector_service)
 
-    result = await service.semantic_search(query="alpha", entity_types=["mcp_server", "tool"], max_results=5)
+    result = await service.semantic_search(
+        query="alpha", user_context=_AUTH_CTX, entity_types=["mcp_server", "tool"], max_results=5
+    )
 
     vector_service.search_mixed.assert_awaited_once_with(
         query="alpha", entity_types=["mcp_server", "tool"], max_results=5
@@ -178,20 +197,28 @@ async def test_semantic_search_splits_a2a_into_agents_and_skills():
         "skill_name": "web_search",
         "relevance_score": 0.75,
     }
-    vector_service = MagicMock()
-    vector_service.search_mixed = AsyncMock(return_value={"servers": [], "tools": []})
     a2a_agent_repo = MagicMock()
     a2a_agent_repo.asearch_with_rerank = AsyncMock(return_value=[agent_doc, skill_doc])
-    service = _make_service(vector_service=vector_service, a2a_agent_repo=a2a_agent_repo)
 
-    result = await service.semantic_search(query="intel research", entity_types=["a2a_agent", "skill"], max_results=5)
+    acl_service = MagicMock()
+    acl_service.get_accessible_resource_ids = AsyncMock(return_value=["agent-1"])
+
+    service = _make_service(a2a_agent_repo=a2a_agent_repo, acl_service=acl_service)
+
+    result = await service.semantic_search(
+        query="intel research", user_context=_AUTH_CTX, entity_types=["a2a_agent", "skill"], max_results=5
+    )
 
     a2a_agent_repo.asearch_with_rerank.assert_awaited_once_with(
         query="intel research",
         k=5,
         candidate_k=50,
         search_type=SearchType.HYBRID,
-        filters={"entity_type": [A2AEntityType.AGENT, A2AEntityType.SKILL], "enabled": True},
+        filters={
+            "entity_type": [A2AEntityType.AGENT, A2AEntityType.SKILL],
+            "enabled": True,
+            "agent_id": {"$in": ["agent-1"]},
+        },
     )
     assert result["agents"] == [agent_doc]
     assert result["skills"] == [skill_doc]
@@ -206,10 +233,124 @@ async def test_semantic_search_degrades_gracefully_when_a2a_unavailable():
     )
     a2a_agent_repo = MagicMock()
     a2a_agent_repo.asearch_with_rerank = AsyncMock(side_effect=RuntimeError("A2A offline"))
+
     service = _make_service(vector_service=vector_service, a2a_agent_repo=a2a_agent_repo)
 
-    result = await service.semantic_search(query="demo", entity_types=["mcp_server", "a2a_agent"], max_results=5)
+    result = await service.semantic_search(
+        query="demo", user_context=_AUTH_CTX, entity_types=["mcp_server", "a2a_agent"], max_results=5
+    )
 
     assert len(result["servers"]) == 1
     assert result["agents"] == []
     assert result["skills"] == []
+
+
+@pytest.mark.asyncio
+async def test_search_entities_adds_server_id_acl_filter():
+    """ACL-allowed server IDs are injected into the Weaviate filter."""
+    tool_results = [{"server_id": "s1", "server_name": "github", "entity_type": "tool", "tool_name": "t"}]
+    mcp_server_repo = MagicMock()
+    mcp_server_repo.asearch_with_rerank = AsyncMock(return_value=tool_results)
+
+    acl_service = MagicMock()
+    acl_service.get_accessible_resource_ids = AsyncMock(return_value=["s1", "s2"])
+
+    service = _make_service(mcp_server_repo=mcp_server_repo, acl_service=acl_service)
+    user_ctx = {"user_id": "507f1f77bcf86cd799439011", "username": "alice"}
+
+    await service.search_entities(
+        SearchRequest(query="github", top_n=2, type_list=[MCPEntityType.TOOL]),
+        user_ctx,
+    )
+
+    call_kwargs = mcp_server_repo.asearch_with_rerank.call_args.kwargs
+    assert call_kwargs["filters"]["server_id"] == {"$in": ["s1", "s2"]}
+
+
+@pytest.mark.asyncio
+async def test_search_entities_returns_empty_when_no_accessible_mcp_servers():
+    """If user has no accessible MCP servers, return empty results without querying Weaviate."""
+    mcp_server_repo = MagicMock()
+    mcp_server_repo.asearch_with_rerank = AsyncMock()
+
+    acl_service = MagicMock()
+    acl_service.get_accessible_resource_ids = AsyncMock(return_value=[])
+
+    service = _make_service(mcp_server_repo=mcp_server_repo, acl_service=acl_service)
+    user_ctx = {"user_id": "507f1f77bcf86cd799439011", "username": "alice"}
+
+    result = await service.search_entities(
+        SearchRequest(query="github", top_n=5, type_list=[MCPEntityType.TOOL]),
+        user_ctx,
+    )
+
+    mcp_server_repo.asearch_with_rerank.assert_not_awaited()
+    assert result["total"] == 0
+    assert result["results"] == []
+
+
+@pytest.mark.asyncio
+async def test_search_entities_adds_agent_id_acl_filter():
+    """ACL-allowed agent IDs are injected into the Weaviate filter for A2A search."""
+    agent_results = [{"agent_id": "a1", "agent_name": "analyst", "entity_type": "agent"}]
+    a2a_agent_repo = MagicMock()
+    a2a_agent_repo.asearch_with_rerank = AsyncMock(return_value=agent_results)
+
+    acl_service = MagicMock()
+    acl_service.get_accessible_resource_ids = AsyncMock(return_value=["a1"])
+
+    service = _make_service(a2a_agent_repo=a2a_agent_repo, acl_service=acl_service)
+    user_ctx = {"user_id": "507f1f77bcf86cd799439011", "username": "alice"}
+
+    await service.search_entities(
+        SearchRequest(query="analyst", top_n=3, type_list=[A2AEntityType.AGENT]),
+        user_ctx,
+    )
+
+    call_kwargs = a2a_agent_repo.asearch_with_rerank.call_args.kwargs
+    assert call_kwargs["filters"]["agent_id"] == {"$in": ["a1"]}
+
+
+@pytest.mark.asyncio
+async def test_search_entities_returns_empty_when_no_accessible_agents():
+    """If user has no accessible A2A agents, return empty without querying Weaviate."""
+    a2a_agent_repo = MagicMock()
+    a2a_agent_repo.asearch_with_rerank = AsyncMock()
+
+    acl_service = MagicMock()
+    acl_service.get_accessible_resource_ids = AsyncMock(return_value=[])
+
+    service = _make_service(a2a_agent_repo=a2a_agent_repo, acl_service=acl_service)
+    user_ctx = {"user_id": "507f1f77bcf86cd799439011", "username": "alice"}
+
+    result = await service.search_entities(
+        SearchRequest(query="analyst", top_n=3, type_list=[A2AEntityType.AGENT]),
+        user_ctx,
+    )
+
+    a2a_agent_repo.asearch_with_rerank.assert_not_awaited()
+    assert result["total"] == 0
+    assert result["results"] == []
+
+
+@pytest.mark.asyncio
+async def test_search_entities_handles_none_user_id_as_public_only():
+    """When user_id is None (unauthenticated), ACL lookup uses None and PUBLIC entries are returned."""
+    tool_results = [{"server_id": "public-s1", "entity_type": "tool"}]
+    mcp_server_repo = MagicMock()
+    mcp_server_repo.asearch_with_rerank = AsyncMock(return_value=tool_results)
+
+    acl_service = MagicMock()
+    acl_service.get_accessible_resource_ids = AsyncMock(return_value=["public-s1"])
+
+    service = _make_service(mcp_server_repo=mcp_server_repo, acl_service=acl_service)
+    user_ctx = {"user_id": None, "username": None}
+
+    await service.search_entities(
+        SearchRequest(query="tools", top_n=5, type_list=[MCPEntityType.TOOL]),
+        user_ctx,
+    )
+
+    acl_service.get_accessible_resource_ids.assert_awaited_once_with(
+        user_id=None, resource_type=RegistryResourceType.MCP_SERVER.value
+    )
