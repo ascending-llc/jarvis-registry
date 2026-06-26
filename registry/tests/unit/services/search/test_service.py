@@ -150,7 +150,6 @@ async def test_search_entities_skips_a2a_on_runtime_error():
 # ---------------------------------------------------------------------------
 
 
-_ANON_CTX = {"user_id": None, "username": None}
 _AUTH_CTX = {"user_id": "507f1f77bcf86cd799439011", "username": "tester"}
 
 
