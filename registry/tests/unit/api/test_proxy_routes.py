@@ -220,4 +220,6 @@ async def test_get_proxy_acl_allowed_continues():
         acl_service=_acl_service(),
     )
 
-    assert resp.status_code != 403
+    body = json.loads(resp.body)
+    assert resp.status_code == 404
+    assert "disabled" in body["detail"].lower()
