@@ -405,14 +405,14 @@ class TestACLService:
     @pytest.mark.asyncio
     @patch("registry.services.access_control_service.RegistryAclEntry")
     async def test_get_accessible_resource_ids_exception(self, mock_acl_entry):
-        """Exception should return empty list."""
+        """A DB failure must raise, not silently resolve to 'no accessible resources'."""
         service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
         mock_acl_entry.find.return_value.to_list = AsyncMock(side_effect=Exception("fail"))
-        result = await service.get_accessible_resource_ids(
-            user_id=PydanticObjectId(),
-            resource_type=ResourceType.MCPSERVER,
-        )
-        assert result == []
+        with pytest.raises(RuntimeError):
+            await service.get_accessible_resource_ids(
+                user_id=PydanticObjectId(),
+                resource_type=ResourceType.MCPSERVER,
+            )
 
     @pytest.mark.asyncio
     @patch("registry.services.access_control_service.RegistryAclEntry")

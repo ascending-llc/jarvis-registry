@@ -493,7 +493,12 @@ class ACLService:
 
         Returns:
                 Deduplicated list of resource ID strings the user can VIEW.
-                Returns an empty list on error.
+
+        Raises:
+                RuntimeError: If the underlying ACL lookup fails (e.g. DB outage).
+                        Callers must not interpret this as "no accessible resources" —
+                        do so would silently return empty results instead of surfacing
+                        the failure.
         """
         try:
             if user_id is not None:
@@ -526,7 +531,7 @@ class ACLService:
             return result
         except Exception as e:
             logger.error(f"Error fetching accessible {resource_type} IDs for user {user_id}: {e}")
-            return []
+            raise RuntimeError(f"Failed to fetch accessible {resource_type} resources") from e
 
     async def get_roles_by_resource_type(
         self,
