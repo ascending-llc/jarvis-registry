@@ -260,8 +260,6 @@ class SearchService:
         success = False
         servers: list = []
         tools: list = []
-        agents: list = []
-        skills: list = []
 
         logger.info(
             "Semantic search: query='%s', mcp_types=%s, a2a_types=%s, max=%s",
@@ -271,39 +269,17 @@ class SearchService:
             max_results,
         )
 
-        async def run_mcp() -> None:
-            nonlocal servers, tools
-            if not mcp_types:
-                return
-            try:
-                mcp_results = await self.vector_service.search_mixed(
-                    query=query,
-                    entity_types=mcp_types,
-                    max_results=max_results,
-                )
-            except Exception:
-                logger.exception("MCP search failed unexpectedly")
-                return
-            servers = mcp_results.get("servers", [])
-            tools = mcp_results.get("tools", [])
-
-        async def run_a2a() -> None:
-            nonlocal agents, skills
-            if not a2a_types:
-                return
-            allowed_ids = await self._get_accessible_ids(user_context, RegistryResourceType.REMOTE_AGENT.value)
-            if not allowed_ids:
-                logger.info("Semantic search: user has no accessible A2A agents")
-                return
-            a_list, s_list = await self._search_a2a_for_semantic(
-                query, a2a_types, max_results, include_disabled, allowed_ids
-            )
-            agents.extend(a_list)
-            skills.extend(s_list)
-
         try:
-            await asyncio.gather(run_mcp(), run_a2a())
+            mcp_result, a2a_result = await asyncio.gather(
+                self._search_mcp_for_semantic(query, mcp_types, max_results, user_context),
+                self._search_a2a_for_semantic(query, a2a_types, max_results, include_disabled, user_context),
+                return_exceptions=True,
+            )
+            for result in (mcp_result, a2a_result):
+                if isinstance(result, BaseException):
+                    raise result
 
+            (servers, tools), (agents, skills) = mcp_result, a2a_result
             success = True
             return {"servers": servers, "tools": tools, "agents": agents, "skills": skills}
         finally:
@@ -315,14 +291,63 @@ class SearchService:
             except Exception as e:
                 logger.warning(f"Failed to record tool discovery metric: {e}")
 
+    async def _accessible_ids_for_semantic(
+        self,
+        user_context: UserContextDict,
+        resource_type: str,
+        label: str,
+    ) -> list[str] | None:
+        """Resolve ACL-allowed IDs for semantic search, or None if the user has none."""
+        allowed_ids = await self._get_accessible_ids(user_context, resource_type)
+        if not allowed_ids:
+            logger.info("Semantic search: user has no accessible %s", label)
+            return None
+        return allowed_ids
+
+    async def _search_mcp_for_semantic(
+        self,
+        query: str,
+        mcp_types: list[MCPEntityType],
+        max_results: int,
+        user_context: UserContextDict,
+    ) -> tuple[list, list]:
+        """ACL-filtered MCP servers/tools for semantic_search. Degrades to empty on any failure."""
+        if not mcp_types:
+            return [], []
+        allowed_server_ids = await self._accessible_ids_for_semantic(
+            user_context, RegistryResourceType.MCP_SERVER.value, "MCP servers"
+        )
+        if allowed_server_ids is None:
+            return [], []
+        try:
+            mcp_results = await self.vector_service.search_mixed(
+                query=query,
+                entity_types=mcp_types,
+                max_results=max_results,
+                allowed_server_ids=allowed_server_ids,
+            )
+        except Exception:
+            logger.exception("MCP search failed unexpectedly")
+            return [], []
+        return mcp_results.get("servers", []), mcp_results.get("tools", [])
+
     async def _search_a2a_for_semantic(
         self,
         query: str,
         a2a_types: list[A2AEntityType],
         max_results: int,
         include_disabled: bool,
-        allowed_agent_ids: list[str],
+        user_context: UserContextDict,
     ) -> tuple[list, list]:
+        """ACL-filtered A2A agents/skills for semantic_search. Degrades to empty on a vector outage."""
+        if not a2a_types:
+            return [], []
+        allowed_agent_ids = await self._accessible_ids_for_semantic(
+            user_context, RegistryResourceType.REMOTE_AGENT.value, "A2A agents"
+        )
+        if allowed_agent_ids is None:
+            return [], []
+
         filters = _build_filters(include_disabled, a2a_types)
         filters["agent_id"] = {"$in": allowed_agent_ids}
         try:

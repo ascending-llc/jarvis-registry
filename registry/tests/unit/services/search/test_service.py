@@ -6,6 +6,7 @@ These cover the search logic extracted out of api/v1/search_routes.py:
   (via a2a_agent_repo) search used by the HTTP POST /search route.
 """
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -170,7 +171,10 @@ async def test_semantic_search_mcp_uses_search_mixed():
     )
 
     vector_service.search_mixed.assert_awaited_once_with(
-        query="alpha", entity_types=["mcp_server", "tool"], max_results=5
+        query="alpha",
+        entity_types=["mcp_server", "tool"],
+        max_results=5,
+        allowed_server_ids=["id-1", "id-2", "agent-1", "agent-2"],
     )
     assert len(result["servers"]) == 1
     assert len(result["tools"]) == 1
@@ -221,6 +225,137 @@ async def test_semantic_search_splits_a2a_into_agents_and_skills():
     )
     assert result["agents"] == [agent_doc]
     assert result["skills"] == [skill_doc]
+
+
+@pytest.mark.asyncio
+async def test_semantic_search_passes_allowed_server_ids_to_search_mixed():
+    """MCP results in semantic_search must be ACL-filtered, like the A2A half already is."""
+    vector_service = MagicMock()
+    vector_service.search_mixed = AsyncMock(return_value={"servers": [], "tools": []})
+
+    acl_service = MagicMock()
+    acl_service.get_accessible_resource_ids = AsyncMock(return_value=["s1"])
+
+    service = _make_service(vector_service=vector_service, acl_service=acl_service)
+
+    await service.semantic_search(
+        query="alpha", user_context=_AUTH_CTX, entity_types=["mcp_server", "tool"], max_results=5
+    )
+
+    vector_service.search_mixed.assert_awaited_once_with(
+        query="alpha", entity_types=["mcp_server", "tool"], max_results=5, allowed_server_ids=["s1"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_semantic_search_skips_mcp_when_no_accessible_servers():
+    """If the user has no accessible MCP servers, skip the Weaviate query entirely."""
+    vector_service = MagicMock()
+    vector_service.search_mixed = AsyncMock()
+
+    acl_service = MagicMock()
+    acl_service.get_accessible_resource_ids = AsyncMock(return_value=[])
+
+    service = _make_service(vector_service=vector_service, acl_service=acl_service)
+
+    result = await service.semantic_search(
+        query="alpha", user_context=_AUTH_CTX, entity_types=["mcp_server", "tool"], max_results=5
+    )
+
+    vector_service.search_mixed.assert_not_awaited()
+    assert result["servers"] == []
+    assert result["tools"] == []
+
+
+@pytest.mark.asyncio
+async def test_semantic_search_skips_a2a_when_no_accessible_agents():
+    """Mirrors the MCP skip behavior: no accessible agents -> skip the A2A query entirely."""
+    a2a_agent_repo = MagicMock()
+    a2a_agent_repo.asearch_with_rerank = AsyncMock()
+
+    acl_service = MagicMock()
+    acl_service.get_accessible_resource_ids = AsyncMock(return_value=[])
+
+    service = _make_service(a2a_agent_repo=a2a_agent_repo, acl_service=acl_service)
+
+    result = await service.semantic_search(
+        query="intel", user_context=_AUTH_CTX, entity_types=["a2a_agent", "skill"], max_results=5
+    )
+
+    a2a_agent_repo.asearch_with_rerank.assert_not_awaited()
+    assert result["agents"] == []
+    assert result["skills"] == []
+
+
+@pytest.mark.asyncio
+async def test_semantic_search_propagates_acl_failure_for_mcp():
+    """An ACL/DB outage must surface as an error (RuntimeError -> HTTP 503), not as empty results."""
+    acl_service = MagicMock()
+    acl_service.get_accessible_resource_ids = AsyncMock(
+        side_effect=RuntimeError("Failed to fetch accessible resources")
+    )
+
+    service = _make_service(acl_service=acl_service)
+
+    with pytest.raises(RuntimeError):
+        await service.semantic_search(
+            query="alpha", user_context=_AUTH_CTX, entity_types=["mcp_server", "tool"], max_results=5
+        )
+
+
+@pytest.mark.asyncio
+async def test_semantic_search_propagates_acl_failure_for_a2a():
+    """Same ACL-failure-must-surface guarantee on the A2A side."""
+    acl_service = MagicMock()
+    acl_service.get_accessible_resource_ids = AsyncMock(
+        side_effect=RuntimeError("Failed to fetch accessible resources")
+    )
+
+    service = _make_service(acl_service=acl_service)
+
+    with pytest.raises(RuntimeError):
+        await service.semantic_search(
+            query="intel", user_context=_AUTH_CTX, entity_types=["a2a_agent", "skill"], max_results=5
+        )
+
+
+@pytest.mark.asyncio
+async def test_semantic_search_awaits_a2a_side_even_when_mcp_acl_fails():
+    """A failure on one side must not leave the other side's coroutine running unawaited.
+
+    asyncio.gather's default behavior (no return_exceptions) raises on first failure
+    without waiting for the sibling task, orphaning it. Regression guard: the A2A
+    side must have actually completed by the time semantic_search raises.
+    """
+    a2a_completed = False
+
+    async def slow_a2a_search(**kwargs):
+        nonlocal a2a_completed
+        await asyncio.sleep(0)
+        a2a_completed = True
+        return []
+
+    a2a_agent_repo = MagicMock()
+    a2a_agent_repo.asearch_with_rerank = AsyncMock(side_effect=slow_a2a_search)
+
+    acl_service = MagicMock()
+
+    async def accessible_ids(*, user_id, resource_type):
+        if resource_type == RegistryResourceType.MCP_SERVER.value:
+            raise RuntimeError("Failed to fetch accessible resources")
+        await asyncio.sleep(0)
+        return ["a1"]
+
+    acl_service.get_accessible_resource_ids = AsyncMock(side_effect=accessible_ids)
+
+    service = _make_service(a2a_agent_repo=a2a_agent_repo, acl_service=acl_service)
+
+    with pytest.raises(RuntimeError):
+        await service.semantic_search(
+            query="intel", user_context=_AUTH_CTX, entity_types=["mcp_server", "a2a_agent"], max_results=5
+        )
+
+    assert a2a_completed is True
 
 
 @pytest.mark.asyncio
@@ -353,3 +488,153 @@ async def test_search_entities_handles_none_user_id_as_public_only():
     acl_service.get_accessible_resource_ids.assert_awaited_once_with(
         user_id=None, resource_type=RegistryResourceType.MCP_SERVER.value
     )
+
+
+# ---------------------------------------------------------------------------
+# Helper methods backing semantic_search: _accessible_ids_for_semantic,
+# _search_mcp_for_semantic, _search_a2a_for_semantic.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_accessible_ids_for_semantic_returns_ids_when_present():
+    acl_service = MagicMock()
+    acl_service.get_accessible_resource_ids = AsyncMock(return_value=["s1", "s2"])
+    service = _make_service(acl_service=acl_service)
+
+    result = await service._accessible_ids_for_semantic(_AUTH_CTX, RegistryResourceType.MCP_SERVER.value, "MCP servers")
+
+    assert result == ["s1", "s2"]
+
+
+@pytest.mark.asyncio
+async def test_accessible_ids_for_semantic_returns_none_when_empty():
+    acl_service = MagicMock()
+    acl_service.get_accessible_resource_ids = AsyncMock(return_value=[])
+    service = _make_service(acl_service=acl_service)
+
+    result = await service._accessible_ids_for_semantic(_AUTH_CTX, RegistryResourceType.MCP_SERVER.value, "MCP servers")
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_accessible_ids_for_semantic_propagates_acl_failure():
+    acl_service = MagicMock()
+    acl_service.get_accessible_resource_ids = AsyncMock(side_effect=RuntimeError("db down"))
+    service = _make_service(acl_service=acl_service)
+
+    with pytest.raises(RuntimeError):
+        await service._accessible_ids_for_semantic(_AUTH_CTX, RegistryResourceType.MCP_SERVER.value, "MCP servers")
+
+
+@pytest.mark.asyncio
+async def test_search_mcp_for_semantic_returns_empty_when_no_mcp_types():
+    """No MCP entity types requested -> skip without even checking ACL."""
+    acl_service = MagicMock()
+    acl_service.get_accessible_resource_ids = AsyncMock(side_effect=AssertionError("ACL should not be checked"))
+    service = _make_service(acl_service=acl_service)
+
+    servers, tools = await service._search_mcp_for_semantic("alpha", [], 5, _AUTH_CTX)
+
+    assert (servers, tools) == ([], [])
+
+
+@pytest.mark.asyncio
+async def test_search_mcp_for_semantic_returns_empty_when_no_accessible_servers():
+    vector_service = MagicMock()
+    vector_service.search_mixed = AsyncMock(side_effect=AssertionError("should not query Weaviate"))
+    acl_service = MagicMock()
+    acl_service.get_accessible_resource_ids = AsyncMock(return_value=[])
+    service = _make_service(vector_service=vector_service, acl_service=acl_service)
+
+    servers, tools = await service._search_mcp_for_semantic("alpha", [MCPEntityType.TOOL], 5, _AUTH_CTX)
+
+    assert (servers, tools) == ([], [])
+
+
+@pytest.mark.asyncio
+async def test_search_mcp_for_semantic_passes_allowed_server_ids():
+    vector_service = MagicMock()
+    vector_service.search_mixed = AsyncMock(
+        return_value={"servers": [{"path": "/demo"}], "tools": [{"tool_name": "t"}]}
+    )
+    acl_service = MagicMock()
+    acl_service.get_accessible_resource_ids = AsyncMock(return_value=["s1"])
+    service = _make_service(vector_service=vector_service, acl_service=acl_service)
+
+    servers, tools = await service._search_mcp_for_semantic("alpha", [MCPEntityType.TOOL], 5, _AUTH_CTX)
+
+    vector_service.search_mixed.assert_awaited_once_with(
+        query="alpha", entity_types=[MCPEntityType.TOOL], max_results=5, allowed_server_ids=["s1"]
+    )
+    assert servers == [{"path": "/demo"}]
+    assert tools == [{"tool_name": "t"}]
+
+
+@pytest.mark.asyncio
+async def test_search_mcp_for_semantic_degrades_on_unexpected_exception():
+    """A non-ACL failure (e.g. Weaviate query error) must degrade to empty, not raise."""
+    vector_service = MagicMock()
+    vector_service.search_mixed = AsyncMock(side_effect=ValueError("bad query"))
+    acl_service = MagicMock()
+    acl_service.get_accessible_resource_ids = AsyncMock(return_value=["s1"])
+    service = _make_service(vector_service=vector_service, acl_service=acl_service)
+
+    servers, tools = await service._search_mcp_for_semantic("alpha", [MCPEntityType.TOOL], 5, _AUTH_CTX)
+
+    assert (servers, tools) == ([], [])
+
+
+@pytest.mark.asyncio
+async def test_search_a2a_for_semantic_returns_empty_when_no_a2a_types():
+    acl_service = MagicMock()
+    acl_service.get_accessible_resource_ids = AsyncMock(side_effect=AssertionError("ACL should not be checked"))
+    service = _make_service(acl_service=acl_service)
+
+    agents, skills = await service._search_a2a_for_semantic("intel", [], 5, False, _AUTH_CTX)
+
+    assert (agents, skills) == ([], [])
+
+
+@pytest.mark.asyncio
+async def test_search_a2a_for_semantic_returns_empty_when_no_accessible_agents():
+    a2a_agent_repo = MagicMock()
+    a2a_agent_repo.asearch_with_rerank = AsyncMock(side_effect=AssertionError("should not query Weaviate"))
+    acl_service = MagicMock()
+    acl_service.get_accessible_resource_ids = AsyncMock(return_value=[])
+    service = _make_service(a2a_agent_repo=a2a_agent_repo, acl_service=acl_service)
+
+    agents, skills = await service._search_a2a_for_semantic("intel", [A2AEntityType.AGENT], 5, False, _AUTH_CTX)
+
+    assert (agents, skills) == ([], [])
+
+
+@pytest.mark.asyncio
+async def test_search_a2a_for_semantic_passes_allowed_agent_ids():
+    agent_doc = {"agent_id": "a1", "entity_type": A2AEntityType.AGENT}
+    a2a_agent_repo = MagicMock()
+    a2a_agent_repo.asearch_with_rerank = AsyncMock(return_value=[agent_doc])
+    acl_service = MagicMock()
+    acl_service.get_accessible_resource_ids = AsyncMock(return_value=["a1"])
+    service = _make_service(a2a_agent_repo=a2a_agent_repo, acl_service=acl_service)
+
+    agents, skills = await service._search_a2a_for_semantic("intel", [A2AEntityType.AGENT], 5, False, _AUTH_CTX)
+
+    call_kwargs = a2a_agent_repo.asearch_with_rerank.call_args.kwargs
+    assert call_kwargs["filters"]["agent_id"] == {"$in": ["a1"]}
+    assert agents == [agent_doc]
+    assert skills == []
+
+
+@pytest.mark.asyncio
+async def test_search_a2a_for_semantic_degrades_on_runtime_error():
+    a2a_agent_repo = MagicMock()
+    a2a_agent_repo.asearch_with_rerank = AsyncMock(side_effect=RuntimeError("A2A offline"))
+    acl_service = MagicMock()
+    acl_service.get_accessible_resource_ids = AsyncMock(return_value=["a1"])
+    service = _make_service(a2a_agent_repo=a2a_agent_repo, acl_service=acl_service)
+
+    agents, skills = await service._search_a2a_for_semantic("intel", [A2AEntityType.AGENT], 5, False, _AUTH_CTX)
+
+    assert (agents, skills) == ([], [])

@@ -156,6 +156,25 @@ async def test_semantic_search_requires_authentication():
 
 
 @pytest.mark.asyncio
+async def test_semantic_search_maps_runtime_error_to_503():
+    """A RuntimeError (e.g. an ACL/DB outage surfaced from the service) maps to 503, not a silent empty result."""
+    from fastapi import HTTPException
+
+    request = make_container(state=make_container(is_authenticated=True, user={"username": "tester"}))
+    search_service = MagicMock()
+    search_service.semantic_search = AsyncMock(side_effect=RuntimeError("Failed to fetch accessible resources"))
+
+    with pytest.raises(HTTPException) as exc_info:
+        await semantic_search(
+            request=request,
+            search_request=SemanticSearchRequest(query="test"),
+            search_service=search_service,
+        )
+
+    assert exc_info.value.status_code == 503
+
+
+@pytest.mark.asyncio
 async def test_semantic_search_wraps_unexpected_errors():
     from fastapi import HTTPException
 
