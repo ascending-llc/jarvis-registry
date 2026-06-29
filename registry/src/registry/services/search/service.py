@@ -12,14 +12,17 @@ import asyncio
 import logging
 import time
 
+from beanie import PydanticObjectId
 from pydantic import BaseModel, Field
 
 from registry_pkgs.models.enums import A2AEntityType, MCPEntityType
+from registry_pkgs.models.extended_access_role import RegistryResourceType
 from registry_pkgs.vector.enum.enums import SearchType
 from registry_pkgs.vector.repositories.a2a_agent_repository import A2AAgentRepository
 from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRepository
 
 from ...auth.dependencies import UserContextDict
+from ...services.access_control_service import ACLService
 from ...utils.otel_metrics import record_tool_discovery
 from .base import VectorSearchService
 
@@ -73,10 +76,34 @@ class SearchService:
         vector_service: VectorSearchService,
         mcp_server_repo: MCPServerRepository,
         a2a_agent_repo: A2AAgentRepository,
+        acl_service: ACLService,
     ) -> None:
         self.vector_service = vector_service
         self.mcp_server_repo = mcp_server_repo
         self.a2a_agent_repo = a2a_agent_repo
+        self.acl_service = acl_service
+
+    async def _get_accessible_ids(
+        self,
+        user_context: UserContextDict,
+        resource_type: str,
+    ) -> list[str]:
+        """Return resource IDs the user may VIEW, including PUBLIC entries.
+
+        Passes None as user_id when the token carries no identity so that
+        get_accessible_resource_ids still returns PUBLIC resources.
+        """
+        raw_user_id: str | None = user_context.get("user_id")
+        try:
+            user_id = PydanticObjectId(raw_user_id) if raw_user_id else None
+        except (ValueError, TypeError):
+            logger.warning("Invalid user_id format in context: %r — treating as anonymous", raw_user_id)
+            user_id = None
+
+        return await self.acl_service.get_accessible_resource_ids(
+            user_id=user_id,
+            resource_type=resource_type,
+        )
 
     async def search_entities(self, search: SearchRequest, user_context: UserContextDict) -> dict[str, object]:
         """Run discovery against the correct Weaviate collection per entity type.
@@ -87,6 +114,9 @@ class SearchService:
         Results are merged and re-sorted by relevance_score before truncation to
         ``top_n``. Every document embeds its server/agent context, so no MongoDB
         lookup is required.
+
+        ACL filtering is pushed into the Weaviate query so that ``top_n`` is
+        respected at the database level, not post-hoc.
         """
         query = search.query.strip()
         top_n = search.top_n
@@ -108,13 +138,23 @@ class SearchService:
             results: list = []
 
             if mcp_types:
-                results.extend(await self._search_mcp_documents(search, query, mcp_types))
+                allowed_server_ids = await self._get_accessible_ids(user_context, RegistryResourceType.MCP_SERVER.value)
+                if allowed_server_ids:
+                    results.extend(await self._search_mcp_documents(search, query, mcp_types, allowed_server_ids))
+                else:
+                    logger.info("User has no accessible MCP servers — skipping MCP search")
 
             if a2a_types:
-                try:
-                    results.extend(await self._search_a2a_documents(search, query, a2a_types))
-                except RuntimeError as exc:
-                    logger.warning("A2A vector search unavailable, skipping A2A results: %s", exc)
+                allowed_agent_ids = await self._get_accessible_ids(
+                    user_context, RegistryResourceType.REMOTE_AGENT.value
+                )
+                if allowed_agent_ids:
+                    try:
+                        results.extend(await self._search_a2a_documents(search, query, a2a_types, allowed_agent_ids))
+                    except RuntimeError as exc:
+                        logger.warning("A2A vector search unavailable, skipping A2A results: %s", exc)
+                else:
+                    logger.info("User has no accessible A2A agents — skipping A2A search")
 
             # Re-sort merged results by relevance_score (desc) and cap at top_n
             results.sort(key=lambda r: r.get("relevance_score") or 0.0, reverse=True)
@@ -140,8 +180,15 @@ class SearchService:
             except Exception as e:
                 logger.warning(f"Failed to record tool discovery metric: {e}")
 
-    async def _search_mcp_documents(self, search: SearchRequest, query: str, mcp_types: list[MCPEntityType]) -> list:
+    async def _search_mcp_documents(
+        self,
+        search: SearchRequest,
+        query: str,
+        mcp_types: list[MCPEntityType],
+        allowed_server_ids: list[str],
+    ) -> list:
         filters = _build_filters(search.include_disabled, mcp_types)
+        filters["server_id"] = {"$in": allowed_server_ids}
         if not query:
             return await self.mcp_server_repo.afilter(filters=filters, limit=search.top_n)
         return await self.mcp_server_repo.asearch_with_rerank(
@@ -152,8 +199,15 @@ class SearchService:
             filters=filters,
         )
 
-    async def _search_a2a_documents(self, search: SearchRequest, query: str, a2a_types: list[A2AEntityType]) -> list:
+    async def _search_a2a_documents(
+        self,
+        search: SearchRequest,
+        query: str,
+        a2a_types: list[A2AEntityType],
+        allowed_agent_ids: list[str],
+    ) -> list:
         filters = _build_filters(search.include_disabled, a2a_types)
+        filters["agent_id"] = {"$in": allowed_agent_ids}
         if not query:
             return await self.a2a_agent_repo.afilter(filters=filters, limit=search.top_n)
         return await self.a2a_agent_repo.asearch_with_rerank(
@@ -172,11 +226,7 @@ class SearchService:
         transport_type: str,
         tools_count: int,
     ) -> None:
-        """Emit a tool-discovery metric per discovered server, or "registry" if none.
-
-        Shared by both the flat and structured search paths. ``items`` are raw
-        result dicts; any with a ``server_name`` are used as the metric source.
-        """
+        """Emit a tool-discovery metric per discovered server, or "registry" if none."""
         discovered_names = {item["server_name"] for item in items if isinstance(item, dict) and item.get("server_name")}
         for name in discovered_names or {"registry"}:
             record_tool_discovery(
@@ -190,6 +240,7 @@ class SearchService:
     async def semantic_search(
         self,
         query: str,
+        user_context: UserContextDict,
         entity_types: list[str] | None = None,
         max_results: int = 10,
         include_disabled: bool = False,
@@ -197,9 +248,8 @@ class SearchService:
         """Structured search returning MCP servers/tools and A2A agents/skills.
 
         MCP results come from ``vector_service.search_mixed`` (unchanged behaviour);
-        A2A results come from ``a2a_agent_repo`` and are split by entity type. An A2A
-        vector outage degrades gracefully (empty agents/skills) so the MCP half of
-        the response is still returned.
+        A2A results come from ``a2a_agent_repo`` with ACL filtering applied via
+        agent_id/$in. An A2A vector outage degrades gracefully.
         """
         query = query.strip()
         requested = entity_types or list(_DEFAULT_SEMANTIC_TYPES)
@@ -210,8 +260,6 @@ class SearchService:
         success = False
         servers: list = []
         tools: list = []
-        agents: list = []
-        skills: list = []
 
         logger.info(
             "Semantic search: query='%s', mcp_types=%s, a2a_types=%s, max=%s",
@@ -221,31 +269,17 @@ class SearchService:
             max_results,
         )
 
-        async def run_mcp() -> None:
-            nonlocal servers, tools
-            if not mcp_types:
-                return
-            try:
-                mcp_results = await self.vector_service.search_mixed(
-                    query=query,
-                    entity_types=mcp_types,
-                    max_results=max_results,
-                )
-            except Exception:
-                logger.exception("MCP search failed unexpectedly")
-                return
-            servers = mcp_results.get("servers", [])
-            tools = mcp_results.get("tools", [])
-
-        async def run_a2a() -> None:
-            nonlocal agents, skills
-            if not a2a_types:
-                return
-            agents, skills = await self._search_a2a_for_semantic(query, a2a_types, max_results, include_disabled)
-
         try:
-            await asyncio.gather(run_mcp(), run_a2a())
+            mcp_result, a2a_result = await asyncio.gather(
+                self._search_mcp_for_semantic(query, mcp_types, max_results, user_context),
+                self._search_a2a_for_semantic(query, a2a_types, max_results, include_disabled, user_context),
+                return_exceptions=True,
+            )
+            for result in (mcp_result, a2a_result):
+                if isinstance(result, BaseException):
+                    raise result
 
+            (servers, tools), (agents, skills) = mcp_result, a2a_result
             success = True
             return {"servers": servers, "tools": tools, "agents": agents, "skills": skills}
         finally:
@@ -257,24 +291,76 @@ class SearchService:
             except Exception as e:
                 logger.warning(f"Failed to record tool discovery metric: {e}")
 
+    async def _accessible_ids_for_semantic(
+        self,
+        user_context: UserContextDict,
+        resource_type: str,
+        label: str,
+    ) -> list[str] | None:
+        """Resolve ACL-allowed IDs for semantic search, or None if the user has none."""
+        allowed_ids = await self._get_accessible_ids(user_context, resource_type)
+        if not allowed_ids:
+            logger.info("Semantic search: user has no accessible %s", label)
+            return None
+        return allowed_ids
+
+    async def _search_mcp_for_semantic(
+        self,
+        query: str,
+        mcp_types: list[MCPEntityType],
+        max_results: int,
+        user_context: UserContextDict,
+    ) -> tuple[list, list]:
+        """ACL-filtered MCP servers/tools for semantic_search. Degrades to empty on any failure."""
+        if not mcp_types:
+            return [], []
+        allowed_server_ids = await self._accessible_ids_for_semantic(
+            user_context, RegistryResourceType.MCP_SERVER.value, "MCP servers"
+        )
+        if allowed_server_ids is None:
+            return [], []
+        try:
+            mcp_results = await self.vector_service.search_mixed(
+                query=query,
+                entity_types=mcp_types,
+                max_results=max_results,
+                allowed_server_ids=allowed_server_ids,
+            )
+        except Exception:
+            logger.exception("MCP search failed unexpectedly")
+            return [], []
+        return mcp_results.get("servers", []), mcp_results.get("tools", [])
+
     async def _search_a2a_for_semantic(
         self,
         query: str,
         a2a_types: list[A2AEntityType],
         max_results: int,
         include_disabled: bool,
+        user_context: UserContextDict,
     ) -> tuple[list, list]:
+        """ACL-filtered A2A agents/skills for semantic_search. Degrades to empty on a vector outage."""
+        if not a2a_types:
+            return [], []
+        allowed_agent_ids = await self._accessible_ids_for_semantic(
+            user_context, RegistryResourceType.REMOTE_AGENT.value, "A2A agents"
+        )
+        if allowed_agent_ids is None:
+            return [], []
+
         filters = _build_filters(include_disabled, a2a_types)
-        # query is stripped by semantic_search; the /search route also enforces
-        # min_length=1, so callers should never reach here with an empty query.
+        filters["agent_id"] = {"$in": allowed_agent_ids}
         try:
-            docs = await self.a2a_agent_repo.asearch_with_rerank(
-                query=query,
-                k=max_results,
-                candidate_k=_candidate_k(max_results),
-                search_type=SearchType.HYBRID,
-                filters=filters,
-            )
+            if query:
+                docs = await self.a2a_agent_repo.asearch_with_rerank(
+                    query=query,
+                    k=max_results,
+                    candidate_k=_candidate_k(max_results),
+                    search_type=SearchType.HYBRID,
+                    filters=filters,
+                )
+            else:
+                docs = await self.a2a_agent_repo.afilter(filters=filters, limit=max_results)
         except RuntimeError as exc:
             logger.warning("A2A vector search unavailable, skipping A2A results: %s", exc)
             return [], []

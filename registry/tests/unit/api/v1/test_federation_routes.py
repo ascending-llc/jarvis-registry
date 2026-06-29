@@ -757,6 +757,32 @@ async def test_list_federations_returns_empty_when_user_has_no_access(sample_use
 
 
 @pytest.mark.asyncio
+async def test_list_federations_maps_acl_runtime_error_to_503(sample_user_context, acl_service):
+    """An ACL/DB outage (RuntimeError from get_accessible_resource_ids) must surface as 503, not 500."""
+    acl_service.get_accessible_resource_ids = AsyncMock(
+        side_effect=RuntimeError("Failed to fetch accessible resources")
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await list_federations(
+            providerType=None,
+            syncStatus=None,
+            tag=None,
+            tags=None,
+            query=None,
+            keyword=None,
+            page=1,
+            per_page=20,
+            pageSize=None,
+            user_context=sample_user_context,
+            federation_crud_service=MagicMock(),
+            acl_service=acl_service,
+        )
+
+    assert exc_info.value.status_code == 503
+
+
+@pytest.mark.asyncio
 async def test_get_federation_checks_view_permission(sample_user_context, sample_federation, acl_service):
     federation_crud_service = MagicMock()
     federation_crud_service.get_federation = AsyncMock(return_value=sample_federation)

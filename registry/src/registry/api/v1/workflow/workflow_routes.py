@@ -145,6 +145,14 @@ async def list_workflows(
     except HTTPException:
         logger.exception("HTTPException in list_workflows")
         raise
+    except RuntimeError as e:
+        logger.exception("ACL lookup failed while listing workflows")
+        raise HTTPException(
+            status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=create_error_detail(
+                ErrorCode.SERVICE_UNAVAILABLE, "Workflow listing is temporarily unavailable. Please try again later."
+            ),
+        ) from e
     except Exception:
         logger.exception("Error listing workflows")
         raise HTTPException(

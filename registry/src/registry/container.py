@@ -111,6 +111,7 @@ class RegistryContainer:
             vector_service=self.vector_service,
             mcp_server_repo=self.mcp_server_repo,
             a2a_agent_repo=self.a2a_agent_repo,
+            acl_service=self.acl_service,
         )
 
     @cached_property

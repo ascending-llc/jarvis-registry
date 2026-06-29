@@ -378,15 +378,41 @@ class TestACLService:
 
     @pytest.mark.asyncio
     @patch("registry.services.access_control_service.RegistryAclEntry")
+    async def test_get_accessible_resource_ids_with_none_user_id_returns_public_only(self, mock_acl_entry):
+        """When user_id is None, only PUBLIC ACL entries are matched."""
+        service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
+
+        public_entry = MagicMock()
+        public_entry.permBits = RoleBits.VIEWER  # 1 = VIEW
+        public_entry.resourceId = PydanticObjectId("507f1f77bcf86cd799439011")
+
+        # Mock to return only the public entry — when user_id is None the query must not match USER entries
+        mock_acl_entry.find.return_value.to_list = AsyncMock(return_value=[public_entry])
+
+        result = await service.get_accessible_resource_ids(user_id=None, resource_type="mcpServer")
+
+        # Should only return the public resource ID
+        assert result == ["507f1f77bcf86cd799439011"]
+        # Verify that the query was called with only PUBLIC principalType filter
+        mock_acl_entry.find.assert_called_once()
+        call_args = mock_acl_entry.find.call_args
+        query = call_args.args[0]
+        assert query["resourceType"] == "mcpServer"
+        assert "principalType" in query
+        assert query["principalType"] == PrincipalType.PUBLIC.value
+        assert query["principalId"] is None
+
+    @pytest.mark.asyncio
+    @patch("registry.services.access_control_service.RegistryAclEntry")
     async def test_get_accessible_resource_ids_exception(self, mock_acl_entry):
-        """Exception should return empty list."""
+        """A DB failure must raise, not silently resolve to 'no accessible resources'."""
         service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
         mock_acl_entry.find.return_value.to_list = AsyncMock(side_effect=Exception("fail"))
-        result = await service.get_accessible_resource_ids(
-            user_id=PydanticObjectId(),
-            resource_type=ResourceType.MCPSERVER,
-        )
-        assert result == []
+        with pytest.raises(RuntimeError):
+            await service.get_accessible_resource_ids(
+                user_id=PydanticObjectId(),
+                resource_type=ResourceType.MCPSERVER,
+            )
 
     @pytest.mark.asyncio
     @patch("registry.services.access_control_service.RegistryAclEntry")
