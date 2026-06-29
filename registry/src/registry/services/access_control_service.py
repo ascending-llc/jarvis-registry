@@ -284,12 +284,13 @@ class ACLService:
     async def search_principals(
         self,
         query: str,
-        limit: int = 30,
+        limit: int | None = 30,
         principal_types: list[str] | None = None,
     ) -> list[PermissionPrincipalOut]:
         """
         Search for principals (users, groups, agents) matching the query string.
         """
+        effective_limit = limit if limit is not None and limit > 0 else 30
         query = (query or "").strip()
         if not query or len(query) < 2:
             raise ValueError("Query string must be at least 2 characters long.")
@@ -309,10 +310,10 @@ class ACLService:
         users: list[Any] = []
         groups: list[Any] = []
         if not type_filters or PrincipalType.USER.value in type_filters:
-            users = await self.user_service.search_users(query, limit=limit)
+            users = await self.user_service.search_users(query, limit=effective_limit)
 
         if not type_filters or PrincipalType.GROUP.value in type_filters:
-            groups = await self.group_service.search_groups(query, limit=limit)
+            groups = await self.group_service.search_groups(query, limit=effective_limit)
 
         for idx in range(max(len(users), len(groups))):
             if idx < len(users):
@@ -320,7 +321,7 @@ class ACLService:
             if idx < len(groups):
                 results.append(self._principal_result_obj(PrincipalType.GROUP, groups[idx]))
 
-        return results[:limit]
+        return results[:effective_limit]
 
     async def get_resource_permissions(
         self,

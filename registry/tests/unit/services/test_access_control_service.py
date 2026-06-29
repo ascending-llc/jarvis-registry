@@ -756,6 +756,20 @@ class TestACLService:
         group_service.search_groups.assert_awaited_once_with("al", limit=30)
 
     @pytest.mark.asyncio
+    async def test_search_principals_none_limit_defaults_to_thirty(self):
+        user_service = Mock()
+        user_service.search_users = AsyncMock(return_value=[])
+        group_service = Mock()
+        group_service.search_groups = AsyncMock(return_value=[])
+        service = ACLService(user_service=user_service, group_service=group_service, role_cache={})
+
+        result = await service.search_principals(query="al", limit=None)
+
+        assert result == []
+        user_service.search_users.assert_awaited_once_with("al", limit=30)
+        group_service.search_groups.assert_awaited_once_with("al", limit=30)
+
+    @pytest.mark.asyncio
     @patch("registry.services.access_control_service.RegistryAclEntry")
     async def test_get_user_permissions_for_resources_empty_input_skips_query(self, mock_acl_entry):
         """Empty resource_ids short-circuits without touching the database."""
