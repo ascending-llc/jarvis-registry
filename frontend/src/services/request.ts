@@ -117,7 +117,7 @@ const request = async ({ url, method, data = {}, config = {} }: RequestType) => 
       throw (error as { originalData?: unknown }).originalData;
     }
     const axiosError = error as AxiosError;
-    if (axiosError.response && axiosError.response.data) {
+    if (axiosError.response?.data) {
       throw axiosError.response.data;
     }
     throw { detail: axiosError.message || 'Network Error' };

@@ -174,3 +174,15 @@ export interface GetWorkflowRunsListResponse {
 }
 
 export type GetWorkflowRunDetailResponse = WorkflowRun;
+
+export interface ReplayWorkflowRunResponse {
+  runId: string;
+  status: string;
+  message: string;
+}
+
+export interface RerunWorkflowNodeResponse {
+  runId: string;
+  status: string;
+  message: string;
+}

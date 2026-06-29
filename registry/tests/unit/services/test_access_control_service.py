@@ -574,16 +574,38 @@ class TestACLService:
 
     @pytest.mark.asyncio
     @patch("registry.services.access_control_service.RegistryAclEntry")
+    async def test_get_accessible_resource_ids_with_none_user_id_returns_public_only(self, mock_acl_entry):
+        """When user_id is None, only PUBLIC ACL entries are matched."""
+        service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
+
+        public_entry = MagicMock()
+        public_entry.permBits = RoleBits.VIEWER  # 1 = VIEW
+        public_entry.resourceId = PydanticObjectId("507f1f77bcf86cd799439011")
+
+        mock_acl_entry.find.return_value.to_list = AsyncMock(return_value=[public_entry])
+
+        result = await service.get_accessible_resource_ids(user_id=None, resource_type="mcpServer")
+
+        assert result == ["507f1f77bcf86cd799439011"]
+        mock_acl_entry.find.assert_called_once()
+        query = mock_acl_entry.find.call_args.args[0]
+        assert query["resourceType"] == "mcpServer"
+        assert "principalType" in query
+        assert query["principalType"] == PrincipalType.PUBLIC.value
+        assert query["principalId"] is None
+
+    @pytest.mark.asyncio
+    @patch("registry.services.access_control_service.RegistryAclEntry")
     async def test_get_accessible_resource_ids_exception(self, mock_acl_entry):
-        """Exception should return empty list."""
+        """A DB failure must raise, not silently resolve to 'no accessible resources'."""
         service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
         mock_acl_entry.find.return_value.to_list = AsyncMock(side_effect=Exception("fail"))
         service._resolve_group_ids_for_user = AsyncMock(return_value=[])
-        result = await service.get_accessible_resource_ids(
-            user_id=PydanticObjectId(),
-            resource_type=ResourceType.MCPSERVER,
-        )
-        assert result == []
+        with pytest.raises(RuntimeError):
+            await service.get_accessible_resource_ids(
+                user_id=PydanticObjectId(),
+                resource_type=ResourceType.MCPSERVER,
+            )
 
     @pytest.mark.asyncio
     @patch("registry.services.access_control_service.RegistryAclEntry")
@@ -675,17 +697,16 @@ class TestACLService:
         assert result == {rid: ResourcePermissions()}
 
     @pytest.mark.asyncio
-    async def test_get_accessible_resource_ids_group_resolution_failure_returns_empty(self):
-        """_resolve_group_ids_for_user raising causes fail-closed: empty list returned, no propagation."""
+    async def test_get_accessible_resource_ids_group_resolution_failure_raises(self):
+        """_resolve_group_ids_for_user raising propagates as RuntimeError (fail-closed: surface the failure)."""
         service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
         service._resolve_group_ids_for_user = AsyncMock(side_effect=Exception("db error"))
 
-        result = await service.get_accessible_resource_ids(
-            user_id=PydanticObjectId(),
-            resource_type=ResourceType.MCPSERVER.value,
-        )
-
-        assert result == []
+        with pytest.raises(RuntimeError):
+            await service.get_accessible_resource_ids(
+                user_id=PydanticObjectId(),
+                resource_type=ResourceType.MCPSERVER.value,
+            )
 
     @pytest.mark.asyncio
     @patch("registry.services.access_control_service.Group")

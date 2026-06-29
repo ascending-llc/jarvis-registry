@@ -46,7 +46,7 @@ export const getLayoutedElements = (nodes: WorkflowNode[], edges: Edge[]): { nod
   for (const e of edges) {
     if (inDeg.has(e.target)) inDeg.set(e.target, (inDeg.get(e.target) ?? 0) + 1);
     if (outEdges.has(e.source)) {
-      outEdges.get(e.source)!.push(e);
+      outEdges.get(e.source)?.push(e);
     }
   }
 

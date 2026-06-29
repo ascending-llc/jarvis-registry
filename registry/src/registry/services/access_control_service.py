@@ -556,32 +556,43 @@ class ACLService:
 
     async def get_accessible_resource_ids(
         self,
-        user_id: PydanticObjectId,
+        user_id: PydanticObjectId | None,
         resource_type: str,
         session: AsyncClientSession | None = None,
     ) -> list[str]:
         """
         Return the IDs of all resources of a given type that the user can VIEW.
 
-        Performs a single MongoDB query matching user-specific and PUBLIC
-        ACL entries, filters by the VIEW bit, and deduplicates results.
+        When user_id is None (anonymous / unauthenticated), only PUBLIC ACL
+        entries are matched.
 
         Args:
-                user_id: The user's ID.
+                user_id: The user's ID, or None for anonymous/unauthenticated access.
                 resource_type: The resource type string (e.g., RegistryResourceType.MCP_SERVER.value).
 
         Returns:
                 Deduplicated list of resource ID strings the user can VIEW.
-                Returns an empty list on error.
+
+        Raises:
+                RuntimeError: If the underlying ACL lookup fails (e.g. DB outage).
+                        Callers must not interpret this as "no accessible resources" —
+                        do so would silently return empty results instead of surfacing
+                        the failure.
         """
         try:
-            group_ids = await self._resolve_group_ids_for_user(user_id, session=session)
-            or_clause = self._build_acl_principal_or_clause(user_id, group_ids)
+            if user_id is not None:
+                group_ids = await self._resolve_group_ids_for_user(user_id, session=session)
+                principal_filter: dict[str, Any] = {"$or": self._build_acl_principal_or_clause(user_id, group_ids)}
+            else:
+                principal_filter = {
+                    "principalType": PrincipalType.PUBLIC.value,
+                    "principalId": None,
+                }
 
             acl_entries = await RegistryAclEntry.find(
                 {
                     "resourceType": resource_type,
-                    "$or": or_clause,
+                    **principal_filter,
                 },
                 session=session,
             ).to_list()
@@ -598,7 +609,7 @@ class ACLService:
             return result
         except Exception as e:
             logger.error(f"Error fetching accessible {resource_type} IDs for user {user_id}: {e}")
-            return []
+            raise RuntimeError(f"Failed to fetch accessible {resource_type} resources") from e
 
     async def get_roles_by_resource_type(
         self,

@@ -91,20 +91,31 @@ export const formatTime = (iso: string): string => {
 
 export const workflowRunToEntry = (run: WorkflowRun): RunEntry => ({
   id: run.id.slice(-8),
+  fullId: run.id,
+  type: 'workflow',
   status: STATUS_MAP[run.status] ?? 'fail',
   time: formatTime(run.startedAt),
   dur: formatDuration(run.startedAt, run.finishedAt),
   err: run.errorSummary ?? undefined,
   actions: ACTIONS_BY_STATUS[run.status] ?? [],
+  input: run.initialInput,
+  output: run.finalOutput,
 });
 
-export const nodeRunToEntry = (run: WorkflowRun, nodeRun: NodeRun): RunEntry => ({
+export const nodeRunToEntry = (run: WorkflowRun, nodeRun: NodeRun, nodeType?: string): RunEntry => ({
   id: run.id.slice(-8),
+  fullId: run.id,
+  type: 'node',
   status: NODE_STATUS_MAP[nodeRun.status] ?? 'fail',
   time: `${formatTime(run.startedAt)} · attempt ${nodeRun.attempt}`,
   dur: formatDuration(nodeRun.startedAt ?? run.startedAt, nodeRun.finishedAt),
   err: nodeRun.error ?? run.errorSummary ?? undefined,
   actions: nodeRun.status === 'failed' ? ['retry'] : [],
+  input: nodeRun.inputSnapshot ?? undefined,
+  output: nodeRun.outputSnapshot ?? undefined,
+  nodeName: nodeRun.nodeName,
+  nodeId: nodeRun.nodeId,
+  nodeType,
 });
 
 export const matchesSelectedNode = (nodeRun: NodeRun, selectedNodeId: string, selectedNodeLabel?: string): boolean => {
@@ -136,8 +147,9 @@ export const buildNodeRunEntries = (
   runs: WorkflowRun[],
   selectedNodeId: string,
   selectedNodeLabel?: string,
+  selectedNodeType?: string,
 ): RunEntry[] =>
   runs.flatMap(run => {
     const nodeRun = (run.nodeRuns ?? []).find(nr => matchesSelectedNode(nr, selectedNodeId, selectedNodeLabel));
-    return nodeRun ? [nodeRunToEntry(run, nodeRun)] : [];
+    return nodeRun ? [nodeRunToEntry(run, nodeRun, selectedNodeType)] : [];
   });

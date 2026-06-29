@@ -361,6 +361,7 @@ class ExternalVectorSearchService(VectorSearchService):
         entity_types: list[str] | None = None,
         max_results: int = 20,
         search_type: SearchType | None = None,
+        allowed_server_ids: list[str] | None = None,
     ) -> dict[str, list[dict[str, Any]]]:
         """
         Search MCP servers and tools with rerank support.
@@ -370,6 +371,8 @@ class ExternalVectorSearchService(VectorSearchService):
             entity_types: Subset of ["mcp_server", "tool"]; default both.
             max_results: Maximum results per result list (default: 20)
             search_type: Override default search type (NEAR_TEXT, BM25, HYBRID)
+            allowed_server_ids: When provided, restrict results to these server IDs
+                (ACL enforcement). ``None`` means no restriction is applied.
 
         Returns:
             ``{"servers": [...], "tools": [...]}`` shaped for the /search route mappers.
@@ -394,7 +397,9 @@ class ExternalVectorSearchService(VectorSearchService):
         )
 
         search_k = max_results * 2  # extra headroom so grouping still yields enough servers
-        filters = {"entity_type": self._mcp_search_entity_types(want_servers)}
+        filters: dict[str, Any] = {"entity_type": self._mcp_search_entity_types(want_servers)}
+        if allowed_server_ids is not None:
+            filters["server_id"] = {"$in": allowed_server_ids}
 
         try:
             if self.enable_rerank:

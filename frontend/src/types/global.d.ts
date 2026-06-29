@@ -9,6 +9,6 @@ declare module '*.svg' {
 }
 
 declare module '*.css' {
-  const content: void;
+  const content: undefined;
   export default content;
 }
