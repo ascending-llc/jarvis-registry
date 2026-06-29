@@ -23,6 +23,7 @@ from ....core.telemetry_decorators import track_registry_operation
 from ....deps import get_acl_service, get_mcp_service, get_server_service, get_status_resolver
 from ....schemas.acl_schema import ResourcePermissions
 from ....schemas.enums import ConnectionState
+from ....schemas.errors import ErrorCode, create_error_detail
 from ....schemas.server_api_schemas import (
     PaginationMetadata,
     ServerConnectionTestRequest,
@@ -163,7 +164,9 @@ async def list_servers(
         logger.error(f"ACL lookup failed while listing servers: {e}", exc_info=True)
         raise HTTPException(
             status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Server listing is temporarily unavailable. Please try again later.",
+            detail=create_error_detail(
+                ErrorCode.SERVICE_UNAVAILABLE, "Server listing is temporarily unavailable. Please try again later."
+            ),
         ) from e
     except Exception as e:
         logger.error(f"Error listing servers: {e}", exc_info=True)
