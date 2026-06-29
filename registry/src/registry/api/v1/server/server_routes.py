@@ -159,6 +159,12 @@ async def list_servers(
 
     except HTTPException:
         raise
+    except RuntimeError as e:
+        logger.error(f"ACL lookup failed while listing servers: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Server listing is temporarily unavailable. Please try again later.",
+        ) from e
     except Exception as e:
         logger.error(f"Error listing servers: {e}", exc_info=True)
         raise HTTPException(

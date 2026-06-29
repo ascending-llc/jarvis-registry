@@ -332,6 +332,24 @@ async def test_list_workflows_filters_by_accessible_ids():
 
 
 @pytest.mark.asyncio
+async def test_list_workflows_maps_acl_runtime_error_to_503():
+    """An ACL/DB outage (RuntimeError from get_accessible_resource_ids) must surface as 503, not 500."""
+    user_context = {"user_id": str(PydanticObjectId()), "username": "u", "groups": [], "scopes": []}
+
+    mock_acl = MagicMock()
+    mock_acl.get_accessible_resource_ids = AsyncMock(side_effect=RuntimeError("Failed to fetch accessible resources"))
+
+    with pytest.raises(HTTPException) as exc_info:
+        await workflow_routes.list_workflows(
+            user_context=user_context,
+            workflow_service=MagicMock(),
+            acl_service=mock_acl,
+        )
+
+    assert exc_info.value.status_code == 503
+
+
+@pytest.mark.asyncio
 async def test_get_workflow_propagates_403_without_view():
     user_context = {"user_id": str(PydanticObjectId()), "username": "u", "groups": [], "scopes": []}
 
