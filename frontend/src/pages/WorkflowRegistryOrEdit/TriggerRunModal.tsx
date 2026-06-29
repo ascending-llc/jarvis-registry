@@ -241,7 +241,7 @@ const TriggerRunModal: React.FC<TriggerRunModalProps> = ({ isOpen, workflowName,
             type='button'
             onClick={handleRun}
             disabled={isValid !== true || triggering}
-            className='flex items-center gap-1.5 rounded-md border border-transparent bg-[var(--jarvis-primary)] px-4 py-1.5 text-[13px] font-medium text-white transition-colors hover:bg-[var(--jarvis-primary-hover)] disabled:cursor-not-allowed disabled:bg-[var(--jarvis-primary-muted)] disabled:text-[var(--jarvis-subtle)]'
+            className='flex items-center gap-1.5 rounded-md border border-transparent bg-[var(--jarvis-primary)] px-4 py-1.5 text-[13px] font-medium text-white transition-colors hover:bg-[var(--jarvis-primary-hover)] disabled:cursor-not-allowed disabled:opacity-50'
           >
             {triggering ? (
               <svg className='h-4 w-4 animate-spin' viewBox='0 0 24 24' fill='none'>

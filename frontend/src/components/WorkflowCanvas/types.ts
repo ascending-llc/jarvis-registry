@@ -155,4 +155,5 @@ export interface RunEntry {
   output?: Record<string, any>;
   nodeName?: string;
   nodeId?: string;
+  nodeType?: string;
 }

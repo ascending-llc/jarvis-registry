@@ -102,7 +102,7 @@ export const workflowRunToEntry = (run: WorkflowRun): RunEntry => ({
   output: run.finalOutput,
 });
 
-export const nodeRunToEntry = (run: WorkflowRun, nodeRun: NodeRun): RunEntry => ({
+export const nodeRunToEntry = (run: WorkflowRun, nodeRun: NodeRun, nodeType?: string): RunEntry => ({
   id: run.id.slice(-8),
   fullId: run.id,
   type: 'node',
@@ -115,6 +115,7 @@ export const nodeRunToEntry = (run: WorkflowRun, nodeRun: NodeRun): RunEntry => 
   output: nodeRun.outputSnapshot ?? undefined,
   nodeName: nodeRun.nodeName,
   nodeId: nodeRun.nodeId,
+  nodeType,
 });
 
 export const matchesSelectedNode = (nodeRun: NodeRun, selectedNodeId: string, selectedNodeLabel?: string): boolean => {
@@ -146,8 +147,9 @@ export const buildNodeRunEntries = (
   runs: WorkflowRun[],
   selectedNodeId: string,
   selectedNodeLabel?: string,
+  selectedNodeType?: string,
 ): RunEntry[] =>
   runs.flatMap(run => {
     const nodeRun = (run.nodeRuns ?? []).find(nr => matchesSelectedNode(nr, selectedNodeId, selectedNodeLabel));
-    return nodeRun ? [nodeRunToEntry(run, nodeRun)] : [];
+    return nodeRun ? [nodeRunToEntry(run, nodeRun, selectedNodeType)] : [];
   });

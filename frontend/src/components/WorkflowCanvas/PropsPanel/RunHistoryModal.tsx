@@ -78,7 +78,16 @@ const RunHistoryModal: React.FC<RunHistoryModalProps> = ({ isOpen, runEntry, onC
   if (!isOpen || !runEntry) return null;
 
   const isError = runEntry.err !== undefined || (activeTab === 'out' && runEntry.status === 'fail');
-  const typeLabel = runEntry.type === 'workflow' ? 'WF' : 'NODE';
+
+  let typeLabel = 'NODE';
+  if (runEntry.type === 'workflow') {
+    typeLabel = 'WF';
+  } else if (runEntry.nodeType === 'agent') {
+    typeLabel = 'A2A';
+  } else if (runEntry.nodeType === 'mcp') {
+    typeLabel = 'MCP';
+  }
+
   const headerIconBg = runEntry.type === 'workflow' ? 'bg-[#0e7490]' : 'bg-[var(--jarvis-primary)]';
 
   return (
@@ -179,7 +188,7 @@ const RunHistoryModal: React.FC<RunHistoryModalProps> = ({ isOpen, runEntry, onC
             type='button'
             onClick={handleReplay}
             disabled={replaying}
-            className='flex items-center gap-1.5 rounded-md border border-transparent bg-[var(--jarvis-primary)] px-4 py-1.5 text-[13px] font-medium text-white transition-colors hover:bg-[var(--jarvis-primary-hover)] disabled:cursor-not-allowed disabled:bg-[var(--jarvis-primary-muted)] disabled:text-[var(--jarvis-subtle)]'
+            className='flex items-center gap-1.5 rounded-md border border-transparent bg-[var(--jarvis-primary)] px-4 py-1.5 text-[13px] font-medium text-white transition-colors hover:bg-[var(--jarvis-primary-hover)] disabled:cursor-not-allowed disabled:opacity-50'
           >
             {replaying ? (
               <svg className='h-4 w-4 animate-spin' viewBox='0 0 24 24' fill='none'>
