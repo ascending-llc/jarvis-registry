@@ -646,6 +646,48 @@ class TestACLService:
         self._assert_group_clause_present(query, group_id)
 
     @pytest.mark.asyncio
+    async def test_get_user_permissions_for_resource_group_resolution_failure_denies_access(self):
+        """_resolve_group_ids_for_user raising causes fail-closed: empty permissions returned, no propagation."""
+        service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
+        service._resolve_group_ids_for_user = AsyncMock(side_effect=Exception("db error"))
+
+        perms = await service.get_user_permissions_for_resource(
+            user_id=PydanticObjectId(),
+            resource_type=ResourceType.MCPSERVER.value,
+            resource_id=PydanticObjectId(),
+        )
+
+        assert perms == ResourcePermissions()
+
+    @pytest.mark.asyncio
+    async def test_get_user_permissions_for_resources_group_resolution_failure_denies_access(self):
+        """_resolve_group_ids_for_user raising causes fail-closed: empty permissions for all resources."""
+        service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
+        service._resolve_group_ids_for_user = AsyncMock(side_effect=Exception("db error"))
+        rid = PydanticObjectId()
+
+        result = await service.get_user_permissions_for_resources(
+            user_id=PydanticObjectId(),
+            resource_type=ResourceType.MCPSERVER.value,
+            resource_ids=[rid],
+        )
+
+        assert result == {rid: ResourcePermissions()}
+
+    @pytest.mark.asyncio
+    async def test_get_accessible_resource_ids_group_resolution_failure_returns_empty(self):
+        """_resolve_group_ids_for_user raising causes fail-closed: empty list returned, no propagation."""
+        service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
+        service._resolve_group_ids_for_user = AsyncMock(side_effect=Exception("db error"))
+
+        result = await service.get_accessible_resource_ids(
+            user_id=PydanticObjectId(),
+            resource_type=ResourceType.MCPSERVER.value,
+        )
+
+        assert result == []
+
+    @pytest.mark.asyncio
     @patch("registry.services.access_control_service.Group")
     @patch("registry.services.access_control_service.RegistryAclEntry")
     async def test_get_resource_permissions_returns_group_principal(self, mock_acl_entry, mock_group):
@@ -673,6 +715,7 @@ class TestACLService:
             resource_id=PydanticObjectId(),
         )
 
+        assert len(result["principals"]) == 1
         assert result["principals"][0]["type"] == "group"
         assert result["principals"][0]["name"] == "Engineering"
         assert result["principals"][0]["email"] == "engineering@example.com"

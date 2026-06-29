@@ -155,13 +155,21 @@ class ACLService:
         user_id: PydanticObjectId,
         session: AsyncClientSession | None = None,
     ) -> list[PydanticObjectId]:
-        """Return MongoDB Group _id values for every group the user belongs to."""
-        user = await User.get(user_id, session=session)
-        if not user or not user.idOnTheSource:
-            return []
+        """Return MongoDB Group _id values for every group the user belongs to.
 
-        groups = await Group.find({"memberIds": user.idOnTheSource}, session=session).to_list()
-        return [group.id for group in groups]
+        Raises on DB error — callers catch this and return empty permissions
+        (fail-closed: deny under uncertainty rather than silently grant access).
+        Returns [] for local users with no idOnTheSource.
+        """
+        try:
+            user = await User.get(user_id, session=session)
+            if not user or not user.idOnTheSource:
+                return []
+            groups = await Group.find({"memberIds": user.idOnTheSource}, session=session).to_list()
+            return [group.id for group in groups]
+        except Exception as e:
+            logger.warning("Failed to resolve group IDs for user %s: %s", user_id, e)
+            raise
 
     async def grant_permission(
         self,
