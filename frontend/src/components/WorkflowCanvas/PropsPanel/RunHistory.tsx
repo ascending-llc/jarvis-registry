@@ -1,6 +1,9 @@
-import type React from 'react';
+import { useState } from 'react';
+import { useGlobal } from '@/contexts/GlobalContext';
+import SERVICES from '@/services';
 import type { PanelMode, RunEntry } from '../types';
 import { useRunHistory } from './hooks/useRunHistory';
+import RunHistoryModal from './RunHistoryModal';
 
 // ─── visual config ────────────────────────────────────────────────────────────
 
@@ -26,8 +29,17 @@ const ACTION_LABELS: Record<string, string> = { pause: '⏸', cancel: '✕', res
 
 // ─── sub-components ───────────────────────────────────────────────────────────
 
-const RunRow: React.FC<{ run: RunEntry }> = ({ run }) => (
-  <div className='flex items-start gap-2 bg-[var(--jarvis-card-muted)] border border-[var(--jarvis-border)] rounded-lg p-2.5 mb-1.5'>
+const RunRow: React.FC<{ run: RunEntry; onClick: (run: RunEntry) => void; isSelected: boolean }> = ({
+  run,
+  onClick,
+  isSelected,
+}) => (
+  <div
+    onClick={() => onClick(run)}
+    className={`flex items-start gap-2 bg-[var(--jarvis-card-muted)] border rounded-lg p-2.5 mb-1.5 cursor-pointer transition-colors hover:bg-[var(--jarvis-surface)] ${
+      isSelected ? 'border-[var(--jarvis-primary)] bg-[rgba(124,58,237,0.08)]' : 'border-[var(--jarvis-border)]'
+    }`}
+  >
     <div
       className='w-[7px] h-[7px] rounded-full shrink-0 mt-[3px]'
       style={{
@@ -73,6 +85,31 @@ const RunHistory: React.FC<RunHistoryProps> = ({ panelMode }) => {
   const { runs, loading, error, showAllWorkflowRuns, workflowId, selectedNodeId, selectedNodeLabel } = useRunHistory({
     panelMode,
   });
+  const { showToast } = useGlobal();
+  const [selectedRun, setSelectedRun] = useState<RunEntry | null>(null);
+  const [replaying, setReplaying] = useState(false);
+
+  const handleReplay = async (runEntry: RunEntry) => {
+    if (!workflowId) return;
+    setReplaying(true);
+    try {
+      if (runEntry.type === 'workflow') {
+        await SERVICES.WORKFLOW.replayWorkflowRun(workflowId, runEntry.fullId);
+        showToast('Workflow replay triggered!', 'success');
+      } else if (runEntry.type === 'node' && runEntry.nodeId) {
+        await SERVICES.WORKFLOW.rerunWorkflowNode(workflowId, runEntry.fullId, runEntry.nodeId);
+        showToast(`Node ${runEntry.nodeName || 'rerun'} triggered!`, 'success');
+      } else {
+        throw new Error('Invalid run entry type for replay');
+      }
+      setSelectedRun(null);
+    } catch (error: any) {
+      const msg = error?.detail?.message || (typeof error?.detail === 'string' ? error.detail : '');
+      showToast(msg || 'Failed to trigger replay', 'error');
+    } finally {
+      setReplaying(false);
+    }
+  };
 
   const heading =
     panelMode === 'workflow'
@@ -108,10 +145,18 @@ const RunHistory: React.FC<RunHistoryProps> = ({ panelMode }) => {
             </p>
           )}
           {runs.map((r, i) => (
-            <RunRow key={`${r.id}-${i}`} run={r} />
+            <RunRow key={`${r.id}-${i}`} run={r} onClick={setSelectedRun} isSelected={selectedRun?.id === r.id} />
           ))}
         </>
       )}
+
+      <RunHistoryModal
+        isOpen={!!selectedRun}
+        runEntry={selectedRun}
+        onClose={() => setSelectedRun(null)}
+        onReplay={handleReplay}
+        replaying={replaying}
+      />
     </div>
   );
 };

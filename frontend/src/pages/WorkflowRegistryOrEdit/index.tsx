@@ -11,6 +11,7 @@ import { useServer } from '@/contexts/ServerContext';
 import SERVICES from '@/services';
 import type { Workflow } from '@/services/workflow/type';
 import DeleteWorkflowDialog from './DeleteWorkflowDialog';
+import TriggerRunModal from './TriggerRunModal';
 import UnsavedChangesDialog from './UnsavedChangesDialog';
 
 type MutatingAction = 'idle' | 'saving' | 'triggering' | 'deleting';
@@ -42,6 +43,7 @@ const WorkflowRegistryOrEdit: React.FC = () => {
     _setHasChanges(val);
   };
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [triggerModalOpen, setTriggerModalOpen] = useState(false);
   const [runHistoryRefresh, setRunHistoryRefresh] = useState(0);
 
   // ── Side Effects: Block navigation & BeforeUnload ──────────────────────────────
@@ -157,14 +159,15 @@ const WorkflowRegistryOrEdit: React.FC = () => {
   };
 
   // ── Actions: Trigger run ─────────────────────────────────────────────────────
-  const handleTrigger = async () => {
+  const handleTrigger = async (initialInput: Record<string, any> = {}) => {
     if (!id) {
       showToast('Save the workflow before triggering a run', 'error');
       return;
     }
+    setTriggerModalOpen(false);
     setMutatingAction('triggering');
     try {
-      await SERVICES.WORKFLOW.triggerWorkflowRun(id, {});
+      await SERVICES.WORKFLOW.triggerWorkflowRun(id, { initialInput });
       setRunHistoryRefresh(k => k + 1);
       showToast('Workflow run triggered!', 'success');
     } catch (error: any) {
@@ -240,7 +243,7 @@ const WorkflowRegistryOrEdit: React.FC = () => {
         {!isReadOnly && (
           <div className='flex items-center gap-2 flex-shrink-0'>
             <button
-              onClick={handleTrigger}
+              onClick={() => setTriggerModalOpen(true)}
               disabled={mutatingAction !== 'idle' || !id}
               className='inline-flex items-center gap-1 px-2.5 py-1 border border-transparent rounded-md text-xs font-medium text-white bg-[var(--jarvis-primary)] hover:opacity-90 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed'
             >
@@ -308,6 +311,15 @@ const WorkflowRegistryOrEdit: React.FC = () => {
         deleting={mutatingAction === 'deleting'}
         onCancel={() => setDeleteDialogOpen(false)}
         onConfirm={handleDeleteWorkflow}
+      />
+
+      {/* ── Trigger run modal ─────────────────────────────────────────────────── */}
+      <TriggerRunModal
+        isOpen={triggerModalOpen}
+        workflowName={workflow?.name ?? ''}
+        onClose={() => setTriggerModalOpen(false)}
+        onTrigger={handleTrigger}
+        triggering={mutatingAction === 'triggering'}
       />
     </div>
   );
