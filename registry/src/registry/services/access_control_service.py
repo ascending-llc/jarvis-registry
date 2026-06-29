@@ -157,9 +157,9 @@ class ACLService:
     ) -> list[PydanticObjectId]:
         """Return MongoDB Group _id values for every group the user belongs to.
 
-        Raises on DB error — callers catch this and return empty permissions
-        (fail-closed: deny under uncertainty rather than silently grant access).
-        Returns [] for local users with no idOnTheSource.
+        Raises on DB error — callers are responsible for deciding whether to
+        propagate or absorb the failure. Returns [] for local users with no
+        idOnTheSource.
         """
         try:
             user = await User.get(user_id, session=session)
