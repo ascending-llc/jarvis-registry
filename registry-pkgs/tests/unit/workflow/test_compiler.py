@@ -289,6 +289,27 @@ class TestWorkflowCompiler:
             snapshots = session_state[compiler.NODE_INPUT_SNAPSHOTS_KEY]
             assert snapshots[node.id]["input"] == raw_input
 
+    @pytest.mark.asyncio
+    async def test_step_executor_parses_json_array_string_input_into_list(self):
+        """A JSON array string (starting with '[') must be parsed into a list, not stored
+        as an escaped string — the same treatment as object-shaped JSON inputs."""
+        node = _step_node("fetch", "fetcher")
+        definition = _workflow_definition([node])
+        workflow = compiler.compile_workflow(
+            definition,
+            _workflow_run(),
+            executor_registry={"fetcher": _executor},
+        )
+        session_state = {}
+
+        await workflow.steps[0].executor(
+            StepInput(input='[{"id": 1}, {"id": 2}]'),
+            session_state,
+        )
+
+        snapshots = session_state[compiler.NODE_INPUT_SNAPSHOTS_KEY]
+        assert snapshots[node.id]["input"] == [{"id": 1}, {"id": 2}]
+
 
 @pytest.mark.unit
 class TestStepConfig:

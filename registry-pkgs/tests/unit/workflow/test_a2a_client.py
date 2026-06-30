@@ -524,7 +524,37 @@ async def test_call_a2a_uses_http_json_protocol_for_rest_transport():
     assert result.success is True
     assert result.render_text() == "rest response"
     assert len(captured_configs) == 1
-    assert TransportProtocol.http_json in captured_configs[0].supported_transports
+    supported = captured_configs[0].supported_transports
+    assert supported[0] == TransportProtocol.http_json
+    assert TransportProtocol.jsonrpc in supported
+    assert captured_configs[0].use_client_preference is True
+
+
+@pytest.mark.asyncio
+async def test_call_a2a_uses_jsonrpc_protocol_for_jsonrpc_transport():
+    """Standard JSONRPC agent (config.type='jsonrpc', no card.preferred_transport):
+    jsonrpc must be first in supported_transports with use_client_preference=True."""
+    agent = _make_agent(transport="jsonrpc")
+    mock_factory, _ = _mock_client([_msg("jsonrpc response")])
+
+    captured_configs: list[ClientConfig] = []
+
+    def capturing_factory(config: ClientConfig) -> MagicMock:
+        captured_configs.append(config)
+        return mock_factory
+
+    with (
+        patch("registry_pkgs.workflows.a2a_client.build_headers", return_value={}),
+        patch("registry_pkgs.workflows.a2a_client.ClientFactory", side_effect=capturing_factory),
+    ):
+        result = await call_a2a(agent, "test", jwt_config=_jwt_config())
+
+    assert result.success is True
+    assert result.render_text() == "jsonrpc response"
+    assert len(captured_configs) == 1
+    supported = captured_configs[0].supported_transports
+    assert supported[0] == TransportProtocol.jsonrpc
+    assert TransportProtocol.http_json in supported
     assert captured_configs[0].use_client_preference is True
 
 
