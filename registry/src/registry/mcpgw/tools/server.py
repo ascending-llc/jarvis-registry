@@ -36,6 +36,11 @@ from ...core.exceptions import (
     UrlElicitationRequiredException,
 )
 from ...core.mcp_client import call_tool_via_sse_ephemeral
+from ...core.telemetry_decorators import (
+    PromptExecutionMetricsContext,
+    ResourceAccessMetricsContext,
+    ToolExecutionMetricsContext,
+)
 from ...utils.otel_metrics import record_server_request
 from ..core.types import McpAppContext
 from .types import get_meta_field
@@ -266,178 +271,187 @@ async def execute_tool_impl(
             the MCP Python SDK to forward the error response to our client.
     """
 
-    try:
-        user_context: UserContextDict = ctx.request_context.request.state.user  # type: ignore[union-attr]
+    async with ToolExecutionMetricsContext(tool_name=tool_name, method="POST") as metrics_ctx:
+        try:
+            user_context: UserContextDict = ctx.request_context.request.state.user  # type: ignore[union-attr]
 
-        username = user_context.get("username", "unknown")
-        user_id = user_context.get("user_id", "unknown")
-        logger.info(f"Tool execution from user '{username}:{user_id}': {tool_name} on {server_id}")
+            username = user_context.get("username", "unknown")
+            user_id = user_context.get("user_id", "unknown")
+            logger.info(f"Tool execution from user '{username}:{user_id}': {tool_name} on {server_id}")
 
-        server = await _get_server_service(ctx).get_server_by_id(server_id)
-        if server is None:
-            # Invalid input. Return a JSON-RPC **result response** with `isError=True` so that LLM can try another request.
+            server = await _get_server_service(ctx).get_server_by_id(server_id)
+            if server is None:
+                # Invalid input. Return a JSON-RPC **result response** with `isError=True` so that LLM can try another request.
+                metrics_ctx.set_error_type("server_not_found")
+                return CallToolResult(
+                    content=[TextContent(type="text", text="There is no server with the given server_id.")],
+                    isError=True,
+                )
+
+            metrics_ctx.set_server_name(server.serverName)
+
+            # Track server request count
+            record_server_request(server.serverName)
+
+            # Build target URL using shared helper
+            target_url = get_target_url(server)
+
+            # Prepare base headers for downstream MCP server
+            additional_headers = {
+                "X-Tool-Name": tool_name,
+                "Accept": "application/json, text/event-stream",  # MCP servers require both
+            }
+
+            # Check if server requires initialization (default True for safety/compatibility)
+            requires_init = server.config.get("requiresInit", True)
+            transport_type = server.config.get("type", "streamable-http")
+
+            state_metadata = _get_state_metadata(ctx.session.client_params)
+
+            # Session management logic - only for streamable-http when initialization is required.
+            # For SSE we intentionally do not persist/reuse session IDs or messages URLs.
+            # Each SSE tool call opens a fresh stream and completes within _downstream_tool_call.
+            if requires_init and transport_type != "sse":
+                # Key format: "user_id:server_id" to track per-user, per-server sessions
+                session_key = f"{user_id}:{server_id}"
+                session_info = _get_mcp_client_service(ctx).get_session(session_key)
+                stored_session_id = None
+
+                if session_info:
+                    # Existing session found - check if it's initialized
+                    stored_session_id, session_initialized = session_info
+
+                    if session_initialized:
+                        additional_headers["mcp-Session-Id"] = stored_session_id
+                        logger.info(f"Reusing initialized session for {server.serverName}: {stored_session_id}")
+
+                if not stored_session_id:
+                    init_headers = await build_authenticated_headers(
+                        oauth_service=ctx.request_context.lifespan_context.oauth_service,
+                        server=server,
+                        auth_context=user_context,
+                        additional_headers=additional_headers,
+                        state_metadata=state_metadata,
+                        redis_client=ctx.request_context.lifespan_context.redis_client,
+                    )
+                    session_id = await _get_mcp_client_service(ctx).initialize_mcp_session(
+                        target_url,
+                        init_headers,
+                        session_key,
+                        transport_type,
+                    )
+
+                    if session_id:
+                        additional_headers["mcp-Session-Id"] = session_id
+                    else:
+                        logger.warning("Failed to initialize session, will attempt tool call without session")
+            elif transport_type == "sse":
+                logger.debug("SSE transport selected: using per-call ephemeral downstream session")
+            else:
+                logger.debug("Stateless server (requiresInit=False), skipping session management")
+
+            # Build final authenticated headers with session ID (if applicable)
+            headers = await build_authenticated_headers(
+                oauth_service=ctx.request_context.lifespan_context.oauth_service,
+                server=server,
+                auth_context=user_context,
+                additional_headers=additional_headers,
+                state_metadata=state_metadata,
+                redis_client=ctx.request_context.lifespan_context.redis_client,
+            )
+
+            # Build MCP JSON-RPC request
+            mcp_request_body = {
+                "jsonrpc": "2.0",
+                "id": ctx.request_id,  # Forward the "id" field from clients of mcpgw to downstream MCPs.
+                "method": "tools/call",
+                "params": {"name": tool_name, "arguments": arguments},
+            }
+            logger.info(f"MCP JSON-RPC request body: {json.dumps(mcp_request_body, indent=2)}")
+
+            resp_obj = await _downstream_tool_call(
+                ctx,
+                target_url,
+                mcp_request_body,
+                headers,
+                transport_type=transport_type,
+                sse_url=target_url if transport_type == "sse" else None,
+            )
+
+            if "error" in resp_obj:
+                error_data = ErrorData.model_validate(resp_obj["error"])
+
+                logger.error(
+                    "Downstream MCP server returned an error response: "
+                    f"code {error_data.code}, messsage: {error_data.message}, data: {str(error_data.data)}"
+                )
+
+                raise McpError(error_data)
+            elif "result" in resp_obj:
+                result = CallToolResult.model_validate(resp_obj["result"])
+                metrics_ctx.set_success(not result.isError)
+                return result
+            else:
+                raise MisimplementedSpecException("Downstream MCP did not return a JSONRPCResponse message.")
+        except UrlElicitationRequiredException as exc:
+            # Re-auth required: a handled failure mode, not a downstream/internal error.
+            metrics_ctx.set_error_type("url_elicitation")
+            auth_url, server_name = exc.auth_url, exc.server_name
+
+            template = (
+                f"In order to make tool calls to the '{server_name}' MCP server, the client must first perform "
+                "out-of-band re-authorization in a browser window. Please direct the client to open the {} "
+                "in a browser window, finish re-authorization, and come back to retry the same tool call again."
+            )
+
+            elicitation_id = parse_elicitation_id(auth_url)
+            if elicitation_id is not None and _support_url_elicitation(ctx.session.client_params):
+                msg = template.format("provided URL")
+
+                logger.info(f"sending back the URL mode elicitation error response with ID {elicitation_id}.")
+
+                _get_session_store(ctx).append(elicitation_id, ctx.session)
+
+                raise UrlElicitationRequiredError(
+                    # This message is for LLM.
+                    message=msg,
+                    elicitations=[
+                        ElicitRequestURLParams(
+                            elicitationId=elicitation_id,
+                            url=auth_url,
+                            # This message is for human users.
+                            message=(
+                                f"The tokens for the '{server_name}' MCP server managed by Jarvis Registry have expired. "
+                                "Please follow the URL to perform re-authorization in a browser window and come back again."
+                            ),
+                        )
+                    ],
+                )
+
+            logger.info(
+                "Client doesn't support URL mode elicitation. Sending back a tool call result to prompt LLM for re-auth."
+            )
+
             return CallToolResult(
-                content=[TextContent(type="text", text="There is no server with the given server_id.")],
-                isError=True,
-            )
-
-        # Track server request count
-        record_server_request(server.serverName)
-
-        # Build target URL using shared helper
-        target_url = get_target_url(server)
-
-        # Prepare base headers for downstream MCP server
-        additional_headers = {
-            "X-Tool-Name": tool_name,
-            "Accept": "application/json, text/event-stream",  # MCP servers require both
-        }
-
-        # Check if server requires initialization (default True for safety/compatibility)
-        requires_init = server.config.get("requiresInit", True)
-        transport_type = server.config.get("type", "streamable-http")
-
-        state_metadata = _get_state_metadata(ctx.session.client_params)
-
-        # Session management logic - only for streamable-http when initialization is required.
-        # For SSE we intentionally do not persist/reuse session IDs or messages URLs.
-        # Each SSE tool call opens a fresh stream and completes within _downstream_tool_call.
-        if requires_init and transport_type != "sse":
-            # Key format: "user_id:server_id" to track per-user, per-server sessions
-            session_key = f"{user_id}:{server_id}"
-            session_info = _get_mcp_client_service(ctx).get_session(session_key)
-            stored_session_id = None
-
-            if session_info:
-                # Existing session found - check if it's initialized
-                stored_session_id, session_initialized = session_info
-
-                if session_initialized:
-                    additional_headers["mcp-Session-Id"] = stored_session_id
-                    logger.info(f"Reusing initialized session for {server.serverName}: {stored_session_id}")
-
-            if not stored_session_id:
-                init_headers = await build_authenticated_headers(
-                    oauth_service=ctx.request_context.lifespan_context.oauth_service,
-                    server=server,
-                    auth_context=user_context,
-                    additional_headers=additional_headers,
-                    state_metadata=state_metadata,
-                    redis_client=ctx.request_context.lifespan_context.redis_client,
-                )
-                session_id = await _get_mcp_client_service(ctx).initialize_mcp_session(
-                    target_url,
-                    init_headers,
-                    session_key,
-                    transport_type,
-                )
-
-                if session_id:
-                    additional_headers["mcp-Session-Id"] = session_id
-                else:
-                    logger.warning("Failed to initialize session, will attempt tool call without session")
-        elif transport_type == "sse":
-            logger.debug("SSE transport selected: using per-call ephemeral downstream session")
-        else:
-            logger.debug("Stateless server (requiresInit=False), skipping session management")
-
-        # Build final authenticated headers with session ID (if applicable)
-        headers = await build_authenticated_headers(
-            oauth_service=ctx.request_context.lifespan_context.oauth_service,
-            server=server,
-            auth_context=user_context,
-            additional_headers=additional_headers,
-            state_metadata=state_metadata,
-            redis_client=ctx.request_context.lifespan_context.redis_client,
-        )
-
-        # Build MCP JSON-RPC request
-        mcp_request_body = {
-            "jsonrpc": "2.0",
-            "id": ctx.request_id,  # Forward the "id" field from clients of mcpgw to downstream MCPs.
-            "method": "tools/call",
-            "params": {"name": tool_name, "arguments": arguments},
-        }
-        logger.info(f"MCP JSON-RPC request body: {json.dumps(mcp_request_body, indent=2)}")
-
-        resp_obj = await _downstream_tool_call(
-            ctx,
-            target_url,
-            mcp_request_body,
-            headers,
-            transport_type=transport_type,
-            sse_url=target_url if transport_type == "sse" else None,
-        )
-
-        if "error" in resp_obj:
-            error_data = ErrorData.model_validate(resp_obj["error"])
-
-            logger.error(
-                "Downstream MCP server returned an error response: "
-                f"code {error_data.code}, messsage: {error_data.message}, data: {str(error_data.data)}"
-            )
-
-            raise McpError(error_data)
-        elif "result" in resp_obj:
-            return CallToolResult.model_validate(resp_obj["result"])
-        else:
-            raise MisimplementedSpecException("Downstream MCP did not return a JSONRPCResponse message.")
-    except UrlElicitationRequiredException as exc:
-        auth_url, server_name = exc.auth_url, exc.server_name
-
-        template = (
-            f"In order to make tool calls to the '{server_name}' MCP server, the client must first perform "
-            "out-of-band re-authorization in a browser window. Please direct the client to open the {} "
-            "in a browser window, finish re-authorization, and come back to retry the same tool call again."
-        )
-
-        elicitation_id = parse_elicitation_id(auth_url)
-        if elicitation_id is not None and _support_url_elicitation(ctx.session.client_params):
-            msg = template.format("provided URL")
-
-            logger.info(f"sending back the URL mode elicitation error response with ID {elicitation_id}.")
-
-            _get_session_store(ctx).append(elicitation_id, ctx.session)
-
-            raise UrlElicitationRequiredError(
-                # This message is for LLM.
-                message=msg,
-                elicitations=[
-                    ElicitRequestURLParams(
-                        elicitationId=elicitation_id,
-                        url=auth_url,
-                        # This message is for human users.
-                        message=(
-                            f"The tokens for the '{server_name}' MCP server managed by Jarvis Registry have expired. "
-                            "Please follow the URL to perform re-authorization in a browser window and come back again."
-                        ),
+                content=[
+                    TextContent(
+                        type="text",
+                        text=template.format(f"URL `{auth_url}`"),
                     )
                 ],
+                isError=True,
             )
+        except (McpGatewayException, McpError):
+            # These exceptions have been logged and should just bubble up to the caller as a way of communication.
+            # __aexit__ records status=failure with error_type = exception class name.
+            raise
+        except Exception as exc:
+            # These are unclassified runtime exceptions. Log them and wrap them as InternalServerException
+            # to avoid leaking implementation details to our clients.
+            msg = "unexpected exception during execute_tool_impl"
+            logger.exception(msg)  # Want stack trace here.
 
-        logger.info(
-            "Client doesn't support URL mode elicitation. Sending back a tool call result to prompt LLM for re-auth."
-        )
-
-        return CallToolResult(
-            content=[
-                TextContent(
-                    type="text",
-                    text=template.format(f"URL `{auth_url}`"),
-                )
-            ],
-            isError=True,
-        )
-    except (McpGatewayException, McpError):
-        # These exceptions have been logged and should just bubble up to the caller as a way of communication.
-        raise
-    except Exception as exc:
-        # These are unclassified runtime exceptions. Log them and wrap them as InternalServerException
-        # to avoid leaking implementation details to our clients.
-        msg = "unexpected exception during execute_tool_impl"
-        logger.exception(msg)  # Want stack trace here.
-
-        raise InternalServerException(msg) from exc
+            raise InternalServerException(msg) from exc
 
 
 async def read_resource_impl(
@@ -464,55 +478,59 @@ async def read_resource_impl(
             resource_uri="tavily://search-results/AI"
         )
     """
-    try:
-        username = user_context.get("username", "unknown")
-        logger.info(f"resource read request from user '{username}' - {resource_uri} on {server_id}")
+    async with ResourceAccessMetricsContext() as metrics_ctx:
+        try:
+            username = user_context.get("username", "unknown")
+            logger.info(f"resource read request from user '{username}' - {resource_uri} on {server_id}")
 
-        server = await _get_server_service(ctx).get_server_by_id(server_id)
-        if server is None:
-            # Invalid input. Return a JSON-RPC **result response** with `isError=True` so that LLM can try another request.
-            return CallToolResult(
-                content=[TextContent(type="text", text="There is no server with the given server_id.")],
-                isError=True,
-            )
-
-        logger.info(f"Reading resource: {resource_uri} from server {server_id}")
-
-        # Track server request count
-        record_server_request(server.serverName)
-
-        # MOCK: Return hardcoded response for POC
-        logger.info(f"(MOCK) Returning cached search results for: {resource_uri}")
-
-        # MOCK, NOTE: Use the following structure to return to our client the result of a `resource/read` from downstream MCPs.
-        # Regarding the use of `EmbeddedResource`, see https://modelcontextprotocol.io/specification/2025-11-25/schema#embeddedresource
-        # Regarding the use of the `_meta` field, see https://modelcontextprotocol.io/specification/2025-11-25/basic/index#_meta
-        # In general, the `_meta` field should be attached to the **most specific** object whose schema allows it.
-        return CallToolResult(
-            content=[
-                EmbeddedResource(
-                    type="resource",
-                    resource=TextResourceContents(
-                        uri=AnyUrl(resource_uri),
-                        text='{"results": [{"title": "AI News", "snippet": "Latest AI developments..."}]}',
-                        mimeType="application/json",
-                        _meta=get_meta_field(True, server_id, server.path),
-                    ),
+            server = await _get_server_service(ctx).get_server_by_id(server_id)
+            if server is None:
+                # Invalid input. Return a JSON-RPC **result response** with `isError=True` so that LLM can try another request.
+                metrics_ctx.set_error_type("server_not_found")
+                return CallToolResult(
+                    content=[TextContent(type="text", text="There is no server with the given server_id.")],
+                    isError=True,
                 )
-            ]
-        )
 
-    except Exception:
-        logger.exception(f"resource read failed for server_id: {server_id}")
+            metrics_ctx.set_server_name(server.serverName)
 
-        if server is not None:
-            err_msg = (
-                f"failed to read resource from downstream server {server.path if server.path else server.serverName}."
+            logger.info(f"Reading resource: {resource_uri} from server {server_id}")
+
+            # Track server request count
+            record_server_request(server.serverName)
+
+            # MOCK: Return hardcoded response for POC
+            logger.info(f"(MOCK) Returning cached search results for: {resource_uri}")
+
+            # MOCK, NOTE: Use the following structure to return to our client the result of a `resource/read` from downstream MCPs.
+            # Regarding the use of `EmbeddedResource`, see https://modelcontextprotocol.io/specification/2025-11-25/schema#embeddedresource
+            # Regarding the use of the `_meta` field, see https://modelcontextprotocol.io/specification/2025-11-25/basic/index#_meta
+            # In general, the `_meta` field should be attached to the **most specific** object whose schema allows it.
+            result = CallToolResult(
+                content=[
+                    EmbeddedResource(
+                        type="resource",
+                        resource=TextResourceContents(
+                            uri=AnyUrl(resource_uri),
+                            text='{"results": [{"title": "AI News", "snippet": "Latest AI developments..."}]}',
+                            mimeType="application/json",
+                            _meta=get_meta_field(True, server_id, server.path),
+                        ),
+                    )
+                ]
             )
-        else:
-            err_msg = "failed to read resource from downstream server."
+            metrics_ctx.set_success(not result.isError)
+            return result
 
-        raise InternalServerException(err_msg)
+        except Exception:
+            logger.exception(f"resource read failed for server_id: {server_id}")
+
+            if server is not None:
+                err_msg = f"failed to read resource from downstream server {server.path if server.path else server.serverName}."
+            else:
+                err_msg = "failed to read resource from downstream server."
+
+            raise InternalServerException(err_msg)
 
 
 async def execute_prompt_impl(
@@ -544,75 +562,81 @@ async def execute_prompt_impl(
             }
         )
     """
-    try:
-        username = user_context.get("username", "unknown")
-        logger.info(f"Prompt execution request from user '{username}': {prompt_name} on {server_id}")
+    async with PromptExecutionMetricsContext(prompt_name=prompt_name) as metrics_ctx:
+        try:
+            username = user_context.get("username", "unknown")
+            logger.info(f"Prompt execution request from user '{username}': {prompt_name} on {server_id}")
 
-        server = await _get_server_service(ctx).get_server_by_id(server_id)
-        if server is None:
-            # Invalid input. Return a JSON-RPC **result response** with `isError=True` so that LLM can try another request.
-            return CallToolResult(
-                content=[TextContent(type="text", text="There is no server with the given server_id.")],
-                isError=True,
+            server = await _get_server_service(ctx).get_server_by_id(server_id)
+            if server is None:
+                # Invalid input. Return a JSON-RPC **result response** with `isError=True` so that LLM can try another request.
+                metrics_ctx.set_error_type("server_not_found")
+                return CallToolResult(
+                    content=[TextContent(type="text", text="There is no server with the given server_id.")],
+                    isError=True,
+                )
+
+            metrics_ctx.set_server_name(server.serverName)
+
+            logger.info(f"Executing prompt: {prompt_name} on server {server_id}")
+
+            # Track server request count
+            record_server_request(server.serverName)
+
+            # MOCK: Return hardcoded prompt response for POC
+            topic = arguments.get("topic", "general topic") if arguments is not None else "general topic"
+            depth = arguments.get("depth", "basic") if arguments is not None else "basic"
+
+            logger.info(f"(MOCK) Returning prompt messages for: {prompt_name} (topic={topic}, depth={depth})")
+
+            # MOCK, NOTE: The client is using a tool call of mcpgw to fetch prompts from downstream MCP servers.
+            # Therefore our handler function must return a CallToolResult, not a GetPromptResult, in order to be spec-compliant.
+            # Maybe one day the MCP spec will explicitly specify the response schema in this forwarding-prompts-via-tool scenario.
+            # Until then, we need to return all prompt texts combined, possibly with some prefix,
+            # because the `content` field in CallToolResult is required.
+            combined_prompt_text = "\n\n".join(
+                [
+                    "The client is using a tool call of mcpgw to fetch prompts from downstream MCP servers.",
+                    "Therefore our handler function must return a CallToolResult, instead of GetPromptResult.",
+                    "Maybe one day the MCP spec will explicitly specify the response schema in this forwarding-prompts-via-tool scenario.",
+                    "Until then, we simply return all prompt texts joined by newlines.",
+                ]
             )
 
-        logger.info(f"Executing prompt: {prompt_name} on server {server_id}")
-
-        # Track server request count
-        record_server_request(server.serverName)
-
-        # MOCK: Return hardcoded prompt response for POC
-        topic = arguments.get("topic", "general topic") if arguments is not None else "general topic"
-        depth = arguments.get("depth", "basic") if arguments is not None else "basic"
-
-        logger.info(f"(MOCK) Returning prompt messages for: {prompt_name} (topic={topic}, depth={depth})")
-
-        # MOCK, NOTE: The client is using a tool call of mcpgw to fetch prompts from downstream MCP servers.
-        # Therefore our handler function must return a CallToolResult, not a GetPromptResult, in order to be spec-compliant.
-        # Maybe one day the MCP spec will explicitly specify the response schema in this forwarding-prompts-via-tool scenario.
-        # Until then, we need to return all prompt texts combined, possibly with some prefix,
-        # because the `content` field in CallToolResult is required.
-        combined_prompt_text = "\n\n".join(
-            [
-                "The client is using a tool call of mcpgw to fetch prompts from downstream MCP servers.",
-                "Therefore our handler function must return a CallToolResult, instead of GetPromptResult.",
-                "Maybe one day the MCP spec will explicitly specify the response schema in this forwarding-prompts-via-tool scenario.",
-                "Until then, we simply return all prompt texts joined by newlines.",
-            ]
-        )
-
-        # MOCK, NOTE: Return hardcoded prompt response for POC. Maybe we can include the `result` field of the JSON-RPC
-        # response from downstream MCP prompt call as the optional `structuredContent` field.
-        return CallToolResult(
-            content=[
-                TextContent(type="text", text=combined_prompt_text, _meta=get_meta_field(True, server_id, server.path))
-            ],
-            structuredContent={
-                "description": f"This is the structured response from the {prompt_name} prompt forwarded to downstream MCP server {server.serverName}",
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": {
-                            "type": "text",
-                            "text": f"You are a research assistant specializing in {topic}. Provide {depth} analysis.",
-                        },
-                    },
-                    {"role": "user", "content": {"type": "text", "text": f"Research and analyze: {topic}"}},
+            # MOCK, NOTE: Return hardcoded prompt response for POC. Maybe we can include the `result` field of the JSON-RPC
+            # response from downstream MCP prompt call as the optional `structuredContent` field.
+            result = CallToolResult(
+                content=[
+                    TextContent(
+                        type="text", text=combined_prompt_text, _meta=get_meta_field(True, server_id, server.path)
+                    )
                 ],
-            },
-        )
-
-    except Exception:
-        logger.exception(f"Prompt execution failed for server_id: {server_id}")
-
-        if server is not None:
-            err_msg = (
-                f"failed to execute prompt from downstream server {server.path if server.path else server.serverName}."
+                structuredContent={
+                    "description": f"This is the structured response from the {prompt_name} prompt forwarded to downstream MCP server {server.serverName}",
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": {
+                                "type": "text",
+                                "text": f"You are a research assistant specializing in {topic}. Provide {depth} analysis.",
+                            },
+                        },
+                        {"role": "user", "content": {"type": "text", "text": f"Research and analyze: {topic}"}},
+                    ],
+                },
             )
-        else:
-            err_msg = "failed to execute prompt from downstream server."
+            metrics_ctx.set_success(not result.isError)
+            return result
 
-        raise InternalServerException(err_msg)
+        except Exception:
+            logger.exception(f"Prompt execution failed for server_id: {server_id}")
+
+            if server is not None:
+                err_msg = f"failed to execute prompt from downstream server {server.path if server.path else server.serverName}."
+            else:
+                err_msg = "failed to execute prompt from downstream server."
+
+            raise InternalServerException(err_msg)
 
 
 # ============================================================================
