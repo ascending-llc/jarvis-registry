@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from datetime import date, datetime
 from typing import TYPE_CHECKING, Any
@@ -52,6 +53,16 @@ _ON_TIMEOUT_TO_AGNO: dict[OnTimeoutPolicy, str] = {
 }
 
 
+def _try_parse_json(value: Any) -> Any:
+    """If value is a JSON-parseable string, return the parsed object; else return value unchanged."""
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except (json.JSONDecodeError, ValueError):
+            return value
+    return value
+
+
 def _json_safe(value: Any) -> Any:
     """Return a Mongo-safe, debug-friendly representation of workflow input values."""
     if value is None or isinstance(value, (str, int, float, bool)):
@@ -87,7 +98,7 @@ def _serialize_step_input(step_input: StepInput) -> dict[str, Any]:
     """Serialize the fields users need to debug how a node was invoked."""
     previous_outputs = step_input.previous_step_outputs or {}
     return {
-        "input": _json_safe(step_input.input),
+        "input": _json_safe(_try_parse_json(step_input.input)),
         "previous_step_content": _json_safe(step_input.previous_step_content),
         "previous_step_outputs": {
             str(name): _serialize_step_output(output) for name, output in previous_outputs.items()

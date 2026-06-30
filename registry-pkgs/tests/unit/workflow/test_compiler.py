@@ -224,6 +224,50 @@ class TestWorkflowCompiler:
         assert snapshots[node.id]["input"] == {"prompt": "hello"}
         assert snapshots[node.id]["previous_step_content"] == "prior"
 
+    @pytest.mark.asyncio
+    async def test_step_executor_parses_json_string_input_into_dict(self):
+        """When the user triggers a workflow with a JSON payload, extract_user_text falls
+        back to json.dumps(initial_input), so StepInput.input arrives as a JSON-encoded
+        string. The snapshot must store the parsed object, not the escaped string."""
+        node = _step_node("fetch", "fetcher")
+        definition = _workflow_definition([node])
+        workflow = compiler.compile_workflow(
+            definition,
+            _workflow_run(),
+            executor_registry={"fetcher": _executor},
+        )
+        session_state = {}
+        raw_payload = '{"method": "message/send", "params": {"text": "hi"}}'
+
+        await workflow.steps[0].executor(
+            StepInput(input=raw_payload),
+            session_state,
+        )
+
+        snapshots = session_state[compiler.NODE_INPUT_SNAPSHOTS_KEY]
+        assert snapshots[node.id]["input"] == {"method": "message/send", "params": {"text": "hi"}}
+
+    @pytest.mark.asyncio
+    async def test_step_executor_preserves_plain_text_input_as_string(self):
+        """Plain natural-language input (LLM prompts, prose) is not valid JSON and must
+        pass through unchanged."""
+        node = _step_node("fetch", "fetcher")
+        definition = _workflow_definition([node])
+        workflow = compiler.compile_workflow(
+            definition,
+            _workflow_run(),
+            executor_registry={"fetcher": _executor},
+        )
+        session_state = {}
+
+        await workflow.steps[0].executor(
+            StepInput(input="3+4 and weather in London"),
+            session_state,
+        )
+
+        snapshots = session_state[compiler.NODE_INPUT_SNAPSHOTS_KEY]
+        assert snapshots[node.id]["input"] == "3+4 and weather in London"
+
 
 @pytest.mark.unit
 class TestStepConfig:
