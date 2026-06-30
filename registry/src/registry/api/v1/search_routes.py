@@ -164,9 +164,12 @@ async def semantic_search(
     if not request.state.is_authenticated:
         raise HTTPException(detail="Not authenticated", status_code=401)
 
+    user_context = request.state.user
+
     try:
         raw = await search_service.semantic_search(
             query=search_request.query,
+            user_context=user_context,
             entity_types=search_request.entityTypes,
             max_results=search_request.maxResults,
             include_disabled=search_request.includeDisabled,

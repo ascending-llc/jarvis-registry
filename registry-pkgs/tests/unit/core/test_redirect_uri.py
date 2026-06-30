@@ -28,6 +28,10 @@ class TestValidateRegistrationRedirectUri:
             "http://127.0.0.1/cb",
             "http://[::1]:5000/cb",
             "https://example.com:8443/cb",
+            # Native-app private-use schemes (RFC 8252 §7.1) — e.g. Cline / VS Code extensions.
+            "vscode://saoudrizwan.claude-dev/oauth",
+            "cline://oauth/callback",
+            "com.example.app:/oauth2redirect",
         ],
     )
     def test_valid_uris_pass(self, uri: str) -> None:
@@ -36,9 +40,9 @@ class TestValidateRegistrationRedirectUri:
     @pytest.mark.parametrize(
         "uri",
         [
-            "ftp://example.com/cb",  # bad scheme
             "https:///cb",  # no host
             "https://example.com/cb#frag",  # fragment
+            "vscode://app/cb#frag",  # fragment on a native scheme
             "http://example.com/cb",  # non-loopback http
             "https://10.0.0.5/cb",  # RFC-1918
             "https://172.16.3.4/cb",  # RFC-1918
@@ -46,6 +50,20 @@ class TestValidateRegistrationRedirectUri:
             "https://169.254.1.1/cb",  # link-local
             "https://127.0.0.1/cb",  # loopback IP over https
             "https://0.0.0.0/cb",  # unspecified
+            # Dangerous browser-executing schemes are always rejected.
+            "javascript:alert(1)",
+            "data:text/html;base64,PHNjcmlwdD4=",
+            "file:///etc/passwd",
+            # Network / remote-transport schemes would leak the code off-device — rejected.
+            "ftp://attacker.example.com/cb",
+            "ftps://attacker.example.com/cb",
+            "gopher://attacker.example.com/cb",
+            "ws://attacker.example.com/cb",
+            "wss://attacker.example.com/cb",
+            "mailto:attacker@example.com",
+            "sms:+15551234567",
+            "tel:+15551234567",
+            "cb-only",  # no scheme
         ],
     )
     def test_invalid_uris_raise(self, uri: str) -> None:

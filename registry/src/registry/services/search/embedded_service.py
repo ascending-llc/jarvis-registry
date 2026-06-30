@@ -495,6 +495,7 @@ class EmbeddedFaissService(VectorSearchService):
         query: str,
         entity_types: list[str] | None = None,
         max_results: int = 20,
+        allowed_server_ids: list[str] | None = None,
     ) -> dict[str, list[dict[str, Any]]]:
         """
         Run a semantic search across MCP servers, their tools, and A2A agents.
@@ -503,6 +504,9 @@ class EmbeddedFaissService(VectorSearchService):
             query: Natural language query text
             entity_types: Optional list of entity filters ("mcp_server", "tool", "a2a_agent")
             max_results: Maximum results to return per entity collection
+            allowed_server_ids: Accepted for interface parity with ExternalVectorSearchService;
+                not enforced here. This legacy FAISS fallback is not wired into the app and has
+                no server-ID metadata to filter on.
 
         Returns:
             Dict with "servers", "tools", and "agents" result lists

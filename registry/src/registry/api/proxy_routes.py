@@ -657,6 +657,7 @@ async def dynamic_mcp_post_proxy(
     oauth_service: MCPOAuthService = Depends(get_oauth_service),
     proxy_client: httpx.AsyncClient = Depends(get_mcp_proxy_client),
     redis_client: Redis = Depends(get_redis_client),
+    acl_service: ACLService = Depends(get_acl_service),
 ):
     """
     Dynamic catch-all route for MCP server proxying, but only works for POST.
@@ -721,6 +722,19 @@ async def dynamic_mcp_post_proxy(
             ),
         )
 
+    try:
+        await acl_service.check_user_permission(
+            user_id=PydanticObjectId(auth_context["user_id"]),
+            resource_type=ResourceType.MCPSERVER.value,
+            resource_id=server.id,
+            required_permission="VIEW",
+        )
+    except HTTPException:
+        return JSONResponse(
+            status_code=200,
+            content=_build_jsonrpc_error_result(request_id, "Access denied to this MCP server."),
+        )
+
     # Check if server is enabled
     config = server.config or {}
     if not config.get("enabled", False):
@@ -778,6 +792,7 @@ async def dynamic_mcp_get_proxy(
     oauth_service: MCPOAuthService = Depends(get_oauth_service),
     proxy_client: httpx.AsyncClient = Depends(get_mcp_proxy_client),
     redis_client: Redis = Depends(get_redis_client),
+    acl_service: ACLService = Depends(get_acl_service),
 ):
     """
     Dynamic catch-all route for MCP server proxying, but only works for GET, i.e. the event stream.
@@ -816,6 +831,19 @@ async def dynamic_mcp_get_proxy(
             content={
                 "detail": f"No MCP server is registered at path '{server_path}'. Verify the server path and try again."
             },
+        )
+
+    try:
+        await acl_service.check_user_permission(
+            user_id=PydanticObjectId(auth_context["user_id"]),
+            resource_type=ResourceType.MCPSERVER.value,
+            resource_id=server.id,
+            required_permission="VIEW",
+        )
+    except HTTPException:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Access denied to this MCP server."},
         )
 
     # Check if server is enabled

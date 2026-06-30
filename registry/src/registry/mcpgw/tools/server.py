@@ -10,6 +10,8 @@ import logging
 from collections.abc import Callable
 from typing import Annotated, Any
 
+from beanie import PydanticObjectId
+from bson import ObjectId
 from httpx_sse import EventSource
 from mcp.server.fastmcp import Context
 from mcp.server.session import ServerSession
@@ -26,6 +28,8 @@ from mcp.types import (
 from pydantic import Field
 from pydantic.networks import AnyUrl
 
+from registry_pkgs.models import ResourceType
+
 from ...auth.dependencies import UserContextDict
 from ...auth.oauth.types import ClientBranding, StateMetadata
 from ...core.exceptions import (
@@ -36,6 +40,7 @@ from ...core.exceptions import (
     UrlElicitationRequiredException,
 )
 from ...core.mcp_client import call_tool_via_sse_ephemeral
+from ...services.access_control_service import ACLService
 from ...utils.otel_metrics import record_server_request
 from ..core.types import McpAppContext
 from .types import get_meta_field
@@ -60,6 +65,31 @@ def _get_session_store(ctx: Context[ServerSession, McpAppContext]):
 
 def _get_mcp_client_service(ctx: Context[ServerSession, McpAppContext]):
     return ctx.request_context.lifespan_context.mcp_client_service
+
+
+def _extract_authenticated_user_context(ctx: Context[ServerSession, McpAppContext]) -> UserContextDict | None:
+    try:
+        user_context: UserContextDict = ctx.request_context.request.state.user  # type: ignore[union-attr]
+    except AttributeError:
+        return None
+
+    user_id = user_context.get("user_id") if user_context else None
+    if not user_id or not ObjectId.is_valid(user_id):
+        return None
+
+    return user_context
+
+
+async def _user_can_view_server(
+    acl_service: ACLService,
+    user_id: str,
+    server_id: PydanticObjectId,
+) -> bool:
+    accessible = await acl_service.get_accessible_resource_ids(
+        user_id=PydanticObjectId(user_id),
+        resource_type=ResourceType.MCPSERVER.value,
+    )
+    return str(server_id) in accessible
 
 
 async def _downstream_tool_call(
@@ -267,10 +297,18 @@ async def execute_tool_impl(
     """
 
     try:
-        user_context: UserContextDict = ctx.request_context.request.state.user  # type: ignore[union-attr]
+        user_context = _extract_authenticated_user_context(ctx)
+        if user_context is None:
+            logger.warning(
+                "execute_tool: missing or invalid authenticated user context; rejecting server_id=%s", server_id
+            )
+            return CallToolResult(
+                content=[TextContent(type="text", text="Authentication required: missing user context.")],
+                isError=True,
+            )
 
         username = user_context.get("username", "unknown")
-        user_id = user_context.get("user_id", "unknown")
+        user_id = user_context["user_id"]
         logger.info(f"Tool execution from user '{username}:{user_id}': {tool_name} on {server_id}")
 
         server = await _get_server_service(ctx).get_server_by_id(server_id)
@@ -278,6 +316,24 @@ async def execute_tool_impl(
             # Invalid input. Return a JSON-RPC **result response** with `isError=True` so that LLM can try another request.
             return CallToolResult(
                 content=[TextContent(type="text", text="There is no server with the given server_id.")],
+                isError=True,
+            )
+
+        lifespan = ctx.request_context.lifespan_context
+        if not await _user_can_view_server(lifespan.acl_service, user_id, server.id):
+            logger.warning(
+                "execute_tool: user_id=%s denied access to server_id=%s path=%s",
+                user_id,
+                server_id,
+                server.path,
+            )
+            return CallToolResult(
+                content=[
+                    TextContent(
+                        type="text",
+                        text=f"Access denied: server {server_id!r} is not in your accessible set.",
+                    )
+                ],
                 isError=True,
             )
 

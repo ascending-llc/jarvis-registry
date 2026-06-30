@@ -600,9 +600,11 @@ def _validate_downstream_authorize_params(
     """Reject unsupported OAuth params before the captured ``redirect_uri`` becomes a redirect sink.
 
     The registry only ever drives a ``code`` + S256 PKCE flow and later 302-redirects the browser to
-    ``redirect_uri`` with the authorization code attached, so reject non-http schemes
-    (``javascript:``, ``data:``) and malformed values before they reach that sink. Host allowlisting
-    is enforced at authorize time via ``_validate_registered_redirect_uri``.
+    ``redirect_uri`` with the authorization code attached, so reject dangerous browser-executing
+    schemes (``javascript:``, ``data:``) and malformed values before they reach that sink. Native-app
+    private-use schemes (RFC 8252 §7.1, e.g. ``vscode://``) are allowed structurally — cross-client
+    abuse is then prevented because ``_validate_registered_redirect_uri`` requires the value to match a
+    redirect_uri the client already registered via DCR, which also enforces host allowlisting.
     """
     if response_type != DownstreamOAuthConstants.SUPPORTED_RESPONSE_TYPE:
         raise HTTPException(

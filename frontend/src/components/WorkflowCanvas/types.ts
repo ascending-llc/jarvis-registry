@@ -144,9 +144,16 @@ export interface LogicStep {
 /** Run history entry */
 export interface RunEntry {
   id: string;
+  fullId: string;
+  type: 'workflow' | 'node';
   status: 'ok' | 'fail' | 'live' | 'paused';
   time: string;
   dur?: string;
   err?: string;
   actions?: ('pause' | 'cancel' | 'resume' | 'retry')[];
+  input?: Record<string, any>;
+  output?: Record<string, any>;
+  nodeName?: string;
+  nodeId?: string;
+  nodeType?: string;
 }

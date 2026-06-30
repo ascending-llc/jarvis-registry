@@ -11,6 +11,7 @@ interface ResizablePanelProps {
   header: React.ReactNode;
   tab: 'props' | 'hist';
   onTabChange: (tab: 'props' | 'hist') => void;
+  showHistoryTab?: boolean;
   children: React.ReactNode;
 }
 
@@ -20,6 +21,7 @@ export const ResizablePanel: React.FC<ResizablePanelProps> = ({
   header,
   tab,
   onTabChange,
+  showHistoryTab = true,
   children,
 }) => {
   const [width, setWidth] = useState(DEFAULT_W);
@@ -106,17 +108,19 @@ export const ResizablePanel: React.FC<ResizablePanelProps> = ({
               >
                 Properties
               </button>
-              <button
-                type='button'
-                className='flex-1 px-1.5 py-2.5 text-center font-sans text-[11.5px] font-medium cursor-pointer bg-none border-none transition-all duration-200'
-                style={{
-                  color: tab === 'hist' ? 'var(--jarvis-primary-text)' : 'var(--jarvis-subtle)',
-                  borderBottom: tab === 'hist' ? '2px solid var(--jarvis-primary-hover)' : '2px solid transparent',
-                }}
-                onClick={() => onTabChange('hist')}
-              >
-                Run history
-              </button>
+              {showHistoryTab && (
+                <button
+                  type='button'
+                  className='flex-1 px-1.5 py-2.5 text-center font-sans text-[11.5px] font-medium cursor-pointer bg-none border-none transition-all duration-200'
+                  style={{
+                    color: tab === 'hist' ? 'var(--jarvis-primary-text)' : 'var(--jarvis-subtle)',
+                    borderBottom: tab === 'hist' ? '2px solid var(--jarvis-primary-hover)' : '2px solid transparent',
+                  }}
+                  onClick={() => onTabChange('hist')}
+                >
+                  Run history
+                </button>
+              )}
             </div>
           </>
         )}

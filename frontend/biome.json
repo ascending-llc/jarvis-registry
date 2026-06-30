@@ -14,7 +14,7 @@
     }
   },
   "files": {
-    "includes": ["**", "!**/assets", "!**/public"]
+    "includes": ["**", "!**/docs", "!**/assets", "!**/public"]
   },
   "formatter": {
     "enabled": true,
@@ -41,7 +41,8 @@
     "rules": {
       "a11y": "off",
       "complexity": {
-        "noBannedTypes": "off"
+        "noBannedTypes": "off",
+        "noImportantStyles": "off"
       },
       "correctness": {
         "useExhaustiveDependencies": "off"
