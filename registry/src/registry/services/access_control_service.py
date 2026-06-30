@@ -429,6 +429,13 @@ class ACLService:
         Performs one targeted MongoDB query using $or to match both the
         user-specific ACL entry and any PUBLIC entry for the resource.
         User-specific entries take precedence (sorted by permBits descending).
+
+        Returns an empty ``ResourcePermissions`` when no ACL entry is found.
+
+        Raises:
+            RuntimeError: If the underlying ACL lookup fails (e.g. DB outage).
+                Callers must not interpret this as "no permissions" — do so
+                would silently deny access instead of surfacing the failure.
         """
         try:
             group_ids = await self._resolve_group_ids_for_user(user_id, session=session)
@@ -458,12 +465,11 @@ class ACLService:
                 SHARE=bool(int(acl_entry.permBits) & PermissionBits.SHARE),
             )
         except Exception as e:
-            logger.error(
-                "Error fetching permissions for user %s on %s/%s: %s",
+            logger.exception(
+                "Error fetching permissions for user %s on %s/%s",
                 user_id,
                 resource_type,
                 resource_id,
-                e,
             )
             raise RuntimeError(f"Failed to fetch permissions for {resource_type}/{resource_id}") from e
 
@@ -480,9 +486,14 @@ class ACLService:
         eliminating N+1 round-trips when callers (e.g. list endpoints) need
         per-resource permissions for many resources at once.
 
-        Missing resources are returned with an empty ``ResourcePermissions``
-        (mirrors the single-resource fallback) so callers can index without
-        ``KeyError`` checks.
+        Resources with no matching ACL entry are returned with an empty
+        ``ResourcePermissions`` so callers can index without ``KeyError`` checks.
+
+        Raises:
+            RuntimeError: If the underlying ACL lookup fails (e.g. DB outage).
+                Callers must not treat this as "no permissions for all resources"
+                — doing so would silently deny access instead of surfacing the
+                failure.
         """
         result: dict[PydanticObjectId, ResourcePermissions] = {rid: ResourcePermissions() for rid in resource_ids}
         if not resource_ids:
@@ -504,11 +515,10 @@ class ACLService:
                 .to_list()
             )
         except Exception as e:
-            logger.error(
-                "Error batch-fetching permissions for user %s on %s: %s",
+            logger.exception(
+                "Error batch-fetching permissions for user %s on %s",
                 user_id,
                 resource_type,
-                e,
             )
             raise RuntimeError(f"Failed to batch-fetch permissions for {resource_type}") from e
 

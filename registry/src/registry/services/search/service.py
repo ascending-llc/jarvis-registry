@@ -148,7 +148,7 @@ class SearchService:
                     allowed_server_ids = None
                 if allowed_server_ids:
                     results.extend(await self._search_mcp_documents(search, query, mcp_types, allowed_server_ids))
-                else:
+                elif allowed_server_ids is not None:
                     logger.info("User has no accessible MCP servers — skipping MCP search")
 
             if a2a_types:
@@ -165,7 +165,7 @@ class SearchService:
                         results.extend(await self._search_a2a_documents(search, query, a2a_types, allowed_agent_ids))
                     except RuntimeError as exc:
                         logger.warning("A2A vector search unavailable, skipping A2A results: %s", exc)
-                else:
+                elif allowed_agent_ids is not None:
                     logger.info("User has no accessible A2A agents — skipping A2A search")
 
             # Re-sort merged results by relevance_score (desc) and cap at top_n
