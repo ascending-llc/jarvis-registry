@@ -134,6 +134,24 @@ async def test_execute_tool_impl_acl_denied_returns_error(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_execute_tool_impl_acl_runtime_error_returns_retryable_error(monkeypatch):
+    server_id = str(PydanticObjectId())
+    ctx = _make_ctx()
+    ctx.request_context.lifespan_context.server_service.get_server_by_id.return_value = _make_server(server_id)
+    ctx.request_context.lifespan_context.acl_service.get_accessible_resource_ids.side_effect = RuntimeError(
+        "acl unavailable"
+    )
+    downstream_call = AsyncMock()
+    monkeypatch.setattr(server, "_downstream_tool_call", downstream_call)
+
+    result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
+
+    assert result.isError is True
+    assert "Service temporarily unavailable" in result.content[0].text
+    downstream_call.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_execute_tool_impl_acl_allowed_proceeds(monkeypatch):
     server_id = str(PydanticObjectId())
     ctx = _make_ctx(accessible_server_ids=[server_id])

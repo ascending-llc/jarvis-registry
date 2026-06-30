@@ -350,6 +350,29 @@ async def test_list_workflows_maps_acl_runtime_error_to_503():
 
 
 @pytest.mark.asyncio
+async def test_list_workflows_maps_batch_permission_runtime_error_to_503():
+    """A batch workflow permission lookup outage must surface as 503, not empty permissions."""
+    wf = _fake_workflow()
+    user_context = {"user_id": str(PydanticObjectId()), "username": "u", "groups": [], "scopes": []}
+
+    mock_service = MagicMock()
+    mock_service.list_workflows = AsyncMock(return_value=([wf], 1))
+
+    mock_acl = MagicMock()
+    mock_acl.get_accessible_resource_ids = AsyncMock(return_value=[str(wf.id)])
+    mock_acl.get_user_permissions_for_resources = AsyncMock(side_effect=RuntimeError("acl unavailable"))
+
+    with pytest.raises(HTTPException) as exc_info:
+        await workflow_routes.list_workflows(
+            user_context=user_context,
+            workflow_service=mock_service,
+            acl_service=mock_acl,
+        )
+
+    assert exc_info.value.status_code == 503
+
+
+@pytest.mark.asyncio
 async def test_get_workflow_propagates_403_without_view():
     user_context = {"user_id": str(PydanticObjectId()), "username": "u", "groups": [], "scopes": []}
 

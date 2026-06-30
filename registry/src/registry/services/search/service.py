@@ -138,16 +138,28 @@ class SearchService:
             results: list = []
 
             if mcp_types:
-                allowed_server_ids = await self._get_accessible_ids(user_context, RegistryResourceType.MCP_SERVER.value)
+                try:
+                    allowed_server_ids = await self._get_accessible_ids(
+                        user_context,
+                        RegistryResourceType.MCP_SERVER.value,
+                    )
+                except RuntimeError as exc:
+                    logger.warning("ACL lookup failed for MCP servers, skipping: %s", exc)
+                    allowed_server_ids = None
                 if allowed_server_ids:
                     results.extend(await self._search_mcp_documents(search, query, mcp_types, allowed_server_ids))
                 else:
                     logger.info("User has no accessible MCP servers — skipping MCP search")
 
             if a2a_types:
-                allowed_agent_ids = await self._get_accessible_ids(
-                    user_context, RegistryResourceType.REMOTE_AGENT.value
-                )
+                try:
+                    allowed_agent_ids = await self._get_accessible_ids(
+                        user_context,
+                        RegistryResourceType.REMOTE_AGENT.value,
+                    )
+                except RuntimeError as exc:
+                    logger.warning("ACL lookup failed for A2A agents, skipping: %s", exc)
+                    allowed_agent_ids = None
                 if allowed_agent_ids:
                     try:
                         results.extend(await self._search_a2a_documents(search, query, a2a_types, allowed_agent_ids))

@@ -458,8 +458,14 @@ class ACLService:
                 SHARE=bool(int(acl_entry.permBits) & PermissionBits.SHARE),
             )
         except Exception as e:
-            logger.error(f"Error fetching permissions for user {user_id} on {resource_type}/{resource_id}: {e}")
-            return ResourcePermissions()
+            logger.error(
+                "Error fetching permissions for user %s on %s/%s: %s",
+                user_id,
+                resource_type,
+                resource_id,
+                e,
+            )
+            raise RuntimeError(f"Failed to fetch permissions for {resource_type}/{resource_id}") from e
 
     async def get_user_permissions_for_resources(
         self,
@@ -498,8 +504,13 @@ class ACLService:
                 .to_list()
             )
         except Exception as e:
-            logger.error(f"Error batch-fetching permissions for user {user_id} on {resource_type}: {e}")
-            return result
+            logger.error(
+                "Error batch-fetching permissions for user %s on %s: %s",
+                user_id,
+                resource_type,
+                e,
+            )
+            raise RuntimeError(f"Failed to batch-fetch permissions for {resource_type}") from e
 
         # Entries are sorted by permBits desc → the first one we see per
         # resource is the winner (matches single-resource precedence).
@@ -526,8 +537,9 @@ class ACLService:
         """
         Verify a user holds a specific permission on a resource.
 
-        Resolves permissions via ``get_user_permissions_for_resource`` and raises
-        HTTP 403 if the required permission flag is False.
+        Resolves permissions via ``get_user_permissions_for_resource``. Raises
+        HTTP 503 if ACL lookup is temporarily unavailable, or HTTP 403 if the
+        required permission flag is False.
 
         Args:
                 user_id: The user's ID.
@@ -539,14 +551,21 @@ class ACLService:
                 The resolved ResourcePermissions on success.
 
         Raises:
+                HTTPException(503): If the ACL lookup is temporarily unavailable.
                 HTTPException(403): If the user lacks the required permission.
         """
-        permissions = await self.get_user_permissions_for_resource(
-            user_id=user_id,
-            resource_type=resource_type,
-            resource_id=resource_id,
-            session=session,
-        )
+        try:
+            permissions = await self.get_user_permissions_for_resource(
+                user_id=user_id,
+                resource_type=resource_type,
+                resource_id=resource_id,
+                session=session,
+            )
+        except RuntimeError as e:
+            raise HTTPException(
+                status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Permission check temporarily unavailable. Please try again later.",
+            ) from e
         if not getattr(permissions, required_permission, False):
             raise HTTPException(
                 status_code=http_status.HTTP_403_FORBIDDEN,
