@@ -86,7 +86,6 @@ const WorkflowRegistryOrEdit: React.FC = () => {
       setWorkflow({
         name: searchParams.get('name') ?? 'New Workflow',
         description: '',
-        type: 'supervised',
       });
     }
   }, [id, searchParams]);
@@ -141,7 +140,6 @@ const WorkflowRegistryOrEdit: React.FC = () => {
         await SERVICES.WORKFLOW.createWorkflow({
           name: workflow?.name?.trim() || 'New Workflow',
           description: workflow?.description?.trim() || undefined,
-          type: workflow?.type ?? 'supervised',
           nodes: apiNodes,
           canvas: { viewport },
         });
@@ -179,7 +177,7 @@ const WorkflowRegistryOrEdit: React.FC = () => {
   };
 
   // ── Actions: Workflow metadata change (from PropsPanel) ──────────────────────
-  const handleWorkflowChange = (patch: Partial<Pick<Workflow, 'name' | 'description' | 'type'>>) => {
+  const handleWorkflowChange = (patch: Partial<Pick<Workflow, 'name' | 'description'>>) => {
     setWorkflow(prev => (prev ? { ...prev, ...patch } : prev));
     setHasChanges(true);
   };

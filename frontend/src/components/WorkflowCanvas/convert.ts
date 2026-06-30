@@ -16,6 +16,7 @@ const CANVAS_TO_API_NODE_TYPE: Record<string, ApiWorkflowNode['nodeType']> = {
   parallel: 'parallel',
   loop: 'loop',
   router: 'router',
+  gate: 'gate_placeholder' as any,
 };
 
 const API_TO_CANVAS_TYPE: Record<string, string> = {
@@ -72,6 +73,9 @@ const mapNodeToApi = (
       const pData = data as import('./types').ParallelNodeData;
       const branches = pData.branches ?? ['Branch A', 'Branch B'];
       apiNode.children = branches.map((_, i) => branchData[`branch-${i}`]?.[0]).filter(Boolean);
+      if (branches.some((_, i) => (branchData[`branch-${i}`]?.length ?? 0) > 1)) {
+        apiNode.config = { ...apiNode.config, _hasInvalidParallelBranch: true };
+      }
     } else {
       // loop nodes expect the full sequence from the 'body' handle
       apiNode.children = branchData.body ?? [];
@@ -113,13 +117,13 @@ const mapNodeToApi = (
   }
   if (node.type === 'gate') {
     const gateData = data as import('./types').GateNodeData;
-    apiNode.executorKey = 'sys.approval'; // Satisfy backend Pydantic validation
-    apiNode.config = {
-      ...apiNode.config,
-      reviewerPrompt: gateData.reviewerPrompt,
+    apiNode.executorKey = gateData.executorKey || '';
+    apiNode.humanReview = {
+      requiresConfirmation: true,
+      confirmationMessage: gateData.reviewerPrompt || 'Are you sure you want to proceed?',
       role: gateData.role,
-      timeout: gateData.timeout,
-      onTimeout: gateData.onTimeout,
+      timeoutSeconds: gateData.timeout ? parseInt(gateData.timeout, 10) || undefined : undefined,
+      onTimeout: (gateData.onTimeout as any) || 'cancel',
     };
   }
 
@@ -175,10 +179,14 @@ export const validateApiNodes = (apiNodes: ApiWorkflowNode[]): string | null => 
     const falseSteps = node.falseSteps ?? [];
     const choices = node.choices ?? [];
 
+    if (node.nodeType === ('gate_placeholder' as any)) {
+      return `Approval Gate 节点 "${node.name}" 必须紧接在 Agent 或 MCP 执行节点之前`;
+    }
+
     if (node.nodeType === 'step') {
       if (children.length > 0 || trueSteps.length > 0 || falseSteps.length > 0 || choices.length > 0)
         return `Step node "${node.name}" must not have nested branches`;
-      if (node.config?.canvasType !== 'gate' && !node.executorKey && (!node.a2aPool || node.a2aPool.length === 0)) {
+      if (!node.executorKey && (!node.a2aPool || node.a2aPool.length === 0)) {
         return `Node "${node.name}" requires an executor key or agent pool`;
       }
     }
@@ -213,6 +221,9 @@ export const validateApiNodes = (apiNodes: ApiWorkflowNode[]): string | null => 
       const expectedBranches = (node.config?.branches as string[] | undefined)?.length ?? 2;
       if (children.length < expectedBranches) {
         return `Parallel node "${node.name}" requires at least one node in every branch`;
+      }
+      if (node.config?._hasInvalidParallelBranch) {
+        return `Parallel branches in node "${node.name}" may contain only one node each. Use a nested container for multi-step branches.`;
       }
     }
 
@@ -253,7 +264,48 @@ export const canvasToApiNodes = (nodes: Node<NodeData>[], edges: Edge[]): ApiWor
   const roots = workNodes.filter(n => !targetIds.has(n.id));
 
   const visited = new Set<string>();
-  return roots.flatMap(n => buildSequence(n.id, nodeMap, edgesFromNode, addNodeIds, visited));
+  const rawNodes = roots.flatMap(n => buildSequence(n.id, nodeMap, edgesFromNode, addNodeIds, visited));
+  return mergeGates(rawNodes);
+};
+
+const mergeGates = (nodes: ApiWorkflowNode[]): ApiWorkflowNode[] => {
+  const merged: ApiWorkflowNode[] = [];
+  let pendingGate: ApiWorkflowNode | null = null;
+
+  for (let i = 0; i < nodes.length; i++) {
+    const n = nodes[i];
+    if (n.nodeType === ('gate_placeholder' as any)) {
+      if (pendingGate) {
+        merged.push(pendingGate);
+      }
+      pendingGate = n;
+    } else {
+      if (pendingGate) {
+        if (n.nodeType === 'step') {
+          n.humanReview = pendingGate.humanReview;
+          pendingGate = null;
+        } else {
+          merged.push(pendingGate);
+          pendingGate = null;
+        }
+      }
+
+      if (n.children) n.children = mergeGates(n.children);
+      if (n.trueSteps) n.trueSteps = mergeGates(n.trueSteps);
+      if (n.falseSteps) n.falseSteps = mergeGates(n.falseSteps);
+      if (n.choices) {
+        n.choices = n.choices.map(c => ({ ...c, steps: mergeGates(c.steps) }));
+      }
+
+      merged.push(n);
+    }
+  }
+
+  if (pendingGate) {
+    merged.push(pendingGate);
+  }
+
+  return merged;
 };
 
 // ─── API → canvas ─────────────────────────────────────────────────────────────
@@ -298,6 +350,13 @@ const apiNodeToCanvas = (w: ApiWorkflowNode): CanvasNode => {
     (data as import('./types').PoolNodeData).agents = w.a2aPool.map(
       id => ({ id, label: id, desc: '', path: id }) satisfies AgentInfo,
     );
+  if (canvasType === 'gate' && w.humanReview) {
+    const gateData = data as import('./types').GateNodeData;
+    gateData.reviewerPrompt = w.humanReview.confirmationMessage || '';
+    gateData.role = w.humanReview.role || '';
+    gateData.timeout = w.humanReview.timeoutSeconds?.toString() || '';
+    gateData.onTimeout = w.humanReview.onTimeout || 'cancel';
+  }
 
   // Restore branch/case labels for parallel & router handles
   if (canvasType === 'parallel') {
@@ -331,7 +390,25 @@ const processApiSequence = (
   let lastStepId: string | null = prevId;
   let lastHandle: string | null = prevHandle;
 
+  const flatNodes: ApiWorkflowNode[] = [];
   for (const apiNode of apiNodes) {
+    if (apiNode.humanReview) {
+      const gateApiNode: ApiWorkflowNode = {
+        id: `gate_${apiNode.id}`,
+        name: 'Approval Gate',
+        nodeType: 'gate_placeholder' as any,
+        position: apiNode.position ? { x: (apiNode.position.x ?? 0) - 220, y: apiNode.position.y ?? 0 } : undefined,
+        config: {
+          canvasType: 'gate',
+        },
+        humanReview: apiNode.humanReview,
+      };
+      flatNodes.push(gateApiNode);
+    }
+    flatNodes.push(apiNode);
+  }
+
+  for (const apiNode of flatNodes) {
     const canvasNode = apiNodeToCanvas(apiNode);
     result.nodes.push(canvasNode);
 

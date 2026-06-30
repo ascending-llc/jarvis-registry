@@ -8,7 +8,6 @@ export type WorkflowItem = {
   id: string;
   name: string;
   description: string;
-  type: 'autonomous' | 'supervised';
   nodeCount: number;
   enabled: boolean;
   status: 'active' | 'inactive' | 'error';
@@ -43,6 +42,23 @@ export interface RouterChoice {
   steps: WorkflowNode[];
 }
 
+export interface HumanReviewConfig {
+  requiresConfirmation?: boolean;
+  confirmationMessage?: string;
+  requiresUserInput?: boolean;
+  userInputMessage?: string;
+  userInputSchema?: any[];
+  requiresOutputReview?: boolean;
+  outputReviewMessage?: string;
+  requiresIterationReview?: boolean;
+  iterationReviewMessage?: string;
+  onReject?: 'skip' | 'else_branch' | 'fail';
+  timeoutSeconds?: number;
+  onTimeout?: 'cancel' | 'fail' | 'skip';
+  // UI only fields (kept for backward compatibility with canvas gate node)
+  role?: string;
+}
+
 export interface WorkflowNode {
   id?: string;
   name: string;
@@ -57,6 +73,7 @@ export interface WorkflowNode {
   choices?: RouterChoice[];
   conditionCel?: string | null;
   loopConfig?: LoopConfig | null;
+  humanReview?: HumanReviewConfig | null;
   position?: { x?: number; y?: number };
 }
 
@@ -64,7 +81,6 @@ export interface Workflow {
   id: string;
   name: string;
   description?: string;
-  type?: 'autonomous' | 'supervised';
   numNodes?: number;
   nodes?: WorkflowNode[];
   canvas?: { viewport: { x?: number; y?: number; zoom?: number } };
@@ -88,7 +104,6 @@ export type GetWorkflowDetailResponse = Workflow;
 export interface CreateWorkflowRequest {
   name: string;
   description?: string;
-  type?: 'autonomous' | 'supervised';
   nodes: WorkflowNode[];
   canvas: { viewport: { x?: number; y?: number; zoom?: number } };
 }
