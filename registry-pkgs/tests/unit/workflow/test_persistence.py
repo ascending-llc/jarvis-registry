@@ -157,7 +157,9 @@ class TestWorkflowPersistence:
                 self.__dict__.update(kwargs)
                 self.attempt = 0
                 self.status = NodeRunStatus.PENDING
+                self.input_snapshot = None
                 self.output_snapshot = None
+                self.session_state_snapshot = None
                 self.finished_at = None
                 self.error = None
                 self.selected_a2a_key = None
@@ -175,14 +177,31 @@ class TestWorkflowPersistence:
         sync = _sync_with_fake_run()
         sync._node_by_name = {"fetch": WorkflowNode(name="fetch", executor_key="tool")}
 
-        await sync._upsert_node_run(StepOutput(step_name="fetch", content="ok", success=True))
+        await sync._upsert_node_run(
+            StepOutput(step_name="fetch", content="ok", success=True),
+            session_data={
+                # agno nests the workflow's shared state under "session_state" — this
+                # mirrors the real shape returned by WorkflowSession.session_data.
+                "session_state": {
+                    persistence.NODE_INPUT_SNAPSHOTS_KEY: {
+                        sync._node_by_name["fetch"].id: {"input": "hello"},
+                    },
+                    "kept": "state",
+                },
+            },
+        )
 
         assert find_one_calls[0][1] == {"session": None}
         node_run, save_kwargs = saved[0]
         assert node_run.node_name == "fetch"
         assert node_run.status == NodeRunStatus.COMPLETED
         assert node_run.attempt == 1
+        assert node_run.input_snapshot == {"input": "hello"}
         assert node_run.output_snapshot == {"content": "ok"}
+        # session_state_snapshot must be the flat session_state (not wrapped in the agno
+        # session_data envelope) with the NODE_INPUT_SNAPSHOTS_KEY entry stripped out —
+        # retry/rerun merges this dict straight into the live session_state via dict.update().
+        assert node_run.session_state_snapshot == {"kept": "state"}
         assert node_run.finished_at is not None
         assert save_kwargs == {"session": None}
 
@@ -255,7 +274,7 @@ class TestWorkflowPersistence:
 
         await sync._upsert_node_run(
             StepOutput(step_name="fetch", content="ok", success=True),
-            session_data={"a2a_target_fetch": "agent-1"},
+            session_data={"session_state": {"a2a_target_fetch": "agent-1"}},
             session=mongo_session,
         )
 

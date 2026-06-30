@@ -327,3 +327,60 @@ async def test_list_servers_route_requests_all_servers_with_enabled_only_false(s
     assert result.pagination.total == 1
     assert len(result.servers) == 1
     assert not hasattr(result.servers[0], "status")
+
+
+@pytest.mark.asyncio
+async def test_list_servers_maps_acl_runtime_error_to_503(sample_user_context):
+    """An ACL/DB outage (RuntimeError from get_accessible_resource_ids) must surface as 503, not 500."""
+    from fastapi import HTTPException
+
+    from registry.api.v1.server.server_routes import list_servers as list_servers_route
+
+    acl_service = MagicMock()
+    acl_service.get_accessible_resource_ids = AsyncMock(
+        side_effect=RuntimeError("Failed to fetch accessible resources")
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await list_servers_route(
+            query=None,
+            page=1,
+            per_page=20,
+            user_context=sample_user_context,
+            acl_service=acl_service,
+            server_service=MagicMock(),
+            mcp_service=MagicMock(),
+            status_resolver=MagicMock(),
+        )
+
+    assert exc_info.value.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_list_servers_maps_per_item_permission_runtime_error_to_503(sample_user_context):
+    """A per-server permission lookup outage must surface as 503, not an empty ACL permission."""
+    from fastapi import HTTPException
+
+    from registry.api.v1.server.server_routes import list_servers as list_servers_route
+
+    server = _fake_mcp_server(enabled=True)
+    acl_service = MagicMock()
+    acl_service.get_accessible_resource_ids = AsyncMock(return_value=[str(server.id)])
+    acl_service.get_user_permissions_for_resource = AsyncMock(side_effect=RuntimeError("acl unavailable"))
+
+    server_service = MagicMock()
+    server_service.list_servers = AsyncMock(return_value=([server], 1))
+
+    with pytest.raises(HTTPException) as exc_info:
+        await list_servers_route(
+            query=None,
+            page=1,
+            per_page=20,
+            user_context=sample_user_context,
+            acl_service=acl_service,
+            server_service=server_service,
+            mcp_service=MagicMock(),
+            status_resolver=MagicMock(),
+        )
+
+    assert exc_info.value.status_code == 503

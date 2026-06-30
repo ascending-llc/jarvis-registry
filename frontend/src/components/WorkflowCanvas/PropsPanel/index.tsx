@@ -1,5 +1,5 @@
 import type React from 'react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { NodeData, PropsPanelProps } from '../types';
 import { PanelHeader } from './PanelHeader';
 import { PropertiesContent } from './PropertiesContent';
@@ -39,6 +39,14 @@ const PropsPanel: React.FC<PropsPanelProps> = ({
   const ctxScope = isWorkflow ? 'workflow' : 'node';
   const ctxIconText = isWorkflow ? '⚡' : (NODE_TYPE_ICON_MAP[nodeType ?? 'agent'] ?? 'A2A');
 
+  const isLogicNode = panelMode === 'node' && nodeType !== undefined && !['mcp', 'agent'].includes(nodeType);
+
+  useEffect(() => {
+    if (isLogicNode && tab === 'hist') {
+      setTab('props');
+    }
+  }, [isLogicNode, tab]);
+
   const header = <PanelHeader iconText={ctxIconText} label={ctxLabel} scope={ctxScope} isWorkflow={isWorkflow} />;
 
   return (
@@ -48,6 +56,7 @@ const PropsPanel: React.FC<PropsPanelProps> = ({
       header={header}
       tab={tab}
       onTabChange={setTab}
+      showHistoryTab={!isLogicNode}
     >
       {tab === 'props' && (
         <PropertiesContent panelMode={panelMode} isReadOnly={isReadOnly} isNewWorkflow={isNewWorkflow} />

@@ -1,5 +1,4 @@
 import logging
-import secrets
 from functools import cached_property
 from typing import Any, Self
 from urllib.parse import urlparse
@@ -230,10 +229,16 @@ class JarvisBaseSettings(BaseSettings):
 
         return self
 
-    def model_post_init(self, __context: Any) -> None:
+    @model_validator(mode="after")
+    def _validate_secret_key(self) -> Self:
+        if self.x_jarvis_registry_import_checks == "disabled":
+            logging.warning("SECRET_KEY validation is disabled. This should only happen in CI import checks.")
+            return self
         if not self.secret_key:
-            self.secret_key = secrets.token_hex(32)
+            raise ValueError("SECRET_KEY must be set.")
+        return self
 
+    def model_post_init(self, __context: Any) -> None:
         if self.auth_server_api_prefix:
             prefix = self.auth_server_api_prefix.rstrip("/")
             if not self.auth_server_url.endswith(prefix):

@@ -27,6 +27,7 @@ __all__ = [
     "decode_jwt_unverified",
     "decode_jwt_with_jwk",
     "encode_jwt",
+    "find_matching_jwk",
     "get_token_kid",
     "get_token_unverified_header",
     # Re-exported pyjwt exceptions so callers outside registry-pkgs
@@ -204,12 +205,38 @@ def decode_jwt_unverified(token: str) -> dict[str, Any]:
     return jwt.decode(token, options={"verify_signature": False})
 
 
+def find_matching_jwk(jwks: dict[str, Any], kid: str | None) -> dict[str, Any]:
+    """Return the JWK entry whose ``kid`` matches the given key ID.
+
+    Args:
+        jwks: A JWKS dict with a ``"keys"`` array (e.g. from a provider's
+            ``/.well-known/jwks.json`` endpoint).
+        kid: The key ID extracted from an unverified JWT header. When None,
+            an :exc:`InvalidTokenError` is raised immediately.
+
+    Returns:
+        dict[str, Any]: The matching JWK entry from ``jwks["keys"]``.
+
+    Raises:
+        jwt.InvalidTokenError: ``kid`` is None, or no key in the JWKS has
+            a ``"kid"`` field equal to the provided value.
+    """
+    if not kid:
+        raise InvalidTokenError("Token missing 'kid' in header")
+
+    matching_key = next((key for key in jwks.get("keys", []) if key.get("kid") == kid), None)
+    if not matching_key:
+        raise InvalidTokenError(f"No matching JWKS key for kid: {kid}")
+
+    return matching_key
+
+
 def decode_jwt_with_jwk(
     token: str,
     jwk_data: dict[str, Any],
     algorithms: list[str],
     issuer: str,
-    audience: str | None = None,
+    audience: str | list[str] | None = None,
     leeway: int = _DEFAULT_LEEWAY,
 ) -> dict[str, Any]:
     """Decode and verify a JWT using a JSON Web Key (JWK).
@@ -226,8 +253,9 @@ def decode_jwt_with_jwk(
             ``["RS256"]``). Passed directly to PyJWT to prevent algorithm
             confusion attacks.
         issuer: Expected value of the ``iss`` claim.
-        audience: Expected value of the ``aud`` claim. When None, audience
-            verification is skipped.
+        audience: Expected value of the ``aud`` claim. A list of strings
+            accepts multiple valid audiences (PyJWT supports this natively).
+            When None, audience verification is skipped.
         leeway: Clock-skew tolerance in seconds. Defaults to 30.
 
     Returns:

@@ -131,6 +131,27 @@ async def test_list_agents_uses_injected_services(sample_user_context):
 
 
 @pytest.mark.asyncio
+async def test_list_agents_maps_acl_runtime_error_to_503(sample_user_context):
+    """An ACL/DB outage (RuntimeError from get_accessible_resource_ids) must surface as 503, not 500."""
+    acl_service = MagicMock()
+    acl_service.get_accessible_resource_ids = AsyncMock(
+        side_effect=RuntimeError("Failed to fetch accessible resources")
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await list_agents(
+            user_context=sample_user_context,
+            query="test",
+            page=1,
+            per_page=20,
+            acl_service=acl_service,
+            a2a_agent_service=MagicMock(),
+        )
+
+    assert exc_info.value.status_code == 503
+
+
+@pytest.mark.asyncio
 async def test_get_agent_stats_uses_injected_service(sample_user_context):
     a2a_agent_service = MagicMock()
     a2a_agent_service.get_stats = AsyncMock(

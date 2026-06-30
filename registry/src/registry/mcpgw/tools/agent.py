@@ -227,7 +227,12 @@ async def execute_agent_impl(
 
     # 3. AuthZ — same VIEW-permission rule as workflow A2A executors
     lifespan = ctx.request_context.lifespan_context
-    if not await _user_can_view_agent(lifespan.acl_service, user_id, agent.id):
+    try:
+        can_view = await _user_can_view_agent(lifespan.acl_service, user_id, agent.id)
+    except RuntimeError:
+        logger.error("execute_agent: ACL lookup failed user_id=%s agent_id=%s", user_id, agent_id, exc_info=True)
+        return _error_result("Service temporarily unavailable. Please try again later.")
+    if not can_view:
         logger.warning(
             "execute_agent: user_id=%s denied access to agent_id=%s path=%s",
             user_id,

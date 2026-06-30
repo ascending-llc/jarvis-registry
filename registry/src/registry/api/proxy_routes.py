@@ -9,10 +9,10 @@ from uuid import uuid4
 
 import httpx
 from beanie import PydanticObjectId
+from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from redis import Redis
-from starlette.routing import get_route_path
 
 from registry_pkgs.models import ResourceType
 from registry_pkgs.models.a2a_agent import AgentConfig
@@ -119,6 +119,12 @@ def _sanitize_hop_by_hop_headers(headers: httpx.Headers) -> dict[str, str]:
     return {k: v for k, v in headers.items() if k.lower() not in _HOP_BY_HOP_HEADERS}
 
 
+# MCP handshake methods that fire before a tool-call context exists. When the downstream MCP
+# server requires authorization, these get an HTTP 401 RFC 9728 discovery challenge instead of a
+# URL mode elicitation, which most MCP clients cannot process at this stage.
+_INIT_METHODS = frozenset({"initialize", "tools/list"})
+
+
 def _build_jsonrpc_error_result(request_id: str | int | None, error_text: str) -> dict[str, Any]:
     """Build JSON-RPC result response with isError=true."""
     return {
@@ -155,6 +161,7 @@ async def proxy_to_mcp_server(
     oauth_service: MCPOAuthService,
     proxy_client: httpx.AsyncClient,
     redis_client: Redis,
+    mcp_method: str | None = None,
 ) -> Response:
     """
     Proxy request to MCP server with auth headers.
@@ -169,6 +176,10 @@ async def proxy_to_mcp_server(
         oauth_service: OAuth service for building auth headers
         proxy_client: Shared httpx client for connection pooling
         redis_client: Redis client for JWT token caching
+        mcp_method: The JSON-RPC method of the proxied MCP request (e.g. "initialize",
+            "tools/list", "tools/call"). Used to decide how to surface a missing downstream
+            authorization: handshake methods get an HTTP 401 RFC 9728 discovery challenge,
+            everything else keeps the existing URL mode elicitation.
     """
     # Build proxy headers - start with request headers
     headers = dict(request.headers)
@@ -196,6 +207,34 @@ async def proxy_to_mcp_server(
             redis_client=redis_client,
         )
     except UrlElicitationRequiredException as exc:
+        # Handshake methods (initialize / tools/list) fire before the client has a tool-call
+        # context, so most MCP clients cannot process a URL mode elicitation here and treat it
+        # as a failed handshake. Instead, return an HTTP 401 with an RFC 9728 resource_metadata
+        # challenge so the client starts standard downstream OAuth discovery (see Change 4/5).
+        if mcp_method in _INIT_METHODS:
+            user_id = request.path_params.get("user_id", "")
+            server_path = request.path_params.get("server_path", "")
+            resource_metadata_url = (
+                f"{settings.jwt_issuer}/.well-known/oauth-protected-resource"
+                f"{settings.service_base_path}/proxy/server/{user_id}/{server_path}"
+            )
+            return JSONResponse(
+                status_code=401,
+                headers={
+                    "WWW-Authenticate": (
+                        f'Bearer realm="{settings.jarvis_realm}", '
+                        f'resource_metadata="{resource_metadata_url}", '
+                        'scope="mcp-proxy-ops"'
+                    ),
+                },
+                content={
+                    "detail": (
+                        f"Downstream MCP server '{exc.server_name}' requires authorization. "
+                        "Complete authorization via the OAuth discovery flow."
+                    )
+                },
+            )
+
         llm_msg = (
             f"In order to make tool calls to the '{exc.server_name}' MCP server, the client must first perform "
             "out-of-band re-authorization in a browser window. Please direct the client to open the provided URL "
@@ -204,7 +243,7 @@ async def proxy_to_mcp_server(
 
         user_msg = (
             f"The tokens for the '{exc.server_name}' MCP server managed by Jarvis Registry have expired. "
-            "Please follow the URL to perform re-authorization in a browser window and come back again.",
+            "Please follow the URL to perform re-authorization in a browser window and come back again."
         )
 
         elicitation_id = _get_elicitation_id(exc.auth_url)
@@ -329,35 +368,6 @@ async def proxy_to_mcp_server(
         logger.exception(f"Error proxying to {target_url}")
 
         return JSONResponse(status_code=200, content=_build_jsonrpc_error(request_id, -32603, "gateway internal error"))
-
-
-async def extract_server_path_from_request(request_path: str, server_service) -> str | None:
-    """
-    Extract registered server path prefix from request URL.
-
-    Tries progressively shorter path segments until finding a registered server.
-    For example, "/github/repos/list" will check:
-    1. /github/repos/list
-    2. /github/repos
-    3. /github
-
-    Args:
-        request_path: Full incoming request path (e.g., /github/repos/list)
-        server_service: Server service instance
-
-    Returns:
-        Registered server path if found, None otherwise
-    """
-    segments = [s for s in request_path.split("/") if s]
-
-    for i in range(len(segments), 0, -1):
-        candidate_path = "/" + "/".join(segments[:i])
-
-        server = await server_service.get_server_by_path(candidate_path)
-        if server:
-            return candidate_path
-
-    return None
 
 
 @router.delete("/sessions/{server_id}")
@@ -637,29 +647,39 @@ async def http_json_proxy(
         return JSONResponse(status_code=500, content={"error": "Internal server error"})
 
 
-@router.post("/server/{full_path:path}")
+@router.post("/server/{user_id}/{server_path:path}")
 async def dynamic_mcp_post_proxy(
     request: Request,
-    full_path: str,
+    user_id: str,
+    server_path: str,
     auth_context: CurrentUser,
     server_service: ServerServiceV1 = Depends(get_server_service),
     oauth_service: MCPOAuthService = Depends(get_oauth_service),
     proxy_client: httpx.AsyncClient = Depends(get_mcp_proxy_client),
     redis_client: Redis = Depends(get_redis_client),
+    acl_service: ACLService = Depends(get_acl_service),
 ):
     """
     Dynamic catch-all route for MCP server proxying, but only works for POST.
     Enables developers to connect directly to all MCP servers through the registry.
+
+    The URL carries the connecting user's MongoDB ObjectId as `{user_id}`, so the full
+    downstream OAuth discovery chain (protected resource metadata, authorization server
+    metadata, `/authorize`, `/token`) can thread user identity through URLs alone, without
+    any client-side protocol extension.
 
     CRITICAL: This catch-all route matches ANY path pattern, so it must be defined LAST.
     FastAPI matches routes in order, so this will capture all unmatched routes.
 
     MCP protocol only uses GET and POST methods.
     """
-    # If client accidentally tries to connect to our MCP Gateway via the dynamic catch-all route,
-    # respond with a permanent redirect.
-    if get_route_path(request.scope) == "/proxy/server/mcpgw/mcp":
-        return RedirectResponse(f"{settings.registry_url.rstrip('/')}/proxy/mcpgw/mcp", status_code=308)
+    if not ObjectId.is_valid(user_id):
+        return JSONResponse(
+            status_code=400,
+            content={
+                "detail": "The URL contains an invalid user ID. Ensure the user ID segment matches your account identifier."
+            },
+        )
 
     msg_body = await _parse_json_rpc_body(request)
     if msg_body is None:
@@ -680,10 +700,11 @@ async def dynamic_mcp_post_proxy(
             ),
         )
 
-    # Extract registered server path from request URL
-    path = f"/{full_path}"
-    server_path = await extract_server_path_from_request(path, server_service)
-    if server_path is None:
+    # Extract registered server path from request URL. The `user_id` prefix is never part of a
+    # registered server path in MongoDB, so only the server's path segment is matched here.
+    path = f"/{server_path}"
+    matched_server_path = await server_service.extract_server_path(path)
+    if matched_server_path is None:
         return JSONResponse(
             status_code=200,
             content=_build_jsonrpc_error_result(
@@ -692,13 +713,26 @@ async def dynamic_mcp_post_proxy(
         )
 
     # Get server by the extracted path
-    server = await server_service.get_server_by_path(server_path)
+    server = await server_service.get_server_by_path(matched_server_path)
     if server is None:
         return JSONResponse(
             status_code=200,
             content=_build_jsonrpc_error_result(
                 request_id, "The path portion of the MCP server URL is misconfigured. Prompt user to re-configure it."
             ),
+        )
+
+    try:
+        await acl_service.check_user_permission(
+            user_id=PydanticObjectId(auth_context["user_id"]),
+            resource_type=ResourceType.MCPSERVER.value,
+            resource_id=server.id,
+            required_permission="VIEW",
+        )
+    except HTTPException:
+        return JSONResponse(
+            status_code=200,
+            content=_build_jsonrpc_error_result(request_id, "Access denied to this MCP server."),
         )
 
     # Check if server is enabled
@@ -744,48 +778,72 @@ async def dynamic_mcp_post_proxy(
         oauth_service=oauth_service,
         proxy_client=proxy_client,
         redis_client=redis_client,
+        mcp_method=msg_body.get("method"),
     )
 
 
-@router.get("/server/{full_path:path}")
+@router.get("/server/{user_id}/{server_path:path}")
 async def dynamic_mcp_get_proxy(
     request: Request,
-    full_path: str,
+    user_id: str,
+    server_path: str,
     auth_context: CurrentUser,
     server_service: ServerServiceV1 = Depends(get_server_service),
     oauth_service: MCPOAuthService = Depends(get_oauth_service),
     proxy_client: httpx.AsyncClient = Depends(get_mcp_proxy_client),
     redis_client: Redis = Depends(get_redis_client),
+    acl_service: ACLService = Depends(get_acl_service),
 ):
     """
     Dynamic catch-all route for MCP server proxying, but only works for GET, i.e. the event stream.
     Enables developers to connect directly to all MCP servers through the registry.
+
+    The URL carries the connecting user's MongoDB ObjectId as `{user_id}` (see the POST handler).
 
     CRITICAL: This catch-all route matches ANY path pattern, so it must be defined LAST.
     FastAPI matches routes in order, so this will capture all unmatched routes.
 
     MCP protocol only uses GET and POST methods.
     """
-    # If client accidentally tries to connect to our MCP Gateway via the dynamic catch-all route,
-    # respond with a permanent redirect.
-    if get_route_path(request.scope) == "/proxy/server/mcpgw/mcp":
-        return RedirectResponse(f"{settings.registry_url.rstrip('/')}/proxy/mcpgw/mcp", status_code=308)
+    if not ObjectId.is_valid(user_id):
+        return JSONResponse(
+            status_code=400,
+            content={
+                "detail": "The URL contains an invalid user ID. Ensure the user ID segment matches your account identifier."
+            },
+        )
 
-    # Extract registered server path from request URL
-    path = f"/{full_path}"
-    server_path = await extract_server_path_from_request(path, server_service)
-    if server_path is None:
+    # Extract registered server path from request URL. The `user_id` prefix is never part of a
+    # registered server path in MongoDB, so only the server's path segment is matched here.
+    path = f"/{server_path}"
+    matched_server_path = await server_service.extract_server_path(path)
+    if matched_server_path is None:
         return JSONResponse(
             status_code=404,
-            content={"error": f"Unknown MCP server with path '{path}'."},
+            content={"detail": f"No MCP server is registered at path '{path}'. Verify the server path and try again."},
         )
 
     # Get server by the extracted path
-    server = await server_service.get_server_by_path(server_path)
+    server = await server_service.get_server_by_path(matched_server_path)
     if server is None:
         return JSONResponse(
             status_code=404,
-            content={"error": f"Unknown MCP server with path '{server_path}'."},
+            content={
+                "detail": f"No MCP server is registered at path '{server_path}'. Verify the server path and try again."
+            },
+        )
+
+    try:
+        await acl_service.check_user_permission(
+            user_id=PydanticObjectId(auth_context["user_id"]),
+            resource_type=ResourceType.MCPSERVER.value,
+            resource_id=server.id,
+            required_permission="VIEW",
+        )
+    except HTTPException:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Access denied to this MCP server."},
         )
 
     # Check if server is enabled
@@ -793,12 +851,16 @@ async def dynamic_mcp_get_proxy(
     if not config.get("enabled", False):
         return JSONResponse(
             status_code=404,
-            content={"error": f"MCP server with path '{server_path}' is disabled."},
+            content={
+                "detail": f"The MCP server at '{server_path}' is currently disabled. Contact the server owner to enable it."
+            },
         )
     elif config.get("type", "") != "streamable-http":
         return JSONResponse(
             status_code=404,
-            content={"error": f"MCP server with path '{server_path}' is not on streamable-http transport."},
+            content={
+                "detail": f"The MCP server at '{server_path}' does not support the streamable-http transport required for direct connections."
+            },
         )
 
     # Get target URL
@@ -807,7 +869,10 @@ async def dynamic_mcp_get_proxy(
     except InternalServerException:
         # GET requests doesn't use JSON-RPC, so use HTTP status code 500.
         return JSONResponse(
-            status_code=500, content={"error": "Server URL is not configured. The MCP server is not reachable."}
+            status_code=500,
+            content={
+                "detail": "The MCP server's backend URL is not configured and cannot be reached. Contact the administrator."
+            },
         )
 
     # Proxy the request. At this point, auth_context must exist as UserContextDict. Otherwise the UnifiedAuthMiddleware
@@ -857,7 +922,12 @@ async def dynamic_mcp_get_proxy(
     except InternalServerException:
         logger.exception("Internal server exception")
 
-        return JSONResponse(status_code=500, content={"error": "internal server error"})
+        return JSONResponse(
+            status_code=500,
+            content={
+                "detail": "An internal server error occurred. Please try again or contact support if the problem persists."
+            },
+        )
 
     body = await request.body()
 
@@ -923,4 +993,9 @@ async def dynamic_mcp_get_proxy(
     except Exception:
         logger.exception(f"Error proxying to {target_url}")
 
-        return JSONResponse(status_code=500, content={"error": "internal server error"})
+        return JSONResponse(
+            status_code=500,
+            content={
+                "detail": "An internal server error occurred. Please try again or contact support if the problem persists."
+            },
+        )

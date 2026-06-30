@@ -363,6 +363,15 @@ async def list_federations(
     except HTTPException:
         logger.exception("Failed to list federations due to HTTP exception")
         raise
+    except RuntimeError as exc:
+        logger.exception("ACL lookup failed while listing federations")
+        raise HTTPException(
+            status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=create_error_detail(
+                ErrorCode.SERVICE_UNAVAILABLE,
+                "Federation listing is temporarily unavailable. Please try again later.",
+            ),
+        ) from exc
     except Exception as exc:
         logger.exception("Unexpected error while listing federations")
         raise HTTPException(

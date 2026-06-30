@@ -186,6 +186,11 @@ class ExtendedMCPServer(MCPServer):
         indexes = [
             IndexModel([("federationRefId", 1)]),
             IndexModel([("federationMetadata.runtimeArn", 1)], sparse=True),
+            IndexModel(
+                [("path", 1)],
+                unique=True,
+                partialFilterExpression={"path": {"$type": "string"}},
+            ),
         ]
 
     @property

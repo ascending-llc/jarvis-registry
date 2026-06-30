@@ -5,7 +5,12 @@ import API from '@/services/api';
 import type { GetTokenResponse } from './auth/type';
 
 const cancelSources: Record<string, () => void> = {};
-const service = axios.create({ baseURL: getBasePath() || '/', timeout: 20000 });
+const service = axios.create({
+  baseURL: getBasePath() || '/',
+  timeout: 20000,
+  xsrfCookieName: 'jarvis_registry_csrf',
+  xsrfHeaderName: 'X-Jarvis-CSRF',
+});
 
 type RequestConfig = AxiosRequestConfig & {
   cancelTokenKey?: string;
@@ -112,7 +117,7 @@ const request = async ({ url, method, data = {}, config = {} }: RequestType) => 
       throw (error as { originalData?: unknown }).originalData;
     }
     const axiosError = error as AxiosError;
-    if (axiosError.response && axiosError.response.data) {
+    if (axiosError.response?.data) {
       throw axiosError.response.data;
     }
     throw { detail: axiosError.message || 'Network Error' };

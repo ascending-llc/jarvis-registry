@@ -135,6 +135,14 @@ async def list_agents(
     except HTTPException:
         logger.exception("HTTPException in list_agents")
         raise
+    except RuntimeError as e:
+        logger.error(f"ACL lookup failed while listing agents: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=create_error_detail(
+                ErrorCode.SERVICE_UNAVAILABLE, "Agent listing is temporarily unavailable. Please try again later."
+            ),
+        ) from e
     except Exception as e:
         logger.error(f"Error listing agents: {e}", exc_info=True)
         raise HTTPException(

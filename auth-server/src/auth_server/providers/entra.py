@@ -11,6 +11,8 @@ from registry_pkgs.core.jwt_utils import (
     InvalidTokenError,
     decode_jwt_unverified,
     decode_jwt_with_jwk,
+    find_matching_jwk,
+    get_token_kid,
     get_token_unverified_header,
 )
 
@@ -248,11 +250,29 @@ class EntraIdProvider(AuthProvider):
             logger.error(f"Failed to exchange code for token: {e}")
             raise ValueError(f"Token exchange failed: {e}")
 
-    def _extract_user_info_from_token(self, token: str, token_type: str) -> dict[str, Any] | None:
-        """Extract user information from JWT token.
+    async def _verify_user_info_token(self, token: str) -> dict[str, Any]:
+        """Verify a JWT before using it as an identity source."""
+        jwks = await self.get_jwks()
+        matching_key = find_matching_jwk(jwks, get_token_kid(token))
+
+        # Unverified issuer inspection is only used to select the expected issuer
+        # before the cryptographic verification below.
+        unverified_issuer = decode_jwt_unverified(token).get("iss")
+        issuer = unverified_issuer if unverified_issuer in self.valid_issuers else self.issuer
+
+        return decode_jwt_with_jwk(
+            token,
+            matching_key,
+            algorithms=["RS256"],
+            issuer=issuer,
+            audience=[self.client_id, f"api://{self.client_id}"],
+        )
+
+    def _extract_user_info_from_token(self, verified_claims: dict[str, Any], token_type: str) -> dict[str, Any] | None:
+        """Extract user information from verified JWT claims.
 
         Args:
-            token: JWT token string
+            verified_claims: Claims returned by a successful JWT verification.
             token_type: Type of token ('id' or 'access')
 
         Returns:
@@ -260,27 +280,28 @@ class EntraIdProvider(AuthProvider):
         """
         try:
             logger.debug(f"Extracting user info from {token_type} token")
-            token_claims = decode_jwt_unverified(token)
-            logger.debug(f"Token claims extracted: {list(token_claims.keys())}")
+            logger.debug(f"Verified token claims available: {list(verified_claims.keys())}")
 
             # Extract username with fallback chain
             username = (
-                token_claims.get(self.username_claim)
-                or token_claims.get("preferred_username")
-                or token_claims.get("upn")
-                or token_claims.get("unique_name")
+                verified_claims.get(self.username_claim)
+                or verified_claims.get("preferred_username")
+                or verified_claims.get("upn")
+                or verified_claims.get("unique_name")
             )
             # Extract email
-            email = token_claims.get(self.email_claim) or token_claims.get("upn")
+            email = verified_claims.get(self.email_claim) or verified_claims.get("upn")
             # Extract name
             name = (
-                token_claims.get(self.name_claim) or token_claims.get("displayName") or token_claims.get("given_name")
+                verified_claims.get(self.name_claim)
+                or verified_claims.get("displayName")
+                or verified_claims.get("given_name")
             )
             user_info = {
                 "username": username,
                 "email": email,
                 "name": name,
-                "id": token_claims.get("oid") or token_claims.get("sub"),
+                "id": verified_claims.get("oid") or verified_claims.get("sub"),
                 "groups": [],
             }
             logger.info(f"User info extracted from {token_type} token: {username}")
@@ -391,11 +412,13 @@ class EntraIdProvider(AuthProvider):
             if token_kind == "id" and id_token:
                 # Use ID token for user identity
                 logger.debug("Extracting user info from ID token")
-                user_info = self._extract_user_info_from_token(id_token, "id")
+                verified_claims = await self._verify_user_info_token(id_token)
+                user_info = self._extract_user_info_from_token(verified_claims, "id")
             elif token_kind == "access" and access_token:
                 #  Use access token
                 logger.debug("Extracting user info from access token")
-                user_info = self._extract_user_info_from_token(access_token, "access")
+                verified_claims = await self._verify_user_info_token(access_token)
+                user_info = self._extract_user_info_from_token(verified_claims, "access")
             else:
                 logger.warning(f"Token kind '{token_kind}' not available or token missing, falling back to Graph API")
 
@@ -411,6 +434,8 @@ class EntraIdProvider(AuthProvider):
             logger.info(f"User info retrieved: {user_info.get('username')} with {len(groups)} groups")
             return user_info
 
+        except InvalidTokenError:
+            raise
         except Exception as e:
             logger.error(f"Failed to get user info: {e}")
             raise ValueError(f"User info retrieval failed: {e}")

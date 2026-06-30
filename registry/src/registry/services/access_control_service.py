@@ -8,6 +8,7 @@ from fastapi import status as http_status
 from pymongo.asynchronous.client_session import AsyncClientSession
 
 from registry_pkgs.models import (
+    Group,
     PrincipalType,
     RegistryAccessRole,
     User,
@@ -135,6 +136,41 @@ class ACLService:
             email=getattr(obj, "email", None),
         )
 
+    def _build_acl_principal_or_clause(
+        self,
+        user_id: PydanticObjectId,
+        group_ids: list[PydanticObjectId],
+    ) -> list[dict[str, Any]]:
+        """Build the principal match clause used by ACL read paths."""
+        or_clause: list[dict[str, Any]] = [
+            {"principalType": PrincipalType.USER.value, "principalId": user_id},
+            {"principalType": PrincipalType.PUBLIC.value, "principalId": None},
+        ]
+        if group_ids:
+            or_clause.append({"principalType": PrincipalType.GROUP.value, "principalId": {"$in": group_ids}})
+        return or_clause
+
+    async def _resolve_group_ids_for_user(
+        self,
+        user_id: PydanticObjectId,
+        session: AsyncClientSession | None = None,
+    ) -> list[PydanticObjectId]:
+        """Return MongoDB Group _id values for every group the user belongs to.
+
+        Raises on DB error — callers are responsible for deciding whether to
+        propagate or absorb the failure. Returns [] for local users with no
+        idOnTheSource.
+        """
+        try:
+            user = await User.get(user_id, session=session)
+            if not user or not user.idOnTheSource:
+                return []
+            groups = await Group.find({"memberIds": user.idOnTheSource}, session=session).to_list()
+            return [group.id for group in groups]
+        except Exception as e:
+            logger.warning("Failed to resolve group IDs for user %s: %s", user_id, e)
+            raise
+
     async def grant_permission(
         self,
         principal_type: str,
@@ -256,12 +292,13 @@ class ACLService:
     async def search_principals(
         self,
         query: str,
-        limit: int = 30,
+        limit: int | None = 30,
         principal_types: list[str] | None = None,
     ) -> list[PermissionPrincipalOut]:
         """
         Search for principals (users, groups, agents) matching the query string.
         """
+        effective_limit = limit if limit is not None and limit > 0 else 30
         query = (query or "").strip()
         if not query or len(query) < 2:
             raise ValueError("Query string must be at least 2 characters long.")
@@ -278,14 +315,21 @@ class ACLService:
                 type_filters = None
 
         results: list[PermissionPrincipalOut] = []
+        users: list[Any] = []
+        groups: list[Any] = []
         if not type_filters or PrincipalType.USER.value in type_filters:
-            for user in await self.user_service.search_users(query):
-                results.append(self._principal_result_obj(PrincipalType.USER, user))
+            users = await self.user_service.search_users(query, limit=effective_limit)
 
         if not type_filters or PrincipalType.GROUP.value in type_filters:
-            for group in await self.group_service.search_groups(query):
-                results.append(self._principal_result_obj(PrincipalType.GROUP, group))
-        return results[:limit]
+            groups = await self.group_service.search_groups(query, limit=effective_limit)
+
+        for idx in range(max(len(users), len(groups))):
+            if idx < len(users):
+                results.append(self._principal_result_obj(PrincipalType.USER, users[idx]))
+            if idx < len(groups):
+                results.append(self._principal_result_obj(PrincipalType.GROUP, groups[idx]))
+
+        return results[:effective_limit]
 
     async def get_resource_permissions(
         self,
@@ -305,27 +349,62 @@ class ACLService:
 
             principals: list[PrincipalDetailOut] = []
             is_public = False
+            user_principal_ids: list[tuple[PydanticObjectId, PydanticObjectId | None]] = []
+            group_principal_ids: list[tuple[PydanticObjectId, PydanticObjectId | None]] = []
 
             for entry in acl_entries:
                 if entry.principalType == PrincipalType.PUBLIC.value:
                     is_public = True
-                    continue
+                elif entry.principalType == PrincipalType.USER.value and entry.principalId:
+                    user_principal_ids.append((entry.principalId, entry.roleId))
+                elif entry.principalType == PrincipalType.GROUP.value and entry.principalId:
+                    group_principal_ids.append((entry.principalId, entry.roleId))
 
-                if entry.principalType == PrincipalType.USER.value and entry.principalId:
-                    user = await User.get(entry.principalId, session=session)
-                    if user:
-                        principals.append(
-                            PrincipalDetailOut(
-                                type="user",
-                                id=str(user.id),
-                                name=user.name,
-                                email=user.email,
-                                avatar=getattr(user, "avatar", None),
-                                source=getattr(user, "source", None),
-                                idOnTheSource=user.idOnTheSource,
-                                roleId=entry.roleId,
-                            )
-                        )
+            users_by_id = {}
+            if user_principal_ids:
+                user_ids = [principal_id for principal_id, _ in user_principal_ids]
+                fetched_users = await User.find({"_id": {"$in": user_ids}}, session=session).to_list()
+                users_by_id = {user.id: user for user in fetched_users}
+
+            groups_by_id = {}
+            if group_principal_ids:
+                group_ids = [principal_id for principal_id, _ in group_principal_ids]
+                fetched_groups = await Group.find({"_id": {"$in": group_ids}}, session=session).to_list()
+                groups_by_id = {group.id: group for group in fetched_groups}
+
+            for principal_id, role_id in user_principal_ids:
+                user = users_by_id.get(principal_id)
+                if not user:
+                    continue
+                principals.append(
+                    PrincipalDetailOut(
+                        type="user",
+                        id=str(user.id),
+                        name=user.name,
+                        email=user.email,
+                        avatar=getattr(user, "avatar", None),
+                        source=getattr(user, "source", None),
+                        idOnTheSource=user.idOnTheSource,
+                        roleId=role_id,
+                    )
+                )
+
+            for principal_id, role_id in group_principal_ids:
+                group = groups_by_id.get(principal_id)
+                if not group:
+                    continue
+                principals.append(
+                    PrincipalDetailOut(
+                        type="group",
+                        id=str(group.id),
+                        name=group.name,
+                        email=group.email,
+                        avatar=group.avatar,
+                        source=group.source,
+                        idOnTheSource=group.idOnTheSource,
+                        roleId=role_id,
+                    )
+                )
 
             return {
                 "resourceType": resource_type,
@@ -350,17 +429,24 @@ class ACLService:
         Performs one targeted MongoDB query using $or to match both the
         user-specific ACL entry and any PUBLIC entry for the resource.
         User-specific entries take precedence (sorted by permBits descending).
+
+        Returns an empty ``ResourcePermissions`` when no ACL entry is found.
+
+        Raises:
+            RuntimeError: If the underlying ACL lookup fails (e.g. DB outage).
+                Callers must not interpret this as "no permissions" — do so
+                would silently deny access instead of surfacing the failure.
         """
         try:
+            group_ids = await self._resolve_group_ids_for_user(user_id, session=session)
+            or_clause = self._build_acl_principal_or_clause(user_id, group_ids)
+
             acl_entries = (
                 await RegistryAclEntry.find(
                     {
                         "resourceType": resource_type,
                         "resourceId": resource_id,
-                        "$or": [
-                            {"principalType": PrincipalType.USER.value, "principalId": user_id},
-                            {"principalType": PrincipalType.PUBLIC.value, "principalId": None},
-                        ],
+                        "$or": or_clause,
                     },
                     session=session,
                 )
@@ -379,8 +465,13 @@ class ACLService:
                 SHARE=bool(int(acl_entry.permBits) & PermissionBits.SHARE),
             )
         except Exception as e:
-            logger.error(f"Error fetching permissions for user {user_id} on {resource_type}/{resource_id}: {e}")
-            return ResourcePermissions()
+            logger.exception(
+                "Error fetching permissions for user %s on %s/%s",
+                user_id,
+                resource_type,
+                resource_id,
+            )
+            raise RuntimeError(f"Failed to fetch permissions for {resource_type}/{resource_id}") from e
 
     async def get_user_permissions_for_resources(
         self,
@@ -395,23 +486,28 @@ class ACLService:
         eliminating N+1 round-trips when callers (e.g. list endpoints) need
         per-resource permissions for many resources at once.
 
-        Missing resources are returned with an empty ``ResourcePermissions``
-        (mirrors the single-resource fallback) so callers can index without
-        ``KeyError`` checks.
+        Resources with no matching ACL entry are returned with an empty
+        ``ResourcePermissions`` so callers can index without ``KeyError`` checks.
+
+        Raises:
+            RuntimeError: If the underlying ACL lookup fails (e.g. DB outage).
+                Callers must not treat this as "no permissions for all resources"
+                — doing so would silently deny access instead of surfacing the
+                failure.
         """
         result: dict[PydanticObjectId, ResourcePermissions] = {rid: ResourcePermissions() for rid in resource_ids}
         if not resource_ids:
             return result
         try:
+            group_ids = await self._resolve_group_ids_for_user(user_id, session=session)
+            or_clause = self._build_acl_principal_or_clause(user_id, group_ids)
+
             acl_entries = (
                 await RegistryAclEntry.find(
                     {
                         "resourceType": resource_type,
                         "resourceId": {"$in": resource_ids},
-                        "$or": [
-                            {"principalType": PrincipalType.USER.value, "principalId": user_id},
-                            {"principalType": PrincipalType.PUBLIC.value, "principalId": None},
-                        ],
+                        "$or": or_clause,
                     },
                     session=session,
                 )
@@ -419,8 +515,12 @@ class ACLService:
                 .to_list()
             )
         except Exception as e:
-            logger.error(f"Error batch-fetching permissions for user {user_id} on {resource_type}: {e}")
-            return result
+            logger.exception(
+                "Error batch-fetching permissions for user %s on %s",
+                user_id,
+                resource_type,
+            )
+            raise RuntimeError(f"Failed to batch-fetch permissions for {resource_type}") from e
 
         # Entries are sorted by permBits desc → the first one we see per
         # resource is the winner (matches single-resource precedence).
@@ -447,8 +547,9 @@ class ACLService:
         """
         Verify a user holds a specific permission on a resource.
 
-        Resolves permissions via ``get_user_permissions_for_resource`` and raises
-        HTTP 403 if the required permission flag is False.
+        Resolves permissions via ``get_user_permissions_for_resource``. Raises
+        HTTP 503 if ACL lookup is temporarily unavailable, or HTTP 403 if the
+        required permission flag is False.
 
         Args:
                 user_id: The user's ID.
@@ -460,14 +561,21 @@ class ACLService:
                 The resolved ResourcePermissions on success.
 
         Raises:
+                HTTPException(503): If the ACL lookup is temporarily unavailable.
                 HTTPException(403): If the user lacks the required permission.
         """
-        permissions = await self.get_user_permissions_for_resource(
-            user_id=user_id,
-            resource_type=resource_type,
-            resource_id=resource_id,
-            session=session,
-        )
+        try:
+            permissions = await self.get_user_permissions_for_resource(
+                user_id=user_id,
+                resource_type=resource_type,
+                resource_id=resource_id,
+                session=session,
+            )
+        except RuntimeError as e:
+            raise HTTPException(
+                status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Permission check temporarily unavailable. Please try again later.",
+            ) from e
         if not getattr(permissions, required_permission, False):
             raise HTTPException(
                 status_code=http_status.HTTP_403_FORBIDDEN,
@@ -477,32 +585,43 @@ class ACLService:
 
     async def get_accessible_resource_ids(
         self,
-        user_id: PydanticObjectId,
+        user_id: PydanticObjectId | None,
         resource_type: str,
         session: AsyncClientSession | None = None,
     ) -> list[str]:
         """
         Return the IDs of all resources of a given type that the user can VIEW.
 
-        Performs a single MongoDB query matching user-specific and PUBLIC
-        ACL entries, filters by the VIEW bit, and deduplicates results.
+        When user_id is None (anonymous / unauthenticated), only PUBLIC ACL
+        entries are matched.
 
         Args:
-                user_id: The user's ID.
+                user_id: The user's ID, or None for anonymous/unauthenticated access.
                 resource_type: The resource type string (e.g., RegistryResourceType.MCP_SERVER.value).
 
         Returns:
                 Deduplicated list of resource ID strings the user can VIEW.
-                Returns an empty list on error.
+
+        Raises:
+                RuntimeError: If the underlying ACL lookup fails (e.g. DB outage).
+                        Callers must not interpret this as "no accessible resources" —
+                        do so would silently return empty results instead of surfacing
+                        the failure.
         """
         try:
+            if user_id is not None:
+                group_ids = await self._resolve_group_ids_for_user(user_id, session=session)
+                principal_filter: dict[str, Any] = {"$or": self._build_acl_principal_or_clause(user_id, group_ids)}
+            else:
+                principal_filter = {
+                    "principalType": PrincipalType.PUBLIC.value,
+                    "principalId": None,
+                }
+
             acl_entries = await RegistryAclEntry.find(
                 {
                     "resourceType": resource_type,
-                    "$or": [
-                        {"principalType": PrincipalType.USER.value, "principalId": user_id},
-                        {"principalType": PrincipalType.PUBLIC.value, "principalId": None},
-                    ],
+                    **principal_filter,
                 },
                 session=session,
             ).to_list()
@@ -519,7 +638,7 @@ class ACLService:
             return result
         except Exception as e:
             logger.error(f"Error fetching accessible {resource_type} IDs for user {user_id}: {e}")
-            return []
+            raise RuntimeError(f"Failed to fetch accessible {resource_type} resources") from e
 
     async def get_roles_by_resource_type(
         self,

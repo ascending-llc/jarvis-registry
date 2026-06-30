@@ -10,6 +10,9 @@ from registry_pkgs.core.jwt_tokens import mint_managed_agent_token
 
 _COOKIE = settings.session_cookie_name
 
+USER_A = "507f1f77bcf86cd799439011"
+USER_B = "507f1f77bcf86cd799439012"
+
 
 def _build_app() -> FastAPI:
     app = FastAPI()
@@ -19,9 +22,21 @@ def _build_app() -> FastAPI:
     async def proxy_ep():  # pragma: no cover - body trivial
         return JSONResponse({"ok": "proxy"})
 
+    @app.get("/proxy/server/{user_id}/{server_path:path}")
+    async def direct_connect_ep(user_id: str, server_path: str):
+        return JSONResponse({"ok": "direct", "user_id": user_id, "server_path": server_path})
+
     @app.get("/api/v1/servers")
-    async def crud_ep():  # pragma: no cover - body trivial
+    async def crud_ep():
         return JSONResponse({"ok": "crud"})
+
+    @app.get("/api/v1/mcp/downstream/oauth/authorize/{user_id}/{server_path:path}")
+    async def ds_authorize_ep(user_id: str, server_path: str):
+        return JSONResponse({"ok": "authorize"})
+
+    @app.post("/api/v1/mcp/downstream/oauth/token/{user_id}/{server_path:path}")
+    async def ds_token_ep(user_id: str, server_path: str):
+        return JSONResponse({"ok": "token"})
 
     return app
 
@@ -31,13 +46,22 @@ def client() -> TestClient:
     return TestClient(_build_app())
 
 
-def _managed_agent_token(client_id: str = "mcp-client-abc") -> str:
+def _managed_agent_token(
+    client_id: str = "mcp-client-abc",
+    user_id: str | None = None,
+    server_path: str | None = None,
+) -> str:
+    extra: dict = {"scope": "mcp-proxy-ops"}
+    if user_id is not None:
+        extra["user_id"] = user_id
+    if server_path is not None:
+        extra["server_path"] = server_path
     return mint_managed_agent_token(
         settings.jwt_token_config,
         subject="alice",
         client_id=client_id,
         expires_in_seconds=3600,
-        extra_claims={"scope": "mcp-proxy-ops"},
+        extra_claims=extra,
     )
 
 
@@ -116,6 +140,51 @@ def test_proxy_401_advertises_bearer_challenge(client):
     resp = client.get("/proxy/mcpgw/mcp")
     assert resp.status_code == 401
     assert resp.headers.get("WWW-Authenticate", "").startswith("Bearer")
+
+
+def test_direct_connect_accepts_matching_user_id(client):
+    token = _managed_agent_token(user_id=USER_A, server_path="github")
+    resp = client.get(f"/proxy/server/{USER_A}/github", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 200
+
+
+def test_direct_connect_rejects_user_id_mismatch(client):
+    # User A's managed-agent token on user B's direct-connect URL must be rejected.
+    token = _managed_agent_token(user_id=USER_A, server_path="github")
+    resp = client.get(f"/proxy/server/{USER_B}/github", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 401
+
+
+def test_direct_connect_rejects_token_without_user_id(client):
+    # A managed-agent token carrying no user_id claim cannot satisfy the binding.
+    token = _managed_agent_token(user_id=None, server_path="github")
+    resp = client.get(f"/proxy/server/{USER_A}/github", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 401
+
+
+def test_direct_connect_rejects_server_path_mismatch(client):
+    token = _managed_agent_token(user_id=USER_A, server_path="github")
+    resp = client.get(f"/proxy/server/{USER_A}/slack", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 401
+
+
+def test_direct_connect_accepts_root_as_token_without_server_path(client):
+    # Root-AS tokens (issued for requiresOAuth=False servers) carry no server_path claim.
+    # The middleware should accept them on any direct-connect URL provided the user_id matches.
+    token = _managed_agent_token(user_id=USER_A)
+    resp = client.get(f"/proxy/server/{USER_A}/github", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 200
+
+
+def test_downstream_token_endpoint_is_public(client):
+    # The PKCE-protected /token exchange carries no registry credential, so it must be public.
+    resp = client.post(f"/api/v1/mcp/downstream/oauth/token/{USER_A}/github")
+    assert resp.status_code == 200
+
+
+def test_downstream_authorize_endpoint_is_not_public(client):
+    resp = client.get(f"/api/v1/mcp/downstream/oauth/authorize/{USER_A}/github")
+    assert resp.status_code == 401
 
 
 def test_all_proxy_router_paths_classify_as_proxy():

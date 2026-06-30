@@ -65,6 +65,9 @@ const API = {
   triggerWorkflowRun: (id: string) => `${WORKFLOW_BASE_URL}/${id}/runs`,
   getWorkflowRunsList: (id: string) => `${WORKFLOW_BASE_URL}/${id}/runs`,
   getWorkflowRunDetail: (id: string, runId: string) => `${WORKFLOW_BASE_URL}/${id}/runs/${runId}`,
+  replayWorkflowRun: (id: string, runId: string) => `${WORKFLOW_BASE_URL}/${id}/runs/${runId}/replay`,
+  rerunWorkflowNode: (id: string, runId: string, nodeId: string) =>
+    `${WORKFLOW_BASE_URL}/${id}/runs/${runId}/nodes/${nodeId}/rerun`,
 
   // acl (permissions)
   searchPrincipals: `${BASE_URL}/permissions/search-principals`,
