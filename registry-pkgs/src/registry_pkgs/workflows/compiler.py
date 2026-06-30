@@ -54,13 +54,21 @@ _ON_TIMEOUT_TO_AGNO: dict[OnTimeoutPolicy, str] = {
 
 
 def _try_parse_json(value: Any) -> Any:
-    """If value is a JSON-parseable string, return the parsed object; else return value unchanged."""
-    if isinstance(value, str):
-        try:
-            return json.loads(value)
-        except (json.JSONDecodeError, ValueError):
-            return value
-    return value
+    """If value is a JSON object/array string, return the parsed object; else return value unchanged.
+
+    Restricted to object/array shapes (not bare JSON scalars) so plain-text prompts that
+    happen to be valid JSON primitives (e.g. "123", "true") are not silently retyped.
+    """
+    if not isinstance(value, str):
+        return value
+    stripped = value.strip()
+    if not stripped or stripped[0] not in "{[":
+        return value
+    try:
+        parsed = json.loads(stripped)
+    except json.JSONDecodeError:
+        return value
+    return parsed if isinstance(parsed, (dict, list)) else value
 
 
 def _json_safe(value: Any) -> Any:

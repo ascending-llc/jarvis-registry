@@ -198,8 +198,10 @@ class TestWorkflowPersistence:
         assert node_run.attempt == 1
         assert node_run.input_snapshot == {"input": "hello"}
         assert node_run.output_snapshot == {"content": "ok"}
-        # the NODE_INPUT_SNAPSHOTS_KEY entry must be stripped out of the persisted snapshot
-        assert node_run.session_state_snapshot == {"session_state": {"kept": "state"}}
+        # session_state_snapshot must be the flat session_state (not wrapped in the agno
+        # session_data envelope) with the NODE_INPUT_SNAPSHOTS_KEY entry stripped out —
+        # retry/rerun merges this dict straight into the live session_state via dict.update().
+        assert node_run.session_state_snapshot == {"kept": "state"}
         assert node_run.finished_at is not None
         assert save_kwargs == {"session": None}
 

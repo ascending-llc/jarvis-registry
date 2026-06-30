@@ -212,10 +212,8 @@ class WorkflowRunSyncer(AsyncMongoDb):
             input_snapshot = input_snapshots.get(node_id)
             if input_snapshot is not None:
                 node_run.input_snapshot = input_snapshot
-            session_state_clean = dict(session_state)
-            session_state_clean.pop(NODE_INPUT_SNAPSHOTS_KEY, None)
-            session_state_snapshot = dict(session_data)
-            session_state_snapshot["session_state"] = session_state_clean
+            session_state_snapshot = dict(session_state)
+            session_state_snapshot.pop(NODE_INPUT_SNAPSHOTS_KEY, None)
             node_run.session_state_snapshot = session_state_snapshot
             # Read the same key written by make_a2a_pool_executor so the
             # selected agent is persisted for retry reconstruction.

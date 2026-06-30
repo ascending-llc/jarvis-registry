@@ -268,6 +268,27 @@ class TestWorkflowCompiler:
         snapshots = session_state[compiler.NODE_INPUT_SNAPSHOTS_KEY]
         assert snapshots[node.id]["input"] == "3+4 and weather in London"
 
+    @pytest.mark.asyncio
+    async def test_step_executor_preserves_json_scalar_input_as_string(self):
+        """A plain-text prompt that happens to be a valid JSON scalar (e.g. "123", "true")
+        must not be silently retyped into an int/bool — only object/array strings are parsed."""
+        node = _step_node("fetch", "fetcher")
+        definition = _workflow_definition([node])
+        workflow = compiler.compile_workflow(
+            definition,
+            _workflow_run(),
+            executor_registry={"fetcher": _executor},
+        )
+
+        for raw_input in ("123", "true", '"hello"'):
+            session_state = {}
+            await workflow.steps[0].executor(
+                StepInput(input=raw_input),
+                session_state,
+            )
+            snapshots = session_state[compiler.NODE_INPUT_SNAPSHOTS_KEY]
+            assert snapshots[node.id]["input"] == raw_input
+
 
 @pytest.mark.unit
 class TestStepConfig:
