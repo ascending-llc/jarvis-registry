@@ -405,7 +405,12 @@ async def call_a2a(
     )
 
     agent_card = agent.card
-    protocol = _PROTOCOL_MAP.get(transport_type, TransportProtocol.jsonrpc)
+    configured = _PROTOCOL_MAP.get(transport_type, TransportProtocol.jsonrpc)
+    # Prefer the admin-configured transport; fall back to the other standard binding
+    # so the SDK can negotiate when the card advertises a different transport.
+    ordered: list[TransportProtocol] = [configured] + [
+        t for t in (TransportProtocol.jsonrpc, TransportProtocol.http_json) if t != configured
+    ]
 
     context = ClientCallContext(
         state={
@@ -418,7 +423,8 @@ async def call_a2a(
 
     try:
         config = ClientConfig(
-            supported_transports=[protocol],
+            supported_transports=ordered,
+            use_client_preference=True,
             httpx_client=httpx_client,
         )
 

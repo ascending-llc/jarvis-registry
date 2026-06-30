@@ -525,7 +525,37 @@ async def test_call_a2a_uses_http_json_protocol_for_rest_transport():
     assert result.render_text() == "rest response"
     assert len(captured_configs) == 1
     assert TransportProtocol.http_json in captured_configs[0].supported_transports
-    assert captured_configs[0].use_client_preference is False
+    assert captured_configs[0].use_client_preference is True
+
+
+@pytest.mark.asyncio
+async def test_call_a2a_negotiates_transport_when_card_disagrees_with_config():
+    """config.type='jsonrpc' but the agent card prefers HTTP+JSON (e.g. AgentCore runtime):
+    supported_transports must list both, jsonrpc first, with use_client_preference=True so the
+    SDK can fall back to whatever the card actually advertises instead of raising
+    'no compatible transports found'."""
+    agent = _make_agent(transport="jsonrpc")
+    agent.card.preferred_transport = TransportProtocol.http_json
+    mock_factory, _ = _mock_client([_msg("agentcore response")])
+
+    captured_configs: list[ClientConfig] = []
+
+    def capturing_factory(config: ClientConfig) -> MagicMock:
+        captured_configs.append(config)
+        return mock_factory
+
+    with (
+        patch("registry_pkgs.workflows.a2a_client.build_headers", return_value={}),
+        patch("registry_pkgs.workflows.a2a_client.ClientFactory", side_effect=capturing_factory),
+    ):
+        result = await call_a2a(agent, "test", jwt_config=_jwt_config())
+
+    assert result.success is True
+    assert len(captured_configs) == 1
+    supported = captured_configs[0].supported_transports
+    assert supported[0] == TransportProtocol.jsonrpc
+    assert TransportProtocol.http_json in supported
+    assert captured_configs[0].use_client_preference is True
 
 
 @pytest.mark.asyncio
