@@ -150,6 +150,14 @@ class Settings(JarvisBaseSettings):
     # ==================== Encryption ====================
     creds_key: str = ""
 
+    # ==================== Entra Group Sync ====================
+    entra_group_sync_enabled: bool = False
+    entra_include_owners_as_members: bool = False
+    entra_tenant_id: str | None = None
+    entra_client_id: str | None = None
+    entra_client_secret: str | None = None
+    entra_graph_url: str = "https://graph.microsoft.com"
+
     # ==================== Keycloak Integration ====================
     keycloak_url: str = "http://keycloak:8080"
     keycloak_realm: str = "mcp-gateway"
