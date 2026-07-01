@@ -91,6 +91,14 @@ class TelemetryConfig(BaseModel):
     )
     otel_prometheus_enabled: bool = Field(default=False, description="Enable Prometheus metrics endpoint")
     otel_prometheus_port: int = Field(default=9464, description="Prometheus metrics port")
+    deployment_environment: str = Field(
+        default="development",
+        description="Deployment environment for the OTel resource (e.g. 'development', 'staging', 'production')",
+    )
+    service_instance_id: str = Field(
+        default="",
+        description="OTel service.instance.id. Defaults to the hostname when left empty.",
+    )
 
 
 class JarvisBaseSettings(BaseSettings):
