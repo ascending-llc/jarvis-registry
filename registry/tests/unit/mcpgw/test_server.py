@@ -64,6 +64,7 @@ def _make_server(server_id: str | None = None):
         },
     )
 
+
 # Module where the metrics context managers look up the domain record functions.
 DECORATORS_PATH = "registry.core.telemetry_decorators"
 
