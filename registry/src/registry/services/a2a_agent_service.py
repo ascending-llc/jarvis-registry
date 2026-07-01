@@ -218,6 +218,42 @@ class A2AAgentService:
             logger.error(f"Unexpected error fetching agent card from {url}: {e}", exc_info=True)
             raise A2AAgentCardUpstreamException(f"Failed to fetch agent card from {url}: {e}")
 
+    @staticmethod
+    def _resolve_current_agent_url(agent: A2AAgent) -> str | None:
+        """Return the agent's known discovery URL.
+
+        `config.url` is the canonical source; `card.url` (normalized) is a fallback for
+        agents that never had `config.url` populated (e.g. AgentCore federation discovery).
+        Returns None if neither is set.
+        """
+        if agent.config and agent.config.url:
+            return str(agent.config.url)
+        if agent.card and agent.card.url:
+            return _normalize_config_url(str(agent.card.url))
+        return None
+
+    def _build_best_effort_auth_headers(self, agent: A2AAgent, agent_id: str) -> dict[str, str] | None:
+        """Build per-call auth headers for agent card discovery, tolerating build failures.
+
+        Best-effort: JWT header construction can fail (misconfigured jwt_config or
+        runtimeAccess settings). On failure, discovery proceeds without auth — if the
+        remote endpoint requires authentication this surfaces as a 401 upstream error,
+        NOT as a JWT signing error. Check jwt_config and the agent's runtimeAccess
+        configuration if discovery fails with an upstream error.
+        """
+        if not (self._jwt_config and agent.card):
+            return None
+        try:
+            return build_headers(agent, jwt_config=self._jwt_config)
+        except Exception as e:
+            logger.warning(
+                f"Could not build auth headers for agent {agent_id} "
+                f"({type(e).__name__}: {e}); retrying discovery without auth. "
+                "If discovery fails with HTTP 401, check jwt_config / runtimeAccess settings.",
+                exc_info=True,
+            )
+            return None
+
     async def list_agents(
         self,
         query: str | None = None,
@@ -494,12 +530,7 @@ class A2AAgentService:
             if "url" in update_data and update_data["url"]:
                 # Normalize to a clean service root so config.url keeps a stable invariant.
                 new_url = _normalize_config_url(str(update_data["url"]))
-                if agent.config and agent.config.url:
-                    current_url = str(agent.config.url)
-                elif agent.card and agent.card.url:
-                    current_url = _normalize_config_url(str(agent.card.url))
-                else:
-                    current_url = None
+                current_url = self._resolve_current_agent_url(agent)
 
                 # Normalize URLs for comparison (remove trailing slashes)
                 new_url_normalized = new_url.rstrip("/")
@@ -508,16 +539,7 @@ class A2AAgentService:
                 if new_url_normalized != current_url_normalized:
                     logger.info(f"URL changed from {current_url} to {new_url}, fetching new agent card")
 
-                    auth_headers: dict[str, str] | None = None
-                    if self._jwt_config and agent.card:
-                        try:
-                            auth_headers = build_headers(agent, jwt_config=self._jwt_config)
-                        except Exception as e:
-                            logger.warning(
-                                f"Could not build auth headers for agent {agent_id} "
-                                f"({type(e).__name__}: {e}); retrying discovery without auth.",
-                                exc_info=True,
-                            )
+                    auth_headers = self._build_best_effort_auth_headers(agent, agent_id)
 
                     # Fetch new agent card from URL - KEEP ORIGINAL DATA
                     agent_card = await self._fetch_agent_card_from_url(new_url, auth_headers=auth_headers)
@@ -761,35 +783,18 @@ class A2AAgentService:
             # no /.well-known suffix).  card.url is the spec-defined INVOCATION endpoint and
             # is NOT normalized for discovery; A2ACardResolver strips trailing slashes itself,
             # but for safety we normalize it too via _normalize_config_url before use.
-            if agent.config and agent.config.url:
-                agent_url = str(agent.config.url)
-            elif agent.card and agent.card.url:
-                agent_url = _normalize_config_url(str(agent.card.url))
+            agent_url = self._resolve_current_agent_url(agent)
+            if agent_url is None:
+                raise ValueError("Agent URL is not configured")
+            if not (agent.config and agent.config.url):
                 logger.warning(
                     f"Agent {agent_id} missing config.url, falling back to card.url for discovery "
                     f"(normalized to {agent_url!r}). Consider updating the agent to set config.url."
                 )
-            else:
-                raise ValueError("Agent URL is not configured")
 
             base_url = agent_url
 
-            auth_headers: dict[str, str] | None = None
-            if self._jwt_config and agent.card:
-                try:
-                    auth_headers = build_headers(agent, jwt_config=self._jwt_config)
-                except Exception as e:
-                    # Best-effort: JWT header construction failed (misconfigured jwt_config or
-                    # runtimeAccess settings). Discovery will proceed without auth — if the
-                    # well-known endpoint requires authentication this will surface as a 401
-                    # upstream error, NOT as a JWT signing error. Check jwt_config and the
-                    # agent's runtimeAccess configuration if sync fails with an upstream error.
-                    logger.warning(
-                        f"Could not build JWT auth headers for agent {agent_id} "
-                        f"({type(e).__name__}: {e}); retrying discovery without auth. "
-                        "If sync fails with HTTP 401, check jwt_config / runtimeAccess settings.",
-                        exc_info=True,
-                    )
+            auth_headers = self._build_best_effort_auth_headers(agent, agent_id)
 
             logger.info(f"Fetching agent card from {base_url} using SDK")
             updated_card = await self._resolve_agent_card_with_fallback(
