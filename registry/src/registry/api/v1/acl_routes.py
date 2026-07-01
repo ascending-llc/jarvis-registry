@@ -15,7 +15,8 @@ from registry_pkgs.models import PrincipalType
 from registry_pkgs.models.enums import PermissionBits
 
 from ...auth.dependencies import CurrentUser
-from ...deps import get_acl_service
+from ...core.config import settings
+from ...deps import get_acl_service, get_group_service
 from ...schemas.acl_schema import (
     GetResourcePermissionsResponse,
     PermissionPrincipalOut,
@@ -24,6 +25,7 @@ from ...schemas.acl_schema import (
     UpdateResourcePermissionsResponse,
 )
 from ...services.access_control_service import ACLService
+from ...services.group_service import GroupService
 from ...utils.utils import validate_resource_type
 
 logger = logging.getLogger(__name__)
@@ -76,6 +78,7 @@ async def update_resource_permissions(
     data: UpdateResourcePermissionsRequest,
     user_context: dict = Depends(get_user_context),
     acl_service: ACLService = Depends(get_acl_service),
+    group_service: GroupService = Depends(get_group_service),
 ) -> UpdateResourcePermissionsResponse:
     validate_resource_type(resource_type)
 
@@ -177,6 +180,12 @@ async def update_resource_permissions(
                 if data.updated:
                     for principal in data.updated:
                         perm_bits = perm_bits_by_role[principal.roleId]
+
+                        if principal.principalType == PrincipalType.GROUP:
+                            await group_service.ensure_group_principal_exists(
+                                str(principal.principalId),
+                                enabled=settings.entra_group_sync_enabled,
+                            )
 
                         principal_id = (
                             None
