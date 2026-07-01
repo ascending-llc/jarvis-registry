@@ -37,9 +37,8 @@ export interface BaseNodeData extends Record<string, unknown> {
 /** Specific node data types */
 export interface GateNodeData extends BaseNodeData {
   reviewerPrompt?: string;
-  role?: string;
   timeout?: string;
-  onTimeout?: string;
+  onTimeout?: 'cancel' | 'skip' | 'approve';
 }
 
 export interface CondNodeData extends BaseNodeData {

@@ -8,7 +8,26 @@ import type { AgentInfo, WorkflowNode as CanvasNode, NodeData } from './types';
 
 const BRANCHING_TYPES = new Set(['cond', 'parallel', 'loop', 'router']);
 
-const CANVAS_TO_API_NODE_TYPE: Record<string, ApiWorkflowNode['nodeType']> = {
+interface InternalWorkflowChoice {
+  name: string;
+  steps: InternalNode[];
+}
+
+/**
+ * Widened node shape used while building/validating the API payload. `'gate_placeholder'`
+ * is a transient marker for an unresolved Approval Gate; it must not survive `mergeGates`
+ * except when the canvas is in an invalid state, which `validateApiNodes` rejects before
+ * anything reaches the backend (whose `WorkflowNode.nodeType` has no such value).
+ */
+interface InternalNode extends Omit<ApiWorkflowNode, 'nodeType' | 'children' | 'trueSteps' | 'falseSteps' | 'choices'> {
+  nodeType: ApiWorkflowNode['nodeType'] | 'gate_placeholder';
+  children?: InternalNode[];
+  trueSteps?: InternalNode[];
+  falseSteps?: InternalNode[];
+  choices?: InternalWorkflowChoice[];
+}
+
+const CANVAS_TO_API_NODE_TYPE: Record<string, InternalNode['nodeType']> = {
   mcp: 'step',
   agent: 'step',
   pool: 'step',
@@ -16,7 +35,7 @@ const CANVAS_TO_API_NODE_TYPE: Record<string, ApiWorkflowNode['nodeType']> = {
   parallel: 'parallel',
   loop: 'loop',
   router: 'router',
-  gate: 'gate_placeholder' as any,
+  gate: 'gate_placeholder',
 };
 
 const API_TO_CANVAS_TYPE: Record<string, string> = {
@@ -41,12 +60,12 @@ const sortEdgesByHandle = (edges: Edge[]): Edge[] =>
 
 const mapNodeToApi = (
   node: Node<NodeData>,
-  branchData: { [handle: string]: ApiWorkflowNode[] } | null,
-): ApiWorkflowNode => {
+  branchData: { [handle: string]: InternalNode[] } | null,
+): InternalNode => {
   const data = node.data;
   const nodeType = CANVAS_TO_API_NODE_TYPE[node.type ?? ''] ?? 'step';
 
-  const apiNode: ApiWorkflowNode = {
+  const apiNode: InternalNode = {
     id: node.id,
     name: data.label || node.id,
     nodeType,
@@ -117,13 +136,11 @@ const mapNodeToApi = (
   }
   if (node.type === 'gate') {
     const gateData = data as import('./types').GateNodeData;
-    apiNode.executorKey = gateData.executorKey || '';
     apiNode.humanReview = {
       requiresConfirmation: true,
       confirmationMessage: gateData.reviewerPrompt || 'Are you sure you want to proceed?',
-      role: gateData.role,
       timeoutSeconds: gateData.timeout ? parseInt(gateData.timeout, 10) || undefined : undefined,
-      onTimeout: (gateData.onTimeout as any) || 'cancel',
+      onTimeout: gateData.onTimeout || 'cancel',
     };
   }
 
@@ -136,8 +153,8 @@ const buildSequence = (
   edgesFromNode: Map<string, Edge[]>,
   addNodeIds: Set<string>,
   visited: Set<string>,
-): ApiWorkflowNode[] => {
-  const result: ApiWorkflowNode[] = [];
+): InternalNode[] => {
+  const result: InternalNode[] = [];
   let currentId: string | null = startId;
 
   while (currentId !== null) {
@@ -152,7 +169,7 @@ const buildSequence = (
 
     if (BRANCHING_TYPES.has(node.type ?? '')) {
       const sortedEdges = sortEdgesByHandle(outEdges);
-      const branchData: { [handle: string]: ApiWorkflowNode[] } = {};
+      const branchData: { [handle: string]: InternalNode[] } = {};
 
       for (const e of sortedEdges) {
         const handle = e.sourceHandle || 'default';
@@ -172,15 +189,15 @@ const buildSequence = (
 };
 
 /** Walk API tree and return first validation error message, or null if valid. */
-export const validateApiNodes = (apiNodes: ApiWorkflowNode[]): string | null => {
-  const visit = (node: ApiWorkflowNode): string | null => {
+export const validateApiNodes = (apiNodes: InternalNode[]): string | null => {
+  const visit = (node: InternalNode): string | null => {
     const children = node.children ?? [];
     const trueSteps = node.trueSteps ?? [];
     const falseSteps = node.falseSteps ?? [];
     const choices = node.choices ?? [];
 
-    if (node.nodeType === ('gate_placeholder' as any)) {
-      return `Approval Gate 节点 "${node.name}" 必须紧接在 Agent 或 MCP 执行节点之前`;
+    if (node.nodeType === 'gate_placeholder') {
+      return `Approval Gate node "${node.name}" must be immediately followed by an Agent or MCP execution node`;
     }
 
     if (node.nodeType === 'step') {
@@ -249,7 +266,7 @@ export const validateApiNodes = (apiNodes: ApiWorkflowNode[]): string | null => 
  * Convert ReactFlow nodes + edges → API `WorkflowNode[]` payload.
  * "add" placeholder nodes are excluded; branching nodes carry their branches in `children`.
  */
-export const canvasToApiNodes = (nodes: Node<NodeData>[], edges: Edge[]): ApiWorkflowNode[] => {
+export const canvasToApiNodes = (nodes: Node<NodeData>[], edges: Edge[]): InternalNode[] => {
   const addNodeIds = new Set(nodes.filter(n => n.type === 'add').map(n => n.id));
   const workNodes = nodes.filter(n => n.type !== 'add');
   if (workNodes.length === 0) return [];
@@ -268,13 +285,13 @@ export const canvasToApiNodes = (nodes: Node<NodeData>[], edges: Edge[]): ApiWor
   return mergeGates(rawNodes);
 };
 
-const mergeGates = (nodes: ApiWorkflowNode[]): ApiWorkflowNode[] => {
-  const merged: ApiWorkflowNode[] = [];
-  let pendingGate: ApiWorkflowNode | null = null;
+const mergeGates = (nodes: InternalNode[]): InternalNode[] => {
+  const merged: InternalNode[] = [];
+  let pendingGate: InternalNode | null = null;
 
   for (let i = 0; i < nodes.length; i++) {
     const n = nodes[i];
-    if (n.nodeType === ('gate_placeholder' as any)) {
+    if (n.nodeType === 'gate_placeholder') {
       if (pendingGate) {
         merged.push(pendingGate);
       }
@@ -320,7 +337,7 @@ let _edgeSeq = 0;
 const nextAddId = () => `add${_nodeSeq++}`;
 const nextEdgeId = () => `e_load_${_edgeSeq++}`;
 
-const apiNodeToCanvas = (w: ApiWorkflowNode): CanvasNode => {
+const apiNodeToCanvas = (w: InternalNode): CanvasNode => {
   // Restore original canvas type if stored; fall back to API-type mapping
   const canvasType: string = (w.config?.canvasType as string | undefined) ?? API_TO_CANVAS_TYPE[w.nodeType] ?? 'agent';
 
@@ -353,7 +370,6 @@ const apiNodeToCanvas = (w: ApiWorkflowNode): CanvasNode => {
   if (canvasType === 'gate' && w.humanReview) {
     const gateData = data as import('./types').GateNodeData;
     gateData.reviewerPrompt = w.humanReview.confirmationMessage || '';
-    gateData.role = w.humanReview.role || '';
     gateData.timeout = w.humanReview.timeoutSeconds?.toString() || '';
     gateData.onTimeout = w.humanReview.onTimeout || 'cancel';
   }
@@ -382,7 +398,7 @@ const apiNodeToCanvas = (w: ApiWorkflowNode): CanvasNode => {
  * Returns the ID of the last step node (null if the sequence ended at a branching node).
  */
 const processApiSequence = (
-  apiNodes: ApiWorkflowNode[],
+  apiNodes: InternalNode[],
   prevId: string | null,
   prevHandle: string | null,
   result: CanvasResult,
@@ -390,13 +406,13 @@ const processApiSequence = (
   let lastStepId: string | null = prevId;
   let lastHandle: string | null = prevHandle;
 
-  const flatNodes: ApiWorkflowNode[] = [];
+  const flatNodes: InternalNode[] = [];
   for (const apiNode of apiNodes) {
     if (apiNode.humanReview) {
-      const gateApiNode: ApiWorkflowNode = {
+      const gateApiNode: InternalNode = {
         id: `gate_${apiNode.id}`,
         name: 'Approval Gate',
-        nodeType: 'gate_placeholder' as any,
+        nodeType: 'gate_placeholder',
         position: apiNode.position ? { x: (apiNode.position.x ?? 0) - 220, y: apiNode.position.y ?? 0 } : undefined,
         config: {
           canvasType: 'gate',
@@ -425,7 +441,7 @@ const processApiSequence = (
     if (BRANCHING_TYPES.has(canvasNode.type ?? '')) {
       const type = canvasNode.type;
 
-      const branches: { handle: string; sequence: ApiWorkflowNode[] }[] = [];
+      const branches: { handle: string; sequence: InternalNode[] }[] = [];
 
       if (type === 'cond') {
         const tSteps = apiNode.trueSteps?.length

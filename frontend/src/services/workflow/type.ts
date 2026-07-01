@@ -54,9 +54,7 @@ export interface HumanReviewConfig {
   iterationReviewMessage?: string;
   onReject?: 'skip' | 'else_branch' | 'fail';
   timeoutSeconds?: number;
-  onTimeout?: 'cancel' | 'fail' | 'skip';
-  // UI only fields (kept for backward compatibility with canvas gate node)
-  role?: string;
+  onTimeout?: 'cancel' | 'skip' | 'approve';
 }
 
 export interface WorkflowNode {

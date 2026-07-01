@@ -9,7 +9,7 @@ import type { WorkflowCanvasRef } from '@/components/WorkflowCanvas/types';
 import { useGlobal } from '@/contexts/GlobalContext';
 import { useServer } from '@/contexts/ServerContext';
 import SERVICES from '@/services';
-import type { Workflow } from '@/services/workflow/type';
+import type { Workflow, WorkflowNode as ApiWorkflowNode } from '@/services/workflow/type';
 import DeleteWorkflowDialog from './DeleteWorkflowDialog';
 import TriggerRunModal from './TriggerRunModal';
 import UnsavedChangesDialog from './UnsavedChangesDialog';
@@ -123,6 +123,9 @@ const WorkflowRegistryOrEdit: React.FC = () => {
       return;
     }
 
+    // validateApiNodes guarantees no unresolved gate placeholders remain past this point.
+    const validatedNodes = apiNodes as unknown as ApiWorkflowNode[];
+
     setMutatingAction('saving');
 
     try {
@@ -130,17 +133,17 @@ const WorkflowRegistryOrEdit: React.FC = () => {
         const updated = await SERVICES.WORKFLOW.updateWorkflow(id, {
           name: workflow?.name,
           description: workflow?.description,
-          nodes: apiNodes,
+          nodes: validatedNodes,
           canvas: { viewport },
         });
-        handleWorkflowUpdate(id, { nodeCount: updated.numNodes ?? apiNodes.length, name: workflow?.name });
+        handleWorkflowUpdate(id, { nodeCount: updated.numNodes ?? validatedNodes.length, name: workflow?.name });
         setHasChanges(false);
         showToast('Workflow updated successfully!', 'success');
       } else {
         await SERVICES.WORKFLOW.createWorkflow({
           name: workflow?.name?.trim() || 'New Workflow',
           description: workflow?.description?.trim() || undefined,
-          nodes: apiNodes,
+          nodes: validatedNodes,
           canvas: { viewport },
         });
         setHasChanges(false);
