@@ -107,6 +107,40 @@ async def test_update_agent_uses_card_url_fallback_to_skip_unchanged_url_fetch()
     fetch.assert_not_awaited()
     fake_agent.save.assert_awaited_once()
     assert fake_agent.config.title == "New Title"
+    # config.url must stay None: it is intentionally unset for AgentCore-federated agents
+    # (card.url is kept fresh by federation resync), so a no-op edit must not backfill it.
+    assert fake_agent.config.url is None
+
+
+@pytest.mark.asyncio
+async def test_update_agent_normalizes_existing_config_url_when_unchanged():
+    service = _service()
+    fake_agent = MagicMock()
+    fake_agent.save = AsyncMock()
+    fake_agent.config = SimpleNamespace(
+        title="Old Title", description="desc", url="https://agent.example.com/", type="jsonrpc"
+    )
+    fake_agent.card = SimpleNamespace(
+        name="Test Agent",
+        description="card desc",
+        url="https://agent.example.com/",
+    )
+    fake_agent.vectorContentHash = "hash"
+
+    data = AgentUpdateRequest(title="New Title", url="https://agent.example.com")
+    fetch = AsyncMock()
+
+    with (
+        patch("registry.services.a2a_agent_service.A2AAgent") as MockAgent,
+        patch.object(service, "_fetch_agent_card_from_url", fetch),
+    ):
+        MockAgent.get = AsyncMock(return_value=fake_agent)
+
+        await service.update_agent(agent_id=str(PydanticObjectId()), data=data)
+
+    fetch.assert_not_awaited()
+    # Already had an explicit config.url — re-normalizing its formatting is still expected.
+    assert fake_agent.config.url == "https://agent.example.com"
 
 
 @pytest.mark.asyncio

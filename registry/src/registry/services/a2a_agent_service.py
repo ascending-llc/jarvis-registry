@@ -578,7 +578,11 @@ class A2AAgentService:
                         agent.wellKnown.lastSyncVersion = agent_card.version
                 else:
                     logger.debug(f"URL unchanged ({new_url}), skipping agent card fetch")
-                    if agent.config and str(agent.config.url) != new_url:
+                    # Only re-normalize an already-set config.url (e.g. trailing-slash
+                    # formatting drift). Never backfill from None — for AgentCore-federated
+                    # agents, config.url is intentionally unset, and card.url (kept fresh by
+                    # federation resync) must remain the sole source of truth for discovery.
+                    if agent.config and agent.config.url and str(agent.config.url) != new_url:
                         logger.debug(f"Normalizing stored config.url from {agent.config.url!r} to {new_url!r}")
                         agent.config.url = new_url
 
