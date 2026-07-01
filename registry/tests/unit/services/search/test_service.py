@@ -146,6 +146,72 @@ async def test_search_entities_skips_a2a_on_runtime_error():
     assert response["results"] == mcp_results
 
 
+@pytest.mark.asyncio
+async def test_search_entities_skips_mcp_when_acl_lookup_fails():
+    """An MCP ACL outage skips MCP results without breaking A2A discovery."""
+    a2a_results = [{"agent_id": "agent-1", "agent_name": "analyst", "entity_type": "agent", "relevance_score": 0.8}]
+    mcp_server_repo = MagicMock()
+    mcp_server_repo.asearch_with_rerank = AsyncMock()
+    a2a_agent_repo = MagicMock()
+    a2a_agent_repo.asearch_with_rerank = AsyncMock(return_value=a2a_results)
+    acl_service = MagicMock()
+    acl_service.get_accessible_resource_ids = AsyncMock(side_effect=[RuntimeError("acl down"), ["agent-1"]])
+    service = _make_service(
+        mcp_server_repo=mcp_server_repo,
+        a2a_agent_repo=a2a_agent_repo,
+        acl_service=acl_service,
+    )
+
+    response = await service.search_entities(
+        SearchRequest(
+            query="analyst",
+            top_n=5,
+            search_type=SearchType.HYBRID,
+            type_list=[MCPEntityType.TOOL, A2AEntityType.AGENT],
+        ),
+        {"username": "tester"},
+    )
+
+    mcp_server_repo.asearch_with_rerank.assert_not_awaited()
+    a2a_agent_repo.asearch_with_rerank.assert_awaited_once()
+    assert response["total"] == 1
+    assert response["results"] == a2a_results
+
+
+@pytest.mark.asyncio
+async def test_search_entities_skips_a2a_when_acl_lookup_fails():
+    """An A2A ACL outage skips A2A results without breaking MCP discovery."""
+    mcp_results = [
+        {"server_id": "id-1", "server_name": "github", "entity_type": "tool", "tool_name": "x", "relevance_score": 0.9}
+    ]
+    mcp_server_repo = MagicMock()
+    mcp_server_repo.asearch_with_rerank = AsyncMock(return_value=mcp_results)
+    a2a_agent_repo = MagicMock()
+    a2a_agent_repo.asearch_with_rerank = AsyncMock()
+    acl_service = MagicMock()
+    acl_service.get_accessible_resource_ids = AsyncMock(side_effect=[["id-1"], RuntimeError("acl down")])
+    service = _make_service(
+        mcp_server_repo=mcp_server_repo,
+        a2a_agent_repo=a2a_agent_repo,
+        acl_service=acl_service,
+    )
+
+    response = await service.search_entities(
+        SearchRequest(
+            query="github",
+            top_n=5,
+            search_type=SearchType.HYBRID,
+            type_list=[MCPEntityType.TOOL, A2AEntityType.AGENT],
+        ),
+        {"username": "tester"},
+    )
+
+    mcp_server_repo.asearch_with_rerank.assert_awaited_once()
+    a2a_agent_repo.asearch_with_rerank.assert_not_awaited()
+    assert response["total"] == 1
+    assert response["results"] == mcp_results
+
+
 # ---------------------------------------------------------------------------
 # semantic_search (structured — used by HTTP POST /search)
 # ---------------------------------------------------------------------------

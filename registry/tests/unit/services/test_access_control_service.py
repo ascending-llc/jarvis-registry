@@ -400,19 +400,19 @@ class TestACLService:
     @pytest.mark.asyncio
     @patch("registry.services.access_control_service.RegistryAclEntry")
     async def test_get_user_permissions_for_resource_exception(self, mock_acl_entry):
-        """Exception should return all-False permissions."""
+        """A DB failure must raise, not silently resolve to all-False permissions."""
         service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
 
         # Mock find() to raise exception
         mock_acl_entry.find = MagicMock(side_effect=Exception("db error"))
         service._resolve_group_ids_for_user = AsyncMock(return_value=[])
 
-        perms = await service.get_user_permissions_for_resource(
-            user_id=PydanticObjectId(),
-            resource_type=ResourceType.MCPSERVER.value,
-            resource_id=PydanticObjectId(),
-        )
-        assert perms == ResourcePermissions()
+        with pytest.raises(RuntimeError):
+            await service.get_user_permissions_for_resource(
+                user_id=PydanticObjectId(),
+                resource_type=ResourceType.MCPSERVER.value,
+                resource_id=PydanticObjectId(),
+            )
 
     @pytest.mark.asyncio
     @patch("registry.services.access_control_service.RegistryAclEntry")
@@ -485,6 +485,23 @@ class TestACLService:
                 required_permission="VIEW",
             )
         assert exc_info.value.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_check_user_permission_runtime_error_returns_503(self):
+        """ACL lookup failures surface as temporarily unavailable, not permission denied."""
+        service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
+        service.get_user_permissions_for_resource = AsyncMock(side_effect=RuntimeError("acl unavailable"))
+
+        with pytest.raises(HTTPException) as exc_info:
+            await service.check_user_permission(
+                user_id=PydanticObjectId(),
+                resource_type=ResourceType.MCPSERVER.value,
+                resource_id=PydanticObjectId(),
+                required_permission="VIEW",
+            )
+
+        assert exc_info.value.status_code == 503
+        assert exc_info.value.detail == "Permission check temporarily unavailable. Please try again later."
 
     @pytest.mark.asyncio
     @patch("registry.services.access_control_service.RegistryAclEntry")
@@ -669,32 +686,30 @@ class TestACLService:
 
     @pytest.mark.asyncio
     async def test_get_user_permissions_for_resource_group_resolution_failure_denies_access(self):
-        """_resolve_group_ids_for_user raising causes fail-closed: empty permissions returned, no propagation."""
+        """_resolve_group_ids_for_user raising causes fail-closed by surfacing ACL unavailability."""
         service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
         service._resolve_group_ids_for_user = AsyncMock(side_effect=Exception("db error"))
 
-        perms = await service.get_user_permissions_for_resource(
-            user_id=PydanticObjectId(),
-            resource_type=ResourceType.MCPSERVER.value,
-            resource_id=PydanticObjectId(),
-        )
-
-        assert perms == ResourcePermissions()
+        with pytest.raises(RuntimeError):
+            await service.get_user_permissions_for_resource(
+                user_id=PydanticObjectId(),
+                resource_type=ResourceType.MCPSERVER.value,
+                resource_id=PydanticObjectId(),
+            )
 
     @pytest.mark.asyncio
     async def test_get_user_permissions_for_resources_group_resolution_failure_denies_access(self):
-        """_resolve_group_ids_for_user raising causes fail-closed: empty permissions for all resources."""
+        """_resolve_group_ids_for_user raising causes fail-closed by surfacing ACL unavailability."""
         service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
         service._resolve_group_ids_for_user = AsyncMock(side_effect=Exception("db error"))
         rid = PydanticObjectId()
 
-        result = await service.get_user_permissions_for_resources(
-            user_id=PydanticObjectId(),
-            resource_type=ResourceType.MCPSERVER.value,
-            resource_ids=[rid],
-        )
-
-        assert result == {rid: ResourcePermissions()}
+        with pytest.raises(RuntimeError):
+            await service.get_user_permissions_for_resources(
+                user_id=PydanticObjectId(),
+                resource_type=ResourceType.MCPSERVER.value,
+                resource_ids=[rid],
+            )
 
     @pytest.mark.asyncio
     async def test_get_accessible_resource_ids_group_resolution_failure_raises(self):
@@ -851,20 +866,18 @@ class TestACLService:
 
     @pytest.mark.asyncio
     @patch("registry.services.access_control_service.RegistryAclEntry")
-    async def test_get_user_permissions_for_resources_exception_returns_empty_perms(self, mock_acl_entry):
-        """A DB failure degrades to empty permissions for every requested resource."""
+    async def test_get_user_permissions_for_resources_exception_raises_runtime_error(self, mock_acl_entry):
+        """A DB failure must raise, not silently resolve to empty permissions."""
         service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
-        rid = PydanticObjectId()
         mock_acl_entry.find = MagicMock(side_effect=Exception("db error"))
         service._resolve_group_ids_for_user = AsyncMock(return_value=[])
 
-        result = await service.get_user_permissions_for_resources(
-            user_id=PydanticObjectId(),
-            resource_type=ResourceType.MCPSERVER.value,
-            resource_ids=[rid],
-        )
-
-        assert result == {rid: ResourcePermissions()}
+        with pytest.raises(RuntimeError):
+            await service.get_user_permissions_for_resources(
+                user_id=PydanticObjectId(),
+                resource_type=ResourceType.MCPSERVER.value,
+                resource_ids=[PydanticObjectId()],
+            )
 
     @pytest.mark.asyncio
     @patch("registry.services.access_control_service.RegistryAclEntry")

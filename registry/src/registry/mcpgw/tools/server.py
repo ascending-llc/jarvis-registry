@@ -320,7 +320,20 @@ async def execute_tool_impl(
             )
 
         lifespan = ctx.request_context.lifespan_context
-        if not await _user_can_view_server(lifespan.acl_service, user_id, server.id):
+        try:
+            can_view = await _user_can_view_server(lifespan.acl_service, user_id, server.id)
+        except RuntimeError:
+            logger.error(
+                "execute_tool: ACL lookup failed user_id=%s server_id=%s",
+                user_id,
+                server_id,
+                exc_info=True,
+            )
+            return CallToolResult(
+                content=[TextContent(type="text", text="Service temporarily unavailable. Please try again later.")],
+                isError=True,
+            )
+        if not can_view:
             logger.warning(
                 "execute_tool: user_id=%s denied access to server_id=%s path=%s",
                 user_id,
