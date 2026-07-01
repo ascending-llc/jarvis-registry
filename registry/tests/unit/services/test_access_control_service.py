@@ -797,7 +797,8 @@ class TestACLService:
     async def test_search_groups_applies_limit(self, mock_group):
         mock_group.find.return_value.limit.return_value.to_list = AsyncMock(return_value=[])
 
-        result = await GroupService().search_groups("alpha", limit=5)
+        service = GroupService(group_directory_client=MagicMock())
+        result = await service.search_groups("alpha", limit=5)
 
         assert result == []
         mock_group.find.return_value.limit.assert_called_once_with(5)
