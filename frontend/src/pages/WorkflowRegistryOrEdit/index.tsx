@@ -124,7 +124,7 @@ const WorkflowRegistryOrEdit: React.FC = () => {
     }
 
     // validateApiNodes guarantees no unresolved gate placeholders remain past this point.
-    const validatedNodes = apiNodes as unknown as ApiWorkflowNode[];
+    const validatedNodes = apiNodes as ApiWorkflowNode[];
 
     setMutatingAction('saving');
 

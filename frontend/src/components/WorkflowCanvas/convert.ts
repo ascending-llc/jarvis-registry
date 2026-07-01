@@ -38,6 +38,19 @@ const CANVAS_TO_API_NODE_TYPE: Record<string, InternalNode['nodeType']> = {
   gate: 'gate_placeholder',
 };
 
+/** Gate "Timeout" dropdown values (`GateNodeProperties.tsx`) ↔ `humanReview.timeoutSeconds`. */
+const GATE_TIMEOUT_OPTIONS: { value: string; seconds?: number }[] = [
+  { value: '24h', seconds: 24 * 60 * 60 },
+  { value: '4h', seconds: 4 * 60 * 60 },
+  { value: 'none' },
+];
+
+const gateTimeoutToSeconds = (value?: string): number | undefined =>
+  GATE_TIMEOUT_OPTIONS.find(o => o.value === value)?.seconds;
+
+const secondsToGateTimeout = (seconds?: number): string =>
+  GATE_TIMEOUT_OPTIONS.find(o => o.seconds === seconds)?.value ?? 'none';
+
 const API_TO_CANVAS_TYPE: Record<string, string> = {
   condition: 'cond',
   parallel: 'parallel',
@@ -139,7 +152,7 @@ const mapNodeToApi = (
     apiNode.humanReview = {
       requiresConfirmation: true,
       confirmationMessage: gateData.reviewerPrompt || 'Are you sure you want to proceed?',
-      timeoutSeconds: gateData.timeout ? parseInt(gateData.timeout, 10) || undefined : undefined,
+      timeoutSeconds: gateTimeoutToSeconds(gateData.timeout),
       onTimeout: gateData.onTimeout || 'cancel',
     };
   }
@@ -370,7 +383,7 @@ const apiNodeToCanvas = (w: InternalNode): CanvasNode => {
   if (canvasType === 'gate' && w.humanReview) {
     const gateData = data as import('./types').GateNodeData;
     gateData.reviewerPrompt = w.humanReview.confirmationMessage || '';
-    gateData.timeout = w.humanReview.timeoutSeconds?.toString() || '';
+    gateData.timeout = secondsToGateTimeout(w.humanReview.timeoutSeconds);
     gateData.onTimeout = w.humanReview.onTimeout || 'cancel';
   }
 
