@@ -385,6 +385,9 @@ export const useCanvasMutations = ({
             offsetY: (i - (cases.length - 1) / 2) * 120,
           }));
         }
+        if (nodeType === 'loop') {
+          return [{ id: 'body', offsetY: 0 }];
+        }
         return [{ id: '', offsetY: 0 }];
       };
 

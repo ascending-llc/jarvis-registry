@@ -168,10 +168,7 @@ const Dashboard: React.FC = () => {
     if (searchTerm) {
       const query = searchTerm.toLowerCase();
       filtered = filtered.filter(
-        w =>
-          w.name.toLowerCase().includes(query) ||
-          (w.description || '').toLowerCase().includes(query) ||
-          w.type.toLowerCase().includes(query),
+        w => w.name.toLowerCase().includes(query) || (w.description || '').toLowerCase().includes(query),
       );
     }
     return filtered;
