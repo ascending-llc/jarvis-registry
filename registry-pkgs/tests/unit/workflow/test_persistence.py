@@ -180,10 +180,14 @@ class TestWorkflowPersistence:
         await sync._upsert_node_run(
             StepOutput(step_name="fetch", content="ok", success=True),
             session_data={
-                persistence.NODE_INPUT_SNAPSHOTS_KEY: {
-                    sync._node_by_name["fetch"].id: {"input": "hello"},
+                # agno nests the workflow's shared state under "session_state" — this
+                # mirrors the real shape returned by WorkflowSession.session_data.
+                "session_state": {
+                    persistence.NODE_INPUT_SNAPSHOTS_KEY: {
+                        sync._node_by_name["fetch"].id: {"input": "hello"},
+                    },
+                    "kept": "state",
                 },
-                "kept": "state",
             },
         )
 
@@ -194,6 +198,9 @@ class TestWorkflowPersistence:
         assert node_run.attempt == 1
         assert node_run.input_snapshot == {"input": "hello"}
         assert node_run.output_snapshot == {"content": "ok"}
+        # session_state_snapshot must be the flat session_state (not wrapped in the agno
+        # session_data envelope) with the NODE_INPUT_SNAPSHOTS_KEY entry stripped out —
+        # retry/rerun merges this dict straight into the live session_state via dict.update().
         assert node_run.session_state_snapshot == {"kept": "state"}
         assert node_run.finished_at is not None
         assert save_kwargs == {"session": None}
@@ -267,7 +274,7 @@ class TestWorkflowPersistence:
 
         await sync._upsert_node_run(
             StepOutput(step_name="fetch", content="ok", success=True),
-            session_data={"a2a_target_fetch": "agent-1"},
+            session_data={"session_state": {"a2a_target_fetch": "agent-1"}},
             session=mongo_session,
         )
 

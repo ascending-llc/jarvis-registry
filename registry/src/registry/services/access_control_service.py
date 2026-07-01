@@ -429,6 +429,13 @@ class ACLService:
         Performs one targeted MongoDB query using $or to match both the
         user-specific ACL entry and any PUBLIC entry for the resource.
         User-specific entries take precedence (sorted by permBits descending).
+
+        Returns an empty ``ResourcePermissions`` when no ACL entry is found.
+
+        Raises:
+            RuntimeError: If the underlying ACL lookup fails (e.g. DB outage).
+                Callers must not interpret this as "no permissions" — do so
+                would silently deny access instead of surfacing the failure.
         """
         try:
             group_ids = await self._resolve_group_ids_for_user(user_id, session=session)
@@ -458,8 +465,13 @@ class ACLService:
                 SHARE=bool(int(acl_entry.permBits) & PermissionBits.SHARE),
             )
         except Exception as e:
-            logger.error(f"Error fetching permissions for user {user_id} on {resource_type}/{resource_id}: {e}")
-            return ResourcePermissions()
+            logger.exception(
+                "Error fetching permissions for user %s on %s/%s",
+                user_id,
+                resource_type,
+                resource_id,
+            )
+            raise RuntimeError(f"Failed to fetch permissions for {resource_type}/{resource_id}") from e
 
     async def get_user_permissions_for_resources(
         self,
@@ -474,9 +486,14 @@ class ACLService:
         eliminating N+1 round-trips when callers (e.g. list endpoints) need
         per-resource permissions for many resources at once.
 
-        Missing resources are returned with an empty ``ResourcePermissions``
-        (mirrors the single-resource fallback) so callers can index without
-        ``KeyError`` checks.
+        Resources with no matching ACL entry are returned with an empty
+        ``ResourcePermissions`` so callers can index without ``KeyError`` checks.
+
+        Raises:
+            RuntimeError: If the underlying ACL lookup fails (e.g. DB outage).
+                Callers must not treat this as "no permissions for all resources"
+                — doing so would silently deny access instead of surfacing the
+                failure.
         """
         result: dict[PydanticObjectId, ResourcePermissions] = {rid: ResourcePermissions() for rid in resource_ids}
         if not resource_ids:
@@ -498,8 +515,12 @@ class ACLService:
                 .to_list()
             )
         except Exception as e:
-            logger.error(f"Error batch-fetching permissions for user {user_id} on {resource_type}: {e}")
-            return result
+            logger.exception(
+                "Error batch-fetching permissions for user %s on %s",
+                user_id,
+                resource_type,
+            )
+            raise RuntimeError(f"Failed to batch-fetch permissions for {resource_type}") from e
 
         # Entries are sorted by permBits desc → the first one we see per
         # resource is the winner (matches single-resource precedence).
@@ -526,8 +547,9 @@ class ACLService:
         """
         Verify a user holds a specific permission on a resource.
 
-        Resolves permissions via ``get_user_permissions_for_resource`` and raises
-        HTTP 403 if the required permission flag is False.
+        Resolves permissions via ``get_user_permissions_for_resource``. Raises
+        HTTP 503 if ACL lookup is temporarily unavailable, or HTTP 403 if the
+        required permission flag is False.
 
         Args:
                 user_id: The user's ID.
@@ -539,14 +561,21 @@ class ACLService:
                 The resolved ResourcePermissions on success.
 
         Raises:
+                HTTPException(503): If the ACL lookup is temporarily unavailable.
                 HTTPException(403): If the user lacks the required permission.
         """
-        permissions = await self.get_user_permissions_for_resource(
-            user_id=user_id,
-            resource_type=resource_type,
-            resource_id=resource_id,
-            session=session,
-        )
+        try:
+            permissions = await self.get_user_permissions_for_resource(
+                user_id=user_id,
+                resource_type=resource_type,
+                resource_id=resource_id,
+                session=session,
+            )
+        except RuntimeError as e:
+            raise HTTPException(
+                status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Permission check temporarily unavailable. Please try again later.",
+            ) from e
         if not getattr(permissions, required_permission, False):
             raise HTTPException(
                 status_code=http_status.HTTP_403_FORBIDDEN,

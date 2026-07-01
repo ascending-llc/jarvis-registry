@@ -204,16 +204,20 @@ class WorkflowRunSyncer(AsyncMongoDb):
             node_run.output_snapshot = {"content": str(step_output.content)}
 
         if session_data is not None:
-            input_snapshots = session_data.get(NODE_INPUT_SNAPSHOTS_KEY, {})
+            # agno nests the workflow's shared `session_state` dict (where compiler.py
+            # and a2a_executor.py write their per-run keys) under session_data["session_state"];
+            # it is not a top-level key of session_data itself.
+            session_state = session_data.get("session_state") or {}
+            input_snapshots = session_state.get(NODE_INPUT_SNAPSHOTS_KEY, {})
             input_snapshot = input_snapshots.get(node_id)
             if input_snapshot is not None:
                 node_run.input_snapshot = input_snapshot
-            session_state_snapshot = dict(session_data)
+            session_state_snapshot = dict(session_state)
             session_state_snapshot.pop(NODE_INPUT_SNAPSHOTS_KEY, None)
             node_run.session_state_snapshot = session_state_snapshot
             # Read the same key written by make_a2a_pool_executor so the
             # selected agent is persisted for retry reconstruction.
-            selected = session_data.get(f"a2a_target_{step_name}")
+            selected = session_state.get(f"a2a_target_{step_name}")
             if selected:
                 node_run.selected_a2a_key = str(selected)
 

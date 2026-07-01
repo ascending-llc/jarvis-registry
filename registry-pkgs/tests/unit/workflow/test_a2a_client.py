@@ -21,7 +21,8 @@ from beanie import PydanticObjectId
 
 from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.models.a2a_agent import A2AAgent, AgentConfig
-from registry_pkgs.workflows.a2a_client import A2ACallResult, call_a2a
+from registry_pkgs.models.enums import FederationProviderType
+from registry_pkgs.workflows.a2a_client import A2ACallResult, build_headers, call_a2a
 
 
 def _jwt_config() -> JwtSigningConfig:
@@ -74,6 +75,23 @@ def _task(state: TaskState, artifacts: list[Artifact] | None = None, task_id: st
 def _artifact(name: str, text_parts: list[str], *, artifact_id: str = "art-1") -> Artifact:
     parts: list[Part] = [Part(root=TextPart(kind="text", text=t)) for t in text_parts]
     return Artifact(artifact_id=artifact_id, name=name, parts=parts)
+
+
+def test_build_headers_returns_empty_headers_for_non_agentcore_agent():
+    agent = _make_agent()
+
+    assert build_headers(agent, jwt_config=_jwt_config()) == {}
+
+
+def test_build_headers_returns_agentcore_jwt_and_session_header():
+    agent = _make_agent()
+    agent.federationMetadata = {"providerType": FederationProviderType.AWS_AGENTCORE}
+
+    with patch("registry_pkgs.workflows.a2a_client._make_agentcore_jwt", return_value="signed-agentcore-jwt"):
+        headers = build_headers(agent, jwt_config=_jwt_config())
+
+    assert headers["Authorization"] == "Bearer signed-agentcore-jwt"
+    assert headers["X-Amzn-Bedrock-AgentCore-Runtime-Session-Id"]
 
 
 def _artifact_event(
@@ -524,8 +542,68 @@ async def test_call_a2a_uses_http_json_protocol_for_rest_transport():
     assert result.success is True
     assert result.render_text() == "rest response"
     assert len(captured_configs) == 1
-    assert TransportProtocol.http_json in captured_configs[0].supported_transports
-    assert captured_configs[0].use_client_preference is False
+    supported = captured_configs[0].supported_transports
+    assert supported[0] == TransportProtocol.http_json
+    assert TransportProtocol.jsonrpc in supported
+    assert captured_configs[0].use_client_preference is True
+
+
+@pytest.mark.asyncio
+async def test_call_a2a_uses_jsonrpc_protocol_for_jsonrpc_transport():
+    """Standard JSONRPC agent (config.type='jsonrpc', no card.preferred_transport):
+    jsonrpc must be first in supported_transports with use_client_preference=True."""
+    agent = _make_agent(transport="jsonrpc")
+    mock_factory, _ = _mock_client([_msg("jsonrpc response")])
+
+    captured_configs: list[ClientConfig] = []
+
+    def capturing_factory(config: ClientConfig) -> MagicMock:
+        captured_configs.append(config)
+        return mock_factory
+
+    with (
+        patch("registry_pkgs.workflows.a2a_client.build_headers", return_value={}),
+        patch("registry_pkgs.workflows.a2a_client.ClientFactory", side_effect=capturing_factory),
+    ):
+        result = await call_a2a(agent, "test", jwt_config=_jwt_config())
+
+    assert result.success is True
+    assert result.render_text() == "jsonrpc response"
+    assert len(captured_configs) == 1
+    supported = captured_configs[0].supported_transports
+    assert supported[0] == TransportProtocol.jsonrpc
+    assert TransportProtocol.http_json in supported
+    assert captured_configs[0].use_client_preference is True
+
+
+@pytest.mark.asyncio
+async def test_call_a2a_negotiates_transport_when_card_disagrees_with_config():
+    """config.type='jsonrpc' but the agent card prefers HTTP+JSON (e.g. AgentCore runtime):
+    supported_transports must list both, jsonrpc first, with use_client_preference=True so the
+    SDK can fall back to whatever the card actually advertises instead of raising
+    'no compatible transports found'."""
+    agent = _make_agent(transport="jsonrpc")
+    agent.card.preferred_transport = TransportProtocol.http_json
+    mock_factory, _ = _mock_client([_msg("agentcore response")])
+
+    captured_configs: list[ClientConfig] = []
+
+    def capturing_factory(config: ClientConfig) -> MagicMock:
+        captured_configs.append(config)
+        return mock_factory
+
+    with (
+        patch("registry_pkgs.workflows.a2a_client.build_headers", return_value={}),
+        patch("registry_pkgs.workflows.a2a_client.ClientFactory", side_effect=capturing_factory),
+    ):
+        result = await call_a2a(agent, "test", jwt_config=_jwt_config())
+
+    assert result.success is True
+    assert len(captured_configs) == 1
+    supported = captured_configs[0].supported_transports
+    assert supported[0] == TransportProtocol.jsonrpc
+    assert TransportProtocol.http_json in supported
+    assert captured_configs[0].use_client_preference is True
 
 
 @pytest.mark.asyncio
