@@ -336,36 +336,6 @@ class TestMcpExecutor:
 class TestA2AExecutor:
     """Tests for a2a_executor.make_a2a_executor and helpers."""
 
-    def test_make_agent_jwt_calls_encode_with_correct_claims(self, monkeypatch: pytest.MonkeyPatch):
-        built_payloads: list[dict] = []
-        encoded_calls: list[tuple] = []
-
-        def fake_build_payload(subject, issuer, audience, expires_in_seconds):
-            built_payloads.append({"sub": subject, "iss": issuer, "aud": audience, "exp": expires_in_seconds})
-            return {"sub": subject, "iss": issuer, "aud": audience}
-
-        def fake_encode(payload, key, kid):
-            encoded_calls.append((payload, key, kid))
-            return "signed-jwt"
-
-        monkeypatch.setattr(a2a_client, "build_jwt_payload", fake_build_payload)
-        monkeypatch.setattr(a2a_client, "encode_jwt", fake_encode)
-
-        token = a2a_client.make_agent_jwt(
-            agent_url="https://agent.example.com",
-            jwt_config=_jwt_config(),
-            expires_in_seconds=120,
-        )
-
-        assert token == "signed-jwt"
-        assert built_payloads[0]["sub"] == "jarvis-workflow"
-        assert built_payloads[0]["iss"] == "https://jarvis.example.com"
-        assert built_payloads[0]["aud"] == "https://agent.example.com"
-        assert built_payloads[0]["exp"] == 120
-        _, key_used, kid_used = encoded_calls[0]
-        assert key_used == "fake-pem"
-        assert kid_used == "kid-v1"
-
     def test_make_agentcore_jwt_strips_whitespace_in_config_claims(self, monkeypatch: pytest.MonkeyPatch):
         built_payloads: list[dict] = []
 

@@ -135,22 +135,6 @@ def get_agentcore_auth_mode(agent: A2AAgent) -> str:
     return "IAM"
 
 
-def make_agent_jwt(
-    *,
-    agent_url: str,
-    jwt_config: JwtSigningConfig,
-    expires_in_seconds: int = _A2A_JWT_TTL_SECONDS,
-) -> str:
-    """Sign a short-lived JWT for direct service-to-agent authentication."""
-    payload = build_jwt_payload(
-        subject="jarvis-workflow",
-        issuer=jwt_config.jwt_issuer,
-        audience=agent_url,
-        expires_in_seconds=expires_in_seconds,
-    )
-    return encode_jwt(payload, jwt_config.jwt_private_key, kid=jwt_config.jwt_self_signed_kid)
-
-
 def _make_agentcore_jwt(
     agent: A2AAgent,
     *,
@@ -202,14 +186,18 @@ def raise_if_iam_unsupported(agent: A2AAgent) -> None:
 
 
 def build_headers(agent: A2AAgent, *, jwt_config: JwtSigningConfig) -> dict[str, str]:
-    """Build per-call HTTP auth headers for an A2A invocation."""
+    """Build per-call HTTP auth headers for an A2A invocation.
+
+    Only AgentCore-federated runtimes are provisioned to accept our self-signed JWT.
+    Other agents have no relationship with our signing key, so we send no unsolicited
+    bearer token.
+    """
     if is_agentcore_runtime(agent):
         return {
             "Authorization": f"Bearer {_make_agentcore_jwt(agent, jwt_config=jwt_config)}",
             "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": str(uuid.uuid4()),
         }
-    token = make_agent_jwt(agent_url=str(agent.card.url).rstrip("/"), jwt_config=jwt_config)
-    return {"Authorization": f"Bearer {token}"}
+    return {}
 
 
 def _create_message(text: str) -> Message:

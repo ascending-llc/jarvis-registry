@@ -179,12 +179,17 @@ class A2AAgentService:
 
         raise A2AAgentCardUpstreamException(f"Failed to fetch agent card from {base_url} for unknown reason")
 
-    async def _fetch_agent_card_from_url(self, url: str) -> AgentCard:
+    async def _fetch_agent_card_from_url(
+        self,
+        url: str,
+        auth_headers: dict[str, str] | None = None,
+    ) -> AgentCard:
         """
         Fetch and validate agent card from URL using SDK.
 
         Args:
             url: Agent endpoint URL
+            auth_headers: Optional HTTP headers for authenticated card discovery
 
         Returns:
             Validated AgentCard from remote endpoint
@@ -197,7 +202,11 @@ class A2AAgentService:
         """
         try:
             logger.info(f"Fetching agent card from {url} using SDK")
-            return await self._resolve_agent_card_with_fallback(base_url=url, timeout_seconds=15.0)
+            return await self._resolve_agent_card_with_fallback(
+                base_url=url,
+                timeout_seconds=15.0,
+                auth_headers=auth_headers,
+            )
         except (
             A2AAgentCardNotFoundException,
             A2AAgentCardTransportException,
@@ -485,7 +494,12 @@ class A2AAgentService:
             if "url" in update_data and update_data["url"]:
                 # Normalize to a clean service root so config.url keeps a stable invariant.
                 new_url = _normalize_config_url(str(update_data["url"]))
-                current_url = str(agent.config.url) if agent.config and agent.config.url else None
+                if agent.config and agent.config.url:
+                    current_url = str(agent.config.url)
+                elif agent.card and agent.card.url:
+                    current_url = _normalize_config_url(str(agent.card.url))
+                else:
+                    current_url = None
 
                 # Normalize URLs for comparison (remove trailing slashes)
                 new_url_normalized = new_url.rstrip("/")
@@ -494,8 +508,19 @@ class A2AAgentService:
                 if new_url_normalized != current_url_normalized:
                     logger.info(f"URL changed from {current_url} to {new_url}, fetching new agent card")
 
+                    auth_headers: dict[str, str] | None = None
+                    if self._jwt_config and agent.card:
+                        try:
+                            auth_headers = build_headers(agent, jwt_config=self._jwt_config)
+                        except Exception as e:
+                            logger.warning(
+                                f"Could not build auth headers for agent {agent_id} "
+                                f"({type(e).__name__}: {e}); retrying discovery without auth.",
+                                exc_info=True,
+                            )
+
                     # Fetch new agent card from URL - KEEP ORIGINAL DATA
-                    agent_card = await self._fetch_agent_card_from_url(new_url)
+                    agent_card = await self._fetch_agent_card_from_url(new_url, auth_headers=auth_headers)
 
                     # DO NOT modify the agent_card - store it as-is
                     agent.card = agent_card
