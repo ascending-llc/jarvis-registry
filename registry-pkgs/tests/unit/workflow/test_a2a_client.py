@@ -21,7 +21,8 @@ from beanie import PydanticObjectId
 
 from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.models.a2a_agent import A2AAgent, AgentConfig
-from registry_pkgs.workflows.a2a_client import A2ACallResult, call_a2a
+from registry_pkgs.models.enums import FederationProviderType
+from registry_pkgs.workflows.a2a_client import A2ACallResult, build_headers, call_a2a
 
 
 def _jwt_config() -> JwtSigningConfig:
@@ -74,6 +75,23 @@ def _task(state: TaskState, artifacts: list[Artifact] | None = None, task_id: st
 def _artifact(name: str, text_parts: list[str], *, artifact_id: str = "art-1") -> Artifact:
     parts: list[Part] = [Part(root=TextPart(kind="text", text=t)) for t in text_parts]
     return Artifact(artifact_id=artifact_id, name=name, parts=parts)
+
+
+def test_build_headers_returns_empty_headers_for_non_agentcore_agent():
+    agent = _make_agent()
+
+    assert build_headers(agent, jwt_config=_jwt_config()) == {}
+
+
+def test_build_headers_returns_agentcore_jwt_and_session_header():
+    agent = _make_agent()
+    agent.federationMetadata = {"providerType": FederationProviderType.AWS_AGENTCORE}
+
+    with patch("registry_pkgs.workflows.a2a_client._make_agentcore_jwt", return_value="signed-agentcore-jwt"):
+        headers = build_headers(agent, jwt_config=_jwt_config())
+
+    assert headers["Authorization"] == "Bearer signed-agentcore-jwt"
+    assert headers["X-Amzn-Bedrock-AgentCore-Runtime-Session-Id"]
 
 
 def _artifact_event(
