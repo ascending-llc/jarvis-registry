@@ -77,7 +77,7 @@ class EntraIdGroupDirectoryClient(IdPGroupDirectoryClient):
         if self._access_token and time.monotonic() < self._token_expiry - 60:
             return self._access_token
         url = f"https://login.microsoftonline.com/{self._tenant_id}/oauth2/v2.0/token"
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
                 url,
                 data={
@@ -97,7 +97,7 @@ class EntraIdGroupDirectoryClient(IdPGroupDirectoryClient):
     async def get_user_group_ids(self, user_oid: str) -> list[str]:
         token = await self._get_token()
         headers = {"Authorization": f"Bearer {token}"}
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
                 f"{self._graph_url}/v1.0/users/{user_oid}/getMemberGroups",
                 json={"securityEnabledOnly": False},
@@ -115,7 +115,7 @@ class EntraIdGroupDirectoryClient(IdPGroupDirectoryClient):
         url: str | None = f"{self._graph_url}/v1.0/groups/{group_oid}/transitiveMembers?$select=id&$top=999"
         members: list[str] = []
 
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=30.0) as client:
             while url:
                 resp = await client.get(url, headers=headers)
                 resp.raise_for_status()
@@ -133,7 +133,7 @@ class EntraIdGroupDirectoryClient(IdPGroupDirectoryClient):
         results: list[dict] = []
         chunk_size = 20
 
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=30.0) as client:
             for i in range(0, len(group_ids), chunk_size):
                 chunk = group_ids[i : i + chunk_size]
                 requests_payload = [

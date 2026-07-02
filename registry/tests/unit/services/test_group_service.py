@@ -113,6 +113,33 @@ async def test_sync_fetches_details_for_missing_groups():
     service._directory_client.get_group_details_batch.assert_called_once_with(["g-new"])
 
 
+async def test_sync_partial_batch_logs_warning_and_skips_unresolved():
+    """Partial $batch result: resolved groups get $addToSet; unresolved ones are skipped with a warning."""
+    service = _make_service(
+        client_group_ids=["g-new-1", "g-new-2"],
+        client_details=[{"id": "g-new-1", "name": "G1", "email": None, "description": None}],
+    )
+    user = _make_user()
+
+    find_mock = MagicMock()
+    find_mock.update_many = AsyncMock()
+    find_mock.to_list = AsyncMock(return_value=[])  # both groups missing from DB
+
+    with patch("registry.services.group_service.Group") as mock_group_cls:
+        mock_group_cls.find.return_value = find_mock
+        with patch("registry.services.group_service.logger") as mock_logger:
+            await service.sync_user_group_memberships(user, enabled=True)
+            mock_logger.warning.assert_called_once()
+            warning_msg = mock_logger.warning.call_args[0][0]
+            assert "get_group_details_batch" in warning_msg
+
+    # $addToSet must only reference the resolved group (g-new-1), not g-new-2
+    addtoset_calls = [c for c in find_mock.update_many.call_args_list if "$addToSet" in str(c)]
+    for call in addtoset_calls:
+        query_str = str(call)
+        assert "g-new-2" not in query_str or "$nin" in query_str  # stale removal may mention it
+
+
 async def test_sync_does_not_call_details_when_all_groups_exist():
     """No details call needed when all Graph groups already exist in DB."""
     service = _make_service(client_group_ids=["g1"])

@@ -63,7 +63,15 @@ class GroupService:
         # Upsert missing groups, then add user to them
         if missing_ids:
             details = await self._directory_client.get_group_details_batch(missing_ids)
+            if len(details) < len(missing_ids):
+                logger.warning(
+                    "get_group_details_batch resolved %d/%d groups; remaining will retry on next login.",
+                    len(details),
+                    len(missing_ids),
+                )
+            detail_ids: list[str] = []
             for detail in details:
+                detail_ids.append(detail["id"])
                 await Group.find({"idOnTheSource": detail["id"], "source": GroupSource.ENTRA}).update_many(
                     {
                         "$setOnInsert": {
@@ -77,9 +85,10 @@ class GroupService:
                     },
                     upsert=True,
                 )
-            await Group.find({"idOnTheSource": {"$in": missing_ids}, "source": GroupSource.ENTRA}).update_many(
-                {"$addToSet": {"memberIds": user_oid}}
-            )
+            if detail_ids:
+                await Group.find({"idOnTheSource": {"$in": detail_ids}, "source": GroupSource.ENTRA}).update_many(
+                    {"$addToSet": {"memberIds": user_oid}}
+                )
 
         # Stale removal: remove user from Entra groups they no longer belong to
         await Group.find(
