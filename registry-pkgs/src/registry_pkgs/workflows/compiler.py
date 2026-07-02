@@ -134,6 +134,33 @@ def _with_input_capture(
     return _capturing
 
 
+def _with_referenced_outputs(
+    referenced_node_names: list[str],
+    executor: StepExecutor,
+) -> StepExecutor:
+    """Prepend explicitly-referenced upstream outputs into the step's input prompt."""
+
+    async def _wrapped(step_input: StepInput, session_state: dict | None = None) -> StepOutput:
+        previous = step_input.previous_step_outputs or {}
+        injected_parts: list[str] = []
+
+        for name in referenced_node_names:
+            out = previous.get(name)
+            if not out or not out.content:
+                continue
+            injected_parts.append(f"[Output from '{name}']\n{out.content}")
+
+        if injected_parts:
+            prefix = "\n\n".join(injected_parts)
+            original_input = step_input.input or ""
+            step_input.input = f"{prefix}\n\n{original_input}".strip() if original_input else prefix
+
+        return await executor(step_input, session_state)
+
+    _wrapped.__name__ = f"ref_outputs_wrapper({', '.join(referenced_node_names)})"
+    return _wrapped
+
+
 def _to_agno_human_review(spec: HumanReviewSpec | None) -> HumanReview | None:
     """Translate our ``HumanReviewSpec`` into agno ``HumanReview``.
 
@@ -254,6 +281,11 @@ def compile_workflow(
                         f"(registered: {list(executor_registry)})"
                     )
 
+            if node.referenced_node_names:
+                executor = _with_referenced_outputs(node.referenced_node_names, executor)
+
+            # _with_input_capture must wrap outermost so the snapshot records the
+            # original (pre-injection) input rather than the injected prompt.
             executor = _with_input_capture(node, executor)
 
             # Wrap with directive checking and retry backoff when a queue is present.
