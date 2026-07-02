@@ -216,6 +216,12 @@ class WorkflowNode(BaseModel):
     # ROUTER-only: named choices.
     choices: list[RouterChoice] = Field(default_factory=list)
 
+    # Names of previously-executed nodes whose outputs should be explicitly injected
+    # into this node's prompt at runtime.  The compiler wraps the executor with
+    # _with_referenced_outputs which pulls each name from StepInput.previous_step_outputs
+    # and prepends the content before the node's own input.  Only meaningful on STEP nodes;
+    referenced_node_names: list[str] = Field(default_factory=list)
+
     # CEL expression used by condition / router nodes.
     # Condition: returns bool; available variables: input, previous_step_content,
     #            previous_step_outputs, additional_data, session_state
@@ -255,6 +261,9 @@ class WorkflowNode(BaseModel):
             if self.loop_config is not None:
                 raise ValueError("step node must not define loop_config")
             return self
+
+        if self.referenced_node_names:
+            raise ValueError("referenced_node_names is only supported on step nodes")
 
         if self.node_type == WorkflowNodeType.PARALLEL:
             if len(self.children) < 2:
