@@ -154,17 +154,18 @@ class EntraIdGroupDirectoryClient(IdPGroupDirectoryClient):
                 retry_delay = 1
 
                 for sub in resp.json().get("responses", []):
-                    if sub.get("status") == 429:
+                    status = sub.get("status")
+                    if status == 429:
                         retry_delay = int((sub.get("headers") or {}).get("Retry-After", 1))
                         throttled.append(
                             {
-                                "id": sub["id"],
+                                "id": sub.get("id"),
                                 "method": "GET",
-                                "url": f"/groups/{sub['id']}?$select=id,displayName,mail,description",
+                                "url": f"/groups/{sub.get('id')}?$select=id,displayName,mail,description",
                             }
                         )
-                    elif sub.get("status") == 200:
-                        body = sub["body"]
+                    elif status == 200:
+                        body = sub.get("body") or {}
                         results.append(
                             {
                                 "id": body.get("id"),
@@ -172,6 +173,12 @@ class EntraIdGroupDirectoryClient(IdPGroupDirectoryClient):
                                 "email": body.get("mail"),
                                 "description": body.get("description"),
                             }
+                        )
+                    else:
+                        logger.warning(
+                            "Graph batch group details request failed: id=%s status=%s",
+                            sub.get("id"),
+                            status,
                         )
 
                 if throttled:
@@ -183,8 +190,9 @@ class EntraIdGroupDirectoryClient(IdPGroupDirectoryClient):
                     )
                     retry_resp.raise_for_status()
                     for sub in retry_resp.json().get("responses", []):
-                        if sub.get("status") == 200:
-                            body = sub["body"]
+                        status = sub.get("status")
+                        if status == 200:
+                            body = sub.get("body") or {}
                             results.append(
                                 {
                                     "id": body.get("id"),
@@ -192,6 +200,12 @@ class EntraIdGroupDirectoryClient(IdPGroupDirectoryClient):
                                     "email": body.get("mail"),
                                     "description": body.get("description"),
                                 }
+                            )
+                        else:
+                            logger.warning(
+                                "Graph batch group details retry failed: id=%s status=%s",
+                                sub.get("id"),
+                                status,
                             )
 
         return results
