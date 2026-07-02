@@ -1,11 +1,11 @@
 """Group management service: search and Entra group membership sync."""
 
 import logging
-from typing import Any
 
 from beanie import PydanticObjectId
 
 from registry_pkgs.models._generated.group import Group, GroupSource
+from registry_pkgs.models._generated.user import User
 
 from .group_directory_client import IdPGroupDirectoryClient
 
@@ -30,7 +30,7 @@ class GroupService:
             logger.error("Error searching groups with query '%s': %s", query, e)
             return []
 
-    async def sync_user_group_memberships(self, user: Any, *, enabled: bool) -> None:
+    async def sync_user_group_memberships(self, user: User, *, enabled: bool) -> None:
         """Sync Entra group membership for the given user into MongoDB Group documents.
 
         Port of PermissionService.syncUserEntraGroupMemberships from jarvis-api.
@@ -107,5 +107,14 @@ class GroupService:
         if not group.idOnTheSource:
             return
 
-        member_oids = await self._directory_client.get_group_members(group.idOnTheSource)
+        try:
+            member_oids = await self._directory_client.get_group_members(group.idOnTheSource)
+        except Exception:
+            logger.error(
+                "Failed to fetch group members for group %s (idOnTheSource=%s); ACL grant aborted.",
+                group_id,
+                group.idOnTheSource,
+                exc_info=True,
+            )
+            raise
         await group.set({"memberIds": member_oids})

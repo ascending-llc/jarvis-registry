@@ -211,5 +211,7 @@ async def test_ensure_propagates_directory_client_error():
 
     with patch("registry.services.group_service.Group") as mock_group_cls:
         mock_group_cls.get = AsyncMock(return_value=group)
-        with pytest.raises(ValueError, match="graph error"):
-            await service.ensure_group_principal_exists(str(group.id), enabled=True)
+        with patch("registry.services.group_service.logger") as mock_logger:
+            with pytest.raises(ValueError, match="graph error"):
+                await service.ensure_group_principal_exists(str(group.id), enabled=True)
+            mock_logger.error.assert_called_once()
