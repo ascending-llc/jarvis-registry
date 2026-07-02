@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 class IdPGroupDirectoryClient(ABC):
     @abstractmethod
     async def get_user_group_ids(self, user_oid: str) -> list[str]:
-        """Return transitive group GUIDs the user belongs to (and optionally owns)."""
+        """Return transitive group GUIDs the user is a member of."""
 
     @abstractmethod
     async def get_group_members(self, group_oid: str) -> list[str]:
@@ -65,13 +65,11 @@ class EntraIdGroupDirectoryClient(IdPGroupDirectoryClient):
         client_id: str,
         client_secret: str,
         graph_url: str = "https://graph.microsoft.com",
-        include_owners: bool = False,
     ) -> None:
         self._tenant_id = tenant_id
         self._client_id = client_id
         self._client_secret = client_secret
         self._graph_url = graph_url.rstrip("/")
-        self._include_owners = include_owners
         self._access_token: str | None = None
         self._token_expiry: float = 0.0
 
@@ -109,21 +107,7 @@ class EntraIdGroupDirectoryClient(IdPGroupDirectoryClient):
             logger.warning("Graph API: user %s not found, returning empty group list.", user_oid)
             return []
         resp.raise_for_status()
-        group_ids: list[str] = resp.json().get("value", [])
-
-        if self._include_owners:
-            token = await self._get_token()
-            headers = {"Authorization": f"Bearer {token}"}
-            async with httpx.AsyncClient() as client:
-                owned_resp = await client.get(
-                    f"{self._graph_url}/v1.0/users/{user_oid}/ownedObjects/microsoft.graph.group?$select=id",
-                    headers=headers,
-                )
-            if owned_resp.status_code == 200:
-                owned_ids = [g["id"] for g in owned_resp.json().get("value", [])]
-                group_ids = list(dict.fromkeys(group_ids + owned_ids))
-
-        return group_ids
+        return resp.json().get("value", [])
 
     async def get_group_members(self, group_oid: str) -> list[str]:
         token = await self._get_token()

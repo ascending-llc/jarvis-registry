@@ -141,7 +141,6 @@ class RegistryContainer:
                 client_id=self.settings.entra_client_id or "",
                 client_secret=self.settings.entra_client_secret or "",
                 graph_url=self.settings.entra_graph_url,
-                include_owners=self.settings.entra_include_owners_as_members,
             )
         if provider == "cognito":
             return CognitoGroupDirectoryClient()

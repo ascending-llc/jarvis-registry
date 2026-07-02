@@ -48,19 +48,18 @@ async def test_keycloak_get_group_details_batch_returns_empty():
     assert result == []
 
 
-def _make_entra_client(include_owners: bool = False) -> EntraIdGroupDirectoryClient:
+def _make_entra_client() -> EntraIdGroupDirectoryClient:
     return EntraIdGroupDirectoryClient(
         tenant_id="tenant-id",
         client_id="client-id",
         client_secret="client-secret",
         graph_url="https://graph.microsoft.com",
-        include_owners=include_owners,
     )
 
 
-def _make_entra_client_with_token(include_owners: bool = False) -> EntraIdGroupDirectoryClient:
+def _make_entra_client_with_token() -> EntraIdGroupDirectoryClient:
     """Return a client with a pre-seeded valid token (skips token acquisition)."""
-    client = _make_entra_client(include_owners=include_owners)
+    client = _make_entra_client()
     client._access_token = "pre-seeded-tok"
     client._token_expiry = time.monotonic() + 3600
     return client
@@ -166,22 +165,6 @@ async def test_entra_get_user_group_ids_returns_empty_on_404():
         result = await client.get_user_group_ids("ghost-oid")
 
     assert result == []
-
-
-async def test_entra_get_user_group_ids_merges_owned_groups():
-    client = _make_entra_client_with_token(include_owners=True)
-    member_resp = _json_resp(200, {"value": ["g1", "g2"]})
-    owned_resp = _json_resp(200, {"value": [{"id": "g2"}, {"id": "g3"}]})
-
-    with patch("registry.services.group_directory_client.httpx.AsyncClient") as mock_cls:
-        _mock_http_context(
-            mock_cls,
-            post=AsyncMock(return_value=member_resp),
-            get=AsyncMock(return_value=owned_resp),
-        )
-        result = await client.get_user_group_ids("oid-user")
-
-    assert sorted(result) == ["g1", "g2", "g3"]
 
 
 async def test_entra_get_group_members_happy_path_with_pagination():
