@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import logging
 from datetime import date, datetime
@@ -153,7 +154,9 @@ def _with_referenced_outputs(
         if injected_parts:
             prefix = "\n\n".join(injected_parts)
             original_input = step_input.input or ""
-            step_input.input = f"{prefix}\n\n{original_input}".strip() if original_input else prefix
+            new_input = f"{prefix}\n\n{original_input}" if original_input else prefix
+            step_input = copy.copy(step_input)
+            step_input.input = new_input
 
         return await executor(step_input, session_state)
 
