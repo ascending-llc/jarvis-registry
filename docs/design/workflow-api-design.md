@@ -364,6 +364,7 @@ node type does not use them. This lets clients access any field without null che
       "name": "Send Onboarding Complete Email",
       "nodeType": "step",
       "executorKey": "mcp-email-sender",
+      "referencedNodeNames": ["Validate Customer Email"],
       "config": {
         "template": "onboarding_complete",
         "includeLoginLink": true
@@ -402,6 +403,7 @@ node type does not use them. This lets clients access any field without null che
   - `choices` (optional, array): Named choices for ROUTER nodes (≥ 2 required); each entry is a `RouterChoice` object
     - `name` (required, string): Choice name — must match the value returned by the router's `conditionCel` selector
     - `steps` (required, array): One or more `WorkflowNode` steps executed sequentially when this choice is selected
+  - `referencedNodeNames` (optional, array of strings, `step` nodes only): Names of previously-executed nodes whose outputs should be injected into this node's prompt at runtime. The runtime reads each name from `previous_step_outputs` and prepends `[Output from '<name>']\n<content>` before this node's own input. Names that do not match an executed node (e.g. a skipped condition branch) are silently omitted. Only valid on `step` nodes — sending this on a non-step node returns `422`.
   - `conditionCel` (optional, string): CEL expression for condition/router nodes
     - Condition: returns bool; available variables: `input`, `previous_step_content`, `previous_step_outputs`, `additional_data`, `session_state`
     - Router: returns a choice name string; additional variable: `step_choices` (list of all choice names)
@@ -417,6 +419,7 @@ node type does not use them. This lets clients access any field without null che
 - `router` nodes must have at least 2 `choices` with unique names and `conditionCel`; `children` and `trueSteps` / `falseSteps` are forbidden
 - Each `RouterChoice` must have a non-empty `steps` list
 - `condition` and `router` nodes must not define `stepConfig` (it is meaningful only for `step` nodes)
+- `referencedNodeNames` is only valid on `step` nodes; sending it on any other node type returns `422`
 
 **Response**: `201 Created`
 ```json
@@ -560,6 +563,7 @@ node type does not use them. This lets clients access any field without null che
       "name": "Setup Complete Notification",
       "nodeType": "step",
       "executorKey": "mcp-email-sender",
+      "referencedNodeNames": ["Validate Customer Email", "Verify Phone Number"],
       "config": {
         "template": "onboarding_complete_v2",
         "includeLoginLink": true,
@@ -575,7 +579,7 @@ node type does not use them. This lets clients access any field without null che
 - `name` (string): Update workflow name
 - `description` (string): Update workflow description
 - `canvas` (object): Update frontend canvas metadata
-- `nodes` (array): Update workflow nodes (follows same structure and validation as create)
+- `nodes` (array): Update workflow nodes (follows same structure and validation as create, including `referencedNodeNames` on `step` nodes)
 - `enabled` (boolean): Update workflow enabled status
 
 **Response**: `200 OK`
@@ -1361,6 +1365,12 @@ All endpoints return errors in the following format:
   executorKey?: string;          // MCP tool name or A2A agent name (required for step nodes if a2aPool is not provided)
   a2aPool?: string[];            // A2A agent pool (max 5 agents, alternative to executorKey for step nodes)
   stepConfig?: StepConfig;       // Step-level retry and error handling configuration (step nodes only)
+  referencedNodeNames?: string[]; // step nodes only — names of upstream nodes whose outputs are injected into this node's prompt at runtime.
+                                  // At runtime the compiler reads each name from StepInput.previous_step_outputs and prepends
+                                  // "[Output from '<name>']\n<content>" before the node's own input.
+                                  // Names that do not appear in previous_step_outputs (e.g. a skipped Condition branch)
+                                  // are silently omitted — no error is raised.
+                                  // Sending this field on non-step nodes returns 422.
   config: object;                // Node configuration
   children: WorkflowNode[];      // Child nodes for parallel and loop nodes only
   trueSteps: WorkflowNode[];     // Sequential steps for the true branch of a condition node (≥ 1 required)
