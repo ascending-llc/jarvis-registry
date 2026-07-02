@@ -991,6 +991,160 @@ class TestNestedBranches:
 
 
 @pytest.mark.unit
+class TestReferencedOutputs:
+    """_with_referenced_outputs wrapper — injects named upstream outputs into prompt."""
+
+    def _step_node_with_refs(self, name: str, refs: list[str]) -> WorkflowNode:
+        return WorkflowNode(
+            name=name,
+            node_type=WorkflowNodeType.STEP,
+            executor_key="tool",
+            referenced_node_names=refs,
+        )
+
+    def _make_previous_outputs(self, **kwargs: str) -> dict:
+        from agno.workflow import StepOutput
+
+        return {name: StepOutput(step_name=name, content=content, success=True) for name, content in kwargs.items()}
+
+    @pytest.mark.asyncio
+    async def test_referenced_output_prepended_to_input(self):
+        node = self._step_node_with_refs("echo", ["Weather Agent"])
+        definition = _workflow_definition([node])
+        compiler.compile_workflow(definition, _workflow_run(), executor_registry={"tool": _executor})
+        received: list[str] = []
+
+        async def capturing_executor(step_input, session_state=None):
+            received.append(step_input.input)
+            return SimpleNamespace(content="ok")
+
+        # Re-compile with capturing executor to inspect what the inner executor sees.
+        workflow2 = compiler.compile_workflow(
+            definition, _workflow_run(), executor_registry={"tool": capturing_executor}
+        )
+        previous = self._make_previous_outputs(**{"Weather Agent": "32°C, windy"})
+        await workflow2.steps[0].executor(
+            StepInput(input="summarise the weather", previous_step_outputs=previous),
+            {},
+        )
+
+        assert len(received) == 1
+        prompt = received[0]
+        assert "[Output from 'Weather Agent']" in prompt
+        assert "32°C, windy" in prompt
+        assert "summarise the weather" in prompt
+        # Referenced content must appear before the original task
+        assert prompt.index("[Output from 'Weather Agent']") < prompt.index("summarise the weather")
+
+    @pytest.mark.asyncio
+    async def test_multiple_references_injected_in_order(self):
+        node = self._step_node_with_refs("echo", ["Node A", "Node B"])
+        definition = _workflow_definition([node])
+        received: list[str] = []
+
+        async def capturing_executor(step_input, session_state=None):
+            received.append(step_input.input)
+            return SimpleNamespace(content="ok")
+
+        workflow = compiler.compile_workflow(
+            definition, _workflow_run(), executor_registry={"tool": capturing_executor}
+        )
+        previous = self._make_previous_outputs(**{"Node A": "output-a", "Node B": "output-b"})
+        await workflow.steps[0].executor(StepInput(input="task", previous_step_outputs=previous), {})
+
+        prompt = received[0]
+        assert prompt.index("Node A") < prompt.index("Node B")
+        assert "output-a" in prompt
+        assert "output-b" in prompt
+
+    @pytest.mark.asyncio
+    async def test_missing_referenced_node_silently_skipped(self):
+        """A referenced node that never executed (skipped Condition branch) is omitted."""
+        node = self._step_node_with_refs("echo", ["Ghost Node"])
+        definition = _workflow_definition([node])
+        received: list[str] = []
+
+        async def capturing_executor(step_input, session_state=None):
+            received.append(step_input.input)
+            return SimpleNamespace(content="ok")
+
+        workflow = compiler.compile_workflow(
+            definition, _workflow_run(), executor_registry={"tool": capturing_executor}
+        )
+        # previous_step_outputs does NOT contain "Ghost Node"
+        await workflow.steps[0].executor(StepInput(input="my task", previous_step_outputs={}), {})
+
+        assert received[0] == "my task"
+
+    @pytest.mark.asyncio
+    async def test_long_output_injected_in_full(self):
+        """Full output is injected without truncation — caller decides on length management."""
+        node = self._step_node_with_refs("echo", ["Big Node"])
+        definition = _workflow_definition([node])
+        received: list[str] = []
+
+        async def capturing_executor(step_input, session_state=None):
+            received.append(step_input.input)
+            return SimpleNamespace(content="ok")
+
+        workflow = compiler.compile_workflow(
+            definition, _workflow_run(), executor_registry={"tool": capturing_executor}
+        )
+        long_content = "x" * 10_000
+        previous = self._make_previous_outputs(**{"Big Node": long_content})
+        await workflow.steps[0].executor(StepInput(input="task", previous_step_outputs=previous), {})
+
+        prompt = received[0]
+        assert long_content in prompt
+        assert "[truncated]" not in prompt
+
+    @pytest.mark.asyncio
+    async def test_no_references_leaves_input_unchanged(self):
+        node = _step_node("plain", "tool")
+        definition = _workflow_definition([node])
+        received: list[str] = []
+
+        async def capturing_executor(step_input, session_state=None):
+            received.append(step_input.input)
+            return SimpleNamespace(content="ok")
+
+        workflow = compiler.compile_workflow(
+            definition, _workflow_run(), executor_registry={"tool": capturing_executor}
+        )
+        previous = self._make_previous_outputs(**{"Some Node": "irrelevant"})
+        await workflow.steps[0].executor(StepInput(input="original task", previous_step_outputs=previous), {})
+
+        assert received[0] == "original task"
+
+    @pytest.mark.asyncio
+    async def test_input_snapshot_captures_original_input_before_injection(self):
+        """_with_input_capture wraps before _with_referenced_outputs, so the snapshot
+        records the unmodified input — not the injected version."""
+        node = self._step_node_with_refs("echo", ["Upstream"])
+        definition = _workflow_definition([node])
+
+        workflow = compiler.compile_workflow(definition, _workflow_run(), executor_registry={"tool": _executor})
+        session_state: dict = {}
+        previous = self._make_previous_outputs(**{"Upstream": "upstream-content"})
+        await workflow.steps[0].executor(
+            StepInput(input="original task", previous_step_outputs=previous),
+            session_state,
+        )
+
+        snapshot = session_state[compiler.NODE_INPUT_SNAPSHOTS_KEY][node.id]
+        assert snapshot["input"] == "original task"
+
+    def test_referenced_node_names_rejected_on_non_step_node(self):
+        with pytest.raises(ValueError, match="referenced_node_names is only supported on step nodes"):
+            WorkflowNode(
+                name="par",
+                node_type=WorkflowNodeType.PARALLEL,
+                referenced_node_names=["some-node"],
+                children=[_step_node("a", "x"), _step_node("b", "y")],
+            )
+
+
+@pytest.mark.unit
 class TestEnumDriftAgainstAgno:
     """Anti-corruption layer: surface agno enum drift the moment it happens.
 
