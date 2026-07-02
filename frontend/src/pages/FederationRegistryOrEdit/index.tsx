@@ -197,18 +197,18 @@ const FederationRegistryOrEdit: React.FC = () => {
   };
 
   const handleSync = async () => {
-    if (!id) return;
+    if (!id || isSyncing) return;
     setIsSyncing(true);
+    showToast('Sync started in background', 'info');
+
     try {
       await SERVICES.FEDERATION.syncFederation(id, undefined, { timeout: 120000 });
-      showToast('Sync started successfully', 'success');
+      showToast('Sync completed successfully', 'success');
+      getDetail();
     } catch (error: any) {
-      showToast(error?.detail?.message || 'Failed to start sync', 'error');
+      showToast(error?.detail?.message || 'Failed to sync', 'error');
     } finally {
-      setTimeout(() => {
-        setIsSyncing(false);
-        getDetail();
-      }, 2000);
+      setIsSyncing(false);
     }
   };
 
@@ -396,10 +396,7 @@ const FederationRegistryOrEdit: React.FC = () => {
                   disabled={loading || loadingDetail || isSyncing}
                   className='inline-flex items-center justify-center gap-2 min-w-[80px] sm:min-w-[120px] md:min-w-[160px] px-4 py-2 border border-[var(--jarvis-primary-soft)] rounded-md shadow-sm text-sm font-medium text-[var(--jarvis-primary)] bg-[var(--jarvis-card)] hover:bg-[var(--jarvis-primary-soft)] hover:bg-[var(--jarvis-primary-soft)] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[var(--jarvis-primary)] disabled:opacity-50 disabled:cursor-not-allowed'
                 >
-                  {isSyncing && (
-                    <div className='animate-spin rounded-full h-4 w-4 border-b-2 border-[var(--jarvis-primary)]'></div>
-                  )}
-                  {!isSyncing && <ArrowPathIcon className='h-4 w-4' />}
+                  <ArrowPathIcon className='h-4 w-4' />
                   Sync Now
                 </button>
               )}

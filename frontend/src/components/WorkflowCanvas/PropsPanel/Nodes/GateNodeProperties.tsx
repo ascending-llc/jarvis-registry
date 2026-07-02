@@ -31,18 +31,6 @@ export const GateNodeProperties: React.FC<Props> = ({ node }) => {
         </div>
         <div className='mb-2'>
           <SelectField
-            label='Approver role'
-            options={[
-              { value: 'engineer', label: 'Engineer' },
-              { value: 'tech-lead', label: 'Tech Lead' },
-              { value: 'any', label: 'Any member' },
-            ]}
-            value={nodeData.role ?? 'engineer'}
-            onChange={val => onNodeDataChange(node.id, { role: val })}
-          />
-        </div>
-        <div className='mb-2'>
-          <SelectField
             label='Timeout'
             options={[
               { value: '24h', label: '24 hours' },
@@ -58,7 +46,7 @@ export const GateNodeProperties: React.FC<Props> = ({ node }) => {
             label='On timeout'
             options={[
               { value: 'cancel', label: 'Auto-cancel' },
-              { value: 'escalate', label: 'Escalate' },
+              { value: 'skip', label: 'Auto-skip' },
               { value: 'approve', label: 'Auto-approve' },
             ]}
             value={nodeData.onTimeout ?? 'cancel'}

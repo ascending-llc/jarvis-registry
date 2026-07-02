@@ -277,8 +277,10 @@ export const useShareModal = ({
 
       showToast?.('Permissions updated successfully', 'success');
       onClose();
-    } catch {
-      showToast?.('Failed to update permissions', 'error');
+    } catch (error: any) {
+      const msg =
+        (typeof error?.detail === 'string' ? error.detail : error?.detail?.message) || 'Failed to update permissions';
+      showToast?.(msg, 'error');
     } finally {
       setSaving(false);
     }

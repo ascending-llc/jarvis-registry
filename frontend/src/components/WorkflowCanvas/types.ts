@@ -21,7 +21,7 @@ export interface WorkflowCanvasProps {
   isReadOnly: boolean;
   isNewWorkflow: boolean;
   onDeleteWorkflow: () => void;
-  onWorkflowChange: (patch: Partial<Pick<Workflow, 'name' | 'description' | 'type'>>) => void;
+  onWorkflowChange: (patch: Partial<Pick<Workflow, 'name' | 'description'>>) => void;
   onSave?: (nodes: Node[], edges: Edge[], viewport: { x: number; y: number; zoom: number }) => void;
   onChange?: () => void;
 }
@@ -37,9 +37,8 @@ export interface BaseNodeData extends Record<string, unknown> {
 /** Specific node data types */
 export interface GateNodeData extends BaseNodeData {
   reviewerPrompt?: string;
-  role?: string;
   timeout?: string;
-  onTimeout?: string;
+  onTimeout?: 'cancel' | 'skip' | 'approve';
 }
 
 export interface CondNodeData extends BaseNodeData {

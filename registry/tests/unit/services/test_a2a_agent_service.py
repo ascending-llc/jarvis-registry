@@ -81,6 +81,156 @@ async def test_update_agent_passes_session_to_save():
 
 
 @pytest.mark.asyncio
+async def test_update_agent_uses_card_url_fallback_to_skip_unchanged_url_fetch():
+    service = _service()
+    fake_agent = MagicMock()
+    fake_agent.save = AsyncMock()
+    fake_agent.config = SimpleNamespace(title="Old Title", description="desc", url=None, type="jsonrpc")
+    fake_agent.card = SimpleNamespace(
+        name="Test Agent",
+        description="card desc",
+        url="https://agentcore.example.com",
+    )
+    fake_agent.vectorContentHash = "hash"
+
+    data = AgentUpdateRequest(title="New Title", url="https://agentcore.example.com/")
+    fetch = AsyncMock()
+
+    with (
+        patch("registry.services.a2a_agent_service.A2AAgent") as MockAgent,
+        patch.object(service, "_fetch_agent_card_from_url", fetch),
+    ):
+        MockAgent.get = AsyncMock(return_value=fake_agent)
+
+        await service.update_agent(agent_id=str(PydanticObjectId()), data=data)
+
+    fetch.assert_not_awaited()
+    fake_agent.save.assert_awaited_once()
+    assert fake_agent.config.title == "New Title"
+    # config.url must stay None: it is intentionally unset for AgentCore-federated agents
+    # (card.url is kept fresh by federation resync), so a no-op edit must not backfill it.
+    assert fake_agent.config.url is None
+
+
+@pytest.mark.asyncio
+async def test_update_agent_normalizes_existing_config_url_when_unchanged():
+    service = _service()
+    fake_agent = MagicMock()
+    fake_agent.save = AsyncMock()
+    fake_agent.config = SimpleNamespace(
+        title="Old Title", description="desc", url="https://agent.example.com/", type="jsonrpc"
+    )
+    fake_agent.card = SimpleNamespace(
+        name="Test Agent",
+        description="card desc",
+        url="https://agent.example.com/",
+    )
+    fake_agent.vectorContentHash = "hash"
+
+    data = AgentUpdateRequest(title="New Title", url="https://agent.example.com")
+    fetch = AsyncMock()
+
+    with (
+        patch("registry.services.a2a_agent_service.A2AAgent") as MockAgent,
+        patch.object(service, "_fetch_agent_card_from_url", fetch),
+    ):
+        MockAgent.get = AsyncMock(return_value=fake_agent)
+
+        await service.update_agent(agent_id=str(PydanticObjectId()), data=data)
+
+    fetch.assert_not_awaited()
+    # Already had an explicit config.url — re-normalizing its formatting is still expected.
+    assert fake_agent.config.url == "https://agent.example.com"
+
+
+@pytest.mark.asyncio
+async def test_update_agent_refetches_changed_card_url_with_auth_headers():
+    service = A2AAgentService(a2a_agent_repo=None, jwt_config=SimpleNamespace())
+    old_card = SimpleNamespace(
+        name="Test Agent",
+        description="old desc",
+        url="https://agentcore.example.com",
+    )
+    updated_card = SimpleNamespace(
+        name="Updated Agent",
+        description="new desc",
+        url="https://new-agentcore.example.com",
+        version="2.0.0",
+    )
+    fake_agent = MagicMock()
+    fake_agent.save = AsyncMock()
+    fake_agent.config = SimpleNamespace(title="Old Title", description="old desc", url=None, type="jsonrpc")
+    fake_agent.card = old_card
+    fake_agent.wellKnown = SimpleNamespace(
+        enabled=True,
+        lastSyncAt=datetime.now(UTC),
+        lastSyncStatus="success",
+        lastSyncVersion="1.0.0",
+    )
+    fake_agent.vectorContentHash = "hash"
+
+    headers = {"Authorization": "Bearer agentcore-jwt"}
+    fetch = AsyncMock(return_value=updated_card)
+
+    with (
+        patch("registry.services.a2a_agent_service.A2AAgent") as MockAgent,
+        patch("registry.services.a2a_agent_service.build_headers", return_value=headers),
+        patch.object(service, "_fetch_agent_card_from_url", fetch),
+    ):
+        MockAgent.get = AsyncMock(return_value=fake_agent)
+
+        await service.update_agent(agent_id=str(PydanticObjectId()), data=AgentUpdateRequest(url=updated_card.url))
+
+    fetch.assert_awaited_once_with("https://new-agentcore.example.com", auth_headers=headers)
+    assert fake_agent.card is updated_card
+    assert fake_agent.config.url == "https://new-agentcore.example.com"
+    fake_agent.save.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_update_agent_refetches_without_auth_headers_when_header_build_fails():
+    service = A2AAgentService(a2a_agent_repo=None, jwt_config=SimpleNamespace())
+    old_card = SimpleNamespace(
+        name="Test Agent",
+        description="old desc",
+        url="https://agentcore.example.com",
+    )
+    updated_card = SimpleNamespace(
+        name="Updated Agent",
+        description="new desc",
+        url="https://new-agentcore.example.com",
+        version="2.0.0",
+    )
+    fake_agent = MagicMock()
+    fake_agent.save = AsyncMock()
+    fake_agent.config = SimpleNamespace(title="Old Title", description="old desc", url=None, type="jsonrpc")
+    fake_agent.card = old_card
+    fake_agent.wellKnown = SimpleNamespace(
+        enabled=True,
+        lastSyncAt=datetime.now(UTC),
+        lastSyncStatus="success",
+        lastSyncVersion="1.0.0",
+    )
+    fake_agent.vectorContentHash = "hash"
+
+    fetch = AsyncMock(return_value=updated_card)
+
+    with (
+        patch("registry.services.a2a_agent_service.A2AAgent") as MockAgent,
+        patch("registry.services.a2a_agent_service.build_headers", side_effect=RuntimeError("jwt config invalid")),
+        patch.object(service, "_fetch_agent_card_from_url", fetch),
+    ):
+        MockAgent.get = AsyncMock(return_value=fake_agent)
+
+        await service.update_agent(agent_id=str(PydanticObjectId()), data=AgentUpdateRequest(url=updated_card.url))
+
+    fetch.assert_awaited_once_with("https://new-agentcore.example.com", auth_headers=None)
+    assert fake_agent.card is updated_card
+    assert fake_agent.config.url == "https://new-agentcore.example.com"
+    fake_agent.save.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_delete_agent_passes_session_to_delete():
     service = _service()
     fake_agent = MagicMock()
