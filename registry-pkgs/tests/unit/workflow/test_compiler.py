@@ -1011,14 +1011,12 @@ class TestReferencedOutputs:
     async def test_referenced_output_prepended_to_input(self):
         node = self._step_node_with_refs("echo", ["Weather Agent"])
         definition = _workflow_definition([node])
-        compiler.compile_workflow(definition, _workflow_run(), executor_registry={"tool": _executor})
         received: list[str] = []
 
         async def capturing_executor(step_input, session_state=None):
             received.append(step_input.input)
             return SimpleNamespace(content="ok")
 
-        # Re-compile with capturing executor to inspect what the inner executor sees.
         workflow2 = compiler.compile_workflow(
             definition, _workflow_run(), executor_registry={"tool": capturing_executor}
         )
@@ -1142,6 +1140,41 @@ class TestReferencedOutputs:
                 referenced_node_names=["some-node"],
                 children=[_step_node("a", "x"), _step_node("b", "y")],
             )
+
+    @pytest.mark.asyncio
+    async def test_retry_does_not_accumulate_prefix(self):
+        """Each retry attempt must receive the same injected prefix, not a growing one.
+
+        with_control passes the same StepInput instance on every retry; the wrapper
+        must shallow-copy before mutating so the original is not poisoned.
+        """
+        node = self._step_node_with_refs("echo", ["Upstream"])
+        definition = _workflow_definition([node])
+        call_inputs: list[str] = []
+
+        attempt = 0
+
+        async def failing_then_ok(step_input, session_state=None):
+            nonlocal attempt
+            call_inputs.append(step_input.input)
+            attempt += 1
+            if attempt == 1:
+                return SimpleNamespace(content=None, success=False, error="transient")
+            return SimpleNamespace(content="ok", success=True, error=None)
+
+        workflow = compiler.compile_workflow(definition, _workflow_run(), executor_registry={"tool": failing_then_ok})
+        previous = self._make_previous_outputs(**{"Upstream": "upstream-content"})
+
+        # Manually drive two calls to simulate retry (with_control is not wired here,
+        # but calling the executor twice with the same StepInput proves isolation).
+        shared_input = StepInput(input="my task", previous_step_outputs=previous)
+        await workflow.steps[0].executor(shared_input, {})
+        await workflow.steps[0].executor(shared_input, {})
+
+        prefix_marker = "[Output from 'Upstream']"
+        for i, received in enumerate(call_inputs):
+            count = received.count(prefix_marker)
+            assert count == 1, f"attempt {i + 1}: expected prefix exactly once, got {count}"
 
 
 @pytest.mark.unit

@@ -219,7 +219,8 @@ class WorkflowNode(BaseModel):
     # Names of previously-executed nodes whose outputs should be explicitly injected
     # into this node's prompt at runtime.  The compiler wraps the executor with
     # _with_referenced_outputs which pulls each name from StepInput.previous_step_outputs
-    # and prepends the content before the node's own input.  Only meaningful on STEP nodes;
+    # and prepends the content before the node's own input.  Only valid on STEP nodes;
+    # non-STEP nodes raise ValueError in _validate_shape.
     referenced_node_names: list[str] = Field(default_factory=list)
 
     # CEL expression used by condition / router nodes.
