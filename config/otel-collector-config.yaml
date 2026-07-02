@@ -18,6 +18,12 @@ exporters:
   prometheus:
     endpoint: "0.0.0.0:8889"
 
+  # Receives gen_ai.* spans from agents/Claude Code.
+  otlphttp/langfuse:
+    endpoint: https://us.cloud.langfuse.com/api/public/otel
+    headers:
+      Authorization: "Basic ${env:LANGFUSE_OTLP_AUTHORIZATION}"
+
 service:
   pipelines:
     logs:
@@ -28,3 +34,9 @@ service:
       receivers: [otlp]
       processors: [batch]
       exporters: [debug, prometheus]
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: 
+        - debug 
+        - otlphttp/langfuse
