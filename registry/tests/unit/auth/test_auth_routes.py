@@ -4,13 +4,14 @@ Unit tests for authentication routes.
 
 import time
 from http.cookies import SimpleCookie
+from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 from urllib.parse import parse_qs, urlparse
 
 import pytest
 from bson import ObjectId
 from fastapi import Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, Response
 
 from registry.api.redirect_routes import (
     get_oauth2_providers,
@@ -19,8 +20,31 @@ from registry.api.redirect_routes import (
     oauth2_login_redirect,
     refresh_token,
 )
+from registry.utils.crypto_utils import REFRESH_TOKEN_EXPIRES_SECONDS
 from registry.utils.csrf import compute_csrf_token
 from registry_pkgs.core.jwt_utils import InvalidSignatureError
+
+
+def _cookies_from_response(response: Response) -> SimpleCookie:
+    cookies = SimpleCookie()
+    for key, value in response.raw_headers:
+        if key == b"set-cookie":
+            cookies.load(value.decode())
+    return cookies
+
+
+def _assert_auth_cookies_cleared(
+    cookies: SimpleCookie,
+    settings_obj: Any,
+) -> None:
+    for cookie_name in (
+        settings_obj.session_cookie_name,
+        settings_obj.refresh_cookie_name,
+        settings_obj.csrf_cookie_name,
+    ):
+        assert cookie_name in cookies
+        assert cookies[cookie_name].value == ""
+        assert cookies[cookie_name]["max-age"] == "0"
 
 
 @pytest.mark.unit
@@ -213,10 +237,7 @@ class TestAuthRoutes:
         assert response.status_code == 302
         assert response.headers["location"] == f"{mock_settings.registry_client_url}"
 
-        cookies = SimpleCookie()
-        for key, value in response.raw_headers:
-            if key == b"set-cookie":
-                cookies.load(value.decode())
+        cookies = _cookies_from_response(response)
 
         assert cookies[mock_settings.session_cookie_name].value == "mock-access-token"
         assert cookies[mock_settings.refresh_cookie_name].value == "mock-refresh-token"
@@ -395,7 +416,7 @@ class TestAuthRoutes:
 
     @pytest.mark.asyncio
     async def test_refresh_token_success_sets_csrf_cookie(self, mock_request, mock_settings):
-        """Successful token refresh must issue new access, CSRF, and rotated refresh cookies."""
+        """Successful token refresh must issue new access, CSRF, and reissued refresh cookies."""
 
         claims = {
             "user_id": "123",
@@ -426,7 +447,7 @@ class TestAuthRoutes:
         assert cookies[mock_settings.session_cookie_name].value == "new-access-token"
         assert cookies[mock_settings.csrf_cookie_name].value == compute_csrf_token("new-access-token")
         assert cookies[mock_settings.refresh_cookie_name].value == "new-refresh-token"
-        assert cookies[mock_settings.refresh_cookie_name]["max-age"] == "172800"
+        assert cookies[mock_settings.refresh_cookie_name]["max-age"] == str(REFRESH_TOKEN_EXPIRES_SECONDS)
 
     @pytest.mark.asyncio
     async def test_refresh_token_no_refresh_cookie_clears_csrf_cookie(self, mock_request, mock_settings):
@@ -435,10 +456,7 @@ class TestAuthRoutes:
 
         assert response.status_code == 401
 
-        cookies = SimpleCookie()
-        for key, value in response.raw_headers:
-            if key == b"set-cookie":
-                cookies.load(value.decode())
+        cookies = _cookies_from_response(response)
 
         assert cookies[mock_settings.csrf_cookie_name].value == ""
         assert cookies[mock_settings.csrf_cookie_name]["max-age"] == "0"
@@ -451,10 +469,7 @@ class TestAuthRoutes:
 
         assert response.status_code == 401
 
-        cookies = SimpleCookie()
-        for key, value in response.raw_headers:
-            if key == b"set-cookie":
-                cookies.load(value.decode())
+        cookies = _cookies_from_response(response)
 
         assert cookies[mock_settings.csrf_cookie_name].value == ""
         assert cookies[mock_settings.csrf_cookie_name]["max-age"] == "0"
@@ -478,19 +493,14 @@ class TestAuthRoutes:
 
         assert response.status_code == 401
 
-        cookies = SimpleCookie()
-        for key, value in response.raw_headers:
-            if key == b"set-cookie":
-                cookies.load(value.decode())
+        cookies = _cookies_from_response(response)
 
         assert cookies[mock_settings.csrf_cookie_name].value == ""
         assert cookies[mock_settings.csrf_cookie_name]["max-age"] == "0"
 
     @pytest.mark.asyncio
-    async def test_refresh_token_rotated_claims_match_prior_token(self, mock_request, mock_settings):
-        """Rotated refresh token must carry forward the same claims from the prior token."""
-        import time
-
+    async def test_refresh_token_reissued_claims_match_prior_token(self, mock_request, mock_settings):
+        """Reissued refresh token must carry forward the same claims from the prior token."""
         fixed_session_start = int(time.time()) - 3600  # 1 hour ago — well within 14-day cap
         claims = {
             "user_id": "123",
@@ -523,10 +533,99 @@ class TestAuthRoutes:
         assert call_kwargs["session_started_at"] == fixed_session_start
 
     @pytest.mark.asyncio
+    async def test_refresh_token_numeric_string_session_started_at_is_accepted(self, mock_request, mock_settings):
+        """String timestamps from refresh token claims are parsed before enforcing the session cap."""
+        fixed_session_start = int(time.time()) - 3600
+        claims = {
+            "user_id": "123",
+            "sub": "testuser",
+            "auth_method": "oauth2",
+            "provider": "entra",
+            "groups": ["admin"],
+            "scope": "read write",
+            "role": "user",
+            "email": "test@example.com",
+            "session_started_at": str(fixed_session_start),
+        }
+
+        with (
+            patch("registry.api.redirect_routes.verify_refresh_token", return_value=claims),
+            patch("registry.api.redirect_routes.generate_access_token", return_value="new-access-token"),
+            patch(
+                "registry.api.redirect_routes.generate_refresh_token", return_value="new-refresh-token"
+            ) as mock_gen_refresh,
+        ):
+            response = await refresh_token(mock_request, refresh="valid-refresh-token", is_https=False)
+
+        assert response.status_code == 200
+        assert mock_gen_refresh.call_args.kwargs["session_started_at"] == fixed_session_start
+
+    @pytest.mark.asyncio
+    async def test_refresh_token_invalid_session_started_at_returns_401(self, mock_request, mock_settings):
+        """Malformed session_started_at claims must not become 500s during refresh."""
+        claims = {
+            "user_id": "123",
+            "sub": "testuser",
+            "auth_method": "oauth2",
+            "provider": "entra",
+            "groups": ["admin"],
+            "scope": "read write",
+            "role": "user",
+            "email": "test@example.com",
+            "session_started_at": "not-a-timestamp",
+        }
+
+        with (
+            patch("registry.api.redirect_routes.verify_refresh_token", return_value=claims),
+            patch("registry.api.redirect_routes.generate_access_token") as mock_gen_access,
+            patch("registry.api.redirect_routes.generate_refresh_token") as mock_gen_refresh,
+        ):
+            response = await refresh_token(mock_request, refresh="valid-refresh-token", is_https=False)
+
+        assert response.status_code == 401
+        mock_gen_access.assert_not_called()
+        mock_gen_refresh.assert_not_called()
+        cookies = _cookies_from_response(response)
+        _assert_auth_cookies_cleared(cookies, mock_settings)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("claim_name", ["user_id", "sub", "auth_method", "provider"])
+    async def test_refresh_token_missing_required_identity_claim_returns_401(
+        self,
+        mock_request,
+        mock_settings,
+        claim_name,
+    ):
+        """Required identity claims must be present before token reissue."""
+        claims = {
+            "user_id": "123",
+            "sub": "testuser",
+            "auth_method": "oauth2",
+            "provider": "entra",
+            "groups": ["admin"],
+            "scope": "read write",
+            "role": "user",
+            "email": "test@example.com",
+            "session_started_at": int(time.time()) - 3600,
+        }
+        claims[claim_name] = None
+
+        with (
+            patch("registry.api.redirect_routes.verify_refresh_token", return_value=claims),
+            patch("registry.api.redirect_routes.generate_access_token") as mock_gen_access,
+            patch("registry.api.redirect_routes.generate_refresh_token") as mock_gen_refresh,
+        ):
+            response = await refresh_token(mock_request, refresh="valid-refresh-token", is_https=False)
+
+        assert response.status_code == 401
+        mock_gen_access.assert_not_called()
+        mock_gen_refresh.assert_not_called()
+        cookies = _cookies_from_response(response)
+        _assert_auth_cookies_cleared(cookies, mock_settings)
+
+    @pytest.mark.asyncio
     async def test_refresh_token_absolute_session_cap_exceeded_returns_401(self, mock_request, mock_settings):
         """A refresh where now - session_started_at > 14 days must return 401 and clear all cookies."""
-        import time
-
         old_start = int(time.time()) - (15 * 86400)  # 15 days ago
         claims = {
             "user_id": "123",
@@ -551,14 +650,8 @@ class TestAuthRoutes:
         mock_gen_access.assert_not_called()
         mock_gen_refresh.assert_not_called()
 
-        cookies = SimpleCookie()
-        for key, value in response.raw_headers:
-            if key == b"set-cookie":
-                cookies.load(value.decode())
-
-        assert cookies[mock_settings.session_cookie_name]["max-age"] == "0"
-        assert cookies[mock_settings.refresh_cookie_name]["max-age"] == "0"
-        assert cookies[mock_settings.csrf_cookie_name]["max-age"] == "0"
+        cookies = _cookies_from_response(response)
+        _assert_auth_cookies_cleared(cookies, mock_settings)
 
     @pytest.mark.asyncio
     async def test_refresh_token_missing_session_started_at_grandfathered(self, mock_request, mock_settings):
@@ -586,39 +679,27 @@ class TestAuthRoutes:
 
         assert response.status_code == 200
 
-        # The newly-rotated refresh token must receive a fresh session_started_at (approx now)
-        import time
-
+        # The newly-reissued refresh token must receive a fresh session_started_at (approx now)
         call_kwargs = mock_gen_refresh.call_args.kwargs
         assert "session_started_at" in call_kwargs
         assert call_kwargs["session_started_at"] is not None
         assert abs(call_kwargs["session_started_at"] - int(time.time())) <= 5
 
     @pytest.mark.asyncio
-    async def test_refresh_token_401_branches_do_not_set_refresh_cookie(self, mock_request, mock_settings):
-        """All 401 error branches (no cookie, invalid token, no scopes) must not set a refresh cookie."""
-        refresh_cookie_name = mock_settings.refresh_cookie_name
-
+    async def test_refresh_token_401_branches_clear_auth_cookies(self, mock_request, mock_settings):
+        """All 401 error branches (no cookie, invalid token, no scopes) must clear auth cookies."""
         # Branch 1: no cookie
         response = await refresh_token(mock_request, refresh=None, is_https=False)
         assert response.status_code == 401
-        cookies = SimpleCookie()
-        for key, value in response.raw_headers:
-            if key == b"set-cookie":
-                cookies.load(value.decode())
-        if refresh_cookie_name in cookies:
-            assert cookies[refresh_cookie_name]["max-age"] == "0"
+        cookies = _cookies_from_response(response)
+        _assert_auth_cookies_cleared(cookies, mock_settings)
 
         # Branch 2: invalid token
         with patch("registry.api.redirect_routes.verify_refresh_token", return_value=None):
             response = await refresh_token(mock_request, refresh="bad-token", is_https=False)
         assert response.status_code == 401
-        cookies = SimpleCookie()
-        for key, value in response.raw_headers:
-            if key == b"set-cookie":
-                cookies.load(value.decode())
-        if refresh_cookie_name in cookies:
-            assert cookies[refresh_cookie_name]["max-age"] == "0"
+        cookies = _cookies_from_response(response)
+        _assert_auth_cookies_cleared(cookies, mock_settings)
 
         # Branch 3: no scopes
         no_scope_claims = {
@@ -634,12 +715,8 @@ class TestAuthRoutes:
         with patch("registry.api.redirect_routes.verify_refresh_token", return_value=no_scope_claims):
             response = await refresh_token(mock_request, refresh="valid-token", is_https=False)
         assert response.status_code == 401
-        cookies = SimpleCookie()
-        for key, value in response.raw_headers:
-            if key == b"set-cookie":
-                cookies.load(value.decode())
-        if refresh_cookie_name in cookies:
-            assert cookies[refresh_cookie_name]["max-age"] == "0"
+        cookies = _cookies_from_response(response)
+        _assert_auth_cookies_cleared(cookies, mock_settings)
 
     @pytest.mark.asyncio
     async def test_oauth2_callback_filters_groups_before_minting_tokens(self, mock_request, mock_settings, mock_code):
