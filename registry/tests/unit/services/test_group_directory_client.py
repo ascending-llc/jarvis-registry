@@ -65,16 +65,13 @@ def _make_entra_client_with_token() -> EntraIdGroupDirectoryClient:
     return client
 
 
-def _mock_http_context(mock_cls, *, post=None, get=None):
-    """Wire up a mock httpx.AsyncClient context manager."""
+def _mock_http(*, post=None, get=None) -> AsyncMock:
+    """Return a mock httpx.AsyncClient with pre-configured methods."""
     mock_http = AsyncMock()
-    mock_http.__aenter__ = AsyncMock(return_value=mock_http)
-    mock_http.__aexit__ = AsyncMock(return_value=False)
     if post is not None:
         mock_http.post = post
     if get is not None:
         mock_http.get = get
-    mock_cls.return_value = mock_http
     return mock_http
 
 
@@ -97,19 +94,13 @@ async def test_entra_token_is_cached():
     client = _make_entra_client()
     token_resp = _json_resp(200, {"access_token": "tok", "expires_in": 3600})
     member_resp = _json_resp(200, {"value": ["g1"]})
+    client._http = _mock_http(post=AsyncMock(side_effect=[token_resp, member_resp, member_resp]))
 
-    with patch("registry.services.group_directory_client.httpx.AsyncClient") as mock_cls:
-        mock_http = _mock_http_context(
-            mock_cls,
-            post=AsyncMock(side_effect=[token_resp, member_resp, member_resp]),
-        )
+    await client.get_user_group_ids("oid-1")
+    await client.get_user_group_ids("oid-1")
 
-        await client.get_user_group_ids("oid-1")
-        await client.get_user_group_ids("oid-1")
-
-    assert mock_http.post.call_count == 3
-    # Verify only the first call was to the token endpoint
-    first_call_url = mock_http.post.call_args_list[0].args[0]
+    assert client._http.post.call_count == 3
+    first_call_url = client._http.post.call_args_list[0].args[0]
     assert "oauth2" in first_call_url
 
 
@@ -121,13 +112,9 @@ async def test_entra_token_refreshed_when_expired():
 
     fresh_token_resp = _json_resp(200, {"access_token": "new-tok", "expires_in": 3600})
     member_resp = _json_resp(200, {"value": []})
+    client._http = _mock_http(post=AsyncMock(side_effect=[fresh_token_resp, member_resp]))
 
-    with patch("registry.services.group_directory_client.httpx.AsyncClient") as mock_cls:
-        _mock_http_context(
-            mock_cls,
-            post=AsyncMock(side_effect=[fresh_token_resp, member_resp]),
-        )
-        await client.get_user_group_ids("oid-1")
+    await client.get_user_group_ids("oid-1")
 
     assert client._access_token == "new-tok"
 
@@ -137,20 +124,18 @@ async def test_entra_token_acquisition_failure_raises():
     fail_resp = MagicMock()
     fail_resp.status_code = 401
     fail_resp.text = "unauthorized"
+    client._http = _mock_http(post=AsyncMock(return_value=fail_resp))
 
-    with patch("registry.services.group_directory_client.httpx.AsyncClient") as mock_cls:
-        _mock_http_context(mock_cls, post=AsyncMock(return_value=fail_resp))
-        with pytest.raises(ValueError, match="Failed to acquire Graph API token"):
-            await client.get_user_group_ids("oid-1")
+    with pytest.raises(ValueError, match="Failed to acquire Graph API token"):
+        await client.get_user_group_ids("oid-1")
 
 
 async def test_entra_get_user_group_ids_happy_path():
     client = _make_entra_client_with_token()
     resp = _json_resp(200, {"value": ["g1", "g2"]})
+    client._http = _mock_http(post=AsyncMock(return_value=resp))
 
-    with patch("registry.services.group_directory_client.httpx.AsyncClient") as mock_cls:
-        _mock_http_context(mock_cls, post=AsyncMock(return_value=resp))
-        result = await client.get_user_group_ids("oid-user")
+    result = await client.get_user_group_ids("oid-user")
 
     assert result == ["g1", "g2"]
 
@@ -159,10 +144,9 @@ async def test_entra_get_user_group_ids_returns_empty_on_404():
     client = _make_entra_client_with_token()
     resp = MagicMock()
     resp.status_code = 404
+    client._http = _mock_http(post=AsyncMock(return_value=resp))
 
-    with patch("registry.services.group_directory_client.httpx.AsyncClient") as mock_cls:
-        _mock_http_context(mock_cls, post=AsyncMock(return_value=resp))
-        result = await client.get_user_group_ids("ghost-oid")
+    result = await client.get_user_group_ids("ghost-oid")
 
     assert result == []
 
@@ -181,10 +165,9 @@ async def test_entra_get_group_members_happy_path_with_pagination():
         },
     )
     page2 = _json_resp(200, {"value": [{"@odata.type": "#microsoft.graph.user", "id": "u2"}]})
+    client._http = _mock_http(get=AsyncMock(side_effect=[page1, page2]))
 
-    with patch("registry.services.group_directory_client.httpx.AsyncClient") as mock_cls:
-        _mock_http_context(mock_cls, get=AsyncMock(side_effect=[page1, page2]))
-        result = await client.get_group_members("gid")
+    result = await client.get_group_members("gid")
 
     assert result == ["u1", "u2"]
 
@@ -208,15 +191,13 @@ async def test_entra_get_group_details_batch_splits_into_chunks_of_20():
             },
         )
 
-    with patch("registry.services.group_directory_client.httpx.AsyncClient") as mock_cls:
-        mock_http = _mock_http_context(
-            mock_cls,
-            post=AsyncMock(side_effect=[_batch_resp(group_ids[:20]), _batch_resp(group_ids[20:])]),
-        )
-        result = await client.get_group_details_batch(group_ids)
+    client._http = _mock_http(
+        post=AsyncMock(side_effect=[_batch_resp(group_ids[:20]), _batch_resp(group_ids[20:])]),
+    )
+    result = await client.get_group_details_batch(group_ids)
 
     assert len(result) == 25
-    assert mock_http.post.call_count == 2
+    assert client._http.post.call_count == 2
 
 
 async def test_entra_get_group_details_batch_retries_on_429():
@@ -243,9 +224,8 @@ async def test_entra_get_group_details_batch_retries_on_429():
         },
     )
 
-    with patch("registry.services.group_directory_client.httpx.AsyncClient") as mock_cls:
-        _mock_http_context(mock_cls, post=AsyncMock(side_effect=[throttle_resp, retry_resp]))
-        with patch("registry.services.group_directory_client.asyncio.sleep", new_callable=AsyncMock):
-            result = await client.get_group_details_batch(["g1"])
+    client._http = _mock_http(post=AsyncMock(side_effect=[throttle_resp, retry_resp]))
+    with patch("registry.services.group_directory_client.asyncio.sleep", new_callable=AsyncMock):
+        result = await client.get_group_details_batch(["g1"])
 
     assert result == [{"id": "g1", "name": "G1", "email": None, "description": None}]

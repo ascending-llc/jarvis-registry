@@ -56,6 +56,7 @@ from registry.schemas.workflow_api_schemas import (
     convert_node_to_input,
 )
 from registry.services.access_control_service import ACLService, load_role_cache
+from registry.services.group_directory_client import KeycloakGroupDirectoryClient
 from registry.services.group_service import GroupService
 from registry.services.user_service import UserService
 from registry.services.workflow_control_service import WorkflowControlService
@@ -1429,7 +1430,7 @@ async def amain(selected: list[str], keep_data: bool) -> int:
     runner = _build_runner(queue)
     acl_service = ACLService(
         user_service=UserService(),
-        group_service=GroupService(),
+        group_service=GroupService(group_directory_client=KeycloakGroupDirectoryClient()),
         role_cache=await load_role_cache(),
     )
     control_service = WorkflowControlService(directive_queue=queue, runner_factory=lambda: runner)

@@ -2,7 +2,7 @@
 
 import logging
 
-from beanie import PydanticObjectId
+from beanie import BulkWriter, PydanticObjectId
 
 from registry_pkgs.models._generated.group import Group, GroupSource
 from registry_pkgs.models._generated.user import User
@@ -46,7 +46,12 @@ class GroupService:
         if not group_ids:
             return
 
-        # Add user to existing matching Entra groups
+        await self._add_user_to_known_groups(user_oid, group_ids)
+        await self._upsert_new_groups_and_enroll_user(user_oid, group_ids)
+        await self._remove_user_from_stale_groups(user_oid, group_ids)
+
+    async def _add_user_to_known_groups(self, user_oid: str, group_ids: list[str]) -> None:
+        """$addToSet the user into Entra groups that already exist in the DB."""
         await Group.find(
             {
                 "idOnTheSource": {"$in": group_ids},
@@ -55,21 +60,24 @@ class GroupService:
             }
         ).update_many({"$addToSet": {"memberIds": user_oid}})
 
-        # Find which groups don't exist in DB yet
+    async def _upsert_new_groups_and_enroll_user(self, user_oid: str, group_ids: list[str]) -> None:
+        """Fetch details for groups absent from the DB, upsert them, then enroll the user."""
         existing = await Group.find({"idOnTheSource": {"$in": group_ids}, "source": GroupSource.ENTRA}).to_list()
         existing_source_ids = {g.idOnTheSource for g in existing}
         missing_ids = [gid for gid in group_ids if gid not in existing_source_ids]
+        if not missing_ids:
+            return
 
-        # Upsert missing groups, then add user to them
-        if missing_ids:
-            details = await self._directory_client.get_group_details_batch(missing_ids)
-            if len(details) < len(missing_ids):
-                logger.warning(
-                    "get_group_details_batch resolved %d/%d groups; remaining will retry on next login.",
-                    len(details),
-                    len(missing_ids),
-                )
-            detail_ids: list[str] = []
+        details = await self._directory_client.get_group_details_batch(missing_ids)
+        if len(details) < len(missing_ids):
+            logger.warning(
+                "get_group_details_batch resolved %d/%d groups; remaining will retry on next login.",
+                len(details),
+                len(missing_ids),
+            )
+
+        detail_ids: list[str] = []
+        async with BulkWriter() as bulk_writer:
             for detail in details:
                 detail_ids.append(detail["id"])
                 await Group.find({"idOnTheSource": detail["id"], "source": GroupSource.ENTRA}).update_many(
@@ -84,13 +92,16 @@ class GroupService:
                         }
                     },
                     upsert=True,
-                )
-            if detail_ids:
-                await Group.find({"idOnTheSource": {"$in": detail_ids}, "source": GroupSource.ENTRA}).update_many(
-                    {"$addToSet": {"memberIds": user_oid}}
+                    bulk_writer=bulk_writer,
                 )
 
-        # Stale removal: remove user from Entra groups they no longer belong to
+        if detail_ids:
+            await Group.find({"idOnTheSource": {"$in": detail_ids}, "source": GroupSource.ENTRA}).update_many(
+                {"$addToSet": {"memberIds": user_oid}}
+            )
+
+    async def _remove_user_from_stale_groups(self, user_oid: str, group_ids: list[str]) -> None:
+        """$pullAll the user from Entra groups they no longer belong to."""
         await Group.find(
             {
                 "source": GroupSource.ENTRA,
