@@ -1144,18 +1144,28 @@ class TestReferencedOutputs:
 
     def test_unknown_referenced_node_name_rejected_at_definition_time(self):
         """A typo in referenced_node_names is caught when the WorkflowDefinition is built."""
+        from registry_pkgs.models.workflow import _collect_all_node_names, _validate_references_exist
+
         node = self._step_node_with_refs("echo", ["Typo Node Name"])
+        nodes = [node]
+        all_names = _collect_all_node_names(nodes)
         with pytest.raises(ValueError, match="references unknown node names"):
-            _workflow_definition([node])
+            _validate_references_exist(nodes, all_names)
 
     def test_valid_referenced_node_name_accepted(self):
         """A name that matches a sibling node in the definition must not raise."""
+        from registry_pkgs.models.workflow import _collect_all_node_names, _validate_references_exist
+
         upstream = _step_node("Upstream", "tool")
         downstream = self._step_node_with_refs("Downstream", ["Upstream"])
-        _workflow_definition([upstream, downstream])
+        nodes = [upstream, downstream]
+        all_names = _collect_all_node_names(nodes)
+        _validate_references_exist(nodes, all_names)
 
     def test_referenced_node_name_in_nested_branch_accepted(self):
         """A referenced name that lives inside a nested branch (e.g. parallel child) is valid."""
+        from registry_pkgs.models.workflow import _collect_all_node_names, _validate_references_exist
+
         inner = _step_node("Inner Step", "tool")
         parallel = WorkflowNode(
             name="Par",
@@ -1163,7 +1173,9 @@ class TestReferencedOutputs:
             children=[inner, _step_node("Other", "tool")],
         )
         consumer = self._step_node_with_refs("Consumer", ["Inner Step"])
-        _workflow_definition([parallel, consumer])
+        nodes = [parallel, consumer]
+        all_names = _collect_all_node_names(nodes)
+        _validate_references_exist(nodes, all_names)
 
     @pytest.mark.asyncio
     async def test_retry_does_not_accumulate_prefix(self):
