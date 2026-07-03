@@ -18,7 +18,8 @@ from ..core.config import settings
 from ..deps import check_if_https, get_user_service
 from ..services.user_service import UserService
 from ..utils.crypto_utils import (
-    REFRESH_TOKEN_EXPIRES_DAYS,
+    ABSOLUTE_SESSION_EXPIRES_SECONDS,
+    REFRESH_TOKEN_EXPIRES_SECONDS,
     decrypt_value,
     encrypt_value,
     generate_access_token,
@@ -33,8 +34,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 ACCESS_TOKEN_COOKIE_MAX_AGE_SECONDS = 86400
-REFRESH_TOKEN_COOKIE_MAX_AGE_SECONDS = REFRESH_TOKEN_EXPIRES_DAYS * 86400
-ABSOLUTE_SESSION_MAX_SECONDS = 14 * 86400  # 14 days; hard ceiling regardless of rotation activity
 
 
 def _set_csrf_cookie(response: Response, access_token: str, cookie_secure: bool) -> None:
@@ -53,6 +52,30 @@ def _delete_auth_cookies(response: Response) -> None:
     response.delete_cookie(key=settings.session_cookie_name, path="/")
     response.delete_cookie(key=settings.refresh_cookie_name, path="/")
     response.delete_cookie(key=settings.csrf_cookie_name, path="/")
+
+
+def _parse_session_started_at(raw_value: object, now: int) -> int | None:
+    """Parse session_started_at from refresh token claims.
+
+    None is grandfathered for pre-deploy refresh tokens. Invalid non-null values
+    are rejected by returning None so the caller can fail closed with 401.
+    """
+    if raw_value is None:
+        return now
+    if isinstance(raw_value, bool):
+        return None
+    if isinstance(raw_value, int):
+        return raw_value
+    if isinstance(raw_value, str) and raw_value.strip().isdecimal():
+        return int(raw_value)
+    return None
+
+
+def _get_required_string_claim(claims: dict, claim_name: str) -> str | None:
+    value = claims.get(claim_name)
+    if isinstance(value, str) and value.strip():
+        return value
+    return None
 
 
 async def get_oauth2_providers():
@@ -263,7 +286,7 @@ async def oauth2_callback(
         resp.set_cookie(
             key=settings.refresh_cookie_name,
             value=refresh_token,
-            max_age=REFRESH_TOKEN_COOKIE_MAX_AGE_SECONDS,
+            max_age=REFRESH_TOKEN_EXPIRES_SECONDS,
             httponly=True,
             samesite="lax",
             secure=cookie_secure,
@@ -321,12 +344,15 @@ async def refresh_token(
             _delete_auth_cookies(response)
             return response
 
-        # Enforce 14-day absolute session cap regardless of rotation activity
+        # Enforce 14-day absolute session cap regardless of refresh-token reissue activity
         now = int(datetime.now(UTC).timestamp())
-        session_started_at = refresh_claims.get("session_started_at")
+        session_started_at = _parse_session_started_at(refresh_claims.get("session_started_at"), now)
         if session_started_at is None:
-            session_started_at = now
-        elif now - session_started_at > ABSOLUTE_SESSION_MAX_SECONDS:
+            logger.warning("Refresh token has invalid session_started_at claim")
+            response = JSONResponse(status_code=401, content={"detail": "Invalid refresh token session"})
+            _delete_auth_cookies(response)
+            return response
+        if now - session_started_at > ABSOLUTE_SESSION_EXPIRES_SECONDS:
             logger.info("Absolute session cap exceeded for refresh token; forcing re-login")
             response = JSONResponse(status_code=401, content={"detail": "Session expired, please log in again"})
             _delete_auth_cookies(response)
@@ -364,7 +390,8 @@ async def refresh_token(
             _delete_auth_cookies(response)
             return response
 
-        # Generate new access and refresh tokens using information from refresh token
+        # Generate new access and refresh tokens using information from refresh token.
+        # Refresh tokens are stateless JWTs, so the previous token remains valid until its exp.
         try:
             new_access_token = generate_access_token(
                 user_id=user_id,
@@ -407,11 +434,11 @@ async def refresh_token(
             )
             _set_csrf_cookie(response, new_access_token, cookie_secure)
 
-            # Rotate refresh token cookie (48 hours sliding)
+            # Reissue refresh token cookie (48 hours sliding)
             response.set_cookie(
                 key=settings.refresh_cookie_name,
                 value=new_refresh_token,
-                max_age=REFRESH_TOKEN_COOKIE_MAX_AGE_SECONDS,
+                max_age=REFRESH_TOKEN_EXPIRES_SECONDS,
                 httponly=True,
                 samesite="lax",
                 secure=cookie_secure,
