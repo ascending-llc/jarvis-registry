@@ -2,6 +2,7 @@ import base64
 import json
 import logging
 import secrets
+from datetime import UTC, datetime
 from typing import Annotated
 from urllib.parse import quote, urlencode
 
@@ -11,15 +12,17 @@ from fastapi import APIRouter, Cookie, Depends, Request, status
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 
 from registry_pkgs.core.jwt_utils import decode_jwt
-from registry_pkgs.core.scopes import map_groups_to_scopes
+from registry_pkgs.core.scopes import filter_known_groups, map_groups_to_scopes
 
 from ..core.config import settings
 from ..deps import check_if_https, get_user_service
 from ..services.user_service import UserService
 from ..utils.crypto_utils import (
+    REFRESH_TOKEN_EXPIRES_DAYS,
     decrypt_value,
     encrypt_value,
     generate_access_token,
+    generate_refresh_token,
     generate_token_pair,
     verify_refresh_token,
 )
@@ -30,6 +33,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 ACCESS_TOKEN_COOKIE_MAX_AGE_SECONDS = 86400
+REFRESH_TOKEN_COOKIE_MAX_AGE_SECONDS = REFRESH_TOKEN_EXPIRES_DAYS * 86400
+ABSOLUTE_SESSION_MAX_SECONDS = 14 * 86400  # 14 days; hard ceiling regardless of rotation activity
 
 
 def _set_csrf_cookie(response: Response, access_token: str, cookie_secure: bool) -> None:
@@ -221,7 +226,7 @@ async def oauth2_callback(
             "user_id": str(user_obj.id),
             "username": user_obj.username,
             "email": user_obj.email or user_claims.get("email", ""),
-            "groups": user_claims.get("groups", []),
+            "groups": filter_known_groups(user_claims.get("groups", []), settings.scopes_file_config),
             "scopes": user_claims.get("scope", []),
             "role": user_obj.role,
             "auth_method": "oauth2",
@@ -254,11 +259,11 @@ async def oauth2_callback(
         )
         _set_csrf_cookie(resp, access_token, cookie_secure)
 
-        # Set refresh token cookie (7 days)
+        # Set refresh token cookie (48 hours sliding)
         resp.set_cookie(
             key=settings.refresh_cookie_name,
             value=refresh_token,
-            max_age=604800,  # 7 days in seconds
+            max_age=REFRESH_TOKEN_COOKIE_MAX_AGE_SECONDS,
             httponly=True,
             samesite="lax",
             secure=cookie_secure,
@@ -316,6 +321,17 @@ async def refresh_token(
             _delete_auth_cookies(response)
             return response
 
+        # Enforce 14-day absolute session cap regardless of rotation activity
+        now = int(datetime.now(UTC).timestamp())
+        session_started_at = refresh_claims.get("session_started_at")
+        if session_started_at is None:
+            session_started_at = now
+        elif now - session_started_at > ABSOLUTE_SESSION_MAX_SECONDS:
+            logger.info("Absolute session cap exceeded for refresh token; forcing re-login")
+            response = JSONResponse(status_code=401, content={"detail": "Session expired, please log in again"})
+            _delete_auth_cookies(response)
+            return response
+
         # Extract user info from refresh token claims
         user_id = refresh_claims.get("user_id")
         username = refresh_claims.get("sub")
@@ -348,7 +364,7 @@ async def refresh_token(
             _delete_auth_cookies(response)
             return response
 
-        # Generate new access token using information from refresh token
+        # Generate new access and refresh tokens using information from refresh token
         try:
             new_access_token = generate_access_token(
                 user_id=user_id,
@@ -361,10 +377,22 @@ async def refresh_token(
                 provider=provider,
             )
 
+            new_refresh_token = generate_refresh_token(
+                user_id=user_id,
+                username=username,
+                auth_method=auth_method,
+                provider=provider,
+                groups=groups,
+                scopes=scopes,
+                role=role,
+                email=email,
+                session_started_at=session_started_at,
+            )
+
             # Determine cookie security settings
             cookie_secure = settings.session_cookie_secure and is_https
 
-            # Create response with new access token
+            # Create response with new tokens
             response = JSONResponse(status_code=200, content={"detail": "Token refreshed successfully"})
 
             # Update access token cookie (1 day)
@@ -379,12 +407,23 @@ async def refresh_token(
             )
             _set_csrf_cookie(response, new_access_token, cookie_secure)
 
-            logger.info(f"Successfully refreshed access token for user {username}")
+            # Rotate refresh token cookie (48 hours sliding)
+            response.set_cookie(
+                key=settings.refresh_cookie_name,
+                value=new_refresh_token,
+                max_age=REFRESH_TOKEN_COOKIE_MAX_AGE_SECONDS,
+                httponly=True,
+                samesite="lax",
+                secure=cookie_secure,
+                path="/",
+            )
+
+            logger.info(f"Successfully refreshed tokens for user {username}")
             return response
 
         except Exception as e:
-            logger.error(f"Error generating new access token during refresh: {e}")
-            return JSONResponse(status_code=500, content={"detail": "Failed to generate new access token"})
+            logger.error(f"Error generating new tokens during refresh: {e}")
+            return JSONResponse(status_code=500, content={"detail": "Failed to complete token refresh"})
 
     except Exception as e:
         logger.error(f"Error during token refresh: {e}")
