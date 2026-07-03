@@ -1,5 +1,6 @@
 """Unit tests for crypto_utils module."""
 
+import time
 from unittest.mock import patch
 
 from registry.core.config import settings
@@ -64,7 +65,7 @@ class TestCrudSessionTokens:
         assert claims["client_id"] == settings.registry_app_name
 
     def test_refresh_token_session_started_at_defaults_to_now(self):
-        before = int(__import__("time").time())
+        before = int(time.time())
         token = generate_refresh_token(
             user_id="u1",
             username="alice",
@@ -75,7 +76,7 @@ class TestCrudSessionTokens:
             role="user",
             email="alice@example.com",
         )
-        after = int(__import__("time").time())
+        after = int(time.time())
         claims = verify_refresh_token(token)
         assert claims is not None
         assert "session_started_at" in claims

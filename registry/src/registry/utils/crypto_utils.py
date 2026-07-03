@@ -34,7 +34,10 @@ logger = logging.getLogger(__name__)
 
 # Token expiration defaults
 ACCESS_TOKEN_EXPIRES_HOURS = 24  # 1 day
-REFRESH_TOKEN_EXPIRES_DAYS = 2  # 48 hours;
+REFRESH_TOKEN_EXPIRES_DAYS = 2  # 48 hours
+REFRESH_TOKEN_EXPIRES_SECONDS = REFRESH_TOKEN_EXPIRES_DAYS * 86400
+ABSOLUTE_SESSION_EXPIRES_DAYS = 14
+ABSOLUTE_SESSION_EXPIRES_SECONDS = ABSOLUTE_SESSION_EXPIRES_DAYS * 86400
 
 
 # Algorithm constants
@@ -480,6 +483,8 @@ def generate_refresh_token(
     Generate a JWT refresh token.
 
     Refresh tokens now include groups and scopes to enable token refresh without re-authentication.
+    They are stateless JWTs: reissuing a token renews the browser cookie but does not revoke
+    the previous token before its own expiration.
     This is especially important for OAuth2 users who cannot re-authenticate automatically.
 
     Args:
