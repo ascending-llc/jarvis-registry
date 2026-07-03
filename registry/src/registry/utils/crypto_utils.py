@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 # Token expiration defaults
 ACCESS_TOKEN_EXPIRES_HOURS = 24  # 1 day
-REFRESH_TOKEN_EXPIRES_DAYS = 7  # 7 days
+REFRESH_TOKEN_EXPIRES_DAYS = 2  # 48 hours;
 
 
 # Algorithm constants
@@ -474,6 +474,7 @@ def generate_refresh_token(
     role: str,
     email: str,
     expires_days: int = REFRESH_TOKEN_EXPIRES_DAYS,
+    session_started_at: int | None = None,
 ) -> str:
     """
     Generate a JWT refresh token.
@@ -490,12 +491,17 @@ def generate_refresh_token(
         scopes: List of permission scopes
         role: User role
         email: User's email
-        expires_days: Token expiration in days (default: 7)
+        expires_days: Token expiration in days (default: 2)
+        session_started_at: Unix timestamp of original login; stamped once and carried forward
+            through every rotation to enforce the absolute 14-day session cap.
 
     Returns:
         JWT token string
     """
     expires_in_seconds = expires_days * 86400  # Convert days to seconds
+
+    if session_started_at is None:
+        session_started_at = int(datetime.now(UTC).timestamp())
 
     # Build extra claims - include groups/scopes for token refresh
     extra_claims = {
@@ -506,6 +512,7 @@ def generate_refresh_token(
         "scope": " ".join(scopes) if isinstance(scopes, list) else scopes,
         "role": role,
         "email": email,
+        "session_started_at": session_started_at,
     }
 
     # CRUD-session (cookie) class: audience, client_id and token_class are set by the layer.
@@ -574,14 +581,14 @@ def verify_refresh_token(token: str) -> dict[str, Any] | None:
 
 
 def generate_token_pair(
-    user_id: str = None,
-    username: str = None,
-    email: str = None,
-    groups: list = None,
-    scopes: list = None,
-    role: str = None,
-    auth_method: str = None,
-    provider: str = None,
+    user_id: str | None = None,
+    username: str | None = None,
+    email: str | None = None,
+    groups: list | None = None,
+    scopes: list | None = None,
+    role: str | None = None,
+    auth_method: str | None = None,
+    provider: str | None = None,
     idp_id: str | None = None,
     user_info: dict[str, Any] | None = None,
     iat: int | None = None,

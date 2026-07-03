@@ -63,6 +63,41 @@ class TestCrudSessionTokens:
         assert claims["token_type"] == "refresh_token"
         assert claims["client_id"] == settings.registry_app_name
 
+    def test_refresh_token_session_started_at_defaults_to_now(self):
+        before = int(__import__("time").time())
+        token = generate_refresh_token(
+            user_id="u1",
+            username="alice",
+            auth_method="oauth2",
+            provider="entra",
+            groups=["g1"],
+            scopes=["servers-read"],
+            role="user",
+            email="alice@example.com",
+        )
+        after = int(__import__("time").time())
+        claims = verify_refresh_token(token)
+        assert claims is not None
+        assert "session_started_at" in claims
+        assert before <= claims["session_started_at"] <= after
+
+    def test_refresh_token_session_started_at_carried_forward(self):
+        fixed_ts = 1_700_000_000
+        token = generate_refresh_token(
+            user_id="u1",
+            username="alice",
+            auth_method="oauth2",
+            provider="entra",
+            groups=["g1"],
+            scopes=["servers-read"],
+            role="user",
+            email="alice@example.com",
+            session_started_at=fixed_ts,
+        )
+        claims = verify_refresh_token(token)
+        assert claims is not None
+        assert claims["session_started_at"] == fixed_ts
+
     def test_access_verifier_rejects_refresh_token(self):
         token = generate_refresh_token(
             user_id="u1",
