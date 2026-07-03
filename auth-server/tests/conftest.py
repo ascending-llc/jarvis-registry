@@ -4,6 +4,7 @@ Pytest configuration and shared fixtures for auth_server tests.
 
 import os
 from collections.abc import Generator
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -22,10 +23,50 @@ from registry_pkgs.testing.fixtures import setup_test_rsa_keys
 _test_rsa_key = setup_test_rsa_keys()
 
 
+class _InMemoryConsentStore:
+    def __init__(self) -> None:
+        self.client_consents: set[tuple[str, str]] = set()
+        self.server_consents: set[tuple[str, str, str]] = set()
+        self.default_client_consent = True
+
+    def has_client_consent(self, user_id: str, client_id: str) -> bool:
+        return self.default_client_consent or (user_id, client_id) in self.client_consents
+
+    def grant_client_consent(self, user_id: str, client_id: str) -> None:
+        self.client_consents.add((user_id, client_id))
+
+    def has_server_consent(self, user_id: str, client_id: str, server_path: str) -> bool:
+        return (user_id, client_id, server_path) in self.server_consents
+
+    def grant_server_consent(self, user_id: str, client_id: str, server_path: str) -> None:
+        self.server_consents.add((user_id, client_id, server_path))
+
+
+class _InMemoryPendingConsentStore:
+    def __init__(self) -> None:
+        self.pending: dict[str, dict] = {}
+
+    def save(self, nonce: str, data: dict, ttl_seconds: int = 600) -> None:
+        self.pending[nonce] = dict(data)
+
+    def peek(self, nonce: str) -> dict | None:
+        return self.pending.get(nonce)
+
+    def consume(self, nonce: str) -> dict | None:
+        return self.pending.pop(nonce, None)
+
+
+test_consent_store = _InMemoryConsentStore()
+test_pending_consent_store = _InMemoryPendingConsentStore()
+
+
 def _seed_default_oauth_state() -> None:
     from tests.support.oauth_state_store import test_oauth_state_store
 
     test_oauth_state_store.clear()
+    test_consent_store.client_consents.clear()
+    test_consent_store.server_consents.clear()
+    test_pending_consent_store.pending.clear()
     test_oauth_state_store.save_client(
         "test-client",
         {
@@ -70,14 +111,33 @@ def mock_auth_server_infra(mock_redis_client: Mock) -> Generator[None, None, Non
         yield
 
 
+@pytest.fixture(autouse=True)
+def auth_server_test_container() -> Generator[None, None, None]:
+    """Provide container-backed consent deps for tests that clear dependency_overrides."""
+    from auth_server.server import app
+
+    app.state.container = SimpleNamespace(
+        consent_store=test_consent_store,
+        pending_consent_store=test_pending_consent_store,
+    )
+    yield
+
+
 @pytest.fixture
 def auth_server_app():
     """Import and return the auth server FastAPI app."""
-    from auth_server.deps import get_oauth_state_store
+    from auth_server.deps import get_consent_store, get_oauth_state_store, get_pending_consent_store
     from auth_server.server import app
     from tests.support.oauth_state_store import test_oauth_state_store
 
+    if not hasattr(app.state, "container"):
+        app.state.container = SimpleNamespace(
+            consent_store=test_consent_store,
+            pending_consent_store=test_pending_consent_store,
+        )
     app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
+    app.dependency_overrides[get_consent_store] = lambda: test_consent_store
+    app.dependency_overrides[get_pending_consent_store] = lambda: test_pending_consent_store
     return app
 
 

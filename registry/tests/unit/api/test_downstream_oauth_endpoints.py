@@ -10,10 +10,18 @@ from authlib.oauth2.rfc7636 import create_s256_code_challenge
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from registry.api.v1.mcp.consent_routes import router as consent_router
 from registry.api.v1.mcp.oauth_router import router
 from registry.auth.dependencies import get_current_user
 from registry.core.config import settings
-from registry.deps import get_mcp_service, get_oauth_state_store, get_redis_client, get_server_service
+from registry.deps import (
+    get_consent_store,
+    get_mcp_service,
+    get_oauth_state_store,
+    get_pending_consent_store,
+    get_redis_client,
+    get_server_service,
+)
 from registry_pkgs.core.downstream_oauth import downstream_mcp_code_key
 from registry_pkgs.core.jwt_tokens import verify_managed_agent_token
 
@@ -34,7 +42,22 @@ def _session_user(user_id: str = USER_A) -> dict:
         "auth_method": "traditional",
         "provider": "local",
         "auth_source": "jwt_session_auth",
+        "client_id": settings.registry_app_name,
     }
+
+
+class _InMemoryPendingConsentStore:
+    def __init__(self) -> None:
+        self.pending: dict[str, dict] = {}
+
+    def save(self, nonce: str, data: dict, ttl_seconds: int = 600) -> None:
+        self.pending[nonce] = dict(data)
+
+    def peek(self, nonce: str) -> dict | None:
+        return self.pending.get(nonce)
+
+    def consume(self, nonce: str) -> dict | None:
+        return self.pending.pop(nonce, None)
 
 
 @pytest.fixture
@@ -52,6 +75,19 @@ def store_mock() -> Mock:
     store.get_refresh_token = Mock(return_value=None)
     store.rotate_refresh_token = Mock(return_value=None)
     return store
+
+
+@pytest.fixture
+def consent_store_mock() -> Mock:
+    store = Mock()
+    store.has_client_consent = Mock(return_value=True)
+    store.grant_client_consent = Mock()
+    return store
+
+
+@pytest.fixture
+def pending_consent_store() -> _InMemoryPendingConsentStore:
+    return _InMemoryPendingConsentStore()
 
 
 @pytest.fixture
@@ -75,13 +111,23 @@ def server_service_mock() -> Mock:
 
 
 @pytest.fixture
-def client(redis_mock, mcp_service_mock, server_service_mock, store_mock) -> TestClient:
+def client(
+    redis_mock,
+    mcp_service_mock,
+    server_service_mock,
+    store_mock,
+    consent_store_mock,
+    pending_consent_store,
+) -> TestClient:
     app = FastAPI()
     app.include_router(router)
+    app.include_router(consent_router)
     app.dependency_overrides[get_redis_client] = lambda: redis_mock
     app.dependency_overrides[get_mcp_service] = lambda: mcp_service_mock
     app.dependency_overrides[get_server_service] = lambda: server_service_mock
     app.dependency_overrides[get_oauth_state_store] = lambda: store_mock
+    app.dependency_overrides[get_consent_store] = lambda: consent_store_mock
+    app.dependency_overrides[get_pending_consent_store] = lambda: pending_consent_store
     # By default the authorize endpoint sees a session for USER_A (matches the URL user_id).
     app.dependency_overrides[get_current_user] = lambda: _session_user(USER_A)
     return TestClient(app)
@@ -112,6 +158,30 @@ def test_authorize_redirects_to_provider(client, redis_mock):
     )
     assert resp.status_code == 307
     assert resp.headers["location"] == "https://github.com/login/oauth/authorize?x=1"
+
+
+def test_authorize_without_client_consent_redirects_to_frontend(
+    client,
+    consent_store_mock,
+    pending_consent_store,
+    mcp_service_mock,
+):
+    consent_store_mock.has_client_consent.return_value = False
+
+    resp = client.get(
+        f"/mcp/downstream/oauth/authorize/{USER_A}/github",
+        params={"client_id": "claude", "redirect_uri": "http://localhost:33418/cb", "code_challenge": "abc"},
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 307
+    assert resp.headers["location"].startswith(f"{settings.registry_client_url}/consent/downstream?nonce=")
+    assert len(pending_consent_store.pending) == 1
+    pending = next(iter(pending_consent_store.pending.values()))
+    assert pending["user_id"] == USER_A
+    assert pending["client_id"] == "claude"
+    assert pending["server_path"] == "github"
+    mcp_service_mock.oauth_service.initiate_oauth_flow.assert_not_called()
 
 
 def test_authorize_invalid_user_id_returns_400(client):
@@ -241,6 +311,87 @@ def test_authorize_unauthenticated_is_not_public(client, mcp_service_mock):
     )
     assert resp.status_code == 401
     mcp_service_mock.oauth_service.initiate_oauth_flow.assert_not_called()
+
+
+def test_get_downstream_consent_context_returns_client_metadata(
+    client,
+    pending_consent_store,
+    store_mock,
+):
+    pending_consent_store.save(
+        "nonce-1",
+        {
+            "user_id": USER_A,
+            "server_path": "github",
+            "client_id": "claude",
+            "response_type": "code",
+            "redirect_uri": "http://localhost:33418/cb",
+            "code_challenge": "abc",
+            "code_challenge_method": "S256",
+            "state": "state-1",
+        },
+    )
+    store_mock.get_client.return_value = {
+        "client_name": "Claude",
+        "client_uri": "https://claude.ai",
+        "ip_address": "203.0.113.7",
+        "registered_at": 1_700_000_000,
+        "redirect_uris": list(REGISTERED_REDIRECT_URIS),
+    }
+
+    resp = client.get("/mcp/consent/downstream", params={"nonce": "nonce-1"})
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "client_name": "Claude",
+        "client_uri": "https://claude.ai",
+        "ip_address": "203.0.113.7",
+        "registered_at": 1_700_000_000,
+        "server_path": "github",
+    }
+
+
+def test_get_downstream_consent_context_rejects_other_user(client, pending_consent_store):
+    pending_consent_store.save("nonce-1", {"user_id": USER_B, "server_path": "github", "client_id": "claude"})
+
+    resp = client.get("/mcp/consent/downstream", params={"nonce": "nonce-1"})
+
+    assert resp.status_code == 404
+
+
+def test_approve_downstream_consent_grants_and_returns_redirect(
+    client,
+    pending_consent_store,
+    consent_store_mock,
+    mcp_service_mock,
+):
+    pending_consent_store.save(
+        "nonce-1",
+        {
+            "user_id": USER_A,
+            "server_path": "github",
+            "client_id": "claude",
+            "response_type": "code",
+            "redirect_uri": "http://localhost:33418/cb",
+            "code_challenge": "abc",
+            "code_challenge_method": "S256",
+            "state": "state-1",
+        },
+    )
+
+    resp = client.post("/mcp/consent/downstream", json={"nonce": "nonce-1"})
+
+    assert resp.status_code == 200
+    assert resp.json() == {"redirect_url": "https://github.com/login/oauth/authorize?x=1"}
+    consent_store_mock.grant_client_consent.assert_called_once_with(USER_A, "claude")
+    assert pending_consent_store.peek("nonce-1") is None
+    mcp_service_mock.oauth_service.initiate_oauth_flow.assert_called_once()
+
+
+def test_approve_downstream_consent_rejects_reused_nonce(client):
+    resp = client.post("/mcp/consent/downstream", json={"nonce": "missing"})
+
+    assert resp.status_code == 404
 
 
 def _post_token(

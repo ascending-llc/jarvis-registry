@@ -4,6 +4,7 @@ and Authorization Code (PKCE) login/callback endpoints.
 """
 
 import base64
+import hmac
 import json
 import logging
 import secrets
@@ -18,6 +19,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from pydantic import BaseModel
 
+from registry_pkgs.core.consent_store import PENDING_CONSENT_TTL_SECONDS, ConsentStore, PendingConsentStore
 from registry_pkgs.core.downstream_oauth import oauth_error_payload
 from registry_pkgs.core.jwt_tokens import mint_managed_agent_token
 from registry_pkgs.core.jwt_utils import (
@@ -39,8 +41,10 @@ from ..core.types import AllowedProvider, AuthProviderConfig, EntraConfig, OAuth
 from ..deps import (
     check_if_https,
     get_auth_provider,
+    get_consent_store,
     get_oauth2_config,
     get_oauth_state_store,
+    get_pending_consent_store,
     get_signer,
     get_user_service,
     get_validator,
@@ -56,6 +60,7 @@ from ..utils.security_mask import (
     mask_sensitive_id,
     parse_server_and_tool_from_url,
 )
+from .consent_templates import render_consent_error_page, render_consent_page
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +74,7 @@ JWT_SELF_SIGNED_KID = settings.jwt_self_signed_kid
 JWT_TOKEN_CONFIG = settings.jwt_token_config
 
 _OIDC_TOKEN_ALGORITHMS = ["RS256"]
+CONSENT_NONCE_COOKIE = "oauth2_consent_nonce"
 
 
 def oauth_error_response(error: str, error_description: str | None = None, status_code: int = 400) -> JSONResponse:
@@ -217,6 +223,61 @@ def _validate_known_client(
         return _get_unknown_client_response()
 
     return None
+
+
+def _auth_server_route_path(path: str) -> str:
+    prefix = settings.auth_server_api_prefix.rstrip("/") if settings.auth_server_api_prefix else ""
+    return f"{prefix}{path}"
+
+
+def _auth_server_external_url(path: str) -> str:
+    base_url = settings.auth_server_external_url.rstrip("/")
+    prefix = settings.auth_server_api_prefix.rstrip("/") if settings.auth_server_api_prefix else ""
+    if prefix and base_url.endswith(prefix):
+        return f"{base_url}{path}"
+    return f"{base_url}{prefix}{path}"
+
+
+def _finish_oauth2_callback(
+    token_data: dict[str, Any],
+    mapped_user: dict[str, Any],
+    session_data: dict[str, Any],
+    resolved_scopes: list[str],
+    store: OAuthStateStoreProtocol,
+) -> RedirectResponse:
+    """Mint our own authorization code and redirect to the MCP client's redirect_uri."""
+    client_redirect_uri = session_data["client_redirect_uri"]
+    authorization_code = secrets.token_urlsafe(32)
+    current_time = int(time.time())
+    expires_at = current_time + 600
+
+    store.save_authcode(
+        authorization_code,
+        {
+            "token_data": token_data,
+            "user_info": mapped_user,
+            "client_id": session_data["client_id"],
+            "expires_at": expires_at,
+            "code_challenge": session_data["code_challenge"],
+            "code_challenge_method": session_data["code_challenge_method"],
+            "redirect_uri": client_redirect_uri,
+            "resource": session_data.get("resource"),
+            "created_at": current_time,
+            "resolved_scope": resolved_scopes,
+        },
+    )
+
+    redirect_params = {"code": authorization_code}
+    client_state = session_data.get("client_state")
+    if client_state:
+        redirect_params["state"] = client_state
+
+    redirect_url = f"{client_redirect_uri}?{urlencode(redirect_params)}"
+    logger.info("OAuth2 login successful, redirecting to %s...", redirect_url)
+
+    response = RedirectResponse(url=redirect_url, status_code=302)
+    response.delete_cookie("oauth2_temp_session")
+    return response
 
 
 @router.post("/oauth2/register", response_model=ClientRegistrationResponse, response_model_exclude_none=True)
@@ -835,6 +896,84 @@ async def oauth2_login(
         return RedirectResponse(url=f"{error_url}?error=server_error", status_code=302)
 
 
+@router.get("/oauth2/consent", response_class=HTMLResponse)
+async def consent_page(
+    nonce: str | None = None,
+    oauth2_consent_nonce: str | None = Cookie(None),
+    store: OAuthStateStoreProtocol = Depends(get_oauth_state_store),
+    pending_store: PendingConsentStore = Depends(get_pending_consent_store),
+) -> HTMLResponse:
+    if not nonce or not oauth2_consent_nonce or not hmac.compare_digest(oauth2_consent_nonce, nonce):
+        return HTMLResponse(render_consent_error_page(), status_code=400)
+
+    pending = pending_store.peek(oauth2_consent_nonce)
+    if pending is None:
+        return HTMLResponse(render_consent_error_page(), status_code=400)
+
+    client_id = pending["session_data"]["client_id"]
+    client_metadata = store.get_client(client_id) or {}
+
+    return HTMLResponse(
+        render_consent_page(
+            client_name=client_metadata.get("client_name", "Unknown application"),
+            client_uri=client_metadata.get("client_uri"),
+            ip_address=client_metadata.get("ip_address"),
+            registered_at=client_metadata.get("registered_at"),
+            nonce=oauth2_consent_nonce,
+            approve_action=_auth_server_route_path("/oauth2/consent/approve"),
+            deny_action=_auth_server_route_path("/oauth2/consent/deny"),
+        )
+    )
+
+
+@router.post("/oauth2/consent/approve")
+async def approve_consent(
+    nonce: str = Form(...),
+    oauth2_consent_nonce: str | None = Cookie(None),
+    store: OAuthStateStoreProtocol = Depends(get_oauth_state_store),
+    consent_store: ConsentStore = Depends(get_consent_store),
+    pending_store: PendingConsentStore = Depends(get_pending_consent_store),
+):
+    if not oauth2_consent_nonce or not hmac.compare_digest(oauth2_consent_nonce, nonce):
+        return JSONResponse({"detail": "Invalid or expired consent request"}, status_code=400)
+
+    pending = pending_store.consume(nonce)
+    if pending is None:
+        return JSONResponse(
+            {"detail": "This consent link has expired. Please retry from your MCP client."},
+            status_code=400,
+        )
+
+    mapped_user = pending["mapped_user"]
+    session_data = pending["session_data"]
+    user_id = mapped_user["user_id"]
+    client_id = session_data["client_id"]
+
+    consent_store.grant_client_consent(user_id, client_id)
+
+    response = _finish_oauth2_callback(
+        pending["token_data"],
+        mapped_user,
+        session_data,
+        pending["resolved_scopes"],
+        store,
+    )
+    response.delete_cookie(CONSENT_NONCE_COOKIE)
+    return response
+
+
+@router.post("/oauth2/consent/deny")
+async def deny_consent(
+    nonce: str = Form(...),
+    pending_store: PendingConsentStore = Depends(get_pending_consent_store),
+) -> RedirectResponse:
+    pending_store.consume(nonce)
+    params = {"error": "access_denied", "error_description": "User denied the authorization request"}
+    response = RedirectResponse(url=f"{settings.registry_error_redirect}?{urlencode(params)}", status_code=302)
+    response.delete_cookie(CONSENT_NONCE_COOKIE)
+    return response
+
+
 @router.get("/oauth2/callback/{provider}")
 async def oauth2_callback(
     provider: AllowedProvider,
@@ -847,6 +986,9 @@ async def oauth2_callback(
     signer: URLSafeTimedSerializer = Depends(get_signer),
     auth_provider: AuthProvider = Depends(get_auth_provider),
     store: OAuthStateStoreProtocol = Depends(get_oauth_state_store),
+    consent_store: ConsentStore = Depends(get_consent_store),
+    pending_store: PendingConsentStore = Depends(get_pending_consent_store),
+    is_https: bool = Depends(check_if_https),
 ):
     error_url = settings.registry_error_redirect
 
@@ -985,41 +1127,33 @@ async def oauth2_callback(
             resolved_scopes = default_user_scopes
             logger.info(f"No scope requested, using default user scopes: {resolved_scopes}")
 
-        # Generate authorization code for OAuth client flow
-        authorization_code = secrets.token_urlsafe(32)
-        current_time = int(time.time())
-        expires_at = current_time + 600
+        client_id = session_data["client_id"]
+        user_id = mapped_user.get("user_id")
+        if user_id and not _is_registry_client(client_id) and not consent_store.has_client_consent(user_id, client_id):
+            nonce = secrets.token_urlsafe(32)
+            pending_store.save(
+                nonce,
+                {
+                    "token_data": token_data,
+                    "mapped_user": mapped_user,
+                    "session_data": session_data,
+                    "resolved_scopes": resolved_scopes,
+                },
+            )
+            consent_url = f"{_auth_server_external_url('/oauth2/consent')}?nonce={nonce}"
+            response = RedirectResponse(url=consent_url, status_code=302)
+            response.set_cookie(
+                key=CONSENT_NONCE_COOKIE,
+                value=nonce,
+                max_age=PENDING_CONSENT_TTL_SECONDS,
+                httponly=True,
+                secure=settings.session_cookie_secure and is_https,
+                samesite="lax",
+            )
+            response.delete_cookie("oauth2_temp_session")
+            return response
 
-        store.save_authcode(
-            authorization_code,
-            {
-                "token_data": token_data,
-                "user_info": mapped_user,
-                "client_id": session_data["client_id"],
-                "expires_at": expires_at,
-                "code_challenge": session_data["code_challenge"],
-                "code_challenge_method": session_data["code_challenge_method"],
-                "redirect_uri": client_redirect_uri,
-                "resource": session_data.get("resource"),
-                "created_at": current_time,
-                "resolved_scope": resolved_scopes,
-            },
-        )
-
-        redirect_params = {"code": authorization_code}
-        client_state = session_data.get("client_state")
-        if client_state:
-            redirect_params["state"] = client_state
-
-        redirect_url = f"{client_redirect_uri}?{urlencode(redirect_params)}"
-        logger.info(
-            f"OAuth2 login successful for user: {mapped_user['username']} via {provider}. Redirecting to {redirect_url}..."
-        )
-
-        response = RedirectResponse(url=redirect_url, status_code=302)
-        response.delete_cookie("oauth2_temp_session")
-
-        return response
+        return _finish_oauth2_callback(token_data, mapped_user, session_data, resolved_scopes, store)
 
     except Exception:
         logger.exception(f"Error in OAuth2 callback for {provider}")
