@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -1141,6 +1142,29 @@ class TestReferencedOutputs:
                 children=[_step_node("a", "x"), _step_node("b", "y")],
             )
 
+    def test_unknown_referenced_node_name_rejected_at_definition_time(self):
+        """A typo in referenced_node_names is caught when the WorkflowDefinition is built."""
+        node = self._step_node_with_refs("echo", ["Typo Node Name"])
+        with pytest.raises(ValueError, match="references unknown node names"):
+            _workflow_definition([node])
+
+    def test_valid_referenced_node_name_accepted(self):
+        """A name that matches a sibling node in the definition must not raise."""
+        upstream = _step_node("Upstream", "tool")
+        downstream = self._step_node_with_refs("Downstream", ["Upstream"])
+        _workflow_definition([upstream, downstream])
+
+    def test_referenced_node_name_in_nested_branch_accepted(self):
+        """A referenced name that lives inside a nested branch (e.g. parallel child) is valid."""
+        inner = _step_node("Inner Step", "tool")
+        parallel = WorkflowNode(
+            name="Par",
+            node_type=WorkflowNodeType.PARALLEL,
+            children=[inner, _step_node("Other", "tool")],
+        )
+        consumer = self._step_node_with_refs("Consumer", ["Inner Step"])
+        _workflow_definition([parallel, consumer])
+
     @pytest.mark.asyncio
     async def test_retry_does_not_accumulate_prefix(self):
         """Each retry attempt must receive the same injected prefix, not a growing one.
@@ -1175,6 +1199,69 @@ class TestReferencedOutputs:
         for i, received in enumerate(call_inputs):
             count = received.count(prefix_marker)
             assert count == 1, f"attempt {i + 1}: expected prefix exactly once, got {count}"
+
+    @pytest.mark.asyncio
+    async def test_falsy_but_real_content_is_injected(self):
+        """0, False, {}, [] are legitimate step outputs and must not be silently dropped.
+
+        The guard must be `is None`, not truthiness, so falsy-but-real content
+        still gets injected into the downstream prompt.
+        """
+        from agno.workflow import StepOutput
+
+        for falsy_content in [False, 0, {}, []]:
+            node = self._step_node_with_refs("echo", ["Validator"])
+            definition = _workflow_definition([node])
+            received: list[str] = []
+
+            async def capturing_executor(step_input, session_state=None, _recv=received):
+                _recv.append(step_input.input)
+                return SimpleNamespace(content="ok")
+
+            workflow = compiler.compile_workflow(
+                definition, _workflow_run(), executor_registry={"tool": capturing_executor}
+            )
+            previous = {"Validator": StepOutput(step_name="Validator", content=falsy_content, success=True)}
+            await workflow.steps[0].executor(StepInput(input="task", previous_step_outputs=previous), {})
+
+            assert "[Output from 'Validator']" in received[-1], (
+                f"falsy content {falsy_content!r} was silently dropped but should have been injected"
+            )
+
+    @pytest.mark.asyncio
+    async def test_dict_content_serialized_as_json_not_python_repr(self):
+        """StepOutput.content typed as Union[str, Dict, ...].
+
+        When content is a dict, injecting it via f-string would produce Python
+        repr (single-quoted keys).  _content_to_str must emit valid JSON instead.
+        """
+        from agno.workflow import StepOutput
+
+        node = self._step_node_with_refs("echo", ["Structured Node"])
+        definition = _workflow_definition([node])
+        received: list[str] = []
+
+        async def capturing_executor(step_input, session_state=None):
+            received.append(step_input.input)
+            return SimpleNamespace(content="ok")
+
+        workflow = compiler.compile_workflow(
+            definition, _workflow_run(), executor_registry={"tool": capturing_executor}
+        )
+        dict_content = {"temperature": 32.3, "unit": "celsius", "city": "New York"}
+        previous = {"Structured Node": StepOutput(step_name="Structured Node", content=dict_content, success=True)}
+        await workflow.steps[0].executor(StepInput(input="analyse", previous_step_outputs=previous), {})
+
+        prompt = received[0]
+        assert "[Output from 'Structured Node']" in prompt
+        # Must not be Python repr (single-quoted keys)
+        assert "{'temperature'" not in prompt
+        # Must be valid JSON embedded in the prompt
+        json_start = prompt.index("{")
+        embedded = prompt[json_start : prompt.rindex("}") + 1]
+        parsed = json.loads(embedded)
+        assert parsed["temperature"] == 32.3
+        assert parsed["city"] == "New York"
 
 
 @pytest.mark.unit

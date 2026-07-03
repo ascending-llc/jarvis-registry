@@ -135,6 +135,14 @@ def _with_input_capture(
     return _capturing
 
 
+def _content_to_str(content: Any) -> str:
+    """Normalize StepOutput.content to a string for prompt injection."""
+    normalized = _json_safe(content)
+    if isinstance(normalized, (dict, list)):
+        return json.dumps(normalized, ensure_ascii=False, indent=2)
+    return str(normalized) if normalized is not None else ""
+
+
 def _with_referenced_outputs(
     referenced_node_names: list[str],
     executor: StepExecutor,
@@ -147,9 +155,9 @@ def _with_referenced_outputs(
 
         for name in referenced_node_names:
             out = previous.get(name)
-            if not out or not out.content:
+            if out is None or out.content is None:
                 continue
-            injected_parts.append(f"[Output from '{name}']\n{out.content}")
+            injected_parts.append(f"[Output from '{name}']\n{_content_to_str(out.content)}")
 
         if injected_parts:
             prefix = "\n\n".join(injected_parts)
