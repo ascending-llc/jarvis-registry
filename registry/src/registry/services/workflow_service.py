@@ -263,9 +263,10 @@ class WorkflowService:
         try:
             # Convert API nodes to model nodes
             nodes = [self._convert_api_node_to_model(node) for node in data.nodes]
-            await self._validate_executor_refs(nodes)
 
-            # Create workflow definition
+            # Create workflow definition — construction triggers model validators including
+            # cross-node reference checks (_validate_referenced_node_names_exist) BEFORE
+            # the more expensive executor-key DB lookup.
             # Always set enabled to False during creation (regardless of frontend input)
             workflow = WorkflowDefinition(
                 name=data.name,
@@ -276,6 +277,8 @@ class WorkflowService:
                 created_at=datetime.now(UTC),
                 updated_at=datetime.now(UTC),
             )
+
+            await self._validate_executor_refs(nodes)
 
             # Save to database (this will trigger Pydantic validation)
             await workflow.insert()
@@ -341,6 +344,9 @@ class WorkflowService:
 
             if data.nodes is not None:
                 nodes = [self._convert_api_node_to_model(node) for node in data.nodes]
+                # Trigger cross-node reference validation (e.g. referenced_node_names must
+                # match existing node names) before the executor-key DB lookup.
+                WorkflowDefinition(name=workflow.name, nodes=nodes)
                 await self._validate_executor_refs(nodes, session=session)
                 update_fields["nodes"] = [node.model_dump(mode="json") for node in nodes]
 
@@ -891,6 +897,7 @@ class WorkflowService:
             true_steps=true_steps,
             false_steps=false_steps,
             choices=choices,
+            referenced_node_names=api_node.referencedNodeNames,
             condition_cel=api_node.conditionCel,
             loop_config=loop_config,
             human_review=human_review,
