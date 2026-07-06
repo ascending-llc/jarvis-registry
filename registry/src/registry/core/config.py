@@ -163,9 +163,6 @@ class Settings(JarvisBaseSettings):
     asor_access_token: str | None = None
     asor_client_credentials: str | None = None
 
-    # ==================== Build Metadata ====================
-    build_version: str = "1.0.0"
-
     # ==================== Model Validation ====================
 
     @model_validator(mode="after")

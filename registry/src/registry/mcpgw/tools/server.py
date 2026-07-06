@@ -555,6 +555,7 @@ async def read_resource_impl(
             username = user_context.get("username", "unknown")
             logger.info(f"resource read request from user '{username}' - {resource_uri} on {server_id}")
 
+            server = None
             server = await _get_server_service(ctx).get_server_by_id(server_id)
             if server is None:
                 # Invalid input. Return a JSON-RPC **result response** with `isError=True` so that LLM can try another request.
@@ -639,6 +640,7 @@ async def execute_prompt_impl(
             username = user_context.get("username", "unknown")
             logger.info(f"Prompt execution request from user '{username}': {prompt_name} on {server_id}")
 
+            server = None
             server = await _get_server_service(ctx).get_server_by_id(server_id)
             if server is None:
                 # Invalid input. Return a JSON-RPC **result response** with `isError=True` so that LLM can try another request.

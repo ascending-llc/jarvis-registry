@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from beanie import PydanticObjectId
 
+from registry.core.exceptions import InternalServerException
 from registry.mcpgw.tools import server
 from registry.mcpgw.tools.server import execute_tool_impl
 
@@ -74,6 +75,13 @@ def _patch_server_service(monkeypatch, server_obj):
     fake_service = SimpleNamespace(get_server_by_id=AsyncMock(return_value=server_obj))
     monkeypatch.setattr(server, "_get_server_service", lambda ctx: fake_service)
     # record_server_request hits the real metrics client; neutralize it for unit tests.
+    monkeypatch.setattr(server, "record_server_request", lambda *a, **k: None)
+
+
+def _patch_server_service_raises(monkeypatch, exc: Exception):
+    """Stub _get_server_service so get_server_by_id raises before `server` is ever assigned."""
+    fake_service = SimpleNamespace(get_server_by_id=AsyncMock(side_effect=exc))
+    monkeypatch.setattr(server, "_get_server_service", lambda ctx: fake_service)
     monkeypatch.setattr(server, "record_server_request", lambda *a, **k: None)
 
 
@@ -164,6 +172,19 @@ class TestExecutionMetricsWiring:
         assert call_kwargs["error_type"] == "server_not_found"
 
     @pytest.mark.asyncio
+    async def test_read_resource_impl_get_server_by_id_raises_returns_internal_error(self, monkeypatch):
+        """Regression test for [m1]: `server` must be bound before get_server_by_id can raise,
+        otherwise the except block's `if server is not None` crashes with UnboundLocalError."""
+        _patch_server_service_raises(monkeypatch, RuntimeError("db unavailable"))
+        with patch(f"{DECORATORS_PATH}._record_resource_access"), pytest.raises(InternalServerException):
+            await server.read_resource_impl(
+                user_context={"username": "alice"},
+                server_id="s1",
+                resource_uri="tavily://x",
+                ctx=SimpleNamespace(),
+            )
+
+    @pytest.mark.asyncio
     async def test_execute_prompt_impl_records_success(self, monkeypatch):
         server_obj = SimpleNamespace(serverName="prompt-server", path="/prompts")
         _patch_server_service(monkeypatch, server_obj)
@@ -182,6 +203,20 @@ class TestExecutionMetricsWiring:
         assert call_kwargs["server_name"] == "prompt-server"
         assert call_kwargs["success"] is True
         assert call_kwargs["error_type"] == "none"
+
+    @pytest.mark.asyncio
+    async def test_execute_prompt_impl_get_server_by_id_raises_returns_internal_error(self, monkeypatch):
+        """Regression test for [m1]: `server` must be bound before get_server_by_id can raise,
+        otherwise the except block's `if server is not None` crashes with UnboundLocalError."""
+        _patch_server_service_raises(monkeypatch, RuntimeError("db unavailable"))
+        with patch(f"{DECORATORS_PATH}._record_prompt_execution"), pytest.raises(InternalServerException):
+            await server.execute_prompt_impl(
+                user_context={"username": "alice"},
+                server_id="s1",
+                prompt_name="research_assistant",
+                arguments={"topic": "AI"},
+                ctx=SimpleNamespace(),
+            )
 
 
 @pytest.mark.asyncio

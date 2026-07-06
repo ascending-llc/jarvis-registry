@@ -1,6 +1,4 @@
 import logging
-import socket
-from importlib.metadata import PackageNotFoundError, version
 
 from opentelemetry import metrics
 from opentelemetry.sdk.metrics import MeterProvider
@@ -9,15 +7,6 @@ from opentelemetry.sdk.metrics.view import ExplicitBucketHistogramAggregation, V
 from opentelemetry.sdk.resources import SERVICE_NAME, Resource
 
 from ..core.config import TelemetryConfig
-
-# OTel semantic-convention resource attribute keys. Declared as literals to avoid
-# pulling in the optional `opentelemetry-semconv` dependency.
-_SERVICE_VERSION = "service.version"
-_SERVICE_INSTANCE_ID = "service.instance.id"
-_DEPLOYMENT_ENVIRONMENT = "deployment.environment"
-
-# Distributions to probe (best-effort) for service.version.
-_VERSION_DISTRIBUTIONS = ("mcp-gateway-registry", "registry", "auth-server", "registry-pkgs")
 from .decorators import (
     create_timed_context,
     track_duration,
@@ -37,6 +26,10 @@ logger = logging.getLogger(__name__)
 # Histogram bucket boundaries for latency metrics (in seconds)
 # These buckets are designed to capture p50, p95, p99 accurately
 LATENCY_BUCKETS = [0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1.0, 2.5, 5.0, 7.5, 10.0]
+
+# OTel semantic-convention resource attribute key. Declared as a literal to avoid
+# pulling in the optional `opentelemetry-semconv` dependency.
+_SERVICE_VERSION = "service.version"
 
 
 class SafeOTLPMetricExporter:
@@ -96,31 +89,17 @@ class SafeOTLPMetricExporter:
             pass
 
 
-def _resolve_service_version() -> str:
-    """Best-effort lookup of the installed service version for the OTel resource."""
-    for dist in _VERSION_DISTRIBUTIONS:
-        try:
-            return version(dist)
-        except PackageNotFoundError:
-            continue
-    return "unknown"
-
-
 def _build_resource(service_name: str, telemetry_config: TelemetryConfig) -> Resource:
     """
     Build the OTel Resource with standard identifying attributes.
 
-    Beyond service.name, include service.version, service.instance.id, and
-    deployment.environment so metrics can be correlated per-version, per-instance,
-    and per-environment in dashboards (industry-standard resource attributes).
+    Beyond service.name, include service.version so metrics can be correlated
+    per-version in dashboards (industry-standard resource attribute).
     """
-    instance_id = telemetry_config.service_instance_id or socket.gethostname()
     return Resource.create(
         attributes={
             SERVICE_NAME: service_name,
-            _SERVICE_VERSION: _resolve_service_version(),
-            _SERVICE_INSTANCE_ID: instance_id,
-            _DEPLOYMENT_ENVIRONMENT: telemetry_config.deployment_environment,
+            _SERVICE_VERSION: telemetry_config.build_version,
         }
     )
 
