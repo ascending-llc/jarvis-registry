@@ -461,6 +461,8 @@ async def execute_tool_impl(
                 raise McpError(error_data)
             elif "result" in resp_obj:
                 result = CallToolResult.model_validate(resp_obj["result"])
+                if result.isError:
+                    metrics_ctx.set_error_type("downstream_tool_error")
                 metrics_ctx.set_success(not result.isError)
                 return result
             else:

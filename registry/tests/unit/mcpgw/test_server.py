@@ -302,3 +302,27 @@ async def test_execute_tool_impl_acl_allowed_proceeds(monkeypatch):
     result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
 
     assert not result.isError
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_impl_downstream_tool_error_records_error_type(monkeypatch):
+    """Regression test for [m3]: a downstream tool-level failure (isError=True) must be
+    recorded with a non-default error_type, not silently left as "none"."""
+    server_id = str(PydanticObjectId())
+    ctx = _make_ctx(accessible_server_ids=[server_id])
+    ctx.request_context.lifespan_context.server_service.get_server_by_id.return_value = _make_server(server_id)
+    monkeypatch.setattr(server, "record_server_request", MagicMock())
+    monkeypatch.setattr(server, "build_authenticated_headers", AsyncMock(return_value={}))
+    monkeypatch.setattr(
+        server,
+        "_downstream_tool_call",
+        AsyncMock(return_value={"result": {"content": [{"type": "text", "text": "boom"}], "isError": True}}),
+    )
+
+    with patch(f"{DECORATORS_PATH}._record_tool_execution") as mock_record:
+        result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
+
+    assert result.isError is True
+    call_kwargs = mock_record.call_args[1]
+    assert call_kwargs["success"] is False
+    assert call_kwargs["error_type"] == "downstream_tool_error"
