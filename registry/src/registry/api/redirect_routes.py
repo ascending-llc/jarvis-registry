@@ -14,7 +14,8 @@ from registry_pkgs.core.jwt_utils import decode_jwt
 from registry_pkgs.core.scopes import map_groups_to_scopes
 
 from ..core.config import settings
-from ..deps import check_if_https, get_user_service
+from ..deps import check_if_https, get_group_service, get_user_service
+from ..services.group_service import GroupService
 from ..services.user_service import UserService
 from ..utils.crypto_utils import (
     decrypt_value,
@@ -117,6 +118,7 @@ async def oauth2_callback(
     details: str | None = None,
     registry_oauth2_code_verifier: str | None = Cookie(None),
     user_service: UserService = Depends(get_user_service),
+    group_service: GroupService = Depends(get_group_service),
     is_https: bool = Depends(check_if_https),
 ):
     """Handle OAuth2 callback from auth server
@@ -213,6 +215,18 @@ async def oauth2_callback(
             logger.error(f"Failed to find or create user for claims: {user_claims}")
             return RedirectResponse(
                 url=f"{settings.registry_client_url}/login?error=User+not+found+in+registry", status_code=302
+            )
+
+        try:
+            await group_service.sync_user_group_memberships(
+                user_obj,
+                enabled=settings.entra_group_sync_enabled,
+            )
+        except Exception:
+            logger.warning(
+                "Group sync failed for user %s; login will proceed.",
+                user_obj.id,
+                exc_info=True,
             )
 
         # Merge OAuth claims with user object data

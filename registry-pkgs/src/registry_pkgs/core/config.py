@@ -6,7 +6,7 @@ from urllib.parse import urlparse
 from cryptography.exceptions import UnsupportedAlgorithm
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey, RSAPublicKey
 from cryptography.hazmat.primitives.serialization import load_pem_private_key, load_pem_public_key
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .scopes import ScopesConfig, load_scopes_config
@@ -163,6 +163,22 @@ class JarvisBaseSettings(BaseSettings):
     otel_exporter_otlp_endpoint: str = "http://otel-collector:4318"
     otel_prometheus_enabled: bool = False
     otel_prometheus_port: int = 9464
+
+    # ==================== Auth Provider ====================
+    auth_provider: str = "entra"  # cognito, keycloak, entra
+
+    @field_validator("auth_provider")
+    @classmethod
+    def validate_auth_provider(cls, v: str) -> str:
+        allowed = ["cognito", "keycloak", "entra"]
+        if v.lower() not in allowed:
+            raise ValueError(f"auth_provider must be one of {allowed}, got '{v}'")
+        return v.lower()
+
+    # ==================== Entra ID Settings ====================
+    entra_tenant_id: str | None = None
+    entra_client_id: str | None = None
+    entra_client_secret: str | None = None
 
     # ==================== Scopes ====================
     scopes_config_path: str = ""
