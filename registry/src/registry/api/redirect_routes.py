@@ -3,7 +3,7 @@ import json
 import logging
 import secrets
 from datetime import UTC, datetime
-from typing import Annotated
+from typing import Annotated, Any
 from urllib.parse import quote, urlencode
 
 import httpx
@@ -76,14 +76,14 @@ def _parse_session_started_at(raw_value: object, now: int) -> int | None:
     return min(ts, now)
 
 
-def _get_required_string_claim(claims: dict, claim_name: str) -> str | None:
+def _get_required_string_claim(claims: dict[str, Any], claim_name: str) -> str | None:
     value = claims.get(claim_name)
     if isinstance(value, str) and value.strip():
         return value
     return None
 
 
-def _get_string_list_claim(claims: dict, claim_name: str) -> list[str]:
+def _get_string_list_claim(claims: dict[str, Any], claim_name: str) -> list[str]:
     value = claims.get(claim_name)
     if value is None:
         return []
@@ -389,7 +389,7 @@ async def refresh_token(
             return response
 
         # Extract groups and scopes from refresh token
-        groups = refresh_claims.get("groups", [])
+        groups = _get_string_list_claim(refresh_claims, "groups")
         scope_string = refresh_claims.get("scope", "")
         scopes = scope_string.split() if scope_string else []
 

@@ -521,10 +521,57 @@ class TestAuthRoutes:
         call_kwargs = mock_gen_refresh.call_args.kwargs
         assert call_kwargs["user_id"] == "123"
         assert call_kwargs["username"] == "testuser"
+        assert call_kwargs["auth_method"] == "oauth2"
+        assert call_kwargs["provider"] == "entra"
         assert call_kwargs["groups"] == ["jarvis-registry-admin"]
+        assert call_kwargs["scopes"] == ["servers-read", "servers-write"]
         assert call_kwargs["role"] == "admin"
         assert call_kwargs["email"] == "admin@example.com"
         assert call_kwargs["session_started_at"] == fixed_session_start
+
+    @pytest.mark.asyncio
+    async def test_refresh_token_session_started_at_survives_two_rotations(self, mock_request, mock_settings):
+        """session_started_at must remain unchanged across two consecutive rotations, not just one."""
+        fixed_session_start = int(time.time()) - 3600  # 1 hour ago — well within 14-day cap
+        first_claims = {
+            "user_id": "123",
+            "sub": "testuser",
+            "auth_method": "oauth2",
+            "provider": "entra",
+            "groups": ["jarvis-registry-admin"],
+            "scope": "servers-read servers-write",
+            "role": "admin",
+            "email": "admin@example.com",
+            "session_started_at": fixed_session_start,
+        }
+
+        with (
+            patch("registry.api.redirect_routes.verify_refresh_token", return_value=first_claims),
+            patch("registry.api.redirect_routes.generate_access_token", return_value="access-token-1"),
+            patch(
+                "registry.api.redirect_routes.generate_refresh_token", return_value="refresh-token-1"
+            ) as mock_gen_refresh_1,
+        ):
+            response_1 = await refresh_token(mock_request, refresh="refresh-token-0", is_https=False)
+
+        assert response_1.status_code == 200
+        first_rotation_session_start = mock_gen_refresh_1.call_args.kwargs["session_started_at"]
+        assert first_rotation_session_start == fixed_session_start
+
+        # Second rotation: the reissued refresh token carries forward session_started_at from the first.
+        second_claims = {**first_claims, "session_started_at": first_rotation_session_start}
+
+        with (
+            patch("registry.api.redirect_routes.verify_refresh_token", return_value=second_claims),
+            patch("registry.api.redirect_routes.generate_access_token", return_value="access-token-2"),
+            patch(
+                "registry.api.redirect_routes.generate_refresh_token", return_value="refresh-token-2"
+            ) as mock_gen_refresh_2,
+        ):
+            response_2 = await refresh_token(mock_request, refresh="refresh-token-1", is_https=False)
+
+        assert response_2.status_code == 200
+        assert mock_gen_refresh_2.call_args.kwargs["session_started_at"] == fixed_session_start
 
     @pytest.mark.asyncio
     async def test_refresh_token_numeric_string_session_started_at_is_accepted(self, mock_request, mock_settings):
@@ -673,6 +720,50 @@ class TestAuthRoutes:
         mock_gen_refresh.assert_not_called()
         cookies = _cookies_from_response(response)
         _assert_auth_cookies_cleared(cookies, mock_settings)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("groups_claim", "expected_groups"),
+        [
+            (None, []),
+            ("jarvis-registry-admin", []),
+            (["jarvis-registry-admin", 123, "", None, "  user  "], ["jarvis-registry-admin", "user"]),
+        ],
+    )
+    async def test_refresh_token_normalizes_group_claim_before_reissue(
+        self,
+        mock_request,
+        mock_settings,
+        groups_claim,
+        expected_groups,
+    ):
+        """refresh_token must not trust raw groups claim shape from a legacy refresh token."""
+        claims = {
+            "user_id": "123",
+            "sub": "testuser",
+            "auth_method": "oauth2",
+            "provider": "entra",
+            "groups": groups_claim,
+            "scope": "servers-read",
+            "role": "user",
+            "email": "test@example.com",
+            "session_started_at": int(time.time()) - 3600,
+        }
+
+        with (
+            patch("registry.api.redirect_routes.verify_refresh_token", return_value=claims),
+            patch(
+                "registry.api.redirect_routes.generate_access_token", return_value="new-access-token"
+            ) as mock_gen_access,
+            patch(
+                "registry.api.redirect_routes.generate_refresh_token", return_value="new-refresh-token"
+            ) as mock_gen_refresh,
+        ):
+            response = await refresh_token(mock_request, refresh="valid-refresh-token", is_https=False)
+
+        assert response.status_code == 200
+        assert mock_gen_access.call_args.kwargs["groups"] == expected_groups
+        assert mock_gen_refresh.call_args.kwargs["groups"] == expected_groups
 
     @pytest.mark.asyncio
     async def test_refresh_token_absolute_session_cap_exceeded_returns_401(self, mock_request, mock_settings):
