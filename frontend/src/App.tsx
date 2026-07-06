@@ -7,6 +7,8 @@ import { GlobalProvider } from './contexts/GlobalContext';
 import { ServerProvider } from './contexts/ServerContext';
 import { ThemeProvider } from './contexts/ThemeContext';
 import AgentRegistryOrEdit from './pages/AgentRegistryOrEdit';
+import ConsentDownstream from './pages/ConsentDownstream';
+import ConsentServer from './pages/ConsentServer';
 import Dashboard from './pages/Dashboard';
 import FederationRegistryOrEdit from './pages/FederationRegistryOrEdit';
 import Login from './pages/Login';
@@ -23,6 +25,22 @@ const router = createBrowserRouter(
       element: (
         <ProtectedRoute>
           <OAuthCallback />
+        </ProtectedRoute>
+      ),
+    },
+    {
+      path: '/consent/downstream',
+      element: (
+        <ProtectedRoute>
+          <ConsentDownstream />
+        </ProtectedRoute>
+      ),
+    },
+    {
+      path: '/consent/server',
+      element: (
+        <ProtectedRoute>
+          <ConsentServer />
         </ProtectedRoute>
       ),
     },
