@@ -203,6 +203,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Determine BUILD_VERSION
+        id: version
+        run: |
+          if [ -n "${{ inputs.version_tag }}" ]; then
+            echo "version=${{ inputs.version_tag }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${GITHUB_SHA:0:8}" >> $GITHUB_OUTPUT
+          fi
+
       - name: Determine image tags
         id: tags
         run: |
@@ -234,6 +243,8 @@ jobs:
           platforms: linux/amd64
           context: .
           file: docker/Dockerfile.auth
+          build-args: |
+            BUILD_VERSION=${{ steps.version.outputs.version }}
           push: true
           tags: ${{ steps.tags.outputs.tags }}
           provenance: false

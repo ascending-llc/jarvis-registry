@@ -91,6 +91,10 @@ class TelemetryConfig(BaseModel):
     )
     otel_prometheus_enabled: bool = Field(default=False, description="Enable Prometheus metrics endpoint")
     otel_prometheus_port: int = Field(default=9464, description="Prometheus metrics port")
+    build_version: str = Field(
+        default="unknown",
+        description="Build identifier (release tag or commit SHA) used as the OTel service.version resource attribute",
+    )
 
 
 class JarvisBaseSettings(BaseSettings):
@@ -163,6 +167,7 @@ class JarvisBaseSettings(BaseSettings):
     otel_exporter_otlp_endpoint: str = "http://otel-collector:4318"
     otel_prometheus_enabled: bool = False
     otel_prometheus_port: int = 9464
+    build_version: str = "unknown"
 
     # ==================== Auth Provider ====================
     auth_provider: str = "entra"  # cognito, keycloak, entra
@@ -298,6 +303,7 @@ class JarvisBaseSettings(BaseSettings):
             otel_exporter_otlp_endpoint=self.otel_exporter_otlp_endpoint,
             otel_prometheus_enabled=self.otel_prometheus_enabled,
             otel_prometheus_port=self.otel_prometheus_port,
+            build_version=self.build_version,
         )
 
     @cached_property

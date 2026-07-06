@@ -27,6 +27,10 @@ logger = logging.getLogger(__name__)
 # These buckets are designed to capture p50, p95, p99 accurately
 LATENCY_BUCKETS = [0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1.0, 2.5, 5.0, 7.5, 10.0]
 
+# OTel semantic-convention resource attribute key. Declared as a literal to avoid
+# pulling in the optional `opentelemetry-semconv` dependency.
+_SERVICE_VERSION = "service.version"
+
 
 class SafeOTLPMetricExporter:
     """Wrapper that catches all exceptions during export."""
@@ -85,6 +89,21 @@ class SafeOTLPMetricExporter:
             pass
 
 
+def _build_resource(service_name: str, telemetry_config: TelemetryConfig) -> Resource:
+    """
+    Build the OTel Resource with standard identifying attributes.
+
+    Beyond service.name, include service.version so metrics can be correlated
+    per-version in dashboards (industry-standard resource attribute).
+    """
+    return Resource.create(
+        attributes={
+            SERVICE_NAME: service_name,
+            _SERVICE_VERSION: telemetry_config.build_version,
+        }
+    )
+
+
 def setup_metrics(
     service_name: str,
     telemetry_config: TelemetryConfig,
@@ -100,7 +119,7 @@ def setup_metrics(
     try:
         otlp_endpoint = otlp_endpoint or telemetry_config.otel_exporter_otlp_endpoint
 
-        resource = Resource.create(attributes={SERVICE_NAME: service_name})
+        resource = _build_resource(service_name, telemetry_config)
 
         # Setup Metrics
         if enable_metrics:
