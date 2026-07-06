@@ -42,9 +42,7 @@ class AuthSettings(JarvisBaseSettings):
     aws_region: str = "us-east-1"
 
     # ==================== Entra ID Settings ====================
-    entra_tenant_id: str | None = None
-    entra_client_id: str | None = None
-    entra_client_secret: str | None = None
+    # entra_tenant_id / entra_client_id / entra_client_secret are inherited from JarvisBaseSettings.
     entra_token_kind: str = "id"  # "id" or "access"
 
     # ==================== Metrics Settings ====================

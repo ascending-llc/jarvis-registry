@@ -175,6 +175,11 @@ class JarvisBaseSettings(BaseSettings):
             raise ValueError(f"auth_provider must be one of {allowed}, got '{v}'")
         return v.lower()
 
+    # ==================== Entra ID Settings ====================
+    entra_tenant_id: str | None = None
+    entra_client_id: str | None = None
+    entra_client_secret: str | None = None
+
     # ==================== Scopes ====================
     scopes_config_path: str = ""
 

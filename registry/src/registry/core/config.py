@@ -151,10 +151,10 @@ class Settings(JarvisBaseSettings):
     creds_key: str = ""
 
     # ==================== Entra Group Sync ====================
+    # entra_tenant_id / entra_client_id / entra_client_secret are inherited from JarvisBaseSettings.
+    # `entra_group_sync_enabled = False` if using Registry together with Jarvis Chat; `True` if using Registry by itself.
+    # This is because Jarvis Chat already performs group sync.
     entra_group_sync_enabled: bool = False
-    entra_tenant_id: str | None = None
-    entra_client_id: str | None = None
-    entra_client_secret: str | None = None
     entra_graph_url: str = "https://graph.microsoft.com"
 
     # ==================== Keycloak Integration ====================
