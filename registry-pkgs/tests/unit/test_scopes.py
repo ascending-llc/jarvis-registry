@@ -344,7 +344,7 @@ class TestMapGroupsToScopes:
         # Should get scopes from admin and user, ignoring unknown-group
         assert set(result) == {"servers-read", "servers-write"}
 
-    def test_preserves_order_with_duplicates(self, reset_scopes_cache):  # noqa: F811
+    def test_preserves_order_with_duplicates(self, reset_scopes_cache):
         """Verify order preservation when deduplicating scopes."""
         config = {
             "group_mappings": {

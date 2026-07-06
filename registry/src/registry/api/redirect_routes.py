@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 ACCESS_TOKEN_COOKIE_MAX_AGE_SECONDS = 86400
+SESSION_STARTED_AT_CLOCK_SKEW_SECONDS = 300
 
 
 def _set_csrf_cookie(response: Response, access_token: str, cookie_secure: bool) -> None:
@@ -65,10 +66,14 @@ def _parse_session_started_at(raw_value: object, now: int) -> int | None:
     if isinstance(raw_value, bool):
         return None
     if isinstance(raw_value, int):
-        return raw_value
-    if isinstance(raw_value, str) and raw_value.strip().isdecimal():
-        return int(raw_value)
-    return None
+        ts = raw_value
+    elif isinstance(raw_value, str) and raw_value.strip().isdecimal():
+        ts = int(raw_value)
+    else:
+        return None
+    if ts > now + SESSION_STARTED_AT_CLOCK_SKEW_SECONDS:
+        return None
+    return min(ts, now)
 
 
 def _get_required_string_claim(claims: dict, claim_name: str) -> str | None:
@@ -76,6 +81,16 @@ def _get_required_string_claim(claims: dict, claim_name: str) -> str | None:
     if isinstance(value, str) and value.strip():
         return value
     return None
+
+
+def _get_string_list_claim(claims: dict, claim_name: str) -> list[str]:
+    value = claims.get(claim_name)
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        logger.warning("Ignoring non-list %s claim from OAuth token", claim_name)
+        return []
+    return [item.strip() for item in value if isinstance(item, str) and item.strip()]
 
 
 async def get_oauth2_providers():
@@ -245,11 +260,12 @@ async def oauth2_callback(
 
         # Merge OAuth claims with user object data
         # OAuth claims take precedence except for email and role which come from database
+        groups = _get_string_list_claim(user_claims, "groups")
         user_info = {
             "user_id": str(user_obj.id),
             "username": user_obj.username,
             "email": user_obj.email or user_claims.get("email", ""),
-            "groups": filter_known_groups(user_claims.get("groups", []), settings.scopes_file_config),
+            "groups": filter_known_groups(groups, settings.scopes_file_config),
             "scopes": user_claims.get("scope", []),
             "role": user_obj.role,
             "auth_method": "oauth2",
@@ -359,10 +375,10 @@ async def refresh_token(
             return response
 
         # Extract user info from refresh token claims
-        user_id = refresh_claims.get("user_id")
-        username = refresh_claims.get("sub")
-        auth_method = refresh_claims.get("auth_method")
-        provider = refresh_claims.get("provider")
+        user_id = _get_required_string_claim(refresh_claims, "user_id")
+        username = _get_required_string_claim(refresh_claims, "sub")
+        auth_method = _get_required_string_claim(refresh_claims, "auth_method")
+        provider = _get_required_string_claim(refresh_claims, "provider")
 
         if not all([user_id, username, auth_method, provider]):
             logger.warning("Refresh token missing required identity claims (user_id/sub/auth_method/provider)")
