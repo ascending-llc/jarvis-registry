@@ -403,7 +403,7 @@ node type does not use them. This lets clients access any field without null che
   - `choices` (optional, array): Named choices for ROUTER nodes (≥ 2 required); each entry is a `RouterChoice` object
     - `name` (required, string): Choice name — must match the value returned by the router's `conditionCel` selector
     - `steps` (required, array): One or more `WorkflowNode` steps executed sequentially when this choice is selected
-  - `referencedNodeNames` (optional, array of strings, `step` nodes only): Names of previously-executed nodes whose outputs should be injected into this node's prompt at runtime. The runtime reads each name from `previous_step_outputs` and prepends `[Output from '<name>']\n<content>` before this node's own input. Names that do not match an executed node (e.g. a skipped condition branch) are silently omitted. Only valid on `step` nodes — sending this on a non-step node returns `422`.
+  - `referencedNodeNames` (optional, array of strings, `step` nodes only): Names of previously-executed nodes whose outputs should be injected into this node's prompt at runtime. The runtime reads each name from `previous_step_outputs` and prepends `[Output from '<name>']\n<content>` before this node's own input. Names that do not match an executed node (e.g. a skipped condition branch) are silently omitted. Only valid on `step` nodes — sending this on a non-step node returns `400`.
   - `conditionCel` (optional, string): CEL expression for condition/router nodes
     - Condition: returns bool; available variables: `input`, `previous_step_content`, `previous_step_outputs`, `additional_data`, `session_state`
     - Router: returns a choice name string; additional variable: `step_choices` (list of all choice names)
@@ -419,7 +419,7 @@ node type does not use them. This lets clients access any field without null che
 - `router` nodes must have at least 2 `choices` with unique names and `conditionCel`; `children` and `trueSteps` / `falseSteps` are forbidden
 - Each `RouterChoice` must have a non-empty `steps` list
 - `condition` and `router` nodes must not define `stepConfig` (it is meaningful only for `step` nodes)
-- `referencedNodeNames` is only valid on `step` nodes; sending it on any other node type returns `422`
+- `referencedNodeNames` is only valid on `step` nodes; sending it on any other node type is rejected
 
 **Response**: `201 Created`
 ```json
@@ -444,8 +444,7 @@ node type does not use them. This lets clients access any field without null che
 - This two-step process (create → enable) ensures workflows are reviewed and verified before execution
 
 **Error**:
-- `400` Validation error (invalid node structure, duplicate node names in router, unknown `executorKey`, unresolvable `a2aPool` agent path, or `referencedNodeNames` referencing a node name that does not exist in the definition)
-- `422` `referencedNodeNames` set on a non-step node
+- `400` Validation error (invalid node structure, duplicate node names in router, unknown `executorKey`, unresolvable `a2aPool` agent path, `referencedNodeNames` set on a non-step node, or `referencedNodeNames` referencing a node name that does not exist in the definition)
 - `500` Internal server error
 
 ---
@@ -600,9 +599,8 @@ node type does not use them. This lets clients access any field without null che
 ```
 
 **Error**:
-- `400` Validation error or invalid workflow ID (invalid node structure, duplicate node names in router, unknown `executorKey`, unresolvable `a2aPool` agent path, or `referencedNodeNames` referencing a node name that does not exist in the definition)
+- `400` Validation error or invalid workflow ID (invalid node structure, duplicate node names in router, unknown `executorKey`, unresolvable `a2aPool` agent path, `referencedNodeNames` set on a non-step node, or `referencedNodeNames` referencing a node name that does not exist in the definition)
 - `404` Workflow not found
-- `422` `referencedNodeNames` set on a non-step node
 - `500` Internal server error
 
 ---
@@ -1372,7 +1370,7 @@ All endpoints return errors in the following format:
                                   // "[Output from '<name>']\n<content>" before the node's own input.
                                   // Names that do not appear in previous_step_outputs (e.g. a skipped Condition branch)
                                   // are silently omitted — no error is raised.
-                                  // Sending this field on non-step nodes returns 422.
+                                  // Sending this field on non-step nodes returns 400.
   config: object;                // Node configuration
   children: WorkflowNode[];      // Child nodes for parallel and loop nodes only
   trueSteps: WorkflowNode[];     // Sequential steps for the true branch of a condition node (≥ 1 required)
