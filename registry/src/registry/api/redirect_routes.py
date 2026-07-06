@@ -364,6 +364,14 @@ async def refresh_token(
         auth_method = refresh_claims.get("auth_method")
         provider = refresh_claims.get("provider")
 
+        if not all([user_id, username, auth_method, provider]):
+            logger.warning("Refresh token missing required identity claims (user_id/sub/auth_method/provider)")
+            response = JSONResponse(
+                status_code=401, content={"detail": "Refresh token missing required identity claims"}
+            )
+            _delete_auth_cookies(response)
+            return response
+
         # Extract groups and scopes from refresh token
         groups = refresh_claims.get("groups", [])
         scope_string = refresh_claims.get("scope", "")
