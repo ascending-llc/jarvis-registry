@@ -184,6 +184,32 @@ def test_authorize_without_client_consent_redirects_to_frontend(
     mcp_service_mock.oauth_service.initiate_oauth_flow.assert_not_called()
 
 
+def test_authorize_registry_client_skips_consent_gate(
+    client,
+    consent_store_mock,
+    pending_consent_store,
+    mcp_service_mock,
+):
+    consent_store_mock.has_client_consent.return_value = False
+    mcp_service_mock.oauth_service.initiate_oauth_flow.reset_mock()
+
+    resp = client.get(
+        f"/mcp/downstream/oauth/authorize/{USER_A}/github",
+        params={
+            "client_id": settings.jwt_token_config.registry_client_id,
+            "redirect_uri": "http://localhost:33418/cb",
+            "code_challenge": "abc",
+        },
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 307
+    assert resp.headers["location"] == "https://github.com/login/oauth/authorize?x=1"
+    assert pending_consent_store.pending == {}
+    consent_store_mock.has_client_consent.assert_not_called()
+    mcp_service_mock.oauth_service.initiate_oauth_flow.assert_called_once()
+
+
 def test_authorize_invalid_user_id_returns_400(client):
     resp = client.get(
         "/mcp/downstream/oauth/authorize/mcpgw/github",

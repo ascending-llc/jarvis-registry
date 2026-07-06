@@ -66,6 +66,7 @@ def _seed_default_oauth_state() -> None:
     test_oauth_state_store.clear()
     test_consent_store.client_consents.clear()
     test_consent_store.server_consents.clear()
+    test_consent_store.default_client_consent = True
     test_pending_consent_store.pending.clear()
     test_oauth_state_store.save_client(
         "test-client",
@@ -150,6 +151,10 @@ def test_client(auth_server_app) -> Generator[TestClient, None, None]:
     from tests.support.oauth_state_store import test_oauth_state_store
 
     test_oauth_state_store.clear()
+    test_consent_store.client_consents.clear()
+    test_consent_store.server_consents.clear()
+    test_consent_store.default_client_consent = True
+    test_pending_consent_store.pending.clear()
 
 
 @pytest.fixture
@@ -174,6 +179,10 @@ def clear_device_storage():
     yield
 
     test_oauth_state_store.clear()
+    test_consent_store.client_consents.clear()
+    test_consent_store.server_consents.clear()
+    test_consent_store.default_client_consent = True
+    test_pending_consent_store.pending.clear()
 
 
 # Test markers

@@ -581,9 +581,10 @@ async def device_token(
     request: Request,
     user_service: UserService = Depends(get_user_service),
     store: OAuthStateStoreProtocol = Depends(get_oauth_state_store),
+    consent_store: ConsentStore = Depends(get_consent_store),
 ):
     try:
-        return await _device_token_handler(request, user_service, store)
+        return await _device_token_handler(request, user_service, store, consent_store)
     except HTTPException:
         raise
     except Exception:
@@ -595,6 +596,7 @@ async def _device_token_handler(
     request: Request,
     user_service: UserService,
     store: OAuthStateStoreProtocol,
+    consent_store: ConsentStore,
 ) -> DeviceTokenResponse | JSONResponse:
     params = await _parse_device_token_params(request)
     grant_type: str | None = params["grant_type"]
@@ -739,11 +741,19 @@ async def _device_token_handler(
         if client_id != settings.registry_app_name and not store.validate_client_credentials(client_id, client_secret):
             return oauth_error_response("invalid_client", "invalid client credentials")
 
+        user_info = refresh_token_data["user_info"]
+        user_id = await user_service.resolve_user_id(user_info)
+        if user_id and not _is_registry_client(client_id) and not consent_store.has_client_consent(user_id, client_id):
+            return oauth_error_response(
+                "interaction_required",
+                "User consent is required. Restart the authorization flow.",
+            )
+
         now = int(time.time())
         new_refresh_token = secrets.token_urlsafe(32)
         new_refresh_data = {
             "client_id": client_id,
-            "user_info": refresh_token_data["user_info"],
+            "user_info": user_info,
             "scope": refresh_token_data.get("scope", ""),
             "expires_at": now + REFRESH_TOKEN_TTL_SECONDS,
         }
@@ -754,11 +764,6 @@ async def _device_token_handler(
         )
         if rt_data is None:
             return oauth_error_response("invalid_grant", "refresh token already used")
-
-        user_info = rt_data["user_info"]
-
-        # Resolve user_id from MongoDB
-        user_id = await user_service.resolve_user_id(user_info)
 
         access_token = mint_managed_agent_token(
             JWT_TOKEN_CONFIG,

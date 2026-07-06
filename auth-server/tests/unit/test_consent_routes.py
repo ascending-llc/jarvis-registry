@@ -249,3 +249,106 @@ def test_oauth_callback_without_client_consent_redirects_to_consent(
     nonce = parse_qs(urlparse(location).query)["nonce"][0]
     assert pending_store.peek(nonce) is not None
     assert oauth_store.authorization_codes_storage == {}
+
+
+@patch("auth_server.routes.oauth_flow.exchange_code_for_token")
+@patch("auth_server.routes.oauth_flow.get_token_kid")
+@patch("auth_server.routes.oauth_flow.decode_jwt_with_jwk")
+def test_oauth_callback_with_cached_client_consent_skips_consent(
+    mock_decode_jwt,
+    mock_get_token_kid,
+    mock_exchange_code_for_token,
+) -> None:
+    client, oauth_store, consent_store, pending_store = _client()
+    signer = URLSafeTimedSerializer("test-secret-key")
+    consent_store.grant_client_consent("507f1f77bcf86cd799439011", "external-client")
+    mock_exchange_code_for_token.return_value = {"access_token": "provider-token", "id_token": "provider-id-token"}
+    mock_get_token_kid.return_value = "test-kid"
+    mock_decode_jwt.return_value = {
+        "sub": "provider-user",
+        "preferred_username": "alice",
+        "email": "alice@example.com",
+        "name": "Alice",
+        "groups": [],
+    }
+
+    client.app.dependency_overrides[get_oauth2_config] = _oauth2_config
+    client.app.dependency_overrides[get_signer] = lambda: signer
+    client.app.dependency_overrides[get_auth_provider] = _auth_provider
+    client.app.dependency_overrides[get_user_service] = _user_service
+
+    session_data = {
+        "state": "internal-state",
+        "client_state": "client-state",
+        "provider": "keycloak",
+        "redirect_uri": "https://client.example.com/callback",
+        "client_id": "external-client",
+        "client_redirect_uri": "https://client.example.com/callback",
+        "code_challenge": "challenge",
+        "code_challenge_method": "S256",
+    }
+
+    response = client.get(
+        "/auth/oauth2/callback/keycloak",
+        params={"code": "idp-code", "state": "internal-state"},
+        cookies={"oauth2_temp_session": signer.dumps(session_data)},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 302
+    location = response.headers["location"]
+    assert location.startswith("https://client.example.com/callback")
+    auth_code = parse_qs(urlparse(location).query)["code"][0]
+    assert oauth_store.get_authcode(auth_code) is not None
+    assert pending_store.pending == {}
+
+
+@patch("auth_server.routes.oauth_flow.exchange_code_for_token")
+@patch("auth_server.routes.oauth_flow.get_token_kid")
+@patch("auth_server.routes.oauth_flow.decode_jwt_with_jwk")
+def test_oauth_callback_registry_client_skips_consent(
+    mock_decode_jwt,
+    mock_get_token_kid,
+    mock_exchange_code_for_token,
+) -> None:
+    client, oauth_store, _, pending_store = _client()
+    signer = URLSafeTimedSerializer("test-secret-key")
+    mock_exchange_code_for_token.return_value = {"access_token": "provider-token", "id_token": "provider-id-token"}
+    mock_get_token_kid.return_value = "test-kid"
+    mock_decode_jwt.return_value = {
+        "sub": "provider-user",
+        "preferred_username": "alice",
+        "email": "alice@example.com",
+        "name": "Alice",
+        "groups": [],
+    }
+
+    client.app.dependency_overrides[get_oauth2_config] = _oauth2_config
+    client.app.dependency_overrides[get_signer] = lambda: signer
+    client.app.dependency_overrides[get_auth_provider] = _auth_provider
+    client.app.dependency_overrides[get_user_service] = _user_service
+
+    session_data = {
+        "state": "internal-state",
+        "client_state": "client-state",
+        "provider": "keycloak",
+        "redirect_uri": "https://registry.example.com/callback",
+        "client_id": "jarvis-registry-client",
+        "client_redirect_uri": "https://registry.example.com/callback",
+        "code_challenge": "challenge",
+        "code_challenge_method": "S256",
+    }
+
+    response = client.get(
+        "/auth/oauth2/callback/keycloak",
+        params={"code": "idp-code", "state": "internal-state"},
+        cookies={"oauth2_temp_session": signer.dumps(session_data)},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 302
+    location = response.headers["location"]
+    assert location.startswith("https://registry.example.com/callback")
+    auth_code = parse_qs(urlparse(location).query)["code"][0]
+    assert oauth_store.get_authcode(auth_code) is not None
+    assert pending_store.pending == {}
