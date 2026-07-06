@@ -30,6 +30,12 @@ from .services.federation_crud_service import FederationCrudService
 from .services.federation_job_service import FederationJobService
 from .services.federation_service import FederationService
 from .services.federation_sync_service import FederationSyncService
+from .services.group_directory_client import (
+    CognitoGroupDirectoryClient,
+    EntraIdGroupDirectoryClient,
+    IdPGroupDirectoryClient,
+    KeycloakGroupDirectoryClient,
+)
 from .services.group_service import GroupService
 from .services.oauth.connection_service import MCPConnectionService
 from .services.oauth.mcp_service import MCPService
@@ -127,8 +133,22 @@ class RegistryContainer:
         return UserService()
 
     @cached_property
+    def group_directory_client(self) -> IdPGroupDirectoryClient:
+        provider = self.settings.auth_provider
+        if provider == "entra":
+            return EntraIdGroupDirectoryClient(
+                tenant_id=self.settings.entra_tenant_id or "",
+                client_id=self.settings.entra_client_id or "",
+                client_secret=self.settings.entra_client_secret or "",
+                graph_url=self.settings.entra_graph_url,
+            )
+        if provider == "cognito":
+            return CognitoGroupDirectoryClient()
+        return KeycloakGroupDirectoryClient()
+
+    @cached_property
     def group_service(self) -> GroupService:
-        return GroupService()
+        return GroupService(group_directory_client=self.group_directory_client)
 
     @cached_property
     def acl_service(self) -> ACLService:

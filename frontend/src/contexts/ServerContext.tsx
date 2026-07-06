@@ -216,7 +216,11 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
       setServers(transformedServers);
       return transformedServers;
     } catch (error: any) {
-      setServerError(error?.data?.detail || 'Failed to fetch servers');
+      const msg =
+        error?.detail?.message ||
+        (typeof error?.detail === 'string' ? error.detail : null) ||
+        'Failed to fetch servers';
+      setServerError(msg);
       return [];
     } finally {
       setServerLoading(false);
@@ -258,7 +262,9 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
       }));
       setAgents(transformedAgents);
     } catch (error: any) {
-      setAgentError(error?.detail || 'Failed to fetch agents');
+      const msg =
+        error?.detail?.message || (typeof error?.detail === 'string' ? error.detail : null) || 'Failed to fetch agents';
+      setAgentError(msg);
     } finally {
       setAgentLoading(false);
     }

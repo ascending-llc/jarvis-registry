@@ -130,10 +130,8 @@ const AgentRegistryOrEdit: React.FC = () => {
 
     if (!formData.path.trim()) {
       newErrors.path = 'Path is required';
-    } else if (!/^\//.test(formData.path)) {
-      newErrors.path = 'Path must start with /';
-    } else if (!/^\/[a-zA-Z0-9\-._~%@!$&'()*+,;=:/]*$/.test(formData.path)) {
-      newErrors.path = 'Path contains invalid characters';
+    } else if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(formData.path)) {
+      newErrors.path = 'Path must be lowercase letters, numbers, and single dashes (no leading/trailing dash)';
     }
 
     if (!formData.url?.trim()) {
@@ -163,10 +161,8 @@ const AgentRegistryOrEdit: React.FC = () => {
     if (field === 'path') {
       const strVal = value as string | undefined;
       let pathError: string | undefined;
-      if (strVal && !/^\//.test(strVal)) {
-        pathError = 'Path must start with /';
-      } else if (strVal && !/^\/[a-zA-Z0-9\-._~%@!$&'()*+,;=:/]*$/.test(strVal)) {
-        pathError = 'Path contains invalid characters';
+      if (strVal && !/^[a-z0-9]+(-[a-z0-9]+)*$/.test(strVal)) {
+        pathError = 'Path must be lowercase letters, numbers, and single dashes (no leading/trailing dash)';
       }
       setErrors(prev => ({ ...prev, path: pathError }));
     } else if (errors[field as string]) {

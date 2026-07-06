@@ -237,11 +237,11 @@ const MainConfigForm: React.FC<MainConfigFormProps> = ({ formData, agentDetail, 
             id='path'
             required
             disabled={isReadOnly}
-            placeholder='/my-agent'
+            placeholder='my-agent'
             value={formData.path}
             onChange={e => updateField('path', e.target.value)}
             onBlur={e => updateField('path', e.target.value.toLowerCase())}
-            helperText='Unique URL path prefix (must start with /)'
+            helperText='Unique URL path slug (lowercase letters, numbers, dashes)'
             error={errors?.path}
           />
         </div>

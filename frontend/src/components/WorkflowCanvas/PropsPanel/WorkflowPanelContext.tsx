@@ -18,7 +18,7 @@ export interface WorkflowPanelContextValue {
   onRouterCasesChange: (nodeId: string, prev: string[], next: string[]) => void;
   onDeleteNode: (nodeId: string) => void;
   onDeleteWorkflow: () => void;
-  onWorkflowChange: (patch: Partial<Pick<Workflow, 'name' | 'description' | 'type'>>) => void;
+  onWorkflowChange: (patch: Partial<Pick<Workflow, 'name' | 'description'>>) => void;
 }
 
 const WorkflowPanelContext = createContext<WorkflowPanelContextValue | null>(null);

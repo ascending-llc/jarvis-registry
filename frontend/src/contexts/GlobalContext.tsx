@@ -1,9 +1,9 @@
-import { CheckCircleIcon, ExclamationCircleIcon, XMarkIcon } from '@heroicons/react/24/outline';
+import { CheckCircleIcon, ExclamationCircleIcon, InformationCircleIcon, XMarkIcon } from '@heroicons/react/24/outline';
 import type React from 'react';
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 
-type ToastType = 'success' | 'error';
+type ToastType = 'success' | 'error' | 'info';
 
 interface GlobalContextType {
   showToast: (message: string, type: ToastType) => void;
@@ -40,29 +40,35 @@ const Toast: React.FC<ToastProps> = ({ message, type, onClose }) => {
       onClick={e => e.stopPropagation()}
       onMouseDown={e => e.stopPropagation()}
     >
-      <div
-        className={`flex items-center p-4 rounded-lg shadow-lg border ${
-          type === 'success'
-            ? 'bg-[var(--jarvis-success-soft)] border-[color:var(--jarvis-success-soft)] text-[var(--jarvis-success-text)] bg-[var(--jarvis-success-soft)]/50 border-[color:var(--jarvis-success-soft)] text-[var(--jarvis-success-text)]'
-            : 'bg-[var(--jarvis-danger-soft)] border-[color:var(--jarvis-danger-soft)] text-[var(--jarvis-danger-text)] bg-[var(--jarvis-danger-soft)]/50 border-[color:var(--jarvis-danger-soft)] text-[var(--jarvis-danger-text)]'
-        }`}
-      >
-        {type === 'success' ? (
-          <CheckCircleIcon className='h-5 w-5 mr-3 flex-shrink-0' />
-        ) : (
-          <ExclamationCircleIcon className='h-5 w-5 mr-3 flex-shrink-0' />
-        )}
-        <p className='text-sm font-medium max-w-full truncate'>{message}</p>
-        <button
-          onClick={e => {
-            e.stopPropagation();
-            onClose();
-          }}
-          onMouseDown={e => e.stopPropagation()}
-          className='ml-3 flex-shrink-0 text-current opacity-70 hover:opacity-100'
+      <div className='bg-[var(--jarvis-surface)] rounded-lg shadow-xl'>
+        <div
+          className={`flex items-center p-4 rounded-lg border ${
+            type === 'success'
+              ? 'bg-[var(--jarvis-success-soft)] border-[var(--jarvis-success)] text-[var(--jarvis-success-text)]'
+              : type === 'info'
+                ? 'bg-[var(--jarvis-info-soft)] border-[var(--jarvis-blue)] text-[var(--jarvis-info-text)]'
+                : 'bg-[var(--jarvis-danger-soft)] border-[var(--jarvis-danger)] text-[var(--jarvis-danger-text)]'
+          }`}
         >
-          <XMarkIcon className='h-4 w-4' />
-        </button>
+          {type === 'success' ? (
+            <CheckCircleIcon className='h-5 w-5 mr-3 flex-shrink-0' />
+          ) : type === 'info' ? (
+            <InformationCircleIcon className='h-5 w-5 mr-3 flex-shrink-0' />
+          ) : (
+            <ExclamationCircleIcon className='h-5 w-5 mr-3 flex-shrink-0' />
+          )}
+          <p className='text-sm font-medium max-w-full truncate'>{message}</p>
+          <button
+            onClick={e => {
+              e.stopPropagation();
+              onClose();
+            }}
+            onMouseDown={e => e.stopPropagation()}
+            className='ml-3 flex-shrink-0 text-current opacity-70 hover:opacity-100'
+          >
+            <XMarkIcon className='h-4 w-4' />
+          </button>
+        </div>
       </div>
     </div>,
     document.body,

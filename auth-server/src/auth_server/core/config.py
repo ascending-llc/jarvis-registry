@@ -8,8 +8,6 @@ All environment variables are loaded here and accessed through the global `setti
 from functools import cached_property
 from typing import Any
 
-from pydantic import field_validator
-
 from registry_pkgs.core.config import JarvisBaseSettings, RedisConfig
 
 
@@ -26,9 +24,6 @@ class AuthSettings(JarvisBaseSettings):
 
     # ==================== CORS Configuration ====================
     cors_origins: str = "*"  # Comma-separated list of allowed origins, or "*" for all
-
-    # ==================== Auth Provider ====================
-    auth_provider: str = "entra"  # cognito, keycloak, entra
 
     # ==================== Keycloak Settings ====================
     keycloak_url: str | None = None
@@ -47,9 +42,7 @@ class AuthSettings(JarvisBaseSettings):
     aws_region: str = "us-east-1"
 
     # ==================== Entra ID Settings ====================
-    entra_tenant_id: str | None = None
-    entra_client_id: str | None = None
-    entra_client_secret: str | None = None
+    # entra_tenant_id / entra_client_id / entra_client_secret are inherited from JarvisBaseSettings.
     entra_token_kind: str = "id"  # "id" or "access"
 
     # ==================== Metrics Settings ====================
@@ -67,15 +60,6 @@ class AuthSettings(JarvisBaseSettings):
     @cached_property
     def redis_config(self) -> RedisConfig:
         return RedisConfig(redis_uri=self.redis_uri, redis_key_prefix=self.redis_key_prefix)
-
-    @field_validator("auth_provider")
-    @classmethod
-    def validate_auth_provider(cls, v: str) -> str:
-        """Validate auth provider value."""
-        allowed = ["cognito", "keycloak", "entra"]
-        if v.lower() not in allowed:
-            raise ValueError(f"auth_provider must be one of {allowed}, got '{v}'")
-        return v.lower()
 
     def model_post_init(self, __context: Any) -> None:
         super().model_post_init(__context)

@@ -165,6 +165,43 @@ def test_workflow_node_input_accepts_router_with_named_choices():
     assert [s.name for s in router.choices[1].steps] == ["web"]
 
 
+def test_workflow_node_input_referenced_node_names_defaults_to_empty_list():
+    node = WorkflowNodeInput(name="echo", nodeType="step", executorKey="tool")
+    assert node.referencedNodeNames == []
+
+
+def test_workflow_node_input_accepts_referenced_node_names():
+    node = WorkflowNodeInput(
+        name="echo",
+        nodeType="step",
+        executorKey="tool",
+        referencedNodeNames=["Weather Agent", "Search Agent"],
+    )
+    assert node.referencedNodeNames == ["Weather Agent", "Search Agent"]
+
+
+def test_convert_node_to_output_includes_referenced_node_names():
+    from registry.schemas.workflow_api_schemas import _convert_node_to_output
+    from registry_pkgs.models.workflow import WorkflowNode
+
+    node = WorkflowNode(name="Downstream", executor_key="tool", referenced_node_names=["Upstream"])
+
+    output = _convert_node_to_output(node)
+
+    assert output.referencedNodeNames == ["Upstream"]
+
+
+def test_convert_node_to_input_includes_referenced_node_names():
+    from registry.schemas.workflow_api_schemas import convert_node_to_input
+    from registry_pkgs.models.workflow import WorkflowNode
+
+    node = WorkflowNode(name="Downstream", executor_key="tool", referenced_node_names=["Upstream"])
+
+    result = convert_node_to_input(node)
+
+    assert result.referencedNodeNames == ["Upstream"]
+
+
 def test_workflow_run_detail_response_uses_independent_list_defaults():
     first = WorkflowRunDetailResponse(
         id="run-1",
