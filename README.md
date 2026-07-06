@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/ascending-llc-jarvis-registry-badge.png)](https://mseep.ai/app/ascending-llc-jarvis-registry)
+
 <div align="center">
 <img src="docs/img/jarvis_vertical_logo_w_text_light_bkg.svg" alt="Jarvis Registry Logo" width="100%">
 
