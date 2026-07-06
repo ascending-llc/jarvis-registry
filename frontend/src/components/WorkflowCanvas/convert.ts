@@ -71,10 +71,7 @@ const sortEdgesByHandle = (edges: Edge[]): Edge[] =>
     return ia - ib;
   });
 
-const mapNodeToApi = (
-  node: Node<NodeData>,
-  branchData: { [handle: string]: InternalNode[] } | null,
-): InternalNode => {
+const mapNodeToApi = (node: Node<NodeData>, branchData: { [handle: string]: InternalNode[] } | null): InternalNode => {
   const data = node.data;
   const nodeType = CANVAS_TO_API_NODE_TYPE[node.type ?? ''] ?? 'step';
 
