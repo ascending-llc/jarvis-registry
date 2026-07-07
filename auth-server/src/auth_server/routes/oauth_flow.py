@@ -745,7 +745,7 @@ async def _device_token_handler(
         user_id = await user_service.resolve_user_id(user_info)
         if user_id and not _is_registry_client(client_id) and not consent_store.has_client_consent(user_id, client_id):
             return oauth_error_response(
-                "interaction_required",
+                "invalid_grant",
                 "User consent is required. Restart the authorization flow.",
             )
 
@@ -908,27 +908,33 @@ async def consent_page(
     store: OAuthStateStoreProtocol = Depends(get_oauth_state_store),
     pending_store: PendingConsentStore = Depends(get_pending_consent_store),
 ) -> HTMLResponse:
-    if not nonce or not oauth2_consent_nonce or not hmac.compare_digest(oauth2_consent_nonce, nonce):
-        return HTMLResponse(render_consent_error_page(), status_code=400)
+    try:
+        if not nonce or not oauth2_consent_nonce or not hmac.compare_digest(oauth2_consent_nonce, nonce):
+            return HTMLResponse(render_consent_error_page(), status_code=400)
 
-    pending = pending_store.peek(oauth2_consent_nonce)
-    if pending is None:
-        return HTMLResponse(render_consent_error_page(), status_code=400)
+        pending = pending_store.peek(oauth2_consent_nonce)
+        if pending is None:
+            return HTMLResponse(render_consent_error_page(), status_code=400)
 
-    client_id = pending["session_data"]["client_id"]
-    client_metadata = store.get_client(client_id) or {}
+        client_id = pending["session_data"]["client_id"]
+        client_metadata = store.get_client(client_id) or {}
 
-    return HTMLResponse(
-        render_consent_page(
-            client_name=client_metadata.get("client_name", "Unknown application"),
-            client_uri=client_metadata.get("client_uri"),
-            ip_address=client_metadata.get("ip_address"),
-            registered_at=client_metadata.get("registered_at"),
-            nonce=oauth2_consent_nonce,
-            approve_action=_auth_server_route_path("/oauth2/consent/approve"),
-            deny_action=_auth_server_route_path("/oauth2/consent/deny"),
+        return HTMLResponse(
+            render_consent_page(
+                client_name=client_metadata.get("client_name", "Unknown application"),
+                client_uri=client_metadata.get("client_uri"),
+                ip_address=client_metadata.get("ip_address"),
+                registered_at=client_metadata.get("registered_at"),
+                nonce=oauth2_consent_nonce,
+                approve_action=_auth_server_route_path("/oauth2/consent/approve"),
+                deny_action=_auth_server_route_path("/oauth2/consent/deny"),
+            )
         )
-    )
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Error rendering OAuth2 consent page")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/oauth2/consent/approve")
@@ -939,32 +945,38 @@ async def approve_consent(
     consent_store: ConsentStore = Depends(get_consent_store),
     pending_store: PendingConsentStore = Depends(get_pending_consent_store),
 ):
-    if not oauth2_consent_nonce or not hmac.compare_digest(oauth2_consent_nonce, nonce):
-        return JSONResponse({"detail": "Invalid or expired consent request"}, status_code=400)
+    try:
+        if not oauth2_consent_nonce or not hmac.compare_digest(oauth2_consent_nonce, nonce):
+            return JSONResponse({"detail": "Invalid or expired consent request"}, status_code=400)
 
-    pending = pending_store.consume(nonce)
-    if pending is None:
-        return JSONResponse(
-            {"detail": "This consent link has expired. Please retry from your MCP client."},
-            status_code=400,
+        pending = pending_store.consume(nonce)
+        if pending is None:
+            return JSONResponse(
+                {"detail": "This consent link has expired. Please retry from your MCP client."},
+                status_code=400,
+            )
+
+        mapped_user = pending["mapped_user"]
+        session_data = pending["session_data"]
+        user_id = mapped_user["user_id"]
+        client_id = session_data["client_id"]
+
+        consent_store.grant_client_consent(user_id, client_id)
+
+        response = _finish_oauth2_callback(
+            pending["token_data"],
+            mapped_user,
+            session_data,
+            pending["resolved_scopes"],
+            store,
         )
-
-    mapped_user = pending["mapped_user"]
-    session_data = pending["session_data"]
-    user_id = mapped_user["user_id"]
-    client_id = session_data["client_id"]
-
-    consent_store.grant_client_consent(user_id, client_id)
-
-    response = _finish_oauth2_callback(
-        pending["token_data"],
-        mapped_user,
-        session_data,
-        pending["resolved_scopes"],
-        store,
-    )
-    response.delete_cookie(CONSENT_NONCE_COOKIE)
-    return response
+        response.delete_cookie(CONSENT_NONCE_COOKIE)
+        return response
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Error approving OAuth2 consent")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/oauth2/consent/deny")
@@ -972,11 +984,17 @@ async def deny_consent(
     nonce: str = Form(...),
     pending_store: PendingConsentStore = Depends(get_pending_consent_store),
 ) -> RedirectResponse:
-    pending_store.consume(nonce)
-    params = {"error": "access_denied", "error_description": "User denied the authorization request"}
-    response = RedirectResponse(url=f"{settings.registry_error_redirect}?{urlencode(params)}", status_code=302)
-    response.delete_cookie(CONSENT_NONCE_COOKIE)
-    return response
+    try:
+        pending_store.consume(nonce)
+        params = {"error": "access_denied", "error_description": "User denied the authorization request"}
+        response = RedirectResponse(url=f"{settings.registry_error_redirect}?{urlencode(params)}", status_code=302)
+        response.delete_cookie(CONSENT_NONCE_COOKIE)
+        return response
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Error denying OAuth2 consent")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/oauth2/callback/{provider}")

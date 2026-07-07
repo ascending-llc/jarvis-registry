@@ -562,7 +562,7 @@ class TestRefreshTokenRotation:
 
         assert response.status_code == 400
         body = response.json()
-        assert body["error"] == "interaction_required"
+        assert body["error"] == "invalid_grant"
         assert "consent" in body["error_description"].lower()
         assert old_refresh_token in refresh_tokens_storage
         assert len(refresh_tokens_storage) == 1
