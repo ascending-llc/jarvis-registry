@@ -200,18 +200,17 @@ class AgentCoreRuntimeInvoker:
         merged = {**fallback_card, **card_payload, "url": fallback_card.get("url")}
         merged = self._normalize_agentcore_a2a_card(merged)
 
+        refreshed_config = agent.config or AgentConfig(
+            title=fallback_card.get("name", agent.card.name),
+            description=fallback_card.get("description", "") or "",
+            type="jsonrpc",
+        )
+
         refreshed = A2AAgent.from_a2a_agent_card(
             card_data=merged,
             path=agent.path,
             author=agent.author,
-            config=agent.config
-            or AgentConfig(
-                title=fallback_card.get("name", agent.card.name),
-                description=fallback_card.get("description", "") or "",
-                type="jsonrpc",
-            ),
-            isEnabled=agent.isEnabled,
-            status=agent.status,
+            config=refreshed_config,
             tags=agent.tags,
             registeredBy=agent.registeredBy,
             registeredAt=agent.registeredAt,

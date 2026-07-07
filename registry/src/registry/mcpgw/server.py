@@ -16,7 +16,7 @@ from .tools import agent, search, server
 if TYPE_CHECKING:
     from ..container import RegistryContainer
 
-_SYSTEM_INSTRUCTIONS = """MCP Gateway: discover and execute tools, resources, and prompts from registered MCP servers, and delegate complex tasks to A2A agents.
+_SYSTEM_INSTRUCTIONS = """MCP/Agent Gateway: discover and execute tools, resources, and prompts from registered MCP servers, and delegate complex tasks to A2A agents.
 
 Two Weaviate collections back this gateway:
   MCP_Servers  → stateless, atomic operations  (tools / resources / prompts from registered MCP servers)

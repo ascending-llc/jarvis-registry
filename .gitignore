@@ -281,6 +281,7 @@ frontend/.fusebox/
 frontend/.dynamodb/
 frontend/.tern-port
 frontend/storybook-static/
+frontend/docs
 
 # Node.js (global patterns)
 node_modules/
@@ -364,3 +365,6 @@ image-manifest.json
 /.playwright-cli
 /.playwright
 .gitnexus
+
+# Editor specific config files
+pyrightconfig.json

@@ -11,9 +11,9 @@ from agno.session import Session, WorkflowSession
 from agno.workflow import StepOutput
 from pymongo.asynchronous.client_session import AsyncClientSession
 
-from registry_pkgs.database.decorators import get_current_session
 from registry_pkgs.models.enums import NodeRunStatus, WorkflowRunStatus
 from registry_pkgs.models.workflow import NodeRun, WorkflowNode, WorkflowRun
+from registry_pkgs.workflows.types import NODE_INPUT_SNAPSHOTS_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -57,13 +57,18 @@ class WorkflowRunSyncer(AsyncMongoDb):
         self,
         session: Session,
         deserialize: bool | None = True,
+        mongo_session: AsyncClientSession | None = None,
     ) -> Session | dict[str, Any] | None:
         """Persist agno session, then mirror the latest run into Beanie."""
         result = await super().upsert_session(session, deserialize=deserialize)
         if isinstance(session, WorkflowSession) and session.runs:
             session_data: dict[str, Any] = session.session_data or {}
             try:
-                await self._sync_to_beanie(session.runs[-1], session_data=session_data)
+                await self._sync_to_beanie(
+                    session.runs[-1],
+                    session_data=session_data,
+                    session=mongo_session,
+                )
             except Exception as e:
                 logger.exception(
                     "WorkflowRunSyncer: failed to sync run %s to Beanie, error: %s", self._workflow_run.id, e
@@ -85,19 +90,19 @@ class WorkflowRunSyncer(AsyncMongoDb):
         self,
         run_output: WorkflowRunOutput,
         session_data: dict[str, Any] | None = None,
+        session: AsyncClientSession | None = None,
     ) -> None:
         """Write WorkflowRun status and per-step NodeRuns from WorkflowRunOutput."""
         step_outputs = _flatten_step_results(run_output.step_results)
         final_status = _resolve_workflow_run_status(run_output, step_outputs, self._node_by_name)
-        active_session = get_current_session()
 
         if final_status in _TERMINAL_STATUSES:
-            if active_session is not None:
+            if session is not None:
                 await self._write_run_and_nodes(
                     run_output,
                     step_outputs,
                     session_data=session_data or {},
-                    session=active_session,
+                    session=session,
                 )
                 return
 
@@ -113,12 +118,12 @@ class WorkflowRunSyncer(AsyncMongoDb):
             return
 
         # Non-terminal state can be synced outside a transaction, but should still
-        # participate in any ambient transaction when one exists.
+        # participate in a caller-supplied transaction when one exists.
         await self._write_run_and_nodes(
             run_output,
             step_outputs,
             session_data=session_data or {},
-            session=active_session,
+            session=session,
         )
 
     async def _write_run_and_nodes(
@@ -199,10 +204,20 @@ class WorkflowRunSyncer(AsyncMongoDb):
             node_run.output_snapshot = {"content": str(step_output.content)}
 
         if session_data is not None:
-            node_run.session_state_snapshot = dict(session_data)
+            # agno nests the workflow's shared `session_state` dict (where compiler.py
+            # and a2a_executor.py write their per-run keys) under session_data["session_state"];
+            # it is not a top-level key of session_data itself.
+            session_state = session_data.get("session_state") or {}
+            input_snapshots = session_state.get(NODE_INPUT_SNAPSHOTS_KEY, {})
+            input_snapshot = input_snapshots.get(node_id)
+            if input_snapshot is not None:
+                node_run.input_snapshot = input_snapshot
+            session_state_snapshot = dict(session_state)
+            session_state_snapshot.pop(NODE_INPUT_SNAPSHOTS_KEY, None)
+            node_run.session_state_snapshot = session_state_snapshot
             # Read the same key written by make_a2a_pool_executor so the
             # selected agent is persisted for retry reconstruction.
-            selected = session_data.get(f"a2a_target_{step_name}")
+            selected = session_state.get(f"a2a_target_{step_name}")
             if selected:
                 node_run.selected_a2a_key = str(selected)
 

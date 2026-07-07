@@ -12,7 +12,6 @@ from .anthropic_schema import (
     StdioTransport,
     StreamableHttpTransport,
 )
-from .enums import TokenType
 from .errors import (
     APIErrorDetail,
     APIErrorResponse,
@@ -50,5 +49,4 @@ __all__ = [
     "OAuthProtectedResourceMetadata",
     "MCPOAuthFlowMetadata",
     "OAuthFlow",
-    "TokenType",
 ]

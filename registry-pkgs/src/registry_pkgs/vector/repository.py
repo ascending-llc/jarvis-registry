@@ -4,7 +4,6 @@ from collections.abc import Awaitable, Callable
 from functools import wraps
 from typing import Any, TypeVar
 
-from langchain_classic.retrievers.contextual_compression import ContextualCompressionRetriever
 from langchain_core.documents import Document
 
 from .batch_result import BatchResult
@@ -12,7 +11,6 @@ from .client import DatabaseClient
 from .enum.enums import RerankerProvider, SearchType
 from .exceptions import RepositoryError
 from .protocols import VectorStorable
-from .retrievers.adapter_retriever import AdapterRetriever
 
 logger = logging.getLogger(__name__)
 
@@ -428,7 +426,7 @@ class Repository[T: VectorStorable]:
         candidate_k: int | None = None,
         search_type: SearchType = SearchType.HYBRID,
         filters: Any | None = None,
-        reranker_type: RerankerProvider = RerankerProvider.FLASHRANK,
+        reranker_type: RerankerProvider = RerankerProvider.BEDROCK_COHERE,
         reranker_kwargs: dict[str, Any] | None = None,
     ) -> list[T]:
         """
@@ -477,54 +475,6 @@ class Repository[T: VectorStorable]:
         except Exception as e:
             logger.error(f"Rerank search failed: {e}", exc_info=True)
             return []
-
-    # ========================================
-    # Retriever Methods (for LangChain integration)
-    # ========================================
-
-    def get_retriever(self, search_type: SearchType = SearchType.HYBRID, k: int = 10):
-        """
-        Get a LangChain retriever for RAG applications.
-
-        Args:
-            search_type: Type of search
-            k: Number of results
-
-        Returns:
-            AdapterRetriever instance
-        """
-        return AdapterRetriever(
-            adapter=self.adapter, collection_name=self.collection, search_type=search_type, search_kwargs={"k": k}
-        )
-
-    def get_compression_retriever(
-        self,
-        reranker_type: RerankerProvider,
-        search_type: SearchType = SearchType.HYBRID,
-        search_kwargs: dict | None = None,
-        reranker_kwargs: dict | None = None,
-    ) -> ContextualCompressionRetriever:
-        """
-        Get a compression retriever with reranking support.
-
-        Args:
-            reranker_type: Reranker provider
-            search_type: Type of search
-            search_kwargs: Search parameters
-            reranker_kwargs: Reranker parameters
-
-        Returns:
-            ContextualCompressionRetriever with reranking
-        """
-        from .retrievers.reranker import create_reranker
-
-        base_retriever = self.get_retriever(
-            search_type=search_type, k=search_kwargs.get("k", 10) if search_kwargs else 10
-        )
-
-        reranker = create_reranker(reranker_type=reranker_type, **(reranker_kwargs or {}))
-
-        return ContextualCompressionRetriever(base_compressor=reranker, base_retriever=base_retriever)
 
     # ========================================
     # Auto-generated Async Methods

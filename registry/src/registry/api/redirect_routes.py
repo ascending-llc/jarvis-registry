@@ -2,7 +2,8 @@ import base64
 import json
 import logging
 import secrets
-from typing import Annotated
+from datetime import UTC, datetime
+from typing import Annotated, Any
 from urllib.parse import quote, urlencode
 
 import httpx
@@ -10,23 +11,87 @@ from authlib.oauth2.rfc7636 import create_s256_code_challenge
 from fastapi import APIRouter, Cookie, Depends, Request, status
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 
-from registry_pkgs.core.jwt_utils import decode_jwt_unverified
-from registry_pkgs.core.scopes import map_groups_to_scopes
+from registry_pkgs.core.jwt_utils import decode_jwt
+from registry_pkgs.core.scopes import filter_known_groups, map_groups_to_scopes
 
 from ..core.config import settings
-from ..deps import check_if_https, get_user_service
+from ..deps import check_if_https, get_group_service, get_user_service
+from ..services.group_service import GroupService
 from ..services.user_service import UserService
 from ..utils.crypto_utils import (
+    ABSOLUTE_SESSION_EXPIRES_SECONDS,
+    REFRESH_TOKEN_EXPIRES_SECONDS,
     decrypt_value,
     encrypt_value,
     generate_access_token,
+    generate_refresh_token,
     generate_token_pair,
     verify_refresh_token,
 )
+from ..utils.csrf import compute_csrf_token
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+ACCESS_TOKEN_COOKIE_MAX_AGE_SECONDS = 86400
+SESSION_STARTED_AT_CLOCK_SKEW_SECONDS = 300
+
+
+def _set_csrf_cookie(response: Response, access_token: str, cookie_secure: bool) -> None:
+    response.set_cookie(
+        key=settings.csrf_cookie_name,
+        value=compute_csrf_token(access_token),
+        max_age=ACCESS_TOKEN_COOKIE_MAX_AGE_SECONDS,
+        httponly=False,
+        samesite="lax",
+        secure=cookie_secure,
+        path="/",
+    )
+
+
+def _delete_auth_cookies(response: Response) -> None:
+    response.delete_cookie(key=settings.session_cookie_name, path="/")
+    response.delete_cookie(key=settings.refresh_cookie_name, path="/")
+    response.delete_cookie(key=settings.csrf_cookie_name, path="/")
+
+
+def _parse_session_started_at(raw_value: object, now: int) -> int | None:
+    """Parse session_started_at from refresh token claims.
+
+    None is grandfathered for pre-deploy refresh tokens. Invalid non-null values
+    are rejected by returning None so the caller can fail closed with 401.
+    """
+    if raw_value is None:
+        return now
+    if isinstance(raw_value, bool):
+        return None
+    if isinstance(raw_value, int):
+        ts = raw_value
+    elif isinstance(raw_value, str) and raw_value.strip().isdecimal():
+        ts = int(raw_value)
+    else:
+        return None
+    if ts > now + SESSION_STARTED_AT_CLOCK_SKEW_SECONDS:
+        return None
+    return min(ts, now)
+
+
+def _get_required_string_claim(claims: dict[str, Any], claim_name: str) -> str | None:
+    value = claims.get(claim_name)
+    if isinstance(value, str) and value.strip():
+        return value
+    return None
+
+
+def _get_string_list_claim(claims: dict[str, Any], claim_name: str) -> list[str]:
+    value = claims.get(claim_name)
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        logger.warning("Ignoring non-list %s claim from OAuth token", claim_name)
+        return []
+    return [item.strip() for item in value if isinstance(item, str) and item.strip()]
 
 
 async def get_oauth2_providers():
@@ -96,6 +161,7 @@ async def oauth2_callback(
     details: str | None = None,
     registry_oauth2_code_verifier: str | None = Cookie(None),
     user_service: UserService = Depends(get_user_service),
+    group_service: GroupService = Depends(get_group_service),
     is_https: bool = Depends(check_if_https),
 ):
     """Handle OAuth2 callback from auth server
@@ -168,7 +234,7 @@ async def oauth2_callback(
                         url=f"{settings.registry_client_url}/login?error=oauth2_invalid_response", status_code=302
                     )
 
-                user_claims = decode_jwt_unverified(access_token)
+                user_claims = decode_jwt(access_token, settings.jwt_public_key, settings.jwt_issuer)
 
                 logger.info(f"OAuth2 callback exchanged code for JWT token: {user_claims.get('sub')}")
 
@@ -194,13 +260,26 @@ async def oauth2_callback(
                 url=f"{settings.registry_client_url}/login?error=User+not+found+in+registry", status_code=302
             )
 
+        try:
+            await group_service.sync_user_group_memberships(
+                user_obj,
+                enabled=settings.entra_group_sync_enabled,
+            )
+        except Exception:
+            logger.warning(
+                "Group sync failed for user %s; login will proceed.",
+                user_obj.id,
+                exc_info=True,
+            )
+
         # Merge OAuth claims with user object data
         # OAuth claims take precedence except for email and role which come from database
+        groups = _get_string_list_claim(user_claims, "groups")
         user_info = {
             "user_id": str(user_obj.id),
             "username": user_obj.username,
             "email": user_obj.email or user_claims.get("email", ""),
-            "groups": user_claims.get("groups", []),
+            "groups": filter_known_groups(groups, settings.scopes_file_config),
             "scopes": user_claims.get("scope", []),
             "role": user_obj.role,
             "auth_method": "oauth2",
@@ -225,18 +304,19 @@ async def oauth2_callback(
         resp.set_cookie(
             key=settings.session_cookie_name,  # jarvis_registry_session
             value=access_token,
-            max_age=86400,  # 1 day in seconds
+            max_age=ACCESS_TOKEN_COOKIE_MAX_AGE_SECONDS,  # 1 day in seconds
             httponly=True,
             samesite="lax",
             secure=cookie_secure,
             path="/",
         )
+        _set_csrf_cookie(resp, access_token, cookie_secure)
 
-        # Set refresh token cookie (7 days)
+        # Set refresh token cookie (48 hours sliding)
         resp.set_cookie(
             key=settings.refresh_cookie_name,
             value=refresh_token,
-            max_age=604800,  # 7 days in seconds
+            max_age=REFRESH_TOKEN_EXPIRES_SECONDS,
             httponly=True,
             samesite="lax",
             secure=cookie_secure,
@@ -259,8 +339,7 @@ async def oauth2_callback(
 @router.post("/redirect/logout")
 async def logout_post():
     response = Response(status_code=status.HTTP_204_NO_CONTENT)
-    response.delete_cookie(settings.session_cookie_name, path="/")
-    response.delete_cookie(settings.refresh_cookie_name, path="/")
+    _delete_auth_cookies(response)
 
     return response
 
@@ -268,7 +347,7 @@ async def logout_post():
 @router.post("/redirect/refresh")
 async def refresh_token(
     request: Request,
-    refresh: Annotated[str | None, Cookie(alias="jarvis_registry_refresh")] = None,
+    refresh: Annotated[str | None, Cookie(alias=settings.refresh_cookie_name)] = None,
     is_https: bool = Depends(check_if_https),
 ):
     """
@@ -283,8 +362,7 @@ async def refresh_token(
             logger.debug("No refresh token in cookie")
             response = JSONResponse(status_code=401, content={"detail": "No refresh token available"})
             # Clear cookies when no refresh token
-            response.delete_cookie(key=settings.session_cookie_name, path="/")
-            response.delete_cookie(key=settings.refresh_cookie_name, path="/")
+            _delete_auth_cookies(response)
             return response
 
         # Verify refresh token
@@ -293,18 +371,39 @@ async def refresh_token(
             logger.debug("Refresh token invalid or expired")
             response = JSONResponse(status_code=401, content={"detail": "Invalid or expired refresh token"})
             # Clear cookies when refresh token is invalid or expired
-            response.delete_cookie(key=settings.session_cookie_name, path="/")
-            response.delete_cookie(key=settings.refresh_cookie_name, path="/")
+            _delete_auth_cookies(response)
+            return response
+
+        # Enforce 14-day absolute session cap regardless of refresh-token reissue activity
+        now = int(datetime.now(UTC).timestamp())
+        session_started_at = _parse_session_started_at(refresh_claims.get("session_started_at"), now)
+        if session_started_at is None:
+            logger.warning("Refresh token has invalid session_started_at claim")
+            response = JSONResponse(status_code=401, content={"detail": "Invalid refresh token session"})
+            _delete_auth_cookies(response)
+            return response
+        if now - session_started_at > ABSOLUTE_SESSION_EXPIRES_SECONDS:
+            logger.info("Absolute session cap exceeded for refresh token; forcing re-login")
+            response = JSONResponse(status_code=401, content={"detail": "Session expired, please log in again"})
+            _delete_auth_cookies(response)
             return response
 
         # Extract user info from refresh token claims
-        user_id = refresh_claims.get("user_id")
-        username = refresh_claims.get("sub")
-        auth_method = refresh_claims.get("auth_method")
-        provider = refresh_claims.get("provider")
+        user_id = _get_required_string_claim(refresh_claims, "user_id")
+        username = _get_required_string_claim(refresh_claims, "sub")
+        auth_method = _get_required_string_claim(refresh_claims, "auth_method")
+        provider = _get_required_string_claim(refresh_claims, "provider")
+
+        if not all([user_id, username, auth_method, provider]):
+            logger.warning("Refresh token missing required identity claims (user_id/sub/auth_method/provider)")
+            response = JSONResponse(
+                status_code=401, content={"detail": "Refresh token missing required identity claims"}
+            )
+            _delete_auth_cookies(response)
+            return response
 
         # Extract groups and scopes from refresh token
-        groups = refresh_claims.get("groups", [])
+        groups = _get_string_list_claim(refresh_claims, "groups")
         scope_string = refresh_claims.get("scope", "")
         scopes = scope_string.split() if scope_string else []
 
@@ -326,11 +425,11 @@ async def refresh_token(
                 status_code=401, content={"detail": "Refresh token missing required scopes information"}
             )
             # Clear cookies when refresh token is missing required information
-            response.delete_cookie(key=settings.session_cookie_name, path="/")
-            response.delete_cookie(key=settings.refresh_cookie_name, path="/")
+            _delete_auth_cookies(response)
             return response
 
-        # Generate new access token using information from refresh token
+        # Generate new access and refresh tokens using information from refresh token.
+        # Refresh tokens are stateless JWTs, so the previous token remains valid until its exp.
         try:
             new_access_token = generate_access_token(
                 user_id=user_id,
@@ -343,29 +442,53 @@ async def refresh_token(
                 provider=provider,
             )
 
+            new_refresh_token = generate_refresh_token(
+                user_id=user_id,
+                username=username,
+                auth_method=auth_method,
+                provider=provider,
+                groups=groups,
+                scopes=scopes,
+                role=role,
+                email=email,
+                session_started_at=session_started_at,
+            )
+
             # Determine cookie security settings
             cookie_secure = settings.session_cookie_secure and is_https
 
-            # Create response with new access token
+            # Create response with new tokens
             response = JSONResponse(status_code=200, content={"detail": "Token refreshed successfully"})
 
             # Update access token cookie (1 day)
             response.set_cookie(
                 key=settings.session_cookie_name,  # jarvis_registry_session
                 value=new_access_token,
-                max_age=86400,  # 1 day in seconds
+                max_age=ACCESS_TOKEN_COOKIE_MAX_AGE_SECONDS,  # 1 day in seconds
+                httponly=True,
+                samesite="lax",
+                secure=cookie_secure,
+                path="/",
+            )
+            _set_csrf_cookie(response, new_access_token, cookie_secure)
+
+            # Reissue refresh token cookie (48 hours sliding)
+            response.set_cookie(
+                key=settings.refresh_cookie_name,
+                value=new_refresh_token,
+                max_age=REFRESH_TOKEN_EXPIRES_SECONDS,
                 httponly=True,
                 samesite="lax",
                 secure=cookie_secure,
                 path="/",
             )
 
-            logger.info(f"Successfully refreshed access token for user {username}")
+            logger.info(f"Successfully refreshed tokens for user {username}")
             return response
 
         except Exception as e:
-            logger.error(f"Error generating new access token during refresh: {e}")
-            return JSONResponse(status_code=500, content={"detail": "Failed to generate new access token"})
+            logger.error(f"Error generating new tokens during refresh: {e}")
+            return JSONResponse(status_code=500, content={"detail": "Failed to complete token refresh"})
 
     except Exception as e:
         logger.error(f"Error during token refresh: {e}")

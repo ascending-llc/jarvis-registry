@@ -128,16 +128,15 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
     }
   }, [server.id, loadingTools, showToast]);
 
-  const handleRefreshHealth = useCallback(async () => {
+  const handleRefresh = useCallback(async () => {
     if (loadingRefresh) return;
 
     setLoadingRefresh(true);
     try {
-      const result = await SERVICES.SERVER.refreshServerHealth(server.id);
+      const result = await SERVICES.SERVER.refreshServer(server.id);
 
       if (handleServerUpdate && result) {
         const updates: Partial<ServerInfo> = {
-          status: result.status,
           lastCheckedTime: result.lastConnected,
           numTools: result.numTools,
         };
@@ -162,8 +161,7 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
   const handleToggleServer = async (id: string, enabled: boolean) => {
     try {
       setLoading(true);
-      await SERVICES.SERVER.refreshServerHealth(id);
-      await SERVICES.SERVER.toggleServerStatus(id, { enabled });
+      await SERVICES.SERVER.toggleServerStatus(id, { enabled }, { timeout: 60000 });
       handleServerUpdate(id, { enabled });
       showToast(`Server ${enabled ? 'enabled' : 'disabled'} successfully!`, 'success');
     } catch (error: any) {
@@ -188,7 +186,7 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
   return (
     <>
       <div
-        className={`group rounded-2xl shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all duration-300 h-full flex flex-col relative ${
+        className={`search-interactive-element group rounded-2xl shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all duration-300 h-full flex flex-col relative ${
           isAnthropicServer
             ? 'border border-[color:var(--jarvis-primary-soft)] bg-gradient-to-br from-[#1f2432] to-[#242b3f] hover:border-[var(--jarvis-primary-hover)]'
             : 'border border-[color:var(--jarvis-border)] bg-[var(--jarvis-card)] hover:border-[color:var(--jarvis-border-strong)]'
@@ -391,7 +389,7 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
               <IconButton
                 ariaLabel='Refresh health status'
                 tooltip={canEdit ? 'Refresh' : 'No edit permission'}
-                onClick={handleRefreshHealth}
+                onClick={handleRefresh}
                 disabled={!canEdit || loadingRefresh}
                 size='card'
                 className='text-[var(--jarvis-icon)] transition-all duration-200 hover:bg-[var(--jarvis-primary-soft)] hover:text-[var(--jarvis-icon-hover)]'

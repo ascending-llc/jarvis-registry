@@ -14,11 +14,12 @@ import pytest
 from authlib.oauth2.rfc7636 import create_s256_code_challenge
 from fastapi.testclient import TestClient
 
-from auth_server.core.state import authorization_codes_storage, refresh_tokens_storage
-from auth_server.deps import get_auth_provider, get_oauth2_config, get_signer, get_user_service
-from auth_server.routes.oauth_flow import REFRESH_TOKEN_EXPIRY_SECONDS
+from auth_server.deps import get_auth_provider, get_oauth2_config, get_oauth_state_store, get_signer, get_user_service
 from auth_server.server import app
 from registry_pkgs.core.jwt_utils import decode_jwt_unverified
+from registry_pkgs.core.oauth_state_store import REFRESH_TOKEN_TTL_SECONDS as REFRESH_TOKEN_EXPIRY_SECONDS
+from tests.integration.conftest import _mock_keycloak_provider
+from tests.support.oauth_state_store import authorization_codes_storage, refresh_tokens_storage, test_oauth_state_store
 
 # API prefix for OAuth endpoints (set in conftest.py via AUTH_SERVER_API_PREFIX env var)
 API_PREFIX = "/auth"
@@ -39,6 +40,7 @@ def mock_user_service():
 @pytest.fixture
 def test_client_with_user_service(mock_user_service):
     """Create test client with user_service dependency override."""
+    app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
     app.dependency_overrides[get_user_service] = lambda: mock_user_service
     client = TestClient(app)
     yield client
@@ -158,7 +160,8 @@ class TestAccessTokenScoping:
         assert "servers-write" not in jwt_payload["scope"]
         assert "agents-write" not in jwt_payload["scope"]
 
-    @patch("auth_server.routes.oauth_flow.decode_jwt_unverified")
+    @patch("auth_server.routes.oauth_flow.get_token_kid")
+    @patch("auth_server.routes.oauth_flow.decode_jwt_with_jwk")
     @patch("auth_server.routes.oauth_flow.map_groups_to_scopes")
     @patch("auth_server.routes.oauth_flow.get_user_info")
     @patch("auth_server.routes.oauth_flow.exchange_code_for_token")
@@ -168,6 +171,7 @@ class TestAccessTokenScoping:
         mock_get_user_info,
         mock_map_groups,
         mock_decode_jwt,
+        mock_get_token_kid,
         clear_device_storage,
         mock_user_service,
     ):
@@ -186,6 +190,7 @@ class TestAccessTokenScoping:
             "access_token": "provider_access_token",
             "id_token": "provider_id_token",
         }
+        mock_get_token_kid.return_value = "test-kid"
 
         # Mock JWT decode to return valid claims (prevents DecodeError)
         mock_decode_jwt.return_value = {
@@ -229,10 +234,11 @@ class TestAccessTokenScoping:
             test_signer = URLSafeTimedSerializer("test-secret-key")
 
             app.dependency_overrides = {}
+            app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
             app.dependency_overrides[get_oauth2_config] = lambda: oauth2_config
             app.dependency_overrides[get_user_service] = lambda: mock_user_service
             app.dependency_overrides[get_signer] = lambda: test_signer
-            app.dependency_overrides[get_auth_provider] = lambda: MagicMock()
+            app.dependency_overrides[get_auth_provider] = _mock_keycloak_provider
 
             test_client = TestClient(app)
 
@@ -284,7 +290,8 @@ class TestAccessTokenScoping:
             # Cleanup
             app.dependency_overrides = {}
 
-    @patch("auth_server.routes.oauth_flow.decode_jwt_unverified")
+    @patch("auth_server.routes.oauth_flow.get_token_kid")
+    @patch("auth_server.routes.oauth_flow.decode_jwt_with_jwk")
     @patch("auth_server.routes.oauth_flow.map_groups_to_scopes")
     @patch("auth_server.routes.oauth_flow.get_user_info")
     @patch("auth_server.routes.oauth_flow.exchange_code_for_token")
@@ -294,6 +301,7 @@ class TestAccessTokenScoping:
         mock_get_user_info,
         mock_map_groups,
         mock_decode_jwt,
+        mock_get_token_kid,
         clear_device_storage,
         mock_user_service,
     ):
@@ -312,6 +320,7 @@ class TestAccessTokenScoping:
             "access_token": "provider_access_token",
             "id_token": "provider_id_token",
         }
+        mock_get_token_kid.return_value = "test-kid"
 
         # Mock JWT decode to return valid claims (prevents DecodeError)
         mock_decode_jwt.return_value = {
@@ -355,10 +364,11 @@ class TestAccessTokenScoping:
             test_signer = URLSafeTimedSerializer("test-secret-key")
 
             app.dependency_overrides = {}
+            app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
             app.dependency_overrides[get_oauth2_config] = lambda: oauth2_config
             app.dependency_overrides[get_user_service] = lambda: mock_user_service
             app.dependency_overrides[get_signer] = lambda: test_signer
-            app.dependency_overrides[get_auth_provider] = lambda: MagicMock()
+            app.dependency_overrides[get_auth_provider] = _mock_keycloak_provider
 
             test_client = TestClient(app)
 
@@ -737,6 +747,41 @@ class TestRefreshTokenRotation:
         assert error_data["error"] == "invalid_client"
 
         # Verify token not removed (not expired, just wrong client)
+        assert old_refresh_token in refresh_tokens_storage
+
+    def test_refresh_token_invalid_client_secret(self, test_client_with_user_service: TestClient, clear_device_storage):
+        """Test client_secret_post clients must provide the registered secret for refresh_token grant."""
+        client_id = "secret-client"
+        old_refresh_token = secrets.token_urlsafe(32)
+        current_time = int(time.time())
+
+        test_oauth_state_store.save_client(
+            client_id,
+            {
+                "client_id": client_id,
+                "client_secret": "correct-secret",
+                "token_endpoint_auth_method": "client_secret_post",
+            },
+        )
+        refresh_tokens_storage[old_refresh_token] = {
+            "client_id": client_id,
+            "user_info": {"username": "test_user", "email": "test@example.com", "groups": []},
+            "scope": "servers-read",
+            "expires_at": current_time + REFRESH_TOKEN_EXPIRY_SECONDS,
+        }
+
+        response = test_client_with_user_service.post(
+            f"{API_PREFIX}/oauth2/token",
+            data={
+                "grant_type": "refresh_token",
+                "refresh_token": old_refresh_token,
+                "client_id": client_id,
+                "client_secret": "wrong-secret",
+            },
+        )
+
+        assert response.status_code == 400
+        assert response.json()["error"] == "invalid_client"
         assert old_refresh_token in refresh_tokens_storage
 
 

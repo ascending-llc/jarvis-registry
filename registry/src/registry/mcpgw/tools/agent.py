@@ -17,6 +17,7 @@ from mcp.types import (
     BlobResourceContents,
     CallToolResult,
     EmbeddedResource,
+    ImageContent,
     TextContent,
     TextResourceContents,
 )
@@ -31,16 +32,32 @@ from ..core.types import McpAppContext
 
 logger = logging.getLogger(__name__)
 
+# MCP content blocks an A2A response can render to: text, inline image, or embedded resource.
+_AgentContent = TextContent | ImageContent | EmbeddedResource
 
-def _file_to_resource(f: FileWithBytes | FileWithUri) -> EmbeddedResource | None:
-    """Convert one A2A file payload to an MCP EmbeddedResource. None for unsupported."""
+
+def _file_to_resource(f: FileWithBytes | FileWithUri) -> ImageContent | EmbeddedResource | None:
+    """Convert one A2A file payload to its most faithful MCP content type.
+
+    image/* FileWithBytes -> ImageContent  (MCP hosts render this inline)
+    other   FileWithBytes -> EmbeddedResource(BlobResourceContents)  (lossless fallback)
+    FileWithUri           -> EmbeddedResource(TextResourceContents)
+    None for unsupported payload types.
+    """
     if isinstance(f, FileWithBytes):
+        mime = f.mime_type or "application/octet-stream"
+        # MIME types are case-insensitive and may carry parameters (RFC 6838); normalize for dispatch.
+        media_type = mime.split(";", 1)[0].strip().lower()
+        if media_type.startswith("image/"):
+            # f.bytes is already base64-encoded by the a2a SDK and is passed through verbatim into
+            # ImageContent.data — no decode/re-encode. The original mimeType is preserved.
+            return ImageContent(type="image", data=f.bytes, mimeType=mime)
         return EmbeddedResource(
             type="resource",
             resource=BlobResourceContents(
                 uri=AnyUrl(f"urn:a2a:file:{uuid.uuid4().hex}"),
                 blob=f.bytes,  # already base64-encoded by the a2a SDK
-                mimeType=f.mime_type or "application/octet-stream",
+                mimeType=mime,
             ),
         )
     if isinstance(f, FileWithUri):
@@ -56,9 +73,9 @@ def _file_to_resource(f: FileWithBytes | FileWithUri) -> EmbeddedResource | None
     return None
 
 
-def _render_artifact(artifact: Artifact) -> list[TextContent | EmbeddedResource]:
+def _render_artifact(artifact: Artifact) -> list[_AgentContent]:
     """Render one artifact as text (with `[<name>]` label) + files + data."""
-    items: list[TextContent | EmbeddedResource] = []
+    items: list[_AgentContent] = []
     text = get_artifact_text(artifact, delimiter="")
     if text:
         labelled = f"[{artifact.name}]\n{text}" if artifact.name else text
@@ -72,9 +89,9 @@ def _render_artifact(artifact: Artifact) -> list[TextContent | EmbeddedResource]
     return items
 
 
-def _render_message(message: Message) -> list[TextContent | EmbeddedResource]:
+def _render_message(message: Message) -> list[_AgentContent]:
     """Render a Message reply as text + files + data (no label — single block)."""
-    items: list[TextContent | EmbeddedResource] = []
+    items: list[_AgentContent] = []
     text = get_message_text(message)
     if text:
         items.append(TextContent(type="text", text=text))
@@ -88,11 +105,11 @@ def _render_message(message: Message) -> list[TextContent | EmbeddedResource]:
     return items
 
 
-def _render_task(task: Task) -> list[TextContent | EmbeddedResource]:
+def _render_task(task: Task) -> list[_AgentContent]:
     """Render a Task's content. Per the A2A spec, both `task.status.message`
     and `task.artifacts` carry content — surface both in that order
     (matches a2a-samples host_agent.py)."""
-    items: list[TextContent | EmbeddedResource] = []
+    items: list[_AgentContent] = []
     if task.status.message is not None:
         items.extend(_render_message(task.status.message))
     for artifact in task.artifacts or []:
@@ -100,7 +117,7 @@ def _render_task(task: Task) -> list[TextContent | EmbeddedResource]:
     return items
 
 
-def _convert_response(result: A2ACallResult) -> list[TextContent | EmbeddedResource]:
+def _convert_response(result: A2ACallResult) -> list[_AgentContent]:
     """Render the successful A2ACallResult into MCP content items."""
     if result.message is not None:
         return _render_message(result.message)
@@ -146,9 +163,9 @@ async def _user_can_view_agent(
     return str(agent_id) in accessible
 
 
-async def _resolve_active_agent(agent_id: str) -> tuple[A2AAgent | None, CallToolResult | None]:
+async def _resolve_enabled_agent(agent_id: str) -> tuple[A2AAgent | None, CallToolResult | None]:
     """
-    Parse `agent_id` and load the active A2AAgent.
+    Parse `agent_id` and load the A2AAgent, gated on config.enabled.
     """
     try:
         oid = PydanticObjectId(agent_id)
@@ -156,11 +173,11 @@ async def _resolve_active_agent(agent_id: str) -> tuple[A2AAgent | None, CallToo
         logger.warning("execute_agent: invalid agent_id format %r, e: %s", agent_id, e)
         return None, _error_result(f"Invalid agent_id format: {agent_id!r}. Use the agent_id from discover_agents.")
 
-    agent = await A2AAgent.find_one(A2AAgent.id == oid, A2AAgent.status == "active")
+    agent = await A2AAgent.find_one(A2AAgent.id == oid, {"config.enabled": True})
     if agent is None:
-        logger.warning("execute_agent: agent not found or inactive agent_id=%s", agent_id)
+        logger.warning("execute_agent: agent not found or disabled agent_id=%s", agent_id)
         return None, _error_result(
-            f"Agent {agent_id!r} not found or no longer active. Run discover_agents to get a fresh agent_id."
+            f"Agent {agent_id!r} not found or not enabled. Run discover_agents to get a fresh agent_id."
         )
     return agent, None
 
@@ -198,7 +215,7 @@ async def execute_agent_impl(
     Invoke an A2A agent and return its response.
     """
     # 1. Resolve agent
-    agent, error = await _resolve_active_agent(agent_id)
+    agent, error = await _resolve_enabled_agent(agent_id)
     if error:
         return error
 
@@ -210,7 +227,12 @@ async def execute_agent_impl(
 
     # 3. AuthZ — same VIEW-permission rule as workflow A2A executors
     lifespan = ctx.request_context.lifespan_context
-    if not await _user_can_view_agent(lifespan.acl_service, user_id, agent.id):
+    try:
+        can_view = await _user_can_view_agent(lifespan.acl_service, user_id, agent.id)
+    except RuntimeError:
+        logger.error("execute_agent: ACL lookup failed user_id=%s agent_id=%s", user_id, agent_id, exc_info=True)
+        return _error_result("Service temporarily unavailable. Please try again later.")
+    if not can_view:
         logger.warning(
             "execute_agent: user_id=%s denied access to agent_id=%s path=%s",
             user_id,

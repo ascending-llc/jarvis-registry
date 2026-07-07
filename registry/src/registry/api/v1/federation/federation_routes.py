@@ -6,10 +6,10 @@ from beanie import PydanticObjectId
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi import status as http_status
 
-from registry_pkgs.database.decorators import use_transaction
+from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.models import PrincipalType
 from registry_pkgs.models.enums import FederationStateMachine, FederationStatus, RoleBits
-from registry_pkgs.models.extended_acl_entry import ExtendedResourceType
+from registry_pkgs.models.extended_access_role import RegistryResourceType
 
 from ....auth.dependencies import CurrentUser
 from ....core.telemetry_decorators import track_registry_operation
@@ -267,7 +267,6 @@ def _raise_conflict(message: str) -> None:
     status_code=http_status.HTTP_201_CREATED,
 )
 @track_registry_operation("create", resource_type="federation")
-@use_transaction
 async def create_federation(
     data: FederationCreateRequest,
     user_context: CurrentUser,
@@ -286,21 +285,25 @@ async def create_federation(
     user_id = user_context.get("user_id")
 
     try:
-        federation = await federation_crud_service.create_federation(
-            provider_type=data.providerType,
-            display_name=data.displayName,
-            description=data.description,
-            tags=data.tags,
-            provider_config=data.providerConfig,
-            created_by=user_id,
-        )
-        await acl_service.grant_permission(
-            principal_type=PrincipalType.USER,
-            principal_id=PydanticObjectId(user_id),
-            resource_type=ExtendedResourceType.FEDERATION,
-            resource_id=federation.id,
-            perm_bits=RoleBits.OWNER,
-        )
+        async with MongoDB.get_client().start_session() as mongo_session:
+            async with await mongo_session.start_transaction():
+                federation = await federation_crud_service.create_federation(
+                    provider_type=data.providerType,
+                    display_name=data.displayName,
+                    description=data.description,
+                    tags=data.tags,
+                    provider_config=data.providerConfig,
+                    created_by=user_id,
+                    session=mongo_session,
+                )
+                await acl_service.grant_permission(
+                    principal_type=PrincipalType.USER,
+                    principal_id=PydanticObjectId(user_id),
+                    resource_type=RegistryResourceType.FEDERATION,
+                    resource_id=federation.id,
+                    perm_bits=RoleBits.OWNER,
+                    session=mongo_session,
+                )
     except ValueError as exc:
         _raise_federation_value_error(exc)
     logger.info(f"Created federation {federation.id}")
@@ -336,7 +339,7 @@ async def list_federations(
         user_id = user_context.get("user_id")
         accessible_ids = await acl_service.get_accessible_resource_ids(
             user_id=PydanticObjectId(user_id),
-            resource_type=ExtendedResourceType.FEDERATION,
+            resource_type=RegistryResourceType.FEDERATION,
         )
 
         items, total = await federation_crud_service.list_federations(
@@ -353,13 +356,22 @@ async def list_federations(
         for federation in items:
             permissions_by_id[str(federation.id)] = await acl_service.get_user_permissions_for_resource(
                 user_id=PydanticObjectId(user_id),
-                resource_type=ExtendedResourceType.FEDERATION,
+                resource_type=RegistryResourceType.FEDERATION,
                 resource_id=federation.id,
             )
         return _to_paged_response(items, total, page, effective_per_page, permissions_by_id)
     except HTTPException:
         logger.exception("Failed to list federations due to HTTP exception")
         raise
+    except RuntimeError as exc:
+        logger.exception("ACL lookup failed while listing federations")
+        raise HTTPException(
+            status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=create_error_detail(
+                ErrorCode.SERVICE_UNAVAILABLE,
+                "Federation listing is temporarily unavailable. Please try again later.",
+            ),
+        ) from exc
     except Exception as exc:
         logger.exception("Unexpected error while listing federations")
         raise HTTPException(
@@ -386,7 +398,7 @@ async def get_federation(
         federation = await _get_required_federation(federation_id, federation_crud_service)
         permissions = await acl_service.check_user_permission(
             user_id=PydanticObjectId(user_context.get("user_id")),
-            resource_type=ExtendedResourceType.FEDERATION,
+            resource_type=RegistryResourceType.FEDERATION,
             resource_id=federation.id,
             required_permission="VIEW",
         )
@@ -423,7 +435,7 @@ async def update_federation(
     federation = await _get_required_federation(federation_id, federation_crud_service)
     permissions = await acl_service.check_user_permission(
         user_id=PydanticObjectId(user_context.get("user_id")),
-        resource_type=ExtendedResourceType.FEDERATION,
+        resource_type=RegistryResourceType.FEDERATION,
         resource_id=federation.id,
         required_permission="EDIT",
     )
@@ -521,7 +533,7 @@ async def sync_federation(
     federation = await _get_required_federation(federation_id, federation_crud_service)
     await acl_service.check_user_permission(
         user_id=PydanticObjectId(user_context.get("user_id")),
-        resource_type=ExtendedResourceType.FEDERATION,
+        resource_type=RegistryResourceType.FEDERATION,
         resource_id=federation.id,
         required_permission="EDIT",
     )
@@ -572,7 +584,7 @@ async def delete_federation(
     federation = await _get_required_federation(federation_id, federation_crud_service)
     await acl_service.check_user_permission(
         user_id=PydanticObjectId(user_context.get("user_id")),
-        resource_type=ExtendedResourceType.FEDERATION,
+        resource_type=RegistryResourceType.FEDERATION,
         resource_id=federation.id,
         required_permission="DELETE",
     )

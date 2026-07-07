@@ -2,6 +2,7 @@ import logging
 from datetime import UTC, datetime
 
 from beanie import PydanticObjectId
+from pymongo.asynchronous.client_session import AsyncClientSession
 
 from registry_pkgs.models import User
 
@@ -21,7 +22,11 @@ class UserService:
             logger.error(f"Error finding user by source_id '{source_id}': {e}")
             return None
 
-    async def get_user_by_user_id(self, user_id: str) -> User | None:
+    async def get_user_by_user_id(
+        self,
+        user_id: str,
+        session: AsyncClientSession | None = None,
+    ) -> User | None:
         """
         Find a user by user_id
         """
@@ -31,7 +36,7 @@ class UserService:
             except Exception:
                 logger.warning(f"Invalid user ID format: {user_id}")
                 return None
-            user = await User.get(obj_id)
+            user = await User.get(obj_id, session=session)
             return user
         except Exception as e:
             logger.error(f"Error finding user by user_id '{user_id}': {e}")
@@ -60,7 +65,7 @@ class UserService:
             user = await User.find_one({"email": email})
         return user
 
-    async def search_users(self, query: str) -> list[User]:
+    async def search_users(self, query: str, limit: int = 30) -> list[User]:
         """
         Search users by name, email, or username. Returns User model objects.
         """
@@ -72,7 +77,7 @@ class UserService:
                     {"username": {"$regex": query, "$options": "i"}},
                 ]
             }
-            results = await User.find(search_query).to_list()
+            results = await User.find(search_query).limit(limit).to_list()
             return results
         except Exception as e:
             logger.error(f"Error searching users with query '{search_query}': {e}")

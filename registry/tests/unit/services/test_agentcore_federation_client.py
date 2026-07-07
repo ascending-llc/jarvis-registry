@@ -3,11 +3,14 @@ from types import SimpleNamespace
 
 import boto3
 import pytest
+from beanie import PydanticObjectId
 from botocore.exceptions import ClientError
 from botocore.stub import Stubber
 
 from registry.services.federation.agentcore_discovery import AgentCoreFederationClient
 from registry_pkgs.models import A2AAgent, ExtendedMCPServer
+
+_TEST_AUTHOR_ID = PydanticObjectId()
 
 
 @pytest.mark.unit
@@ -50,6 +53,7 @@ class TestAgentCoreFederationClient:
                     "protocolConfiguration": {"serverProtocol": "A2A"},
                 },
                 region="us-east-1",
+                author_id=_TEST_AUTHOR_ID,
             )
         finally:
             monkeypatch.undo()
@@ -174,7 +178,7 @@ class TestAgentCoreFederationClient:
         )
 
         with stubber:
-            result = await client.discover_runtime_entities(region="us-east-1")
+            result = await client.discover_runtime_entities(region="us-east-1", author_id=_TEST_AUTHOR_ID)
 
         assert len(result["mcp_servers"]) == 1
         assert len(result["a2a_agents"]) == 1
@@ -248,6 +252,7 @@ class TestAgentCoreFederationClient:
 
         with stubber:
             result = await client.discover_runtime_entities(
+                author_id=_TEST_AUTHOR_ID,
                 runtime_arns=[target_arn],
                 region="us-east-1",
             )
@@ -363,6 +368,7 @@ class TestAgentCoreFederationClient:
 
         with stubber:
             result = await client.discover_runtime_entities(
+                author_id=_TEST_AUTHOR_ID,
                 region="us-east-1",
                 resource_tags_filter={"env": "production", "team": "platform"},
             )
@@ -399,7 +405,7 @@ class TestAgentCoreFederationClient:
         monkeypatch.setattr(ExtendedMCPServer, "find_one", _fail_if_called)
         monkeypatch.setattr(A2AAgent, "find_one", _fail_if_called)
 
-        result = await client.discover_runtime_entities(region="us-east-1")
+        result = await client.discover_runtime_entities(region="us-east-1", author_id=_TEST_AUTHOR_ID)
 
         assert result == {"a2a_agents": [], "mcp_servers": [], "skipped_runtimes": []}
 
@@ -423,7 +429,7 @@ class TestAgentCoreFederationClient:
         monkeypatch.setattr(client, "_list_runtime_summaries", _list_runtime_summaries)
 
         with pytest.raises(RuntimeError, match="Failed to list AgentCore runtimes in us-east-1"):
-            await client.discover_runtime_entities(region="us-east-1")
+            await client.discover_runtime_entities(region="us-east-1", author_id=_TEST_AUTHOR_ID)
 
     async def test_discover_runtime_entities_refreshes_cached_client_after_expired_token(self, monkeypatch):
         client = AgentCoreFederationClient()
@@ -471,6 +477,7 @@ class TestAgentCoreFederationClient:
         monkeypatch.setattr(client, "_get_runtime_details", lambda *_args, **_kwargs: [])
 
         result = await client.discover_runtime_entities(
+            author_id=_TEST_AUTHOR_ID,
             region="us-east-1",
             assume_role_arn="arn:aws:iam::123456789012:role/TestRole",
         )

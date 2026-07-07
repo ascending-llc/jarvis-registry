@@ -22,7 +22,8 @@ from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.models._generated.acl_entry import PrincipalType
 from registry_pkgs.models.a2a_agent import A2AAgent
 from registry_pkgs.models.enums import PermissionBits
-from registry_pkgs.models.extended_acl_entry import ExtendedAclEntry, ExtendedResourceType
+from registry_pkgs.models.extended_access_role import RegistryResourceType
+from registry_pkgs.models.extended_acl_entry import RegistryAclEntry
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 from registry_pkgs.models.workflow import WorkflowNode
 from registry_pkgs.workflows.a2a_client import HeadersProvider
@@ -61,9 +62,9 @@ def _builtin_executor(key: str) -> StepExecutor | None:
 
 async def _load_accessible_agent_ids(user_id: str) -> set[str]:
     """Query ACL to find all REMOTE_AGENT resource IDs a user can VIEW."""
-    entries = await ExtendedAclEntry.find(
+    entries = await RegistryAclEntry.find(
         {
-            "resourceType": ExtendedResourceType.REMOTE_AGENT.value,
+            "resourceType": RegistryResourceType.REMOTE_AGENT.value,
             "$or": [
                 {"principalType": PrincipalType.USER.value, "principalId": PydanticObjectId(user_id)},
                 {"principalType": PrincipalType.PUBLIC.value, "principalId": None},
@@ -188,7 +189,7 @@ async def _resolve_executor(
     path = key.lstrip("/")
     a2a_agent = await A2AAgent.find_one(
         A2AAgent.path == path,
-        {"isEnabled": True},
+        {"config.enabled": True},
     )
     if a2a_agent is not None:
         if accessible_agent_ids is not None and str(a2a_agent.id) not in accessible_agent_ids:

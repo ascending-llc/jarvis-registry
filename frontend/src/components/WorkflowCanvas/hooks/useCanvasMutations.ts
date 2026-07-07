@@ -1,8 +1,8 @@
-import type { Edge, Node } from '@xyflow/react';
+import type { Edge } from '@xyflow/react';
 import { useCallback } from 'react';
 import { ADD_NODE_MARGIN_X, BRANCH_SPACING, DASHED_EDGE, NODE_WIDTH } from '../constants';
 import { estimateNodeHeight } from '../layout';
-import type { AgentInfo, LogicStep, NodeData, PickerItem, WorkflowNode } from '../types';
+import type { AgentInfo, AgentNodeData, LogicStep, McpNodeData, NodeData, PickerItem, WorkflowNode } from '../types';
 
 const CATEGORY_TYPE: Record<string, (item: PickerItem | LogicStep) => string> = {
   agent: _item => 'agent',
@@ -30,8 +30,8 @@ const getDefaultNodeData = (type: string, label: string, desc: string): NodeData
     return {
       ...base,
       agents: [
-        { id: 'classifier-agent', label: 'Classifier Agent', desc: '' },
-        { id: 'responder-agent', label: 'Responder Agent', desc: '' },
+        { id: 'classifier-agent', label: 'Classifier Agent', desc: '', path: 'classifier-agent' },
+        { id: 'responder-agent', label: 'Responder Agent', desc: '', path: 'responder-agent' },
       ] satisfies AgentInfo[],
     };
   if (type === 'cond') return { ...base, expression: 'session_state.score > 0.8' };
@@ -70,6 +70,15 @@ export const useCanvasMutations = ({
 
   const onDeleteNode = useCallback(
     (nodeId: string) => {
+      const deletedNode = nodes.find(n => n.id === nodeId);
+      if (deletedNode?.type === 'add') {
+        setNodes(prev => prev.filter(n => n.id !== nodeId));
+        setEdges(prev => prev.filter(e => e.source !== nodeId && e.target !== nodeId));
+        setSelected(null);
+        onChange?.();
+        return;
+      }
+
       const remainingRealNodes = nodes.filter(n => n.id !== nodeId && n.type !== 'add').length;
       if (remainingRealNodes === 0) {
         setNodes([{ id: `add_${Date.now()}`, type: 'add', position: { x: 0, y: 0 }, data: { label: '' } }]);
@@ -92,7 +101,6 @@ export const useCanvasMutations = ({
 
       const newAddNodes: WorkflowNode[] = [];
       const newEdges: Edge[] = [];
-      const deletedNode = nodes.find(n => n.id === nodeId);
       const fallbackX = deletedNode?.position.x ?? 0;
       const fallbackY = deletedNode?.position.y ?? 0;
 
@@ -321,19 +329,36 @@ export const useCanvasMutations = ({
 
   const onPick = useCallback(
     (pendingAddId: string, category: 'agent' | 'mcp' | 'logic', item: PickerItem | LogicStep) => {
-      const addNode = nodes.find(n => n.id === pendingAddId);
-      if (!addNode) return;
-
       onChange?.();
 
       const nodeType = CATEGORY_TYPE[category](item);
       const newId = generateNodeId();
       const data = getDefaultNodeData(nodeType, item.label, item.desc);
+      if ((nodeType === 'agent' || nodeType === 'mcp') && 'executorKey' in item) {
+        (data as AgentNodeData | McpNodeData).executorKey = (item as PickerItem).executorKey;
+      }
+
+      let targetX = 0;
+      let targetY = 0;
+
+      if (pendingAddId === 'global') {
+        if (nodes.length > 0) {
+          const maxX = Math.max(...nodes.map(n => n.position.x));
+          const rightmostNode = nodes.find(n => n.position.x === maxX);
+          targetX = maxX + NODE_WIDTH + ADD_NODE_MARGIN_X;
+          targetY = rightmostNode ? rightmostNode.position.y : 0;
+        }
+      } else {
+        const addNode = nodes.find(n => n.id === pendingAddId);
+        if (!addNode) return;
+        targetX = addNode.position.x;
+        targetY = addNode.position.y;
+      }
 
       const newNode: WorkflowNode = {
         id: newId,
         type: nodeType,
-        position: { ...addNode.position },
+        position: { x: targetX, y: targetY },
         data,
       };
 
@@ -360,6 +385,9 @@ export const useCanvasMutations = ({
             offsetY: (i - (cases.length - 1) / 2) * 120,
           }));
         }
+        if (nodeType === 'loop') {
+          return [{ id: 'body', offsetY: 0 }];
+        }
         return [{ id: '', offsetY: 0 }];
       };
 
@@ -376,9 +404,25 @@ export const useCanvasMutations = ({
         data: { label: '' },
       }));
 
-      const nextNodes = nodes.filter(n => n.id !== pendingAddId).concat([newNode, ...newAddNodes]);
+      const nextNodes =
+        pendingAddId === 'global'
+          ? nodes.concat([newNode, ...newAddNodes])
+          : nodes.filter(n => n.id !== pendingAddId).concat([newNode, ...newAddNodes]);
 
       const nextEdges = (() => {
+        if (pendingAddId === 'global') {
+          return [
+            ...edges,
+            ...newAddNodes.map((addN, i) => ({
+              id: generateEdgeId(),
+              source: newId,
+              target: addN.id,
+              ...(handles[i].id ? { sourceHandle: handles[i].id } : {}),
+              ...DASHED_EDGE,
+            })),
+          ];
+        }
+
         const without = edges.filter(e => e.target !== pendingAddId);
         const incoming = edges.find(e => e.target === pendingAddId);
         return [

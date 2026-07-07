@@ -11,6 +11,8 @@ class AccessRoleResourceType(StrEnum):
     PROMPT_GROUP = "promptGroup"
     MCP_SERVER = "mcpServer"
     REMOTE_AGENT = "remoteAgent"
+    SKILL = "skill"
+    SHARED_LINK = "sharedLink"
 
 
 class AccessRole(Document):

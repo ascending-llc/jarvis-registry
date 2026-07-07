@@ -8,10 +8,10 @@ import boto3
 import httpx
 from botocore.exceptions import ClientError
 
+from registry_pkgs.core.jwt_tokens import verify_managed_agent_token
 from registry_pkgs.core.jwt_utils import (
     ExpiredSignatureError,
     InvalidTokenError,
-    decode_jwt,
     decode_jwt_unverified,
     decode_jwt_with_jwk,
     get_token_unverified_header,
@@ -147,12 +147,7 @@ class SimplifiedCognitoValidator:
 
     def validate_self_signed_token(self, access_token: str) -> dict:
         try:
-            claims = decode_jwt(
-                access_token,
-                settings.jwt_public_key,
-                issuer=settings.jwt_issuer,
-                audience=settings.jwt_audience,
-            )
+            claims = verify_managed_agent_token(settings.jwt_token_config, access_token)
 
             token_use = claims.get("token_use")
             if token_use != "access":

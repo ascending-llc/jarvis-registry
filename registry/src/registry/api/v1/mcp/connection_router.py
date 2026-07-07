@@ -104,8 +104,8 @@ async def get_all_connection_status(
         user_id = current_user.get("user_id")
         logger.debug(f"Fetching connection status for all servers (user: {user_id})")
 
-        # Get all active servers
-        all_services, _ = await server_service.list_servers(per_page=1000, status="active")
+        # Get all enabled servers
+        all_services, _ = await server_service.list_servers(per_page=1000, enabled_only=True)
         logger.info(f"Found {len(all_services)} servers")
 
         connection_status = await get_servers_connection_status(

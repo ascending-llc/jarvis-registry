@@ -37,9 +37,10 @@ class AgentCoreFederationClient:
 
     async def discover_runtime_entities(
         self,
+        *,
         region: str,
+        author_id: PydanticObjectId,
         runtime_arns: list[str] | None = None,
-        author_id: PydanticObjectId | None = None,
         assume_role_arn: str | None = None,
         resource_tags_filter: dict[str, str] | None = None,
     ) -> dict[str, list[Any]]:
@@ -266,7 +267,7 @@ class AgentCoreFederationClient:
         self,
         runtime_detail: dict[str, Any],
         region: str,
-        author_id: PydanticObjectId | None = None,
+        author_id: PydanticObjectId,
     ) -> A2AAgent:
         runtime_arn = runtime_detail["runtimeArn"]
         runtime_id = runtime_detail["agentRuntimeId"]
@@ -307,15 +308,14 @@ class AgentCoreFederationClient:
         return A2AAgent.from_a2a_agent_card(
             card_data=card_data,
             path=f"/{self._slug(runtime_name)}",
-            author=author_id or PydanticObjectId(),
+            author=author_id,
             config=AgentConfig(
                 title=runtime_name,
                 description=runtime_detail.get("description", f"AgentCore runtime {runtime_name}"),
+                enabled=status == "READY",
                 type=TRANSPORT_JSONRPC,
                 runtimeAccess=runtime_access,
             ),
-            isEnabled=status == "READY",
-            status="active" if status == "READY" else "inactive",
             tags=["agentcore", "a2a", "aws", "federated"],
             registeredBy="agentcore-federation",
             registeredAt=datetime.now(UTC),
@@ -347,7 +347,7 @@ class AgentCoreFederationClient:
         self,
         runtime_detail: dict[str, Any],
         region: str,
-        author_id: PydanticObjectId | None = None,
+        author_id: PydanticObjectId,
     ) -> ExtendedMCPServer:
         runtime_arn = runtime_detail["runtimeArn"]
         runtime_id = runtime_detail["agentRuntimeId"]
@@ -384,7 +384,7 @@ class AgentCoreFederationClient:
                 "runtimeAccess": runtime_access.model_dump(mode="json", exclude_none=True),
                 "enabled": status == "READY",
             },
-            "author": author_id or PydanticObjectId(),
+            "author": author_id,
             "federationMetadata": {
                 "providerType": FederationProviderType.AWS_AGENTCORE,
                 "runtimeArn": runtime_arn,

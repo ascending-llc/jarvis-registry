@@ -80,7 +80,16 @@ export const CanvasView: React.FC<CanvasViewProps> = ({ canvas, defaultViewport,
   );
 
   return (
-    <div className='flex-1'>
+    <div className='flex-1 relative'>
+      {!isReadOnly && (
+        <button
+          className='absolute top-4 right-4 z-10 px-3 py-1.5 bg-[var(--jarvis-primary)] text-white text-sm font-medium rounded-md shadow-sm hover:opacity-90 flex items-center gap-1 transition-opacity'
+          onClick={() => canvas.onOpenNodePicker?.('global')}
+          title='Add a new independent node'
+        >
+          <span className='text-lg leading-none'>+</span> Add Node
+        </button>
+      )}
       <CanvasActionsContext.Provider value={{ onAdd: canvas.onOpenNodePicker }}>
         <ReactFlow
           nodes={displayNodes}
@@ -93,15 +102,34 @@ export const CanvasView: React.FC<CanvasViewProps> = ({ canvas, defaultViewport,
           nodeTypes={nodeTypes}
           defaultEdgeOptions={EDGE_CONFIG}
           isValidConnection={canvas.isValidConnection}
-          onNodesDelete={nodesToDelete => {
-            nodesToDelete.forEach(node => {
-              if (node.type !== 'add') {
-                canvas.onDeleteNode(node.id);
+          deleteKeyCode={['Backspace', 'Delete']}
+          onDelete={({ nodes: nodesToDelete, edges: edgesToDelete }) => {
+            const deletedNodeIds = new Set(nodesToDelete.map(n => n.id));
+
+            // Delete edges that aren't attached to deleted nodes
+            const isolatedEdgesToDelete = edgesToDelete.filter(
+              e => !deletedNodeIds.has(e.source) && !deletedNodeIds.has(e.target),
+            );
+
+            // Find orphaned add nodes: if an isolated edge points to an add node, that add node is orphaned
+            const orphanedAddNodeIds = new Set<string>();
+            isolatedEdgesToDelete.forEach(edge => {
+              const targetNode = canvas.nodes.find(n => n.id === edge.target);
+              if (targetNode?.type === 'add') {
+                orphanedAddNodeIds.add(targetNode.id);
               }
             });
-          }}
-          onEdgesDelete={edgesToDelete => {
-            canvas.onDeleteEdges(edgesToDelete);
+
+            if (isolatedEdgesToDelete.length > 0) {
+              canvas.onDeleteEdges(isolatedEdgesToDelete);
+            }
+
+            // Collect all nodes to delete: the explicitly selected ones + the orphaned add nodes
+            const allNodesToDeleteIds = new Set([...nodesToDelete.map(n => n.id), ...orphanedAddNodeIds]);
+
+            allNodesToDeleteIds.forEach(id => {
+              canvas.onDeleteNode(id);
+            });
           }}
           defaultViewport={
             defaultViewport

@@ -3,8 +3,9 @@
 from datetime import UTC, datetime
 
 import pytest
-from a2a.types import AgentCard
+from a2a.types import AgentCard, AgentSkill
 from beanie import PydanticObjectId
+from langchain_core.documents import Document as LangChainDocument
 from pydantic import ValidationError
 
 from registry_pkgs.models.a2a_agent import A2AAgent
@@ -45,7 +46,6 @@ class TestExtendedMCPServerStructure:
             "author": str(PydanticObjectId()),
             "path": "/mcp/test",
             "tags": ["test", "demo"],
-            "status": "active",
             "numTools": 2,
             "numStars": 5,
         }
@@ -54,7 +54,6 @@ class TestExtendedMCPServerStructure:
         server = ExtendedMCPServer.model_construct(**server_dict)
 
         # Root-level fields should NOT be in config
-        assert "status" not in server.config
         assert "path" not in server.config
         assert "tags" not in server.config
         assert "numTools" not in server.config
@@ -64,7 +63,7 @@ class TestExtendedMCPServerStructure:
         assert "errorMessage" not in server.config
 
         # Root-level fields should be accessible directly
-        assert server.status == "active"
+        assert not hasattr(server, "status")
         assert server.path == "/mcp/test"
         assert server.tags == ["test", "demo"]
         assert server.numTools == 2
@@ -132,7 +131,7 @@ class TestExtendedMCPServerStructure:
         # Verify defaults (model_construct doesn't apply defaults, so we need to check field definitions)
         # These would be set by Pydantic during normal instantiation
         assert hasattr(server, "scope")
-        assert hasattr(server, "status")
+        assert not hasattr(server, "status")
         assert hasattr(server, "tags")
 
     def test_optional_monitoring_fields(self):
@@ -155,20 +154,16 @@ class TestExtendedMCPServerStructure:
         assert server.lastError == now
         assert server.errorMessage == "Connection timeout"
 
-    def test_status_values(self):
-        """Test valid status values."""
-        valid_statuses = ["active", "inactive", "error"]
+    def test_status_field_removed(self):
+        """The deprecated health status field is no longer part of the model."""
+        server = ExtendedMCPServer.model_construct(
+            serverName="test",
+            config={"title": "Test", "type": "sse", "url": "http://test:8000"},
+            author=str(PydanticObjectId()),
+            path="/mcp/test",
+        )
 
-        for status in valid_statuses:
-            server_dict = {
-                "serverName": f"test-{status}",
-                "config": {"title": "Test", "type": "sse", "url": "http://test:8000"},
-                "author": str(PydanticObjectId()),
-                "path": f"/mcp/{status}",
-                "status": status,
-            }
-            server = ExtendedMCPServer.model_construct(**server_dict)
-            assert server.status == status
+        assert not hasattr(server, "status")
 
     def test_tags_array(self):
         """Test tags field accepts array of strings."""
@@ -263,7 +258,6 @@ class TestExtendedMCPServerStructure:
             },
             author=PydanticObjectId(),
             path="/agentcore/mcp/versioned-server",
-            status="active",
             federationId="arn:aws:bedrock-agentcore:us-east-1:1:runtime/versioned",
             federationMetadata={"providerType": FederationProviderType.AWS_AGENTCORE, "runtimeVersion": "7"},
         )
@@ -297,7 +291,6 @@ class TestExtendedMCPServerStructure:
             },
             author=PydanticObjectId(),
             path="/mcp/tool-server",
-            status="active",
         )
 
         docs = server.to_documents()
@@ -312,6 +305,7 @@ class TestExtendedMCPServerStructure:
 
         result = ExtendedMCPServer.from_document(tool_doc)
         assert result["tool_name"] == "downstream_tool"
+        assert result["match_context"] == tool_doc.page_content[:200]
         assert "original_mcp_name" not in result
 
     def test_tool_doc_content_includes_server_prefix(self):
@@ -340,7 +334,6 @@ class TestExtendedMCPServerStructure:
             },
             author=PydanticObjectId(),
             path="/mcp/github",
-            status="active",
         )
 
         docs = server.to_documents()
@@ -374,7 +367,6 @@ class TestExtendedMCPServerStructure:
             },
             author=PydanticObjectId(),
             path="/mcp/github",
-            status="active",
         )
 
         docs = server.to_documents()
@@ -406,7 +398,6 @@ class TestExtendedMCPServerStructure:
             },
             author=PydanticObjectId(),
             path="/mcp/github",
-            status="active",
         )
 
         docs = server.to_documents()
@@ -435,11 +426,10 @@ class TestExtendedMCPServerStructure:
             config=AgentConfig(
                 title="Versioned Agent",
                 description="A test A2A agent",
+                enabled=True,
                 type="jsonrpc",
             ),
             tags=["agentcore"],
-            status="active",
-            isEnabled=True,
             author=PydanticObjectId(),
             federationMetadata={"providerType": FederationProviderType.AWS_AGENTCORE, "runtimeVersion": "11"},
         )
@@ -447,6 +437,70 @@ class TestExtendedMCPServerStructure:
         docs = agent.to_documents()
         assert docs
         assert docs[0].metadata.get("runtimeVersion") == "11"
+
+    def test_a2a_to_documents_includes_card_name_metadata(self):
+        """card_name carries the protocol card name, distinct from config.title, on every doc."""
+        from registry_pkgs.models.a2a_agent import AgentConfig
+
+        agent = A2AAgent.model_construct(
+            id=PydanticObjectId(),
+            path="a2a1forfederationtesting",
+            card=AgentCard(
+                name="Calculator Agent",  # protocol card name
+                description="A test A2A agent",
+                url="https://example.com/a2a",
+                version="1.0.0",
+                capabilities={"streaming": True},
+                defaultInputModes=["text/plain"],
+                defaultOutputModes=["application/json"],
+                skills=[
+                    AgentSkill(
+                        id="calc",
+                        name="Calculate",
+                        description="Performs calculations",
+                        tags=["math"],
+                    )
+                ],
+            ),
+            config=AgentConfig(
+                title="A2a1ForFederationTesting",  # user-provided title, differs from card.name
+                description="A test A2A agent",
+                type="jsonrpc",
+            ),
+            tags=["agentcore"],
+            status="active",
+            isEnabled=True,
+            author=PydanticObjectId(),
+        )
+
+        docs = agent.to_documents()
+
+        # One agent overview doc + one skill doc, both carrying card_name.
+        assert len(docs) == 2
+        for doc in docs:
+            assert doc.metadata.get("card_name") == "Calculator Agent"
+            # agent_name stays the user title for backward compatibility.
+            assert doc.metadata.get("agent_name") == "A2a1ForFederationTesting"
+
+    def test_a2a_from_document_extracts_card_name(self):
+        """from_document surfaces card_name so /search can prefer it over agent_name."""
+        doc = LangChainDocument(
+            page_content="Agent: A2a1ForFederationTesting\nName: Calculator Agent",
+            metadata={
+                "agent_id": "agent-1",
+                "agent_name": "A2a1ForFederationTesting",
+                "card_name": "Calculator Agent",
+                "path": "a2a1forfederationtesting",
+                "entity_type": "agent",
+                "enabled": True,
+                "tags": [],
+            },
+        )
+
+        result = A2AAgent.from_document(doc)
+
+        assert result["card_name"] == "Calculator Agent"
+        assert result["agent_name"] == "A2a1ForFederationTesting"
 
     def test_a2a_agent_uses_federation_metadata_for_remote_identity(self, monkeypatch):
         from registry_pkgs.models.a2a_agent import AgentConfig
@@ -513,3 +567,29 @@ class TestExtendedMCPServerStructure:
         assert agent.wellKnown is not None
         assert agent.wellKnown.enabled is True
         assert str(agent.config.url) == "https://example.com/.well-known/agent-card.json"
+
+
+class TestFromServerInfoAuthorRequirement:
+    """Regression: from_server_info must not silently fabricate an author ObjectId."""
+
+    def test_raises_when_author_missing(self):
+        with pytest.raises(ValueError, match="non-null 'author'"):
+            ExtendedMCPServer.from_server_info(
+                server_info={
+                    "path": "/example",
+                    "server_name": "example",
+                    "config": {"title": "example"},
+                },
+                is_enabled=True,
+            )
+
+    def test_raises_when_author_is_none(self):
+        with pytest.raises(ValueError, match="non-null 'author'"):
+            ExtendedMCPServer.from_server_info(
+                server_info={
+                    "path": "/example",
+                    "server_name": "example",
+                    "author": None,
+                },
+                is_enabled=True,
+            )

@@ -175,6 +175,13 @@ class WorkflowNodeInput(APIBaseModel):
         default_factory=list,
         description="Named choices for ROUTER nodes (at least 2 required)",
     )
+    referencedNodeNames: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Names of upstream nodes whose outputs are injected into this node's prompt at runtime. "
+            "Only valid on step nodes — sending this on any other node type returns 422."
+        ),
+    )
     conditionCel: str | None = Field(None, description="CEL expression for condition/router nodes")
     loopConfig: LoopConfigInput | None = Field(None, description="Loop configuration for loop nodes")
     humanReview: HumanReviewConfig | None = Field(
@@ -203,6 +210,7 @@ class WorkflowNodeOutput(APIBaseModel):
     trueSteps: list["WorkflowNodeOutput"] = Field(default_factory=list)
     falseSteps: list["WorkflowNodeOutput"] = Field(default_factory=list)
     choices: list[RouterChoiceOutput] = Field(default_factory=list)
+    referencedNodeNames: list[str] = Field(default_factory=list)
     conditionCel: str | None = None
     loopConfig: LoopConfigInput | None = None
     # ``null`` when no HITL configured.
@@ -538,6 +546,7 @@ def _convert_node_to_output(node: Any) -> WorkflowNodeOutput:
             )
             for choice in node.choices
         ],
+        referencedNodeNames=node.referenced_node_names,
         conditionCel=node.condition_cel,
         loopConfig=(
             LoopConfigInput(
@@ -610,6 +619,7 @@ def convert_node_to_input(node: Any) -> WorkflowNodeInput:
             )
             for choice in node.choices
         ],
+        referencedNodeNames=node.referenced_node_names,
         conditionCel=node.condition_cel,
         loopConfig=(
             LoopConfigInput(
@@ -708,13 +718,8 @@ def convert_to_run_detail(run: Any, node_runs: list[Any]) -> WorkflowRunDetailRe
     )
 
 
-def _convert_node_run_to_output(node_run: Any) -> NodeRunOutput:
+def convert_node_run_to_output(node_run: Any) -> NodeRunOutput:
     """Convert NodeRun to NodeRunOutput"""
-    from registry_pkgs.models.workflow import NodeRun
-
-    if not isinstance(node_run, NodeRun):
-        raise ValueError("Expected NodeRun instance")
-
     return NodeRunOutput(
         id=str(node_run.id),
         workflowRunId=str(node_run.workflow_run_id),
@@ -728,3 +733,8 @@ def _convert_node_run_to_output(node_run: Any) -> NodeRunOutput:
         startedAt=node_run.started_at,
         finishedAt=node_run.finished_at,
     )
+
+
+def _convert_node_run_to_output(node_run: Any) -> NodeRunOutput:
+    """Backward-compatible private alias for existing converter call sites."""
+    return convert_node_run_to_output(node_run)

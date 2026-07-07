@@ -23,7 +23,7 @@ const API = {
   getDiscover: `${MCP_BASE_URL}/oauth/discover`,
 
   // server
-  getSemanticSearch: `${BASE_URL}/search/semantic`,
+  getSearch: `${BASE_URL}/search`,
   getVersion: '/api/version',
   getServers: `${SERVER_BASE_URL}`,
   getServerDetail: (id: string) => `${SERVER_BASE_URL}/${id}`,
@@ -33,7 +33,7 @@ const API = {
   deleteServer: (id: string) => `${SERVER_BASE_URL}/${id}`,
   toggleServerStatus: (id: string) => `${SERVER_BASE_URL}/${id}/toggle`,
   getServerTools: (id: string) => `${SERVER_BASE_URL}/${id}/tools`,
-  refreshServerHealth: (id: string) => `${SERVER_BASE_URL}/${id}/refresh`,
+  refreshServer: (id: string) => `${SERVER_BASE_URL}/${id}/refresh`,
 
   // agent
   getAgentsList: `${AGENT_BASE_URL}`,
@@ -65,6 +65,9 @@ const API = {
   triggerWorkflowRun: (id: string) => `${WORKFLOW_BASE_URL}/${id}/runs`,
   getWorkflowRunsList: (id: string) => `${WORKFLOW_BASE_URL}/${id}/runs`,
   getWorkflowRunDetail: (id: string, runId: string) => `${WORKFLOW_BASE_URL}/${id}/runs/${runId}`,
+  replayWorkflowRun: (id: string, runId: string) => `${WORKFLOW_BASE_URL}/${id}/runs/${runId}/replay`,
+  rerunWorkflowNode: (id: string, runId: string, nodeId: string) =>
+    `${WORKFLOW_BASE_URL}/${id}/runs/${runId}/nodes/${nodeId}/rerun`,
 
   // acl (permissions)
   searchPrincipals: `${BASE_URL}/permissions/search-principals`,

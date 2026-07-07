@@ -16,20 +16,21 @@ from ._generated import (
     User,
 )
 from .a2a_agent import A2AAgent
-from .extended_access_role import ExtendedAccessRole
-from .extended_acl_entry import ExtendedAclEntry
+from .extended_access_role import RegistryAccessRole
+from .extended_acl_entry import RegistryAclEntry
 from .extended_mcp_server import ExtendedMCPServer
 from .federation import Federation
 from .federation_sync_job import FederationSyncJob
+from .token_type import TokenType
 from .workflow import NodeRun, WorkflowDefinition, WorkflowRun, WorkflowVersion
 
 __all__ = [
     "A2AAgent",
-    "ExtendedAclEntry",
+    "RegistryAclEntry",
     "ExtendedMCPServer",
     "Federation",
     "FederationSyncJob",
-    "ExtendedAccessRole",
+    "RegistryAccessRole",
     "NodeRun",
     "WorkflowDefinition",
     "WorkflowRun",
@@ -38,6 +39,7 @@ __all__ = [
     "User",
     "Key",
     "Token",
+    "TokenType",
     "PrincipalType",
     "ResourceType",
 ]

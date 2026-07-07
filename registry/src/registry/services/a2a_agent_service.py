@@ -15,6 +15,7 @@ import httpx
 from a2a.client import A2ACardResolver, A2AClientHTTPError
 from a2a.types import AgentCard
 from beanie import PydanticObjectId
+from pymongo.asynchronous.client_session import AsyncClientSession
 from pymongo.errors import DuplicateKeyError
 
 from registry.core.exceptions import (
@@ -23,20 +24,34 @@ from registry.core.exceptions import (
     A2AAgentCardTransportException,
     A2AAgentCardUpstreamException,
 )
-from registry_pkgs.database.decorators import get_current_session
-from registry_pkgs.models.a2a_agent import STATUS_ACTIVE, A2AAgent, normalize_a2a_agent_path
+from registry_pkgs.core.config import JwtSigningConfig
+from registry_pkgs.models.a2a_agent import A2AAgent, AgentConfig, normalize_a2a_agent_path
 from registry_pkgs.vector.repositories.a2a_agent_repository import A2AAgentRepository
+from registry_pkgs.workflows.a2a_client import build_headers
 
 from ..schemas.a2a_agent_api_schemas import AgentCreateRequest, AgentUpdateRequest
 
 logger = logging.getLogger(__name__)
 
 
+_WELL_KNOWN_SUFFIX_RE = re.compile(r"/\.well-known(/.*)?$")
+
+
+def _normalize_config_url(url: str) -> str:
+    """Strip trailing slash and any terminal /.well-known/... suffix from a URL."""
+    return _WELL_KNOWN_SUFFIX_RE.sub("", url.rstrip("/"))
+
+
 class A2AAgentService:
     """Service for A2A Agent operations"""
 
-    def __init__(self, a2a_agent_repo: A2AAgentRepository | None = None):
+    def __init__(
+        self,
+        a2a_agent_repo: A2AAgentRepository | None = None,
+        jwt_config: JwtSigningConfig | None = None,
+    ):
         self._a2a_agent_repo = a2a_agent_repo
+        self._jwt_config = jwt_config
 
     @staticmethod
     def _path_conflict_message(input_path: Any, normalized_path: str) -> str:
@@ -84,17 +99,30 @@ class A2AAgentService:
             async def _task():
                 try:
                     await self._a2a_agent_repo.update_entity_metadata(
-                        "agent_id", str(agent.id), {"enabled": agent.isEnabled}
+                        "agent_id", str(agent.id), {"enabled": agent.config.enabled if agent.config else False}
                     )
                 except Exception as e:
                     logger.error("Vector metadata update failed for agent %s: %s", agent.id, e, exc_info=True)
 
             asyncio.create_task(_task())
 
+    @staticmethod
+    def _ensure_agent_config(agent: A2AAgent) -> AgentConfig:
+        """Return an AgentConfig, creating one from card data for legacy documents."""
+        if agent.config is None:
+            agent.config = AgentConfig(
+                title=agent.card.name,
+                description=agent.card.description or "",
+                url=str(agent.card.url) if agent.card.url else None,
+                type="jsonrpc",
+            )
+        return agent.config
+
     async def _resolve_agent_card_with_fallback(
         self,
         base_url: str,
         timeout_seconds: float,
+        auth_headers: dict[str, str] | None = None,
     ) -> AgentCard:
         """Fetch agent card from known well-known paths with deterministic error semantics."""
         timeout = httpx.Timeout(timeout_seconds)
@@ -103,9 +131,9 @@ class A2AAgentService:
         first_transport_error: Exception | None = None
         first_parse_error: Exception | None = None
 
-        well_known_paths = [".well-known/agent-card.json", ".well-known/agent.json"]
+        well_known_paths = [".well-known/agent-card.json", ".well-known/agent.json", ""]
 
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with httpx.AsyncClient(timeout=timeout, headers=auth_headers or {}) as client:
             for path in well_known_paths:
                 try:
                     resolver = A2ACardResolver(
@@ -146,18 +174,22 @@ class A2AAgentService:
             raise A2AAgentCardParseException(f"Failed to parse agent card from {base_url}: {first_parse_error}")
 
         if last_404_error is not None:
-            raise A2AAgentCardNotFoundException(
-                f"Agent card not found at {base_url} (tried: {', '.join(well_known_paths)})"
-            )
+            tried = ", ".join(p if p else "<base url>" for p in well_known_paths)
+            raise A2AAgentCardNotFoundException(f"Agent card not found at {base_url} (tried: {tried})")
 
         raise A2AAgentCardUpstreamException(f"Failed to fetch agent card from {base_url} for unknown reason")
 
-    async def _fetch_agent_card_from_url(self, url: str) -> AgentCard:
+    async def _fetch_agent_card_from_url(
+        self,
+        url: str,
+        auth_headers: dict[str, str] | None = None,
+    ) -> AgentCard:
         """
         Fetch and validate agent card from URL using SDK.
 
         Args:
             url: Agent endpoint URL
+            auth_headers: Optional HTTP headers for authenticated card discovery
 
         Returns:
             Validated AgentCard from remote endpoint
@@ -170,7 +202,11 @@ class A2AAgentService:
         """
         try:
             logger.info(f"Fetching agent card from {url} using SDK")
-            return await self._resolve_agent_card_with_fallback(base_url=url, timeout_seconds=15.0)
+            return await self._resolve_agent_card_with_fallback(
+                base_url=url,
+                timeout_seconds=15.0,
+                auth_headers=auth_headers,
+            )
         except (
             A2AAgentCardNotFoundException,
             A2AAgentCardTransportException,
@@ -182,10 +218,46 @@ class A2AAgentService:
             logger.error(f"Unexpected error fetching agent card from {url}: {e}", exc_info=True)
             raise A2AAgentCardUpstreamException(f"Failed to fetch agent card from {url}: {e}")
 
+    @staticmethod
+    def _resolve_current_agent_url(agent: A2AAgent) -> str | None:
+        """Return the agent's known discovery URL.
+
+        `config.url` is the canonical source; `card.url` (normalized) is a fallback for
+        agents that never had `config.url` populated (e.g. AgentCore federation discovery).
+        Returns None if neither is set.
+        """
+        if agent.config and agent.config.url:
+            return str(agent.config.url)
+        if agent.card and agent.card.url:
+            return _normalize_config_url(str(agent.card.url))
+        return None
+
+    def _build_best_effort_auth_headers(self, agent: A2AAgent, agent_id: str) -> dict[str, str] | None:
+        """Build per-call auth headers for agent card discovery, tolerating build failures.
+
+        Best-effort: JWT header construction can fail (misconfigured jwt_config or
+        runtimeAccess settings). On failure, discovery proceeds without auth — if the
+        remote endpoint requires authentication this surfaces as a 401 upstream error,
+        NOT as a JWT signing error. Check jwt_config and the agent's runtimeAccess
+        configuration if discovery fails with an upstream error.
+        """
+        if not (self._jwt_config and agent.card):
+            return None
+        try:
+            return build_headers(agent, jwt_config=self._jwt_config)
+        except Exception as e:
+            logger.warning(
+                f"Could not build auth headers for agent {agent_id} "
+                f"({type(e).__name__}: {e}); retrying discovery without auth. "
+                "If discovery fails with HTTP 401, check jwt_config / runtimeAccess settings.",
+                exc_info=True,
+            )
+            return None
+
     async def list_agents(
         self,
         query: str | None = None,
-        status: str | None = None,
+        enabled_only: bool = False,
         page: int = 1,
         per_page: int = 20,
         accessible_agent_ids: list[str] | None = None,
@@ -195,7 +267,7 @@ class A2AAgentService:
 
         Args:
             query: Free-text search across name, description, tags, skills
-            status: Filter by operational state (active, inactive, error)
+            enabled_only: When True, return only enabled agents (config.enabled is True)
             page: Page number (validated by router)
             per_page: Items per page (validated by router)
             accessible_agent_ids: List of agent ID strings accessible to the user (from ACL)
@@ -212,9 +284,9 @@ class A2AAgentService:
                 object_ids = [PydanticObjectId(aid) for aid in accessible_agent_ids]
                 filters["_id"] = {"$in": object_ids}
 
-            # Filter by status if provided
-            if status:
-                filters["status"] = status
+            # Filter by enabled flag (config.enabled is the source of truth for enablement)
+            if enabled_only:
+                filters["config.enabled"] = True
 
             # Build text search filter if query provided
             if query:
@@ -255,13 +327,8 @@ class A2AAgentService:
         try:
             # Total counts
             total_agents = await A2AAgent.count()
-            enabled_agents = await A2AAgent.find({"isEnabled": True}).count()
-            disabled_agents = await A2AAgent.find({"isEnabled": False}).count()
-
-            # Count by status
-            status_pipeline = [{"$group": {"_id": "$status", "count": {"$sum": 1}}}]
-            status_results = await A2AAgent.aggregate(status_pipeline).to_list()
-            by_status = {result["_id"]: result["count"] for result in status_results}
+            enabled_agents = await A2AAgent.find({"config.enabled": True}).count()
+            disabled_agents = total_agents - enabled_agents
 
             # Count by transport
             transport_pipeline = [{"$group": {"_id": "$card.preferred_transport", "count": {"$sum": 1}}}]
@@ -281,7 +348,6 @@ class A2AAgentService:
                 "total_agents": total_agents,
                 "enabled_agents": enabled_agents,
                 "disabled_agents": disabled_agents,
-                "by_status": by_status,
                 "by_transport": by_transport,
                 "total_skills": total_skills,
                 "average_skills_per_agent": average_skills,
@@ -332,7 +398,12 @@ class A2AAgentService:
         """
         return await A2AAgent.find_one({"path": path})
 
-    async def create_agent(self, data: AgentCreateRequest, user_id: str) -> A2AAgent:
+    async def create_agent(
+        self,
+        data: AgentCreateRequest,
+        user_id: str,
+        session: AsyncClientSession | None = None,
+    ) -> A2AAgent:
         """
         Create a new agent. Automatically fetches agent card from provided URL.
 
@@ -358,22 +429,26 @@ class A2AAgentService:
             normalized_path = normalize_a2a_agent_path(data.path)
 
             # Check if path already exists
-            existing = await A2AAgent.find_one({"path": normalized_path})
+            existing = await A2AAgent.find_one({"path": normalized_path}, session=session)
             if existing:
                 raise ValueError(self._path_conflict_message(data.path, normalized_path))
 
+            # Normalize to a clean service root (no trailing slash, no /.well-known/... suffix)
+            # so config.url has a stable invariant and discovery always starts from the root.
+            discovery_url = _normalize_config_url(str(data.url))
+
             # Fetch agent card from URL using SDK - KEEP ORIGINAL DATA
-            logger.info(f"Fetching agent card from URL for new agent: {data.url}")
-            agent_card = await self._fetch_agent_card_from_url(str(data.url))
+            logger.info(f"Fetching agent card from URL for new agent: {discovery_url}")
+            agent_card = await self._fetch_agent_card_from_url(discovery_url)
 
             # DO NOT modify the agent_card - store it as-is
             # Store user-provided information in config field instead
-            from registry_pkgs.models.a2a_agent import AgentConfig, WellKnownConfig
+            from registry_pkgs.models.a2a_agent import WellKnownConfig
 
             agent_config = AgentConfig(
                 title=data.title,
                 description=data.description or "",
-                url=str(data.url),  # Store user-provided URL in config
+                url=discovery_url,  # Store normalized service root in config
                 type=data.type,
             )
 
@@ -383,8 +458,6 @@ class A2AAgentService:
                 card=agent_card,  # Original, unmodified card from third-party
                 config=agent_config,  # User-provided configuration including URL
                 tags=[],  # Initialize as empty list - tags are registry metadata, not derived from skills
-                isEnabled=False,  # Default to disabled for safety
-                status=STATUS_ACTIVE,
                 author=PydanticObjectId(user_id),
                 registeredBy=None,
                 registeredAt=datetime.now(UTC),
@@ -397,7 +470,7 @@ class A2AAgentService:
                 lastSyncStatus="success",
                 lastSyncVersion=agent_card.version,
             )
-            await agent.insert(session=get_current_session())
+            await agent.insert(session=session)
             logger.info(
                 f"Created agent: {agent.config.title} (ID: {agent.id}, path: {agent.path}) with wellKnown sync enabled"
             )
@@ -416,7 +489,12 @@ class A2AAgentService:
             logger.error(f"Error creating agent: {e}", exc_info=True)
             raise ValueError(f"Failed to create agent: {str(e)}")
 
-    async def update_agent(self, agent_id: str, data: AgentUpdateRequest) -> A2AAgent:
+    async def update_agent(
+        self,
+        agent_id: str,
+        data: AgentUpdateRequest,
+        session: AsyncClientSession | None = None,
+    ) -> A2AAgent:
         """
         Update an existing agent. If URL is updated, automatically fetches new agent card.
 
@@ -431,7 +509,7 @@ class A2AAgentService:
             ValueError: If agent not found or validation fails
         """
         try:
-            agent = await A2AAgent.get(PydanticObjectId(agent_id))
+            agent = await A2AAgent.get(PydanticObjectId(agent_id), session=session)
             if not agent:
                 raise ValueError(f"Agent not found: {agent_id}")
 
@@ -450,8 +528,9 @@ class A2AAgentService:
             # If URL is being updated, fetch new agent card
             # Only fetch if URL actually changed (compare with config.url to avoid unnecessary fetches)
             if "url" in update_data and update_data["url"]:
-                new_url = str(update_data["url"])
-                current_url = str(agent.config.url) if agent.config and agent.config.url else None
+                # Normalize to a clean service root so config.url keeps a stable invariant.
+                new_url = _normalize_config_url(str(update_data["url"]))
+                current_url = self._resolve_current_agent_url(agent)
 
                 # Normalize URLs for comparison (remove trailing slashes)
                 new_url_normalized = new_url.rstrip("/")
@@ -460,8 +539,10 @@ class A2AAgentService:
                 if new_url_normalized != current_url_normalized:
                     logger.info(f"URL changed from {current_url} to {new_url}, fetching new agent card")
 
+                    auth_headers = self._build_best_effort_auth_headers(agent, agent_id)
+
                     # Fetch new agent card from URL - KEEP ORIGINAL DATA
-                    agent_card = await self._fetch_agent_card_from_url(new_url)
+                    agent_card = await self._fetch_agent_card_from_url(new_url, auth_headers=auth_headers)
 
                     # DO NOT modify the agent_card - store it as-is
                     agent.card = agent_card
@@ -497,6 +578,13 @@ class A2AAgentService:
                         agent.wellKnown.lastSyncVersion = agent_card.version
                 else:
                     logger.debug(f"URL unchanged ({new_url}), skipping agent card fetch")
+                    # Only re-normalize an already-set config.url (e.g. trailing-slash
+                    # formatting drift). Never backfill from None — for AgentCore-federated
+                    # agents, config.url is intentionally unset, and card.url (kept fresh by
+                    # federation resync) must remain the sole source of truth for discovery.
+                    if agent.config and agent.config.url and str(agent.config.url) != new_url:
+                        logger.debug(f"Normalizing stored config.url from {agent.config.url!r} to {new_url!r}")
+                        agent.config.url = new_url
 
             # Update config fields (title, description, type)
             # These are stored separately in the config field
@@ -523,21 +611,21 @@ class A2AAgentService:
             if "path" in update_data:
                 normalized_path = normalize_a2a_agent_path(update_data["path"])
                 # Check if new path conflicts with existing agent
-                existing = await A2AAgent.find_one({"path": normalized_path, "_id": {"$ne": agent.id}})
+                existing = await A2AAgent.find_one({"path": normalized_path, "_id": {"$ne": agent.id}}, session=session)
                 if existing:
                     raise ValueError(self._path_conflict_message(update_data["path"], normalized_path))
                 agent.path = normalized_path
 
             # Update enabled state if provided
             if "enabled" in update_data:
-                agent.isEnabled = update_data["enabled"]
+                self._ensure_agent_config(agent).enabled = update_data["enabled"]
 
             # Update timestamp
             agent.updatedAt = datetime.now(UTC)
 
             # Save changes
             old_hash = agent.vectorContentHash
-            await agent.save(session=get_current_session())
+            await agent.save(session=session)
             logger.info(f"Updated agent: {agent.config.title} (ID: {agent_id})")
 
             self._schedule_vector_sync(agent, old_hash)
@@ -556,7 +644,11 @@ class A2AAgentService:
             logger.error(f"Error updating agent {agent_id}: {e}", exc_info=True)
             raise ValueError(f"Failed to update agent: {str(e)}")
 
-    async def delete_agent(self, agent_id: str) -> bool:
+    async def delete_agent(
+        self,
+        agent_id: str,
+        session: AsyncClientSession | None = None,
+    ) -> bool:
         """
         Delete an agent.
 
@@ -570,12 +662,12 @@ class A2AAgentService:
             ValueError: If agent not found
         """
         try:
-            agent = await A2AAgent.get(PydanticObjectId(agent_id))
+            agent = await A2AAgent.get(PydanticObjectId(agent_id), session=session)
             if not agent:
                 raise ValueError(f"Agent not found: {agent_id}")
 
             agent_name = agent.card.name
-            await agent.delete(session=get_current_session())
+            await agent.delete(session=session)
             logger.info(f"Deleted agent: {agent_name} (ID: {agent_id})")
 
             self._schedule_delete(agent_id, agent_name)
@@ -587,7 +679,12 @@ class A2AAgentService:
             logger.error(f"Error deleting agent {agent_id}: {e}", exc_info=True)
             raise ValueError(f"Failed to delete agent: {str(e)}")
 
-    async def toggle_agent_status(self, agent_id: str, enabled: bool) -> A2AAgent:
+    async def toggle_agent_status(
+        self,
+        agent_id: str,
+        enabled: bool,
+        session: AsyncClientSession | None = None,
+    ) -> A2AAgent:
         """
         Toggle agent enabled/disabled status.
 
@@ -602,15 +699,15 @@ class A2AAgentService:
             ValueError: If agent not found
         """
         try:
-            agent = await A2AAgent.get(PydanticObjectId(agent_id))
+            agent = await A2AAgent.get(PydanticObjectId(agent_id), session=session)
             if not agent:
                 raise ValueError(f"Agent not found: {agent_id}")
 
-            agent.isEnabled = enabled
+            self._ensure_agent_config(agent).enabled = enabled
             agent.updatedAt = datetime.now(UTC)
 
             old_hash = agent.vectorContentHash
-            await agent.save(session=get_current_session())
+            await agent.save(session=session)
 
             logger.info(f"Toggled agent {agent.card.name} to {'enabled' if enabled else 'disabled'}")
 
@@ -628,7 +725,11 @@ class A2AAgentService:
             logger.error(f"Error toggling agent {agent_id}: {e}", exc_info=True)
             raise ValueError(f"Failed to toggle agent: {str(e)}")
 
-    async def refresh_agent_capabilities(self, agent_id: str) -> A2AAgent:
+    async def refresh_agent_capabilities(
+        self,
+        agent_id: str,
+        session: AsyncClientSession | None = None,
+    ) -> A2AAgent:
         """
         Refresh agent capabilities by fetching latest agent card from well-known endpoint.
 
@@ -649,12 +750,16 @@ class A2AAgentService:
             A2AAgentCardParseException: If agent card cannot be parsed/validated
         """
         # Reuse the sync_wellknown implementation - it now returns the updated agent
-        result = await self.sync_wellknown(agent_id)
+        result = await self.sync_wellknown(agent_id, session=session)
 
         # Return the updated agent document from sync result (avoids redundant DB query)
         return result["agent"]
 
-    async def sync_wellknown(self, agent_id: str) -> dict[str, Any]:
+    async def sync_wellknown(
+        self,
+        agent_id: str,
+        session: AsyncClientSession | None = None,
+    ) -> dict[str, Any]:
         """
         Sync agent configuration from .well-known/agent-card.json endpoint using SDK.
 
@@ -668,10 +773,8 @@ class A2AAgentService:
             ValueError: If agent not found, well-known not enabled, or sync fails
         """
         agent: A2AAgent | None = None
-        session = get_current_session()
-
         try:
-            agent = await A2AAgent.get(PydanticObjectId(agent_id))
+            agent = await A2AAgent.get(PydanticObjectId(agent_id), session=session)
             if not agent:
                 raise ValueError(f"Agent not found: {agent_id}")
 
@@ -679,21 +782,28 @@ class A2AAgentService:
             if not agent.wellKnown or not agent.wellKnown.enabled:
                 raise ValueError("Well-known sync is not enabled for this agent")
 
-            # URL comes from config.url (user-provided), fallback to card.url for backward compatibility
-            if agent.config and agent.config.url:
-                agent_url = str(agent.config.url)
-            elif agent.card and agent.card.url:
-                agent_url = str(agent.card.url)
-                logger.warning(
-                    f"Agent {agent_id} missing config.url, falling back to card.url. Consider updating the agent."
-                )
-            else:
+            # Discovery base URL: config.url is the canonical source (user-provided, normalized
+            # at write time by _normalize_config_url — clean service root, no trailing slash,
+            # no /.well-known suffix).  card.url is the spec-defined INVOCATION endpoint and
+            # is NOT normalized for discovery; A2ACardResolver strips trailing slashes itself,
+            # but for safety we normalize it too via _normalize_config_url before use.
+            agent_url = self._resolve_current_agent_url(agent)
+            if agent_url is None:
                 raise ValueError("Agent URL is not configured")
+            if not (agent.config and agent.config.url):
+                logger.warning(
+                    f"Agent {agent_id} missing config.url, falling back to card.url for discovery "
+                    f"(normalized to {agent_url!r}). Consider updating the agent to set config.url."
+                )
 
-            # Use shared fallback helper for deterministic exception semantics.
-            logger.info(f"Fetching agent card from {agent_url} using SDK")
-            base_url = agent_url.rsplit("/.well-known", 1)[0]
-            updated_card = await self._resolve_agent_card_with_fallback(base_url=base_url, timeout_seconds=10.0)
+            base_url = agent_url
+
+            auth_headers = self._build_best_effort_auth_headers(agent, agent_id)
+
+            logger.info(f"Fetching agent card from {base_url} using SDK")
+            updated_card = await self._resolve_agent_card_with_fallback(
+                base_url=base_url, timeout_seconds=10.0, auth_headers=auth_headers
+            )
 
             # Track changes
             changes = []

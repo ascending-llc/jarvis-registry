@@ -55,7 +55,8 @@ from registry.schemas.workflow_api_schemas import (
     WorkflowUpdateRequest,
     convert_node_to_input,
 )
-from registry.services.access_control_service import ACLService
+from registry.services.access_control_service import ACLService, load_role_cache
+from registry.services.group_directory_client import KeycloakGroupDirectoryClient
 from registry.services.group_service import GroupService
 from registry.services.user_service import UserService
 from registry.services.workflow_control_service import WorkflowControlService
@@ -70,7 +71,7 @@ from registry_pkgs.models.enums import (
     RoleBits,
     WorkflowRunStatus,
 )
-from registry_pkgs.models.extended_acl_entry import ExtendedResourceType
+from registry_pkgs.models.extended_access_role import RegistryResourceType
 from registry_pkgs.models.workflow import NodeRun, WorkflowDefinition, WorkflowRun, WorkflowVersion
 from registry_pkgs.workflows.compiler import flatten_workflow_nodes
 from registry_pkgs.workflows.control import DirectiveQueue
@@ -253,7 +254,7 @@ async def _make_workflow(
     await acl_service.grant_permission(
         principal_type=PrincipalType.USER,
         principal_id=creator,
-        resource_type=ExtendedResourceType.WORKFLOW,
+        resource_type=RegistryResourceType.WORKFLOW,
         resource_id=workflow.id,
         perm_bits=RoleBits.OWNER,
     )
@@ -349,13 +350,13 @@ async def module_a(workflow_service, control_service, acl_service) -> Report:
     await acl_service.grant_permission(
         principal_type=PrincipalType.USER,
         principal_id=USER_A,
-        resource_type=ExtendedResourceType.WORKFLOW,
+        resource_type=RegistryResourceType.WORKFLOW,
         resource_id=workflow.id,
         perm_bits=RoleBits.OWNER,
     )
     perms = await acl_service.get_user_permissions_for_resource(
         user_id=USER_A,
-        resource_type=ExtendedResourceType.WORKFLOW.value,
+        resource_type=RegistryResourceType.WORKFLOW.value,
         resource_id=workflow.id,
     )
     r.check(
@@ -369,7 +370,7 @@ async def module_a(workflow_service, control_service, acl_service) -> Report:
     try:
         await acl_service.check_user_permission(
             user_id=USER_B,
-            resource_type=ExtendedResourceType.WORKFLOW.value,
+            resource_type=RegistryResourceType.WORKFLOW.value,
             resource_id=workflow.id,
             required_permission="VIEW",
         )
@@ -385,7 +386,7 @@ async def module_a(workflow_service, control_service, acl_service) -> Report:
     wf_b = await _make_workflow(workflow_service, acl_service, "acl-list-b", nodes, creator=USER_B)
     accessible = await acl_service.get_accessible_resource_ids(
         user_id=USER_A,
-        resource_type=ExtendedResourceType.WORKFLOW.value,
+        resource_type=RegistryResourceType.WORKFLOW.value,
     )
     listed, _ = await workflow_service.list_workflows(query=PREFIX + "acl-list", accessible_workflow_ids=accessible)
     listed_ids = {str(w.id) for w in listed}
@@ -1391,7 +1392,7 @@ async def cleanup() -> None:
         await db.get_collection("workflow_versions").delete_many({"workflow_id": {"$in": wf_ids}})
         await db.get_collection("workflow_definitions").delete_many({"_id": {"$in": wf_ids}})
     await db.get_collection("aclentries").delete_many(
-        {"resourceType": ExtendedResourceType.WORKFLOW.value, "principalId": {"$in": [USER_A, USER_B]}}
+        {"resourceType": RegistryResourceType.WORKFLOW.value, "principalId": {"$in": [USER_A, USER_B]}}
     )
 
 
@@ -1427,7 +1428,11 @@ async def amain(selected: list[str], keep_data: bool) -> int:
     workflow_service = WorkflowService()
     queue = DirectiveQueue()
     runner = _build_runner(queue)
-    acl_service = ACLService(user_service=UserService(), group_service=GroupService())
+    acl_service = ACLService(
+        user_service=UserService(),
+        group_service=GroupService(group_directory_client=KeycloakGroupDirectoryClient()),
+        role_cache=await load_role_cache(),
+    )
     control_service = WorkflowControlService(directive_queue=queue, runner_factory=lambda: runner)
 
     reports: list[Report] = []

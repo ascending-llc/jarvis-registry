@@ -83,7 +83,7 @@ export const ShareModal: React.FC<ShareModalProps> = props => {
                 <div className='my-6 border-t border-[color:var(--jarvis-border)] border-[color:var(--jarvis-border)]' />
 
                 {/* Section: Share with everyone */}
-                <PublicShare publicShare={publicShare} roles={roles} resourceLabel={resourceLabel} />
+                <PublicShare publicShare={publicShare} resourceLabel={resourceLabel} />
 
                 {/* Footer */}
                 <div className='flex items-center justify-end gap-3'>

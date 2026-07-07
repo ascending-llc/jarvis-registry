@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from beanie import PydanticObjectId
 
-from registry.services.federation.federation_handlers import AwsAgentCoreSyncHandler, AzureAiFoundrySyncHandler
+from registry.services.federation.federation_handlers import AwsAgentCoreSyncHandler
 from registry.services.federation_sync_service import (
     ACL_INHERITANCE_BATCH_SIZE,
     FederationSyncMutationResult,
@@ -112,23 +112,14 @@ async def test_aws_handler_passes_resource_tags_filter_to_client():
 
 
 @pytest.mark.asyncio
-async def test_azure_sync_dispatches_through_handler(federation_sync_service: FederationSyncService):
-    """Sync dispatches to AzureAiFoundrySyncHandler. Credential resolution (managed
-    identity vs. service principal) is covered in test_azure_foundry_auth.py."""
+async def test_azure_sync_is_not_implemented(federation_sync_service: FederationSyncService):
     federation = _make_federation(
         FederationProviderType.AZURE_AI_FOUNDRY,
         {"projectEndpoint": "https://example.projects.ai.azure.com"},
     )
-    expected = {"mcp_servers": [], "a2a_agents": []}
 
-    azure_handler = MagicMock(spec=AzureAiFoundrySyncHandler)
-    azure_handler.discover_entities = AsyncMock(return_value=expected)
-    federation_sync_service.sync_handlers[FederationProviderType.AZURE_AI_FOUNDRY] = azure_handler
-
-    result = await federation_sync_service._discover_entities(federation)
-
-    azure_handler.discover_entities.assert_awaited_once_with(federation)
-    assert result == expected
+    with pytest.raises(ValueError, match="not implemented yet"):
+        await federation_sync_service._discover_entities(federation)
 
 
 @pytest.mark.asyncio

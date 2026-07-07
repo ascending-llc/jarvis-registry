@@ -13,7 +13,7 @@ from beanie import PydanticObjectId
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi import status as http_status
 
-from registry_pkgs.database.decorators import use_transaction
+from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.models import PrincipalType, ResourceType
 from registry_pkgs.models.enums import RoleBits
 
@@ -23,6 +23,7 @@ from ....core.telemetry_decorators import track_registry_operation
 from ....deps import get_acl_service, get_mcp_service, get_server_service, get_status_resolver
 from ....schemas.acl_schema import ResourcePermissions
 from ....schemas.enums import ConnectionState
+from ....schemas.errors import ErrorCode, create_error_detail
 from ....schemas.server_api_schemas import (
     PaginationMetadata,
     ServerConnectionTestRequest,
@@ -85,7 +86,6 @@ def apply_connection_status_to_server(
 @track_registry_operation("list", resource_type="server")
 async def list_servers(
     query: str | None = None,
-    status: str | None = None,
     page: int = 1,
     per_page: int = 20,
     user_context: dict = Depends(get_user_context),
@@ -100,18 +100,10 @@ async def list_servers(
 
     Query Parameters:
     - query: Free-text search across server_name, description, tags
-    - status: Filter by operational state (active, inactive, error)
     - page: Page number (default: 1, min: 1)
     - per_page: Items per page (default: 20, min: 1, max: 100)
     """
     try:
-        # Validate status if provided
-        if status and status not in ["active", "inactive", "error"]:
-            raise HTTPException(
-                status_code=http_status.HTTP_400_BAD_REQUEST,
-                detail="Invalid status. Must be one of: active, inactive, error",
-            )
-
         user_id = user_context.get("user_id")
         accessible_ids = await acl_service.get_accessible_resource_ids(
             user_id=PydanticObjectId(user_id),
@@ -120,7 +112,7 @@ async def list_servers(
 
         servers, total = await server_service.list_servers(
             query=query,
-            status=status,
+            enabled_only=False,
             page=page,
             per_page=per_page,
             user_id=None,
@@ -168,6 +160,14 @@ async def list_servers(
 
     except HTTPException:
         raise
+    except RuntimeError as e:
+        logger.error(f"ACL lookup failed while listing servers: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=create_error_detail(
+                ErrorCode.SERVICE_UNAVAILABLE, "Server listing is temporarily unavailable. Please try again later."
+            ),
+        ) from e
     except Exception as e:
         logger.error(f"Error listing servers: {e}", exc_info=True)
         raise HTTPException(
@@ -207,7 +207,16 @@ async def get_server_stats(
         # Get statistics from service
         stats = await server_service.get_stats()
 
-        return ServerStatsResponse(**stats)
+        return ServerStatsResponse(
+            totalServers=stats["total_servers"],
+            serversByTransport=stats["servers_by_transport"],
+            totalTokens=stats["total_tokens"],
+            tokensByType=stats["tokens_by_type"],
+            activeTokens=stats["active_tokens"],
+            expiredTokens=stats["expired_tokens"],
+            activeUsers=stats["active_users"],
+            totalTools=stats["total_tools"],
+        )
 
     except HTTPException:
         raise
@@ -385,7 +394,6 @@ async def get_server(
     description="Register a new MCP server",
 )
 @track_registry_operation("create", resource_type="server")
-@use_transaction
 async def create_server(
     data: ServerCreateRequest,
     user_context: dict = Depends(get_user_context),
@@ -396,22 +404,26 @@ async def create_server(
     try:
         user_id = user_context.get("user_id")
 
-        server = await server_service.create_server(
-            data=data,
-            user_id=user_id,
-        )
+        async with MongoDB.get_client().start_session() as mongo_session:
+            async with await mongo_session.start_transaction():
+                server = await server_service.create_server(
+                    data=data,
+                    user_id=user_id,
+                    session=mongo_session,
+                )
 
-        if not server:
-            logger.error("Server creation failed without exception")
-            raise ValueError("Failed to create server")
+                if not server:
+                    logger.error("Server creation failed without exception")
+                    raise ValueError("Failed to create server")
 
-        await acl_service.grant_permission(
-            principal_type=PrincipalType.USER,
-            principal_id=PydanticObjectId(user_id),
-            resource_type=ResourceType.MCPSERVER,
-            resource_id=server.id,
-            perm_bits=RoleBits.OWNER,
-        )
+                await acl_service.grant_permission(
+                    principal_type=PrincipalType.USER,
+                    principal_id=PydanticObjectId(user_id),
+                    resource_type=ResourceType.MCPSERVER,
+                    resource_id=server.id,
+                    perm_bits=RoleBits.OWNER,
+                    session=mongo_session,
+                )
 
         logger.info(f"Granted user {user_id} {RoleBits.OWNER} permissions for server Id {server.id}")
 
@@ -453,7 +465,6 @@ async def create_server(
     description="Update server configuration",
 )
 @track_registry_operation("update", resource_type="server")
-@use_transaction
 async def update_server(
     server_id: str,
     data: ServerUpdateRequest,
@@ -464,18 +475,22 @@ async def update_server(
     """Update a server with partial data"""
     try:
         user_id = user_context.get("user_id")
-        permissions = await acl_service.check_user_permission(
-            user_id=PydanticObjectId(user_id),
-            resource_type=ResourceType.MCPSERVER.value,
-            resource_id=PydanticObjectId(server_id),
-            required_permission="EDIT",
-        )
+        async with MongoDB.get_client().start_session() as mongo_session:
+            async with await mongo_session.start_transaction():
+                permissions = await acl_service.check_user_permission(
+                    user_id=PydanticObjectId(user_id),
+                    resource_type=ResourceType.MCPSERVER.value,
+                    resource_id=PydanticObjectId(server_id),
+                    required_permission="EDIT",
+                    session=mongo_session,
+                )
 
-        server = await server_service.update_server(
-            server_id=server_id,
-            data=data,
-            user_id=user_id,
-        )
+                server = await server_service.update_server(
+                    server_id=server_id,
+                    data=data,
+                    user_id=user_id,
+                    session=mongo_session,
+                )
 
         return convert_to_detail(server, acl_permission=permissions)
 
@@ -511,7 +526,6 @@ async def update_server(
     description="Delete a server",
 )
 @track_registry_operation("delete", resource_type="server")
-@use_transaction
 async def delete_server(
     server_id: str,
     user_context: dict = Depends(get_user_context),
@@ -521,27 +535,31 @@ async def delete_server(
     """Delete a server"""
     try:
         user_id = user_context.get("user_id")
-        await acl_service.check_user_permission(
-            user_id=PydanticObjectId(user_id),
-            resource_type=ResourceType.MCPSERVER.value,
-            resource_id=PydanticObjectId(server_id),
-            required_permission="DELETE",
-        )
+        async with MongoDB.get_client().start_session() as mongo_session:
+            async with await mongo_session.start_transaction():
+                await acl_service.check_user_permission(
+                    user_id=PydanticObjectId(user_id),
+                    resource_type=ResourceType.MCPSERVER.value,
+                    resource_id=PydanticObjectId(server_id),
+                    required_permission="DELETE",
+                    session=mongo_session,
+                )
 
-        successful_delete = await server_service.delete_server(
-            server_id=server_id,
-            user_id=None,
-        )
+                successful_delete = await server_service.delete_server(
+                    server_id=server_id,
+                    user_id=None,
+                    session=mongo_session,
+                )
 
-        if successful_delete:
-            deleted_count = await acl_service.delete_acl_entries_for_resource(
-                resource_type=ResourceType.MCPSERVER,
-                resource_id=PydanticObjectId(server_id),
-            )
-            logger.info(f"Removed {deleted_count} ACL permissions for server Id {server_id}")
-            return None  # 204 No Content
-        else:
-            raise ValueError(f"Failed to delete server {server_id}. Skipping ACL cleanup")
+                if successful_delete:
+                    deleted_count = await acl_service.delete_acl_entries_for_resource(
+                        resource_type=ResourceType.MCPSERVER,
+                        resource_id=PydanticObjectId(server_id),
+                        session=mongo_session,
+                    )
+                    logger.info(f"Removed {deleted_count} ACL permissions for server Id {server_id}")
+                    return None  # 204 No Content
+                raise ValueError(f"Failed to delete server {server_id}. Skipping ACL cleanup")
 
     except ValueError as e:
         error_msg = str(e)

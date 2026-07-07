@@ -5,7 +5,5 @@ When we receive such reports,
 we will investigate and subsequently address
 any potential vulnerabilities as quickly as possible.
 If you discover a potential security issue in this project,
-please notify AWS/Amazon Security via our
-[vulnerability reporting page](http://aws.amazon.com/security/vulnerability-reporting/)
-or directly via email to [AWS Security](mailto:aws-security@amazon.com).
+please notify us directly via email to [Security](mailto:security@ascendingdc.com).
 Please do *not* create a public GitHub issue in this project.

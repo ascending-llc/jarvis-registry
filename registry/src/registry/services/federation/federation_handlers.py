@@ -3,6 +3,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any
 
+from beanie import PydanticObjectId
+
 from registry.services.federation.agentcore_discovery import AgentCoreFederationClient
 from registry.services.federation.agentcore_runtime import AgentCoreRuntimeInvoker
 from registry.services.federation.azure_foundry_auth import AzureFoundryAuthService
@@ -21,7 +23,12 @@ class BaseFederationSyncHandler(ABC):
     provider_type: FederationProviderType
 
     @abstractmethod
-    async def discover_entities(self, federation: Federation) -> dict[str, list[Any]]:
+    async def discover_entities(
+        self,
+        federation: Federation,
+        *,
+        author_id: PydanticObjectId,
+    ) -> dict[str, list[Any]]:
         raise NotImplementedError
 
 
@@ -39,14 +46,19 @@ class AwsAgentCoreSyncHandler(BaseFederationSyncHandler):
             extract_region_from_arn=self.discovery_client.extract_region_from_arn,
         )
 
-    async def discover_entities(self, federation: Federation) -> dict[str, list[Any]]:
+    async def discover_entities(
+        self,
+        federation: Federation,
+        *,
+        author_id: PydanticObjectId,
+    ) -> dict[str, list[Any]]:
         provider_config = AwsAgentCoreProviderConfig(**dict(federation.providerConfig or {}))
         region = provider_config.region or settings.aws_region or "us-east-1"
         assume_role_arn = provider_config.assumeRoleArn
         resource_tags_filter = dict(provider_config.resourceTagsFilter or {})
         discovered = await self.discovery_client.discover_runtime_entities(
             region=region,
-            author_id=None,
+            author_id=author_id,
             assume_role_arn=assume_role_arn,
             resource_tags_filter=resource_tags_filter,
         )

@@ -1,10 +1,12 @@
+from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from beanie import PydanticObjectId
 
 from registry.api.v1.server.server_routes import create_server
-from registry.schemas.server_api_schemas import ServerCreateRequest
+from registry.schemas.server_api_schemas import ServerCreateRequest, convert_to_detail, convert_to_list_item
 from registry_pkgs.models import PrincipalType, ResourceType
 from registry_pkgs.models.enums import RoleBits
 
@@ -61,13 +63,13 @@ async def test_create_server_route_creates_acl_entry(
     mock_acl_service.grant_permission = AsyncMock(return_value=MagicMock())
 
     with (
-        patch("registry_pkgs.database.decorators.MongoDB.get_client") as mock_get_client,
+        patch("registry.api.v1.server.server_routes.MongoDB.get_client") as mock_get_client,
         patch(
             "registry.api.v1.server.server_routes.convert_to_detail",
             return_value={"id": str(mock_created_server.id)},
         ),
     ):
-        # Mock the MongoDB client and session for @use_transaction
+        # Mock the MongoDB client and session for the explicit transaction block
         mock_client = MagicMock()
         mock_client.start_session.return_value.__aenter__.return_value = mock_session
         mock_session.start_transaction.return_value.__aenter__.return_value = None
@@ -84,6 +86,7 @@ async def test_create_server_route_creates_acl_entry(
         mock_server_service.create_server.assert_awaited_once_with(
             data=sample_server_request,
             user_id=sample_user_context["user_id"],
+            session=mock_session,
         )
 
         # Verify ACL permission was granted
@@ -96,6 +99,7 @@ async def test_create_server_route_creates_acl_entry(
         assert call_args.kwargs["resource_type"] == ResourceType.MCPSERVER
         assert call_args.kwargs["resource_id"] == mock_created_server.id
         assert call_args.kwargs["perm_bits"] == RoleBits.OWNER
+        assert call_args.kwargs["session"] is mock_session
 
 
 # ==================== refresh_server_capabilities endpoint tests ====================
@@ -247,3 +251,136 @@ async def test_refresh_server_capabilities_server_not_found():
     # Verify 404 error
     assert exc_info.value.status_code == 404
     assert "not_found" in str(exc_info.value.detail)
+
+
+def _fake_mcp_server(*, enabled: bool = True):
+    """Minimal ExtendedMCPServer stand-in for converter tests."""
+    now = datetime.now(UTC)
+    return SimpleNamespace(
+        id=PydanticObjectId(),
+        serverName="test-server",
+        author=None,
+        numTools=2,
+        numStars=0,
+        path="/test",
+        tags=["t"],
+        lastConnected=None,
+        lastError=None,
+        createdAt=now,
+        updatedAt=now,
+        config={"enabled": enabled, "title": "Test", "description": "desc"},
+    )
+
+
+def test_convert_to_list_item_omits_status_and_reads_config_enabled():
+    server = _fake_mcp_server(enabled=True)
+    item = convert_to_list_item(server)
+    assert not hasattr(item, "status")
+    # enablement comes from config.enabled, not status
+    assert item.enabled is True
+
+
+def test_convert_to_list_item_reflects_disabled_config():
+    server = _fake_mcp_server(enabled=False)
+    item = convert_to_list_item(server)
+    assert not hasattr(item, "status")
+    assert item.enabled is False
+
+
+def test_convert_to_detail_omits_status():
+    server = _fake_mcp_server(enabled=True)
+    detail = convert_to_detail(server)
+    assert not hasattr(detail, "status")
+    assert detail.enabled is True
+
+
+@pytest.mark.asyncio
+async def test_list_servers_route_requests_all_servers_with_enabled_only_false(sample_user_context):
+    """The list endpoint dropped ?status and must ask the service for all servers."""
+    from registry.api.v1.server.server_routes import list_servers as list_servers_route
+
+    server = _fake_mcp_server(enabled=True)
+
+    acl_service = MagicMock()
+    acl_service.get_accessible_resource_ids = AsyncMock(return_value=[str(server.id)])
+    acl_service.get_user_permissions_for_resource = AsyncMock(return_value=None)
+
+    server_service = MagicMock()
+    server_service.list_servers = AsyncMock(return_value=([server], 1))
+
+    with patch(
+        "registry.api.v1.server.server_routes.get_servers_connection_status",
+        new=AsyncMock(return_value={}),
+    ):
+        result = await list_servers_route(
+            query=None,
+            page=1,
+            per_page=20,
+            user_context=sample_user_context,
+            acl_service=acl_service,
+            server_service=server_service,
+            mcp_service=MagicMock(),
+            status_resolver=MagicMock(),
+        )
+
+    assert server_service.list_servers.await_args.kwargs["enabled_only"] is False
+    assert result.pagination.total == 1
+    assert len(result.servers) == 1
+    assert not hasattr(result.servers[0], "status")
+
+
+@pytest.mark.asyncio
+async def test_list_servers_maps_acl_runtime_error_to_503(sample_user_context):
+    """An ACL/DB outage (RuntimeError from get_accessible_resource_ids) must surface as 503, not 500."""
+    from fastapi import HTTPException
+
+    from registry.api.v1.server.server_routes import list_servers as list_servers_route
+
+    acl_service = MagicMock()
+    acl_service.get_accessible_resource_ids = AsyncMock(
+        side_effect=RuntimeError("Failed to fetch accessible resources")
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await list_servers_route(
+            query=None,
+            page=1,
+            per_page=20,
+            user_context=sample_user_context,
+            acl_service=acl_service,
+            server_service=MagicMock(),
+            mcp_service=MagicMock(),
+            status_resolver=MagicMock(),
+        )
+
+    assert exc_info.value.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_list_servers_maps_per_item_permission_runtime_error_to_503(sample_user_context):
+    """A per-server permission lookup outage must surface as 503, not an empty ACL permission."""
+    from fastapi import HTTPException
+
+    from registry.api.v1.server.server_routes import list_servers as list_servers_route
+
+    server = _fake_mcp_server(enabled=True)
+    acl_service = MagicMock()
+    acl_service.get_accessible_resource_ids = AsyncMock(return_value=[str(server.id)])
+    acl_service.get_user_permissions_for_resource = AsyncMock(side_effect=RuntimeError("acl unavailable"))
+
+    server_service = MagicMock()
+    server_service.list_servers = AsyncMock(return_value=([server], 1))
+
+    with pytest.raises(HTTPException) as exc_info:
+        await list_servers_route(
+            query=None,
+            page=1,
+            per_page=20,
+            user_context=sample_user_context,
+            acl_service=acl_service,
+            server_service=server_service,
+            mcp_service=MagicMock(),
+            status_resolver=MagicMock(),
+        )
+
+    assert exc_info.value.status_code == 503

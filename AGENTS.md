@@ -175,7 +175,7 @@ These rules are non-negotiable. They define where code lives and how workspaces 
 
 | Directory | Responsibility |
 |---|---|
-| `models/` | Beanie Document models (`ExtendedMCPServer`, `A2AAgent`, `ExtendedAclEntry`, etc.). Single source of truth. |
+| `models/` | Beanie Document models (`ExtendedMCPServer`, `A2AAgent`, `RegistryAclEntry`, etc.). Single source of truth. |
 | `database/` | MongoDB connection (`connect_db`/`close_db`, Beanie init), Redis client, DB decorators. |
 | `vector/` | Weaviate vector DB integration: adapters, backends, repositories, rerankers (FlashRank). |
 | `core/` | Shared `Settings` (`BaseSettings`): vector store, Weaviate, AWS Bedrock, MongoDB, OTEL config. |

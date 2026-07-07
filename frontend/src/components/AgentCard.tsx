@@ -131,7 +131,7 @@ const AgentCard: React.FC<AgentCardProps> = ({ agent }) => {
 
   return (
     <>
-      <div className='group relative flex h-full flex-col rounded-2xl border border-[color:var(--jarvis-border)] bg-[var(--jarvis-card)] shadow-sm transition-all duration-300 hover:border-[color:var(--jarvis-border-strong)] hover:shadow-xl hover:-translate-y-1'>
+      <div className='search-interactive-element group relative flex h-full flex-col rounded-2xl border border-[color:var(--jarvis-border)] bg-[var(--jarvis-card)] shadow-sm transition-all duration-300 hover:border-[color:var(--jarvis-border-strong)] hover:shadow-xl hover:-translate-y-1'>
         {loading && (
           <div className='absolute inset-0 z-10 flex items-center justify-center rounded-2xl bg-[var(--jarvis-overlay)] backdrop-blur-sm'>
             <div className='h-8 w-8 animate-spin rounded-full border-b-2 border-[var(--jarvis-spinner)]'></div>
@@ -148,11 +148,11 @@ const AgentCard: React.FC<AgentCardProps> = ({ agent }) => {
                     className='max-w-[160px] cursor-pointer truncate text-base font-medium text-[var(--jarvis-text)] transition-colors hover:text-[var(--jarvis-text-strong)]'
                     onClick={() => navigate(`/agent-edit?id=${agent.id}&isReadOnly=true`)}
                   >
-                    {agent.name}
+                    {agent.card?.name || agent.config?.title || agent.name}
                   </h3>
                 ) : (
                   <h3 className='max-w-[160px] truncate text-base font-medium text-[var(--jarvis-text)]'>
-                    {agent.name}
+                    {agent.card?.name || agent.config?.title || agent.name}
                   </h3>
                 )}
               </div>

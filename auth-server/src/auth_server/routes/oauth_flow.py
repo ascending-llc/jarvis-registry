@@ -18,21 +18,33 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from pydantic import BaseModel
 
-from registry_pkgs.core.jwt_utils import build_jwt_payload, decode_jwt_unverified, encode_jwt, get_token_kid
+from registry_pkgs.core.downstream_oauth import oauth_error_payload
+from registry_pkgs.core.jwt_tokens import mint_managed_agent_token
+from registry_pkgs.core.jwt_utils import (
+    InvalidAudienceError,
+    InvalidIssuerError,
+    InvalidSignatureError,
+    InvalidTokenError,
+    decode_jwt_unverified,
+    decode_jwt_with_jwk,
+    find_matching_jwk,
+    get_token_kid,
+)
+from registry_pkgs.core.oauth_state_store import REFRESH_TOKEN_TTL_SECONDS, OAuthStateStoreProtocol
+from registry_pkgs.core.redirect_uri import redirect_uri_matches, validate_registration_redirect_uri
 from registry_pkgs.core.scopes import map_groups_to_scopes
 
 from ..core.config import settings
-
-# Shared in-memory state (centralized)
-from ..core.state import (
-    authorization_codes_storage,
-    device_codes_storage,
-    refresh_tokens_storage,
-    registered_clients,
-    user_codes_storage,
-)
 from ..core.types import AllowedProvider, AuthProviderConfig, EntraConfig, OAuth2Config
-from ..deps import check_if_https, get_auth_provider, get_oauth2_config, get_signer, get_user_service, get_validator
+from ..deps import (
+    check_if_https,
+    get_auth_provider,
+    get_oauth2_config,
+    get_oauth_state_store,
+    get_signer,
+    get_user_service,
+    get_validator,
+)
 from ..models.device_flow import DeviceApprovalRequest, DeviceCodeResponse, DeviceTokenResponse
 from ..providers.base import AuthProvider
 from ..services.cognito_validator_service import SimplifiedCognitoValidator
@@ -51,20 +63,71 @@ router = APIRouter()
 
 
 # JWT / signer configuration (use settings)
-PRIVATE_KEY = settings.jwt_private_key
 JWT_ISSUER = settings.jwt_issuer
-JWT_AUDIENCE = settings.jwt_audience
 JWT_SELF_SIGNED_KID = settings.jwt_self_signed_kid
+# All access tokens issued by /oauth2/token (+ device flow) are managed-agent (proxy) tokens.
+JWT_TOKEN_CONFIG = settings.jwt_token_config
 
-# Refresh token expiry (14 days in seconds)
-REFRESH_TOKEN_EXPIRY_SECONDS = 1209600
+_OIDC_TOKEN_ALGORITHMS = ["RS256"]
 
 
 def oauth_error_response(error: str, error_description: str | None = None, status_code: int = 400) -> JSONResponse:
-    content = {"error": error}
-    if error_description:
-        content["error_description"] = error_description
-    return JSONResponse(status_code=status_code, content=content)
+    return JSONResponse(status_code=status_code, content=oauth_error_payload(error, error_description))
+
+
+def _provider_token_issuers(provider: AllowedProvider, auth_provider: AuthProvider) -> list[str]:
+    if provider == "keycloak":
+        issuer_candidates = [
+            getattr(auth_provider, "external_realm_url", None),
+            getattr(auth_provider, "realm_url", None),
+            f"http://localhost:8080/realms/{getattr(auth_provider, 'realm', '')}",
+        ]
+        return [issuer for issuer in issuer_candidates if issuer]
+
+    issuer = getattr(auth_provider, "issuer", None)
+    if not issuer:
+        raise InvalidTokenError(f"Provider {provider} does not expose an issuer for token verification")
+
+    return [issuer]
+
+
+def _provider_token_audience(provider: AllowedProvider, auth_provider: AuthProvider) -> str | list[str] | None:
+    client_id = getattr(auth_provider, "client_id", None)
+    if not client_id:
+        raise InvalidTokenError(f"Provider {provider} does not expose a client_id for token verification")
+
+    if provider == "keycloak":
+        audiences = ["account", client_id, getattr(auth_provider, "m2m_client_id", client_id)]
+        return list(dict.fromkeys(audiences))
+
+    # Cognito access tokens omit the standard 'aud' claim; skipping audience
+    # verification avoids InvalidAudienceError for both id_token and access_token flows.
+    return None
+
+
+async def _decode_oidc_provider_token(
+    token: str,
+    provider: AllowedProvider,
+    auth_provider: AuthProvider,
+) -> dict[str, Any]:
+    jwks = await auth_provider.get_jwks()
+    matching_key = find_matching_jwk(jwks, get_token_kid(token))
+    audience = _provider_token_audience(provider, auth_provider)
+
+    last_issuer_error: InvalidIssuerError | None = None
+    for issuer in _provider_token_issuers(provider, auth_provider):
+        try:
+            return decode_jwt_with_jwk(
+                token,
+                matching_key,
+                algorithms=_OIDC_TOKEN_ALGORITHMS,
+                issuer=issuer,
+                audience=audience,
+            )
+        except InvalidIssuerError as e:
+            last_issuer_error = e
+
+    raise last_issuer_error or ValueError(f"Token issuer is not trusted for provider {provider}")
 
 
 class ClientRegistrationRequest(BaseModel):
@@ -95,14 +158,88 @@ class ClientRegistrationResponse(BaseModel):
 DEVICE_CODE_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code"
 
 
+def _is_registry_client(client_id: str) -> bool:
+    return client_id == settings.registry_app_name
+
+
+def _is_registered_redirect_uri(client_metadata: dict[str, Any], redirect_uri: str) -> bool:
+    registered_redirect_uris = client_metadata.get("redirect_uris") or []
+    return any(redirect_uri_matches(redirect_uri, registered) for registered in registered_redirect_uris)
+
+
+def _get_unknown_client_response() -> JSONResponse:
+    return oauth_error_response("invalid_client", "Unknown client_id")
+
+
+def _validate_registration_redirect_uris(redirect_uris: list[str] | None) -> JSONResponse | None:
+    """Reject a DCR request whose redirect_uris are missing or structurally unsafe.
+
+    Returns an RFC 7591 §3.2.2 ``invalid_redirect_uri`` OAuth error response (not a ``{"detail": …}``
+    body) so spec-compliant clients (Cline, VS Code) can parse the failure; ``None`` when valid.
+    """
+    uris = redirect_uris or []
+    if not uris:
+        return oauth_error_response("invalid_redirect_uri", "at least one redirect_uri is required")
+    for uri in uris:
+        try:
+            validate_registration_redirect_uri(uri)
+        except ValueError as e:
+            return oauth_error_response("invalid_redirect_uri", str(e))
+    return None
+
+
+def _validate_known_client_for_redirect(
+    client_id: str,
+    redirect_uri: str,
+    store: OAuthStateStoreProtocol,
+) -> JSONResponse | None:
+    if _is_registry_client(client_id):
+        return None
+
+    client_metadata = store.get_client(client_id)
+    if client_metadata is None:
+        return _get_unknown_client_response()
+
+    if not _is_registered_redirect_uri(client_metadata, redirect_uri):
+        return oauth_error_response("invalid_request", "redirect_uri is not registered for this client")
+
+    return None
+
+
+def _validate_known_client(
+    client_id: str,
+    store: OAuthStateStoreProtocol,
+) -> JSONResponse | None:
+    if _is_registry_client(client_id):
+        return None
+
+    if store.get_client(client_id) is None:
+        return _get_unknown_client_response()
+
+    return None
+
+
 @router.post("/oauth2/register", response_model=ClientRegistrationResponse, response_model_exclude_none=True)
-async def register_client(registration: ClientRegistrationRequest, request: Request) -> ClientRegistrationResponse:
+async def register_client(
+    registration: ClientRegistrationRequest,
+    request: Request,
+    store: OAuthStateStoreProtocol = Depends(get_oauth_state_store),
+) -> ClientRegistrationResponse | JSONResponse:
     try:
         logger.info(
             f"incoming DCR request. client_name: {registration.client_name}, grant_types: {registration.grant_types}, "
             f"response_types: {registration.response_types}, scope: {registration.scope}, "
             f"token_endpoint_auth_method: {registration.token_endpoint_auth_method}."
         )
+
+        redirect_uri_error = _validate_registration_redirect_uris(registration.redirect_uris)
+        if redirect_uri_error is not None:
+            logger.warning(
+                "DCR request rejected: invalid redirect_uri. client_name=%s, redirect_uris=%s",
+                registration.client_name,
+                registration.redirect_uris,
+            )
+            return redirect_uri_error
 
         client_id = f"mcp-client-{secrets.token_urlsafe(16)}"
 
@@ -140,7 +277,7 @@ async def register_client(registration: ClientRegistrationRequest, request: Requ
             "ip_address": request.client.host if request.client else "unknown",
         }
 
-        registered_clients[client_id] = client_metadata
+        store.save_client(client_id, client_metadata)
 
         logger.info(f"Registered new OAuth client: client_id={client_id}, name={client_metadata['client_name']}")
 
@@ -157,38 +294,12 @@ async def register_client(registration: ClientRegistrationRequest, request: Requ
             scope=client_metadata["scope"],
             token_endpoint_auth_method=client_metadata["token_endpoint_auth_method"],
         )
+    except HTTPException:
+        raise
     except Exception:
         logger.exception("Client registration failed")
 
         raise HTTPException(status_code=500, detail="Client registration failed")
-
-
-def get_client(client_id: str) -> dict[str, Any] | None:
-    return registered_clients.get(client_id)
-
-
-def validate_client_credentials(client_id: str, client_secret: str | None = None) -> bool:
-    client_metadata = registered_clients.get(client_id)
-
-    if client_metadata is None:
-        return False
-    elif client_metadata["token_endpoint_auth_method"] == "client_secret_post":
-        return client_metadata.get("client_secret") == client_secret
-    else:
-        return True
-
-
-def list_registered_clients() -> list[dict[str, Any]]:
-    return [
-        {
-            "client_id": client_id,
-            "client_name": metadata.get("client_name"),
-            "grant_types": metadata.get("grant_types"),
-            "registered_at": metadata.get("registered_at"),
-            "ip_address": metadata.get("ip_address"),
-        }
-        for client_id, metadata in registered_clients.items()
-    ]
 
 
 # Device Flow helpers
@@ -201,70 +312,67 @@ def generate_user_code() -> str:
     return f"{code[:4]}-{code[4:]}"
 
 
-def cleanup_expired_device_codes():
-    current_time = int(time.time())
-    expired_codes = [code for code, data in device_codes_storage.items() if current_time > data["expires_at"]]
-    for code in expired_codes:
-        user_code = device_codes_storage[code]["user_code"]
-        del device_codes_storage[code]
-        if user_code in user_codes_storage:
-            del user_codes_storage[user_code]
-    if expired_codes:
-        logger.info(f"Cleaned up {len(expired_codes)} expired device codes")
-
-
-def cleanup_expired_authorization_codes():
-    current_time = int(time.time())
-    expired_codes = [code for code, data in authorization_codes_storage.items() if current_time > data["expires_at"]]
-    for code in expired_codes:
-        del authorization_codes_storage[code]
-    if expired_codes:
-        logger.info(f"Cleaned up {len(expired_codes)} expired authorization codes")
-
-
 @router.post("/oauth2/device/code", response_model=DeviceCodeResponse, response_model_exclude_none=True)
 async def device_authorization(
-    req: Request, client_id: str = Form(...), scope: str | None = Form(None), resource: str | None = Form(None)
+    req: Request,
+    client_id: str = Form(...),
+    scope: str | None = Form(None),
+    resource: str | None = Form(None),
+    store: OAuthStateStoreProtocol = Depends(get_oauth_state_store),
 ):
-    cleanup_expired_device_codes()
-    device_code = secrets.token_urlsafe(32)
-    user_code = generate_user_code()
+    try:
+        client_error = _validate_known_client(client_id, store)
+        if client_error is not None:
+            return client_error
 
-    auth_server_url = settings.auth_server_external_url
-    if not auth_server_url:
-        host = req.headers.get("host", "localhost:8888")
-        scheme = "https" if req.headers.get("x-forwarded-proto") == "https" or req.url.scheme == "https" else "http"
-        auth_server_url = f"{scheme}://{host}"
+        device_code = secrets.token_urlsafe(32)
+        user_code = generate_user_code()
 
-    verification_uri = f"{auth_server_url}/oauth2/device/verify"
-    verification_uri_complete = f"{verification_uri}?user_code={user_code}"
+        auth_server_url = settings.auth_server_external_url
+        if not auth_server_url:
+            host = req.headers.get("host", "localhost:8888")
+            scheme = "https" if req.headers.get("x-forwarded-proto") == "https" or req.url.scheme == "https" else "http"
+            auth_server_url = f"{scheme}://{host}"
 
-    current_time = int(time.time())
-    expires_at = current_time + settings.device_code_expiry_seconds
+        verification_uri = f"{auth_server_url}/oauth2/device/verify"
+        verification_uri_complete = f"{verification_uri}?user_code={user_code}"
 
-    device_codes_storage[device_code] = {
-        "user_code": user_code,
-        "client_id": client_id,
-        "scope": scope or "",
-        "resource": resource,
-        "status": "pending",
-        "created_at": current_time,
-        "expires_at": expires_at,
-        "token": None,
-    }
+        current_time = int(time.time())
+        expires_at = current_time + settings.device_code_expiry_seconds
 
-    user_codes_storage[user_code] = device_code
+        device_data = {
+            "user_code": user_code,
+            "client_id": client_id,
+            "scope": scope or "",
+            "resource": resource,
+            "status": "pending",
+            "created_at": current_time,
+            "expires_at": expires_at,
+            "token": None,
+        }
 
-    logger.info(f"Generated device code for client_id: {client_id}, user_code: {user_code}, resource: {resource}")
+        store.save_device_authorization(
+            device_code=device_code,
+            user_code=user_code,
+            data=device_data,
+            ttl_seconds=settings.device_code_expiry_seconds,
+        )
 
-    return DeviceCodeResponse(
-        device_code=device_code,
-        user_code=user_code,
-        verification_uri=verification_uri,
-        verification_uri_complete=verification_uri_complete,
-        expires_in=settings.device_code_expiry_seconds,
-        interval=settings.device_code_poll_interval,
-    )
+        logger.info(f"Generated device code for client_id: {client_id}, user_code: {user_code}, resource: {resource}")
+
+        return DeviceCodeResponse(
+            device_code=device_code,
+            user_code=user_code,
+            verification_uri=verification_uri,
+            verification_uri_complete=verification_uri_complete,
+            expires_in=settings.device_code_expiry_seconds,
+            interval=settings.device_code_poll_interval,
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Device authorization request failed for client_id=%s", client_id)
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/oauth2/device/verify", response_class=HTMLResponse)
@@ -281,40 +389,49 @@ async def device_verification_page(user_code: str | None = None):
 
 
 @router.post("/oauth2/device/approve")
-async def approve_device(request: DeviceApprovalRequest):
-    cleanup_expired_device_codes()
-    device_code = user_codes_storage.get(request.user_code)
-    if not device_code:
-        raise HTTPException(status_code=404, detail="Invalid or expired user code")
-    device_data = device_codes_storage.get(device_code)
-    if not device_data:
-        raise HTTPException(status_code=404, detail="Device code not found")
-    current_time = int(time.time())
-    if current_time > device_data["expires_at"]:
-        raise HTTPException(status_code=400, detail="Device code expired")
-    if device_data["status"] == "approved":
-        return {"status": "already_approved", "message": "Device already approved"}
+async def approve_device(
+    request: DeviceApprovalRequest,
+    store: OAuthStateStoreProtocol = Depends(get_oauth_state_store),
+):
+    try:
+        device_code = store.get_user_code(request.user_code)
+        if not device_code:
+            raise HTTPException(status_code=404, detail="Invalid or expired user code")
+        device_data = store.get_device_code(device_code)
+        if not device_data:
+            raise HTTPException(status_code=404, detail="Device code not found")
+        current_time = int(time.time())
+        if current_time > device_data["expires_at"]:
+            raise HTTPException(status_code=400, detail="Device code expired")
+        if device_data["status"] == "approved":
+            return {"status": "already_approved", "message": "Device already approved"}
 
-    # Generate token
-    token_payload = build_jwt_payload(
-        subject="device_user",
-        issuer=JWT_ISSUER,
-        audience=JWT_AUDIENCE,
-        expires_in_seconds=3600,
-        iat=current_time,
-        extra_claims={
-            "client_id": device_data["client_id"],
-            "scope": device_data["scope"],
-            "token_use": "access",
-            "auth_provider": settings.auth_provider,
-        },
-    )
-    access_token = encode_jwt(token_payload, PRIVATE_KEY, kid=JWT_SELF_SIGNED_KID)
-    device_data["status"] = "approved"
-    device_data["token"] = access_token
-    device_data["approved_at"] = current_time
-    logger.info(f"Device approved for user_code: {request.user_code}")
-    return {"status": "approved", "message": "Device verified successfully"}
+        # Generate token (managed-agent / proxy class)
+        access_token = mint_managed_agent_token(
+            JWT_TOKEN_CONFIG,
+            subject="device_user",
+            client_id=device_data["client_id"],
+            expires_in_seconds=3600,
+            iat=current_time,
+            extra_claims={
+                "scope": device_data["scope"],
+                "token_use": "access",
+                "auth_provider": settings.auth_provider,
+            },
+        )
+        updated_device_data = dict(device_data)
+        updated_device_data["status"] = "approved"
+        updated_device_data["token"] = access_token
+        updated_device_data["approved_at"] = current_time
+        if not store.update_device_code(device_code, updated_device_data):
+            raise HTTPException(status_code=400, detail="Device code expired")
+        logger.info(f"Device approved for user_code: {request.user_code}")
+        return {"status": "approved", "message": "Device verified successfully"}
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Device approval failed for user_code=%s", request.user_code)
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 async def _parse_device_token_params(request: Request) -> dict:
@@ -323,7 +440,7 @@ async def _parse_device_token_params(request: Request) -> dict:
     if content_type.startswith("application/json"):
         body = await request.json()
 
-        return {
+        params = {
             "grant_type": body.get("grant_type"),
             "device_code": body.get("device_code"),
             "client_id": body.get("client_id"),
@@ -336,7 +453,7 @@ async def _parse_device_token_params(request: Request) -> dict:
     elif content_type.startswith("application/x-www-form-urlencoded"):
         form = await request.form()
 
-        return {
+        params = {
             "grant_type": form.get("grant_type"),
             "device_code": form.get("device_code"),
             "client_id": form.get("client_id"),
@@ -351,9 +468,73 @@ async def _parse_device_token_params(request: Request) -> dict:
             status_code=415, detail="content-type must be application/json or application/x-www-form-urlencoded"
         )
 
+    if params.get("client_id"):
+        return params
+
+    request_redirect_uri = params.get("redirect_uri")
+    if not isinstance(request_redirect_uri, str):
+        return params
+
+    try:
+        hostname = (urlparse(request_redirect_uri).hostname or "").lower()
+    except ValueError:
+        return params
+
+    auth_header = request.headers.get("authorization", "")
+    scheme, _, encoded = auth_header.partition(" ")
+    has_basic_credentials = scheme.lower() == "basic" and encoded
+
+    is_quick_suite_host = hostname == "quicksight.aws.amazon.com" or hostname.endswith(".quicksight.aws.amazon.com")
+    if not is_quick_suite_host:
+        if has_basic_credentials:
+            logger.warning(
+                "client_secret_basic was provided for non-Quick Suite redirect_uri host '%s'; "
+                "skipping Quick Suite fallback client_id parsing.",
+                hostname or "unknown",
+            )
+        return params
+
+    if not has_basic_credentials:
+        return params
+
+    try:
+        logger.info("Quick Suite host identified. Attempting to resolve client credentials from Authorization header.")
+        decoded = base64.b64decode(encoded, validate=True).decode("utf-8")
+        basic_client_id, basic_client_secret = decoded.split(":", 1)
+    except Exception as e:
+        logger.warning(
+            f"Quick Suite Authorization header parsing failed: {e}. Continuing without fallback credentials."
+        )
+        return params
+
+    if basic_client_id:
+        params["client_id"] = basic_client_id
+        params["client_secret"] = basic_client_secret
+        logger.info("Resolved Quick Suite client credentials from Authorization header.")
+
+    return params
+
 
 @router.post("/oauth2/token", response_model=DeviceTokenResponse, response_model_exclude_none=True)
-async def device_token(request: Request, user_service: UserService = Depends(get_user_service)):
+async def device_token(
+    request: Request,
+    user_service: UserService = Depends(get_user_service),
+    store: OAuthStateStoreProtocol = Depends(get_oauth_state_store),
+):
+    try:
+        return await _device_token_handler(request, user_service, store)
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Token endpoint failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+async def _device_token_handler(
+    request: Request,
+    user_service: UserService,
+    store: OAuthStateStoreProtocol,
+) -> DeviceTokenResponse | JSONResponse:
     params = await _parse_device_token_params(request)
     grant_type: str | None = params["grant_type"]
     device_code: str | None = params["device_code"]
@@ -374,24 +555,21 @@ async def device_token(request: Request, user_service: UserService = Depends(get
 
     # Authorization Code Flow
     if grant_type == "authorization_code":
-        cleanup_expired_authorization_codes()
         if not code or not redirect_uri:
             return oauth_error_response("invalid_request", "code and redirect_uri are required")
-        auth_code_data = authorization_codes_storage.get(code)
+        auth_code_data = store.get_authcode(code)
         if not auth_code_data:
             return oauth_error_response("invalid_grant", "authorization code not found or expired")
-        if auth_code_data.get("used"):
-            del authorization_codes_storage[code]
-            return oauth_error_response("invalid_grant", "authorization code already used")
         if auth_code_data["client_id"] != client_id:
             return oauth_error_response("invalid_client", "client_id mismatch")
         if client_id == settings.registry_app_name and client_secret != settings.registry_client_secret:
             return oauth_error_response("invalid_client", "missing or invalid client_secret")
+        if client_id != settings.registry_app_name and not store.validate_client_credentials(client_id, client_secret):
+            return oauth_error_response("invalid_client", "invalid client credentials")
         if auth_code_data["redirect_uri"] != redirect_uri:
             return oauth_error_response("invalid_grant", "redirect_uri mismatch")
         current_time = int(time.time())
         if current_time > auth_code_data["expires_at"]:
-            del authorization_codes_storage[code]
             return oauth_error_response("invalid_grant", "authorization code expired")
         code_challenge = auth_code_data.get("code_challenge")
         if code_challenge:
@@ -407,7 +585,10 @@ async def device_token(request: Request, user_service: UserService = Depends(get
             if computed_challenge != code_challenge:
                 return oauth_error_response("invalid_grant", "code_verifier validation failed")
 
-        auth_code_data["used"] = True
+        auth_code_data = store.consume_authcode(code)
+        if auth_code_data is None:
+            return oauth_error_response("invalid_grant", "authorization code already used")
+
         user_info = auth_code_data["user_info"]
 
         # Use resolved scope from authorization code (negotiated in callback)
@@ -425,49 +606,48 @@ async def device_token(request: Request, user_service: UserService = Depends(get
         # Resolve user_id from MongoDB
         user_id = await user_service.resolve_user_id(user_info)
 
-        token_payload = build_jwt_payload(
+        scope_claim = " ".join(resolved_scopes) if isinstance(resolved_scopes, list) else resolved_scopes
+        access_token = mint_managed_agent_token(
+            JWT_TOKEN_CONFIG,
             subject=user_info["username"],
-            issuer=JWT_ISSUER,
-            audience=JWT_AUDIENCE,
+            client_id=client_id,
             expires_in_seconds=3600,
             iat=current_time,
             extra_claims={
                 "name": user_info.get("name"),
                 "idp_id": user_info.get("idp_id"),
                 "user_id": user_id,
-                "client_id": client_id,
-                "scope": " ".join(resolved_scopes) if isinstance(resolved_scopes, list) else resolved_scopes,
+                "scope": scope_claim,
                 "groups": user_info.get("groups", []),
                 "token_use": "access",
                 "auth_provider": settings.auth_provider,
             },
         )
-        access_token = encode_jwt(token_payload, PRIVATE_KEY, kid=JWT_SELF_SIGNED_KID)
 
         rt = secrets.token_urlsafe(32)
-        refresh_expires_at = current_time + REFRESH_TOKEN_EXPIRY_SECONDS
-        refresh_tokens_storage[rt] = {
-            "client_id": client_id,
-            "user_info": user_info,
-            "scope": token_payload["scope"],
-            "expires_at": refresh_expires_at,
-        }
-
-        del authorization_codes_storage[code]
+        refresh_expires_at = current_time + REFRESH_TOKEN_TTL_SECONDS
+        store.save_refresh_token(
+            rt,
+            {
+                "client_id": client_id,
+                "user_info": user_info,
+                "scope": scope_claim,
+                "expires_at": refresh_expires_at,
+            },
+        )
 
         return DeviceTokenResponse(
             access_token=access_token,
             token_type="Bearer",
             expires_in=3600,
-            scope=token_payload["scope"],
+            scope=scope_claim,
             refresh_token=rt,
         )
 
     elif grant_type == "urn:ietf:params:oauth:grant-type:device_code":
-        cleanup_expired_device_codes()
         if not device_code:
             return oauth_error_response("invalid_request", "device_code is required")
-        device_data = device_codes_storage.get(device_code)
+        device_data = store.get_device_code(device_code)
         if not device_data:
             return oauth_error_response("invalid_grant", "device_code not found")
         if device_data["client_id"] != client_id:
@@ -488,67 +668,51 @@ async def device_token(request: Request, user_service: UserService = Depends(get
     elif grant_type == "refresh_token":
         if not refresh_token:
             return oauth_error_response("invalid_request", "refresh_token is required")
-        rt_data = refresh_tokens_storage.get(refresh_token)
-        if not rt_data:
+        refresh_token_data = store.get_refresh_token(refresh_token)
+        if not refresh_token_data:
             return oauth_error_response("invalid_grant", "refresh token invalid or expired")
-        if rt_data.get("client_id") != client_id:
+        if refresh_token_data.get("client_id") != client_id:
             return oauth_error_response("invalid_client", "client_id mismatch")
+        if client_id == settings.registry_app_name and client_secret != settings.registry_client_secret:
+            return oauth_error_response("invalid_client", "missing or invalid client_secret")
+        if client_id != settings.registry_app_name and not store.validate_client_credentials(client_id, client_secret):
+            return oauth_error_response("invalid_client", "invalid client credentials")
+
         now = int(time.time())
-        if now > rt_data.get("expires_at", 0):
-            refresh_tokens_storage.pop(refresh_token, None)
-            return oauth_error_response("invalid_grant", "refresh token expired")
+        new_refresh_token = secrets.token_urlsafe(32)
+        new_refresh_data = {
+            "client_id": client_id,
+            "user_info": refresh_token_data["user_info"],
+            "scope": refresh_token_data.get("scope", ""),
+            "expires_at": now + REFRESH_TOKEN_TTL_SECONDS,
+        }
+        rt_data = store.rotate_refresh_token(
+            old_token=refresh_token,
+            new_token=new_refresh_token,
+            new_data=new_refresh_data,
+        )
+        if rt_data is None:
+            return oauth_error_response("invalid_grant", "refresh token already used")
 
         user_info = rt_data["user_info"]
 
         # Resolve user_id from MongoDB
         user_id = await user_service.resolve_user_id(user_info)
 
-        token_payload = build_jwt_payload(
+        access_token = mint_managed_agent_token(
+            JWT_TOKEN_CONFIG,
             subject=user_info["username"],
-            issuer=JWT_ISSUER,
-            audience=JWT_AUDIENCE,
+            client_id=client_id,
             expires_in_seconds=3600,
             iat=now,
             extra_claims={
                 "user_id": user_id,
-                "client_id": client_id,
                 "scope": rt_data.get("scope", ""),
                 "groups": user_info.get("groups", []),
                 "token_use": "access",
                 "auth_provider": settings.auth_provider,
             },
         )
-
-        access_token = encode_jwt(token_payload, PRIVATE_KEY, kid=JWT_SELF_SIGNED_KID)
-
-        # Atomically remove old refresh token to prevent reuse and handle concurrent requests
-        # IMPORTANT: popping of the old token must be BEFORE storing a new token.
-        # Consider what happens if storing new token is before popping old:
-        # - Request A hit the `await` on Line 504. Suspended. Request B hit the `await` on Line 504. Suspended.
-        # - Request A re-activates first. Request A stores new token T1.
-        # - Request A pops old token. Succeed and return.
-        # - Request B stores new token T2. Request B pop old token. Old token is gone and request B returns an error.
-        # The problem is that nobody will ever reclaim T2.
-        # If we pop then store, it ensures that a concurrent loser exits before writing the new token, preventing orphans.
-        old_token_data = refresh_tokens_storage.pop(refresh_token, None)
-        if old_token_data is None:
-            # Token was already consumed by another concurrent request
-            logger.warning(
-                f"Refresh token already consumed (concurrent use detected) for user: {user_info['username']}"
-            )
-            return oauth_error_response("invalid_grant", "refresh token already used")
-
-        # Refresh token rotation: generate new refresh token and delete old one
-        new_refresh_token = secrets.token_urlsafe(32)
-        new_refresh_expires_at = now + REFRESH_TOKEN_EXPIRY_SECONDS
-
-        # Store new refresh token with extended expiry
-        refresh_tokens_storage[new_refresh_token] = {
-            "client_id": client_id,
-            "user_info": user_info,
-            "scope": rt_data.get("scope", ""),
-            "expires_at": new_refresh_expires_at,
-        }
 
         logger.info(f"Rotated refresh token for user: {user_info['username']}")
 
@@ -593,13 +757,13 @@ async def oauth2_login(
     oauth2_config: OAuth2Config = Depends(get_oauth2_config),
     signer: URLSafeTimedSerializer = Depends(get_signer),
     is_https: bool = Depends(check_if_https),
+    store: OAuthStateStoreProtocol = Depends(get_oauth_state_store),
 ):
+    error_url = settings.registry_error_redirect
     try:
         provider_config = oauth2_config["providers"][provider]
         if not provider_config.get("enabled", False):
             return JSONResponse({"detail": f"Provider {provider} is disabled"}, 400)
-
-        error_url = settings.registry_error_redirect
 
         if response_type != "code":
             params = {"error": "unsupported_response_type", "error_description": "only supports response_type=code"}
@@ -611,6 +775,10 @@ async def oauth2_login(
                 "error_description": "redirect_uri, code_challenge and code_challenge_method are all required",
             }
             return RedirectResponse(f"{error_url}?{urlencode(params)}", 302)
+
+        client_error = _validate_known_client_for_redirect(client_id, redirect_uri, store)
+        if client_error is not None:
+            return client_error
 
         if code_challenge_method != "S256":
             params = {
@@ -678,6 +846,7 @@ async def oauth2_callback(
     user_service: UserService = Depends(get_user_service),
     signer: URLSafeTimedSerializer = Depends(get_signer),
     auth_provider: AuthProvider = Depends(get_auth_provider),
+    store: OAuthStateStoreProtocol = Depends(get_oauth_state_store),
 ):
     error_url = settings.registry_error_redirect
 
@@ -720,7 +889,7 @@ async def oauth2_callback(
         try:
             if provider in ["cognito", "keycloak"]:
                 if "id_token" in token_data:
-                    id_claims = decode_jwt_unverified(token_data["id_token"])
+                    id_claims = await _decode_oidc_provider_token(token_data["id_token"], provider, auth_provider)
                     mapped_user = {
                         "username": id_claims.get("preferred_username") or id_claims.get("sub"),
                         "email": id_claims.get("email"),
@@ -729,8 +898,9 @@ async def oauth2_callback(
                         "groups": id_claims.get("groups", []),
                     }
                 elif "access_token" in token_data:
-                    # Try to decode access_token without verification to extract claims
-                    access_claims = decode_jwt_unverified(token_data["access_token"])
+                    access_claims = await _decode_oidc_provider_token(
+                        token_data["access_token"], provider, auth_provider
+                    )
                     mapped_user = {
                         "username": access_claims.get("username") or access_claims.get("sub"),
                         "email": access_claims.get("email"),
@@ -753,6 +923,8 @@ async def oauth2_callback(
                 }
             else:
                 raise ValueError(f"Unsupported provider {provider}")
+        except (InvalidSignatureError, InvalidTokenError, InvalidIssuerError, InvalidAudienceError):
+            raise
         except Exception:
             logger.exception("Falling back to userInfo on token parsing error")
 
@@ -814,25 +986,25 @@ async def oauth2_callback(
             logger.info(f"No scope requested, using default user scopes: {resolved_scopes}")
 
         # Generate authorization code for OAuth client flow
-        cleanup_expired_authorization_codes()
-
         authorization_code = secrets.token_urlsafe(32)
         current_time = int(time.time())
         expires_at = current_time + 600
 
-        authorization_codes_storage[authorization_code] = {
-            "token_data": token_data,
-            "user_info": mapped_user,
-            "client_id": session_data["client_id"],
-            "expires_at": expires_at,
-            "used": False,
-            "code_challenge": session_data["code_challenge"],
-            "code_challenge_method": session_data["code_challenge_method"],
-            "redirect_uri": client_redirect_uri,
-            "resource": session_data.get("resource"),
-            "created_at": current_time,
-            "resolved_scope": resolved_scopes,
-        }
+        store.save_authcode(
+            authorization_code,
+            {
+                "token_data": token_data,
+                "user_info": mapped_user,
+                "client_id": session_data["client_id"],
+                "expires_at": expires_at,
+                "code_challenge": session_data["code_challenge"],
+                "code_challenge_method": session_data["code_challenge_method"],
+                "redirect_uri": client_redirect_uri,
+                "resource": session_data.get("resource"),
+                "created_at": current_time,
+                "resolved_scope": resolved_scopes,
+            },
+        )
 
         redirect_params = {"code": authorization_code}
         client_state = session_data.get("client_state")

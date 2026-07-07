@@ -1,6 +1,5 @@
 import { TrashIcon } from '@heroicons/react/24/outline';
 import type React from 'react';
-import FormFields from '@/components/FormFields';
 import { useWorkflowPanel } from './WorkflowPanelContext';
 
 interface WorkflowPropsProps {
@@ -11,10 +10,6 @@ interface WorkflowPropsProps {
 const WorkflowProps: React.FC<WorkflowPropsProps> = ({ isReadOnly, isNewWorkflow }) => {
   const { workflow, onWorkflowChange: onChange, onDeleteWorkflow } = useWorkflowPanel();
   if (!workflow) return null;
-  const typeOptions = [
-    { label: 'Supervised', value: 'supervised' },
-    { label: 'Autonomous', value: 'autonomous' },
-  ];
 
   return (
     <>
@@ -43,21 +38,6 @@ const WorkflowProps: React.FC<WorkflowPropsProps> = ({ isReadOnly, isNewWorkflow
             disabled={isReadOnly}
             placeholder='Add a description for this workflow'
           />
-        </div>
-
-        <div className='mb-3'>
-          <FormFields.RadioGroupField
-            label='Type'
-            value={workflow.type ?? 'supervised'}
-            onChange={val => onChange({ type: val as 'autonomous' | 'supervised' })}
-            options={typeOptions}
-            disabled={isReadOnly || !isNewWorkflow}
-          />
-          {!isNewWorkflow && (
-            <p className='text-[10px] text-[var(--jarvis-subtle)] mt-1'>
-              Workflow type is determined at creation and cannot be changed
-            </p>
-          )}
         </div>
       </div>
 

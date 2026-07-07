@@ -35,6 +35,8 @@ logger = logging.getLogger(__name__)
 
 _A2A_JWT_TTL_SECONDS = 300
 _A2A_HTTP_TIMEOUT = 300
+# a2a poll timeout needs to be strictly less than _A2A_JWT_TTL_SECONDS and _A2A_HTTP_TIMEOUT
+_A2A_POLL_TIMEOUT = _A2A_HTTP_TIMEOUT * 0.6
 
 HeadersProvider = Callable[[A2AAgent], Awaitable[dict[str, str]]]
 _IN_PROGRESS_STATES: frozenset[TaskState] = frozenset({TaskState.submitted, TaskState.working})
@@ -146,22 +148,6 @@ def get_agentcore_auth_mode(agent: A2AAgent) -> str:
     return "IAM"
 
 
-def make_agent_jwt(
-    *,
-    agent_url: str,
-    jwt_config: JwtSigningConfig,
-    expires_in_seconds: int = _A2A_JWT_TTL_SECONDS,
-) -> str:
-    """Sign a short-lived JWT for direct service-to-agent authentication."""
-    payload = build_jwt_payload(
-        subject="jarvis-workflow",
-        issuer=jwt_config.jwt_issuer,
-        audience=agent_url,
-        expires_in_seconds=expires_in_seconds,
-    )
-    return encode_jwt(payload, jwt_config.jwt_private_key, kid=jwt_config.jwt_self_signed_kid)
-
-
 def _make_agentcore_jwt(
     agent: A2AAgent,
     *,
@@ -213,14 +199,18 @@ def raise_if_iam_unsupported(agent: A2AAgent) -> None:
 
 
 def build_headers(agent: A2AAgent, *, jwt_config: JwtSigningConfig) -> dict[str, str]:
-    """Build per-call HTTP auth headers for an A2A invocation."""
+    """Build per-call HTTP auth headers for an A2A invocation.
+
+    Only AgentCore-federated runtimes are provisioned to accept our self-signed JWT.
+    Other agents have no relationship with our signing key, so we send no unsolicited
+    bearer token.
+    """
     if is_agentcore_runtime(agent):
         return {
             "Authorization": f"Bearer {_make_agentcore_jwt(agent, jwt_config=jwt_config)}",
             "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": str(uuid.uuid4()),
         }
-    token = make_agent_jwt(agent_url=str(agent.card.url).rstrip("/"), jwt_config=jwt_config)
-    return {"Authorization": f"Bearer {token}"}
+    return {}
 
 
 def _create_message(text: str) -> Message:
@@ -266,11 +256,11 @@ async def _poll_until_terminal(
     `blocking=True` is only a hint; servers may ignore it and return a
     `submitted`/`working` Task immediately. Caller-side polling is the
     documented workaround (see a2a-send-message-1.md, Bug 2). Returns the
-    final Task. Raises TimeoutError if the 60s budget is exceeded.
+    final Task. Raises TimeoutError if the _A2A_POLL_TIMEOUT budget is exceeded.
     """
-    # Exponential backoff capped at 8s; total budget 60s.
+    # Exponential backoff capped at 8s; total budget _A2A_POLL_TIMEOUT.
     back_offs = (0.5, 1.0, 2.0, 4.0, 8.0)
-    deadline = time.monotonic() + 60.0
+    deadline = time.monotonic() + _A2A_POLL_TIMEOUT
     delay_iter = iter(back_offs)
     while True:
         try:
@@ -280,7 +270,7 @@ async def _poll_until_terminal(
 
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            raise TimeoutError(f"polling timed out after 60s for task {task_id!r}")
+            raise TimeoutError(f"polling timed out after {_A2A_POLL_TIMEOUT}s for task {task_id!r}")
         await asyncio.sleep(min(delay, remaining))
 
         task = await client.get_task(TaskQueryParams(id=task_id), context=context)
@@ -327,10 +317,12 @@ def _result_from_task(task: Task) -> A2ACallResult:
         )
 
     # Remaining: failed / canceled / rejected / unknown.
+    detail = get_message_text(task.status.message) if task.status.message is not None else ""
+    base = f"task terminated in non-completed state: {state.value}"
     return A2ACallResult(
         task=task,
         success=False,
-        error=f"task terminated in non-completed state: {state.value}",
+        error=f"{base} — {detail}" if detail else base,
     )
 
 
@@ -407,19 +399,21 @@ async def call_a2a(
             error=f"Unsupported transport type '{transport_type}' for agent {agent_name!r}. Supported: {sorted(_PROTOCOL_MAP)}",
         )
 
-    base_url = str(agent.config.url if agent.config and agent.config.url else agent.card.url).rstrip("/")
-
     logger.debug(
         "→ calling A2A agent %r  transport=%s  url=%s  prompt=%r",
         agent_name,
         transport_type,
-        base_url,
+        str(agent.card.url),
         text[:120] if isinstance(text, str) else f"<Message parts={len(text.parts)}>",
     )
 
-    agent_card = agent.card.model_copy(deep=True)
-    agent_card.url = base_url  # type: ignore[assignment]
-    protocol = _PROTOCOL_MAP.get(transport_type, TransportProtocol.jsonrpc)
+    agent_card = agent.card
+    configured = _PROTOCOL_MAP.get(transport_type, TransportProtocol.jsonrpc)
+    # Prefer the admin-configured transport; fall back to the other standard binding
+    # so the SDK can negotiate when the card advertises a different transport.
+    ordered: list[TransportProtocol] = [configured] + [
+        t for t in (TransportProtocol.jsonrpc, TransportProtocol.http_json) if t != configured
+    ]
 
     if headers_provider is not None:
         headers = await headers_provider(agent)
@@ -437,7 +431,8 @@ async def call_a2a(
 
     try:
         config = ClientConfig(
-            supported_transports=[protocol],
+            supported_transports=ordered,
+            use_client_preference=True,
             httpx_client=httpx_client,
         )
 

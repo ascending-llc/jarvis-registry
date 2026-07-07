@@ -37,7 +37,8 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 from registry import settings  # noqa: E402
-from registry.services.access_control_service import ACLService  # noqa: E402
+from registry.services.access_control_service import ACLService, load_role_cache  # noqa: E402
+from registry.services.group_directory_client import KeycloakGroupDirectoryClient  # noqa: E402
 from registry.services.group_service import GroupService  # noqa: E402
 from registry.services.user_service import UserService  # noqa: E402
 from registry_pkgs.core.config import MongoConfig  # noqa: E402
@@ -46,7 +47,7 @@ from registry_pkgs.database.mongodb import MongoDB  # noqa: E402
 from registry_pkgs.models import PrincipalType  # noqa: E402
 from registry_pkgs.models.a2a_agent import A2AAgent  # noqa: E402
 from registry_pkgs.models.enums import RoleBits, WorkflowNodeType, WorkflowRunStatus  # noqa: E402
-from registry_pkgs.models.extended_acl_entry import ExtendedResourceType  # noqa: E402
+from registry_pkgs.models.extended_access_role import RegistryResourceType  # noqa: E402
 from registry_pkgs.models.workflow import (  # noqa: E402
     HumanReviewSpec,
     NodeRun,
@@ -130,11 +131,15 @@ def _build_definition(args: argparse.Namespace) -> WorkflowDefinition:
 
 
 async def _grant_owner(user_id: str, workflow_id: PydanticObjectId) -> None:
-    acl = ACLService(user_service=UserService(), group_service=GroupService())
+    acl = ACLService(
+        user_service=UserService(),
+        group_service=GroupService(group_directory_client=KeycloakGroupDirectoryClient()),
+        role_cache=await load_role_cache(),
+    )
     await acl.grant_permission(
         principal_type=PrincipalType.USER,
         principal_id=PydanticObjectId(user_id),
-        resource_type=ExtendedResourceType.WORKFLOW,
+        resource_type=RegistryResourceType.WORKFLOW,
         resource_id=workflow_id,
         perm_bits=RoleBits.OWNER,
     )
@@ -147,7 +152,11 @@ async def _grant_agent_access(user_id: str, agent_keys: list[str]) -> None:
     enforces REMOTE_AGENT ACL (unlike the user_id=None bypass that one-off
     scripts use). Without this grant the run fails at A2A resolution.
     """
-    acl = ACLService(user_service=UserService(), group_service=GroupService())
+    acl = ACLService(
+        user_service=UserService(),
+        group_service=GroupService(group_directory_client=KeycloakGroupDirectoryClient()),
+        role_cache=await load_role_cache(),
+    )
     for key in dict.fromkeys(agent_keys):
         agent = await A2AAgent.find_one({"path": f"/{key.lstrip('/')}"})
         if agent is None:
@@ -156,7 +165,7 @@ async def _grant_agent_access(user_id: str, agent_keys: list[str]) -> None:
         await acl.grant_permission(
             principal_type=PrincipalType.USER,
             principal_id=PydanticObjectId(user_id),
-            resource_type=ExtendedResourceType.REMOTE_AGENT,
+            resource_type=RegistryResourceType.REMOTE_AGENT,
             resource_id=agent.id,
             perm_bits=RoleBits.VIEWER,
         )

@@ -7,10 +7,13 @@ import pytest
 from beanie import PydanticObjectId
 from fastapi import HTTPException, Request
 
+from registry.api.v1.workflow import token_helpers
 from registry.api.v1.workflow.control_routes import (
     approve_run,
     cancel_run,
     pause_run,
+    replay_run,
+    rerun_node,
     resume_run,
     retry_run,
 )
@@ -51,6 +54,8 @@ def mock_service():
     service.send_cancel = AsyncMock()
     service.send_retry = AsyncMock()
     service.resolve_requirement = AsyncMock()
+    service.rerun_single_node = AsyncMock()
+    service.replay_run = AsyncMock()
     return service
 
 
@@ -299,7 +304,11 @@ async def test_retry_run_strips_bearer_prefix(wf_id, sample_user_context, mock_s
 
 
 @pytest.mark.asyncio
-async def test_retry_run_empty_auth_header(wf_id, sample_user_context, mock_service, mock_acl):
+async def test_retry_run_empty_auth_header(monkeypatch, wf_id, sample_user_context, mock_service, mock_acl):
+    """Without a Bearer header, build_registry_token mints a service JWT from the user context."""
+
+    monkeypatch.setattr(token_helpers, "generate_service_jwt", MagicMock(return_value="svc-jwt"))
+
     child_run = _make_run(WorkflowRunStatus.PENDING)
     mock_service.send_retry.return_value = child_run
 
@@ -319,7 +328,7 @@ async def test_retry_run_empty_auth_header(wf_id, sample_user_context, mock_serv
     )
 
     call_kwargs = mock_service.send_retry.call_args.kwargs
-    assert call_kwargs["registry_token"] == ""
+    assert call_kwargs["registry_token"] == "svc-jwt"
     assert call_kwargs["user_id"] == sample_user_context["user_id"]
 
 
@@ -533,3 +542,234 @@ async def test_approve_run_reject_with_retry_policy(wf_id, sample_user_context, 
     )
     assert result.resolvedStepId == "node-1"
     assert "reject" in result.message
+
+
+@pytest.mark.asyncio
+async def test_rerun_node_success(wf_id, sample_user_context, mock_service, mock_acl):
+    child_run = _make_run(WorkflowRunStatus.PENDING)
+    mock_service.rerun_single_node = AsyncMock(return_value=child_run)
+
+    request = MagicMock(spec=Request)
+    request.headers = {"Authorization": "Bearer rerun-token"}
+
+    result = await rerun_node(
+        workflow_id=wf_id,
+        run_id="run-1",
+        node_id="node-3",
+        request=request,
+        current_user=sample_user_context,
+        service=mock_service,
+        acl_service=mock_acl,
+    )
+
+    mock_service.rerun_single_node.assert_awaited_once_with(
+        wf_id,
+        "run-1",
+        "node-3",
+        registry_token="rerun-token",
+        user_id=sample_user_context["user_id"],
+    )
+    assert result.run_id == str(child_run.id)
+    assert result.status == WorkflowRunStatus.PENDING
+    assert "node-3" in result.message
+
+
+@pytest.mark.asyncio
+async def test_rerun_node_strips_bearer_prefix(wf_id, sample_user_context, mock_service, mock_acl):
+    child_run = _make_run(WorkflowRunStatus.PENDING)
+    mock_service.rerun_single_node = AsyncMock(return_value=child_run)
+
+    request = MagicMock(spec=Request)
+    request.headers = {"Authorization": "Bearer  tok-padded "}
+
+    await rerun_node(
+        workflow_id=wf_id,
+        run_id="run-1",
+        node_id="node-3",
+        request=request,
+        current_user=sample_user_context,
+        service=mock_service,
+        acl_service=mock_acl,
+    )
+
+    assert mock_service.rerun_single_node.call_args.kwargs["registry_token"] == "tok-padded"
+
+
+@pytest.mark.asyncio
+async def test_rerun_node_no_auth_header_uses_service_jwt(
+    monkeypatch, wf_id, sample_user_context, mock_service, mock_acl
+):
+    monkeypatch.setattr(token_helpers, "generate_service_jwt", MagicMock(return_value="svc-jwt"))
+    child_run = _make_run(WorkflowRunStatus.PENDING)
+    mock_service.rerun_single_node = AsyncMock(return_value=child_run)
+
+    request = MagicMock(spec=Request)
+    request.headers = {}
+
+    await rerun_node(
+        workflow_id=wf_id,
+        run_id="run-1",
+        node_id="node-3",
+        request=request,
+        current_user=sample_user_context,
+        service=mock_service,
+        acl_service=mock_acl,
+    )
+
+    assert mock_service.rerun_single_node.call_args.kwargs["registry_token"] == "svc-jwt"
+
+
+@pytest.mark.asyncio
+async def test_rerun_node_forbidden_without_view(wf_id, sample_user_context, mock_service, mock_acl):
+    mock_acl.check_user_permission.side_effect = HTTPException(status_code=403, detail="Forbidden")
+
+    request = MagicMock(spec=Request)
+    request.headers = {}
+
+    with pytest.raises(HTTPException) as exc_info:
+        await rerun_node(
+            workflow_id=wf_id,
+            run_id="run-1",
+            node_id="node-3",
+            request=request,
+            current_user=sample_user_context,
+            service=mock_service,
+            acl_service=mock_acl,
+        )
+
+    assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_rerun_node_wraps_unexpected_exception(wf_id, sample_user_context, mock_service, mock_acl):
+    mock_service.rerun_single_node = AsyncMock(side_effect=OSError("disk full"))
+
+    request = MagicMock(spec=Request)
+    request.headers = {}
+
+    with pytest.raises(HTTPException) as exc_info:
+        await rerun_node(
+            workflow_id=wf_id,
+            run_id="run-1",
+            node_id="node-3",
+            request=request,
+            current_user=sample_user_context,
+            service=mock_service,
+            acl_service=mock_acl,
+        )
+
+    assert exc_info.value.status_code == 500
+
+
+# ---------------------------------------------------------------------------
+# replay_run: POST /replay
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_replay_run_success(wf_id, sample_user_context, mock_service, mock_acl):
+    new_run = _make_run(WorkflowRunStatus.PENDING)
+    mock_service.replay_run = AsyncMock(return_value=new_run)
+
+    request = MagicMock(spec=Request)
+    request.headers = {"Authorization": "Bearer replay-token"}
+
+    result = await replay_run(
+        workflow_id=wf_id,
+        run_id="run-1",
+        request=request,
+        current_user=sample_user_context,
+        service=mock_service,
+        acl_service=mock_acl,
+    )
+
+    mock_service.replay_run.assert_awaited_once_with(
+        wf_id,
+        "run-1",
+        registry_token="replay-token",
+        user_id=sample_user_context["user_id"],
+    )
+    assert result.run_id == str(new_run.id)
+    assert result.status == WorkflowRunStatus.PENDING
+    assert str(new_run.id) in result.message
+
+
+@pytest.mark.asyncio
+async def test_replay_run_strips_bearer_prefix(wf_id, sample_user_context, mock_service, mock_acl):
+    new_run = _make_run(WorkflowRunStatus.PENDING)
+    mock_service.replay_run = AsyncMock(return_value=new_run)
+
+    request = MagicMock(spec=Request)
+    request.headers = {"Authorization": "Bearer  tok-padded "}
+
+    await replay_run(
+        workflow_id=wf_id,
+        run_id="run-1",
+        request=request,
+        current_user=sample_user_context,
+        service=mock_service,
+        acl_service=mock_acl,
+    )
+
+    assert mock_service.replay_run.call_args.kwargs["registry_token"] == "tok-padded"
+
+
+@pytest.mark.asyncio
+async def test_replay_run_no_auth_header_uses_service_jwt(
+    monkeypatch, wf_id, sample_user_context, mock_service, mock_acl
+):
+    monkeypatch.setattr(token_helpers, "generate_service_jwt", MagicMock(return_value="svc-jwt"))
+    new_run = _make_run(WorkflowRunStatus.PENDING)
+    mock_service.replay_run = AsyncMock(return_value=new_run)
+
+    request = MagicMock(spec=Request)
+    request.headers = {}
+
+    await replay_run(
+        workflow_id=wf_id,
+        run_id="run-1",
+        request=request,
+        current_user=sample_user_context,
+        service=mock_service,
+        acl_service=mock_acl,
+    )
+
+    assert mock_service.replay_run.call_args.kwargs["registry_token"] == "svc-jwt"
+
+
+@pytest.mark.asyncio
+async def test_replay_run_forbidden_without_view(wf_id, sample_user_context, mock_service, mock_acl):
+    mock_acl.check_user_permission.side_effect = HTTPException(status_code=403, detail="Forbidden")
+
+    request = MagicMock(spec=Request)
+    request.headers = {}
+
+    with pytest.raises(HTTPException) as exc_info:
+        await replay_run(
+            workflow_id=wf_id,
+            run_id="run-1",
+            request=request,
+            current_user=sample_user_context,
+            service=mock_service,
+            acl_service=mock_acl,
+        )
+
+    assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_replay_run_wraps_unexpected_exception(wf_id, sample_user_context, mock_service, mock_acl):
+    mock_service.replay_run = AsyncMock(side_effect=RuntimeError("boom"))
+
+    request = MagicMock(spec=Request)
+    request.headers = {}
+
+    with pytest.raises(HTTPException) as exc_info:
+        await replay_run(
+            workflow_id=wf_id,
+            run_id="run-1",
+            request=request,
+            current_user=sample_user_context,
+            service=mock_service,
+            acl_service=mock_acl,
+        )
+
+    assert exc_info.value.status_code == 500

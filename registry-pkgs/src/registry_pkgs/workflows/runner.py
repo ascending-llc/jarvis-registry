@@ -53,17 +53,50 @@ from agno.exceptions import RunCancelledException
 from agno.models.base import Model
 from agno.run.cancel import acancel_run as agno_acancel_run
 from beanie import PydanticObjectId
+from beanie.exceptions import DocumentNotFound
 
 from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.models.enums import WorkflowRunStatus
-from registry_pkgs.models.workflow import NodeRun, WorkflowDefinition, WorkflowRun
+from registry_pkgs.models.workflow import (
+    NodeRun,
+    WorkflowCanvas,
+    WorkflowDefinition,
+    WorkflowNode,
+    WorkflowRun,
+)
 from registry_pkgs.workflows.a2a_client import HeadersProvider
 from registry_pkgs.workflows.compiler import StepExecutor, compile_workflow, flatten_workflow_nodes
 from registry_pkgs.workflows.control import DirectiveQueue, WorkflowCancelledError
 from registry_pkgs.workflows.executor_resolver import build_executor_registry
 from registry_pkgs.workflows.hitl import hydrate_requirement, serialize_requirement
+from registry_pkgs.workflows.types import WorkflowConfigError
 
 logger = logging.getLogger(__name__)
+
+
+def definition_from_snapshot(snapshot: dict[str, Any]) -> WorkflowDefinition:
+    """Rebuild a ``WorkflowDefinition`` from a persisted JSON snapshot.
+
+    Beanie 2.x's ``Document.__init__`` (and ``model_validate``) eagerly resolve
+    the pymongo collection, which couples deserialization to a live DB
+    connection. Snapshots are replayed in-memory only, so we validate the nested
+    non-Document fields explicitly and assemble the document via
+    ``model_construct`` to avoid touching the database layer.
+    """
+    data = dict(snapshot)
+    data["nodes"] = [WorkflowNode.model_validate(node) for node in data.get("nodes") or []]
+    if data.get("canvas") is not None:
+        data["canvas"] = WorkflowCanvas.model_validate(data["canvas"])
+    for ts_field in ("created_at", "updated_at"):
+        if isinstance(data.get(ts_field), str):
+            data[ts_field] = datetime.fromisoformat(data[ts_field])
+
+    raw_id = data.pop("id", None)
+    data.pop("_id", None)
+    definition = WorkflowDefinition.model_construct(**data)
+    if raw_id is not None:
+        definition.id = PydanticObjectId(raw_id)
+    return definition
 
 
 class WorkflowRunner:
@@ -123,6 +156,8 @@ class WorkflowRunner:
         user_id: str | None,
         existing_run_id: str,
         injected_outputs: dict[str, dict[str, Any]] | None = None,
+        stop_after_node_id: str | None = None,
+        definition_snapshot: dict[str, Any] | None = None,
     ) -> tuple[WorkflowRun, list[NodeRun]]:
         """Execute a workflow definition and return the completed run + per-node results.
 
@@ -139,6 +174,10 @@ class WorkflowRunner:
             existing_run_id:  ID of the pre-created ``WorkflowRun`` document to drive.
             injected_outputs: Mapping of ``node_id → {"content": ..., "session_state": ...}``
                               for nodes reused from a previous run (retry-from-node).
+            stop_after_node_id: When set, only nodes up to and including this node ID
+                              are compiled and executed; downstream nodes are excluded.
+            definition_snapshot: Optional WorkflowDefinition snapshot to execute
+                                 instead of the current live definition.
 
         Returns:
             A tuple of (WorkflowRun, list[NodeRun]) after the run completes.
@@ -148,13 +187,19 @@ class WorkflowRunner:
             PermissionError: If the workflow references an A2A agent the caller cannot access.
             Exception:       Re-raises any execution error after marking the run FAILED.
         """
-        definition = await WorkflowDefinition.get(definition_id)
-        if definition is None:
-            raise ValueError(f"WorkflowDefinition {definition_id!r} not found")
-
         run = await WorkflowRun.get(existing_run_id)
         if run is None:
             raise ValueError(f"WorkflowRun {existing_run_id!r} not found")
+
+        snapshot = definition_snapshot or run.definition_snapshot
+        if snapshot:
+            definition = definition_from_snapshot(snapshot)
+            if definition.id is None:
+                definition.id = PydanticObjectId(definition_id)
+        else:
+            definition = await WorkflowDefinition.get(definition_id)
+            if definition is None:
+                raise ValueError(f"WorkflowDefinition {definition_id!r} not found")
 
         run.status = WorkflowRunStatus.RUNNING
         run.definition_snapshot = definition.model_dump(mode="json")
@@ -175,6 +220,17 @@ class WorkflowRunner:
         try:
             try:
                 executor_registry = await self._build_registry(definition, registry_token, user_id)
+            except WorkflowConfigError as exc:
+                run.status = WorkflowRunStatus.FAILED
+                run.error_summary = str(exc)
+                run.finished_at = datetime.now(UTC)
+                await run.save()
+                logger.warning(
+                    "[run=%s] ✗ workflow cannot start — configuration error: %s",
+                    run.id,
+                    exc,
+                )
+                raise
             except Exception as exc:
                 run.status = WorkflowRunStatus.FAILED
                 run.error_summary = str(exc)
@@ -182,7 +238,7 @@ class WorkflowRunner:
                 await run.save()
                 logger.error("[run=%s] ✗ failed to build executor registry: %s", run.id, exc, exc_info=True)
                 raise
-            await self._execute(run, definition, user_text, executor_registry, injected_outputs)
+            await self._execute(run, definition, user_text, executor_registry, injected_outputs, stop_after_node_id)
         finally:
             # Always unregister — even on failure — so the queue slot is freed.
             if self._directive_queue is not None:
@@ -288,7 +344,7 @@ class WorkflowRunner:
             )
 
         # Reconstruct definition from the snapshot to guarantee version determinism
-        snapshot_def = WorkflowDefinition(**run.definition_snapshot)
+        snapshot_def = definition_from_snapshot(run.definition_snapshot)
 
         # Pull the pending requirements out; hydration happens inside the try below.
         pending = list(run.pending_requirements)
@@ -341,6 +397,7 @@ class WorkflowRunner:
         user_text: str,
         executor_registry: dict[str, StepExecutor],
         injected_outputs: dict[str, dict[str, Any]] | None = None,
+        stop_after_node_id: str | None = None,
     ) -> None:
         """Compile the workflow and run it via agno.
 
@@ -358,6 +415,7 @@ class WorkflowRunner:
             db_name=self._db_name,
             directive_queue=self._directive_queue,
             injected_outputs=injected_outputs,
+            stop_after_node_id=stop_after_node_id,
         )
         try:
             result = await workflow.arun(
@@ -414,7 +472,13 @@ class WorkflowRunner:
             )
             return
 
-        await run.sync()
+        try:
+            await run.sync()
+        except DocumentNotFound:
+            # The document was deleted between workflow completion and this sync
+            # (e.g. concurrent cleanup). The run already reached a terminal state
+            # via WorkflowRunSyncer, so there is nothing left to do.
+            logger.warning("[run=%s] sync() skipped — document deleted before reload", run.id)
 
     async def _finalize_cancel(self, run: WorkflowRun, exc: BaseException) -> None:
         """Mark the run CANCELLED and reverse-notify agno (M2)."""

@@ -5,7 +5,7 @@ import uuid
 from fastapi import APIRouter, HTTPException
 from pydantic import ValidationError
 
-from registry_pkgs.core.jwt_utils import build_jwt_payload, encode_jwt
+from registry_pkgs.core.jwt_tokens import mint_managed_agent_token
 
 from ...auth.dependencies import CurrentUser
 from ...core.config import settings
@@ -78,22 +78,21 @@ async def generate_user_token(
             "groups": user_groups,
             "jti": str(uuid.uuid4()),
             "token_use": "access",
-            "client_id": "user-generated",
         }
 
         if description:
             extra_claims["description"] = description
 
-        access_payload = build_jwt_payload(
+        # User-vended tokens are managed-agent (proxy / Bearer) class. client_id is the
+        # sentinel "user-generated" (never the registry backend's id).
+        access_token = mint_managed_agent_token(
+            settings.jwt_token_config,
             subject=username,
-            issuer=settings.jwt_issuer,
-            audience=settings.jwt_audience,
+            client_id="user-generated",
             expires_in_seconds=expires_in_seconds,
             iat=current_time,
             extra_claims=extra_claims,
         )
-
-        access_token = encode_jwt(access_payload, settings.jwt_private_key, kid=settings.jwt_self_signed_kid)
 
         logger.info(f"Successfully generated token for user '{username}' with expiry {expires_in_hours}h")
 

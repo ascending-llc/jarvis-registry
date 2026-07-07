@@ -1,5 +1,4 @@
 import logging
-import secrets
 from functools import cached_property
 from typing import Any, Self
 from urllib.parse import urlparse
@@ -7,7 +6,7 @@ from urllib.parse import urlparse
 from cryptography.exceptions import UnsupportedAlgorithm
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey, RSAPublicKey
 from cryptography.hazmat.primitives.serialization import load_pem_private_key, load_pem_public_key
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .scopes import ScopesConfig, load_scopes_config
@@ -39,6 +38,10 @@ class VectorConfig(BaseModel):
     azure_openai_embedding_deployment: str = Field(default="", description="Azure OpenAI embedding deployment name")
     azure_openai_llm_deployment: str = Field(default="", description="Azure OpenAI LLM deployment name")
     llm_model: str = Field(default="gpt-4", description="LLM model name")
+    rerank_enabled: bool = Field(default=True, description="Enable Bedrock Cohere reranking on vector search")
+    rerank_model_id: str = Field(
+        default="cohere.rerank-v3-5:0", description="Bedrock Cohere rerank model ID (ARN is built from region + ID)"
+    )
 
 
 class MongoConfig(BaseModel):
@@ -68,6 +71,19 @@ class JwtSigningConfig(BaseModel):
     jwt_audience: str = Field(description="Default audience (`aud`) claim")
 
 
+class JwtTokenConfig(BaseModel):
+    """Everything the token-class layer (``core.jwt_tokens``) needs to mint and verify
+    the two mutually-exclusive classes of self-signed JWT."""
+
+    jwt_private_key: str = Field(description="PEM-encoded RSA private key used to sign tokens")
+    jwt_public_key: str = Field(description="PEM-encoded RSA public key used to verify tokens")
+    jwt_issuer: str = Field(description="Issuer (`iss`) claim — the registry's public URL")
+    jwt_self_signed_kid: str = Field(description="`kid` header for self-signed JWKS lookup")
+    managed_agents_audience: str = Field(description="`aud` for managed-agent (proxy / Bearer) tokens")
+    crud_services_audience: str = Field(description="`aud` for CRUD session (cookie) tokens")
+    registry_client_id: str = Field(description="`client_id` of the registry backend (the first-party CRUD principal)")
+
+
 class TelemetryConfig(BaseModel):
     otel_metrics_config_path: str = Field(default="", description="Metrics config file path")
     otel_exporter_otlp_endpoint: str = Field(
@@ -75,6 +91,10 @@ class TelemetryConfig(BaseModel):
     )
     otel_prometheus_enabled: bool = Field(default=False, description="Enable Prometheus metrics endpoint")
     otel_prometheus_port: int = Field(default=9464, description="Prometheus metrics port")
+    build_version: str = Field(
+        default="unknown",
+        description="Build identifier (release tag or commit SHA) used as the OTel service.version resource attribute",
+    )
 
 
 class JarvisBaseSettings(BaseSettings):
@@ -105,7 +125,13 @@ class JarvisBaseSettings(BaseSettings):
     # ==================== JWT ====================
     jwt_private_key: str = ""  # PEM-encoded RSA private key (JWT_PRIVATE_KEY env var)
     jwt_public_key: str = ""  # PEM-encoded RSA public key (JWT_PUBLIC_KEY env var)
+    # Outbound / service-to-service audience (registry -> external MCP / AgentCore Runtime).
+    # Coupled to AgentCore-side config; do NOT reuse for inbound managed-agent / CRUD tokens.
     jwt_audience: str = "jarvis-services"
+    # Inbound token-class audiences (AS-1523): managed-agent tokens (Bearer -> /proxy) vs
+    # CRUD session tokens (jarvis_registry_session cookie -> non-proxy CRUD routes).
+    jwt_audience_managed_agents: str = "jarvis-managed-agents"
+    jwt_audience_crud_services: str = "jarvis-crud-services"
     jwt_self_signed_kid: str = "self-signed-key-v1"
 
     # ==================== RFC 9110 realm ====================
@@ -141,6 +167,23 @@ class JarvisBaseSettings(BaseSettings):
     otel_exporter_otlp_endpoint: str = "http://otel-collector:4318"
     otel_prometheus_enabled: bool = False
     otel_prometheus_port: int = 9464
+    build_version: str = "unknown"
+
+    # ==================== Auth Provider ====================
+    auth_provider: str = "entra"  # cognito, keycloak, entra
+
+    @field_validator("auth_provider")
+    @classmethod
+    def validate_auth_provider(cls, v: str) -> str:
+        allowed = ["cognito", "keycloak", "entra"]
+        if v.lower() not in allowed:
+            raise ValueError(f"auth_provider must be one of {allowed}, got '{v}'")
+        return v.lower()
+
+    # ==================== Entra ID Settings ====================
+    entra_tenant_id: str | None = None
+    entra_client_id: str | None = None
+    entra_client_secret: str | None = None
 
     # ==================== Scopes ====================
     scopes_config_path: str = ""
@@ -199,10 +242,16 @@ class JarvisBaseSettings(BaseSettings):
 
         return self
 
-    def model_post_init(self, __context: Any) -> None:
+    @model_validator(mode="after")
+    def _validate_secret_key(self) -> Self:
+        if self.x_jarvis_registry_import_checks == "disabled":
+            logging.warning("SECRET_KEY validation is disabled. This should only happen in CI import checks.")
+            return self
         if not self.secret_key:
-            self.secret_key = secrets.token_hex(32)
+            raise ValueError("SECRET_KEY must be set.")
+        return self
 
+    def model_post_init(self, __context: Any) -> None:
         if self.auth_server_api_prefix:
             prefix = self.auth_server_api_prefix.rstrip("/")
             if not self.auth_server_url.endswith(prefix):
@@ -236,12 +285,25 @@ class JarvisBaseSettings(BaseSettings):
         )
 
     @cached_property
+    def jwt_token_config(self) -> JwtTokenConfig:
+        return JwtTokenConfig(
+            jwt_private_key=self.jwt_private_key,
+            jwt_public_key=self.jwt_public_key,
+            jwt_issuer=self.jwt_issuer,
+            jwt_self_signed_kid=self.jwt_self_signed_kid,
+            managed_agents_audience=self.jwt_audience_managed_agents,
+            crud_services_audience=self.jwt_audience_crud_services,
+            registry_client_id=self.registry_app_name,
+        )
+
+    @cached_property
     def telemetry_config(self) -> TelemetryConfig:
         return TelemetryConfig(
             otel_metrics_config_path=self.otel_metrics_config_path,
             otel_exporter_otlp_endpoint=self.otel_exporter_otlp_endpoint,
             otel_prometheus_enabled=self.otel_prometheus_enabled,
             otel_prometheus_port=self.otel_prometheus_port,
+            build_version=self.build_version,
         )
 
     @cached_property

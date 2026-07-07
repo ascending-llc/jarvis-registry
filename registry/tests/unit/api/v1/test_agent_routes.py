@@ -7,7 +7,12 @@ from beanie import PydanticObjectId
 from fastapi import HTTPException
 
 from registry.api.v1.a2a.agent_routes import create_agent, delete_agent, get_agent_stats, list_agents, update_agent
-from registry.schemas.a2a_agent_api_schemas import AgentCreateRequest, AgentUpdateRequest
+from registry.schemas.a2a_agent_api_schemas import (
+    AgentCreateRequest,
+    AgentUpdateRequest,
+    convert_to_detail,
+    convert_to_list_item,
+)
 from registry_pkgs.models import PrincipalType, ResourceType
 from registry_pkgs.models.enums import RoleBits
 
@@ -21,7 +26,7 @@ class _RecordingTxnCtx:
 
     async def __aexit__(self, exc_type, exc, tb):
         self.exit_exc_type = exc_type
-        return False  # do not suppress -> exception propagates out of @use_transaction
+        return False  # do not suppress -> exception propagates out of the explicit transaction block
 
 
 class _FakeTxnSession:
@@ -70,10 +75,9 @@ def _build_agent(agent_id: PydanticObjectId | None = None):
             description="Agent description",
             url="https://agent.example.com",
             type="jsonrpc",
+            enabled=True,
         ),
         tags=["test"],
-        isEnabled=True,
-        status="active",
         author=PydanticObjectId(),
         createdAt=now,
         updatedAt=now,
@@ -108,7 +112,6 @@ async def test_list_agents_uses_injected_services(sample_user_context):
     result = await list_agents(
         user_context=sample_user_context,
         query="test",
-        status="active",
         page=1,
         per_page=20,
         acl_service=acl_service,
@@ -117,12 +120,35 @@ async def test_list_agents_uses_injected_services(sample_user_context):
 
     acl_service.get_accessible_resource_ids.assert_awaited_once()
     a2a_agent_service.list_agents.assert_awaited_once()
+    # status filtering is gone; the route always calls the service with enabled_only=False
+    assert a2a_agent_service.list_agents.await_args.kwargs["enabled_only"] is False
     assert result.pagination.total == 1
     assert result.agents[0].name == "Test Agent"
     # Assert config field is returned
     assert result.agents[0].config is not None
     assert result.agents[0].config.title == "Test Agent"
     assert result.agents[0].config.type == "jsonrpc"
+
+
+@pytest.mark.asyncio
+async def test_list_agents_maps_acl_runtime_error_to_503(sample_user_context):
+    """An ACL/DB outage (RuntimeError from get_accessible_resource_ids) must surface as 503, not 500."""
+    acl_service = MagicMock()
+    acl_service.get_accessible_resource_ids = AsyncMock(
+        side_effect=RuntimeError("Failed to fetch accessible resources")
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await list_agents(
+            user_context=sample_user_context,
+            query="test",
+            page=1,
+            per_page=20,
+            acl_service=acl_service,
+            a2a_agent_service=MagicMock(),
+        )
+
+    assert exc_info.value.status_code == 503
 
 
 @pytest.mark.asyncio
@@ -133,7 +159,6 @@ async def test_get_agent_stats_uses_injected_service(sample_user_context):
             "total_agents": 3,
             "enabled_agents": 2,
             "disabled_agents": 1,
-            "by_status": {"active": 2, "inactive": 1},
             "by_transport": {"HTTP+JSON": 3},
             "total_skills": 5,
             "average_skills_per_agent": 1.7,
@@ -167,7 +192,7 @@ async def test_create_agent_uses_injected_services(sample_user_context):
         type="jsonrpc",
     )
 
-    with patch("registry_pkgs.database.decorators.MongoDB.get_client") as mock_get_client:
+    with patch("registry.api.v1.a2a.agent_routes.MongoDB.get_client") as mock_get_client:
         mock_session = AsyncMock()
         mock_client = MagicMock()
         mock_client.start_session.return_value.__aenter__.return_value = mock_session
@@ -181,12 +206,17 @@ async def test_create_agent_uses_injected_services(sample_user_context):
             a2a_agent_service=a2a_agent_service,
         )
 
-    a2a_agent_service.create_agent.assert_awaited_once_with(data=request, user_id=sample_user_context["user_id"])
+    a2a_agent_service.create_agent.assert_awaited_once_with(
+        data=request,
+        user_id=sample_user_context["user_id"],
+        session=mock_session,
+    )
     acl_service.grant_permission.assert_awaited_once()
     call_args = acl_service.grant_permission.call_args
     assert call_args.kwargs["principal_type"] == PrincipalType.USER
     assert call_args.kwargs["resource_type"] == ResourceType.REMOTE_AGENT
     assert call_args.kwargs["perm_bits"] == RoleBits.OWNER
+    assert call_args.kwargs["session"] is mock_session
     assert result.name == "Test Agent"
     # Assert config field is returned with correct values
     assert result.config is not None
@@ -215,7 +245,7 @@ async def test_create_agent_invalid_root_path_returns_400(sample_user_context):
         type="jsonrpc",
     )
 
-    with patch("registry_pkgs.database.decorators.MongoDB.get_client") as mock_get_client:
+    with patch("registry.api.v1.a2a.agent_routes.MongoDB.get_client") as mock_get_client:
         mock_session = AsyncMock()
         mock_client = MagicMock()
         mock_client.start_session.return_value.__aenter__.return_value = mock_session
@@ -250,7 +280,7 @@ async def test_update_agent_duplicate_path_returns_409(sample_user_context):
 
     request = AgentUpdateRequest(path="/Team A/CRM Agent")
 
-    with patch("registry_pkgs.database.decorators.MongoDB.get_client") as mock_get_client:
+    with patch("registry.api.v1.a2a.agent_routes.MongoDB.get_client") as mock_get_client:
         mock_session = AsyncMock()
         mock_client = MagicMock()
         mock_client.start_session.return_value.__aenter__.return_value = mock_session
@@ -285,7 +315,7 @@ async def test_update_agent_invalid_root_path_returns_400(sample_user_context):
 
     request = AgentUpdateRequest(path="/")
 
-    with patch("registry_pkgs.database.decorators.MongoDB.get_client") as mock_get_client:
+    with patch("registry.api.v1.a2a.agent_routes.MongoDB.get_client") as mock_get_client:
         mock_session = AsyncMock()
         mock_client = MagicMock()
         mock_client.start_session.return_value.__aenter__.return_value = mock_session
@@ -508,7 +538,7 @@ async def test_refresh_agent_capabilities_permission_denied():
 @pytest.mark.asyncio
 async def test_create_agent_rolls_back_when_grant_permission_fails(sample_user_context):
     """AC4: if grant_permission fails after create_agent succeeds, the failure
-    propagates out of the @use_transaction boundary (rollback path), so the
+    propagates out of the explicit transaction boundary (rollback path), so the
     agent insert is rolled back rather than left orphaned."""
     agent = _build_agent()
     a2a_agent_service = MagicMock()
@@ -528,7 +558,7 @@ async def test_create_agent_rolls_back_when_grant_permission_fails(sample_user_c
     ctx = _RecordingTxnCtx()
     fake_client = _FakeTxnClient(_FakeTxnSession(ctx))
 
-    with patch("registry_pkgs.database.decorators.MongoDB.get_client", return_value=fake_client):
+    with patch("registry.api.v1.a2a.agent_routes.MongoDB.get_client", return_value=fake_client):
         with pytest.raises(HTTPException) as exc_info:
             await create_agent(
                 data=request,
@@ -540,8 +570,8 @@ async def test_create_agent_rolls_back_when_grant_permission_fails(sample_user_c
     assert exc_info.value.status_code == 500
     a2a_agent_service.create_agent.assert_awaited_once()
     acl_service.grant_permission.assert_awaited_once()
-    # Transaction context manager exited via an exception -> rollback path taken.
-    assert ctx.exit_exc_type is HTTPException
+    # Transaction context manager sees the original exception before the route maps it to HTTPException.
+    assert ctx.exit_exc_type is RuntimeError
 
 
 @pytest.mark.asyncio
@@ -558,7 +588,7 @@ async def test_delete_agent_rolls_back_when_acl_cleanup_fails(sample_user_contex
     ctx = _RecordingTxnCtx()
     fake_client = _FakeTxnClient(_FakeTxnSession(ctx))
 
-    with patch("registry_pkgs.database.decorators.MongoDB.get_client", return_value=fake_client):
+    with patch("registry.api.v1.a2a.agent_routes.MongoDB.get_client", return_value=fake_client):
         with pytest.raises(HTTPException) as exc_info:
             await delete_agent(
                 agent_id=agent_id,
@@ -570,5 +600,21 @@ async def test_delete_agent_rolls_back_when_acl_cleanup_fails(sample_user_contex
     assert exc_info.value.status_code == 500
     a2a_agent_service.delete_agent.assert_awaited_once()
     acl_service.delete_acl_entries_for_resource.assert_awaited_once()
-    # Transaction context manager exited via an exception -> rollback path taken.
-    assert ctx.exit_exc_type is HTTPException
+    # Transaction context manager sees the original exception before the route maps it to HTTPException.
+    assert ctx.exit_exc_type is RuntimeError
+
+
+def test_convert_to_list_item_uses_config_enabled_without_status():
+    agent = _build_agent()
+    agent.config.enabled = False
+    item = convert_to_list_item(agent, 15)
+    assert not hasattr(item, "status")
+    assert item.enabled is False
+
+
+def test_convert_to_detail_uses_config_enabled_without_status():
+    agent = _build_agent()
+    agent.config.enabled = True
+    detail = convert_to_detail(agent, 15)
+    assert not hasattr(detail, "status")
+    assert detail.enabled is True

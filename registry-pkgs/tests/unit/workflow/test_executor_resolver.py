@@ -34,7 +34,6 @@ def _mcp_server(name: str = "github") -> ExtendedMCPServer:
         serverName=name,
         config={"description": "server description"},
         author=PydanticObjectId(),
-        status="active",
     )
 
 
@@ -61,10 +60,10 @@ def _a2a_agent(
             title="Configured Agent",
             description="desc",
             url=HttpUrl(config_url),
+            enabled=True,
             type=transport,
         ),
         author=PydanticObjectId(),
-        status="active",
     )
 
 
@@ -178,7 +177,7 @@ class TestExecutorResolver:
         assert resolved == "a2a-executor"
         assert len(captured_agents) == 1
         assert captured_agents[0].path == "deep-intel"  # Path is now normalized (no slashes)
-        find_one.assert_awaited_once_with(("path", "==", "deep-intel"), {"isEnabled": True})
+        find_one.assert_awaited_once_with(("path", "==", "deep-intel"), {"config.enabled": True})
 
     @pytest.mark.asyncio
     async def test_resolve_executor_raises_when_key_is_unknown(self, monkeypatch: pytest.MonkeyPatch):
@@ -337,36 +336,6 @@ class TestMcpExecutor:
 class TestA2AExecutor:
     """Tests for a2a_executor.make_a2a_executor and helpers."""
 
-    def test_make_agent_jwt_calls_encode_with_correct_claims(self, monkeypatch: pytest.MonkeyPatch):
-        built_payloads: list[dict] = []
-        encoded_calls: list[tuple] = []
-
-        def fake_build_payload(subject, issuer, audience, expires_in_seconds):
-            built_payloads.append({"sub": subject, "iss": issuer, "aud": audience, "exp": expires_in_seconds})
-            return {"sub": subject, "iss": issuer, "aud": audience}
-
-        def fake_encode(payload, key, kid):
-            encoded_calls.append((payload, key, kid))
-            return "signed-jwt"
-
-        monkeypatch.setattr(a2a_client, "build_jwt_payload", fake_build_payload)
-        monkeypatch.setattr(a2a_client, "encode_jwt", fake_encode)
-
-        token = a2a_client.make_agent_jwt(
-            agent_url="https://agent.example.com",
-            jwt_config=_jwt_config(),
-            expires_in_seconds=120,
-        )
-
-        assert token == "signed-jwt"
-        assert built_payloads[0]["sub"] == "jarvis-workflow"
-        assert built_payloads[0]["iss"] == "https://jarvis.example.com"
-        assert built_payloads[0]["aud"] == "https://agent.example.com"
-        assert built_payloads[0]["exp"] == 120
-        _, key_used, kid_used = encoded_calls[0]
-        assert key_used == "fake-pem"
-        assert kid_used == "kid-v1"
-
     def test_make_agentcore_jwt_strips_whitespace_in_config_claims(self, monkeypatch: pytest.MonkeyPatch):
         built_payloads: list[dict] = []
 
@@ -465,7 +434,7 @@ class TestLoadAccessibleAgentIds:
         from beanie import PydanticObjectId
 
         from registry_pkgs.models.enums import PermissionBits
-        from registry_pkgs.models.extended_acl_entry import ExtendedAclEntry
+        from registry_pkgs.models.extended_acl_entry import RegistryAclEntry
 
         rid1 = PydanticObjectId()
         rid2 = PydanticObjectId()
@@ -482,14 +451,14 @@ class TestLoadAccessibleAgentIds:
 
             return FakeQuery()
 
-        monkeypatch.setattr(ExtendedAclEntry, "find", fake_find)
+        monkeypatch.setattr(RegistryAclEntry, "find", fake_find)
 
         result = await executor_resolver._load_accessible_agent_ids(str(PydanticObjectId()))
         assert result == {str(rid1), str(rid3)}
 
     @pytest.mark.asyncio
     async def test_returns_empty_set_when_no_entries(self, monkeypatch: pytest.MonkeyPatch):
-        from registry_pkgs.models.extended_acl_entry import ExtendedAclEntry
+        from registry_pkgs.models.extended_acl_entry import RegistryAclEntry
 
         def fake_find(query):
             class FakeQuery:
@@ -498,7 +467,7 @@ class TestLoadAccessibleAgentIds:
 
             return FakeQuery()
 
-        monkeypatch.setattr(ExtendedAclEntry, "find", fake_find)
+        monkeypatch.setattr(RegistryAclEntry, "find", fake_find)
 
         result = await executor_resolver._load_accessible_agent_ids(str(PydanticObjectId()))
         assert result == set()
@@ -529,11 +498,11 @@ class TestLoadAccessibleAgentIds:
 
 @pytest.mark.unit
 class TestA2APoolExecutorQueries:
-    """Ensure make_a2a_pool_executor queries use isEnabled, not status."""
+    """Ensure make_a2a_pool_executor queries use config.enabled."""
 
     @pytest.mark.asyncio
-    async def test_pool_initial_selection_queries_by_is_enabled(self, monkeypatch: pytest.MonkeyPatch):
-        """Initial pool query must filter on isEnabled=True, not status='active'."""
+    async def test_pool_initial_selection_queries_by_config_enabled(self, monkeypatch: pytest.MonkeyPatch):
+        """Initial pool query must filter on config.enabled=True."""
         captured_queries: list = []
 
         async def fake_to_list():
@@ -564,12 +533,12 @@ class TestA2APoolExecutorQueries:
         assert len(captured_queries) == 1, "expected exactly one find() call"
         query = captured_queries[0]
         assert "status" not in query, f"status filter found in pool query: {query}"
-        assert query.get("isEnabled") is True, f"isEnabled=True not in pool query: {query}"
+        assert query.get("config.enabled") is True, f"config.enabled=True not in pool query: {query}"
         assert query.get("path") == {"$in": ["agent-a", "agent-b"]}
 
     @pytest.mark.asyncio
-    async def test_pool_retry_path_queries_by_is_enabled(self, monkeypatch: pytest.MonkeyPatch):
-        """Retry path (selected_path already cached) must filter on isEnabled=True."""
+    async def test_pool_retry_path_queries_by_config_enabled(self, monkeypatch: pytest.MonkeyPatch):
+        """Retry path (selected_path already cached) must filter on config.enabled=True."""
         captured_args: list = []
 
         async def fake_find_one(*args, **kwargs):
@@ -597,5 +566,5 @@ class TestA2APoolExecutorQueries:
         assert len(captured_args) >= 1
         args_str = str(captured_args)
         assert "status" not in args_str, f"status filter found in retry query: {captured_args}"
-        assert "isEnabled" in args_str, f"isEnabled not in retry query: {captured_args}"
-        assert captured_args[0] == {"path": "agent-a", "isEnabled": True}
+        assert "config.enabled" in args_str, f"config.enabled not in retry query: {captured_args}"
+        assert captured_args[0] == {"path": "agent-a", "config.enabled": True}

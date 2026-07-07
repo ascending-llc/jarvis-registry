@@ -43,6 +43,8 @@ def create_bedrock_embedding(config: BackendConfig):
         if embed_config.access_key_id and embed_config.secret_access_key:
             kwargs["aws_access_key_id"] = embed_config.access_key_id
             kwargs["aws_secret_access_key"] = embed_config.secret_access_key
+            if embed_config.session_token:
+                kwargs["aws_session_token"] = embed_config.session_token
 
         return embedding_class(**kwargs)
 

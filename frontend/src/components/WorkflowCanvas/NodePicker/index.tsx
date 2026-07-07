@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useServer } from '@/contexts/ServerContext';
 import type { LogicStep, NodePickerProps, PickerItem } from '../types';
 
@@ -58,14 +58,6 @@ const LOGIC_STEPS: LogicStep[] = [
 const TABS = ['A2A Agents', 'MCP Servers', 'Logic Step', 'All'] as const;
 type TabType = (typeof TABS)[number];
 
-/** Status color mapping. */
-const STATUS_COLOR: Record<string, string> = {
-  active: 'var(--jarvis-success)',
-  inactive: 'var(--jarvis-warning)',
-  error: 'var(--jarvis-danger)',
-};
-const STATUS_LABEL: Record<string, string> = { active: 'Active', inactive: 'Inactive', error: 'Error' };
-
 /** Get 2-char initials from any display name. */
 const getInitials = (name: string): string => {
   if (!name) return '??';
@@ -79,6 +71,16 @@ const NodePicker: React.FC<NodePickerProps> = ({ onPick, onClose, agentOnly = fa
   const [internalTab, setInternalTab] = useState<TabType>('A2A Agents');
   const [query, setQuery] = useState('');
   const [hovered, setHovered] = useState<string | null>(null);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onClose]);
 
   const activeTab: string = tab ?? internalTab;
   const setActiveTab = (t: string) => {
@@ -95,7 +97,8 @@ const NodePicker: React.FC<NodePickerProps> = ({ onPick, onClose, agentOnly = fa
         id: a.id,
         label: a.name,
         desc: a.description || `${a.numSkills} skill${a.numSkills !== 1 ? 's' : ''}`,
-        status: a.status || 'active',
+        enabled: a.enabled,
+        executorKey: a.path,
       })),
     [agents],
   );
@@ -106,7 +109,8 @@ const NodePicker: React.FC<NodePickerProps> = ({ onPick, onClose, agentOnly = fa
         id: s.id,
         label: s.name,
         desc: s.description || `${s.numTools ?? 0} tool${s.numTools !== 1 ? 's' : ''}`,
-        status: s.status || 'active',
+        enabled: s.enabled,
+        executorKey: s.name,
       })),
     [servers],
   );
@@ -194,32 +198,40 @@ const NodePicker: React.FC<NodePickerProps> = ({ onPick, onClose, agentOnly = fa
               <div className='font-mono text-[10px] font-bold tracking-[0.08em] uppercase text-[var(--jarvis-subtle)] px-2.5 py-2 pb-1'>
                 A2A Agents
               </div>
-              {agentList.map(a => (
-                <button
-                  key={a.id}
-                  className={`w-full text-left flex items-center gap-2.5 p-2.5 rounded-lg cursor-pointer border-none outline-none focus:ring-1 focus:ring-[var(--jarvis-primary)] transition-colors ${
-                    hovered === a.id ? 'bg-[var(--jarvis-surface)]' : 'bg-transparent'
-                  }`}
-                  onMouseEnter={() => setHovered(a.id)}
-                  onMouseLeave={() => setHovered(null)}
-                  onClick={() => onPick('agent', a)}
-                >
-                  <div className='w-8 h-8 rounded-lg flex items-center justify-center font-sans font-bold text-[11px] bg-[var(--jarvis-primary-soft)] text-[var(--jarvis-primary-text)] shrink-0'>
-                    {getInitials(a.label)}
-                  </div>
-                  <div className='flex-1 min-w-0'>
-                    <div className='text-[13px] font-medium text-[var(--jarvis-text-strong)]'>{a.label}</div>
-                    <div className='text-[11px] text-[var(--jarvis-subtle)] mt-0.5'>{a.desc}</div>
-                  </div>
-                  <div className='ml-auto text-[11px] text-[var(--jarvis-subtle)] whitespace-nowrap flex items-center gap-1 shrink-0'>
-                    <div
-                      className='w-[5px] h-[5px] rounded-full'
-                      style={{ background: STATUS_COLOR[a.status ?? 'active'] || 'var(--jarvis-subtle)' }}
-                    />
-                    {STATUS_LABEL[a.status ?? 'active'] || 'Unknown'}
-                  </div>
-                </button>
-              ))}
+              {agentList.map(a => {
+                const isEnabled = a.enabled !== false;
+                return (
+                  <button
+                    key={a.id}
+                    disabled={!isEnabled}
+                    className={`w-full text-left flex items-center gap-2.5 p-2.5 rounded-lg border-none outline-none transition-colors ${
+                      !isEnabled
+                        ? 'opacity-50 cursor-not-allowed bg-transparent'
+                        : hovered === a.id
+                          ? 'bg-[var(--jarvis-surface)] cursor-pointer focus:ring-1 focus:ring-[var(--jarvis-primary)]'
+                          : 'bg-transparent cursor-pointer focus:ring-1 focus:ring-[var(--jarvis-primary)]'
+                    }`}
+                    onMouseEnter={() => setHovered(a.id)}
+                    onMouseLeave={() => setHovered(null)}
+                    onClick={() => isEnabled && onPick('agent', a)}
+                  >
+                    <div className='w-8 h-8 rounded-lg flex items-center justify-center font-sans font-bold text-[11px] bg-[var(--jarvis-primary-soft)] text-[var(--jarvis-primary-text)] shrink-0'>
+                      {getInitials(a.label)}
+                    </div>
+                    <div className='flex-1 min-w-0'>
+                      <div className='text-[13px] font-medium text-[var(--jarvis-text-strong)]'>{a.label}</div>
+                      <div className='text-[11px] text-[var(--jarvis-subtle)] mt-0.5'>{a.desc}</div>
+                    </div>
+                    <div className='ml-auto text-[11px] text-[var(--jarvis-subtle)] whitespace-nowrap flex items-center gap-1 shrink-0'>
+                      <div
+                        className='w-[5px] h-[5px] rounded-full'
+                        style={{ background: isEnabled ? 'var(--jarvis-success)' : 'var(--jarvis-subtle)' }}
+                      />
+                      {isEnabled ? 'Enabled' : 'Disabled'}
+                    </div>
+                  </button>
+                );
+              })}
             </>
           )}
 
@@ -228,32 +240,40 @@ const NodePicker: React.FC<NodePickerProps> = ({ onPick, onClose, agentOnly = fa
               <div className='font-mono text-[10px] font-bold tracking-[0.08em] uppercase text-[var(--jarvis-subtle)] px-2.5 py-2 pb-1'>
                 MCP Servers
               </div>
-              {mcpList.map(m => (
-                <button
-                  key={m.id}
-                  className={`w-full text-left flex items-center gap-2.5 p-2.5 rounded-lg cursor-pointer border-none outline-none focus:ring-1 focus:ring-[var(--jarvis-primary)] transition-colors ${
-                    hovered === m.id ? 'bg-[var(--jarvis-surface)]' : 'bg-transparent'
-                  }`}
-                  onMouseEnter={() => setHovered(m.id)}
-                  onMouseLeave={() => setHovered(null)}
-                  onClick={() => onPick('mcp', m)}
-                >
-                  <div className='w-8 h-8 rounded-lg flex items-center justify-center font-sans font-bold text-[11px] bg-[var(--jarvis-blue-soft)] text-[var(--jarvis-blue)] shrink-0'>
-                    {getInitials(m.label)}
-                  </div>
-                  <div className='flex-1 min-w-0'>
-                    <div className='text-[13px] font-medium text-[var(--jarvis-text-strong)]'>{m.label}</div>
-                    <div className='text-[11px] text-[var(--jarvis-subtle)] mt-0.5'>{m.desc}</div>
-                  </div>
-                  <div className='ml-auto text-[11px] text-[var(--jarvis-subtle)] whitespace-nowrap flex items-center gap-1 shrink-0'>
-                    <div
-                      className='w-[5px] h-[5px] rounded-full'
-                      style={{ background: STATUS_COLOR[m.status ?? 'active'] || 'var(--jarvis-subtle)' }}
-                    />
-                    {STATUS_LABEL[m.status ?? 'active'] || 'Unknown'}
-                  </div>
-                </button>
-              ))}
+              {mcpList.map(m => {
+                const isEnabled = m.enabled !== false;
+                return (
+                  <button
+                    key={m.id}
+                    disabled={!isEnabled}
+                    className={`w-full text-left flex items-center gap-2.5 p-2.5 rounded-lg border-none outline-none transition-colors ${
+                      !isEnabled
+                        ? 'opacity-50 cursor-not-allowed bg-transparent'
+                        : hovered === m.id
+                          ? 'bg-[var(--jarvis-surface)] cursor-pointer focus:ring-1 focus:ring-[var(--jarvis-primary)]'
+                          : 'bg-transparent cursor-pointer focus:ring-1 focus:ring-[var(--jarvis-primary)]'
+                    }`}
+                    onMouseEnter={() => setHovered(m.id)}
+                    onMouseLeave={() => setHovered(null)}
+                    onClick={() => isEnabled && onPick('mcp', m)}
+                  >
+                    <div className='w-8 h-8 rounded-lg flex items-center justify-center font-sans font-bold text-[11px] bg-[var(--jarvis-blue-soft)] text-[var(--jarvis-blue)] shrink-0'>
+                      {getInitials(m.label)}
+                    </div>
+                    <div className='flex-1 min-w-0'>
+                      <div className='text-[13px] font-medium text-[var(--jarvis-text-strong)]'>{m.label}</div>
+                      <div className='text-[11px] text-[var(--jarvis-subtle)] mt-0.5'>{m.desc}</div>
+                    </div>
+                    <div className='ml-auto text-[11px] text-[var(--jarvis-subtle)] whitespace-nowrap flex items-center gap-1 shrink-0'>
+                      <div
+                        className='w-[5px] h-[5px] rounded-full'
+                        style={{ background: isEnabled ? 'var(--jarvis-success)' : 'var(--jarvis-subtle)' }}
+                      />
+                      {isEnabled ? 'Enabled' : 'Disabled'}
+                    </div>
+                  </button>
+                );
+              })}
             </>
           )}
 

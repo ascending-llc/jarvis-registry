@@ -4,9 +4,9 @@ from typing import Any
 
 from beanie import PydanticObjectId
 from bson.errors import InvalidId
+from pymongo.asynchronous.client_session import AsyncClientSession
 
 from registry.utils.crypto_utils import encrypt_value, is_encrypted
-from registry_pkgs.database.decorators import get_current_session
 from registry_pkgs.models.enums import (
     FederationProviderType,
     FederationStateMachine,
@@ -87,6 +87,7 @@ class FederationCrudService:
         tags: list[str],
         provider_config: dict,
         created_by: str | None,
+        session: AsyncClientSession | None = None,
     ) -> Federation:
         # Creation only persists the federation definition. Provider sync is
         # always triggered explicitly through the dedicated sync API.
@@ -103,16 +104,20 @@ class FederationCrudService:
             updatedBy=created_by,
             stats=FederationStats(),
         )
-        await federation.insert(session=get_current_session())
+        await federation.insert(session=session)
         return federation
 
-    async def get_federation(self, federation_id: str) -> Federation | None:
+    async def get_federation(
+        self,
+        federation_id: str,
+        session: AsyncClientSession | None = None,
+    ) -> Federation | None:
         try:
             object_id = PydanticObjectId(federation_id)
         except (InvalidId, TypeError, ValueError):
             return None
 
-        federation = await Federation.get(object_id)
+        federation = await Federation.get(object_id, session=session)
         if not federation or federation.status == FederationStatus.DELETED or federation.deletedAt is not None:
             return None
         return federation
@@ -184,6 +189,7 @@ class FederationCrudService:
         tags: list[str],
         provider_config: dict,
         updated_by: str | None,
+        session: AsyncClientSession | None = None,
     ) -> Federation:
         normalized_config = self.validate_provider_config(federation.providerType, provider_config)
 
@@ -192,7 +198,7 @@ class FederationCrudService:
         federation.tags = tags
         federation.providerConfig = normalized_config
         federation.updatedBy = updated_by
-        await federation.save(session=get_current_session())
+        await federation.save(session=session)
         return federation
 
     async def mark_sync_pending(
@@ -200,6 +206,7 @@ class FederationCrudService:
         federation: Federation,
         *,
         last_sync: FederationLastSync | None = None,
+        session: AsyncClientSession | None = None,
     ) -> Federation:
         federation.syncStatus = FederationStateMachine.transition_to_sync_pending(
             federation.status,
@@ -208,7 +215,7 @@ class FederationCrudService:
         federation.syncMessage = None
         if last_sync is not None:
             federation.lastSync = last_sync
-        await federation.save(session=get_current_session())
+        await federation.save(session=session)
         return federation
 
     async def mark_syncing(
@@ -216,6 +223,7 @@ class FederationCrudService:
         federation: Federation,
         *,
         last_sync: FederationLastSync | None = None,
+        session: AsyncClientSession | None = None,
     ) -> Federation:
         federation.syncStatus = FederationStateMachine.transition_to_syncing(
             federation.status,
@@ -224,15 +232,21 @@ class FederationCrudService:
         federation.syncMessage = None
         if last_sync is not None:
             federation.lastSync = last_sync
-        await federation.save(session=get_current_session())
+        await federation.save(session=session)
         return federation
 
-    async def mark_sync_success(self, federation: Federation, last_sync, stats: FederationStats) -> Federation:
+    async def mark_sync_success(
+        self,
+        federation: Federation,
+        last_sync,
+        stats: FederationStats,
+        session: AsyncClientSession | None = None,
+    ) -> Federation:
         federation.syncStatus = FederationStateMachine.transition_to_sync_success(federation.syncStatus)
         federation.syncMessage = None
         federation.lastSync = last_sync
         federation.stats = stats
-        await federation.save(session=get_current_session())
+        await federation.save(session=session)
         return federation
 
     async def mark_sync_failed(
@@ -241,6 +255,7 @@ class FederationCrudService:
         message: str,
         last_sync=None,
         stats: FederationStats | None = None,
+        session: AsyncClientSession | None = None,
     ) -> Federation:
         federation.syncStatus = FederationStateMachine.transition_to_sync_failed(federation.syncStatus)
         federation.syncMessage = message
@@ -248,29 +263,42 @@ class FederationCrudService:
             federation.lastSync = last_sync
         if stats is not None:
             federation.stats = stats
-        await federation.save(session=get_current_session())
+        await federation.save(session=session)
         return federation
 
-    async def mark_delete_failed(self, federation: Federation, message: str) -> Federation:
+    async def mark_delete_failed(
+        self,
+        federation: Federation,
+        message: str,
+        session: AsyncClientSession | None = None,
+    ) -> Federation:
         federation.status = FederationStateMachine.transition_to_delete_failed(federation.status)
         federation.syncStatus = FederationStateMachine.transition_to_sync_failed(federation.syncStatus)
         federation.syncMessage = message
-        await federation.save(session=get_current_session())
+        await federation.save(session=session)
         return federation
 
-    async def mark_deleting(self, federation: Federation) -> Federation:
+    async def mark_deleting(
+        self,
+        federation: Federation,
+        session: AsyncClientSession | None = None,
+    ) -> Federation:
         next_sync_status = FederationStateMachine.transition_to_sync_pending(
             federation.status,
             federation.syncStatus,
         )
         federation.status = FederationStateMachine.transition_to_deleting(federation.status)
         federation.syncStatus = next_sync_status
-        await federation.save(session=get_current_session())
+        await federation.save(session=session)
         return federation
 
-    async def mark_deleted(self, federation: Federation) -> Federation:
+    async def mark_deleted(
+        self,
+        federation: Federation,
+        session: AsyncClientSession | None = None,
+    ) -> Federation:
         federation.status = FederationStateMachine.transition_to_deleted(federation.status)
         federation.deletedAt = datetime.now(UTC)
         federation.syncStatus = FederationStateMachine.transition_to_sync_success(federation.syncStatus)
-        await federation.save(session=get_current_session())
+        await federation.save(session=session)
         return federation

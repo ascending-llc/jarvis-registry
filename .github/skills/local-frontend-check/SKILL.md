@@ -13,7 +13,7 @@ allowed-tools: Bash(playwright-cli:*) Bash(docker:*)
 | Base URL | `http://localhost/gateway` |
 | Browser session | Named `jarvis` — keeps a stable, reusable identity across runs |
 | Launch flags | `--persistent --headed` — profile saved to disk, browser window visible |
-| Backend log container | `jarvis-registry-registry-1` |
+| Backend log container | `<cwd-basename>-registry-1` — where `<cwd-basename>` is the basename of your current working directory (e.g. if CWD is `/projects/jarvis-registry`, use `jarvis-registry-registry-1`) |
 
 ---
 
@@ -87,7 +87,8 @@ playwright-cli -s=jarvis screenshot
 After triggering the key operation(s), read recent logs from the backend container:
 
 ```bash
-docker logs jarvis-registry-registry-1 --tail=200 2>&1
+docker logs <cwd-basename>-registry-1 --tail=200 2>&1
+# Replace <cwd-basename> with the basename of your CWD (e.g. `jarvis-registry` if CWD is `/projects/jarvis-registry`)
 ```
 
 Look for:

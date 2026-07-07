@@ -43,6 +43,7 @@ const Dashboard: React.FC = () => {
     refreshWorkflowData,
 
     searchTerm,
+    setSearchTerm,
     committedQuery,
     setCommittedQuery,
   } = useServer();
@@ -57,16 +58,18 @@ const Dashboard: React.FC = () => {
     } else {
       setViewMode('servers');
     }
-  }, [urlTab, setViewMode]);
+    setSearchTerm('');
+    setCommittedQuery('');
+  }, [urlTab, setViewMode, setSearchTerm, setCommittedQuery]);
 
   // Semantic search
-  const semanticEnabled = committedQuery.trim().length >= 2;
+  const semanticEnabled = committedQuery.trim().length >= 1;
   const {
     results: semanticResults,
     loading: semanticLoading,
     error: semanticError,
   } = useSemanticSearch(committedQuery, {
-    minLength: 2,
+    minLength: 1,
     maxResults: 12,
     enabled: semanticEnabled,
   });
@@ -74,12 +77,18 @@ const Dashboard: React.FC = () => {
   const semanticServers = semanticResults?.servers ?? [];
   const semanticTools = semanticResults?.tools ?? [];
   const semanticAgents = semanticResults?.agents ?? [];
+  const semanticSkills = semanticResults?.skills ?? [];
   const semanticDisplayQuery = semanticResults?.query || committedQuery || searchTerm;
   const semanticSectionVisible = semanticEnabled;
+
   const shouldShowFallbackGrid =
     semanticSectionVisible &&
     (Boolean(semanticError) ||
-      (!semanticLoading && semanticServers.length === 0 && semanticTools.length === 0 && semanticAgents.length === 0));
+      (!semanticLoading &&
+        semanticServers.length === 0 &&
+        semanticTools.length === 0 &&
+        semanticAgents.length === 0 &&
+        semanticSkills.length === 0));
 
   // Filter servers based on activeFilter and searchTerm
   const filteredServers = useMemo(() => {
@@ -159,10 +168,7 @@ const Dashboard: React.FC = () => {
     if (searchTerm) {
       const query = searchTerm.toLowerCase();
       filtered = filtered.filter(
-        w =>
-          w.name.toLowerCase().includes(query) ||
-          (w.description || '').toLowerCase().includes(query) ||
-          w.type.toLowerCase().includes(query),
+        w => w.name.toLowerCase().includes(query) || (w.description || '').toLowerCase().includes(query),
       );
     }
     return filtered;
@@ -438,10 +444,15 @@ const Dashboard: React.FC = () => {
               servers={semanticServers}
               tools={semanticTools}
               agents={semanticAgents}
+              skills={semanticSkills}
+              viewMode={viewMode}
             />
 
             {shouldShowFallbackGrid && (
-              <div className='border-t border-[color:var(--jarvis-border)] pt-6'>
+              <div
+                id='semantic-search-fallback-container'
+                className='border-t border-[color:var(--jarvis-border)] pt-6'
+              >
                 <div className='flex items-center justify-between mb-4'>
                   <h4 className='text-base font-semibold text-[var(--jarvis-text-strong)]'>Keyword search fallback</h4>
                   {semanticError && (
@@ -455,7 +466,7 @@ const Dashboard: React.FC = () => {
             )}
           </>
         ) : (
-          renderDashboardCollections()
+          <div id={searchTerm ? 'semantic-search-fallback-container' : undefined}>{renderDashboardCollections()}</div>
         )}
       </div>
     </div>

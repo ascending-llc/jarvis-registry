@@ -25,7 +25,8 @@ load_dotenv()
 
 from registry.utils.crypto_utils import encrypt_auth_fields
 from registry_pkgs.database.mongodb import MongoDB
-from registry_pkgs.models import ExtendedAclEntry, ExtendedMCPServer, Group, Key, Token, User
+from registry_pkgs.models import ExtendedMCPServer, Group, Key, RegistryAclEntry, Token, User
+from registry_pkgs.models.extended_access_role import RegistryResourceType
 
 
 async def seed_groups():
@@ -646,7 +647,7 @@ async def seed_acl_entries(users, servers):
     for server in servers:
         # Create a public entry
         print(f"Seeding public ACL Entry for server: {server.id}")
-        existing_public_acl = await ExtendedAclEntry.find_one(
+        existing_public_acl = await RegistryAclEntry.find_one(
             {
                 "principalType": PrincipalType.PUBLIC,
                 "principalId": None,
@@ -658,10 +659,10 @@ async def seed_acl_entries(users, servers):
             print(f"  Public ACL entry for server {server.serverName} already exists, skipping...")
             acl_entries.append(existing_public_acl)
         else:
-            public_acl_entry = ExtendedAclEntry(
+            public_acl_entry = RegistryAclEntry(
                 principalType=PrincipalType.PUBLIC,
                 principalId=None,
-                resourceType=ResourceType.MCPSERVER.value,
+                resourceType=RegistryResourceType.MCP_SERVER,
                 resourceId=server.id,
                 permBits=PermissionBits.VIEW,
                 grantedAt=datetime.now(UTC),
@@ -678,7 +679,7 @@ async def seed_acl_entries(users, servers):
             if user.id == admin_user.id or user.id == server.author:
                 perm_bits = RoleBits.OWNER
 
-                existing_acl = await ExtendedAclEntry.find_one(
+                existing_acl = await RegistryAclEntry.find_one(
                     {
                         "principalType": PrincipalType.USER,
                         "principalId": user.id,
@@ -690,10 +691,10 @@ async def seed_acl_entries(users, servers):
                     print(f"  ACL entry for user {user} and server {server.serverName} already exists, skipping...")
                     acl_entries.append(existing_acl)
                 else:
-                    acl_entry = ExtendedAclEntry(
+                    acl_entry = RegistryAclEntry(
                         principalType=PrincipalType.USER,
                         principalId=user.id,
-                        resourceType=ResourceType.MCPSERVER.value,
+                        resourceType=RegistryResourceType.MCP_SERVER,
                         resourceId=server.id,
                         permBits=perm_bits,
                         grantedAt=datetime.now(UTC),
@@ -728,7 +729,7 @@ async def clean_database():
         server_count = await ExtendedMCPServer.delete_all()
         print(f"  Deleted {server_count.deleted_count} MCP servers")
 
-        acl_count = await ExtendedAclEntry.delete_all()
+        acl_count = await RegistryAclEntry.delete_all()
         print(f"  Deleted {acl_count.deleted_count} ACL Entries")
 
         group_count = await Group.delete_all()

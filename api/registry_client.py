@@ -321,7 +321,7 @@ class AgentRegistration(BaseModel):
         None, description="Registry path (e.g., /agents/my-agent). Optional - auto-generated if not provided."
     )
     tags: list[str] = Field(default_factory=list, description="Categorization tags")
-    is_enabled: bool = Field(False, alias="isEnabled", description="Whether agent is enabled in registry")
+    enabled: bool = Field(False, description="Whether agent is enabled in registry")
     num_stars: int = Field(0, ge=0, alias="numStars", description="Community rating")
     license: str = Field("N/A", description="License information")
     registered_at: datetime | None = Field(None, alias="registeredAt", description="Registration timestamp")
@@ -344,7 +344,7 @@ class AgentCard(BaseModel):
     url: str = Field(..., description="Agent URL")
     num_skills: int = Field(..., description="Number of skills")
     registered_at: datetime = Field(..., description="Registration timestamp")
-    is_enabled: bool = Field(..., description="Whether agent is enabled")
+    enabled: bool = Field(..., description="Whether agent is enabled")
 
 
 class AgentRegistrationResponse(BaseModel):
@@ -417,7 +417,7 @@ class AgentDetail(BaseModel):
     # MCP Gateway Registry extensions (optional - not part of A2A spec)
     path: str | None = Field(None, description="Registry path")
     tags: list[str] = Field(default_factory=list, description="Categorization tags")
-    is_enabled: bool = Field(False, alias="isEnabled", description="Whether agent is enabled")
+    enabled: bool = Field(False, description="Whether agent is enabled")
     num_stars: int = Field(0, ge=0, alias="numStars", description="Community rating")
     license: str = Field("N/A", description="License information")
     registered_at: datetime | None = Field(None, alias="registeredAt", description="Registration timestamp")
@@ -449,7 +449,6 @@ class AgentListItem(BaseModel):
     num_skills: int = Field(default=0, alias="numSkills", description="Number of skills")
     skills: list[Skill] = Field(default_factory=list, description="Agent skills with full details")
     enabled: bool = Field(default=False, description="Whether agent is enabled")
-    status: str = Field(..., description="Agent status (active, inactive, error)")
     permissions: dict[str, bool] = Field(default_factory=dict, description="User permissions for this agent")
     author: str = Field(..., description="Agent author ID")
     created_at: str = Field(..., alias="createdAt", description="Creation timestamp")
@@ -470,7 +469,7 @@ class AgentToggleResponse(BaseModel):
     """Agent toggle response model."""
 
     path: str = Field(..., description="Agent path")
-    is_enabled: bool = Field(..., description="Current enabled status")
+    enabled: bool = Field(..., description="Current enabled status")
     message: str = Field(..., description="Response message")
 
 
@@ -1185,7 +1184,7 @@ class RegistryClient:
         response = self._make_request(method="POST", endpoint=f"/api/agents{path}/toggle", params=params)
 
         result = AgentToggleResponse(**response.json())
-        logger.info(f"Agent toggled: {path} is now {'enabled' if result.is_enabled else 'disabled'}")
+        logger.info(f"Agent toggled: {path} is now {'enabled' if result.enabled else 'disabled'}")
         return result
 
     def discover_agents_by_skills(

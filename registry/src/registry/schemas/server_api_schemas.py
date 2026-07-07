@@ -112,7 +112,6 @@ class ServerUpdateRequest(APIBaseModel):
     customUserVars: dict[str, Any] | None = None
     apiKey: dict[str, Any] | None = None
     headers: dict[str, Any] | None = None
-    status: str | None = None
     enabled: bool | None = None
 
     @field_validator("tags", mode="before")
@@ -121,16 +120,6 @@ class ServerUpdateRequest(APIBaseModel):
         """Convert tags to lowercase"""
         if isinstance(v, list):
             return [tag.lower() if isinstance(tag, str) else tag for tag in v]
-        return v
-
-    @field_validator("status")
-    @classmethod
-    def validate_status(cls, v):
-        """Validate status values"""
-        if v is not None:
-            valid_statuses = ["active", "inactive", "error"]
-            if v not in valid_statuses:
-                raise ValueError(f"status must be one of {valid_statuses}")
         return v
 
     @field_validator("headers")
@@ -182,7 +171,6 @@ class ServerListItemResponse(APIBaseModel):
     oauthMetadata: dict[str, Any] | None = Field(None, description="OAuth metadata from autodiscovery")
     tools: str | None = Field(None, description="Comma-separated list of tool names")
     author: str | None = Field(None, description="Author user ID")
-    status: str = "active"
     path: str | None = Field(None, description="API path for this server")
     tags: list[str] = Field(default_factory=list)
     numTools: int = Field(0, description="Number of tools")
@@ -246,7 +234,6 @@ class ServerDetailResponse(APIBaseModel):
     prompts: list[dict[str, Any]] | None = Field(None, description="List of available prompts")
     initDuration: int | None = Field(None, description="Initialization duration in ms")
     author: str | None = Field(None, description="Author user ID")
-    status: str = Field(default="active", description="Operational state: active, inactive, error")
     path: str | None = Field(None, description="API path for this server")
     tags: list[str] = Field(default_factory=list)
     numTools: int = Field(0, description="Number of tools")
@@ -322,7 +309,6 @@ class ServerStatsResponse(APIBaseModel):
     """Response schema for server statistics (Admin only)"""
 
     totalServers: int = Field(..., description="Total number of servers")
-    serversByStatus: dict[str, int] = Field(..., description="Server count grouped by status")
     serversByTransport: dict[str, int] = Field(..., description="Server count grouped by transport type")
     totalTokens: int = Field(..., description="Total number of tokens")
     tokensByType: dict[str, int] = Field(..., description="Token count grouped by type")
@@ -412,7 +398,6 @@ def convert_to_list_item(
         oauthMetadata=convert_dict_keys_to_camel(config.get("oauthMetadata")),
         tools=tools_str,
         author=author_id,
-        status=server.status,
         path=server.path,
         tags=server.tags,
         numTools=num_tools,
@@ -472,7 +457,6 @@ def convert_to_detail(
         prompts=prompts,
         initDuration=config.get("initDuration"),
         author=author_id,
-        status=server.status,
         path=server.path,
         tags=server.tags,
         numTools=num_tools,

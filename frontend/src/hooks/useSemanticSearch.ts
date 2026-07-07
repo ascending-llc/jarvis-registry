@@ -1,10 +1,10 @@
-import axios from 'axios';
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import API from '@/services/api';
+import Request from '@/services/request';
 
-type EntityType = 'mcpServer' | 'tool' | 'a2aAgent';
+type EntityType = 'mcp_server' | 'tool' | 'a2a_agent' | 'skill';
 
-const DEFAULT_ENTITY_TYPES: EntityType[] = ['mcpServer', 'tool', 'a2aAgent'];
+const DEFAULT_ENTITY_TYPES: EntityType[] = ['mcp_server', 'tool', 'a2a_agent', 'skill'];
 const DEFAULT_ENTITY_TYPES_KEY = DEFAULT_ENTITY_TYPES.join('|');
 
 export interface MatchingToolHit {
@@ -16,11 +16,12 @@ export interface MatchingToolHit {
 
 export interface SemanticServerHit {
   path: string;
+  serverId?: string;
   serverName: string;
   description?: string;
   tags: string[];
   numTools: number;
-  isEnabled: boolean;
+  enabled: boolean;
   relevanceScore: number;
   matchContext?: string;
   matchingTools: MatchingToolHit[];
@@ -37,15 +38,26 @@ export interface SemanticToolHit {
 
 export interface SemanticAgentHit {
   path: string;
+  agentId?: string;
   agentName: string;
   description?: string;
   tags: string[];
   skills: string[];
   trustLevel?: string;
   visibility?: string;
-  isEnabled?: boolean;
+  enabled?: boolean;
   url?: string;
   agentCard?: Record<string, any>;
+  relevanceScore: number;
+  matchContext?: string;
+}
+
+export interface SemanticSkillHit {
+  agentId: string;
+  agentPath: string;
+  agentName: string;
+  skillName: string;
+  description?: string;
   relevanceScore: number;
   matchContext?: string;
 }
@@ -55,9 +67,11 @@ export interface SemanticSearchResponse {
   servers: SemanticServerHit[];
   tools: SemanticToolHit[];
   agents: SemanticAgentHit[];
+  skills: SemanticSkillHit[];
   totalServers: number;
   totalTools: number;
   totalAgents: number;
+  totalSkills: number;
 }
 
 interface UseSemanticSearchOptions {
@@ -71,32 +85,24 @@ interface UseSemanticSearchReturn {
   results: SemanticSearchResponse | null;
   loading: boolean;
   error: string | null;
-  debouncedQuery: string;
 }
 
 export const useSemanticSearch = (query: string, options: UseSemanticSearchOptions = {}): UseSemanticSearchReturn => {
   const [results, setResults] = useState<SemanticSearchResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [debouncedQuery, setDebouncedQuery] = useState('');
+  const instanceId = useId();
+  const cancelKey = `semanticSearch_${instanceId}`;
 
   const enabled = options.enabled ?? true;
-  const minLength = options.minLength ?? 2;
+  const minLength = options.minLength ?? 1;
   const maxResults = options.maxResults ?? 10;
   const entityTypes = options.entityTypes ?? DEFAULT_ENTITY_TYPES;
   const entityTypesKey = options.entityTypes?.join('|') ?? DEFAULT_ENTITY_TYPES_KEY;
 
-  // Debounce user input to minimize API calls
   useEffect(() => {
-    const handle = setTimeout(() => {
-      setDebouncedQuery(query.trim());
-    }, 350);
-
-    return () => clearTimeout(handle);
-  }, [query]);
-
-  useEffect(() => {
-    if (!enabled || debouncedQuery.length < minLength) {
+    const trimmedQuery = query.trim();
+    if (!enabled || trimmedQuery.length < minLength) {
       setResults(null);
       setError(null);
       setLoading(false);
@@ -104,27 +110,32 @@ export const useSemanticSearch = (query: string, options: UseSemanticSearchOptio
     }
 
     let cancelled = false;
-    const controller = new AbortController();
 
     const runSearch = async () => {
       setLoading(true);
       setError(null);
       try {
-        const response = await axios.post<SemanticSearchResponse>(
-          API.getSemanticSearch,
+        const responseData = await Request.post(
+          API.getSearch,
           {
-            query: debouncedQuery,
+            query: trimmedQuery,
             entityTypes,
             maxResults,
+            includeDisabled: false,
           },
-          { signal: controller.signal },
+          { cancelTokenKey: cancelKey },
         );
+
+        if (responseData && (responseData as any).Code === -200) {
+          return; // Request was cancelled
+        }
+
         if (!cancelled) {
-          setResults(response.data);
+          setResults(responseData as SemanticSearchResponse);
         }
       } catch (err: any) {
-        if (axios.isCancel(err) || cancelled) return;
-        const message = err.response?.data?.detail || err.message || 'Semantic search failed.';
+        if (cancelled) return;
+        const message = err?.detail || err?.message || 'Semantic search failed.';
         setError(message);
         setResults(null);
       } finally {
@@ -138,9 +149,9 @@ export const useSemanticSearch = (query: string, options: UseSemanticSearchOptio
 
     return () => {
       cancelled = true;
-      controller.abort();
+      Request.cancels[cancelKey]?.();
     };
-  }, [debouncedQuery, enabled, minLength, maxResults, entityTypesKey]);
+  }, [query, enabled, minLength, maxResults, entityTypesKey, cancelKey]);
 
-  return { results, loading, error, debouncedQuery };
+  return { results, loading, error };
 };

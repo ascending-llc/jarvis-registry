@@ -14,13 +14,13 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
-from auth_server.core.state import device_codes_storage, registered_clients, user_codes_storage
-from auth_server.routes.oauth_flow import (
-    cleanup_expired_device_codes,
-    generate_user_code,
-    get_client,
-    list_registered_clients,
-    validate_client_credentials,
+from auth_server.deps import get_oauth2_config
+from auth_server.routes.oauth_flow import generate_user_code
+from tests.support.oauth_state_store import (
+    device_codes_storage,
+    registered_clients,
+    test_oauth_state_store,
+    user_codes_storage,
 )
 
 # API prefix for OAuth endpoints (set in conftest.py via AUTH_SERVER_API_PREFIX env var)
@@ -34,7 +34,10 @@ class TestDynamicClientRegistration:
 
     def test_register_client_minimal(self, test_client: TestClient, clear_device_storage):
         """Test client registration with minimal required fields."""
-        response = test_client.post(f"{API_PREFIX}/oauth2/register", json={})
+        response = test_client.post(
+            f"{API_PREFIX}/oauth2/register",
+            json={"redirect_uris": ["https://example.com/callback"]},
+        )
 
         assert response.status_code == 200
         data = response.json()
@@ -87,12 +90,58 @@ class TestDynamicClientRegistration:
         assert data["scope"] == registration_data["scope"]
         assert data["token_endpoint_auth_method"] == registration_data["token_endpoint_auth_method"]
 
+    def test_register_without_redirect_uris_rejected(self, test_client: TestClient, clear_device_storage):
+        """Registration must include at least one redirect_uri (anti-open-redirect)."""
+        response = test_client.post(f"{API_PREFIX}/oauth2/register", json={"client_name": "No Redirect"})
+        assert response.status_code == 400
+
+    @pytest.mark.parametrize(
+        "bad_uri",
+        [
+            "http://example.com/cb",  # non-loopback http
+            "https://10.0.0.1/cb",  # RFC-1918
+            "https://example.com/cb#frag",  # fragment
+            "javascript:alert(1)",  # dangerous scheme
+            "data:text/html;base64,PHNjcmlwdD4=",  # dangerous scheme
+        ],
+    )
+    def test_register_with_unsafe_redirect_uri_rejected(
+        self, test_client: TestClient, clear_device_storage, bad_uri: str
+    ):
+        """Registration must reject structurally unsafe redirect_uris with an OAuth error shape."""
+        response = test_client.post(
+            f"{API_PREFIX}/oauth2/register",
+            json={"client_name": "Unsafe", "redirect_uris": [bad_uri]},
+        )
+        assert response.status_code == 400
+        # RFC 7591 §3.2.2 error shape so clients (Cline, VS Code) can parse it.
+        assert response.json()["error"] == "invalid_redirect_uri"
+
+    @pytest.mark.parametrize(
+        "native_uri",
+        [
+            "vscode://saoudrizwan.claude-dev/oauth",  # Cline / VS Code extension callback
+            "com.example.app:/oauth2redirect",  # RFC 8252 private-use scheme
+        ],
+    )
+    def test_register_with_native_scheme_redirect_uri_succeeds(
+        self, test_client: TestClient, clear_device_storage, native_uri: str
+    ):
+        """Native-app private-use schemes (RFC 8252 §7.1) must be accepted at registration."""
+        response = test_client.post(
+            f"{API_PREFIX}/oauth2/register",
+            json={"client_name": "Native", "redirect_uris": [native_uri]},
+        )
+        assert response.status_code == 200
+        assert response.json()["redirect_uris"] == [native_uri]
+
     def test_register_multiple_clients(self, test_client: TestClient, clear_device_storage):
         """Test registering multiple clients generates unique credentials."""
         response1 = test_client.post(
             f"{API_PREFIX}/oauth2/register",
             json={
                 "client_name": "Client 1",
+                "redirect_uris": ["https://example.com/callback"],
                 "token_endpoint_auth_method": "client_secret_post",
             },
         )
@@ -100,6 +149,7 @@ class TestDynamicClientRegistration:
             f"{API_PREFIX}/oauth2/register",
             json={
                 "client_name": "Client 2",
+                "redirect_uris": ["https://example.com/callback"],
                 "token_endpoint_auth_method": "client_secret_post",
             },
         )
@@ -116,28 +166,31 @@ class TestDynamicClientRegistration:
         # Verify unique client_secrets
         assert data1["client_secret"] != data2["client_secret"]
 
-        # Verify both stored
-        assert len(registered_clients) == 2
+        # Verify both newly registered clients are stored
+        assert data1["client_id"] in registered_clients
+        assert data2["client_id"] in registered_clients
 
     def test_get_client(self, test_client: TestClient, clear_device_storage):
         """Test retrieving registered client by ID."""
         # Register a client
-        response = test_client.post(f"{API_PREFIX}/oauth2/register", json={"client_name": "Test Client"})
+        response = test_client.post(
+            f"{API_PREFIX}/oauth2/register",
+            json={"client_name": "Test Client", "redirect_uris": ["https://example.com/callback"]},
+        )
         assert response.status_code == 200
 
         client_id = response.json()["client_id"]
 
         # Retrieve client
-        retrieved_client = get_client(client_id)
+        retrieved_client = test_oauth_state_store.get_client(client_id)
 
         assert retrieved_client is not None
         assert retrieved_client["client_id"] == client_id
         assert retrieved_client["client_name"] == "Test Client"
-        assert "client_secret" in retrieved_client
 
     def test_get_nonexistent_client(self, clear_device_storage):
         """Test retrieving non-existent client returns None."""
-        result = get_client("nonexistent-client-id")
+        result = test_oauth_state_store.get_client("nonexistent-client-id")
         assert result is None
 
     def test_validate_client_credentials_valid(self, test_client: TestClient, clear_device_storage):
@@ -147,6 +200,7 @@ class TestDynamicClientRegistration:
             f"{API_PREFIX}/oauth2/register",
             json={
                 "client_name": "Test Client",
+                "redirect_uris": ["https://example.com/callback"],
                 "token_endpoint_auth_method": "client_secret_post",
             },
         )
@@ -157,7 +211,7 @@ class TestDynamicClientRegistration:
         client_secret = data["client_secret"]
 
         # Validate credentials
-        assert validate_client_credentials(client_id, client_secret) is True
+        assert test_oauth_state_store.validate_client_credentials(client_id, client_secret) is True
 
     def test_validate_client_credentials_invalid_secret(self, test_client: TestClient, clear_device_storage):
         """Test validating incorrect client secret."""
@@ -166,6 +220,7 @@ class TestDynamicClientRegistration:
             f"{API_PREFIX}/oauth2/register",
             json={
                 "client_name": "Test Client",
+                "redirect_uris": ["https://example.com/callback"],
                 "token_endpoint_auth_method": "client_secret_post",
             },
         )
@@ -174,23 +229,70 @@ class TestDynamicClientRegistration:
         client_id = response.json()["client_id"]
 
         # Try invalid secret
-        assert validate_client_credentials(client_id, "invalid-secret") is False
+        assert test_oauth_state_store.validate_client_credentials(client_id, "invalid-secret") is False
 
     def test_validate_client_credentials_invalid_id(self, clear_device_storage):
         """Test validating with non-existent client ID."""
-        assert validate_client_credentials("nonexistent-id", "any-secret") is False
+        assert test_oauth_state_store.validate_client_credentials("nonexistent-id", "any-secret") is False
+
+    def test_authorize_unknown_client_returns_json_error(
+        self,
+        test_client: TestClient,
+        clear_device_storage,
+    ):
+        """Test /authorize rejects unknown client_id without redirecting."""
+        oauth2_config = {
+            "providers": {
+                "keycloak": {
+                    "enabled": True,
+                    "client_id": "provider-client",
+                    "response_type": "code",
+                    "scopes": ["openid"],
+                    "auth_url": "https://idp.example.com/authorize",
+                }
+            }
+        }
+
+        from auth_server.server import app
+
+        app.dependency_overrides[get_oauth2_config] = lambda: oauth2_config
+
+        response = test_client.get(
+            f"{API_PREFIX}/oauth2/login/keycloak",
+            params={
+                "client_id": "unknown-client",
+                "response_type": "code",
+                "redirect_uri": "https://evil.example.com/callback",
+                "code_challenge": "challenge",
+                "code_challenge_method": "S256",
+            },
+            follow_redirects=False,
+        )
+
+        assert response.status_code == 400
+        assert response.json()["error"] == "invalid_client"
+        assert "location" not in response.headers
+        app.dependency_overrides.pop(get_oauth2_config, None)
 
     def test_list_registered_clients(self, test_client: TestClient, clear_device_storage):
         """Test listing all registered clients (admin function)."""
         # Register multiple clients
-        test_client.post(f"{API_PREFIX}/oauth2/register", json={"client_name": "Client 1"})
-        test_client.post(f"{API_PREFIX}/oauth2/register", json={"client_name": "Client 2"})
-        test_client.post(f"{API_PREFIX}/oauth2/register", json={"client_name": "Client 3"})
+        redirect_uris = ["https://example.com/callback"]
+        test_client.post(
+            f"{API_PREFIX}/oauth2/register", json={"client_name": "Client 1", "redirect_uris": redirect_uris}
+        )
+        test_client.post(
+            f"{API_PREFIX}/oauth2/register", json={"client_name": "Client 2", "redirect_uris": redirect_uris}
+        )
+        test_client.post(
+            f"{API_PREFIX}/oauth2/register", json={"client_name": "Client 3", "redirect_uris": redirect_uris}
+        )
 
         # List clients
-        clients_list = list_registered_clients()
+        clients_list = test_oauth_state_store.list_clients()
 
-        assert len(clients_list) == 3
+        registered_names = {client["client_name"] for client in clients_list}
+        assert {"Client 1", "Client 2", "Client 3"}.issubset(registered_names)
 
         # Verify secrets not included in list
         for client_info in clients_list:
@@ -234,8 +336,8 @@ class TestDeviceFlowRoutes:
         # Should generate 100 unique codes (collision highly unlikely)
         assert len(codes) == 100
 
-    def test_cleanup_expired_device_codes_function(self, test_client: TestClient, clear_device_storage):
-        """Test cleanup_expired_device_codes utility function."""
+    def test_expired_device_code_rejected(self, test_client: TestClient, clear_device_storage):
+        """Test expired device codes are rejected by token polling."""
         # Create device code
         device_response = test_client.post(f"{API_PREFIX}/oauth2/device/code", data={"client_id": "test-client"})
         data = device_response.json()
@@ -249,12 +351,17 @@ class TestDeviceFlowRoutes:
         # Manually expire the code
         device_codes_storage[device_code]["expires_at"] = int(time.time()) - 1
 
-        # Trigger cleanup
-        cleanup_expired_device_codes()
+        response = test_client.post(
+            f"{API_PREFIX}/oauth2/token",
+            data={
+                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                "device_code": device_code,
+                "client_id": "test-client",
+            },
+        )
 
-        # Verify removed
-        assert device_code not in device_codes_storage
-        assert user_code not in user_codes_storage
+        assert response.status_code == 400
+        assert response.json()["error"] == "expired_token"
 
     def test_device_authorization_success(self, test_client: TestClient, clear_device_storage):
         """Test successful device code generation."""
@@ -298,6 +405,13 @@ class TestDeviceFlowRoutes:
         response = test_client.post(f"{API_PREFIX}/oauth2/device/code", data={"scope": "openid"})
 
         assert response.status_code == 422  # Validation error
+
+    def test_device_authorization_unknown_client(self, test_client: TestClient, clear_device_storage):
+        """Test device code generation rejects unknown clients."""
+        response = test_client.post(f"{API_PREFIX}/oauth2/device/code", data={"client_id": "unknown-client"})
+
+        assert response.status_code == 400
+        assert response.json()["error"] == "invalid_client"
 
     def test_device_verification_page(self, test_client: TestClient, clear_device_storage):
         """Test device verification HTML page rendering."""
@@ -440,8 +554,26 @@ class TestDeviceFlowRoutes:
 
     def test_device_token_client_mismatch(self, test_client: TestClient, clear_device_storage):
         """Test token request with mismatched client_id."""
+        test_oauth_state_store.save_client(
+            "client-1",
+            {
+                "client_id": "client-1",
+                "token_endpoint_auth_method": "none",
+                "redirect_uris": [],
+            },
+        )
+        test_oauth_state_store.save_client(
+            "client-2",
+            {
+                "client_id": "client-2",
+                "token_endpoint_auth_method": "none",
+                "redirect_uris": [],
+            },
+        )
+
         # Generate device code with one client
         device_response = test_client.post(f"{API_PREFIX}/oauth2/device/code", data={"client_id": "client-1"})
+        assert device_response.status_code == 200
         device_code = device_response.json()["device_code"]
 
         # Try to poll with different client
@@ -465,14 +597,9 @@ class TestDeviceFlowRoutes:
         device_code = device_response.json()["device_code"]
 
         # Manually expire the device code
-        from auth_server.core.state import device_codes_storage
-
         device_codes_storage[device_code]["expires_at"] = int(time.time()) - 1
 
-        # Trigger cleanup to remove expired code
-        test_client.post(f"{API_PREFIX}/oauth2/device/code", data={"client_id": "test-client"})
-
-        # Try to poll with expired code (now removed)
+        # Try to poll with expired code
         response = test_client.post(
             f"{API_PREFIX}/oauth2/token",
             data={
@@ -484,7 +611,7 @@ class TestDeviceFlowRoutes:
 
         assert response.status_code == 400
         data = response.json()
-        assert data["error"] == "invalid_grant"  # Code no longer exists after cleanup
+        assert data["error"] == "expired_token"
 
     def test_device_token_slow_down(self, test_client: TestClient, clear_device_storage):
         """Test polling behavior (slow_down not implemented yet, returns authorization_pending)."""
@@ -603,10 +730,8 @@ class TestDeviceFlowRoutes:
         assert len(codes) == 10
         assert len(user_codes) == 10
 
-    def test_cleanup_expired_codes(self, test_client: TestClient, clear_device_storage):
-        """Test that expired device codes are cleaned up."""
-        from auth_server.core.state import device_codes_storage, user_codes_storage
-
+    def test_expired_codes_are_rejected(self, test_client: TestClient, clear_device_storage):
+        """Test that expired device codes are rejected."""
         # Generate device code
         response = test_client.post(f"{API_PREFIX}/oauth2/device/code", data={"client_id": "test-client"})
         device_code = response.json()["device_code"]
@@ -619,12 +744,17 @@ class TestDeviceFlowRoutes:
         # Expire the code
         device_codes_storage[device_code]["expires_at"] = int(time.time()) - 1
 
-        # Trigger cleanup by making another request
-        test_client.post(f"{API_PREFIX}/oauth2/device/code", data={"client_id": "test-client"})
+        token_response = test_client.post(
+            f"{API_PREFIX}/oauth2/token",
+            data={
+                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                "device_code": device_code,
+                "client_id": "test-client",
+            },
+        )
 
-        # Expired code should be cleaned up
-        assert device_code not in device_codes_storage
-        assert user_code not in user_codes_storage
+        assert token_response.status_code == 400
+        assert token_response.json()["error"] == "expired_token"
 
 
 @pytest.mark.integration
@@ -632,10 +762,10 @@ class TestDeviceFlowRoutes:
 class TestDeviceFlowWithMocking:
     """Integration tests for device flow with JWT mocking."""
 
-    @patch("auth_server.routes.oauth_flow.encode_jwt")
-    def test_approve_device_success_with_token(self, mock_jwt_encode, test_client: TestClient, clear_device_storage):
+    @patch("auth_server.routes.oauth_flow.mint_managed_agent_token")
+    def test_approve_device_success_with_token(self, mock_mint_token, test_client: TestClient, clear_device_storage):
         """Test device approval generates access token."""
-        mock_jwt_encode.return_value = "mock-access-token"
+        mock_mint_token.return_value = "mock-access-token"
 
         # Create device code
         device_response = test_client.post(
@@ -652,13 +782,16 @@ class TestDeviceFlowWithMocking:
         assert data["status"] == "approved"
         assert "successfully" in data["message"].lower()
 
-        # Verify JWT token generated
-        mock_jwt_encode.assert_called_once()
+        # Verify access token generated
+        mock_mint_token.assert_called_once()
+        assert mock_mint_token.call_args.kwargs["subject"] == "device_user"
+        assert mock_mint_token.call_args.kwargs["client_id"] == "test-client"
+        assert mock_mint_token.call_args.kwargs["extra_claims"]["scope"] == "test-scope"
 
-    @patch("auth_server.routes.oauth_flow.encode_jwt")
-    def test_approve_device_already_approved(self, mock_jwt_encode, test_client: TestClient, clear_device_storage):
+    @patch("auth_server.routes.oauth_flow.mint_managed_agent_token")
+    def test_approve_device_already_approved(self, mock_mint_token, test_client: TestClient, clear_device_storage):
         """Test approving already-approved device returns success."""
-        mock_jwt_encode.return_value = "mock-access-token"
+        mock_mint_token.return_value = "mock-access-token"
 
         # Create and approve device
         device_response = test_client.post(f"{API_PREFIX}/oauth2/device/code", data={"client_id": "test-client"})
@@ -672,11 +805,12 @@ class TestDeviceFlowWithMocking:
 
         assert response.status_code == 200
         assert "already" in response.json()["message"].lower()
+        mock_mint_token.assert_called_once()
 
-    @patch("auth_server.routes.oauth_flow.encode_jwt")
-    def test_device_token_success_with_mocked_jwt(self, mock_jwt_encode, test_client: TestClient, clear_device_storage):
+    @patch("auth_server.routes.oauth_flow.mint_managed_agent_token")
+    def test_device_token_success_with_mocked_jwt(self, mock_mint_token, test_client: TestClient, clear_device_storage):
         """Test token endpoint returns mocked access token after approval."""
-        mock_jwt_encode.return_value = "mock-access-token"
+        mock_mint_token.return_value = "mock-access-token"
 
         # Create device code
         device_response = test_client.post(
@@ -709,8 +843,8 @@ class TestDeviceFlowWithMocking:
         assert token_data["scope"] == "test-scope"
         assert token_data["access_token"] == "mock-access-token"
 
-    @patch("auth_server.routes.oauth_flow.encode_jwt")
-    def test_device_token_expired_code(self, mock_jwt_encode, test_client: TestClient, clear_device_storage):
+    @patch("auth_server.routes.oauth_flow.mint_managed_agent_token")
+    def test_device_token_expired_code(self, mock_mint_token, test_client: TestClient, clear_device_storage):
         """Test token endpoint rejects expired device codes."""
         # Create device code
         device_response = test_client.post(f"{API_PREFIX}/oauth2/device/code", data={"client_id": "test-client"})
@@ -732,6 +866,7 @@ class TestDeviceFlowWithMocking:
         assert response.status_code == 400
         # After cleanup, expired codes may return invalid_grant or expired_token
         assert response.json()["error"] in ["expired_token", "invalid_grant"]
+        mock_mint_token.assert_not_called()
 
 
 @pytest.mark.integration
@@ -739,18 +874,19 @@ class TestDeviceFlowWithMocking:
 class TestEndToEndIntegration:
     """End-to-end integration tests combining client registration and device flow."""
 
-    @patch("auth_server.routes.oauth_flow.encode_jwt")
+    @patch("auth_server.routes.oauth_flow.mint_managed_agent_token")
     def test_full_device_flow_with_registered_client(
-        self, mock_jwt_encode, test_client: TestClient, clear_device_storage
+        self, mock_mint_token, test_client: TestClient, clear_device_storage
     ):
         """Test complete device flow with dynamically registered client."""
-        mock_jwt_encode.return_value = "integration-test-token"
+        mock_mint_token.return_value = "integration-test-token"
 
         # Step 1: Register client
         reg_response = test_client.post(
             f"{API_PREFIX}/oauth2/register",
             json={
                 "client_name": "Integration Test Client",
+                "redirect_uris": ["https://example.com/callback"],
                 "grant_types": ["urn:ietf:params:oauth:grant-type:device_code"],
             },
         )
@@ -769,6 +905,7 @@ class TestEndToEndIntegration:
         # Step 3: User approves device
         approve_response = test_client.post(f"{API_PREFIX}/oauth2/device/approve", json={"user_code": user_code})
         assert approve_response.status_code == 200
+        mock_mint_token.assert_called_once()
 
         # Step 4: Client polls for token
         token_response = test_client.post(
@@ -786,4 +923,4 @@ class TestEndToEndIntegration:
         assert access_token == "integration-test-token"
 
         # Verify client credentials still valid
-        assert validate_client_credentials(client_id) is True
+        assert test_oauth_state_store.validate_client_credentials(client_id) is True

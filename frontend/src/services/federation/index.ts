@@ -1,3 +1,5 @@
+import type { AxiosRequestConfig } from 'axios';
+
 import API from '@/services/api';
 import Request from '@/services/request';
 import type * as TYPE from './type';
@@ -48,7 +50,9 @@ const deleteFederation: (federationId: string) => Promise<void> = async federati
 const syncFederation: (
   federationId: string,
   data?: { force?: boolean; reason?: string; dryRun?: boolean; providerConfig?: Record<string, unknown> },
-) => Promise<any> = async (federationId, data) => await Request.post(API.syncFederation(federationId), data);
+  config?: AxiosRequestConfig,
+) => Promise<any> = async (federationId, data, config) =>
+  await Request.post(API.syncFederation(federationId), data, config);
 
 const FEDERATION = {
   getFederations,

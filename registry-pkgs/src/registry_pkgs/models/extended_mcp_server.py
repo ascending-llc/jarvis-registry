@@ -26,7 +26,6 @@ Identity & Metadata Fields (stored at root level):
 - serverName: string - Unique server identifier
 - author: ObjectId - User who created this server
 - scope: string - Access level (shared_app, shared_user, private_user)
-- status: string - Server status (active, inactive, error)
 - createdAt: datetime - Creation timestamp
 - updatedAt: datetime - Last update timestamp
 
@@ -131,7 +130,6 @@ class ExtendedMCPServer(MCPServer):
         "initDuration": 170
       },
       "scope": "shared_app",  # Registry field (root level)
-      "status": "active",     # Registry field (root level)
       "path": "/mcp/github",  # Registry field (root level)
       "tags": ["github"],     # Registry field (root level)
       "numTools": 2,          # Registry field (root level)
@@ -160,7 +158,6 @@ class ExtendedMCPServer(MCPServer):
     path: str | None = Field(default=None, description="API path for this server (e.g., /mcp/github)")
     tags: list[str] = Field(default_factory=list, description="Tags for categorization")
     scope: str | None = Field(default=None, description="Deprecated. Access control is handled by ACL permissions.")
-    status: str = Field(default="active", description="Operational state: active, inactive, error")
     numTools: int = Field(default=0, alias="numTools", description="Number of tools (calculated from toolFunctions)")
     numStars: int = Field(default=0, alias="numStars", description="Number of stars/favorites")
 
@@ -189,6 +186,11 @@ class ExtendedMCPServer(MCPServer):
         indexes = [
             IndexModel([("federationRefId", 1)]),
             IndexModel([("federationMetadata.runtimeArn", 1)], sparse=True),
+            IndexModel(
+                [("path", 1)],
+                unique=True,
+                partialFilterExpression={"path": {"$type": "string"}},
+            ),
         ]
 
     @property
@@ -204,7 +206,7 @@ class ExtendedMCPServer(MCPServer):
 
         Service layer captures the hash before .save() and compares after to decide whether to
         call sync_to_vector_db (full rebuild) or update_entity_metadata (metadata-only patch).
-        This contract holds as long as enabled/status are NOT included in page_content — if
+        This contract holds as long as config.enabled is NOT included in page_content — if
         to_documents() ever embeds those fields, toggle paths will incorrectly trigger full syncs.
         """
         docs = self.to_documents()
@@ -517,7 +519,7 @@ class ExtendedMCPServer(MCPServer):
         Extract metadata from any document type.
 
         Returns execution-ready fields for LLM consumption.
-        relevance_score is populated by the reranker (FlashRank sets it in metadata);
+        relevance_score is populated by the reranker (Bedrock rerank sets it in metadata);
         None for filter-only results where no semantic score is available.
         """
         metadata = document.metadata
@@ -527,8 +529,12 @@ class ExtendedMCPServer(MCPServer):
             "server_id": metadata.get("server_id"),
             "server_name": metadata.get("server_name"),
             "entity_type": metadata.get("entity_type"),
+            "path": metadata.get("path"),
+            "is_enabled": metadata.get("enabled", False),
+            "tags": metadata.get("tags") or [],
             "relevance_score": round(float(raw_score), 3) if raw_score is not None else None,
             "description": document.page_content,
+            "match_context": (document.page_content or "")[:200],
         }
 
         entity_type = metadata.get("entity_type")
@@ -550,7 +556,7 @@ class ExtendedMCPServer(MCPServer):
 
         Args:
             server_info: Server information dictionary (must contain 'path' and 'server_name')
-            is_enabled: Whether the service is enabled (maps to status)
+            is_enabled: Whether the service is enabled
 
         Returns:
             ExtendedMCPServer instance
@@ -576,22 +582,22 @@ class ExtendedMCPServer(MCPServer):
                 "prompts": server_info.get("prompts", []),
             }
 
-        # Map is_enabled to status
-        status = "active" if is_enabled else "inactive"
         config["enabled"] = is_enabled
 
         # Extract server_id if available (for updates)
         server_id = server_info.get("id") or server_info.get("_id")
 
-        # Create server instance
+        author = server_info.get("author")
+        if author is None:
+            raise ValueError("server_info must contain a non-null 'author' field")
+
         return cls(
             id=PydanticObjectId(server_id) if server_id else None,
             serverName=server_name,
             path=path,
             config=config,
-            status=status,
             tags=server_info.get("tags", []),
-            author=server_info.get("author") or PydanticObjectId(),
+            author=author,
             federationRefId=server_info.get("federationRefId"),
             federationMetadata=server_info.get("federationMetadata"),
         )

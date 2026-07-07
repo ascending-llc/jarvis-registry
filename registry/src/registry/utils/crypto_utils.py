@@ -20,13 +20,12 @@ from typing import Any
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
+from registry_pkgs.core.jwt_tokens import mint_crud_session_token, verify_crud_session_token
 from registry_pkgs.core.jwt_utils import (
     ExpiredSignatureError,
     InvalidTokenError,
     build_jwt_payload,
-    decode_jwt,
     encode_jwt,
-    get_token_kid,
 )
 
 from ..core.config import settings
@@ -35,7 +34,10 @@ logger = logging.getLogger(__name__)
 
 # Token expiration defaults
 ACCESS_TOKEN_EXPIRES_HOURS = 24  # 1 day
-REFRESH_TOKEN_EXPIRES_DAYS = 7  # 7 days
+REFRESH_TOKEN_EXPIRES_DAYS = 2  # 48 hours
+REFRESH_TOKEN_EXPIRES_SECONDS = REFRESH_TOKEN_EXPIRES_DAYS * 86400
+ABSOLUTE_SESSION_EXPIRES_DAYS = 14
+ABSOLUTE_SESSION_EXPIRES_SECONDS = ABSOLUTE_SESSION_EXPIRES_DAYS * 86400
 
 
 # Algorithm constants
@@ -451,19 +453,15 @@ def generate_access_token(
     if idp_id:
         extra_claims["idp_id"] = idp_id
 
-    # Build JWT payload using centralized helper
-    payload = build_jwt_payload(
+    # CRUD-session (cookie) class: audience, client_id and token_class are set by the layer.
+    token = mint_crud_session_token(
+        settings.jwt_token_config,
         subject=username,
-        issuer=settings.jwt_issuer,
-        audience=settings.jwt_audience,
-        expires_in_seconds=expires_in_seconds,
         token_type="access_token",
+        expires_in_seconds=expires_in_seconds,
         iat=iat,
         extra_claims=extra_claims,
     )
-
-    # Generate JWT
-    token = encode_jwt(payload, settings.jwt_private_key, kid=settings.jwt_self_signed_kid)
 
     logger.debug(f"Generated access token for user {username}, expires in {expires_hours}h")
     return token
@@ -479,11 +477,14 @@ def generate_refresh_token(
     role: str,
     email: str,
     expires_days: int = REFRESH_TOKEN_EXPIRES_DAYS,
+    session_started_at: int | None = None,
 ) -> str:
     """
     Generate a JWT refresh token.
 
     Refresh tokens now include groups and scopes to enable token refresh without re-authentication.
+    They are stateless JWTs: reissuing a token renews the browser cookie but does not revoke
+    the previous token before its own expiration.
     This is especially important for OAuth2 users who cannot re-authenticate automatically.
 
     Args:
@@ -495,12 +496,17 @@ def generate_refresh_token(
         scopes: List of permission scopes
         role: User role
         email: User's email
-        expires_days: Token expiration in days (default: 7)
+        expires_days: Token expiration in days (default: 2)
+        session_started_at: Unix timestamp of original login; stamped once and carried forward
+            through every rotation to enforce the absolute 14-day session cap.
 
     Returns:
         JWT token string
     """
     expires_in_seconds = expires_days * 86400  # Convert days to seconds
+
+    if session_started_at is None:
+        session_started_at = int(datetime.now(UTC).timestamp())
 
     # Build extra claims - include groups/scopes for token refresh
     extra_claims = {
@@ -511,19 +517,17 @@ def generate_refresh_token(
         "scope": " ".join(scopes) if isinstance(scopes, list) else scopes,
         "role": role,
         "email": email,
+        "session_started_at": session_started_at,
     }
 
-    # Build JWT payload using centralized helper
-    payload = build_jwt_payload(
+    # CRUD-session (cookie) class: audience, client_id and token_class are set by the layer.
+    token = mint_crud_session_token(
+        settings.jwt_token_config,
         subject=username,
-        issuer=settings.jwt_issuer,
-        audience=settings.jwt_audience,
-        expires_in_seconds=expires_in_seconds,
         token_type="refresh_token",
+        expires_in_seconds=expires_in_seconds,
         extra_claims=extra_claims,
     )
-
-    token = encode_jwt(payload, settings.jwt_private_key, kid=settings.jwt_self_signed_kid)
 
     logger.debug(f"Generated refresh token for user {username}, expires in {expires_days} days")
     return token
@@ -540,27 +544,7 @@ def verify_access_token(token: str) -> dict[str, Any] | None:
         Decoded token claims if valid, None otherwise
     """
     try:
-        # Verify kid in header
-        kid = get_token_kid(token)
-
-        if kid != settings.jwt_self_signed_kid:
-            logger.debug(f"Invalid kid in token: {kid}")
-            return None
-
-        # Decode and verify token
-        claims = decode_jwt(
-            token,
-            settings.jwt_public_key,
-            issuer=settings.jwt_issuer,
-            audience=settings.jwt_audience,
-            leeway=30,
-        )
-
-        # Verify token type
-        if claims.get("token_type") != "access_token":
-            logger.warning(f"Wrong token type: {claims.get('token_type')}")
-            return None
-
+        claims = verify_crud_session_token(settings.jwt_token_config, token, expected_token_type="access_token")
         logger.debug(f"Access token verified for user: {claims.get('sub')}")
         return claims
 
@@ -586,27 +570,7 @@ def verify_refresh_token(token: str) -> dict[str, Any] | None:
         Decoded token claims if valid, None otherwise
     """
     try:
-        # Verify kid in header
-        kid = get_token_kid(token)
-
-        if kid != settings.jwt_self_signed_kid:
-            logger.debug(f"Invalid kid in refresh token: {kid}")
-            return None
-
-        # Decode and verify token
-        claims = decode_jwt(
-            token,
-            settings.jwt_public_key,
-            issuer=settings.jwt_issuer,
-            audience=settings.jwt_audience,
-            leeway=30,
-        )
-
-        # Verify token type
-        if claims.get("token_type") != "refresh_token":
-            logger.warning(f"Wrong token type in refresh: {claims.get('token_type')}")
-            return None
-
+        claims = verify_crud_session_token(settings.jwt_token_config, token, expected_token_type="refresh_token")
         logger.debug(f"Refresh token verified for user: {claims.get('sub')}")
         return claims
 
@@ -622,14 +586,14 @@ def verify_refresh_token(token: str) -> dict[str, Any] | None:
 
 
 def generate_token_pair(
-    user_id: str = None,
-    username: str = None,
-    email: str = None,
-    groups: list = None,
-    scopes: list = None,
-    role: str = None,
-    auth_method: str = None,
-    provider: str = None,
+    user_id: str | None = None,
+    username: str | None = None,
+    email: str | None = None,
+    groups: list | None = None,
+    scopes: list | None = None,
+    role: str | None = None,
+    auth_method: str | None = None,
+    provider: str | None = None,
     idp_id: str | None = None,
     user_info: dict[str, Any] | None = None,
     iat: int | None = None,

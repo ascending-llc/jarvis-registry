@@ -1,11 +1,13 @@
 import logging
+import re
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.routing import compile_path, get_route_path
 
-from registry_pkgs.core.jwt_utils import ExpiredSignatureError, InvalidTokenError, decode_jwt, get_token_kid
+from registry_pkgs.core.jwt_tokens import verify_managed_agent_token
+from registry_pkgs.core.jwt_utils import ExpiredSignatureError, InvalidTokenError
 from registry_pkgs.core.scopes import map_groups_to_scopes
 
 from ..auth.dependencies import UserContextDict
@@ -14,6 +16,23 @@ from ..core.telemetry_decorators import AuthMetricsContext
 from ..utils.crypto_utils import verify_access_token
 
 logger = logging.getLogger(__name__)
+
+# Direct-connect proxy path: /proxy/server/{user_id}/{server_path}. Used to bind a managed-agent
+# token's direct-connect claims to the URL.
+DIRECT_CONNECT_RE = re.compile(r"^/proxy/server/([^/]+)/(.+)$")
+
+
+def _parse_bearer_token(request: Request) -> str | None:
+    """Extract a non-empty Bearer token from the Authorization header, or None."""
+    auth_header = request.headers.get("Authorization")
+    if not auth_header:
+        return None
+
+    scheme, _, token = auth_header.partition(" ")
+    if scheme.lower() != "bearer":
+        return None
+
+    return token.strip() or None
 
 
 class UnifiedAuthMiddleware(BaseHTTPMiddleware):
@@ -43,15 +62,6 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
 
     def __init__(self, app):
         super().__init__(app)
-        # Paths that require authentication (checked before public paths)
-        # self.authenticated_paths_compiled = self._compile_patterns([
-        #     "/api/auth/me",
-        #     "/api/{versions}/servers/{path:path}",
-        #     "/api/{versions}/servers",
-        #     "/proxy/{path:path}",
-        #     "/api/{versions}/mcp/{path:path}",
-        #     "/api/search/{path:path}",
-        # ])
         self.public_paths_compiled = self._compile_patterns(
             [
                 "/",
@@ -66,6 +76,7 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
                 "/api/auth/providers",
                 "/api/auth/config",
                 f"/api/{settings.api_version}/mcp/{{server_name}}/oauth/callback",  # OAuth callback is public
+                f"/api/{settings.api_version}/mcp/downstream/oauth/token/{{user_id}}/{{server_path:path}}",
                 "/.well-known/{path:path}",  # OAuth discovery endpoints must be public
             ]
         )
@@ -75,6 +86,10 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
         # Pre-load scopes config once for performance (cached at module level)
         self.scopes_config = settings.scopes_config
         logger.info(f"Scopes config loaded with {len(self.scopes_config.get('group_mappings', {}))} group mappings")
+
+    def _is_proxy_route(self, path: str) -> bool:
+        """Single source of truth for the proxy/non-proxy split."""
+        return path.startswith("/proxy/")
 
     def _compile_patterns(self, patterns: list[str]) -> list[tuple]:
         """
@@ -108,7 +123,7 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
         # Use context manager for clean metrics tracking
         async with AuthMetricsContext() as auth_ctx:
             try:
-                user_context = await self._authenticate(request)
+                user_context = await self._authenticate(request, path)
                 request.state.user = user_context
                 request.state.is_authenticated = True
                 auth_source = user_context.get("auth_source", "unknown")
@@ -127,18 +142,19 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
 
                 headers = {"Connection": "close"}
 
-                if path.startswith("/proxy/"):
-                    # Add WWW-Authenticate header for MCP related routes (both `mcpgw` and dynamic catch-all),
-                    # so that AI agents can perform Dynamic Client Registration.
+                if self._is_proxy_route(path):
+                    # Proxy routes are Bearer-authenticated (managed-agent tokens). Advertise a
+                    # Bearer challenge with resource metadata so AI agents can perform Dynamic
+                    # Client Registration.
                     headers["WWW-Authenticate"] = (
                         f'Bearer realm="{settings.jarvis_realm}", '
                         f'resource_metadata="{settings.jwt_issuer}/.well-known/oauth-protected-resource{settings.service_base_path}{path}", '
                         'scope="mcp-proxy-ops"'
                     )
-                else:
-                    # For non-MCP related routes, the only caller is our frontend, which knows the auth-server routes.
-                    # Therefore we don't include resource_metadata here.
-                    headers["WWW-Authenticate"] = f'Bearer realm="{settings.jarvis_realm}"'
+                # Non-proxy routes are cookie-authenticated (CRUD-session cookie). Cookie/session
+                # auth has no RFC 7235 challenge scheme, and the only caller is our frontend, which
+                # handles a bare 401 by redirecting to login — so we deliberately advertise no
+                # (misleading) Bearer challenge here.
 
                 return JSONResponse(status_code=401, content={"detail": str(e)}, headers=headers)
 
@@ -160,119 +176,116 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
                 return True
         return False
 
-    async def _authenticate(self, request: Request) -> UserContextDict:
-        """
-        Unified authentication logic (simple and efficient)
+    async def _authenticate(self, request: Request, path: str) -> UserContextDict:
+        """Route-based authentication dispatch.
 
-        1. Authenticated paths (including /api/auth/me, /api/servers/*, /proxy/*, /api/mcp/*) → JWT or Session Auth
-        2. Other paths → Session Auth
+        - Proxy routes (``/proxy/*``): the ONLY accepted credential is a managed-agent
+          Bearer token in the Authorization header. The session cookie is never consulted.
+        - Every other authenticated route: the ONLY accepted credential is the
+          CRUD-session cookie. The Authorization header is never consulted.
+
+        This hard split is what stops a leaked managed-agent token (e.g. via the DCR-CSRF
+        path) from being replayed as a dashboard session cookie, and vice versa.
         """
-        # Try JWT first, then fall back to session auth
-        user_context = self._try_jwt_auth(request)
-        if user_context:
-            return user_context
+        if self._is_proxy_route(path):
+            user_context = self._try_jwt_auth(request, path)
+            if user_context:
+                return user_context
+            raise AuthenticationError("Managed-agent Bearer token required for proxy routes")
+
         user_context = await self._try_session_auth(request)
         if user_context:
             return user_context
-        raise AuthenticationError("JWT or session authentication required")
+        raise AuthenticationError("Session authentication required")
 
-    def _try_jwt_auth(self, request: Request) -> UserContextDict | None:
-        """JWT token authentication for /api/servers endpoints"""
+    def _try_jwt_auth(self, request: Request, path: str) -> UserContextDict | None:
+        """Bearer-token authentication for proxy routes.
+
+        Accepts a managed-agent token (the proxy credential, including the access token issued by the
+        direct-connect downstream ``/token`` endpoint). On direct-connect routes, the token's
+        ``user_id`` and ``server_path`` must match the URL.
+        """
+        access_token = _parse_bearer_token(request)
+        if access_token is None:
+            return None
+
         try:
-            # Get Authorization header
-            auth_header = request.headers.get("Authorization")
-            if not auth_header:
-                logger.debug("Missing Authorization header for JWT auth")
-                return None
-
-            access_token = auth_header.split(" ")[1]
-            if not access_token:
-                logger.debug("Empty JWT token after split")
-                return None
-
-            # Extract kid from header first
-            try:
-                kid = get_token_kid(access_token)
-            except Exception as e:
-                logger.debug(f"Failed to decode JWT header: {e}")
-                return None
-
-            # Check if this is our self-signed token; reject tokens with an unrecognised explicit kid
-            if kid and kid != settings.jwt_self_signed_kid:
-                logger.debug(f"JWT token has wrong kid: {kid}, expected: {settings.jwt_self_signed_kid}")
-                return None
-
-            # Validate and decode token
-            try:
-                # For self-signed tokens (kid='mcp-self-signed'), skip audience validation
-                # because the audience is now the resource URL (RFC 8707 Resource Indicators)
-                # which varies per endpoint (/proxy/mcpgw, /proxy/server2, etc.)
-                # Issuer validation provides sufficient security for self-signed tokens.
-                is_self_signed_token = kid == settings.jwt_self_signed_kid
-
-                if is_self_signed_token:
-                    logger.info("Skipping audience validation for self-signed token (RFC 8707 Resource Indicators)")
-
-                claims = decode_jwt(
-                    access_token,
-                    settings.jwt_public_key,
-                    issuer=settings.jwt_issuer,
-                    audience=None if is_self_signed_token else settings.jwt_audience,
-                )
-                logger.info(
-                    f"JWT claims validated: sub={claims.get('sub')}, aud={claims.get('aud')}, scope={claims.get('scope')}"
-                )
-            except ExpiredSignatureError:
-                logger.debug("JWT token has expired")
-                return None
-            except InvalidTokenError as e:
-                logger.debug(f"Invalid JWT token: {e}")
-                return None
-
-            # Extract user information from claims
-            username = claims.get("sub", "")
-            if not username:
-                logger.debug("JWT token missing 'sub' claim")
-                return None
-
-            # Extract groups first
-            groups = claims.get("groups", [])
-
-            # Extract scopes from space-separated string
-            scope_string = claims.get("scope", "")
-            scopes = scope_string.split() if scope_string else []
-
-            # If no scopes but has groups, map groups to scopes
-            if not scopes and groups:
-                scopes = map_groups_to_scopes(groups, settings.scopes_file_config)
-                logger.info(f"Mapped JWT groups {groups} to scopes: {scopes}")
-
-            # Verify we have at least some scopes
-            if not scopes:
-                logger.debug(f"JWT token has no scopes and groups mapping failed. Groups: {groups}")
-                return None
-
-            # Log token validation success with additional details
-            token_type = claims.get("token_type", "unknown")
-            description = claims.get("description", "")
-            logger.info(f"JWT token validated for user: {username}, type: {token_type}, scopes: {scopes}")
-            if description:
-                logger.debug(f"Token description: {description}")
-            user_id = claims.get("user_id")
-            logger.debug(f"jwt enhencement user id {user_id}")
-
-            return self._build_user_context(
-                user_id=user_id,
-                username=username,
-                groups=groups,
-                scopes=scopes,
-                auth_method="jwt",
-                provider="jwt",
-                auth_source="jwt_auth",
-            )
+            claims = self._verify_managed_agent_claims(access_token)
+            if claims is not None:
+                return self._build_managed_agent_context(claims, path)
+            return None
         except Exception as e:
             logger.debug(f"JWT auth failed: {e}")
             return None
+
+    @staticmethod
+    def _verify_managed_agent_claims(access_token: str) -> dict | None:
+        """Validate a managed-agent (proxy) token. Returns its claims, or None if it is not one.
+
+        Wrong class/audience/kid/client_id all raise InvalidTokenError and are treated as "not a
+        usable token here".
+        """
+        try:
+            claims = verify_managed_agent_token(settings.jwt_token_config, access_token)
+        except (ExpiredSignatureError, InvalidTokenError) as e:
+            logger.debug(f"Not a valid managed-agent token: {e}")
+            return None
+
+        logger.info(
+            f"Managed-agent token validated: sub={claims.get('sub')}, "
+            f"aud={claims.get('aud')}, client_id={claims.get('client_id')}"
+        )
+        return claims
+
+    def _build_managed_agent_context(self, claims: dict, path: str) -> UserContextDict | None:
+        """Build a user context from validated managed-agent claims, enforcing direct-connect binding."""
+        username = claims.get("sub", "")
+        if not username:
+            logger.debug("JWT token missing 'sub' claim")
+            return None
+
+        groups = claims.get("groups", [])
+
+        scope_string = claims.get("scope", "")
+        scopes = scope_string.split() if scope_string else []
+
+        if not scopes and groups:
+            scopes = map_groups_to_scopes(groups, settings.scopes_file_config)
+            logger.info(f"Mapped JWT groups {groups} to scopes: {scopes}")
+
+        if not scopes:
+            logger.debug(f"JWT token has no scopes and groups mapping failed. Groups: {groups}")
+            return None
+
+        user_id = claims.get("user_id")
+
+        binding = DIRECT_CONNECT_RE.match(path)
+        if binding is not None:
+            url_user_id = binding.group(1)
+            if user_id != url_user_id:
+                logger.warning(f"user_id mismatch: token has {user_id}, URL has {url_user_id}")
+                return None
+            url_server_path = binding.group(2)
+            token_server_path = claims.get("server_path")
+            # Root-AS tokens (requiresOAuth=False servers) carry no server_path claim; only
+            # downstream-AS tokens (requiresOAuth=True) embed one. Skip the binding check when
+            # absent so non-OAuth direct-connect servers still work with a root-AS token.
+            if token_server_path is not None and token_server_path != url_server_path:
+                logger.warning(f"server_path mismatch: token has {token_server_path}, URL has {url_server_path}")
+                return None
+
+        token_class = claims.get("token_class", "unknown")
+        logger.info(f"Managed-agent token validated for user: {username}, class: {token_class}, scopes: {scopes}")
+
+        return self._build_user_context(
+            user_id=user_id,
+            username=username,
+            groups=groups,
+            scopes=scopes,
+            auth_method="jwt",
+            provider="jwt",
+            auth_source="jwt_auth",
+        )
 
     async def _try_session_auth(self, request: Request) -> UserContextDict | None:
         """JWT-based session authentication from httpOnly cookie"""

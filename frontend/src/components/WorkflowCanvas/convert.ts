@@ -8,7 +8,26 @@ import type { AgentInfo, WorkflowNode as CanvasNode, NodeData } from './types';
 
 const BRANCHING_TYPES = new Set(['cond', 'parallel', 'loop', 'router']);
 
-const CANVAS_TO_API_NODE_TYPE: Record<string, ApiWorkflowNode['nodeType']> = {
+interface InternalWorkflowChoice {
+  name: string;
+  steps: InternalNode[];
+}
+
+/**
+ * Widened node shape used while building/validating the API payload. `'gate_placeholder'`
+ * is a transient marker for an unresolved Approval Gate; it must not survive `mergeGates`
+ * except when the canvas is in an invalid state, which `validateApiNodes` rejects before
+ * anything reaches the backend (whose `WorkflowNode.nodeType` has no such value).
+ */
+interface InternalNode extends Omit<ApiWorkflowNode, 'nodeType' | 'children' | 'trueSteps' | 'falseSteps' | 'choices'> {
+  nodeType: ApiWorkflowNode['nodeType'] | 'gate_placeholder';
+  children?: InternalNode[];
+  trueSteps?: InternalNode[];
+  falseSteps?: InternalNode[];
+  choices?: InternalWorkflowChoice[];
+}
+
+const CANVAS_TO_API_NODE_TYPE: Record<string, InternalNode['nodeType']> = {
   mcp: 'step',
   agent: 'step',
   pool: 'step',
@@ -16,7 +35,21 @@ const CANVAS_TO_API_NODE_TYPE: Record<string, ApiWorkflowNode['nodeType']> = {
   parallel: 'parallel',
   loop: 'loop',
   router: 'router',
+  gate: 'gate_placeholder',
 };
+
+/** Gate "Timeout" dropdown values (`GateNodeProperties.tsx`) ↔ `humanReview.timeoutSeconds`. */
+const GATE_TIMEOUT_OPTIONS: { value: string; seconds?: number }[] = [
+  { value: '24h', seconds: 24 * 60 * 60 },
+  { value: '4h', seconds: 4 * 60 * 60 },
+  { value: 'none' },
+];
+
+const gateTimeoutToSeconds = (value?: string): number | undefined =>
+  GATE_TIMEOUT_OPTIONS.find(o => o.value === value)?.seconds;
+
+const secondsToGateTimeout = (seconds?: number): string =>
+  GATE_TIMEOUT_OPTIONS.find(o => o.seconds === seconds)?.value ?? 'none';
 
 const API_TO_CANVAS_TYPE: Record<string, string> = {
   condition: 'cond',
@@ -40,12 +73,12 @@ const sortEdgesByHandle = (edges: Edge[]): Edge[] =>
 
 const mapNodeToApi = (
   node: Node<NodeData>,
-  branchData: { [handle: string]: ApiWorkflowNode[] } | null,
-): ApiWorkflowNode => {
+  branchData: { [handle: string]: InternalNode[] } | null,
+): InternalNode => {
   const data = node.data;
   const nodeType = CANVAS_TO_API_NODE_TYPE[node.type ?? ''] ?? 'step';
 
-  const apiNode: ApiWorkflowNode = {
+  const apiNode: InternalNode = {
     id: node.id,
     name: data.label || node.id,
     nodeType,
@@ -56,8 +89,8 @@ const mapNodeToApi = (
 
   if (branchData) {
     if (nodeType === 'condition') {
-      apiNode.trueSteps = branchData['true'] ?? [];
-      apiNode.falseSteps = branchData['false'] ?? [];
+      apiNode.trueSteps = branchData.true ?? [];
+      apiNode.falseSteps = branchData.false ?? [];
     } else if (nodeType === 'router') {
       const routerData = data as import('./types').RouterNodeData;
       const cases = routerData.cases ?? [];
@@ -65,24 +98,30 @@ const mapNodeToApi = (
         name: c,
         steps: branchData[`case-${i}`] ?? [],
       }));
-      if (branchData['default']?.length) {
-        apiNode.choices.push({ name: 'default', steps: branchData['default'] });
+      if (branchData.default?.length) {
+        apiNode.choices.push({ name: 'default', steps: branchData.default });
       }
     } else if (nodeType === 'parallel') {
       const pData = data as import('./types').ParallelNodeData;
       const branches = pData.branches ?? ['Branch A', 'Branch B'];
       apiNode.children = branches.map((_, i) => branchData[`branch-${i}`]?.[0]).filter(Boolean);
+      if (branches.some((_, i) => (branchData[`branch-${i}`]?.length ?? 0) > 1)) {
+        apiNode.config = { ...apiNode.config, _hasInvalidParallelBranch: true };
+      }
     } else {
       // loop nodes expect the full sequence from the 'body' handle
-      apiNode.children = branchData['body'] ?? [];
+      apiNode.children = branchData.body ?? [];
     }
   }
 
-  if ((node.type === 'mcp' || node.type === 'agent') && data.label) {
-    apiNode.executorKey = data.label;
+  if (node.type === 'mcp' || node.type === 'agent') {
+    if ('executorKey' in data) {
+      apiNode.executorKey = (data as import('./types').AgentNodeData | import('./types').McpNodeData).executorKey;
+    }
   }
-  if (node.type === 'pool')
-    apiNode.a2aPool = (data as import('./types').PoolNodeData).agents?.map((a: AgentInfo) => a.id) ?? [];
+  if (node.type === 'pool') {
+    apiNode.a2aPool = (data as import('./types').PoolNodeData).agents?.map((a: AgentInfo) => a.path) ?? [];
+  }
   if (node.type === 'parallel') {
     const pData = data as import('./types').ParallelNodeData;
     apiNode.config = {
@@ -110,13 +149,11 @@ const mapNodeToApi = (
   }
   if (node.type === 'gate') {
     const gateData = data as import('./types').GateNodeData;
-    apiNode.executorKey = 'sys.approval'; // Satisfy backend Pydantic validation
-    apiNode.config = {
-      ...apiNode.config,
-      reviewerPrompt: gateData.reviewerPrompt,
-      role: gateData.role,
-      timeout: gateData.timeout,
-      onTimeout: gateData.onTimeout,
+    apiNode.humanReview = {
+      requiresConfirmation: true,
+      confirmationMessage: gateData.reviewerPrompt || 'Are you sure you want to proceed?',
+      timeoutSeconds: gateTimeoutToSeconds(gateData.timeout),
+      onTimeout: gateData.onTimeout || 'cancel',
     };
   }
 
@@ -129,8 +166,8 @@ const buildSequence = (
   edgesFromNode: Map<string, Edge[]>,
   addNodeIds: Set<string>,
   visited: Set<string>,
-): ApiWorkflowNode[] => {
-  const result: ApiWorkflowNode[] = [];
+): InternalNode[] => {
+  const result: InternalNode[] = [];
   let currentId: string | null = startId;
 
   while (currentId !== null) {
@@ -145,7 +182,7 @@ const buildSequence = (
 
     if (BRANCHING_TYPES.has(node.type ?? '')) {
       const sortedEdges = sortEdgesByHandle(outEdges);
-      const branchData: { [handle: string]: ApiWorkflowNode[] } = {};
+      const branchData: { [handle: string]: InternalNode[] } = {};
 
       for (const e of sortedEdges) {
         const handle = e.sourceHandle || 'default';
@@ -165,17 +202,21 @@ const buildSequence = (
 };
 
 /** Walk API tree and return first validation error message, or null if valid. */
-export const validateApiNodes = (apiNodes: ApiWorkflowNode[]): string | null => {
-  const visit = (node: ApiWorkflowNode): string | null => {
+export const validateApiNodes = (apiNodes: InternalNode[]): string | null => {
+  const visit = (node: InternalNode): string | null => {
     const children = node.children ?? [];
     const trueSteps = node.trueSteps ?? [];
     const falseSteps = node.falseSteps ?? [];
     const choices = node.choices ?? [];
 
+    if (node.nodeType === 'gate_placeholder') {
+      return `Approval Gate node "${node.name}" must be immediately followed by an Agent or MCP execution node`;
+    }
+
     if (node.nodeType === 'step') {
       if (children.length > 0 || trueSteps.length > 0 || falseSteps.length > 0 || choices.length > 0)
         return `Step node "${node.name}" must not have nested branches`;
-      if (node.config?.canvasType !== 'gate' && !node.executorKey && (!node.a2aPool || node.a2aPool.length === 0)) {
+      if (!node.executorKey && (!node.a2aPool || node.a2aPool.length === 0)) {
         return `Node "${node.name}" requires an executor key or agent pool`;
       }
     }
@@ -211,6 +252,9 @@ export const validateApiNodes = (apiNodes: ApiWorkflowNode[]): string | null => 
       if (children.length < expectedBranches) {
         return `Parallel node "${node.name}" requires at least one node in every branch`;
       }
+      if (node.config?._hasInvalidParallelBranch) {
+        return `Parallel branches in node "${node.name}" may contain only one node each. Use a nested container for multi-step branches.`;
+      }
     }
 
     if (node.nodeType === 'loop' && children.length < 1) {
@@ -235,7 +279,7 @@ export const validateApiNodes = (apiNodes: ApiWorkflowNode[]): string | null => 
  * Convert ReactFlow nodes + edges → API `WorkflowNode[]` payload.
  * "add" placeholder nodes are excluded; branching nodes carry their branches in `children`.
  */
-export const canvasToApiNodes = (nodes: Node<NodeData>[], edges: Edge[]): ApiWorkflowNode[] => {
+export const canvasToApiNodes = (nodes: Node<NodeData>[], edges: Edge[]): InternalNode[] => {
   const addNodeIds = new Set(nodes.filter(n => n.type === 'add').map(n => n.id));
   const workNodes = nodes.filter(n => n.type !== 'add');
   if (workNodes.length === 0) return [];
@@ -250,7 +294,48 @@ export const canvasToApiNodes = (nodes: Node<NodeData>[], edges: Edge[]): ApiWor
   const roots = workNodes.filter(n => !targetIds.has(n.id));
 
   const visited = new Set<string>();
-  return roots.flatMap(n => buildSequence(n.id, nodeMap, edgesFromNode, addNodeIds, visited));
+  const rawNodes = roots.flatMap(n => buildSequence(n.id, nodeMap, edgesFromNode, addNodeIds, visited));
+  return mergeGates(rawNodes);
+};
+
+const mergeGates = (nodes: InternalNode[]): InternalNode[] => {
+  const merged: InternalNode[] = [];
+  let pendingGate: InternalNode | null = null;
+
+  for (let i = 0; i < nodes.length; i++) {
+    const n = nodes[i];
+    if (n.nodeType === 'gate_placeholder') {
+      if (pendingGate) {
+        merged.push(pendingGate);
+      }
+      pendingGate = n;
+    } else {
+      if (pendingGate) {
+        if (n.nodeType === 'step') {
+          n.humanReview = pendingGate.humanReview;
+          pendingGate = null;
+        } else {
+          merged.push(pendingGate);
+          pendingGate = null;
+        }
+      }
+
+      if (n.children) n.children = mergeGates(n.children);
+      if (n.trueSteps) n.trueSteps = mergeGates(n.trueSteps);
+      if (n.falseSteps) n.falseSteps = mergeGates(n.falseSteps);
+      if (n.choices) {
+        n.choices = n.choices.map(c => ({ ...c, steps: mergeGates(c.steps) }));
+      }
+
+      merged.push(n);
+    }
+  }
+
+  if (pendingGate) {
+    merged.push(pendingGate);
+  }
+
+  return merged;
 };
 
 // ─── API → canvas ─────────────────────────────────────────────────────────────
@@ -265,13 +350,14 @@ let _edgeSeq = 0;
 const nextAddId = () => `add${_nodeSeq++}`;
 const nextEdgeId = () => `e_load_${_edgeSeq++}`;
 
-const apiNodeToCanvas = (w: ApiWorkflowNode): CanvasNode => {
+const apiNodeToCanvas = (w: InternalNode): CanvasNode => {
   // Restore original canvas type if stored; fall back to API-type mapping
   const canvasType: string = (w.config?.canvasType as string | undefined) ?? API_TO_CANVAS_TYPE[w.nodeType] ?? 'agent';
 
   const data = {
     label: w.name,
     description: (w.config?.description as string | undefined) ?? '',
+    executorKey: w.executorKey,
   } as NodeData;
 
   if (canvasType === 'cond' && w.conditionCel) {
@@ -292,8 +378,14 @@ const apiNodeToCanvas = (w: ApiWorkflowNode): CanvasNode => {
   if (w.config?.cases) (data as import('./types').RouterNodeData).cases = w.config.cases as string[];
   if (w.a2aPool)
     (data as import('./types').PoolNodeData).agents = w.a2aPool.map(
-      id => ({ id, label: id, desc: '' }) satisfies AgentInfo,
+      id => ({ id, label: id, desc: '', path: id }) satisfies AgentInfo,
     );
+  if (canvasType === 'gate' && w.humanReview) {
+    const gateData = data as import('./types').GateNodeData;
+    gateData.reviewerPrompt = w.humanReview.confirmationMessage || '';
+    gateData.timeout = secondsToGateTimeout(w.humanReview.timeoutSeconds);
+    gateData.onTimeout = w.humanReview.onTimeout || 'cancel';
+  }
 
   // Restore branch/case labels for parallel & router handles
   if (canvasType === 'parallel') {
@@ -319,7 +411,7 @@ const apiNodeToCanvas = (w: ApiWorkflowNode): CanvasNode => {
  * Returns the ID of the last step node (null if the sequence ended at a branching node).
  */
 const processApiSequence = (
-  apiNodes: ApiWorkflowNode[],
+  apiNodes: InternalNode[],
   prevId: string | null,
   prevHandle: string | null,
   result: CanvasResult,
@@ -327,7 +419,25 @@ const processApiSequence = (
   let lastStepId: string | null = prevId;
   let lastHandle: string | null = prevHandle;
 
+  const flatNodes: InternalNode[] = [];
   for (const apiNode of apiNodes) {
+    if (apiNode.humanReview) {
+      const gateApiNode: InternalNode = {
+        id: `gate_${apiNode.id}`,
+        name: 'Approval Gate',
+        nodeType: 'gate_placeholder',
+        position: apiNode.position ? { x: (apiNode.position.x ?? 0) - 220, y: apiNode.position.y ?? 0 } : undefined,
+        config: {
+          canvasType: 'gate',
+        },
+        humanReview: apiNode.humanReview,
+      };
+      flatNodes.push(gateApiNode);
+    }
+    flatNodes.push(apiNode);
+  }
+
+  for (const apiNode of flatNodes) {
     const canvasNode = apiNodeToCanvas(apiNode);
     result.nodes.push(canvasNode);
 
@@ -344,7 +454,7 @@ const processApiSequence = (
     if (BRANCHING_TYPES.has(canvasNode.type ?? '')) {
       const type = canvasNode.type;
 
-      const branches: { handle: string; sequence: ApiWorkflowNode[] }[] = [];
+      const branches: { handle: string; sequence: InternalNode[] }[] = [];
 
       if (type === 'cond') {
         const tSteps = apiNode.trueSteps?.length

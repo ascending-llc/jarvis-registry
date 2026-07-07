@@ -19,9 +19,9 @@ from datetime import UTC, datetime
 from typing import Any
 
 from beanie import PydanticObjectId
+from pymongo.asynchronous.client_session import AsyncClientSession
 from redis import Redis
 
-from registry_pkgs.database.decorators import get_current_session
 from registry_pkgs.models import (
     ExtendedMCPServer,
     Token,
@@ -413,7 +413,7 @@ def _build_config_from_request(data: ServerCreateRequest, server_name: str = Non
     """
     Build config dictionary from ServerCreateRequest
 
-    Important: Registry-specific fields (path, tags, scope, status, numStars, lastConnected, etc.)
+    Important: Registry-specific fields (path, tags, scope, numStars, lastConnected, etc.)
     are stored at root level in MongoDB, NOT in config.
     Config stores MCP-specific configuration only (title, description, type, url, oauth, apiKey, etc.)
     """
@@ -484,8 +484,8 @@ def _update_config_from_request(
     Update config dictionary from ServerUpdateRequest
 
     Important: Only updates MCP-specific config fields.
-    Registry fields (path, tags, scope, status) are updated at root level separately.
-    Note: enabled field is stored in BOTH config and used to update status at root level.
+    Registry fields (path, tags, scope) are updated at root level separately.
+    Note: enabled field is stored in config.
     """
     # Use to_db_dict() to get DB-compatible field names
     update_dict = data.to_db_dict(exclude_unset=True)
@@ -498,7 +498,6 @@ def _update_config_from_request(
     registry_fields = [
         "path",
         "tags",
-        "status",
         "serverName",
         "numStars",
         "enabled",
@@ -605,7 +604,7 @@ class ServerServiceV1:
     async def list_servers(
         self,
         query: str | None = None,
-        status: str | None = None,
+        enabled_only: bool = False,
         page: int = 1,
         per_page: int = 20,
         user_id: str | None = None,
@@ -616,7 +615,7 @@ class ServerServiceV1:
 
         Args:
             query: Free-text search across server_name, description, tags
-            status: Filter by operational state (active, inactive, error)
+            enabled_only: When True, return only enabled servers (config.enabled is True)
             page: Page number (min: 1)
             per_page: Items per page (min: 1, max: 100)
             user_id: Current user's ID (kept for compatibility but not used for filtering)
@@ -633,9 +632,9 @@ class ServerServiceV1:
         # Build filter conditions
         filters = []
 
-        # Status filter (now at root level)
-        if status:
-            filters.append({"status": status})
+        # Enabled filter (config.enabled is the source of truth for enablement)
+        if enabled_only:
+            filters.append({"config.enabled": True})
 
         # Text search across multiple fields (tags now at root level)
         if query:
@@ -671,6 +670,7 @@ class ServerServiceV1:
         self,
         server_id: str,
         user_id: str | None = None,
+        session: AsyncClientSession | None = None,
     ) -> ExtendedMCPServer | None:
         """
         Get a server by its ID.
@@ -689,7 +689,7 @@ class ServerServiceV1:
             logger.warning(f"Invalid server ID format: {server_id}")
             return None
 
-        server = await ExtendedMCPServer.get(obj_id)
+        server = await ExtendedMCPServer.get(obj_id, session=session)
 
         return server
 
@@ -705,11 +705,25 @@ class ServerServiceV1:
         """
         return await ExtendedMCPServer.find_one({"path": path})
 
+    async def extract_server_path(self, request_path: str) -> str | None:
+        """Return the longest registered path prefix that matches ``request_path``.
+
+        Tries progressively shorter segments so a sub-path like ``/github/repos/list``
+        resolves to the registered server at ``/github``.
+        """
+        segments = [s for s in request_path.split("/") if s]
+        for i in range(len(segments), 0, -1):
+            candidate_path = "/" + "/".join(segments[:i])
+            if await self.get_server_by_path(candidate_path):
+                return candidate_path
+        return None
+
     async def create_server(
         self,
         data: ServerCreateRequest,
         user_id: str,
         skip_post_registration_checks: bool = False,
+        session: AsyncClientSession | None = None,
     ) -> ExtendedMCPServer:
         """
         Create a new server.
@@ -724,7 +738,6 @@ class ServerServiceV1:
         Raises:
             ValueError: If path+url combination already exists, server_name already exists, or tags contain duplicates (case-insensitive)
         """
-        session = get_current_session()
         # Check if path+url combination already exists
         # Only reject if BOTH path AND url are the same (to allow same path for different services)
         existing_servers = await ExtendedMCPServer.find({"path": data.path}, session=session).to_list()
@@ -755,7 +768,7 @@ class ServerServiceV1:
         num_tools = len(tool_functions) if tool_functions else 0
 
         # Get author user reference - authentication required
-        author = await self.user_service.get_user_by_user_id(user_id)
+        author = await self.user_service.get_user_by_user_id(user_id, session=session)
 
         if not author:
             raise ValueError(f"Authentication required: User {user_id} not found")
@@ -769,7 +782,6 @@ class ServerServiceV1:
             # Registry-specific root-level fields
             path=data.path,
             tags=[tag.lower() for tag in data.tags],  # Normalize tags to lowercase
-            status="active",  # Default status (independent of enabled field)
             numTools=num_tools,  # Store calculated numTools at root level
             numStars=data.numStars,
             # Initialize error tracking fields as None
@@ -816,7 +828,6 @@ class ServerServiceV1:
 
                 # Update server with health check results (root-level field)
                 server.lastConnected = _get_current_utc_time()
-                server.status = "active"
 
                 # 2. Retrieve capabilities (but skip tools - they will be fetched on-demand)
                 logger.info(f"Retrieving capabilities for {server.serverName} (skipping tools)")
@@ -934,6 +945,7 @@ class ServerServiceV1:
         server_id: str,
         data: ServerUpdateRequest,
         user_id: str | None = None,
+        session: AsyncClientSession | None = None,
     ) -> ExtendedMCPServer:
         """
         Update a server.
@@ -949,8 +961,7 @@ class ServerServiceV1:
         Raises:
             ValueError: If server not found
         """
-        session = get_current_session()
-        server = await self.get_server_by_id(server_id, user_id)
+        server = await self.get_server_by_id(server_id, user_id, session=session)
 
         if not server:
             raise ValueError("Server not found")
@@ -969,8 +980,6 @@ class ServerServiceV1:
             server.path = data.path
         if data.tags is not None:
             server.tags = [tag.lower() for tag in data.tags]
-        if data.status is not None:
-            server.status = data.status
 
         # Update config with MCP-specific values only
         updated_config = _update_config_from_request(config, data, server_name=server.serverName)
@@ -1012,6 +1021,7 @@ class ServerServiceV1:
         self,
         server_id: str,
         user_id: str | None = None,
+        session: AsyncClientSession | None = None,
     ) -> bool:
         """
         Delete a server.
@@ -1031,7 +1041,6 @@ class ServerServiceV1:
         except Exception:
             raise ValueError("Server not found")
 
-        session = get_current_session()
         server = await ExtendedMCPServer.get(obj_id, session=session)
 
         if not server:
@@ -1397,7 +1406,6 @@ class ServerServiceV1:
             # Capabilities refresh failed
             logger.error(f"Capabilities refresh failed for {server.serverName}: {tool_error}")
 
-            # Do NOT update server.status (status is no longer used for enabled/disabled logic)
             server.lastError = now
             server.errorMessage = tool_error or "Failed to retrieve capabilities"
             # Do NOT update lastConnected on failure - only update on success
@@ -1418,7 +1426,6 @@ class ServerServiceV1:
             f"Capabilities refresh succeeded for {server.serverName}: retrieved {len(tool_list)} tools, {len(resource_list or [])} resources, {len(prompt_list or [])} prompts, and capabilities"
         )
 
-        # Do NOT update server.status (status is no longer used for enabled/disabled logic)
         server.lastError = None
         server.errorMessage = None
         # ONLY update lastConnected on success
@@ -1484,12 +1491,11 @@ class ServerServiceV1:
         # 1. Server Statistics
         try:
             # Use facet to get multiple aggregations in one query
-            # Note: scope and status are now at root level
+            # Note: root-level registry fields are not part of config.
             server_pipeline = [
                 {
                     "$facet": {
                         "total": [{"$count": "count"}],
-                        "by_status": [{"$group": {"_id": "$status", "count": {"$sum": 1}}}],
                         "by_transport": [{"$group": {"_id": "$config.type", "count": {"$sum": 1}}}],
                         "total_tools": [
                             {
@@ -1518,13 +1524,6 @@ class ServerServiceV1:
                 # Total servers
                 stats["total_servers"] = result["total"][0]["count"] if result["total"] else 0
 
-                # Servers by status
-                servers_by_status = {}
-                for item in result.get("by_status", []):
-                    status = item["_id"] or "unknown"
-                    servers_by_status[status] = item["count"]
-                stats["servers_by_status"] = servers_by_status
-
                 # Servers by transport
                 servers_by_transport = {}
                 for item in result.get("by_transport", []):
@@ -1537,7 +1536,6 @@ class ServerServiceV1:
             else:
                 # No servers found
                 stats["total_servers"] = 0
-                stats["servers_by_status"] = {}
                 stats["servers_by_transport"] = {}
                 stats["total_tools"] = 0
 
@@ -1545,7 +1543,6 @@ class ServerServiceV1:
             logger.exception(f"Error gathering server statistics: {e}")
             stats["total_servers"] = 0
             stats["servers_by_scope"] = {}
-            stats["servers_by_status"] = {}
             stats["servers_by_transport"] = {}
             stats["total_tools"] = 0
 

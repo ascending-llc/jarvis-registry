@@ -2,13 +2,20 @@ import { ArrowPathIcon, CogIcon, InformationCircleIcon } from '@heroicons/react/
 import axios from 'axios';
 import type React from 'react';
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 
 import type { ServerInfo } from '@/contexts/ServerContext';
 import type { Agent as AgentType } from '@/services/agent/type';
-import type { SemanticAgentHit, SemanticServerHit, SemanticToolHit } from '../hooks/useSemanticSearch';
+import type {
+  SemanticAgentHit,
+  SemanticServerHit,
+  SemanticSkillHit,
+  SemanticToolHit,
+} from '../hooks/useSemanticSearch';
 import AgentDetailsModal from './AgentDetailsModal';
 import IconButton from './IconButton';
 import ServerConfigModal from './ServerConfigModal';
+import Tooltip from './Tooltip';
 
 interface SemanticSearchResultsProps {
   query: string;
@@ -17,6 +24,8 @@ interface SemanticSearchResultsProps {
   servers: SemanticServerHit[];
   tools: SemanticToolHit[];
   agents: SemanticAgentHit[];
+  skills: SemanticSkillHit[];
+  viewMode?: string;
 }
 
 const formatPercent = (value: number) => `${Math.round(Math.min(value, 1) * 100)}%`;
@@ -28,12 +37,15 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
   servers,
   tools,
   agents,
+  skills,
+  viewMode,
 }) => {
-  const hasResults = servers.length > 0 || tools.length > 0 || agents.length > 0;
+  const hasResults = servers.length > 0 || tools.length > 0 || agents.length > 0 || skills.length > 0;
   const [configServer, setConfigServer] = useState<SemanticServerHit | null>(null);
   const [detailsAgent, setDetailsAgent] = useState<SemanticAgentHit | null>(null);
   const [agentDetailsData, setAgentDetailsData] = useState<any>(null);
   const [agentDetailsLoading, setAgentDetailsLoading] = useState(false);
+  const navigate = useNavigate();
 
   const openAgentDetails = async (agentHit: SemanticAgentHit) => {
     setDetailsAgent(agentHit);
@@ -50,8 +62,8 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
   };
 
   const mapHitToAgent = (hit: SemanticAgentHit): AgentType => ({
-    id: hit.path || '',
-    name: hit.agentName,
+    id: hit.agentId || hit.path || '',
+    name: hit.agentCard?.name || (hit as any).config?.title || hit.agentName,
     path: hit.path,
     url: hit.url || (hit.agentCard as any)?.url || '',
     description: hit.description || '',
@@ -69,15 +81,14 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
     wellKnown: { enabled: false, url: '', lastSyncAt: '', lastSyncStatus: '', lastSyncVersion: '' },
     createdAt: '',
     updatedAt: '',
-    enabled: hit.isEnabled ?? true,
+    enabled: hit.enabled ?? true,
     tags: hit.tags,
-    status: 'unknown' as any,
   });
 
   return (
-    <>
+    <div>
       <div className='space-y-8'>
-        <div className='flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between'>
+        <div className='search-interactive-element flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between'>
           <div>
             <p className='text-sm font-medium uppercase tracking-wide text-[var(--jarvis-muted)]'>Semantic Search</p>
             <h3 className='text-xl font-semibold text-[var(--jarvis-text-strong)]'>
@@ -109,198 +120,277 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
           </div>
         )}
 
-        {servers.length > 0 && (
-          <section className='space-y-4'>
-            <div className='flex items-center justify-between'>
-              <h4 className='text-lg font-semibold text-[var(--jarvis-text-strong)]'>
-                Matching Servers{' '}
-                <span className='text-sm font-normal text-[var(--jarvis-muted)]'>({servers.length})</span>
-              </h4>
-            </div>
-            <div
-              className='grid'
-              style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '1.5rem' }}
-            >
-              {servers.map(server => (
-                <div
-                  key={server.path}
-                  className='rounded-2xl border border-[var(--jarvis-border)] bg-[var(--jarvis-card)] p-5 shadow-sm transition-shadow hover:shadow-md'
-                >
-                  <div className='flex items-start justify-between gap-4'>
-                    <div>
-                      <p className='text-base font-semibold text-[var(--jarvis-text-strong)]'>{server.serverName}</p>
-                      <p className='text-sm text-[var(--jarvis-muted)]'>{server.path}</p>
-                    </div>
-                    <div className='flex items-center gap-2'>
-                      <IconButton
-                        onClick={() => setConfigServer(server)}
-                        ariaLabel='Open MCP configuration'
-                        tooltip='Open MCP configuration'
-                        size='card'
-                        className='text-[var(--jarvis-icon)] hover:text-[var(--jarvis-icon-hover)]'
-                      >
-                        <CogIcon className='h-4 w-4' />
-                      </IconButton>
-                      <span className='inline-flex items-center rounded-full border border-[var(--jarvis-primary)]/30 bg-[var(--jarvis-primary-soft)] px-3 py-1 text-xs font-semibold text-[var(--jarvis-primary-text)]'>
-                        {formatPercent(server.relevanceScore)} match
-                      </span>
-                    </div>
-                  </div>
-                  <p className='mt-3 line-clamp-3 text-sm text-[var(--jarvis-muted)]'>
-                    {server.description || server.matchContext || 'No description available.'}
-                  </p>
-
-                  {server.tags?.length > 0 && (
-                    <div className='mt-4 flex flex-wrap gap-2'>
-                      {server.tags.slice(0, 6).map(tag => (
-                        <span
-                          key={tag}
-                          className='rounded-full border border-[var(--jarvis-border-soft)] bg-[var(--jarvis-surface)] px-2.5 py-1 text-xs text-[var(--jarvis-text)]'
+        {(() => {
+          const serversSection = servers.length > 0 && (
+            <section key='servers' className='space-y-4'>
+              <div className='flex items-center justify-between'>
+                <h4 className='text-lg font-semibold text-[var(--jarvis-text-strong)]'>
+                  Matching Servers{' '}
+                  <span className='text-sm font-normal text-[var(--jarvis-muted)]'>({servers.length})</span>
+                </h4>
+              </div>
+              <div
+                className='grid'
+                style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '1.5rem' }}
+              >
+                {servers.map((server, index) => (
+                  <div
+                    key={`${server.path}-${index}`}
+                    className='search-interactive-element rounded-2xl border border-[var(--jarvis-border)] bg-[var(--jarvis-card)] p-5 shadow-sm transition-all hover:shadow-md cursor-pointer hover:border-[color:var(--jarvis-primary-soft)]'
+                    onClick={() => navigate(`/server-edit?id=${server.serverId || server.path}&isReadOnly=true`)}
+                  >
+                    <div className='flex items-start justify-between gap-4'>
+                      <div className='flex-1 min-w-0'>
+                        <p className='text-base font-semibold text-[var(--jarvis-text-strong)] truncate'>
+                          {server.serverName}
+                        </p>
+                        <p className='text-sm text-[var(--jarvis-muted)] truncate'>{server.path}</p>
+                      </div>
+                      <div className='flex items-center gap-2 flex-shrink-0'>
+                        <IconButton
+                          onClick={e => {
+                            e.stopPropagation();
+                            setConfigServer(server);
+                          }}
+                          ariaLabel='Open MCP configuration'
+                          tooltip='Open MCP configuration'
+                          size='card'
+                          className='text-[var(--jarvis-icon)] hover:text-[var(--jarvis-icon-hover)]'
                         >
-                          {tag}
+                          <CogIcon className='h-4 w-4' />
+                        </IconButton>
+                        <span className='inline-flex items-center rounded-full border border-[var(--jarvis-primary)]/30 bg-[var(--jarvis-primary-soft)] px-3 py-1 text-xs font-semibold text-[var(--jarvis-primary-text)]'>
+                          {formatPercent(server.relevanceScore)} match
                         </span>
-                      ))}
+                      </div>
                     </div>
-                  )}
-
-                  {server.matchingTools?.length > 0 && (
-                    <div className='mt-4 border-t border-dashed border-[var(--jarvis-border)] pt-3'>
-                      <p className='mb-2 text-xs font-semibold uppercase tracking-wide text-[var(--jarvis-muted)]'>
-                        Relevant tools
+                    <Tooltip content={server.description || server.matchContext || 'No description available.'}>
+                      <p className='mt-3 line-clamp-3 text-sm text-[var(--jarvis-muted)]'>
+                        {server.description || server.matchContext || 'No description available.'}
                       </p>
-                      <ul className='space-y-2'>
-                        {server.matchingTools.slice(0, 3).map(tool => (
-                          <li key={tool.toolName} className='text-sm text-[var(--jarvis-text)]'>
-                            <span className='font-medium text-[var(--jarvis-text-strong)]'>{tool.toolName}</span>
-                            <span className='mx-2 text-[var(--jarvis-faint)]'>•</span>
-                            <span className='text-[var(--jarvis-muted)]'>
-                              {tool.description || tool.matchContext || 'No description'}
-                            </span>
-                          </li>
+                    </Tooltip>
+
+                    {server.tags?.length > 0 && (
+                      <div className='mt-4 flex flex-wrap gap-2'>
+                        {server.tags.slice(0, 6).map(tag => (
+                          <span
+                            key={tag}
+                            className='rounded-full border border-[var(--jarvis-border-soft)] bg-[var(--jarvis-surface)] px-2.5 py-1 text-xs text-[var(--jarvis-text)]'
+                          >
+                            {tag}
+                          </span>
                         ))}
-                      </ul>
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          </section>
-        )}
+                      </div>
+                    )}
 
-        {tools.length > 0 && (
-          <section className='space-y-4'>
-            <div className='flex items-center justify-between'>
-              <h4 className='text-lg font-semibold text-[var(--jarvis-text-strong)]'>
-                Matching Tools <span className='text-sm font-normal text-[var(--jarvis-muted)]'>({tools.length})</span>
-              </h4>
-            </div>
-            <div
-              className='grid'
-              style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '1.25rem' }}
-            >
-              {tools.map(tool => (
-                <div
-                  key={`${tool.serverPath}-${tool.toolName}`}
-                  className='flex flex-col gap-2 rounded-2xl border border-[var(--jarvis-border)] bg-[var(--jarvis-card)] p-4 sm:flex-row sm:items-center sm:justify-between'
-                >
-                  <div>
-                    <p className='text-sm font-semibold text-[var(--jarvis-text-strong)]'>
-                      {tool.toolName}
-                      <span className='ml-2 text-xs font-normal text-[var(--jarvis-muted)]'>({tool.serverName})</span>
-                    </p>
-                    <p className='text-sm text-[var(--jarvis-muted)]'>
-                      {tool.description || tool.matchContext || 'No description available.'}
-                    </p>
+                    {server.matchingTools?.length > 0 && (
+                      <div className='mt-4 border-t border-dashed border-[var(--jarvis-border)] pt-3'>
+                        <p className='mb-2 text-xs font-semibold uppercase tracking-wide text-[var(--jarvis-muted)]'>
+                          Relevant tools
+                        </p>
+                        <ul className='space-y-2'>
+                          {server.matchingTools.slice(0, 3).map(tool => (
+                            <li key={tool.toolName} className='text-sm text-[var(--jarvis-text)]'>
+                              <span className='font-medium text-[var(--jarvis-text-strong)]'>{tool.toolName}</span>
+                              <span className='mx-2 text-[var(--jarvis-faint)]'>•</span>
+                              <Tooltip content={tool.description || tool.matchContext || 'No description'}>
+                                <span className='text-[var(--jarvis-muted)] line-clamp-3 mt-1'>
+                                  {tool.description || tool.matchContext || 'No description'}
+                                </span>
+                              </Tooltip>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
                   </div>
-                  <span className='inline-flex items-center rounded-full border border-[var(--jarvis-border-soft)] bg-[var(--jarvis-surface)] px-3 py-1 text-xs font-semibold text-[var(--jarvis-text)]'>
-                    {formatPercent(tool.relevanceScore)} match
-                  </span>
-                </div>
-              ))}
-            </div>
-          </section>
-        )}
+                ))}
+              </div>
+            </section>
+          );
 
-        {agents.length > 0 && (
-          <section className='space-y-4'>
-            <div className='flex items-center justify-between'>
-              <h4 className='text-lg font-semibold text-[var(--jarvis-text-strong)]'>
-                Matching Agents{' '}
-                <span className='text-sm font-normal text-[var(--jarvis-muted)]'>({agents.length})</span>
-              </h4>
-            </div>
-            <div
-              className='grid'
-              style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '1.25rem' }}
-            >
-              {agents.map(agent => (
-                <div
-                  key={agent.path}
-                  className='rounded-2xl border border-[var(--jarvis-border)] bg-[var(--jarvis-card)] p-5 shadow-sm transition-shadow hover:shadow-md'
-                >
-                  <div className='flex items-start justify-between gap-4'>
-                    <div>
-                      <p className='text-base font-semibold text-[var(--jarvis-text-strong)]'>{agent.agentName}</p>
-                      <p className='text-xs uppercase tracking-wide text-[var(--jarvis-faint)]'>
-                        {agent.visibility || 'public'}
+          const toolsSection = tools.length > 0 && (
+            <section key='tools' className='space-y-4'>
+              <div className='flex items-center justify-between'>
+                <h4 className='text-lg font-semibold text-[var(--jarvis-text-strong)]'>
+                  Matching Tools{' '}
+                  <span className='text-sm font-normal text-[var(--jarvis-muted)]'>({tools.length})</span>
+                </h4>
+              </div>
+              <div
+                className='grid'
+                style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '1.25rem' }}
+              >
+                {tools.map((tool, index) => (
+                  <div
+                    key={`${tool.serverPath}-${tool.toolName}-${index}`}
+                    className='search-interactive-element flex flex-col gap-2 rounded-2xl border border-[var(--jarvis-border)] bg-[var(--jarvis-card)] p-4 sm:flex-row sm:items-center sm:justify-between'
+                  >
+                    <div className='flex-1 min-w-0'>
+                      <p className='text-sm font-semibold text-[var(--jarvis-text-strong)] truncate'>
+                        {tool.toolName}
+                        <span className='ml-2 text-xs font-normal text-[var(--jarvis-muted)]'>({tool.serverName})</span>
                       </p>
+                      <Tooltip content={tool.description || tool.matchContext || 'No description available.'}>
+                        <p className='mt-1 text-sm text-[var(--jarvis-muted)] line-clamp-3'>
+                          {tool.description || tool.matchContext || 'No description available.'}
+                        </p>
+                      </Tooltip>
                     </div>
-                    <div className='flex items-center gap-2'>
-                      <IconButton
-                        onClick={() => openAgentDetails(agent)}
-                        ariaLabel='View full agent details'
-                        tooltip='View full agent details'
-                        size='card'
-                        className='text-[var(--jarvis-icon)] hover:text-[var(--jarvis-icon-hover)]'
-                      >
-                        <InformationCircleIcon className='h-4 w-4' />
-                      </IconButton>
-                      <span className='inline-flex items-center rounded-full border border-[var(--jarvis-info-text)]/25 bg-[var(--jarvis-info-soft)] px-3 py-1 text-xs font-semibold text-[var(--jarvis-info-text)]'>
-                        {formatPercent(agent.relevanceScore)} match
-                      </span>
-                    </div>
-                  </div>
-
-                  <p className='mt-3 line-clamp-3 text-sm text-[var(--jarvis-muted)]'>
-                    {agent.description || agent.matchContext || 'No description available.'}
-                  </p>
-
-                  {agent.skills?.length > 0 && (
-                    <div className='mt-4'>
-                      <p className='mb-1 text-xs font-semibold uppercase tracking-wide text-[var(--jarvis-muted)]'>
-                        Key Skills
-                      </p>
-                      <p className='text-xs text-[var(--jarvis-muted)]'>
-                        {agent.skills.slice(0, 4).join(', ')}
-                        {agent.skills.length > 4 && '…'}
-                      </p>
-                    </div>
-                  )}
-
-                  {agent.tags?.length > 0 && (
-                    <div className='mt-4 flex flex-wrap gap-2'>
-                      {agent.tags.slice(0, 6).map(tag => (
-                        <span
-                          key={tag}
-                          className='rounded-full border border-[var(--jarvis-info-text)]/20 bg-[var(--jarvis-info-soft)] px-2.5 py-1 text-[11px] text-[var(--jarvis-info-text)]'
-                        >
-                          {tag}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-
-                  <div className='mt-4 flex items-center justify-between text-xs text-[var(--jarvis-muted)]'>
-                    <span className='font-semibold text-[var(--jarvis-info-text)]'>
-                      {agent.trustLevel || 'unverified'}
+                    <span className='inline-flex items-center flex-shrink-0 rounded-full border border-[var(--jarvis-border-soft)] bg-[var(--jarvis-surface)] px-3 py-1 text-xs font-semibold text-[var(--jarvis-text)]'>
+                      {formatPercent(tool.relevanceScore)} match
                     </span>
-                    <span>{agent.isEnabled ? 'Enabled' : 'Disabled'}</span>
                   </div>
-                </div>
-              ))}
-            </div>
-          </section>
-        )}
+                ))}
+              </div>
+            </section>
+          );
+
+          const agentsSection = agents.length > 0 && (
+            <section key='agents' className='space-y-4'>
+              <div className='flex items-center justify-between'>
+                <h4 className='text-lg font-semibold text-[var(--jarvis-text-strong)]'>
+                  Matching Agents{' '}
+                  <span className='text-sm font-normal text-[var(--jarvis-muted)]'>({agents.length})</span>
+                </h4>
+              </div>
+              <div
+                className='grid'
+                style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '1.25rem' }}
+              >
+                {agents.map((agent, index) => (
+                  <div
+                    key={`${agent.path}-${index}`}
+                    className='search-interactive-element rounded-2xl border border-[var(--jarvis-border)] bg-[var(--jarvis-card)] p-5 shadow-sm transition-all hover:shadow-md cursor-pointer hover:border-[color:var(--jarvis-primary-soft)]'
+                    onClick={() => navigate(`/agent-edit?id=${agent.agentId || agent.path}&isReadOnly=true`)}
+                  >
+                    <div className='flex items-start justify-between gap-4'>
+                      <div className='flex-1 min-w-0'>
+                        <p className='text-base font-semibold text-[var(--jarvis-text-strong)] truncate'>
+                          {agent.agentCard?.name || (agent as any).config?.title || agent.agentName}
+                        </p>
+                        <p className='text-xs uppercase tracking-wide text-[var(--jarvis-faint)] truncate'>
+                          {agent.visibility || 'public'}
+                        </p>
+                      </div>
+                      <div className='flex items-center gap-2 flex-shrink-0'>
+                        <IconButton
+                          onClick={e => {
+                            e.stopPropagation();
+                            openAgentDetails(agent);
+                          }}
+                          ariaLabel='View full agent details'
+                          tooltip='View full agent details'
+                          size='card'
+                          className='text-[var(--jarvis-icon)] hover:text-[var(--jarvis-icon-hover)]'
+                        >
+                          <InformationCircleIcon className='h-4 w-4' />
+                        </IconButton>
+                        <span className='inline-flex items-center rounded-full border border-[var(--jarvis-info-text)]/25 bg-[var(--jarvis-info-soft)] px-3 py-1 text-xs font-semibold text-[var(--jarvis-info-text)]'>
+                          {formatPercent(agent.relevanceScore)} match
+                        </span>
+                      </div>
+                    </div>
+
+                    <Tooltip content={agent.description || agent.matchContext || 'No description available.'}>
+                      <p className='mt-3 line-clamp-3 text-sm text-[var(--jarvis-muted)]'>
+                        {agent.description || agent.matchContext || 'No description available.'}
+                      </p>
+                    </Tooltip>
+
+                    {agent.skills?.length > 0 && (
+                      <div className='mt-4'>
+                        <p className='mb-1 text-xs font-semibold uppercase tracking-wide text-[var(--jarvis-muted)]'>
+                          Key Skills
+                        </p>
+                        <p className='text-xs text-[var(--jarvis-muted)]'>
+                          {agent.skills.slice(0, 4).join(', ')}
+                          {agent.skills.length > 4 && '…'}
+                        </p>
+                      </div>
+                    )}
+
+                    {agent.tags?.length > 0 && (
+                      <div className='mt-4 flex flex-wrap gap-2'>
+                        {agent.tags.slice(0, 6).map(tag => (
+                          <span
+                            key={tag}
+                            className='rounded-full border border-[var(--jarvis-info-text)]/20 bg-[var(--jarvis-info-soft)] px-2.5 py-1 text-[11px] text-[var(--jarvis-info-text)]'
+                          >
+                            {tag}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+
+                    <div className='mt-4 flex items-center justify-between text-xs text-[var(--jarvis-muted)]'>
+                      <span className='font-semibold text-[var(--jarvis-info-text)]'>
+                        {agent.trustLevel || 'unverified'}
+                      </span>
+                      <span>{agent.enabled ? 'Enabled' : 'Disabled'}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          );
+
+          const skillsSection = skills.length > 0 && (
+            <section key='skills' className='space-y-4'>
+              <div className='flex items-center justify-between'>
+                <h4 className='text-lg font-semibold text-[var(--jarvis-text-strong)]'>
+                  Matching Skills{' '}
+                  <span className='text-sm font-normal text-[var(--jarvis-muted)]'>({skills.length})</span>
+                </h4>
+              </div>
+              <div
+                className='grid'
+                style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '1.25rem' }}
+              >
+                {skills.map((skill, index) => (
+                  <div
+                    key={`${skill.agentPath}-${skill.skillName}-${index}`}
+                    className='search-interactive-element flex flex-col gap-2 rounded-2xl border border-[var(--jarvis-border)] bg-[var(--jarvis-card)] p-4 sm:flex-row sm:items-center sm:justify-between'
+                  >
+                    <div className='flex-1 min-w-0'>
+                      <p className='text-sm font-semibold text-[var(--jarvis-text-strong)] truncate'>
+                        {skill.skillName}
+                        <span className='ml-2 text-xs font-normal text-[var(--jarvis-muted)]'>({skill.agentName})</span>
+                      </p>
+                      <Tooltip content={skill.description || skill.matchContext || 'No description available.'}>
+                        <p className='mt-1 text-sm text-[var(--jarvis-muted)] line-clamp-3'>
+                          {skill.description || skill.matchContext || 'No description available.'}
+                        </p>
+                      </Tooltip>
+                    </div>
+                    <span className='inline-flex items-center flex-shrink-0 rounded-full border border-[var(--jarvis-info-text)]/20 bg-[var(--jarvis-info-soft)] px-3 py-1 text-xs font-semibold text-[var(--jarvis-info-text)]'>
+                      {formatPercent(skill.relevanceScore)} match
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </section>
+          );
+
+          if (viewMode === 'agents') {
+            return (
+              <>
+                {agentsSection}
+                {skillsSection}
+                {serversSection}
+                {toolsSection}
+              </>
+            );
+          }
+          return (
+            <>
+              {serversSection}
+              {toolsSection}
+              {agentsSection}
+              {skillsSection}
+            </>
+          );
+        })()}
       </div>
 
       {configServer && (
@@ -310,7 +400,7 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
               name: configServer.serverName,
               path: configServer.path,
               description: configServer.description,
-              enabled: configServer.isEnabled ?? true,
+              enabled: configServer.enabled ?? true,
               tags: configServer.tags,
               numTools: configServer.numTools,
             } as ServerInfo
@@ -329,7 +419,7 @@ const SemanticSearchResults: React.FC<SemanticSearchResultsProps> = ({
           fullDetails={agentDetailsData}
         />
       )}
-    </>
+    </div>
   );
 };
 

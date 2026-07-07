@@ -1,14 +1,31 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { HiBolt, HiCheckCircle } from 'react-icons/hi2';
 
 import FormFields from '@/components/FormFields';
 import { useGlobal } from '@/contexts/GlobalContext';
 import SERVICES from '@/services';
-import type { Agent } from '@/services/agent/type';
+import type { Agent, GetWellKnownAgentCardsResponse } from '@/services/agent/type';
 import Request from '@/services/request';
 import type { AgentConfig } from './types';
 
 const TEST_URL_CANCEL_KEY = 'testAgentUrl';
+
+function agentDetailToCardShape(detail: Agent): GetWellKnownAgentCardsResponse {
+  return {
+    name: detail.name,
+    description: detail.description,
+    url: detail.url,
+    version: detail.version,
+    protocolVersion: detail.protocolVersion,
+    capabilities: detail.capabilities,
+    preferredTransport: detail.preferredTransport,
+    provider: detail.provider,
+    skills: detail.skills,
+    securitySchemes: detail.securitySchemes,
+    defaultInputModes: detail.defaultInputModes,
+    defaultOutputModes: detail.defaultOutputModes,
+  };
+}
 
 interface MainConfigFormProps {
   formData: AgentConfig;
@@ -26,7 +43,8 @@ const MainConfigForm: React.FC<MainConfigFormProps> = ({ formData, agentDetail, 
   const isManualLoading = discoverStatus === 'manual';
   const isSilentLoading = discoverStatus === 'silent';
   const isSameUrl = !!agentDetail?.url && agentDetail.url === formData.url;
-  const displayDiscoveredData = discoveredData || (isSameUrl ? agentDetail?.wellKnown : null);
+  const displayDiscoveredData =
+    discoveredData ?? (isSameUrl && agentDetail ? agentDetailToCardShape(agentDetail) : null);
 
   const handleTestUrl = async (silent = false) => {
     if (!silent && isManualLoading) {
@@ -88,13 +106,33 @@ const MainConfigForm: React.FC<MainConfigFormProps> = ({ formData, agentDetail, 
     }
   };
 
-  const hasFetchedRef = useRef(false);
+  const handleRefreshAgent = async () => {
+    if (!agentDetail) return;
+    setDiscoverStatus('manual');
+    try {
+      const result = await SERVICES.AGENT.refreshAgent(agentDetail.id);
+      if (result) {
+        setDiscoveredData(agentDetailToCardShape(result));
+        showToast('Agent card refreshed successfully', 'success');
+      }
+    } catch (error: any) {
+      const errorMessage =
+        typeof error?.detail === 'string'
+          ? error.detail
+          : typeof error?.detail?.message === 'string'
+            ? error.detail.message
+            : error?.message || 'Unknown error';
+      showToast(errorMessage, 'error');
+    } finally {
+      setDiscoverStatus('idle');
+    }
+  };
+
   useEffect(() => {
-    if (agentDetail && formData.url && !hasFetchedRef.current) {
-      hasFetchedRef.current = true;
+    if (agentDetail && !isSameUrl && formData.url) {
       handleTestUrl(true);
     }
-  }, [agentDetail, formData.url]);
+  }, [agentDetail, isSameUrl, formData.url]);
 
   const getLineCount = (jsonStr: string) => {
     return jsonStr.split('\n').length;
@@ -199,11 +237,11 @@ const MainConfigForm: React.FC<MainConfigFormProps> = ({ formData, agentDetail, 
             id='path'
             required
             disabled={isReadOnly}
-            placeholder='/my-agent'
+            placeholder='my-agent'
             value={formData.path}
             onChange={e => updateField('path', e.target.value)}
             onBlur={e => updateField('path', e.target.value.toLowerCase())}
-            helperText='Unique URL path prefix (must start with /)'
+            helperText='Unique URL path slug (lowercase letters, numbers, dashes)'
             error={errors?.path}
           />
         </div>
@@ -228,7 +266,13 @@ const MainConfigForm: React.FC<MainConfigFormProps> = ({ formData, agentDetail, 
           {displayDiscoveredData && !isSilentLoading && (
             <button
               type='button'
-              onClick={() => handleTestUrl(true)}
+              onClick={() => {
+                if (isSameUrl && agentDetail) {
+                  handleRefreshAgent();
+                } else {
+                  handleTestUrl();
+                }
+              }}
               disabled={isManualLoading}
               className='ml-auto text-xs text-[var(--jarvis-primary)] hover:text-[var(--jarvis-primary-text-hover)] hover:text-[var(--jarvis-primary-text-hover)] cursor-pointer disabled:opacity-50 flex items-center gap-1'
             >
@@ -263,7 +307,7 @@ const MainConfigForm: React.FC<MainConfigFormProps> = ({ formData, agentDetail, 
               <div className='animate-spin rounded-full h-8 w-8 border-b-2 border-[var(--jarvis-primary)]' />
             </div>
           ) : displayDiscoveredData ? (
-            <pre className='bg-[var(--jarvis-card)] bg-[var(--jarvis-card)]/50 text-[var(--jarvis-success-text)] font-mono text-xs leading-relaxed whitespace-pre overflow-x-auto p-4 m-0'>
+            <pre className='bg-[var(--jarvis-card)] bg-[var(--jarvis-card)]/50 text-[var(--jarvis-success-text)] font-mono text-xs leading-relaxed whitespace-pre-wrap overflow-x-auto p-4 m-0'>
               {JSON.stringify(displayDiscoveredData, null, 2)}
             </pre>
           ) : (

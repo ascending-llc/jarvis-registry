@@ -23,6 +23,7 @@ async def test_semantic_search_maps_service_result_to_response():
         return_value={
             "servers": [
                 {
+                    "server_id": "server-1",
                     "path": "/test-server",
                     "server_name": "test-server",
                     "description": "Test server",
@@ -67,19 +68,70 @@ async def test_semantic_search_maps_service_result_to_response():
 
     search_service.semantic_search.assert_awaited_once_with(
         query="test",
+        user_context={"username": "tester"},
         entity_types=["mcp_server", "a2a_agent", "skill"],
         max_results=5,
         include_disabled=False,
     )
     assert response.totalServers == 1
+    assert response.servers[0].serverId == "server-1"
     assert response.servers[0].serverName == "test-server"
     assert response.totalTools == 0
     assert response.totalAgents == 1
     assert response.agents[0].agentName == "deep-intel"
     assert response.agents[0].tags == ["research"]
-    assert response.agents[0].isEnabled is True
+    assert response.agents[0].enabled is True
     assert response.totalSkills == 1
     assert response.skills[0].skillName == "web_search"
+
+
+@pytest.mark.asyncio
+async def test_semantic_search_prefers_card_name_with_agent_name_fallback():
+    """agentName uses card_name when present, falling back to agent_name otherwise."""
+    request = make_container(state=make_container(is_authenticated=True, user={"username": "tester"}))
+    search_service = MagicMock()
+    search_service.semantic_search = AsyncMock(
+        return_value={
+            "servers": [],
+            "tools": [],
+            "agents": [
+                {
+                    "agent_id": "agent-1",
+                    "path": "/calc",
+                    "agent_name": "A2a1ForFederationTesting",
+                    "card_name": "Calculator Agent",
+                    "relevance_score": 0.9,
+                },
+                {
+                    "agent_id": "agent-2",
+                    "path": "/legacy",
+                    "agent_name": "Legacy Title",  # no card_name (pre-reindex doc)
+                    "relevance_score": 0.8,
+                },
+            ],
+            "skills": [
+                {
+                    "agent_id": "agent-1",
+                    "path": "/calc",
+                    "agent_name": "A2a1ForFederationTesting",
+                    "card_name": "Calculator Agent",
+                    "skill_name": "add",
+                    "relevance_score": 0.7,
+                }
+            ],
+        }
+    )
+
+    response = await semantic_search(
+        request=request,
+        search_request=SemanticSearchRequest(query="calc", entityTypes=["a2a_agent", "skill"], maxResults=5),
+        search_service=search_service,
+    )
+
+    # card_name wins when present; agent_name is the fallback for legacy docs.
+    assert response.agents[0].agentName == "Calculator Agent"
+    assert response.agents[1].agentName == "Legacy Title"
+    assert response.skills[0].agentName == "Calculator Agent"
 
 
 @pytest.mark.asyncio
@@ -101,3 +153,41 @@ async def test_semantic_search_requires_authentication():
         )
 
     assert exc_info.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_semantic_search_maps_runtime_error_to_503():
+    """A RuntimeError (e.g. an ACL/DB outage surfaced from the service) maps to 503, not a silent empty result."""
+    from fastapi import HTTPException
+
+    request = make_container(state=make_container(is_authenticated=True, user={"username": "tester"}))
+    search_service = MagicMock()
+    search_service.semantic_search = AsyncMock(side_effect=RuntimeError("Failed to fetch accessible resources"))
+
+    with pytest.raises(HTTPException) as exc_info:
+        await semantic_search(
+            request=request,
+            search_request=SemanticSearchRequest(query="test"),
+            search_service=search_service,
+        )
+
+    assert exc_info.value.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_semantic_search_wraps_unexpected_errors():
+    from fastapi import HTTPException
+
+    request = make_container(state=make_container(is_authenticated=True, user={"username": "tester"}))
+    search_service = MagicMock()
+    search_service.semantic_search = AsyncMock(side_effect=AttributeError("bad search mapping"))
+
+    with pytest.raises(HTTPException) as exc_info:
+        await semantic_search(
+            request=request,
+            search_request=SemanticSearchRequest(query="test"),
+            search_service=search_service,
+        )
+
+    assert exc_info.value.status_code == 500
+    assert exc_info.value.detail == "Internal server error"

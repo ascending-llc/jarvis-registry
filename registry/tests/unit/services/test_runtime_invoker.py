@@ -38,10 +38,8 @@ def _build_fake_a2a_agent(*, runtime_arn: str | None) -> SimpleNamespace:
             },
         ),
         path="/demo",
-        config=AgentConfig(title="demo-a2a", description="demo", type="http_json"),
+        config=AgentConfig(title="demo-a2a", description="demo", enabled=True, type="http_json"),
         author="user_demo_id",
-        isEnabled=True,
-        status="active",
         tags=[],
         registeredBy="tester",
         registeredAt=None,
@@ -87,8 +85,8 @@ class TestAgentCoreRuntimeInvoker:
     @pytest.mark.asyncio
     async def test_call_with_runtime_init_retry_async_retries(self):
         invoker = _build_invoker()
-        invoker._runtime_init_retry_attempts = 2
-        invoker._runtime_init_retry_delay_seconds = 0
+        invoker._invoke_runtime_retry_attempts = 2
+        invoker._invoke_runtime_retry_delay_seconds = 0
         calls = {"n": 0}
 
         async def _operation():
@@ -354,8 +352,8 @@ class TestAgentCoreRuntimeInvoker:
     @pytest.mark.asyncio
     async def test_call_with_a2a_card_retry_retries_on_retryable_error(self, monkeypatch):
         invoker = _build_invoker()
-        invoker._a2a_card_retry_attempts = 2
-        invoker._a2a_card_retry_delay_seconds = 0
+        invoker._get_agent_card_retry_attempts = 2
+        invoker._get_agent_card_retry_delay_seconds = 0
 
         calls = {"n": 0}
 

@@ -29,21 +29,20 @@ const FederationCard: React.FC<FederationCardProps> = ({ federation }) => {
   const handleSyncClick = useCallback(
     async (e: React.MouseEvent) => {
       e.stopPropagation();
-      if (!isSyncing) {
-        setIsSyncing(true);
-        try {
-          await SERVICES.FEDERATION.syncFederation(federation.id);
-          showToast?.('Sync started successfully', 'success');
-          // Wait momentarily for status updates
-          setTimeout(() => {
-            refreshFederationData();
-            setIsSyncing(false);
-          }, 2000);
-        } catch (err: any) {
-          console.error('Failed to sync federation:', err);
-          showToast?.(err?.detail?.message || 'Failed to start sync', 'error');
-          setIsSyncing(false);
-        }
+      if (isSyncing) return;
+
+      setIsSyncing(true);
+      showToast?.('Sync started in background', 'info');
+
+      try {
+        await SERVICES.FEDERATION.syncFederation(federation.id, undefined, { timeout: 120000 });
+        showToast?.('Sync completed successfully', 'success');
+        refreshFederationData();
+      } catch (err: any) {
+        console.error('Failed to sync federation:', err);
+        showToast?.(err?.detail?.message || 'Failed to sync', 'error');
+      } finally {
+        setIsSyncing(false);
       }
     },
     [federation.id, isSyncing, refreshFederationData, showToast],
@@ -144,7 +143,7 @@ const FederationCard: React.FC<FederationCardProps> = ({ federation }) => {
             size='card'
             className='text-[var(--jarvis-icon)] hover:bg-[var(--jarvis-primary-soft)] hover:text-[var(--jarvis-icon-hover)]'
           >
-            <ArrowPathIcon className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
+            <ArrowPathIcon className='w-3.5 h-3.5' />
           </IconButton>
         </div>
       </div>

@@ -6,8 +6,10 @@ from typing import TYPE_CHECKING
 
 import httpx
 from agno.models.aws import AwsBedrock
+from beanie import PydanticObjectId
 from redis import Redis
 
+from registry_pkgs.core.oauth_state_store import DownstreamOAuthStateStore, OAuthClientStore, OAuthStateStore
 from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.vector.client import DatabaseClient
 from registry_pkgs.vector.repositories.a2a_agent_repository import A2AAgentRepository
@@ -22,14 +24,19 @@ from .core.mcp_client import MCPClientService
 from .core.session_store import SessionStore
 from .health.service import HealthMonitoringService
 from .services.a2a_agent_service import A2AAgentService
-from .services.access_control_service import ACLService
+from .services.access_control_service import ACLService, load_role_cache
 from .services.agent_scanner import AgentScannerService
-from .services.agentcore_import_service import AgentCoreImportService
 from .services.federation.azure_foundry_proxy_auth import A2aHeadersProvider, make_a2a_headers_provider
 from .services.federation_crud_service import FederationCrudService
 from .services.federation_job_service import FederationJobService
 from .services.federation_service import FederationService
 from .services.federation_sync_service import FederationSyncService
+from .services.group_directory_client import (
+    CognitoGroupDirectoryClient,
+    EntraIdGroupDirectoryClient,
+    IdPGroupDirectoryClient,
+    KeycloakGroupDirectoryClient,
+)
 from .services.group_service import GroupService
 from .services.oauth.connection_service import MCPConnectionService
 from .services.oauth.mcp_service import MCPService
@@ -65,6 +72,7 @@ class RegistryContainer:
         self.db_client = db_client
         self.redis_client = redis_client
         self.directive_queue = DirectiveQueue()
+        self.role_cache: dict[tuple[str, int], PydanticObjectId] = {}
 
     @cached_property
     def mcp_server_repo(self) -> MCPServerRepository:
@@ -93,7 +101,10 @@ class RegistryContainer:
             from .services.search.external_service import ExternalVectorSearchService
 
             logger.info("Initializing Weaviate-based vector search service for MCP tools")
-            return ExternalVectorSearchService(mcp_server_repo=self.mcp_server_repo)
+            return ExternalVectorSearchService(
+                mcp_server_repo=self.mcp_server_repo,
+                enable_rerank=self.settings.rerank_enabled,
+            )
 
         from .services.search.embedded_service import EmbeddedFaissService
 
@@ -107,6 +118,7 @@ class RegistryContainer:
             vector_service=self.vector_service,
             mcp_server_repo=self.mcp_server_repo,
             a2a_agent_repo=self.a2a_agent_repo,
+            acl_service=self.acl_service,
         )
 
     @cached_property
@@ -122,12 +134,30 @@ class RegistryContainer:
         return UserService()
 
     @cached_property
+    def group_directory_client(self) -> IdPGroupDirectoryClient:
+        provider = self.settings.auth_provider
+        if provider == "entra":
+            return EntraIdGroupDirectoryClient(
+                tenant_id=self.settings.entra_tenant_id or "",
+                client_id=self.settings.entra_client_id or "",
+                client_secret=self.settings.entra_client_secret or "",
+                graph_url=self.settings.entra_graph_url,
+            )
+        if provider == "cognito":
+            return CognitoGroupDirectoryClient()
+        return KeycloakGroupDirectoryClient()
+
+    @cached_property
     def group_service(self) -> GroupService:
-        return GroupService()
+        return GroupService(group_directory_client=self.group_directory_client)
 
     @cached_property
     def acl_service(self) -> ACLService:
-        return ACLService(user_service=self.user_service, group_service=self.group_service)
+        return ACLService(
+            user_service=self.user_service,
+            group_service=self.group_service,
+            role_cache=self.role_cache,
+        )
 
     @cached_property
     def token_service(self) -> TokenService:
@@ -136,6 +166,36 @@ class RegistryContainer:
     @cached_property
     def flow_state_manager(self) -> FlowStateManager:
         return FlowStateManager(redis_client=self.redis_client)
+
+    @cached_property
+    def oauth_client_store(self) -> OAuthClientStore:
+        """Read DCR client metadata from auth-server's Redis namespace."""
+        return OAuthClientStore(
+            redis_client=self.redis_client,
+            key_prefix=self.settings.auth_server_redis_key_prefix,
+            client_secret_hash_key=self.settings.secret_key,
+        )
+
+    @cached_property
+    def downstream_refresh_token_store(self) -> OAuthStateStore:
+        """Persist registry-owned direct-connect refresh tokens under registry's Redis namespace."""
+        return OAuthStateStore(
+            redis_client=self.redis_client,
+            key_prefix=self.settings.redis_key_prefix,
+            client_secret_hash_key=self.settings.secret_key,
+        )
+
+    @cached_property
+    def oauth_state_store(self) -> DownstreamOAuthStateStore:
+        """Redis-backed OAuth state for the direct-connect downstream flow.
+
+        Direct-connect refresh tokens live under registry's own ``redis_key_prefix``; DCR client
+        records are read through an explicit client facade over auth-server's namespace.
+        """
+        return DownstreamOAuthStateStore(
+            client_store=self.oauth_client_store,
+            refresh_token_store=self.downstream_refresh_token_store,
+        )
 
     @cached_property
     def oauth_service(self) -> MCPOAuthService:
@@ -176,16 +236,9 @@ class RegistryContainer:
 
     @cached_property
     def a2a_agent_service(self) -> A2AAgentService:
-        return A2AAgentService(a2a_agent_repo=self.a2a_agent_repo)
-
-    @cached_property
-    def agentcore_import_service(self) -> AgentCoreImportService:
-        return AgentCoreImportService(
-            acl_service_instance=self.acl_service,
-            server_service=self.server_service,
-            user_service_instance=self.user_service,
-            mcp_server_repo=self.mcp_server_repo,
+        return A2AAgentService(
             a2a_agent_repo=self.a2a_agent_repo,
+            jwt_config=self.settings.jwt_signing_config,
         )
 
     @cached_property
@@ -293,6 +346,12 @@ class RegistryContainer:
         """Warm services that need async initialization before the app can serve traffic."""
         logger.info("Initializing services via registry container...")
 
+        logger.info("Loading ACL role cache...")
+        loaded = await load_role_cache()
+        self.role_cache.clear()
+        self.role_cache.update(loaded)
+        logger.info("ACL role cache loaded: %d roles", len(self.role_cache))
+
         logger.info("Initializing vector search service...")
         await self.vector_service.initialize()
         if self.vector_service.is_initialized:
@@ -319,7 +378,6 @@ class RegistryContainer:
 
     async def shutdown(self) -> None:
         """Shutdown services that hold background tasks or external resources."""
-        await self.workflow_reaper.stop()
         await cancel_in_flight_runs()
         await self.health_service.shutdown()
         await self.mcp_proxy_client.aclose()

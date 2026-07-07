@@ -10,6 +10,7 @@ from unittest.mock import patch
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
+from pydantic import ValidationError
 
 from registry.core.config import Settings
 
@@ -30,6 +31,7 @@ _SETTINGS_ENV = {
     .decode(),
     "TOOL_DISCOVERY_MODE": "external",
     "CREDS_KEY": os.urandom(32).hex(),
+    "SECRET_KEY": os.urandom(32).hex(),
 }
 
 
@@ -50,14 +52,12 @@ class TestSettings:
         assert settings.local_embeddings_model_dimensions == 384
         assert settings.health_check_interval_seconds == 300  # 5 minutes
 
-    @patch.dict(os.environ, _SETTINGS_ENV, clear=True)
-    def test_secret_key_generation(self):
-        """Test that secret key is generated if not provided."""
-        # Create settings without loading .env file
-        settings = Settings(_env_file=None)
-
-        assert settings.secret_key is not None
-        assert len(settings.secret_key) == 64  # 32 bytes in hex = 64 characters
+    def test_secret_key_required(self):
+        """Test that Settings raises a validation error when SECRET_KEY is absent."""
+        env_without_secret_key = {k: v for k, v in _SETTINGS_ENV.items() if k != "SECRET_KEY"}
+        with patch.dict(os.environ, env_without_secret_key, clear=True):
+            with pytest.raises(ValidationError, match="SECRET_KEY must be set"):
+                Settings(_env_file=None)
 
     @patch.dict(os.environ, _SETTINGS_ENV, clear=True)
     def test_custom_secret_key(self):

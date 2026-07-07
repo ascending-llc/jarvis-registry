@@ -17,7 +17,7 @@ from a2a.types import (
     TextPart,
 )
 from beanie import PydanticObjectId
-from mcp.types import BlobResourceContents, EmbeddedResource, TextContent, TextResourceContents
+from mcp.types import BlobResourceContents, EmbeddedResource, ImageContent, TextContent, TextResourceContents
 
 from registry.mcpgw.tools import agent
 from registry.mcpgw.tools.agent import AgentMessageInput, _convert_response, execute_agent_impl
@@ -118,14 +118,13 @@ async def test_execute_agent_invalid_id_returns_error():
 
 @pytest.mark.asyncio
 async def test_execute_agent_not_found_returns_error():
-    """The single 'not found / inactive' branch — `find_one(id, status=active)`
+    """The single 'not found / disabled' branch — `find_one(id == oid, {"config.enabled": True})`
     returns None — should produce the combined error message."""
     ctx = _make_ctx()
     valid_id = str(PydanticObjectId())
 
     with patch("registry.mcpgw.tools.agent.A2AAgent") as mock_model:
         mock_model.id = MagicMock()
-        mock_model.status = MagicMock()
         mock_model.find_one = AsyncMock(return_value=None)
 
         result = await execute_agent_impl(valid_id, _msg("hello"), ctx)
@@ -133,7 +132,7 @@ async def test_execute_agent_not_found_returns_error():
     assert result.isError is True
     text = result.content[0].text
     assert "not found" in text
-    assert "no longer active" in text
+    assert "not enabled" in text
 
 
 @pytest.mark.asyncio
@@ -249,6 +248,31 @@ async def test_execute_agent_a2a_failure_returns_error():
 
 
 @pytest.mark.asyncio
+async def test_execute_agent_a2a_failure_surfaces_status_message_detail():
+    """A terminal `failed` task surfaces its status.message reason to the caller."""
+    ctx = _make_ctx()
+    valid_id = str(PydanticObjectId())
+    agent = _make_agent(valid_id)
+    reason = "agent overloaded (HTTP 503), retryable, retry in a few minutes"
+
+    with (
+        patch("registry.mcpgw.tools.agent.A2AAgent") as mock_model,
+        patch("registry.mcpgw.tools.agent.call_a2a", new_callable=AsyncMock) as mock_call,
+    ):
+        mock_model.id = MagicMock()
+        mock_model.find_one = AsyncMock(return_value=agent)
+        mock_call.return_value = A2ACallResult(
+            success=False,
+            error=f"task terminated in non-completed state: failed — {reason}",
+        )
+
+        result = await execute_agent_impl(valid_id, _msg("Do something"), ctx)
+
+    assert result.isError is True
+    assert reason in result.content[0].text
+
+
+@pytest.mark.asyncio
 async def test_get_tools_returns_execute_agent():
     tools = agent.get_tools()
     names = [name for name, _ in tools]
@@ -301,6 +325,54 @@ def test_convert_response_task_file_with_bytes():
     assert "urn:a2a:file:" in str(resource.uri)
 
 
+def test_convert_response_task_image_file_with_bytes():
+    """image/* FileWithBytes render as inline ImageContent (not an opaque blob resource),
+    preserving the base64 payload verbatim. This is the reported image_agent path."""
+    b64_data = "iVBORw0KGgo="
+    artifact = _text_artifact(
+        "Diagram",
+        "",
+        extra_parts=[Part(root=FilePart(kind="file", file=FileWithBytes(bytes=b64_data, mimeType="image/png")))],
+    )
+    items = _convert_response(_result_with_task(artifact))
+    assert len(items) == 1
+    assert isinstance(items[0], ImageContent)
+    assert items[0].data == b64_data
+    assert items[0].mimeType == "image/png"
+
+
+def test_convert_response_message_image_file_with_bytes():
+    """`_file_to_resource` is shared by `_render_message`, so an image carried on a
+    Message reply (not a Task artifact) must also become inline ImageContent."""
+    b64_data = "iVBORw0KGgo="
+    msg = Message(
+        kind="message",
+        role=Role.user,
+        message_id="m",
+        parts=[Part(root=FilePart(kind="file", file=FileWithBytes(bytes=b64_data, mimeType="image/png")))],
+    )
+    items = _convert_response(A2ACallResult(message=msg, success=True))
+    assert len(items) == 1
+    assert isinstance(items[0], ImageContent)
+    assert items[0].data == b64_data
+    assert items[0].mimeType == "image/png"
+
+
+def test_convert_response_image_mimetype_case_and_params_normalized():
+    """Image dispatch normalizes the mime for matching (case-insensitive, strips RFC 6838
+    parameters) yet preserves the original declared mimeType on the ImageContent."""
+    declared = "IMAGE/PNG; charset=binary"
+    artifact = _text_artifact(
+        "Diagram",
+        "",
+        extra_parts=[Part(root=FilePart(kind="file", file=FileWithBytes(bytes="iVBORw0KGgo=", mimeType=declared)))],
+    )
+    items = _convert_response(_result_with_task(artifact))
+    assert len(items) == 1
+    assert isinstance(items[0], ImageContent)
+    assert items[0].mimeType == declared
+
+
 def test_convert_response_task_file_with_uri():
     artifact = _text_artifact(
         "Report",
@@ -340,8 +412,8 @@ def test_convert_response_task_multiple_files_get_unique_uris():
         "Bundle",
         "",
         extra_parts=[
-            Part(root=FilePart(kind="file", file=FileWithBytes(bytes=b64_data, mimeType="image/png"))),
-            Part(root=FilePart(kind="file", file=FileWithBytes(bytes=b64_data, mimeType="image/png"))),
+            Part(root=FilePart(kind="file", file=FileWithBytes(bytes=b64_data, mimeType="application/pdf"))),
+            Part(root=FilePart(kind="file", file=FileWithBytes(bytes=b64_data, mimeType="application/pdf"))),
         ],
     )
     items = _convert_response(_result_with_task(artifact))
@@ -433,7 +505,6 @@ async def test_execute_agent_iam_unsupported_returns_error():
         ),
     ):
         mock_model.id = MagicMock()
-        mock_model.status = MagicMock()
         mock_model.find_one = AsyncMock(return_value=agent)
 
         result = await execute_agent_impl(valid_id, _msg("hello"), ctx)

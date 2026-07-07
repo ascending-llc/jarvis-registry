@@ -2,7 +2,7 @@ import type React from 'react';
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { getBasePath } from '@/config';
 import SERVICES from '@/services';
-import type { Agent, AgentItem } from '@/services/agent/type';
+import type { AgentItem } from '@/services/agent/type';
 import type { Federation } from '@/services/federation/type';
 import { ServerConnection } from '@/services/mcp/type';
 import type { PermissionType, Server } from '@/services/server/type';
@@ -21,7 +21,6 @@ export interface ServerInfo {
   lastCheckedTime?: string;
   usersCount?: number;
   rating?: number;
-  status?: 'active' | 'inactive' | 'error';
   numTools?: number;
   url?: string;
   numStars?: number;
@@ -179,20 +178,6 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
     [federations],
   );
 
-  // Helper function to map backend health status to frontend status
-  const mapHealthStatus = (healthStatus: string): Agent['status'] => {
-    if (!healthStatus || healthStatus === 'unknown') return 'unknown' as any;
-    if (healthStatus === 'active' || healthStatus === 'healthy') return 'active';
-    if (
-      healthStatus === 'inactive' ||
-      healthStatus.includes('unhealthy') ||
-      healthStatus.includes('error') ||
-      healthStatus.includes('timeout')
-    )
-      return 'inactive';
-    return 'unknown' as any;
-  };
-
   const handleServerUpdate = (id: string, updates: Partial<ServerInfo>) => {
     setServers(prevServers => prevServers.map(server => (server.id === id ? { ...server, ...updates } : server)));
   };
@@ -212,7 +197,6 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
         lastCheckedTime: serverInfo.lastConnected,
         usersCount: 0,
         rating: serverInfo.numStars || 0,
-        status: serverInfo.status || 'unknown', // undefined
         numTools: serverInfo.numTools || 0,
         url: serverInfo.url,
         numStars: serverInfo.numStars || 0,
@@ -232,7 +216,11 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
       setServers(transformedServers);
       return transformedServers;
     } catch (error: any) {
-      setServerError(error?.data?.detail || 'Failed to fetch servers');
+      const msg =
+        error?.detail?.message ||
+        (typeof error?.detail === 'string' ? error.detail : null) ||
+        'Failed to fetch servers';
+      setServerError(msg);
       return [];
     } finally {
       setServerLoading(false);
@@ -266,7 +254,6 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
             : agentInfo.enabled !== undefined
               ? agentInfo.enabled
               : false,
-        status: mapHealthStatus(agentInfo.health_status || agentInfo.status || 'unknown'),
         permissions: agentInfo.permissions || { VIEW: false, EDIT: false, DELETE: false, SHARE: false },
         author: agentInfo.author || '',
         createdAt: agentInfo.createdAt || '',
@@ -275,7 +262,9 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
       }));
       setAgents(transformedAgents);
     } catch (error: any) {
-      setAgentError(error?.detail || 'Failed to fetch agents');
+      const msg =
+        error?.detail?.message || (typeof error?.detail === 'string' ? error.detail : null) || 'Failed to fetch agents';
+      setAgentError(msg);
     } finally {
       setAgentLoading(false);
     }
@@ -397,11 +386,10 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
             clearTimeout(timeoutRef.current[serverId]);
             delete timeoutRef.current[serverId];
 
-            const result = await SERVICES.SERVER.refreshServerHealth(serverId);
+            const result = await SERVICES.SERVER.refreshServer(serverId);
             handleServerUpdate(serverId, {
               lastCheckedTime: result.lastConnected,
               numTools: result.numTools,
-              status: result.status || 'unknown',
             });
           }
         }

@@ -56,12 +56,12 @@ def _patch_executor_ref_queries(
     mcp_names = mcp_names or set()
     a2a_paths = a2a_paths or set()
 
-    def fake_mcp_find(query: dict):
+    def fake_mcp_find(query: dict, **_kwargs):
         captured_queries.append(("mcp", query))
         requested = set(query["serverName"]["$in"])
         return _ListQuery([SimpleNamespace(serverName=name) for name in sorted(mcp_names & requested)])
 
-    def fake_a2a_find(query: dict):
+    def fake_a2a_find(query: dict, **_kwargs):
         captured_queries.append(("a2a", query))
         requested = set(query["path"]["$in"])
         return _ListQuery([SimpleNamespace(path=path) for path in sorted(a2a_paths & requested)])
@@ -110,6 +110,26 @@ async def test_create_workflow_does_not_convert_unexpected_errors_to_value_error
 
 
 @pytest.mark.asyncio
+async def test_create_workflow_unknown_referenced_node_name_raises_before_executor_check(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The cross-node referenced_node_names check runs when WorkflowDefinition is
+    constructed, before _validate_executor_refs or any DB write."""
+    monkeypatch.setattr(WorkflowService, "_validate_executor_refs", AsyncMock(side_effect=AssertionError))
+
+    request = WorkflowCreateRequest(
+        name="Demo workflow",
+        canvas={"viewport": {"x": 0, "y": 0, "zoom": 1}},
+        nodes=[
+            WorkflowNodeInput(name="echo", nodeType="step", executorKey="tool", referencedNodeNames=["Typo Name"]),
+        ],
+    )
+
+    with pytest.raises(ValueError, match="references unknown node names"):
+        await WorkflowService().create_workflow(request)
+
+
+@pytest.mark.asyncio
 async def test_validate_executor_refs_passes_for_valid_mcp_server_and_a2a_agent(monkeypatch: pytest.MonkeyPatch):
     service = WorkflowService()
     captured_queries = _patch_executor_ref_queries(
@@ -129,8 +149,8 @@ async def test_validate_executor_refs_passes_for_valid_mcp_server_and_a2a_agent(
         "mcp",
         {"serverName": {"$in": ["deep-intel", "github"]}, "config.enabled": True},
     )
-    assert captured_queries[1] == ("a2a", {"path": {"$in": ["deep-intel"]}, "isEnabled": True})
-    assert captured_queries[2] == ("a2a", {"path": {"$in": ["researcher"]}, "isEnabled": True})
+    assert captured_queries[1] == ("a2a", {"path": {"$in": ["deep-intel"]}, "config.enabled": True})
+    assert captured_queries[2] == ("a2a", {"path": {"$in": ["researcher"]}, "config.enabled": True})
 
 
 @pytest.mark.asyncio
@@ -306,6 +326,34 @@ def test_convert_api_node_preserves_explicit_id():
     assert model.id == "custom-id"
 
 
+def test_convert_api_node_preserves_referenced_node_names():
+    api_node = WorkflowNodeInput(
+        name="echo", nodeType="step", executorKey="tool", referencedNodeNames=["Weather Agent"]
+    )
+    model = WorkflowService()._convert_api_node_to_model(api_node)
+    assert model.referenced_node_names == ["Weather Agent"]
+
+
+def test_convert_api_node_defaults_referenced_node_names_to_empty_list():
+    api_node = WorkflowNodeInput(name="echo", nodeType="step", executorKey="tool")
+    model = WorkflowService()._convert_api_node_to_model(api_node)
+    assert model.referenced_node_names == []
+
+
+def test_convert_api_node_rejects_referenced_node_names_on_non_step_node():
+    api_node = WorkflowNodeInput(
+        name="par",
+        nodeType="parallel",
+        referencedNodeNames=["x"],
+        children=[
+            WorkflowNodeInput(name="a", nodeType="step", executorKey="tool-a"),
+            WorkflowNodeInput(name="b", nodeType="step", executorKey="tool-b"),
+        ],
+    )
+    with pytest.raises(ValueError, match="referenced_node_names is only supported on step nodes"):
+        WorkflowService()._convert_api_node_to_model(api_node)
+
+
 # ---------------------------------------------------------------------------
 # Versioning
 # ---------------------------------------------------------------------------
@@ -335,7 +383,7 @@ class _FakeWorkflow:
         self.saved = True
 
 
-# ── Transaction + collection mocks for update_workflow (@use_transaction) ──────
+# ── Transaction + collection mocks for update_workflow ─────────────────────────
 
 
 class _FakeTxnCtx:
@@ -404,7 +452,7 @@ async def test_update_workflow_bumps_version_and_snapshots_history(monkeypatch: 
 
     fake_wf = _FakeWorkflow(version=4)
 
-    async def fake_get(self, workflow_id):
+    async def fake_get(self, workflow_id, session=None):
         return fake_wf
 
     monkeypatch.setattr(WorkflowService, "get_workflow_by_id", fake_get)
@@ -443,7 +491,7 @@ async def test_update_workflow_returns_409_on_concurrent_modification(monkeypatc
 
     fake_wf = _FakeWorkflow(version=4)
 
-    async def fake_get(self, workflow_id):
+    async def fake_get(self, workflow_id, session=None):
         return fake_wf
 
     monkeypatch.setattr(WorkflowService, "get_workflow_by_id", fake_get)
@@ -466,7 +514,7 @@ async def test_update_workflow_returns_409_on_duplicate_version(monkeypatch: pyt
 
     fake_wf = _FakeWorkflow(version=4)
 
-    async def fake_get(self, workflow_id):
+    async def fake_get(self, workflow_id, session=None):
         return fake_wf
 
     monkeypatch.setattr(WorkflowService, "get_workflow_by_id", fake_get)
@@ -492,7 +540,7 @@ async def test_update_workflow_invalid_nodes_writes_nothing(monkeypatch: pytest.
 
     fake_wf = _FakeWorkflow(version=4)
 
-    async def fake_get(self, workflow_id):
+    async def fake_get(self, workflow_id, session=None):
         return fake_wf
 
     monkeypatch.setattr(WorkflowService, "get_workflow_by_id", fake_get)
@@ -510,10 +558,37 @@ async def test_update_workflow_invalid_nodes_writes_nothing(monkeypatch: pytest.
 
 
 @pytest.mark.asyncio
+async def test_update_workflow_unknown_referenced_node_name_writes_nothing(monkeypatch: pytest.MonkeyPatch):
+    """referenced_node_names pointing at a name absent from the definition fails the
+    cross-node WorkflowDefinition validator during update, before any DB write."""
+    from registry.schemas.workflow_api_schemas import WorkflowNodeInput, WorkflowUpdateRequest
+
+    fake_wf = _FakeWorkflow(version=4)
+
+    async def fake_get(self, workflow_id, session=None):
+        return fake_wf
+
+    monkeypatch.setattr(WorkflowService, "get_workflow_by_id", fake_get)
+    collection, inserted = _patch_update_transaction(monkeypatch, found_doc={"_id": fake_wf.id, "version": 5})
+
+    bad_update = WorkflowUpdateRequest(
+        nodes=[
+            WorkflowNodeInput(name="echo", nodeType="step", executorKey="tool", referencedNodeNames=["Typo Name"]),
+        ]
+    )
+
+    with pytest.raises(ValueError, match="references unknown node names"):
+        await WorkflowService().update_workflow(workflow_id=str(fake_wf.id), data=bad_update)
+
+    collection.find_one_and_update.assert_not_awaited()
+    assert inserted == []
+
+
+@pytest.mark.asyncio
 async def test_list_versions_includes_history_and_current(monkeypatch: pytest.MonkeyPatch):
     fake_wf = _FakeWorkflow(version=3)
 
-    async def fake_get(self, workflow_id):
+    async def fake_get(self, workflow_id, session=None):
         return fake_wf
 
     monkeypatch.setattr(WorkflowService, "get_workflow_by_id", fake_get)
@@ -547,7 +622,7 @@ async def test_trigger_run_resolves_requested_historical_version(monkeypatch: py
 
     fake_wf = _FakeWorkflow(version=3)
 
-    async def fake_get(self, workflow_id):
+    async def fake_get(self, workflow_id, session=None):
         return fake_wf
 
     monkeypatch.setattr(WorkflowService, "get_workflow_by_id", fake_get)
@@ -659,7 +734,7 @@ async def test_trigger_workflow_run_persists_triggering_identity(monkeypatch: py
     service JWT on their behalf."""
     fake_wf = _FakeWorkflow(version=3)
 
-    async def fake_get(self, workflow_id):
+    async def fake_get(self, workflow_id, session=None):
         return fake_wf
 
     monkeypatch.setattr(WorkflowService, "get_workflow_by_id", fake_get)
@@ -694,3 +769,157 @@ async def test_trigger_workflow_run_persists_triggering_identity(monkeypatch: py
     assert captured["triggering_user_id"] == "user-42"
     assert captured["triggering_username"] == "alice"
     assert captured["triggering_scopes"] == ["workflows-read", "workflows-control"]
+
+
+class _ChildRunQuery:
+    """Chainable stand-in for ``WorkflowRun.find(...)`` in list_child_runs."""
+
+    def __init__(self, runs: list, captured_filters: list):
+        self._runs = runs
+        self._captured = captured_filters
+
+    async def count(self):
+        return len(self._runs)
+
+    def sort(self, *_a, **_k):
+        return self
+
+    def skip(self, *_a, **_k):
+        return self
+
+    def limit(self, *_a, **_k):
+        return self
+
+    async def to_list(self):
+        return self._runs
+
+
+@pytest.mark.asyncio
+async def test_list_child_runs_filters_by_parent_run_id(monkeypatch: pytest.MonkeyPatch):
+    """list_child_runs must scope the query to the parent's workflow AND parent_run_id."""
+    workflow_oid = PydanticObjectId()
+    parent_oid = PydanticObjectId()
+    child = SimpleNamespace(id=PydanticObjectId(), workflow_definition_id=workflow_oid)
+
+    workflow = SimpleNamespace(id=workflow_oid, name="wf")
+    monkeypatch.setattr(WorkflowService, "get_workflow_by_id", AsyncMock(return_value=workflow))
+
+    captured_filters: list = []
+
+    class _FakeWorkflowRun:
+        id = "id"
+        workflow_definition_id = "workflow_definition_id"
+
+        @staticmethod
+        async def find_one(*_a, **_k):
+            return SimpleNamespace(id=parent_oid, workflow_definition_id=workflow_oid)
+
+        @staticmethod
+        def find(filters, *_a, **_k):
+            captured_filters.append(filters)
+            return _ChildRunQuery([child], captured_filters)
+
+    class _FakeNodeRun:
+        @staticmethod
+        def find(*_a, **_k):
+            return _ChildRunQuery([], captured_filters)
+
+    monkeypatch.setattr(workflow_service, "WorkflowRun", _FakeWorkflowRun)
+    monkeypatch.setattr(workflow_service, "NodeRun", _FakeNodeRun)
+
+    runs_with_nodes, total = await WorkflowService().list_child_runs(
+        workflow_id=str(workflow_oid),
+        parent_run_id=str(parent_oid),
+    )
+
+    assert total == 1
+    assert runs_with_nodes[0][0] is child
+    # Both the count and the page query must carry the parent_run_id filter.
+    assert all(f["parent_run_id"] == parent_oid for f in captured_filters)
+    assert all(f["workflow_definition_id"] == workflow_oid for f in captured_filters)
+
+
+@pytest.mark.asyncio
+async def test_list_child_runs_raises_when_parent_missing(monkeypatch: pytest.MonkeyPatch):
+    """A non-existent parent run must raise ValueError (mapped to 404 by the route)."""
+    workflow_oid = PydanticObjectId()
+    parent_oid = PydanticObjectId()
+
+    workflow = SimpleNamespace(id=workflow_oid, name="wf")
+    monkeypatch.setattr(WorkflowService, "get_workflow_by_id", AsyncMock(return_value=workflow))
+
+    class _FakeWorkflowRun:
+        id = "id"
+        workflow_definition_id = "workflow_definition_id"
+
+        @staticmethod
+        async def find_one(*_a, **_k):
+            return None
+
+    monkeypatch.setattr(workflow_service, "WorkflowRun", _FakeWorkflowRun)
+
+    with pytest.raises(ValueError, match="not found"):
+        await WorkflowService().list_child_runs(
+            workflow_id=str(workflow_oid),
+            parent_run_id=str(parent_oid),
+        )
+
+
+@pytest.mark.asyncio
+async def test_get_workflow_run_doc_returns_run_without_node_runs(monkeypatch: pytest.MonkeyPatch):
+    """get_workflow_run_doc must load the run and verify ownership without fetching NodeRuns."""
+    workflow_oid = PydanticObjectId()
+    run_oid = PydanticObjectId()
+
+    workflow = SimpleNamespace(id=workflow_oid, name="wf")
+    run = SimpleNamespace(id=run_oid, workflow_definition_id=workflow_oid)
+
+    monkeypatch.setattr(WorkflowService, "get_workflow_by_id", AsyncMock(return_value=workflow))
+    monkeypatch.setattr(workflow_service.WorkflowRun, "get", AsyncMock(return_value=run))
+
+    result = await WorkflowService().get_workflow_run_doc(
+        workflow_id=str(workflow_oid),
+        run_id=str(run_oid),
+    )
+
+    assert result is run
+
+
+@pytest.mark.asyncio
+async def test_get_workflow_run_doc_raises_when_run_not_found(monkeypatch: pytest.MonkeyPatch):
+    """get_workflow_run_doc must raise ValueError when the run does not exist."""
+    workflow_oid = PydanticObjectId()
+    run_oid = PydanticObjectId()
+
+    workflow = SimpleNamespace(id=workflow_oid, name="wf")
+
+    monkeypatch.setattr(WorkflowService, "get_workflow_by_id", AsyncMock(return_value=workflow))
+    monkeypatch.setattr(workflow_service.WorkflowRun, "get", AsyncMock(return_value=None))
+
+    with pytest.raises(ValueError, match="Workflow run .* not found"):
+        await WorkflowService().get_workflow_run_doc(
+            workflow_id=str(workflow_oid),
+            run_id=str(run_oid),
+        )
+
+
+@pytest.mark.asyncio
+async def test_get_workflow_run_doc_raises_when_run_belongs_to_other_workflow(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """get_workflow_run_doc must raise ValueError when the run belongs to a different workflow."""
+    workflow_oid = PydanticObjectId()
+    other_workflow_oid = PydanticObjectId()
+    run_oid = PydanticObjectId()
+
+    workflow = SimpleNamespace(id=workflow_oid, name="wf")
+    run = SimpleNamespace(id=run_oid, workflow_definition_id=other_workflow_oid)
+
+    monkeypatch.setattr(WorkflowService, "get_workflow_by_id", AsyncMock(return_value=workflow))
+    monkeypatch.setattr(workflow_service.WorkflowRun, "get", AsyncMock(return_value=run))
+
+    with pytest.raises(ValueError, match="does not belong to workflow"):
+        await WorkflowService().get_workflow_run_doc(
+            workflow_id=str(workflow_oid),
+            run_id=str(run_oid),
+        )

@@ -17,6 +17,7 @@ export const useRunHistory = ({ panelMode }: UseRunHistoryProps) => {
   const { workflowId, selectedNode, refreshRunHistoryKey = 0 } = useWorkflowPanel();
   const selectedNodeId = selectedNode?.id;
   const selectedNodeLabel = selectedNode?.data?.label as string | undefined;
+  const selectedNodeType = selectedNode?.type;
 
   const [runs, setRuns] = useState<RunEntry[]>([]);
   const [loading, setLoading] = useState(false);
@@ -46,11 +47,7 @@ export const useRunHistory = ({ panelMode }: UseRunHistoryProps) => {
         if (panelMode === 'workflow') {
           entries = enriched.map(workflowRunToEntry);
         } else if (selectedNodeId) {
-          entries = buildNodeRunEntries(enriched, selectedNodeId, selectedNodeLabel);
-          if (entries.length === 0 && enriched.length > 0) {
-            entries = enriched.map(workflowRunToEntry);
-            setShowAllWorkflowRuns(true);
-          }
+          entries = buildNodeRunEntries(enriched, selectedNodeId, selectedNodeLabel, selectedNodeType);
         } else {
           entries = [];
         }

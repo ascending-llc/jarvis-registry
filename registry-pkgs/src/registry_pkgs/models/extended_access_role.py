@@ -1,17 +1,16 @@
 from enum import StrEnum
 
+from pydantic import Field
+
 from ._generated import AccessRole
 
 
-class ExtendedAccessRoleResourceType(StrEnum):
-    AGENT = "agent"
-    PROJECT = "project"
-    FILE = "file"
-    PROMPT_GROUP = "promptGroup"
+class RegistryResourceType(StrEnum):
     MCP_SERVER = "mcpServer"
     REMOTE_AGENT = "remoteAgent"
     FEDERATION = "federation"
+    WORKFLOW = "workflow"
 
 
-class ExtendedAccessRole(AccessRole):
-    resourceType: ExtendedAccessRoleResourceType = ExtendedAccessRoleResourceType.AGENT  # type: ignore[assignment]
+class RegistryAccessRole(AccessRole):
+    resourceType: RegistryResourceType = Field(...)

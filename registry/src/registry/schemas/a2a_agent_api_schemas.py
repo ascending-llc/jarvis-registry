@@ -137,7 +137,6 @@ class AgentListItem(APIBaseModel):
     numSkills: int
     skills: list[AgentSkillOutput]
     enabled: bool
-    status: str
     config: AgentConfigOutput
     permissions: ResourcePermissions
     author: str
@@ -158,7 +157,6 @@ class AgentStatsResponse(APIBaseModel):
     totalAgents: int
     enabledAgents: int
     disabledAgents: int
-    byStatus: dict[str, int]
     byTransport: dict[str, int]
     totalSkills: int
     averageSkillsPerAgent: float
@@ -192,7 +190,6 @@ class AgentDetailResponse(APIBaseModel):
     defaultOutputModes: list[str]
     provider: AgentProviderOutput | None = None
     tags: list[str]
-    status: str
     enabled: bool
     config: AgentConfigOutput
     permissions: ResourcePermissions
@@ -281,8 +278,7 @@ def convert_to_list_item(agent: Any, acl_permission: int | ResourcePermissions) 
         tags=agent.tags,
         numSkills=len(agent.card.skills or []),
         skills=skills_output,
-        enabled=agent.isEnabled,
-        status=agent.status,
+        enabled=agent.config.enabled if agent.config else False,
         config=config_output,
         permissions=permissions,
         author=str(agent.author),
@@ -370,8 +366,7 @@ def convert_to_detail(agent: Any, acl_permission: int | ResourcePermissions) -> 
         defaultOutputModes=agent.card.default_output_modes or [],
         provider=provider_output,
         tags=agent.tags,
-        status=agent.status,
-        enabled=agent.isEnabled,
+        enabled=agent.config.enabled if agent.config else False,
         config=config_output,
         permissions=permissions,
         author=str(agent.author),

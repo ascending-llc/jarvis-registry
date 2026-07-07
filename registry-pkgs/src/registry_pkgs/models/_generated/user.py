@@ -36,6 +36,7 @@ class User(Document):
     googleId: str | None = None
     facebookId: str | None = None
     openidId: str | None = None
+    openidIssuer: str | None = None
     samlId: str | None = None
     ldapId: str | None = None
     githubId: str | None = None
@@ -47,6 +48,8 @@ class User(Document):
     termsAccepted: bool = False
     personalization: Personalization = Field(default_factory=Personalization)
     favorites: list[Favorite] = Field(default_factory=list)
+    skillStates: dict[str, bool] = Field(default_factory=dict)
+    storageKey: str | None = None
     idOnTheSource: str | None = None
     tenantId: str | None = None
     createdAt: datetime | None = None

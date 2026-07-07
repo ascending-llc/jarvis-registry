@@ -24,12 +24,13 @@ class MatchingToolResult(APIBaseModel):
 
 
 class ServerSearchResult(APIBaseModel):
+    serverId: str | None = None
     path: str
     serverName: str
     description: str | None = None
     tags: list[str] = Field(default_factory=list)
     numTools: int = 0
-    isEnabled: bool = False
+    enabled: bool = False
     relevanceScore: float = Field(..., ge=0.0, le=1.0)
     matchContext: str | None = None
     matchingTools: list[MatchingToolResult] = Field(default_factory=list)
@@ -50,7 +51,7 @@ class AgentSearchResult(APIBaseModel):
     agentName: str
     description: str | None = None
     tags: list[str] = Field(default_factory=list)
-    isEnabled: bool = False
+    enabled: bool = False
     relevanceScore: float = Field(..., ge=0.0, le=1.0)
     matchContext: str | None = None
 
@@ -98,12 +99,13 @@ def _map_server(server: dict) -> ServerSearchResult:
         for tool in server.get("matching_tools", [])
     ]
     return ServerSearchResult(
+        serverId=server.get("server_id"),
         path=server.get("path", ""),
         serverName=server.get("server_name", ""),
         description=server.get("description"),
         tags=server.get("tags", []),
         numTools=server.get("num_tools", 0),
-        isEnabled=server.get("is_enabled", False),
+        enabled=server.get("is_enabled", False),
         relevanceScore=server.get("relevance_score", 0.0),
         matchContext=server.get("match_context"),
         matchingTools=matching_tools,
@@ -125,10 +127,10 @@ def _map_agent(doc: dict) -> AgentSearchResult:
     return AgentSearchResult(
         agentId=doc.get("agent_id"),
         path=doc.get("path", ""),
-        agentName=doc.get("agent_name", ""),
+        agentName=doc.get("card_name") or doc.get("agent_name", ""),
         description=doc.get("description"),
         tags=doc.get("tags") or [],
-        isEnabled=doc.get("enabled", False),
+        enabled=doc.get("enabled", False),
         relevanceScore=doc.get("relevance_score") or 0.0,
         matchContext=doc.get("match_context"),
     )
@@ -138,7 +140,7 @@ def _map_skill(doc: dict) -> SkillSearchResult:
     return SkillSearchResult(
         agentId=doc.get("agent_id"),
         agentPath=doc.get("path", ""),
-        agentName=doc.get("agent_name", ""),
+        agentName=doc.get("card_name") or doc.get("agent_name", ""),
         skillName=doc.get("skill_name", ""),
         description=doc.get("description"),
         relevanceScore=doc.get("relevance_score") or 0.0,
@@ -162,9 +164,12 @@ async def semantic_search(
     if not request.state.is_authenticated:
         raise HTTPException(detail="Not authenticated", status_code=401)
 
+    user_context = request.state.user
+
     try:
         raw = await search_service.semantic_search(
             query=search_request.query,
+            user_context=user_context,
             entity_types=search_request.entityTypes,
             max_results=search_request.maxResults,
             include_disabled=search_request.includeDisabled,
@@ -177,6 +182,9 @@ async def semantic_search(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Semantic search is temporarily unavailable. Please try again later.",
         ) from exc
+    except Exception as exc:
+        logger.error("Semantic search failed unexpectedly: %s", exc, exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error") from exc
 
     servers = [_map_server(s) for s in raw.get("servers", [])]
     tools = [_map_tool(t) for t in raw.get("tools", [])]

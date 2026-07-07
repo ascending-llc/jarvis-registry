@@ -1,14 +1,126 @@
 """Unit tests for crypto_utils module."""
 
+import time
 from unittest.mock import patch
 
+from registry.core.config import settings
 from registry.utils.crypto_utils import (
     ENCRYPTED_VALUE_PATTERN,
     decrypt_auth_fields,
     encrypt_auth_fields,
+    generate_access_token,
+    generate_refresh_token,
     generate_service_jwt,
     is_encrypted,
+    verify_access_token,
+    verify_refresh_token,
 )
+from registry_pkgs.core.jwt_tokens import (
+    TOKEN_CLASS_CLAIM,
+    TOKEN_CLASS_CRUD_SESSION,
+    mint_managed_agent_token,
+)
+
+
+class TestCrudSessionTokens:
+    """Cookie (CRUD-session) token round-trips and cross-class rejection (AS-1523)."""
+
+    @staticmethod
+    def _gen_access() -> str:
+        return generate_access_token(
+            user_id="u1",
+            username="alice",
+            email="alice@example.com",
+            groups=["g1"],
+            scopes=["servers-read"],
+            role="user",
+            auth_method="oauth2",
+            provider="entra",
+        )
+
+    def test_access_token_roundtrip_and_class(self):
+        token = self._gen_access()
+        claims = verify_access_token(token)
+        assert claims is not None
+        assert claims["sub"] == "alice"
+        assert claims["aud"] == settings.jwt_audience_crud_services
+        assert claims["client_id"] == settings.registry_app_name
+        assert claims[TOKEN_CLASS_CLAIM] == TOKEN_CLASS_CRUD_SESSION
+        assert claims["token_type"] == "access_token"
+
+    def test_refresh_token_roundtrip(self):
+        token = generate_refresh_token(
+            user_id="u1",
+            username="alice",
+            auth_method="oauth2",
+            provider="entra",
+            groups=["g1"],
+            scopes=["servers-read"],
+            role="user",
+            email="alice@example.com",
+        )
+        claims = verify_refresh_token(token)
+        assert claims is not None
+        assert claims["token_type"] == "refresh_token"
+        assert claims["client_id"] == settings.registry_app_name
+
+    def test_refresh_token_session_started_at_defaults_to_now(self):
+        before = int(time.time())
+        token = generate_refresh_token(
+            user_id="u1",
+            username="alice",
+            auth_method="oauth2",
+            provider="entra",
+            groups=["g1"],
+            scopes=["servers-read"],
+            role="user",
+            email="alice@example.com",
+        )
+        after = int(time.time())
+        claims = verify_refresh_token(token)
+        assert claims is not None
+        assert "session_started_at" in claims
+        assert before <= claims["session_started_at"] <= after
+
+    def test_refresh_token_session_started_at_carried_forward(self):
+        fixed_ts = 1_700_000_000
+        token = generate_refresh_token(
+            user_id="u1",
+            username="alice",
+            auth_method="oauth2",
+            provider="entra",
+            groups=["g1"],
+            scopes=["servers-read"],
+            role="user",
+            email="alice@example.com",
+            session_started_at=fixed_ts,
+        )
+        claims = verify_refresh_token(token)
+        assert claims is not None
+        assert claims["session_started_at"] == fixed_ts
+
+    def test_access_verifier_rejects_refresh_token(self):
+        token = generate_refresh_token(
+            user_id="u1",
+            username="alice",
+            auth_method="oauth2",
+            provider="entra",
+            groups=[],
+            scopes=["servers-read"],
+            role="user",
+            email="alice@example.com",
+        )
+        assert verify_access_token(token) is None
+
+    def test_access_verifier_rejects_managed_agent_token(self):
+        # A leaked managed-agent (proxy) token must never validate as a CRUD session cookie.
+        managed = mint_managed_agent_token(
+            settings.jwt_token_config,
+            subject="alice",
+            client_id="mcp-client-abc",
+            expires_in_seconds=3600,
+        )
+        assert verify_access_token(managed) is None
 
 
 class TestIsEncrypted:

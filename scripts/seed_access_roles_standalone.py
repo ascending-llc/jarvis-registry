@@ -26,9 +26,9 @@ async def seed_access_roles(collection, session):
     Uses direct MongoDB operations instead of Beanie ORM to avoid
     triggering A2AAgent model initialization.
     """
-    print("=== Seeding Federation AccessRoles ===\n")
+    print("=== Seeding Federation & Workflow AccessRoles ===\n")
 
-    # Only define federation roles - Chat handles all other resource types
+    # Only define federation + workflow roles - Chat handles all other resource types
     roles_data = [
         {
             "accessRoleId": "federation_viewer",
@@ -55,6 +55,36 @@ async def seed_access_roles(collection, session):
             "resourceType": "federation",
             "name": "com_ui_federation_role_owner",
             "description": "com_ui_federation_owner_desc",
+            "permBits": 15,
+            "createdAt": datetime.now(UTC),
+            "updatedAt": datetime.now(UTC),
+            "__v": 0,
+        },
+        {
+            "accessRoleId": "workflow_viewer",
+            "resourceType": "workflow",
+            "name": "com_ui_workflow_role_viewer",
+            "description": "com_ui_workflow_viewer_desc",
+            "permBits": 1,
+            "createdAt": datetime.now(UTC),
+            "updatedAt": datetime.now(UTC),
+            "__v": 0,
+        },
+        {
+            "accessRoleId": "workflow_editor",
+            "resourceType": "workflow",
+            "name": "com_ui_workflow_role_editor",
+            "description": "com_ui_workflow_editor_desc",
+            "permBits": 3,
+            "createdAt": datetime.now(UTC),
+            "updatedAt": datetime.now(UTC),
+            "__v": 0,
+        },
+        {
+            "accessRoleId": "workflow_owner",
+            "resourceType": "workflow",
+            "name": "com_ui_workflow_role_owner",
+            "description": "com_ui_workflow_owner_desc",
             "permBits": 15,
             "createdAt": datetime.now(UTC),
             "updatedAt": datetime.now(UTC),

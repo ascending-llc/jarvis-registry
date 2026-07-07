@@ -28,6 +28,7 @@ class Settings(JarvisBaseSettings):
     # ==================== Session ====================
     session_cookie_name: str = "jarvis_registry_session"
     refresh_cookie_name: str = "jarvis_registry_refresh"
+    csrf_cookie_name: str = "jarvis_registry_csrf"
     session_max_age_seconds: int = 60 * 60 * 8
     session_cookie_domain: str | None = None
 
@@ -37,6 +38,7 @@ class Settings(JarvisBaseSettings):
     # ==================== Headers ====================
     auth_egress_header: str = "Authorization"
     internal_auth_header: str = "X-Jarvis-Auth"
+    csrf_header_name: str = "X-Jarvis-CSRF"
 
     # ==================== API ====================
     api_version: str = "v1"
@@ -99,6 +101,9 @@ class Settings(JarvisBaseSettings):
     # ==================== Redis ====================
     redis_uri: str = "redis://registry-redis:6379/1"
     redis_key_prefix: str = "jarvis-registry"
+    # auth-server's Redis namespace. Direct-connect MCP clients perform DCR against auth-server, so
+    # their client records live here; registry reads them to validate redirect_uri at /authorize.
+    auth_server_redis_key_prefix: str = "jarvis-auth-server"
 
     # ==================== Chunking ====================
     max_chunk_size: int = 2048
@@ -113,6 +118,8 @@ class Settings(JarvisBaseSettings):
     weaviate_collection_prefix: str = ""
     openai_api_key: str | None = None
     openai_model: str = "text-embedding-3-small"
+    rerank_enabled: bool = True
+    rerank_model_id: str = "cohere.rerank-v3-5:0"
 
     # ==================== AWS ====================
     aws_region: str = "us-east-1"
@@ -143,6 +150,13 @@ class Settings(JarvisBaseSettings):
     # ==================== Encryption ====================
     creds_key: str = ""
 
+    # ==================== Entra Group Sync ====================
+    # entra_tenant_id / entra_client_id / entra_client_secret are inherited from JarvisBaseSettings.
+    # `entra_group_sync_enabled = False` if using Registry together with Jarvis Chat; `True` if using Registry by itself.
+    # This is because Jarvis Chat already performs group sync.
+    entra_group_sync_enabled: bool = False
+    entra_graph_url: str = "https://graph.microsoft.com"
+
     # ==================== Keycloak Integration ====================
     keycloak_url: str = "http://keycloak:8080"
     keycloak_realm: str = "mcp-gateway"
@@ -155,9 +169,6 @@ class Settings(JarvisBaseSettings):
     federation_config_path: str = "/app/config/federation.json"
     asor_access_token: str | None = None
     asor_client_credentials: str | None = None
-
-    # ==================== Build Metadata ====================
-    build_version: str = "1.0.0"
 
     # ==================== Model Validation ====================
 
@@ -285,6 +296,8 @@ class Settings(JarvisBaseSettings):
             weaviate_collection_prefix=self.weaviate_collection_prefix,
             openai_api_key=self.openai_api_key,
             openai_model=self.openai_model,
+            rerank_enabled=self.rerank_enabled,
+            rerank_model_id=self.rerank_model_id,
             aws_region=self.aws_region,
             embedding_model=self.embedding_model,
             aws_access_key_id=self.aws_access_key_id,

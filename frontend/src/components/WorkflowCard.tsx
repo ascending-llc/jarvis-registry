@@ -56,10 +56,8 @@ const WorkflowCard: React.FC<WorkflowCardProps> = ({ workflow, onEdit }) => {
     }
   };
 
-  const isAutonomous = workflow.type === 'autonomous';
-
   return (
-    <div className='group relative flex h-full flex-col rounded-2xl border border-[color:var(--jarvis-border)] bg-[var(--jarvis-card)] shadow-sm transition-all duration-300 hover:-translate-y-1 hover:border-[color:var(--jarvis-border-strong)] hover:shadow-xl'>
+    <div className='search-interactive-element group relative flex h-full flex-col rounded-2xl border border-[color:var(--jarvis-border)] bg-[var(--jarvis-card)] shadow-sm transition-all duration-300 hover:-translate-y-1 hover:border-[color:var(--jarvis-border-strong)] hover:shadow-xl'>
       {loading && (
         <div className='absolute inset-0 z-10 flex items-center justify-center rounded-2xl bg-[var(--jarvis-overlay)] backdrop-blur-sm'>
           <div className='h-8 w-8 animate-spin rounded-full border-b-2 border-[var(--jarvis-spinner)]' />
@@ -95,19 +93,6 @@ const WorkflowCard: React.FC<WorkflowCardProps> = ({ workflow, onEdit }) => {
               </IconButton>
             )}
           </div>
-        </div>
-
-        {/* Type Badge */}
-        <div className='mb-3'>
-          <span
-            className={`inline-block rounded px-1.5 py-0.5 text-xs font-medium ${
-              isAutonomous
-                ? 'bg-[var(--jarvis-primary-soft)] text-[var(--jarvis-primary-text)]'
-                : 'bg-[var(--jarvis-info-soft)] text-[var(--jarvis-info-text)]'
-            }`}
-          >
-            {isAutonomous ? 'Autonomous' : 'Supervised'}
-          </span>
         </div>
 
         {/* Description */}

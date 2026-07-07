@@ -15,9 +15,9 @@ from uuid import uuid4
 from beanie import PydanticObjectId
 from fastapi import HTTPException
 from pymongo import ReturnDocument
+from pymongo.asynchronous.client_session import AsyncClientSession
 from pymongo.errors import DuplicateKeyError
 
-from registry_pkgs.database.decorators import get_current_session, use_transaction
 from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.models.a2a_agent import A2AAgent
 from registry_pkgs.models.enums import WorkflowNodeType, WorkflowRunStatus
@@ -101,7 +101,11 @@ class WorkflowService:
             for choice in node.choices:
                 yield from WorkflowService._iter_nodes(choice.steps)
 
-    async def _validate_executor_refs(self, nodes: list[WorkflowNode]) -> None:
+    async def _validate_executor_refs(
+        self,
+        nodes: list[WorkflowNode],
+        session: AsyncClientSession | None = None,
+    ) -> None:
         """Ensure workflow executor references resolve before saving the definition."""
         executor_keys: set[str] = set()
         pool_paths: set[str] = set()
@@ -118,7 +122,8 @@ class WorkflowService:
         matched_mcp_keys: set[str] = set()
         if executor_keys_to_check:
             mcp_servers = await ExtendedMCPServer.find(
-                {"serverName": {"$in": sorted(executor_keys_to_check)}, "config.enabled": True}
+                {"serverName": {"$in": sorted(executor_keys_to_check)}, "config.enabled": True},
+                session=session,
             ).to_list()
             matched_mcp_keys = {server.serverName for server in mcp_servers}
 
@@ -126,7 +131,8 @@ class WorkflowService:
         matched_a2a_executor_keys: set[str] = set()
         if unmatched_executor_keys:
             a2a_agents = await A2AAgent.find(
-                {"path": {"$in": sorted(unmatched_executor_keys)}, "isEnabled": True}
+                {"path": {"$in": sorted(unmatched_executor_keys)}, "config.enabled": True},
+                session=session,
             ).to_list()
             matched_a2a_executor_keys = {agent.path for agent in a2a_agents}
 
@@ -140,7 +146,10 @@ class WorkflowService:
         if not pool_paths:
             return
 
-        pool_agents = await A2AAgent.find({"path": {"$in": sorted(pool_paths)}, "isEnabled": True}).to_list()
+        pool_agents = await A2AAgent.find(
+            {"path": {"$in": sorted(pool_paths)}, "config.enabled": True},
+            session=session,
+        ).to_list()
         matched_pool_paths = {agent.path for agent in pool_agents}
         unknown_pool_paths = pool_paths - matched_pool_paths
         if unknown_pool_paths:
@@ -199,7 +208,11 @@ class WorkflowService:
             logger.exception("Error listing workflows")
             raise
 
-    async def get_workflow_by_id(self, workflow_id: str) -> WorkflowDefinition:
+    async def get_workflow_by_id(
+        self,
+        workflow_id: str,
+        session: AsyncClientSession | None = None,
+    ) -> WorkflowDefinition:
         """
         Get workflow by ID.
 
@@ -218,7 +231,7 @@ class WorkflowService:
             except Exception as exc:
                 raise ValueError(f"Invalid workflow ID: {workflow_id}") from exc
 
-            workflow = await WorkflowDefinition.get(workflow_oid)
+            workflow = await WorkflowDefinition.get(workflow_oid, session=session)
             if not workflow:
                 raise ValueError(f"Workflow {workflow_id} not found")
 
@@ -250,9 +263,10 @@ class WorkflowService:
         try:
             # Convert API nodes to model nodes
             nodes = [self._convert_api_node_to_model(node) for node in data.nodes]
-            await self._validate_executor_refs(nodes)
 
-            # Create workflow definition
+            # Create workflow definition — construction triggers model validators including
+            # cross-node reference checks (_validate_referenced_node_names_exist) BEFORE
+            # the more expensive executor-key DB lookup.
             # Always set enabled to False during creation (regardless of frontend input)
             workflow = WorkflowDefinition(
                 name=data.name,
@@ -263,6 +277,8 @@ class WorkflowService:
                 created_at=datetime.now(UTC),
                 updated_at=datetime.now(UTC),
             )
+
+            await self._validate_executor_refs(nodes)
 
             # Save to database (this will trigger Pydantic validation)
             await workflow.insert()
@@ -279,11 +295,11 @@ class WorkflowService:
             logger.exception("Error creating workflow")
             raise
 
-    @use_transaction
     async def update_workflow(
         self,
         workflow_id: str,
         data: WorkflowUpdateRequest,
+        session: AsyncClientSession | None = None,
     ) -> WorkflowDefinition:
         """
         Update an existing workflow.
@@ -301,7 +317,7 @@ class WorkflowService:
         """
         try:
             # Get existing workflow
-            workflow = await self.get_workflow_by_id(workflow_id)
+            workflow = await self.get_workflow_by_id(workflow_id, session=session)
 
             # Capture the current version's definition for history BEFORE mutating it.
             previous_version = workflow.version
@@ -328,7 +344,10 @@ class WorkflowService:
 
             if data.nodes is not None:
                 nodes = [self._convert_api_node_to_model(node) for node in data.nodes]
-                await self._validate_executor_refs(nodes)
+                # Trigger cross-node reference validation (e.g. referenced_node_names must
+                # match existing node names) before the executor-key DB lookup.
+                WorkflowDefinition(name=workflow.name, nodes=nodes)
+                await self._validate_executor_refs(nodes, session=session)
                 update_fields["nodes"] = [node.model_dump(mode="json") for node in nodes]
 
             if data.enabled is not None:
@@ -337,7 +356,6 @@ class WorkflowService:
             # Always update the timestamp
             update_fields["updated_at"] = datetime.now(UTC)
 
-            session = get_current_session()
             collection = MongoDB.get_database().get_collection(WorkflowDefinition.get_settings().name)
 
             updated_doc = await collection.find_one_and_update(
@@ -668,32 +686,102 @@ class WorkflowService:
             logger.exception("Error listing workflow runs for %s", workflow_id)
             raise
 
-    async def get_workflow_run(self, workflow_id: str, run_id: str) -> tuple[WorkflowRun, list[NodeRun]]:
+    async def list_child_runs(
+        self,
+        workflow_id: str,
+        parent_run_id: str,
+        page: int = 1,
+        per_page: int = 20,
+    ) -> tuple[list[tuple[WorkflowRun, list[NodeRun]]], int]:
+        """List child runs spawned from a given parent run (rerun / replay / retry).
+
+        Args:
+            workflow_id:    Parent workflow ID (used to verify ownership).
+            parent_run_id:  The source WorkflowRun whose children we want.
+            page:           Page number (1-based).
+            per_page:       Items per page.
+
+        Returns:
+            Tuple of ((run, node_runs) list, total count).
+
+        Raises:
+            ValueError: If workflow or parent run not found.
         """
-        Get workflow run detail with all node runs.
+        try:
+            workflow = await self.get_workflow_by_id(workflow_id)
+            try:
+                parent_oid = PydanticObjectId(parent_run_id)
+            except Exception as exc:
+                raise ValueError(f"Invalid run ID: {parent_run_id!r}") from exc
+
+            parent_run = await WorkflowRun.find_one(
+                WorkflowRun.id == parent_oid,
+                WorkflowRun.workflow_definition_id == workflow.id,
+            )
+            if parent_run is None:
+                raise ValueError(f"Run {parent_run_id!r} not found in workflow {workflow_id!r}")
+
+            filters: dict[str, Any] = {
+                "workflow_definition_id": workflow.id,
+                "parent_run_id": parent_oid,
+            }
+            total = await WorkflowRun.find(filters).count()
+            skip = (page - 1) * per_page
+            runs = await WorkflowRun.find(filters).sort("-started_at").skip(skip).limit(per_page).to_list()
+            run_ids = [run.id for run in runs]
+            node_runs_by_run_id: dict[str, list[NodeRun]] = {str(run_id): [] for run_id in run_ids}
+            if run_ids:
+                node_runs = await NodeRun.find({"workflow_run_id": {"$in": run_ids}}).sort("started_at").to_list()
+                for node_run in node_runs:
+                    node_runs_by_run_id.setdefault(str(node_run.workflow_run_id), []).append(node_run)
+
+            runs_with_nodes = [(run, node_runs_by_run_id.get(str(run.id), [])) for run in runs]
+            logger.info(
+                "Listed %d child run(s) for parent run %s (workflow: %s, total: %d)",
+                len(runs),
+                parent_run_id,
+                workflow_id,
+                total,
+            )
+            return runs_with_nodes, total
+
+        except ValueError:
+            raise
+        except Exception:
+            logger.exception("Error listing child runs for parent run %s", parent_run_id)
+            raise
+
+    async def _load_workflow_run(self, workflow_id: str, run_id: str) -> WorkflowRun:
+        """Load a WorkflowRun and verify it belongs to the requested workflow.
 
         Args:
             workflow_id: Workflow ID
             run_id: Run ID
 
         Returns:
-            Tuple of (WorkflowRun, list of NodeRuns)
+            The matching WorkflowRun document.
 
         Raises:
-            ValueError: If workflow or run not found
+            ValueError: If workflow or run not found, or run does not belong to workflow.
         """
+        # Verify workflow exists
+        await self.get_workflow_by_id(workflow_id)
+
+        # Get workflow run
+        run = await WorkflowRun.get(PydanticObjectId(run_id))
+        if not run:
+            raise ValueError(f"Workflow run {run_id} not found")
+
+        # Verify run belongs to workflow
+        if str(run.workflow_definition_id) != workflow_id:
+            raise ValueError(f"Workflow run {run_id} does not belong to workflow {workflow_id}")
+
+        return run
+
+    async def get_workflow_run(self, workflow_id: str, run_id: str) -> tuple[WorkflowRun, list[NodeRun]]:
+        """Get workflow run detail with all node runs."""
         try:
-            # Verify workflow exists
-            await self.get_workflow_by_id(workflow_id)
-
-            # Get workflow run
-            run = await WorkflowRun.get(PydanticObjectId(run_id))
-            if not run:
-                raise ValueError(f"Workflow run {run_id} not found")
-
-            # Verify run belongs to workflow
-            if str(run.workflow_definition_id) != workflow_id:
-                raise ValueError(f"Workflow run {run_id} does not belong to workflow {workflow_id}")
+            run = await self._load_workflow_run(workflow_id, run_id)
 
             # Get all node runs for this workflow run
             node_runs = await NodeRun.find(NodeRun.workflow_run_id == run.id).sort("started_at").to_list()
@@ -706,6 +794,41 @@ class WorkflowService:
         except Exception:
             logger.exception("Error getting workflow run %s", run_id)
             raise
+
+    async def get_workflow_run_doc(self, workflow_id: str, run_id: str) -> WorkflowRun:
+        """Get a WorkflowRun document without loading its NodeRuns"""
+        try:
+            return await self._load_workflow_run(workflow_id, run_id)
+        except ValueError:
+            raise
+        except Exception:
+            logger.exception("Error getting workflow run doc %s", run_id)
+            raise
+
+    async def get_node_runs(self, workflow_run_id: str) -> list[NodeRun]:
+        """Return all NodeRuns for a WorkflowRun, ordered by started_at ascending."""
+        try:
+            run_oid = PydanticObjectId(workflow_run_id)
+        except Exception as exc:
+            raise ValueError(f"Invalid workflow_run_id {workflow_run_id!r}") from exc
+        return await NodeRun.find(NodeRun.workflow_run_id == run_oid).sort("started_at").to_list()
+
+    async def get_node_run(self, workflow_run_id: str, node_run_id: str) -> NodeRun:
+        """Return a single NodeRun by ID, verifying it belongs to the given run.
+
+        Raises:
+            ValueError: If node_run_id is invalid, not found, or belongs to a different run.
+        """
+        try:
+            nr_oid = PydanticObjectId(node_run_id)
+        except Exception as exc:
+            raise ValueError(f"Invalid node_run_id {node_run_id!r}") from exc
+        nr = await NodeRun.get(nr_oid)
+        if nr is None:
+            raise ValueError(f"NodeRun {node_run_id!r} not found")
+        if str(nr.workflow_run_id) != workflow_run_id:
+            raise ValueError(f"NodeRun {node_run_id!r} does not belong to run {workflow_run_id!r}")
+        return nr
 
     def _convert_api_canvas_to_model(self, api_canvas: Any) -> WorkflowCanvas:
         """Convert API canvas input to model WorkflowCanvas."""
@@ -774,6 +897,7 @@ class WorkflowService:
             true_steps=true_steps,
             false_steps=false_steps,
             choices=choices,
+            referenced_node_names=api_node.referencedNodeNames,
             condition_cel=api_node.conditionCel,
             loop_config=loop_config,
             human_review=human_review,

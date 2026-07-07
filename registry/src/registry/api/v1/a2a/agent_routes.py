@@ -7,7 +7,7 @@ Includes well-known agent card discovery endpoint.
 
 import logging
 import math
-from typing import Annotated, Literal
+from typing import Annotated
 
 from beanie import PydanticObjectId
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -37,7 +37,7 @@ from registry.schemas.a2a_agent_api_schemas import (
     convert_to_list_item,
     convert_to_skills_response,
 )
-from registry_pkgs.database.decorators import use_transaction
+from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.models import PrincipalType, ResourceType
 from registry_pkgs.models.enums import RoleBits
 
@@ -79,7 +79,6 @@ def check_admin_permission(user_context: dict) -> bool:
 async def list_agents(
     user_context: CurrentUser,
     query: str | None = None,
-    status: Annotated[Literal["active", "inactive", "error"] | None, Query()] = None,
     page: Annotated[int, Query(ge=1)] = 1,
     per_page: Annotated[int, Query(ge=1, le=100)] = 20,
     acl_service: ACLService = Depends(get_acl_service),
@@ -90,7 +89,6 @@ async def list_agents(
 
     Query Parameters:
     - query: Free-text search across agent name, description, tags, skills
-    - status: Filter by operational state (active, inactive, error)
     - page: Page number (default: 1, min: 1)
     - per_page: Items per page (default: 20, min: 1, max: 100)
     """
@@ -105,7 +103,7 @@ async def list_agents(
         # List agents
         agents, total = await a2a_agent_service.list_agents(
             query=query,
-            status=status,
+            enabled_only=False,
             page=page,
             per_page=per_page,
             accessible_agent_ids=accessible_ids,
@@ -137,6 +135,14 @@ async def list_agents(
     except HTTPException:
         logger.exception("HTTPException in list_agents")
         raise
+    except RuntimeError as e:
+        logger.error(f"ACL lookup failed while listing agents: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=create_error_detail(
+                ErrorCode.SERVICE_UNAVAILABLE, "Agent listing is temporarily unavailable. Please try again later."
+            ),
+        ) from e
     except Exception as e:
         logger.error(f"Error listing agents: {e}", exc_info=True)
         raise HTTPException(
@@ -163,7 +169,6 @@ async def get_agent_stats(
 
     Returns comprehensive statistics about:
     - Total agents and breakdown by enabled/disabled
-    - Breakdown by status (active, inactive, error)
     - Breakdown by transport type
     - Total skills and average skills per agent
     """
@@ -183,7 +188,6 @@ async def get_agent_stats(
             totalAgents=stats["total_agents"],
             enabledAgents=stats["enabled_agents"],
             disabledAgents=stats["disabled_agents"],
-            byStatus=stats["by_status"],
             byTransport=stats["by_transport"],
             totalSkills=stats["total_skills"],
             averageSkillsPerAgent=stats["average_skills_per_agent"],
@@ -263,7 +267,6 @@ async def get_agent(
     description="Register a new A2A agent",
 )
 @track_registry_operation("create", resource_type="agent")
-@use_transaction
 async def create_agent(
     data: AgentCreateRequest,
     user_context: CurrentUser,
@@ -274,21 +277,24 @@ async def create_agent(
     try:
         user_id = user_context.get("user_id")
 
-        # Create agent
-        agent = await a2a_agent_service.create_agent(data=data, user_id=user_id)
+        async with MongoDB.get_client().start_session() as mongo_session:
+            async with await mongo_session.start_transaction():
+                # Create agent
+                agent = await a2a_agent_service.create_agent(data=data, user_id=user_id, session=mongo_session)
 
-        if not agent:
-            logger.error("Agent creation failed without exception")
-            raise ValueError("Failed to create agent")
+                if not agent:
+                    logger.error("Agent creation failed without exception")
+                    raise ValueError("Failed to create agent")
 
-        # Grant OWNER permission to creator
-        await acl_service.grant_permission(
-            principal_type=PrincipalType.USER,
-            principal_id=PydanticObjectId(user_id),
-            resource_type=ResourceType.REMOTE_AGENT,
-            resource_id=agent.id,
-            perm_bits=RoleBits.OWNER,
-        )
+                # Grant OWNER permission to creator
+                await acl_service.grant_permission(
+                    principal_type=PrincipalType.USER,
+                    principal_id=PydanticObjectId(user_id),
+                    resource_type=ResourceType.REMOTE_AGENT,
+                    resource_id=agent.id,
+                    perm_bits=RoleBits.OWNER,
+                    session=mongo_session,
+                )
 
         logger.info(f"Granted user {user_id} OWNER permissions for agent {agent.id}")
 
@@ -336,7 +342,6 @@ async def create_agent(
     description="Update agent configuration",
 )
 @track_registry_operation("update", resource_type="agent")
-@use_transaction
 async def update_agent(
     agent_id: str,
     data: AgentUpdateRequest,
@@ -348,16 +353,19 @@ async def update_agent(
     try:
         user_id = user_context.get("user_id")
 
-        # Check EDIT permission and get permissions for response
-        permissions = await acl_service.check_user_permission(
-            user_id=PydanticObjectId(user_id),
-            resource_type=ResourceType.REMOTE_AGENT.value,
-            resource_id=PydanticObjectId(agent_id),
-            required_permission="EDIT",
-        )
+        async with MongoDB.get_client().start_session() as mongo_session:
+            async with await mongo_session.start_transaction():
+                # Check EDIT permission and get permissions for response
+                permissions = await acl_service.check_user_permission(
+                    user_id=PydanticObjectId(user_id),
+                    resource_type=ResourceType.REMOTE_AGENT.value,
+                    resource_id=PydanticObjectId(agent_id),
+                    required_permission="EDIT",
+                    session=mongo_session,
+                )
 
-        # Update agent
-        agent = await a2a_agent_service.update_agent(agent_id=agent_id, data=data)
+                # Update agent
+                agent = await a2a_agent_service.update_agent(agent_id=agent_id, data=data, session=mongo_session)
 
         return convert_to_detail(agent, acl_permission=permissions)
 
@@ -401,7 +409,6 @@ async def update_agent(
     description="Delete an agent",
 )
 @track_registry_operation("delete", resource_type="agent")
-@use_transaction
 async def delete_agent(
     agent_id: str,
     user_context: CurrentUser,
@@ -412,27 +419,30 @@ async def delete_agent(
     try:
         user_id = user_context.get("user_id")
 
-        # Check DELETE permission
-        await acl_service.check_user_permission(
-            user_id=PydanticObjectId(user_id),
-            resource_type=ResourceType.REMOTE_AGENT.value,
-            resource_id=PydanticObjectId(agent_id),
-            required_permission="DELETE",
-        )
+        async with MongoDB.get_client().start_session() as mongo_session:
+            async with await mongo_session.start_transaction():
+                # Check DELETE permission
+                await acl_service.check_user_permission(
+                    user_id=PydanticObjectId(user_id),
+                    resource_type=ResourceType.REMOTE_AGENT.value,
+                    resource_id=PydanticObjectId(agent_id),
+                    required_permission="DELETE",
+                    session=mongo_session,
+                )
 
-        # Delete agent
-        successful_delete = await a2a_agent_service.delete_agent(agent_id=agent_id)
+                # Delete agent
+                successful_delete = await a2a_agent_service.delete_agent(agent_id=agent_id, session=mongo_session)
 
-        if successful_delete:
-            # Delete all associated ACL permission records
-            deleted_count = await acl_service.delete_acl_entries_for_resource(
-                resource_type=ResourceType.REMOTE_AGENT,
-                resource_id=PydanticObjectId(agent_id),
-            )
-            logger.info(f"Removed {deleted_count} ACL permissions for agent {agent_id}")
-            return None  # 204 No Content
-        else:
-            raise ValueError(f"Failed to delete agent {agent_id}. Skipping ACL cleanup")
+                if successful_delete:
+                    # Delete all associated ACL permission records
+                    deleted_count = await acl_service.delete_acl_entries_for_resource(
+                        resource_type=ResourceType.REMOTE_AGENT,
+                        resource_id=PydanticObjectId(agent_id),
+                        session=mongo_session,
+                    )
+                    logger.info(f"Removed {deleted_count} ACL permissions for agent {agent_id}")
+                    return None  # 204 No Content
+                raise ValueError(f"Failed to delete agent {agent_id}. Skipping ACL cleanup")
 
     except ValueError as e:
         error_msg = str(e)
