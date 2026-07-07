@@ -2,6 +2,7 @@
 
 Env (loaded from .env, shell overrides):
     required: AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, FOUNDRY_PROJECT_ENDPOINT
+              TRIGGERED_BY_USER_ID    user_id of the triggering user (must exist in DB)
     optional: FOUNDRY_AGENT_NAME       limit discovery to one agent
               E2E_KEEP_FEDERATION=1    skip cleanup so azure_foundry_execute.py can use it
 
@@ -18,9 +19,7 @@ from dotenv import load_dotenv
 
 from registry.container import RegistryContainer
 from registry.core.config import settings
-from registry.services.federation_crud_service import FederationCrudService
 from registry_pkgs.database import close_mongodb, init_mongodb
-from registry_pkgs.database.decorators import use_transaction
 from registry_pkgs.database.redis_client import create_redis_client
 from registry_pkgs.models import A2AAgent
 from registry_pkgs.models.enums import FederationProviderType
@@ -49,9 +48,7 @@ def _banner(title: str) -> None:
     print("=" * 70)
 
 
-@use_transaction
-async def _create_federation(crud: FederationCrudService, provider_config: dict) -> Federation:
-    """Wrapped in a txn because create_federation persists via get_current_session()."""
+async def _create_federation(crud, provider_config: dict) -> Federation:
     return await crud.create_federation(
         provider_type=FederationProviderType.AZURE_AI_FOUNDRY,
         display_name="azure-foundry-e2e",
@@ -63,6 +60,7 @@ async def _create_federation(crud: FederationCrudService, provider_config: dict)
 
 
 async def main() -> None:
+    triggered_by = _require_env("TRIGGERED_BY_USER_ID")
     provider_config: dict = {
         "projectEndpoint": _require_env("FOUNDRY_PROJECT_ENDPOINT"),
         "tenantId": _require_env("AZURE_TENANT_ID"),
@@ -104,7 +102,7 @@ async def main() -> None:
         _banner("STEP 2 — start_manual_sync (discover -> diff -> apply -> vector -> mark_success)")
         federation_id = str(federation.id)
         try:
-            job = await sync.start_manual_sync(federation=federation, reason="e2e", triggered_by=None)
+            job = await sync.start_manual_sync(federation=federation, reason="e2e", triggered_by=triggered_by)
             print(f"job_id     = {job.id}")
             print(f"job_status = {getattr(job.status, 'value', job.status)}")
         except Exception as sync_exc:
