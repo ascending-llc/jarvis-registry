@@ -35,6 +35,14 @@ frontend)
     export NGINX_BASE_PATH="${NGINX_BASE_PATH:-}"
     echo "NGINX_BASE_PATH configured as: '${NGINX_BASE_PATH:-/}'"
 
+    if [ -z "$NGINX_BASE_PATH" ]; then
+        FRONTEND_BASE_HREF="/"
+    else
+        FRONTEND_BASE_HREF="${NGINX_BASE_PATH%/}/"
+    fi
+    export FRONTEND_BASE_HREF
+    echo "Frontend base href configured as: '${FRONTEND_BASE_HREF}'"
+
     # Generate runtime config.js for React app
     cat >/usr/share/nginx/html/config.js <<EOF
 // Runtime configuration - generated at container startup
@@ -43,6 +51,13 @@ window.__RUNTIME_CONFIG__ = {
 };
 EOF
     echo "Generated config.js with BASE_PATH=${NGINX_BASE_PATH}"
+
+    # Vite builds this image without knowing the runtime mount path. Its JS/CSS
+    # assets are intentionally relative, so inject a base URL at startup to make
+    # deep links like /gateway/consent/downstream resolve ./assets and config.js
+    # under /gateway instead of /gateway/consent.
+    sed -i '/<base href=/d' /usr/share/nginx/html/index.html
+    sed -i "s|<head>|<head><base href=\"${FRONTEND_BASE_HREF}\">|" /usr/share/nginx/html/index.html
 
     # Config paths matching Dockerfile.registry-frontend
     NGINX_HTTP_ONLY_CONF="/nginx_http_only.conf"

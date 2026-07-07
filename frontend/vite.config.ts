@@ -13,7 +13,10 @@ export default defineConfig(({ mode }) => {
   // Auth server is at root /oauth2, not under registry path e.g. /gateway
   const authURL = env.AUTH_SERVER_EXTERNAL_URL || env.AUTH_SERVER_URL || 'http://localhost:8888';
 
-  const basePath = env.NGINX_BASE_PATH || '';
+  // The frontend image is built once, while NGINX_BASE_PATH is injected when the
+  // container starts. Keep build assets relative and let the entrypoint add the
+  // runtime <base href="..."> so deep links under /gateway load the right files.
+  const assetBasePath = './';
 
   console.log('🔧 Vite Configuration:');
   console.log('  AUTH_SERVER_EXTERNAL_URL:', env.AUTH_SERVER_EXTERNAL_URL);
@@ -43,7 +46,7 @@ export default defineConfig(({ mode }) => {
     //     }
     //   }
     // ],
-    base: basePath,
+    base: assetBasePath,
     server: {
       port: 5173,
       host: '0.0.0.0',

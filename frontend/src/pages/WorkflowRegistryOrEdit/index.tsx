@@ -9,7 +9,7 @@ import type { WorkflowCanvasRef } from '@/components/WorkflowCanvas/types';
 import { useGlobal } from '@/contexts/GlobalContext';
 import { useServer } from '@/contexts/ServerContext';
 import SERVICES from '@/services';
-import type { Workflow, WorkflowNode as ApiWorkflowNode } from '@/services/workflow/type';
+import type { WorkflowNode as ApiWorkflowNode, Workflow } from '@/services/workflow/type';
 import DeleteWorkflowDialog from './DeleteWorkflowDialog';
 import TriggerRunModal from './TriggerRunModal';
 import UnsavedChangesDialog from './UnsavedChangesDialog';

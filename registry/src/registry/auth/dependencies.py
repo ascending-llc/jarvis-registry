@@ -23,6 +23,9 @@ class UserContextDict(TypedDict):
     # From the "user_id" field of the JWT claim.
     user_id: str | None
 
+    # From the "client_id" claim of the JWT.
+    client_id: str
+
     # From the "sub" field of the JWT claim.
     username: str | None
 
