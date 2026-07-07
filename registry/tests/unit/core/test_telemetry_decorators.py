@@ -11,6 +11,8 @@ import pytest
 
 from registry.core.telemetry_decorators import (
     AuthMetricsContext,
+    PromptExecutionMetricsContext,
+    ResourceAccessMetricsContext,
     ToolExecutionMetricsContext,
     track_registry_operation,
 )
@@ -171,6 +173,7 @@ class TestToolExecutionMetricsContext:
             assert call_kwargs["server_name"] == "math-server"
             assert call_kwargs["method"] == "POST"
             assert call_kwargs["success"] is True
+            assert call_kwargs["error_type"] == "none"
 
     @pytest.mark.asyncio
     async def test_allows_dynamic_updates(self):
@@ -198,3 +201,85 @@ class TestToolExecutionMetricsContext:
             call_kwargs = mock_record.call_args[1]
             assert call_kwargs["success"] is False
             assert call_kwargs["tool_name"] == "slow-tool"
+            # error_type auto-captured from the propagating exception class
+            assert call_kwargs["error_type"] == "TimeoutError"
+
+    @pytest.mark.asyncio
+    async def test_explicit_error_type_takes_precedence(self):
+        """Test an explicitly set error_type is not overwritten by the exception class."""
+        with patch(f"{DOMAIN_FUNCS_PATH}._record_tool_execution") as mock_record:
+            async with ToolExecutionMetricsContext(tool_name="t", server_name="s") as ctx:
+                ctx.set_error_type("server_not_found")
+                ctx.set_success(False)
+
+            call_kwargs = mock_record.call_args[1]
+            assert call_kwargs["success"] is False
+            assert call_kwargs["error_type"] == "server_not_found"
+
+
+@pytest.mark.unit
+@pytest.mark.metrics
+class TestResourceAccessMetricsContext:
+    """Test suite for ResourceAccessMetricsContext context manager."""
+
+    @pytest.mark.asyncio
+    async def test_records_success_without_resource_uri_label(self):
+        """Success path records server_name/status/error_type and never a resource_uri label."""
+        with patch(f"{DOMAIN_FUNCS_PATH}._record_resource_access") as mock_record:
+            async with ResourceAccessMetricsContext() as ctx:
+                ctx.set_server_name("docs-server")
+                ctx.set_success(True)
+
+            mock_record.assert_called_once()
+            call_kwargs = mock_record.call_args[1]
+            assert call_kwargs["server_name"] == "docs-server"
+            assert call_kwargs["success"] is True
+            assert call_kwargs["error_type"] == "none"
+            # resource_uri is unbounded cardinality and must not be a metric label.
+            assert "resource_uri" not in call_kwargs
+
+    @pytest.mark.asyncio
+    async def test_records_failure_on_exception(self):
+        """Exception path records failure and captures the exception class as error_type."""
+        with patch(f"{DOMAIN_FUNCS_PATH}._record_resource_access") as mock_record:
+            with pytest.raises(ValueError):
+                async with ResourceAccessMetricsContext() as ctx:
+                    ctx.set_server_name("docs-server")
+                    raise ValueError("boom")
+
+            call_kwargs = mock_record.call_args[1]
+            assert call_kwargs["success"] is False
+            assert call_kwargs["error_type"] == "ValueError"
+
+
+@pytest.mark.unit
+@pytest.mark.metrics
+class TestPromptExecutionMetricsContext:
+    """Test suite for PromptExecutionMetricsContext context manager."""
+
+    @pytest.mark.asyncio
+    async def test_records_success(self):
+        """Success path records prompt_name/server_name/status/error_type."""
+        with patch(f"{DOMAIN_FUNCS_PATH}._record_prompt_execution") as mock_record:
+            async with PromptExecutionMetricsContext(prompt_name="summarize") as ctx:
+                ctx.set_server_name("prompt-server")
+                ctx.set_success(True)
+
+            mock_record.assert_called_once()
+            call_kwargs = mock_record.call_args[1]
+            assert call_kwargs["prompt_name"] == "summarize"
+            assert call_kwargs["server_name"] == "prompt-server"
+            assert call_kwargs["success"] is True
+            assert call_kwargs["error_type"] == "none"
+
+    @pytest.mark.asyncio
+    async def test_handled_failure_sets_error_type(self):
+        """A handled failure (no exception) records the explicit error_type."""
+        with patch(f"{DOMAIN_FUNCS_PATH}._record_prompt_execution") as mock_record:
+            async with PromptExecutionMetricsContext(prompt_name="p") as ctx:
+                ctx.set_error_type("server_not_found")
+                ctx.set_success(False)
+
+            call_kwargs = mock_record.call_args[1]
+            assert call_kwargs["success"] is False
+            assert call_kwargs["error_type"] == "server_not_found"

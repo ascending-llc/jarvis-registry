@@ -2,14 +2,16 @@
 Unit tests for authentication routes.
 """
 
+import time
 from http.cookies import SimpleCookie
+from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 from urllib.parse import parse_qs, urlparse
 
 import pytest
 from bson import ObjectId
 from fastapi import Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, Response
 
 from registry.api.redirect_routes import (
     get_oauth2_providers,
@@ -18,8 +20,31 @@ from registry.api.redirect_routes import (
     oauth2_login_redirect,
     refresh_token,
 )
+from registry.utils.crypto_utils import REFRESH_TOKEN_EXPIRES_SECONDS
 from registry.utils.csrf import compute_csrf_token
 from registry_pkgs.core.jwt_utils import InvalidSignatureError
+
+
+def _cookies_from_response(response: Response) -> SimpleCookie:
+    cookies = SimpleCookie()
+    for key, value in response.raw_headers:
+        if key == b"set-cookie":
+            cookies.load(value.decode())
+    return cookies
+
+
+def _assert_auth_cookies_cleared(
+    cookies: SimpleCookie,
+    settings_obj: Any,
+) -> None:
+    for cookie_name in (
+        settings_obj.session_cookie_name,
+        settings_obj.refresh_cookie_name,
+        settings_obj.csrf_cookie_name,
+    ):
+        assert cookie_name in cookies
+        assert cookies[cookie_name].value == ""
+        assert cookies[cookie_name]["max-age"] == "0"
 
 
 @pytest.mark.unit
@@ -212,10 +237,7 @@ class TestAuthRoutes:
         assert response.status_code == 302
         assert response.headers["location"] == f"{mock_settings.registry_client_url}"
 
-        cookies = SimpleCookie()
-        for key, value in response.raw_headers:
-            if key == b"set-cookie":
-                cookies.load(value.decode())
+        cookies = _cookies_from_response(response)
 
         assert cookies[mock_settings.session_cookie_name].value == "mock-access-token"
         assert cookies[mock_settings.refresh_cookie_name].value == "mock-refresh-token"
@@ -383,10 +405,7 @@ class TestAuthRoutes:
 
         assert response.status_code == 204
 
-        cookies = SimpleCookie()
-        for key, value in response.raw_headers:
-            if key == b"set-cookie":
-                cookies.load(value.decode())
+        cookies = _cookies_from_response(response)
 
         assert mock_settings.csrf_cookie_name in cookies
         assert cookies[mock_settings.csrf_cookie_name].value == ""
@@ -394,7 +413,8 @@ class TestAuthRoutes:
 
     @pytest.mark.asyncio
     async def test_refresh_token_success_sets_csrf_cookie(self, mock_request, mock_settings):
-        """Successful token refresh must issue a new CSRF cookie bound to the new access token."""
+        """Successful token refresh must issue new access, CSRF, and reissued refresh cookies."""
+
         claims = {
             "user_id": "123",
             "sub": "testuser",
@@ -404,23 +424,24 @@ class TestAuthRoutes:
             "scope": "read write",
             "role": "user",
             "email": "test@example.com",
+            "session_started_at": int(time.time()) - 3600,  # 1 hour ago — well within 14-day cap
         }
 
         with (
             patch("registry.api.redirect_routes.verify_refresh_token", return_value=claims),
             patch("registry.api.redirect_routes.generate_access_token", return_value="new-access-token"),
+            patch("registry.api.redirect_routes.generate_refresh_token", return_value="new-refresh-token"),
         ):
             response = await refresh_token(mock_request, refresh="valid-refresh-token", is_https=False)
 
         assert response.status_code == 200
 
-        cookies = SimpleCookie()
-        for key, value in response.raw_headers:
-            if key == b"set-cookie":
-                cookies.load(value.decode())
+        cookies = _cookies_from_response(response)
 
         assert cookies[mock_settings.session_cookie_name].value == "new-access-token"
         assert cookies[mock_settings.csrf_cookie_name].value == compute_csrf_token("new-access-token")
+        assert cookies[mock_settings.refresh_cookie_name].value == "new-refresh-token"
+        assert cookies[mock_settings.refresh_cookie_name]["max-age"] == str(REFRESH_TOKEN_EXPIRES_SECONDS)
 
     @pytest.mark.asyncio
     async def test_refresh_token_no_refresh_cookie_clears_csrf_cookie(self, mock_request, mock_settings):
@@ -429,10 +450,7 @@ class TestAuthRoutes:
 
         assert response.status_code == 401
 
-        cookies = SimpleCookie()
-        for key, value in response.raw_headers:
-            if key == b"set-cookie":
-                cookies.load(value.decode())
+        cookies = _cookies_from_response(response)
 
         assert cookies[mock_settings.csrf_cookie_name].value == ""
         assert cookies[mock_settings.csrf_cookie_name]["max-age"] == "0"
@@ -445,10 +463,7 @@ class TestAuthRoutes:
 
         assert response.status_code == 401
 
-        cookies = SimpleCookie()
-        for key, value in response.raw_headers:
-            if key == b"set-cookie":
-                cookies.load(value.decode())
+        cookies = _cookies_from_response(response)
 
         assert cookies[mock_settings.csrf_cookie_name].value == ""
         assert cookies[mock_settings.csrf_cookie_name]["max-age"] == "0"
@@ -472,10 +487,483 @@ class TestAuthRoutes:
 
         assert response.status_code == 401
 
-        cookies = SimpleCookie()
-        for key, value in response.raw_headers:
-            if key == b"set-cookie":
-                cookies.load(value.decode())
+        cookies = _cookies_from_response(response)
 
         assert cookies[mock_settings.csrf_cookie_name].value == ""
         assert cookies[mock_settings.csrf_cookie_name]["max-age"] == "0"
+
+    @pytest.mark.asyncio
+    async def test_refresh_token_reissued_claims_match_prior_token(self, mock_request, mock_settings):
+        """Reissued refresh token must carry forward the same claims from the prior token."""
+        fixed_session_start = int(time.time()) - 3600  # 1 hour ago — well within 14-day cap
+        claims = {
+            "user_id": "123",
+            "sub": "testuser",
+            "auth_method": "oauth2",
+            "provider": "entra",
+            "groups": ["jarvis-registry-admin"],
+            "scope": "servers-read servers-write",
+            "role": "admin",
+            "email": "admin@example.com",
+            "session_started_at": fixed_session_start,
+        }
+
+        with (
+            patch("registry.api.redirect_routes.verify_refresh_token", return_value=claims),
+            patch("registry.api.redirect_routes.generate_access_token", return_value="new-access-token"),
+            patch(
+                "registry.api.redirect_routes.generate_refresh_token", return_value="new-refresh-token"
+            ) as mock_gen_refresh,
+        ):
+            await refresh_token(mock_request, refresh="valid-refresh-token", is_https=False)
+
+        mock_gen_refresh.assert_called_once()
+        call_kwargs = mock_gen_refresh.call_args.kwargs
+        assert call_kwargs["user_id"] == "123"
+        assert call_kwargs["username"] == "testuser"
+        assert call_kwargs["auth_method"] == "oauth2"
+        assert call_kwargs["provider"] == "entra"
+        assert call_kwargs["groups"] == ["jarvis-registry-admin"]
+        assert call_kwargs["scopes"] == ["servers-read", "servers-write"]
+        assert call_kwargs["role"] == "admin"
+        assert call_kwargs["email"] == "admin@example.com"
+        assert call_kwargs["session_started_at"] == fixed_session_start
+
+    @pytest.mark.asyncio
+    async def test_refresh_token_session_started_at_survives_two_rotations(self, mock_request, mock_settings):
+        """session_started_at must remain unchanged across two consecutive rotations, not just one."""
+        fixed_session_start = int(time.time()) - 3600  # 1 hour ago — well within 14-day cap
+        first_claims = {
+            "user_id": "123",
+            "sub": "testuser",
+            "auth_method": "oauth2",
+            "provider": "entra",
+            "groups": ["jarvis-registry-admin"],
+            "scope": "servers-read servers-write",
+            "role": "admin",
+            "email": "admin@example.com",
+            "session_started_at": fixed_session_start,
+        }
+
+        with (
+            patch("registry.api.redirect_routes.verify_refresh_token", return_value=first_claims),
+            patch("registry.api.redirect_routes.generate_access_token", return_value="access-token-1"),
+            patch(
+                "registry.api.redirect_routes.generate_refresh_token", return_value="refresh-token-1"
+            ) as mock_gen_refresh_1,
+        ):
+            response_1 = await refresh_token(mock_request, refresh="refresh-token-0", is_https=False)
+
+        assert response_1.status_code == 200
+        first_rotation_session_start = mock_gen_refresh_1.call_args.kwargs["session_started_at"]
+        assert first_rotation_session_start == fixed_session_start
+
+        # Second rotation: the reissued refresh token carries forward session_started_at from the first.
+        second_claims = {**first_claims, "session_started_at": first_rotation_session_start}
+
+        with (
+            patch("registry.api.redirect_routes.verify_refresh_token", return_value=second_claims),
+            patch("registry.api.redirect_routes.generate_access_token", return_value="access-token-2"),
+            patch(
+                "registry.api.redirect_routes.generate_refresh_token", return_value="refresh-token-2"
+            ) as mock_gen_refresh_2,
+        ):
+            response_2 = await refresh_token(mock_request, refresh="refresh-token-1", is_https=False)
+
+        assert response_2.status_code == 200
+        assert mock_gen_refresh_2.call_args.kwargs["session_started_at"] == fixed_session_start
+
+    @pytest.mark.asyncio
+    async def test_refresh_token_numeric_string_session_started_at_is_accepted(self, mock_request, mock_settings):
+        """String timestamps from refresh token claims are parsed before enforcing the session cap."""
+        fixed_session_start = int(time.time()) - 3600
+        claims = {
+            "user_id": "123",
+            "sub": "testuser",
+            "auth_method": "oauth2",
+            "provider": "entra",
+            "groups": ["admin"],
+            "scope": "read write",
+            "role": "user",
+            "email": "test@example.com",
+            "session_started_at": str(fixed_session_start),
+        }
+
+        with (
+            patch("registry.api.redirect_routes.verify_refresh_token", return_value=claims),
+            patch("registry.api.redirect_routes.generate_access_token", return_value="new-access-token"),
+            patch(
+                "registry.api.redirect_routes.generate_refresh_token", return_value="new-refresh-token"
+            ) as mock_gen_refresh,
+        ):
+            response = await refresh_token(mock_request, refresh="valid-refresh-token", is_https=False)
+
+        assert response.status_code == 200
+        assert mock_gen_refresh.call_args.kwargs["session_started_at"] == fixed_session_start
+
+    @pytest.mark.asyncio
+    async def test_refresh_token_small_future_session_started_at_is_clamped(self, mock_request, mock_settings):
+        """Small clock skew in session_started_at is tolerated but not carried forward as future time."""
+        before = int(time.time())
+        claims = {
+            "user_id": "123",
+            "sub": "testuser",
+            "auth_method": "oauth2",
+            "provider": "entra",
+            "groups": ["admin"],
+            "scope": "read write",
+            "role": "user",
+            "email": "test@example.com",
+            "session_started_at": before + 60,
+        }
+
+        with (
+            patch("registry.api.redirect_routes.verify_refresh_token", return_value=claims),
+            patch("registry.api.redirect_routes.generate_access_token", return_value="new-access-token"),
+            patch(
+                "registry.api.redirect_routes.generate_refresh_token", return_value="new-refresh-token"
+            ) as mock_gen_refresh,
+        ):
+            response = await refresh_token(mock_request, refresh="valid-refresh-token", is_https=False)
+
+        assert response.status_code == 200
+        carried_session_start = mock_gen_refresh.call_args.kwargs["session_started_at"]
+        assert before <= carried_session_start <= int(time.time())
+
+    @pytest.mark.asyncio
+    async def test_refresh_token_far_future_session_started_at_returns_401(self, mock_request, mock_settings):
+        """Far-future session_started_at claims must fail closed instead of extending the session cap."""
+        claims = {
+            "user_id": "123",
+            "sub": "testuser",
+            "auth_method": "oauth2",
+            "provider": "entra",
+            "groups": ["admin"],
+            "scope": "read write",
+            "role": "user",
+            "email": "test@example.com",
+            "session_started_at": int(time.time()) + 86400,
+        }
+
+        with (
+            patch("registry.api.redirect_routes.verify_refresh_token", return_value=claims),
+            patch("registry.api.redirect_routes.generate_access_token") as mock_gen_access,
+            patch("registry.api.redirect_routes.generate_refresh_token") as mock_gen_refresh,
+        ):
+            response = await refresh_token(mock_request, refresh="valid-refresh-token", is_https=False)
+
+        assert response.status_code == 401
+        mock_gen_access.assert_not_called()
+        mock_gen_refresh.assert_not_called()
+        cookies = _cookies_from_response(response)
+        _assert_auth_cookies_cleared(cookies, mock_settings)
+
+    @pytest.mark.asyncio
+    async def test_refresh_token_invalid_session_started_at_returns_401(self, mock_request, mock_settings):
+        """Malformed session_started_at claims must not become 500s during refresh."""
+        claims = {
+            "user_id": "123",
+            "sub": "testuser",
+            "auth_method": "oauth2",
+            "provider": "entra",
+            "groups": ["admin"],
+            "scope": "read write",
+            "role": "user",
+            "email": "test@example.com",
+            "session_started_at": "not-a-timestamp",
+        }
+
+        with (
+            patch("registry.api.redirect_routes.verify_refresh_token", return_value=claims),
+            patch("registry.api.redirect_routes.generate_access_token") as mock_gen_access,
+            patch("registry.api.redirect_routes.generate_refresh_token") as mock_gen_refresh,
+        ):
+            response = await refresh_token(mock_request, refresh="valid-refresh-token", is_https=False)
+
+        assert response.status_code == 401
+        mock_gen_access.assert_not_called()
+        mock_gen_refresh.assert_not_called()
+        cookies = _cookies_from_response(response)
+        _assert_auth_cookies_cleared(cookies, mock_settings)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("claim_name", ["user_id", "sub", "auth_method", "provider"])
+    async def test_refresh_token_missing_required_identity_claim_returns_401(
+        self,
+        mock_request,
+        mock_settings,
+        claim_name,
+    ):
+        """Required identity claims must be present before token reissue."""
+        claims = {
+            "user_id": "123",
+            "sub": "testuser",
+            "auth_method": "oauth2",
+            "provider": "entra",
+            "groups": ["admin"],
+            "scope": "read write",
+            "role": "user",
+            "email": "test@example.com",
+            "session_started_at": int(time.time()) - 3600,
+        }
+        claims[claim_name] = None
+
+        with (
+            patch("registry.api.redirect_routes.verify_refresh_token", return_value=claims),
+            patch("registry.api.redirect_routes.generate_access_token") as mock_gen_access,
+            patch("registry.api.redirect_routes.generate_refresh_token") as mock_gen_refresh,
+        ):
+            response = await refresh_token(mock_request, refresh="valid-refresh-token", is_https=False)
+
+        assert response.status_code == 401
+        mock_gen_access.assert_not_called()
+        mock_gen_refresh.assert_not_called()
+        cookies = _cookies_from_response(response)
+        _assert_auth_cookies_cleared(cookies, mock_settings)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("groups_claim", "expected_groups"),
+        [
+            (None, []),
+            ("jarvis-registry-admin", []),
+            (["jarvis-registry-admin", 123, "", None, "  user  "], ["jarvis-registry-admin", "user"]),
+        ],
+    )
+    async def test_refresh_token_normalizes_group_claim_before_reissue(
+        self,
+        mock_request,
+        mock_settings,
+        groups_claim,
+        expected_groups,
+    ):
+        """refresh_token must not trust raw groups claim shape from a legacy refresh token."""
+        claims = {
+            "user_id": "123",
+            "sub": "testuser",
+            "auth_method": "oauth2",
+            "provider": "entra",
+            "groups": groups_claim,
+            "scope": "servers-read",
+            "role": "user",
+            "email": "test@example.com",
+            "session_started_at": int(time.time()) - 3600,
+        }
+
+        with (
+            patch("registry.api.redirect_routes.verify_refresh_token", return_value=claims),
+            patch(
+                "registry.api.redirect_routes.generate_access_token", return_value="new-access-token"
+            ) as mock_gen_access,
+            patch(
+                "registry.api.redirect_routes.generate_refresh_token", return_value="new-refresh-token"
+            ) as mock_gen_refresh,
+        ):
+            response = await refresh_token(mock_request, refresh="valid-refresh-token", is_https=False)
+
+        assert response.status_code == 200
+        assert mock_gen_access.call_args.kwargs["groups"] == expected_groups
+        assert mock_gen_refresh.call_args.kwargs["groups"] == expected_groups
+
+    @pytest.mark.asyncio
+    async def test_refresh_token_absolute_session_cap_exceeded_returns_401(self, mock_request, mock_settings):
+        """A refresh where now - session_started_at > 14 days must return 401 and clear all cookies."""
+        old_start = int(time.time()) - (15 * 86400)  # 15 days ago
+        claims = {
+            "user_id": "123",
+            "sub": "testuser",
+            "auth_method": "oauth2",
+            "provider": "entra",
+            "groups": ["admin"],
+            "scope": "read write",
+            "role": "user",
+            "email": "test@example.com",
+            "session_started_at": old_start,
+        }
+
+        with (
+            patch("registry.api.redirect_routes.verify_refresh_token", return_value=claims),
+            patch("registry.api.redirect_routes.generate_access_token") as mock_gen_access,
+            patch("registry.api.redirect_routes.generate_refresh_token") as mock_gen_refresh,
+        ):
+            response = await refresh_token(mock_request, refresh="valid-refresh-token", is_https=False)
+
+        assert response.status_code == 401
+        mock_gen_access.assert_not_called()
+        mock_gen_refresh.assert_not_called()
+
+        cookies = _cookies_from_response(response)
+        _assert_auth_cookies_cleared(cookies, mock_settings)
+
+    @pytest.mark.asyncio
+    async def test_refresh_token_missing_session_started_at_grandfathered(self, mock_request, mock_settings):
+        """A pre-deploy refresh token with no session_started_at must NOT be rejected."""
+        claims = {
+            "user_id": "123",
+            "sub": "testuser",
+            "auth_method": "oauth2",
+            "provider": "entra",
+            "groups": ["admin"],
+            "scope": "read write",
+            "role": "user",
+            "email": "test@example.com",
+            # No session_started_at — simulates a pre-deploy token
+        }
+
+        with (
+            patch("registry.api.redirect_routes.verify_refresh_token", return_value=claims),
+            patch("registry.api.redirect_routes.generate_access_token", return_value="new-access-token"),
+            patch(
+                "registry.api.redirect_routes.generate_refresh_token", return_value="new-refresh-token"
+            ) as mock_gen_refresh,
+        ):
+            response = await refresh_token(mock_request, refresh="valid-refresh-token", is_https=False)
+
+        assert response.status_code == 200
+
+        # The newly-reissued refresh token must receive a fresh session_started_at (approx now)
+        call_kwargs = mock_gen_refresh.call_args.kwargs
+        assert "session_started_at" in call_kwargs
+        assert call_kwargs["session_started_at"] is not None
+        assert abs(call_kwargs["session_started_at"] - int(time.time())) <= 5
+
+    @pytest.mark.asyncio
+    async def test_refresh_token_401_branches_clear_auth_cookies(self, mock_request, mock_settings):
+        """All 401 error branches (no cookie, invalid token, no scopes) must clear auth cookies."""
+        # Branch 1: no cookie
+        response = await refresh_token(mock_request, refresh=None, is_https=False)
+        assert response.status_code == 401
+        cookies = _cookies_from_response(response)
+        _assert_auth_cookies_cleared(cookies, mock_settings)
+
+        # Branch 2: invalid token
+        with patch("registry.api.redirect_routes.verify_refresh_token", return_value=None):
+            response = await refresh_token(mock_request, refresh="bad-token", is_https=False)
+        assert response.status_code == 401
+        cookies = _cookies_from_response(response)
+        _assert_auth_cookies_cleared(cookies, mock_settings)
+
+        # Branch 3: no scopes
+        no_scope_claims = {
+            "user_id": "123",
+            "sub": "testuser",
+            "auth_method": "oauth2",
+            "provider": "entra",
+            "groups": [],
+            "scope": "",
+            "role": "user",
+            "email": "test@example.com",
+        }
+        with patch("registry.api.redirect_routes.verify_refresh_token", return_value=no_scope_claims):
+            response = await refresh_token(mock_request, refresh="valid-token", is_https=False)
+        assert response.status_code == 401
+        cookies = _cookies_from_response(response)
+        _assert_auth_cookies_cleared(cookies, mock_settings)
+
+    @pytest.mark.asyncio
+    async def test_oauth2_callback_filters_groups_before_minting_tokens(self, mock_request, mock_settings, mock_code):
+        """oauth2_callback must pass only known groups to generate_token_pair."""
+        mock_user = Mock()
+        mock_user.id = "12345"
+        mock_user.username = "testuser"
+        mock_user.email = "test@example.com"
+        mock_user.role = "user"
+        mock_user.idp_id = "12345-6789"
+
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"access_token": "test-access-token"}
+        mock_user_service = Mock()
+        mock_user_service.get_user_by_user_id = AsyncMock(return_value=mock_user)
+
+        user_claims = {
+            "sub": "someone",
+            "user_id": "12345",
+            "groups": ["jarvis-registry-admin", "Some-Unrelated-Distro-List", "Teams-Channel-Foo"],
+        }
+
+        with (
+            patch("registry.api.redirect_routes.httpx.AsyncClient") as mock_client,
+            patch("registry.api.redirect_routes.decrypt_value", return_value="verifier"),
+            patch("registry.api.redirect_routes.decode_jwt", return_value=user_claims),
+            patch(
+                "registry.api.redirect_routes.generate_token_pair",
+                return_value=("mock-access-token", "mock-refresh-token"),
+            ) as mock_gen_pair,
+            patch(
+                "registry.api.redirect_routes.filter_known_groups",
+                return_value=["jarvis-registry-admin"],
+            ) as mock_filter,
+        ):
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
+            await oauth2_callback(
+                mock_request,
+                code=mock_code,
+                registry_oauth2_code_verifier="a-cookie",
+                user_service=mock_user_service,
+            )
+
+        mock_filter.assert_called_once()
+        filter_input = mock_filter.call_args.args[0]
+        assert "Some-Unrelated-Distro-List" in filter_input
+        assert "Teams-Channel-Foo" in filter_input
+
+        passed_user_info = mock_gen_pair.call_args.kwargs.get("user_info") or mock_gen_pair.call_args.args[0]
+        assert passed_user_info["groups"] == ["jarvis-registry-admin"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("groups_claim", "expected_groups"),
+        [
+            (None, []),
+            ("jarvis-registry-admin", []),
+            (["jarvis-registry-admin", 123, "", None, "  user  "], ["jarvis-registry-admin", "user"]),
+        ],
+    )
+    async def test_oauth2_callback_normalizes_group_claim_before_filtering(
+        self,
+        mock_request,
+        mock_settings,
+        mock_code,
+        groups_claim,
+        expected_groups,
+    ):
+        """OAuth callback must not trust raw group claim shape from upstream tokens."""
+        mock_user = Mock()
+        mock_user.id = "12345"
+        mock_user.username = "testuser"
+        mock_user.email = "test@example.com"
+        mock_user.role = "user"
+
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"access_token": "test-access-token"}
+        mock_user_service = Mock()
+        mock_user_service.get_user_by_user_id = AsyncMock(return_value=mock_user)
+
+        user_claims = {
+            "sub": "someone",
+            "user_id": "12345",
+            "groups": groups_claim,
+        }
+
+        with (
+            patch("registry.api.redirect_routes.httpx.AsyncClient") as mock_client,
+            patch("registry.api.redirect_routes.decrypt_value", return_value="verifier"),
+            patch("registry.api.redirect_routes.decode_jwt", return_value=user_claims),
+            patch(
+                "registry.api.redirect_routes.generate_token_pair",
+                return_value=("mock-access-token", "mock-refresh-token"),
+            ),
+            patch("registry.api.redirect_routes.filter_known_groups", return_value=expected_groups) as mock_filter,
+        ):
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
+            response = await oauth2_callback(
+                mock_request,
+                code=mock_code,
+                registry_oauth2_code_verifier="a-cookie",
+                user_service=mock_user_service,
+            )
+
+        assert response.status_code == 302
+        mock_filter.assert_called_once_with(expected_groups, mock_settings.scopes_file_config)
