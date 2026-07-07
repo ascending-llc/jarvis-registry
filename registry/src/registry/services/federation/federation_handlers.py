@@ -107,12 +107,18 @@ class AzureAiFoundrySyncHandler(BaseFederationSyncHandler):
     ):
         self.discovery_client = discovery_client or AzureFoundryDiscoveryClient()
 
-    async def discover_entities(self, federation: Federation) -> dict[str, list[Any]]:
+    async def discover_entities(
+        self,
+        federation: Federation,
+        *,
+        author_id: PydanticObjectId | None = None,
+    ) -> dict[str, list[Any]]:
         provider_config = AzureAiFoundryProviderConfig(**dict(federation.providerConfig or {}))
         async with AzureFoundryAuthService(provider_config) as auth:
             agents = await self.discovery_client.discover_a2a_agents(
                 provider_config=provider_config,
                 auth=auth,
+                author_id=author_id,
             )
         # Foundry hosted agents only expose A2A;
         return {"a2a_agents": agents, "mcp_servers": []}
