@@ -27,7 +27,6 @@ from registry_pkgs.models.extended_acl_entry import RegistryAclEntry
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 from registry_pkgs.models.workflow import WorkflowNode
 from registry_pkgs.workflows.a2a_executor import make_a2a_executor, make_a2a_pool_executor
-from registry_pkgs.workflows.helpers import build_prompt
 from registry_pkgs.workflows.mcp_executor import make_mcp_executor
 from registry_pkgs.workflows.types import POOL_KEY_PREFIX
 
@@ -39,9 +38,12 @@ def _builtin_executor(key: str) -> StepExecutor | None:
     if key == "echo":
 
         async def _echo(step_input: StepInput, session_state: dict | None = None) -> StepOutput:
+            # Demo executor: not LLM-backed, echoes the raw trigger text.
+            # Uses get_input_as_string() rather than build_prompt() to avoid
+            # storing the structured Markdown prompt in session_state.
             state = session_state if session_state is not None else {}
             state["echo_count"] = int(state.get("echo_count", 0)) + 1
-            return StepOutput(content=build_prompt(step_input), success=True)
+            return StepOutput(content=step_input.get_input_as_string() or "", success=True)
 
         _echo.__name__ = "builtin_echo_executor"
         return _echo
@@ -49,8 +51,9 @@ def _builtin_executor(key: str) -> StepExecutor | None:
     if key == "set_value":
 
         async def _set_value(step_input: StepInput, session_state: dict | None = None) -> StepOutput:
+            # Demo executor: not LLM-backed, stores raw trigger text in session_state.
             state = session_state if session_state is not None else {}
-            state["value"] = build_prompt(step_input)
+            state["value"] = step_input.get_input_as_string() or ""
             return StepOutput(content=str(state["value"]), success=True)
 
         _set_value.__name__ = "builtin_set_value_executor"
