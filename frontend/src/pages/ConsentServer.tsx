@@ -1,10 +1,16 @@
-import { isAxiosError } from 'axios';
 import { useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 
 import { AuthPageLayout } from '@/components/auth/AuthPageLayout';
 import ConsentPrompt from '@/components/consent/ConsentPrompt';
 import { approveServerConsent, getServerConsentContext } from '@/services/consent';
+
+const getErrorDetail = (err: unknown): string | undefined => {
+  if (err && typeof err === 'object' && 'detail' in err && typeof err.detail === 'string') {
+    return err.detail;
+  }
+  return undefined;
+};
 
 const ConsentServer: React.FC = () => {
   const [searchParams] = useSearchParams();
@@ -23,10 +29,8 @@ const ConsentServer: React.FC = () => {
     getServerConsentContext(nonce)
       .then(setContext)
       .catch(err => {
-        setError('This consent link has expired. Please retry your request.');
-        if (isAxiosError(err) && err.response?.data?.detail) {
-          setErrorDetails(err.response.data.detail);
-        }
+        setError('Unable to load this consent request. Please retry your request.');
+        setErrorDetails(getErrorDetail(err));
       });
   }, [nonce]);
 
@@ -37,9 +41,7 @@ const ConsentServer: React.FC = () => {
       setApproved(true);
     } catch (err) {
       setError('Authorization failed. Please retry your request.');
-      if (isAxiosError(err) && err.response?.data?.detail) {
-        setErrorDetails(err.response.data.detail);
-      }
+      setErrorDetails(getErrorDetail(err));
     } finally {
       setApproving(false);
     }

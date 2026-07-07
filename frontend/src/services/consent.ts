@@ -24,24 +24,20 @@ const MOCK_SERVER_CONTEXT: ConsentContext = { ...MOCK_DOWNSTREAM_CONTEXT, server
 
 export async function getDownstreamConsentContext(nonce: string): Promise<ConsentContext> {
   if (MOCK_ENABLED) return MOCK_DOWNSTREAM_CONTEXT;
-  const { data } = await service.get(API.getDownstreamConsent(nonce));
-  return data;
+  return service.get(API.getDownstreamConsent(nonce)) as Promise<ConsentContext>;
 }
 
 export async function approveDownstreamConsent(nonce: string): Promise<{ redirect_url: string }> {
   if (MOCK_ENABLED) return { redirect_url: 'https://example.com/mock-provider-redirect' };
-  const { data } = await service.post(API.approveDownstreamConsent, { nonce });
-  return data;
+  return service.post(API.approveDownstreamConsent, { nonce }) as Promise<{ redirect_url: string }>;
 }
 
 export async function getServerConsentContext(nonce: string): Promise<ConsentContext> {
   if (MOCK_ENABLED) return MOCK_SERVER_CONTEXT;
-  const { data } = await service.get(API.getServerConsent(nonce));
-  return data;
+  return service.get(API.getServerConsent(nonce)) as Promise<ConsentContext>;
 }
 
 export async function approveServerConsent(nonce: string): Promise<{ status: string }> {
   if (MOCK_ENABLED) return { status: 'ok' };
-  const { data } = await service.post(API.approveServerConsent, { nonce });
-  return data;
+  return service.post(API.approveServerConsent, { nonce }) as Promise<{ status: string }>;
 }

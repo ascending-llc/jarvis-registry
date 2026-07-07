@@ -1,10 +1,16 @@
-import { isAxiosError } from 'axios';
 import { useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 
 import { AuthPageLayout } from '@/components/auth/AuthPageLayout';
 import ConsentPrompt from '@/components/consent/ConsentPrompt';
 import { approveDownstreamConsent, getDownstreamConsentContext } from '@/services/consent';
+
+const getErrorDetail = (err: unknown): string | undefined => {
+  if (err && typeof err === 'object' && 'detail' in err && typeof err.detail === 'string') {
+    return err.detail;
+  }
+  return undefined;
+};
 
 const ConsentDownstream: React.FC = () => {
   const [searchParams] = useSearchParams();
@@ -22,10 +28,8 @@ const ConsentDownstream: React.FC = () => {
     getDownstreamConsentContext(nonce)
       .then(setContext)
       .catch(err => {
-        setError('This consent link has expired. Please retry from your MCP client.');
-        if (isAxiosError(err) && err.response?.data?.detail) {
-          setErrorDetails(err.response.data.detail);
-        }
+        setError('Unable to load this consent request. Please retry from your MCP client.');
+        setErrorDetails(getErrorDetail(err));
       });
   }, [nonce]);
 
@@ -36,9 +40,7 @@ const ConsentDownstream: React.FC = () => {
       window.location.assign(redirect_url);
     } catch (err) {
       setError('Authorization failed. Please retry from your MCP client.');
-      if (isAxiosError(err) && err.response?.data?.detail) {
-        setErrorDetails(err.response.data.detail);
-      }
+      setErrorDetails(getErrorDetail(err));
       setApproving(false);
     }
   }, [nonce]);
