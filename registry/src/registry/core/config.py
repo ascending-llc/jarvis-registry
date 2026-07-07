@@ -150,6 +150,13 @@ class Settings(JarvisBaseSettings):
     # ==================== Encryption ====================
     creds_key: str = ""
 
+    # ==================== Entra Group Sync ====================
+    # entra_tenant_id / entra_client_id / entra_client_secret are inherited from JarvisBaseSettings.
+    # `entra_group_sync_enabled = False` if using Registry together with Jarvis Chat; `True` if using Registry by itself.
+    # This is because Jarvis Chat already performs group sync.
+    entra_group_sync_enabled: bool = False
+    entra_graph_url: str = "https://graph.microsoft.com"
+
     # ==================== Keycloak Integration ====================
     keycloak_url: str = "http://keycloak:8080"
     keycloak_realm: str = "mcp-gateway"
@@ -162,9 +169,6 @@ class Settings(JarvisBaseSettings):
     federation_config_path: str = "/app/config/federation.json"
     asor_access_token: str | None = None
     asor_client_credentials: str | None = None
-
-    # ==================== Build Metadata ====================
-    build_version: str = "1.0.0"
 
     # ==================== Model Validation ====================
 

@@ -110,6 +110,26 @@ async def test_create_workflow_does_not_convert_unexpected_errors_to_value_error
 
 
 @pytest.mark.asyncio
+async def test_create_workflow_unknown_referenced_node_name_raises_before_executor_check(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The cross-node referenced_node_names check runs when WorkflowDefinition is
+    constructed, before _validate_executor_refs or any DB write."""
+    monkeypatch.setattr(WorkflowService, "_validate_executor_refs", AsyncMock(side_effect=AssertionError))
+
+    request = WorkflowCreateRequest(
+        name="Demo workflow",
+        canvas={"viewport": {"x": 0, "y": 0, "zoom": 1}},
+        nodes=[
+            WorkflowNodeInput(name="echo", nodeType="step", executorKey="tool", referencedNodeNames=["Typo Name"]),
+        ],
+    )
+
+    with pytest.raises(ValueError, match="references unknown node names"):
+        await WorkflowService().create_workflow(request)
+
+
+@pytest.mark.asyncio
 async def test_validate_executor_refs_passes_for_valid_mcp_server_and_a2a_agent(monkeypatch: pytest.MonkeyPatch):
     service = WorkflowService()
     captured_queries = _patch_executor_ref_queries(
@@ -304,6 +324,34 @@ def test_convert_api_node_preserves_explicit_id():
     api_node = WorkflowNodeInput(id="custom-id", name="x", nodeType="step", executorKey="tool")
     model = WorkflowService()._convert_api_node_to_model(api_node)
     assert model.id == "custom-id"
+
+
+def test_convert_api_node_preserves_referenced_node_names():
+    api_node = WorkflowNodeInput(
+        name="echo", nodeType="step", executorKey="tool", referencedNodeNames=["Weather Agent"]
+    )
+    model = WorkflowService()._convert_api_node_to_model(api_node)
+    assert model.referenced_node_names == ["Weather Agent"]
+
+
+def test_convert_api_node_defaults_referenced_node_names_to_empty_list():
+    api_node = WorkflowNodeInput(name="echo", nodeType="step", executorKey="tool")
+    model = WorkflowService()._convert_api_node_to_model(api_node)
+    assert model.referenced_node_names == []
+
+
+def test_convert_api_node_rejects_referenced_node_names_on_non_step_node():
+    api_node = WorkflowNodeInput(
+        name="par",
+        nodeType="parallel",
+        referencedNodeNames=["x"],
+        children=[
+            WorkflowNodeInput(name="a", nodeType="step", executorKey="tool-a"),
+            WorkflowNodeInput(name="b", nodeType="step", executorKey="tool-b"),
+        ],
+    )
+    with pytest.raises(ValueError, match="referenced_node_names is only supported on step nodes"):
+        WorkflowService()._convert_api_node_to_model(api_node)
 
 
 # ---------------------------------------------------------------------------
@@ -505,6 +553,33 @@ async def test_update_workflow_invalid_nodes_writes_nothing(monkeypatch: pytest.
         await WorkflowService().update_workflow(workflow_id=str(fake_wf.id), data=bad_update)
 
     # Validation raised before the conditional update or any history write.
+    collection.find_one_and_update.assert_not_awaited()
+    assert inserted == []
+
+
+@pytest.mark.asyncio
+async def test_update_workflow_unknown_referenced_node_name_writes_nothing(monkeypatch: pytest.MonkeyPatch):
+    """referenced_node_names pointing at a name absent from the definition fails the
+    cross-node WorkflowDefinition validator during update, before any DB write."""
+    from registry.schemas.workflow_api_schemas import WorkflowNodeInput, WorkflowUpdateRequest
+
+    fake_wf = _FakeWorkflow(version=4)
+
+    async def fake_get(self, workflow_id, session=None):
+        return fake_wf
+
+    monkeypatch.setattr(WorkflowService, "get_workflow_by_id", fake_get)
+    collection, inserted = _patch_update_transaction(monkeypatch, found_doc={"_id": fake_wf.id, "version": 5})
+
+    bad_update = WorkflowUpdateRequest(
+        nodes=[
+            WorkflowNodeInput(name="echo", nodeType="step", executorKey="tool", referencedNodeNames=["Typo Name"]),
+        ]
+    )
+
+    with pytest.raises(ValueError, match="references unknown node names"):
+        await WorkflowService().update_workflow(workflow_id=str(fake_wf.id), data=bad_update)
+
     collection.find_one_and_update.assert_not_awaited()
     assert inserted == []
 

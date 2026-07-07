@@ -6,7 +6,7 @@ from urllib.parse import urlparse
 from cryptography.exceptions import UnsupportedAlgorithm
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey, RSAPublicKey
 from cryptography.hazmat.primitives.serialization import load_pem_private_key, load_pem_public_key
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .scopes import ScopesConfig, load_scopes_config
@@ -91,6 +91,10 @@ class TelemetryConfig(BaseModel):
     )
     otel_prometheus_enabled: bool = Field(default=False, description="Enable Prometheus metrics endpoint")
     otel_prometheus_port: int = Field(default=9464, description="Prometheus metrics port")
+    build_version: str = Field(
+        default="unknown",
+        description="Build identifier (release tag or commit SHA) used as the OTel service.version resource attribute",
+    )
 
 
 class JarvisBaseSettings(BaseSettings):
@@ -163,6 +167,23 @@ class JarvisBaseSettings(BaseSettings):
     otel_exporter_otlp_endpoint: str = "http://otel-collector:4318"
     otel_prometheus_enabled: bool = False
     otel_prometheus_port: int = 9464
+    build_version: str = "unknown"
+
+    # ==================== Auth Provider ====================
+    auth_provider: str = "entra"  # cognito, keycloak, entra
+
+    @field_validator("auth_provider")
+    @classmethod
+    def validate_auth_provider(cls, v: str) -> str:
+        allowed = ["cognito", "keycloak", "entra"]
+        if v.lower() not in allowed:
+            raise ValueError(f"auth_provider must be one of {allowed}, got '{v}'")
+        return v.lower()
+
+    # ==================== Entra ID Settings ====================
+    entra_tenant_id: str | None = None
+    entra_client_id: str | None = None
+    entra_client_secret: str | None = None
 
     # ==================== Scopes ====================
     scopes_config_path: str = ""
@@ -282,6 +303,7 @@ class JarvisBaseSettings(BaseSettings):
             otel_exporter_otlp_endpoint=self.otel_exporter_otlp_endpoint,
             otel_prometheus_enabled=self.otel_prometheus_enabled,
             otel_prometheus_port=self.otel_prometheus_port,
+            build_version=self.build_version,
         )
 
     @cached_property

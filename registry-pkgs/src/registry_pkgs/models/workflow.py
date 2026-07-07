@@ -216,6 +216,13 @@ class WorkflowNode(BaseModel):
     # ROUTER-only: named choices.
     choices: list[RouterChoice] = Field(default_factory=list)
 
+    # Names of previously-executed nodes whose outputs should be explicitly injected
+    # into this node's prompt at runtime.  The compiler wraps the executor with
+    # _with_referenced_outputs which pulls each name from StepInput.previous_step_outputs
+    # and prepends the content before the node's own input.  Only valid on STEP nodes;
+    # non-STEP nodes raise ValueError in _validate_shape.
+    referenced_node_names: list[str] = Field(default_factory=list)
+
     # CEL expression used by condition / router nodes.
     # Condition: returns bool; available variables: input, previous_step_content,
     #            previous_step_outputs, additional_data, session_state
@@ -255,6 +262,9 @@ class WorkflowNode(BaseModel):
             if self.loop_config is not None:
                 raise ValueError("step node must not define loop_config")
             return self
+
+        if self.referenced_node_names:
+            raise ValueError("referenced_node_names is only supported on step nodes")
 
         if self.node_type == WorkflowNodeType.PARALLEL:
             if len(self.children) < 2:
@@ -404,6 +414,35 @@ class ResolvedDependency(BaseModel):
     source_node_run_id: PydanticObjectId | None = None
 
 
+def _collect_all_node_names(nodes: list[WorkflowNode]) -> set[str]:
+    """Recursively collect every node name in the workflow tree."""
+    names: set[str] = set()
+    for node in nodes:
+        names.add(node.name)
+        names.update(_collect_all_node_names(node.children))
+        names.update(_collect_all_node_names(node.true_steps))
+        names.update(_collect_all_node_names(node.false_steps))
+        for choice in node.choices:
+            names.update(_collect_all_node_names(choice.steps))
+    return names
+
+
+def _validate_references_exist(nodes: list[WorkflowNode], all_names: set[str]) -> None:
+    """Raise ValueError if any step node references a name absent from the definition."""
+    for node in nodes:
+        if node.referenced_node_names:
+            unknown = [n for n in node.referenced_node_names if n not in all_names]
+            if unknown:
+                raise ValueError(
+                    f"node {node.name!r} references unknown node names {unknown}; available names: {sorted(all_names)}"
+                )
+        _validate_references_exist(node.children, all_names)
+        _validate_references_exist(node.true_steps, all_names)
+        _validate_references_exist(node.false_steps, all_names)
+        for choice in node.choices:
+            _validate_references_exist(choice.steps, all_names)
+
+
 class WorkflowDefinition(Document):
     name: str
     description: str | None = None
@@ -420,6 +459,13 @@ class WorkflowDefinition(Document):
         if not value:
             raise ValueError("workflow definition requires at least 1 root node")
         return value
+
+    @model_validator(mode="after")
+    def _validate_referenced_node_names_exist(self) -> WorkflowDefinition:
+        """Every name in referenced_node_names must match a node that exists in the definition."""
+        all_names = _collect_all_node_names(self.nodes)
+        _validate_references_exist(self.nodes, all_names)
+        return self
 
     class Settings:
         name = "workflow_definitions"
