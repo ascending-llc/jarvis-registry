@@ -28,15 +28,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+env_settings = get_env()
+
 strands_agent = Agent(
     name="Flight Booking Agent",
     description="Flight booking and reservation management agent",
     tools=FLIGHT_BOOKING_TOOLS,
     callback_handler=None,
-    model="us.anthropic.claude-haiku-4-5-20251001-v1:0",
+    model=env_settings.bedrock_model_id,
 )
 
-env_settings = get_env()
 a2a_server = A2AServer(agent=strands_agent, http_url=env_settings.agent_url, serve_at_root=True)
 
 
