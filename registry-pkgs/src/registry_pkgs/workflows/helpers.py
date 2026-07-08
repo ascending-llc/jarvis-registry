@@ -27,32 +27,12 @@ def extract_user_text(initial_input: dict[str, Any] | None) -> str:
 
 
 def build_prompt(step_input: StepInput) -> str:
-    """Build the prompt handed to an executor's LLM from a ``StepInput``.
+    """Render the Markdown prompt for an executor's LLM from per-node intention data.
 
-    Reads per-node intention data injected by ``_with_intention_data`` in
-    ``compiler.py`` via ``StepInput.additional_data``, then delegates to
-    ``render_step_prompt`` for the actual Markdown assembly.
-
-    Fallback
-    --------
-    When ``additional_data`` is absent or contains no ``step_objective``
-    (e.g. builtin demo executors called directly in unit tests without going
-    through the compiler), the function returns the raw trigger text via
-    ``step_input.get_input_as_string()`` so those callers are not broken.
-
-    Data flow
-    ---------
-    Writer: ``compiler._with_intention_data`` sets these keys on a
-            ``copy.copy(step_input).additional_data`` before calling the executor.
-    Reader: this function reads them back and resolves dependency content from
-            ``step_input.previous_step_outputs``.
-
-    Key                                  | Type              | Meaning
-    -------------------------------------|-------------------|----------------------------
-    ``step_objective``                   | str               | What this step must do
-    ``workflow_description``             | str | None        | Top-level workflow context
-    ``dependency_node_names``            | list[str]         | Ordered declared deps
-    ``dependency_objectives``            | dict[str, str]    | Each dep's own objective
+    Reads ``jarvis_*`` keys injected into ``StepInput.additional_data`` by
+    ``compiler._with_intention_data``, then delegates to ``render_step_prompt``.
+    Falls back to raw trigger text when ``additional_data`` has no step_objective
+    (e.g. demo executors or direct unit-test calls that bypass the compiler).
     """
     additional = step_input.additional_data or {}
     step_objective: str = additional.get(ADDITIONAL_DATA_STEP_OBJECTIVE) or ""

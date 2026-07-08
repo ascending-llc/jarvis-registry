@@ -18,8 +18,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from registry_pkgs.workflows.serialization import content_to_str  # noqa: F401 — re-exported for helpers
-
 
 @dataclass(frozen=True)
 class DependencySpec:
@@ -130,7 +128,7 @@ def render_step_prompt(
 # (writer) and helpers.build_prompt (reader).  Centralising them here means
 # a typo in either file is caught at import time.
 
-ADDITIONAL_DATA_STEP_OBJECTIVE = "step_objective"
-ADDITIONAL_DATA_WORKFLOW_DESCRIPTION = "workflow_description"
-ADDITIONAL_DATA_DEPENDENCY_NODE_NAMES = "dependency_node_names"
-ADDITIONAL_DATA_DEPENDENCY_OBJECTIVES = "dependency_objectives"
+ADDITIONAL_DATA_STEP_OBJECTIVE = "jarvis_step_objective"
+ADDITIONAL_DATA_WORKFLOW_DESCRIPTION = "jarvis_workflow_description"
+ADDITIONAL_DATA_DEPENDENCY_NODE_NAMES = "jarvis_dependency_node_names"
+ADDITIONAL_DATA_DEPENDENCY_OBJECTIVES = "jarvis_dependency_objectives"

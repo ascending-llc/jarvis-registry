@@ -270,13 +270,12 @@ def compile_workflow(
                         f"executor key {lookup_key!r} not found in executor_registry "
                         f"(registered: {list(executor_registry)})"
                     )
+                # Injected (replay) executors return cached data directly — they
+                # never call build_prompt, so intention injection is skipped.
+                executor = _with_intention_data(node, executor, node_by_name, definition.description)
 
-            # Inject per-node intention data into StepInput.additional_data.
-            # Applied to every STEP node so build_prompt always has step_objective
-            # and dependency context, even for nodes with no referenced_node_names.
-            # _with_input_capture must wrap outermost so the snapshot records the
-            # original (pre-injection) StepInput, not the enriched copy.
-            executor = _with_intention_data(node, executor, node_by_name, definition.description)
+            # _with_input_capture snapshots the pre-injection StepInput, so it
+            # must be the outermost wrapper around both live and injected paths.
             executor = _with_input_capture(node, executor)
 
             # Wrap with directive checking and retry backoff when a queue is present.
