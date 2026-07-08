@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from mcp.server.session import ServerSession
 from redis import Redis
 
+from registry_pkgs.core.consent_store import ConsentStore, PendingConsentStore
 from registry_pkgs.core.downstream_oauth import downstream_mcp_code_key, oauth_error_payload
 from registry_pkgs.core.jwt_tokens import mint_managed_agent_token
 from registry_pkgs.core.oauth_state_store import DownstreamOAuthStoreProtocol
@@ -25,8 +26,10 @@ from ....core.config import settings
 from ....core.mcp_client import get_oauth_metadata_from_server
 from ....core.session_store import SessionStore
 from ....deps import (
+    get_consent_store,
     get_mcp_service,
     get_oauth_state_store,
+    get_pending_consent_store,
     get_reconnection_manager,
     get_redis_client,
     get_server_service,
@@ -656,6 +659,8 @@ async def _build_downstream_authorize_redirect(
     mcp_service: MCPService,
     server_service: ServerServiceV1,
     store: DownstreamOAuthStoreProtocol,
+    consent_store: ConsentStore,
+    pending_store: PendingConsentStore,
 ) -> RedirectResponse:
     """Validate and initiate the per-server downstream authorization flow."""
     if not ObjectId.is_valid(user_id):
@@ -675,6 +680,26 @@ async def _build_downstream_authorize_redirect(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Server not found for path '{server_path}'")
 
     _validate_registered_redirect_uri(store.get_client(client_id), redirect_uri)
+
+    if client_id != settings.jwt_token_config.registry_client_id and not consent_store.has_client_consent(
+        user_id, client_id
+    ):
+        nonce = secrets.token_urlsafe(32)
+        pending_store.save(
+            nonce,
+            {
+                "user_id": user_id,
+                "server_path": server_path,
+                "response_type": response_type,
+                "client_id": client_id,
+                "redirect_uri": redirect_uri,
+                "code_challenge": code_challenge,
+                "code_challenge_method": code_challenge_method,
+                "state": state,
+            },
+        )
+        consent_url = f"{settings.registry_client_url}/consent/downstream?nonce={nonce}"
+        return RedirectResponse(url=consent_url)
 
     ctx: MCPClientContext = {
         "redirect_uri": redirect_uri,
@@ -712,6 +737,8 @@ async def downstream_oauth_authorize(
     mcp_service: MCPService = Depends(get_mcp_service),
     server_service: ServerServiceV1 = Depends(get_server_service),
     store: DownstreamOAuthStoreProtocol = Depends(get_oauth_state_store),
+    consent_store: ConsentStore = Depends(get_consent_store),
+    pending_store: PendingConsentStore = Depends(get_pending_consent_store),
 ) -> RedirectResponse:
     """Per-server downstream OAuth authorization endpoint (Layer B: registry-as-AS).
 
@@ -732,6 +759,8 @@ async def downstream_oauth_authorize(
             mcp_service=mcp_service,
             server_service=server_service,
             store=store,
+            consent_store=consent_store,
+            pending_store=pending_store,
         )
     except HTTPException:
         raise

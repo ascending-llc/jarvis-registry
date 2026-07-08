@@ -8,6 +8,7 @@ from .api.v1.a2a.agent_routes import router as a2a_agent_router
 from .api.v1.acl_routes import router as acl_router
 from .api.v1.federation.federation_routes import router as federation_router
 from .api.v1.mcp.connection_router import router as connection_router
+from .api.v1.mcp.consent_routes import router as consent_router
 from .api.v1.mcp.oauth_router import router as oauth_router
 from .api.v1.meta_routes import router as meta_router
 from .api.v1.search_routes import router as search_router
@@ -30,6 +31,7 @@ def register_routers(app: FastAPI) -> None:
     app.include_router(search_router, prefix=f"/api/{settings.api_version}", tags=["Semantic Search"])
     app.include_router(health_router, prefix="/api/health", tags=["Health Monitoring"])
     app.include_router(oauth_router, prefix=f"/api/{settings.api_version}", tags=["MCP  Oauth Management"])
+    app.include_router(consent_router, prefix=f"/api/{settings.api_version}", tags=["MCP Consent Management"])
     app.include_router(connection_router, prefix=f"/api/{settings.api_version}", tags=["MCP  Connection Management"])
     app.include_router(acl_router, prefix=f"/api/{settings.api_version}", tags=["ACL Management"])
     app.include_router(
