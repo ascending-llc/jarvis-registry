@@ -175,7 +175,7 @@ class TestWorkflowPersistence:
         monkeypatch.setattr(persistence, "NodeRun", FakeNodeRun)
 
         sync = _sync_with_fake_run()
-        sync._node_by_name = {"fetch": WorkflowNode(name="fetch", executor_key="tool")}
+        sync._node_by_name = {"fetch": WorkflowNode(name="fetch", executor_key="tool", step_objective="fetch data")}
 
         await sync._upsert_node_run(
             StepOutput(step_name="fetch", content="ok", success=True),
@@ -228,7 +228,9 @@ class TestWorkflowPersistence:
         monkeypatch.setattr(NodeRun, "save", fake_save)
 
         sync = _sync_with_fake_run()
-        sync._node_by_name = {"fetch": WorkflowNode(id="node-1", name="fetch", executor_key="tool")}
+        sync._node_by_name = {
+            "fetch": WorkflowNode(id="node-1", name="fetch", executor_key="tool", step_objective="fetch data")
+        }
 
         await sync._upsert_node_run(StepOutput(step_name="fetch", content="bad", success=False, error="boom"))
 
@@ -270,7 +272,7 @@ class TestWorkflowPersistence:
         monkeypatch.setattr(persistence, "NodeRun", FakeNodeRun)
 
         sync = _sync_with_fake_run()
-        sync._node_by_name = {"fetch": WorkflowNode(name="fetch", executor_key="tool")}
+        sync._node_by_name = {"fetch": WorkflowNode(name="fetch", executor_key="tool", step_objective="fetch data")}
 
         await sync._upsert_node_run(
             StepOutput(step_name="fetch", content="ok", success=True),
@@ -350,7 +352,14 @@ class TestWorkflowPersistence:
 
     def test_resolve_status_skip_tolerated_failure_keeps_run_completed(self):
         """A failed step whose node is on_error=skip must not force the run to FAILED."""
-        node_by_name = {"opt": WorkflowNode(name="opt", executor_key="t", step_config=StepConfig(on_error="skip"))}
+        node_by_name = {
+            "opt": WorkflowNode(
+                name="opt",
+                executor_key="t",
+                step_config=StepConfig(on_error="skip"),
+                step_objective="run optional step",
+            )
+        }
         run_output = WorkflowRunOutput(content="done", status=RunStatus.completed)
         status = persistence._resolve_workflow_run_status(
             run_output,
@@ -361,7 +370,14 @@ class TestWorkflowPersistence:
 
     def test_resolve_status_non_skip_failure_still_forces_failed(self):
         """A failed step on a fail/default node still forces FAILED (regression guard)."""
-        node_by_name = {"crit": WorkflowNode(name="crit", executor_key="t", step_config=StepConfig(on_error="fail"))}
+        node_by_name = {
+            "crit": WorkflowNode(
+                name="crit",
+                executor_key="t",
+                step_config=StepConfig(on_error="fail"),
+                step_objective="run critical step",
+            )
+        }
         run_output = WorkflowRunOutput(content="done", status=RunStatus.completed)
         status = persistence._resolve_workflow_run_status(
             run_output,
@@ -409,7 +425,12 @@ class TestWorkflowPersistence:
 
         sync = _sync_with_fake_run()
         sync._node_by_name = {
-            "opt": WorkflowNode(name="opt", executor_key="t", step_config=StepConfig(on_error="skip"))
+            "opt": WorkflowNode(
+                name="opt",
+                executor_key="t",
+                step_config=StepConfig(on_error="skip"),
+                step_objective="run optional step",
+            )
         }
 
         await sync._upsert_node_run(StepOutput(step_name="opt", content="boom", success=False, error="boom"))
