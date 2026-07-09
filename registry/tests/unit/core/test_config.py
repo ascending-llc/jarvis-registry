@@ -182,3 +182,67 @@ class TestSettings:
         settings = Settings()
 
         assert settings.service_base_path == ""
+
+    @pytest.mark.unit
+    @patch.dict(os.environ, _SETTINGS_ENV, clear=True)
+    def test_aws_bedrock_sonnet_aip_arn_defaults_to_none(self) -> None:
+        settings = Settings(_env_file=None)
+
+        assert settings.aws_bedrock_sonnet_aip_arn is None
+        assert settings.aws_bedrock_require_aip is False
+
+    @pytest.mark.unit
+    @patch.dict(
+        os.environ,
+        {
+            **_SETTINGS_ENV,
+            "AWS_BEDROCK_SONNET_AIP_ARN": "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/test",
+        },
+        clear=True,
+    )
+    def test_aws_bedrock_sonnet_aip_arn_loaded_from_env(self) -> None:
+        settings = Settings(_env_file=None)
+
+        assert (
+            settings.aws_bedrock_sonnet_aip_arn
+            == "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/test"
+        )
+
+    @pytest.mark.unit
+    @patch.dict(os.environ, _SETTINGS_ENV, clear=True)
+    def test_workflow_llm_model_id_falls_back_to_model_id(self) -> None:
+        settings = Settings(_env_file=None)
+
+        assert settings.workflow_llm_model_id == "amazon.nova-2-lite-v1:0"
+
+    @pytest.mark.unit
+    @patch.dict(
+        os.environ,
+        {
+            **_SETTINGS_ENV,
+            "AWS_BEDROCK_SONNET_AIP_ARN": " arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/test ",
+        },
+        clear=True,
+    )
+    def test_workflow_llm_model_id_prefers_trimmed_aip_arn(self) -> None:
+        settings = Settings(_env_file=None)
+
+        assert (
+            settings.workflow_llm_model_id
+            == "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/test"
+        )
+
+    @pytest.mark.unit
+    @patch.dict(
+        os.environ,
+        {
+            **_SETTINGS_ENV,
+            "AWS_BEDROCK_REQUIRE_AIP": "true",
+        },
+        clear=True,
+    )
+    def test_workflow_llm_model_id_requires_aip_when_configured(self) -> None:
+        settings = Settings(_env_file=None)
+
+        with pytest.raises(ValueError, match="AWS_BEDROCK_SONNET_AIP_ARN must be set"):
+            _ = settings.workflow_llm_model_id
