@@ -128,7 +128,7 @@ def _with_intention_data(
     (``ADDITIONAL_DATA_*``).  ``build_prompt`` in ``helpers.py`` reads them back
     and calls ``render_step_prompt`` to assemble the final Markdown prompt.
     """
-    dependency_node_names = node.referenced_node_names
+    dependency_node_names = list(node.referenced_node_names)
     dependency_objectives: dict[str, str] = {
         name: node_by_name[name].step_objective or "" for name in dependency_node_names if name in node_by_name
     }
@@ -270,8 +270,8 @@ def compile_workflow(
                         f"executor key {lookup_key!r} not found in executor_registry "
                         f"(registered: {list(executor_registry)})"
                     )
-                # Injected (replay) executors return cached data directly — they
-                # never call build_prompt, so intention injection is skipped.
+                # Live executors rely on build_prompt(), so inject per-node intention
+                # into StepInput.additional_data before invoking the underlying executor.
                 executor = _with_intention_data(node, executor, node_by_name, definition.description)
 
             # _with_input_capture snapshots the pre-injection StepInput, so it

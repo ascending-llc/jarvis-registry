@@ -179,7 +179,7 @@ class WorkflowNodeInput(APIBaseModel):
         default_factory=list,
         description=(
             "Names of upstream nodes whose outputs are injected into this node's prompt at runtime. "
-            "Only valid on step nodes — sending this on any other node type returns 422."
+            "Only valid on step nodes — sending this on any other node type returns 400."
         ),
     )
     stepObjective: str | None = Field(
