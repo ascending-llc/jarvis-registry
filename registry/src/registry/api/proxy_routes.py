@@ -743,7 +743,8 @@ async def dynamic_mcp_post_proxy(
 
     user_id = auth_context["user_id"]
     client_id = auth_context["client_id"]
-    if not consent_store.has_server_consent(user_id, client_id, server.path):
+    mcp_method = msg_body.get("method")
+    if mcp_method not in _INIT_METHODS and not consent_store.has_server_consent(user_id, client_id, server.path):
         nonce = secrets.token_urlsafe(32)
         pending_store.save(nonce, {"user_id": user_id, "client_id": client_id, "server_path": server.path})
         auth_url = f"{settings.registry_client_url}/consent/server?nonce={nonce}"
@@ -812,7 +813,7 @@ async def dynamic_mcp_post_proxy(
         oauth_service=oauth_service,
         proxy_client=proxy_client,
         redis_client=redis_client,
-        mcp_method=msg_body.get("method"),
+        mcp_method=mcp_method,
     )
 
 

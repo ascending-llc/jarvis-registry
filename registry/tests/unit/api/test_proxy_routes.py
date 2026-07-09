@@ -239,6 +239,35 @@ async def test_post_proxy_without_server_consent_returns_url_elicitation(monkeyp
     consent_store.has_server_consent.assert_called_once_with(VALID_OBJECT_ID, "claude", "/github")
 
 
+@pytest.mark.parametrize("method", ["initialize", "tools/list"])
+async def test_post_proxy_without_server_consent_allows_handshake_methods(monkeypatch, method):
+    monkeypatch.setattr(
+        "registry.api.proxy_routes._parse_json_rpc_body",
+        AsyncMock(return_value={"jsonrpc": "2.0", "method": method, "id": 1}),
+    )
+    consent_store = _consent_store(has_server_consent=False)
+
+    resp = await dynamic_mcp_post_proxy(
+        request=_post_request(VALID_OBJECT_ID),
+        user_id=VALID_OBJECT_ID,
+        server_path="github",
+        auth_context=_AUTH_CONTEXT,
+        server_service=_server_service(_make_server(enabled=False)),
+        oauth_service=Mock(),
+        proxy_client=Mock(),
+        redis_client=Mock(),
+        acl_service=_acl_service(),
+        consent_store=consent_store,
+        pending_store=_PendingConsentStore(),
+    )
+
+    body = json.loads(resp.body)
+    assert resp.status_code == 200
+    assert "error" not in body
+    assert "disabled" in body["result"]["content"][0]["text"].lower()
+    consent_store.has_server_consent.assert_not_called()
+
+
 async def test_get_proxy_acl_denied_returns_403():
     resp = await dynamic_mcp_get_proxy(
         request=_get_request(VALID_OBJECT_ID),
