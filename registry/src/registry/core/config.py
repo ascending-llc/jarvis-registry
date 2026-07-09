@@ -17,6 +17,7 @@ MCP_CLIENT_INFO = {
     "name": "jarvis-registry",
     "version": "1.0.0",
 }
+DEFAULT_AWS_BEDROCK_SONNET_AIP_ARN = "arn:aws:bedrock:us-east-1:189772910973:application-inference-profile/1rh94q6d583t"
 
 
 class Settings(JarvisBaseSettings):
@@ -125,7 +126,7 @@ class Settings(JarvisBaseSettings):
     aws_region: str = "us-east-1"
     embedding_model: str = "amazon.titan-embed-text-v2:0"
     aws_workflow_llm_model: str = "amazon.nova-2-lite-v1:0"
-    aws_bedrock_sonnet_aip_arn: str | None = None
+    aws_bedrock_sonnet_aip_arn: str | None = DEFAULT_AWS_BEDROCK_SONNET_AIP_ARN
     aws_bedrock_require_aip: bool = False
     aws_access_key_id: str | None = None
     aws_secret_access_key: str | None = None

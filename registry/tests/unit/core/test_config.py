@@ -12,7 +12,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from pydantic import ValidationError
 
-from registry.core.config import Settings
+from registry.core.config import DEFAULT_AWS_BEDROCK_SONNET_AIP_ARN, Settings
 
 # Module-level RSA key pair so tests that clear os.environ still satisfy the JWT validator.
 _TEST_RSA_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
@@ -185,10 +185,10 @@ class TestSettings:
 
     @pytest.mark.unit
     @patch.dict(os.environ, _SETTINGS_ENV, clear=True)
-    def test_aws_bedrock_sonnet_aip_arn_defaults_to_none(self) -> None:
+    def test_aws_bedrock_sonnet_aip_arn_defaults_to_sonnet_aip(self) -> None:
         settings = Settings(_env_file=None)
 
-        assert settings.aws_bedrock_sonnet_aip_arn is None
+        assert settings.aws_bedrock_sonnet_aip_arn == DEFAULT_AWS_BEDROCK_SONNET_AIP_ARN
         assert settings.aws_bedrock_require_aip is False
 
     @pytest.mark.unit
@@ -211,9 +211,16 @@ class TestSettings:
     @pytest.mark.unit
     @patch.dict(os.environ, _SETTINGS_ENV, clear=True)
     def test_workflow_llm_model_id_falls_back_to_model_id(self) -> None:
-        settings = Settings(_env_file=None)
+        settings = Settings(aws_bedrock_sonnet_aip_arn="", _env_file=None)
 
         assert settings.workflow_llm_model_id == "amazon.nova-2-lite-v1:0"
+
+    @pytest.mark.unit
+    @patch.dict(os.environ, _SETTINGS_ENV, clear=True)
+    def test_workflow_llm_model_id_uses_default_sonnet_aip(self) -> None:
+        settings = Settings(_env_file=None)
+
+        assert settings.workflow_llm_model_id == DEFAULT_AWS_BEDROCK_SONNET_AIP_ARN
 
     @pytest.mark.unit
     @patch.dict(
@@ -237,6 +244,7 @@ class TestSettings:
         os.environ,
         {
             **_SETTINGS_ENV,
+            "AWS_BEDROCK_SONNET_AIP_ARN": "",
             "AWS_BEDROCK_REQUIRE_AIP": "true",
         },
         clear=True,
