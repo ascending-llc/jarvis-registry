@@ -102,7 +102,7 @@ async def test_create_workflow_does_not_convert_unexpected_errors_to_value_error
     request = WorkflowCreateRequest(
         name="Demo workflow",
         canvas={"viewport": {"x": 0, "y": 0, "zoom": 1}},
-        nodes=[WorkflowNodeInput(name="Fetch", nodeType="step", executorKey="tool")],
+        nodes=[WorkflowNodeInput(name="Fetch", nodeType="step", executorKey="tool", stepObjective="fetch data")],
     )
 
     with pytest.raises(RuntimeError, match="database unavailable"):
@@ -121,7 +121,13 @@ async def test_create_workflow_unknown_referenced_node_name_raises_before_execut
         name="Demo workflow",
         canvas={"viewport": {"x": 0, "y": 0, "zoom": 1}},
         nodes=[
-            WorkflowNodeInput(name="echo", nodeType="step", executorKey="tool", referencedNodeNames=["Typo Name"]),
+            WorkflowNodeInput(
+                name="echo",
+                nodeType="step",
+                executorKey="tool",
+                stepObjective="echo typo",
+                referencedNodeNames=["Typo Name"],
+            ),
         ],
     )
 
@@ -138,9 +144,15 @@ async def test_validate_executor_refs_passes_for_valid_mcp_server_and_a2a_agent(
         a2a_paths={"deep-intel", "researcher"},
     )
     nodes = [
-        service._convert_api_node_to_model(WorkflowNodeInput(name="mcp", nodeType="step", executorKey="github")),
-        service._convert_api_node_to_model(WorkflowNodeInput(name="a2a", nodeType="step", executorKey="deep-intel")),
-        service._convert_api_node_to_model(WorkflowNodeInput(name="pool", nodeType="step", a2aPool=["researcher"])),
+        service._convert_api_node_to_model(
+            WorkflowNodeInput(name="mcp", nodeType="step", executorKey="github", stepObjective="run mcp")
+        ),
+        service._convert_api_node_to_model(
+            WorkflowNodeInput(name="a2a", nodeType="step", executorKey="deep-intel", stepObjective="run a2a")
+        ),
+        service._convert_api_node_to_model(
+            WorkflowNodeInput(name="pool", nodeType="step", a2aPool=["researcher"], stepObjective="run pool")
+        ),
     ]
 
     await service._validate_executor_refs(nodes)
@@ -157,7 +169,11 @@ async def test_validate_executor_refs_passes_for_valid_mcp_server_and_a2a_agent(
 async def test_validate_executor_refs_returns_400_for_unknown_executor_key(monkeypatch: pytest.MonkeyPatch):
     service = WorkflowService()
     _patch_executor_ref_queries(monkeypatch, mcp_names=set(), a2a_paths=set())
-    nodes = [service._convert_api_node_to_model(WorkflowNodeInput(name="bad", nodeType="step", executorKey="typo"))]
+    nodes = [
+        service._convert_api_node_to_model(
+            WorkflowNodeInput(name="bad", nodeType="step", executorKey="typo", stepObjective="run bad")
+        )
+    ]
 
     with pytest.raises(HTTPException) as exc_info:
         await service._validate_executor_refs(nodes)
@@ -170,7 +186,11 @@ async def test_validate_executor_refs_returns_400_for_unknown_executor_key(monke
 async def test_validate_executor_refs_returns_400_for_unknown_a2a_pool_path(monkeypatch: pytest.MonkeyPatch):
     service = WorkflowService()
     _patch_executor_ref_queries(monkeypatch, a2a_paths=set())
-    nodes = [service._convert_api_node_to_model(WorkflowNodeInput(name="pool", nodeType="step", a2aPool=["missing"]))]
+    nodes = [
+        service._convert_api_node_to_model(
+            WorkflowNodeInput(name="pool", nodeType="step", a2aPool=["missing"], stepObjective="run pool")
+        )
+    ]
 
     with pytest.raises(HTTPException) as exc_info:
         await service._validate_executor_refs(nodes)
@@ -188,8 +208,8 @@ async def test_validate_executor_refs_finds_bad_key_in_nested_step(monkeypatch: 
             name="par",
             nodeType="parallel",
             children=[
-                WorkflowNodeInput(name="ok", nodeType="step", executorKey="echo"),
-                WorkflowNodeInput(name="bad", nodeType="step", executorKey="missing"),
+                WorkflowNodeInput(name="ok", nodeType="step", executorKey="echo", stepObjective="run ok"),
+                WorkflowNodeInput(name="bad", nodeType="step", executorKey="missing", stepObjective="run bad"),
             ],
         )
     )
@@ -202,11 +222,17 @@ async def test_validate_executor_refs_finds_bad_key_in_nested_step(monkeypatch: 
 
 
 def test_convert_step_node_preserves_executor_key():
-    api_node = WorkflowNodeInput(name="fetch", nodeType="step", executorKey="tool-fetch")
+    api_node = WorkflowNodeInput(
+        name="fetch",
+        nodeType="step",
+        executorKey="tool-fetch",
+        stepObjective="fetch data",
+    )
     model = WorkflowService()._convert_api_node_to_model(api_node)
     assert model.name == "fetch"
     assert model.node_type == "step"
     assert model.executor_key == "tool-fetch"
+    assert model.step_objective == "fetch data"
     assert model.children == []
     assert model.true_steps == []
     assert model.false_steps == []
@@ -220,14 +246,14 @@ def test_convert_condition_node_maps_true_and_false_steps_recursively():
         nodeType="condition",
         conditionCel="input.routeToTrue == true",
         trueSteps=[
-            WorkflowNodeInput(name="C", nodeType="step", executorKey="tool-c"),
-            WorkflowNodeInput(name="E", nodeType="step", executorKey="tool-e"),
-            WorkflowNodeInput(name="G", nodeType="step", executorKey="tool-g"),
+            WorkflowNodeInput(name="C", nodeType="step", executorKey="tool-c", stepObjective="run C"),
+            WorkflowNodeInput(name="E", nodeType="step", executorKey="tool-e", stepObjective="run E"),
+            WorkflowNodeInput(name="G", nodeType="step", executorKey="tool-g", stepObjective="run G"),
         ],
         falseSteps=[
-            WorkflowNodeInput(name="D", nodeType="step", executorKey="tool-d"),
-            WorkflowNodeInput(name="F", nodeType="step", executorKey="tool-f"),
-            WorkflowNodeInput(name="H", nodeType="step", executorKey="tool-h"),
+            WorkflowNodeInput(name="D", nodeType="step", executorKey="tool-d", stepObjective="run D"),
+            WorkflowNodeInput(name="F", nodeType="step", executorKey="tool-f", stepObjective="run F"),
+            WorkflowNodeInput(name="H", nodeType="step", executorKey="tool-h", stepObjective="run H"),
         ],
     )
 
@@ -251,13 +277,13 @@ def test_convert_router_node_maps_choices_with_multi_step_pipelines():
             RouterChoiceInput(
                 name="tech",
                 steps=[
-                    WorkflowNodeInput(name="hn", nodeType="step", executorKey="hn-tool"),
-                    WorkflowNodeInput(name="deep", nodeType="step", executorKey="deep-tool"),
+                    WorkflowNodeInput(name="hn", nodeType="step", executorKey="hn-tool", stepObjective="run hn"),
+                    WorkflowNodeInput(name="deep", nodeType="step", executorKey="deep-tool", stepObjective="run deep"),
                 ],
             ),
             RouterChoiceInput(
                 name="general",
-                steps=[WorkflowNodeInput(name="web", nodeType="step", executorKey="web-tool")],
+                steps=[WorkflowNodeInput(name="web", nodeType="step", executorKey="web-tool", stepObjective="run web")],
             ),
         ],
     )
@@ -290,13 +316,19 @@ def test_convert_condition_node_with_nested_router_recursively_converts():
                     RouterChoiceInput(
                         name="a",
                         steps=[
-                            WorkflowNodeInput(name="a1", nodeType="step", executorKey="tool-a1"),
-                            WorkflowNodeInput(name="a2", nodeType="step", executorKey="tool-a2"),
+                            WorkflowNodeInput(
+                                name="a1", nodeType="step", executorKey="tool-a1", stepObjective="run a1"
+                            ),
+                            WorkflowNodeInput(
+                                name="a2", nodeType="step", executorKey="tool-a2", stepObjective="run a2"
+                            ),
                         ],
                     ),
                     RouterChoiceInput(
                         name="b",
-                        steps=[WorkflowNodeInput(name="b1", nodeType="step", executorKey="tool-b1")],
+                        steps=[
+                            WorkflowNodeInput(name="b1", nodeType="step", executorKey="tool-b1", stepObjective="run b1")
+                        ],
                     ),
                 ],
             ),
@@ -315,29 +347,60 @@ def test_convert_condition_node_with_nested_router_recursively_converts():
 
 
 def test_convert_api_node_generates_id_when_missing():
-    api_node = WorkflowNodeInput(name="x", nodeType="step", executorKey="tool")
+    api_node = WorkflowNodeInput(name="x", nodeType="step", executorKey="tool", stepObjective="run x")
     model = WorkflowService()._convert_api_node_to_model(api_node)
     assert isinstance(model.id, str) and len(model.id) > 0
 
 
 def test_convert_api_node_preserves_explicit_id():
-    api_node = WorkflowNodeInput(id="custom-id", name="x", nodeType="step", executorKey="tool")
+    api_node = WorkflowNodeInput(
+        id="custom-id",
+        name="x",
+        nodeType="step",
+        executorKey="tool",
+        stepObjective="run x",
+    )
     model = WorkflowService()._convert_api_node_to_model(api_node)
     assert model.id == "custom-id"
 
 
 def test_convert_api_node_preserves_referenced_node_names():
     api_node = WorkflowNodeInput(
-        name="echo", nodeType="step", executorKey="tool", referencedNodeNames=["Weather Agent"]
+        name="echo",
+        nodeType="step",
+        executorKey="tool",
+        stepObjective="echo weather",
+        referencedNodeNames=["Weather Agent"],
     )
     model = WorkflowService()._convert_api_node_to_model(api_node)
     assert model.referenced_node_names == ["Weather Agent"]
+    assert model.step_objective == "echo weather"
 
 
 def test_convert_api_node_defaults_referenced_node_names_to_empty_list():
-    api_node = WorkflowNodeInput(name="echo", nodeType="step", executorKey="tool")
+    api_node = WorkflowNodeInput(name="echo", nodeType="step", executorKey="tool", stepObjective="echo input")
     model = WorkflowService()._convert_api_node_to_model(api_node)
     assert model.referenced_node_names == []
+
+
+def test_convert_api_node_rejects_step_without_step_objective():
+    api_node = WorkflowNodeInput(name="echo", nodeType="step", executorKey="tool")
+    with pytest.raises(ValueError, match="step node requires step_objective"):
+        WorkflowService()._convert_api_node_to_model(api_node)
+
+
+def test_convert_api_node_rejects_step_objective_on_non_step_node():
+    api_node = WorkflowNodeInput(
+        name="par",
+        nodeType="parallel",
+        stepObjective="not allowed",
+        children=[
+            WorkflowNodeInput(name="a", nodeType="step", executorKey="tool-a", stepObjective="run a"),
+            WorkflowNodeInput(name="b", nodeType="step", executorKey="tool-b", stepObjective="run b"),
+        ],
+    )
+    with pytest.raises(ValueError, match="step_objective is only valid on step nodes"):
+        WorkflowService()._convert_api_node_to_model(api_node)
 
 
 def test_convert_api_node_rejects_referenced_node_names_on_non_step_node():
@@ -346,12 +409,29 @@ def test_convert_api_node_rejects_referenced_node_names_on_non_step_node():
         nodeType="parallel",
         referencedNodeNames=["x"],
         children=[
-            WorkflowNodeInput(name="a", nodeType="step", executorKey="tool-a"),
-            WorkflowNodeInput(name="b", nodeType="step", executorKey="tool-b"),
+            WorkflowNodeInput(name="a", nodeType="step", executorKey="tool-a", stepObjective="run a"),
+            WorkflowNodeInput(name="b", nodeType="step", executorKey="tool-b", stepObjective="run b"),
         ],
     )
     with pytest.raises(ValueError, match="referenced_node_names is only supported on step nodes"):
         WorkflowService()._convert_api_node_to_model(api_node)
+
+
+@pytest.mark.asyncio
+async def test_create_workflow_rejects_duplicate_node_names_before_executor_check(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(WorkflowService, "_validate_executor_refs", AsyncMock(side_effect=AssertionError))
+
+    request = WorkflowCreateRequest(
+        name="Demo workflow",
+        canvas={"viewport": {"x": 0, "y": 0, "zoom": 1}},
+        nodes=[
+            WorkflowNodeInput(name="dup", nodeType="step", executorKey="tool-a", stepObjective="run first"),
+            WorkflowNodeInput(name="dup", nodeType="step", executorKey="tool-b", stepObjective="run second"),
+        ],
+    )
+
+    with pytest.raises(ValueError, match="duplicates found: \\['dup'\\]"):
+        await WorkflowService().create_workflow(request)
 
 
 # ---------------------------------------------------------------------------
@@ -573,7 +653,13 @@ async def test_update_workflow_unknown_referenced_node_name_writes_nothing(monke
 
     bad_update = WorkflowUpdateRequest(
         nodes=[
-            WorkflowNodeInput(name="echo", nodeType="step", executorKey="tool", referencedNodeNames=["Typo Name"]),
+            WorkflowNodeInput(
+                name="echo",
+                nodeType="step",
+                executorKey="tool",
+                stepObjective="echo typo",
+                referencedNodeNames=["Typo Name"],
+            ),
         ]
     )
 
