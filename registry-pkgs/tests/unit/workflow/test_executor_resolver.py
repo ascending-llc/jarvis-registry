@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from a2a.types import AgentCard
+from agno.workflow import StepInput
 from beanie import PydanticObjectId
 from pydantic import HttpUrl
 
@@ -144,10 +145,10 @@ class TestExecutorResolver:
             accessible_agent_ids=None,
         )
 
-        output = await resolved(SimpleNamespace(input="hello", previous_step_content="ctx"), {"echo_count": 0})
+        output = await resolved(StepInput(input="hello", previous_step_content="ctx"), {"echo_count": 0})
 
         assert output.success is True
-        assert output.content == "Context from previous step:\nctx\n\nhello"
+        assert output.content == "hello"
         mcp_find_one.assert_not_awaited()
         a2a_find_one.assert_not_awaited()
 
@@ -263,7 +264,7 @@ class TestMcpExecutor:
             registry_token="token",
         )
 
-        output = await executor(SimpleNamespace(input="hello", previous_step_content="ctx"), {})
+        output = await executor(StepInput(input="hello", previous_step_content="ctx"), {})
 
         assert output.success is True
         assert output.content == "done"
@@ -286,7 +287,7 @@ class TestMcpExecutor:
         )
 
         with pytest.raises(RuntimeError, match="MCP executor 'github' failed: init failed"):
-            await executor(SimpleNamespace(input="hello", previous_step_content="ctx"), {})
+            await executor(StepInput(input="hello", previous_step_content="ctx"), {})
 
     @pytest.mark.asyncio
     async def test_make_mcp_executor_raises_when_agent_returns_error_status(self, monkeypatch: pytest.MonkeyPatch):
@@ -306,7 +307,7 @@ class TestMcpExecutor:
         )
 
         with pytest.raises(RuntimeError, match="Unable to locate credentials"):
-            await executor(SimpleNamespace(input="hello", previous_step_content="ctx"), {})
+            await executor(StepInput(input="hello", previous_step_content="ctx"), {})
 
     @pytest.mark.asyncio
     async def test_make_mcp_executor_raises_when_agent_returns_credential_error_content(
@@ -329,7 +330,7 @@ class TestMcpExecutor:
         )
 
         with pytest.raises(RuntimeError, match="Unable to locate credentials"):
-            await executor(SimpleNamespace(input="hello", previous_step_content="ctx"), {})
+            await executor(StepInput(input="hello", previous_step_content="ctx"), {})
 
 
 @pytest.mark.unit
@@ -404,7 +405,7 @@ class TestA2AExecutor:
                 captured_kwargs.update(kwargs)
                 return A2ACallResult(success=True)
 
-            step_input = SimpleNamespace(previous_step_content=None, input="hello")
+            step_input = StepInput(input="hello")
             with patch("registry_pkgs.workflows.a2a_executor.call_a2a", side_effect=fake_call_a2a):
                 await executor(step_input)
 
@@ -417,11 +418,11 @@ class TestA2AExecutor:
 class TestHelpers:
     """Tests for shared workflow helper utilities."""
 
-    def test_build_prompt_joins_previous_step_content_and_input(self):
-        prompt = build_prompt(SimpleNamespace(previous_step_content="ctx", input="hello"))
-        empty_prompt = build_prompt(SimpleNamespace(previous_step_content=None, input=""))
+    def test_build_prompt_falls_back_to_raw_input_without_intention_data(self):
+        prompt = build_prompt(StepInput(previous_step_content="ctx", input="hello"))
+        empty_prompt = build_prompt(StepInput(previous_step_content=None, input=""))
 
-        assert prompt == "Context from previous step:\nctx\n\nhello"
+        assert prompt == "hello"
         assert empty_prompt == "(no input)"
 
 
@@ -527,7 +528,7 @@ class TestA2APoolExecutorQueries:
             accessible_agent_ids=None,
         )
 
-        result = await executor(SimpleNamespace(input="hello", previous_step_content=None), {})
+        result = await executor(StepInput(input="hello"), {})
 
         assert result.success is False  # no agents found → pool resolution failed
         assert len(captured_queries) == 1, "expected exactly one find() call"
@@ -559,7 +560,7 @@ class TestA2APoolExecutorQueries:
 
         # Pre-fill cache to simulate retry path
         state = {"a2a_target_retry-pool": "agent-a"}
-        result = await executor(SimpleNamespace(input="hello", previous_step_content=None), state)
+        result = await executor(StepInput(input="hello"), state)
 
         assert result.success is False
         assert "not found or disabled" in result.error

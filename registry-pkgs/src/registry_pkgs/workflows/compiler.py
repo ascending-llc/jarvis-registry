@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import copy
-import json
 import logging
-from datetime import date, datetime
 from typing import TYPE_CHECKING, Any
 
 from agno.workflow import (
@@ -19,7 +17,6 @@ from agno.workflow import (
 )
 from agno.workflow.step import OnError, StepExecutor
 from agno.workflow.types import HumanReview
-from pydantic import BaseModel
 
 from registry_pkgs.models.enums import OnRejectPolicy, OnTimeoutPolicy, WorkflowNodeType
 from registry_pkgs.models.workflow import (
@@ -31,6 +28,13 @@ from registry_pkgs.models.workflow import (
 )
 from registry_pkgs.workflows.hitl.field_types import field_type_to_agno
 from registry_pkgs.workflows.persistence import WorkflowRunSyncer
+from registry_pkgs.workflows.prompt import (
+    ADDITIONAL_DATA_DEPENDENCY_NODE_NAMES,
+    ADDITIONAL_DATA_DEPENDENCY_OBJECTIVES,
+    ADDITIONAL_DATA_STEP_OBJECTIVE,
+    ADDITIONAL_DATA_WORKFLOW_DESCRIPTION,
+)
+from registry_pkgs.workflows.serialization import json_safe, try_parse_json
 from registry_pkgs.workflows.types import NODE_INPUT_SNAPSHOTS_KEY, POOL_KEY_PREFIX
 
 if TYPE_CHECKING:
@@ -54,69 +58,36 @@ _ON_TIMEOUT_TO_AGNO: dict[OnTimeoutPolicy, str] = {
 }
 
 
-def _try_parse_json(value: Any) -> Any:
-    """If value is a JSON object/array string, return the parsed object; else return value unchanged.
-
-    Restricted to object/array shapes (not bare JSON scalars) so plain-text prompts that
-    happen to be valid JSON primitives (e.g. "123", "true") are not silently retyped.
-    """
-    if not isinstance(value, str):
-        return value
-    stripped = value.strip()
-    if not stripped or stripped[0] not in "{[":
-        return value
-    try:
-        parsed = json.loads(stripped)
-    except json.JSONDecodeError:
-        return value
-    return parsed if isinstance(parsed, (dict, list)) else value
-
-
-def _json_safe(value: Any) -> Any:
-    """Return a Mongo-safe, debug-friendly representation of workflow input values."""
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    if isinstance(value, (datetime, date)):
-        return value.isoformat()
-    if isinstance(value, BaseModel):
-        return value.model_dump(mode="json")
-    if isinstance(value, dict):
-        return {str(k): _json_safe(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple, set)):
-        return [_json_safe(item) for item in value]
-    if hasattr(value, "to_dict"):
-        try:
-            return _json_safe(value.to_dict())
-        except Exception:
-            return str(value)
-    return str(value)
-
-
 def _serialize_step_output(value: StepOutput) -> dict[str, Any]:
     """Serialize a previous StepOutput without recursively storing full internals."""
     return {
         "step_name": value.step_name,
         "step_id": value.step_id,
-        "content": _json_safe(value.content),
+        "content": json_safe(value.content),
         "success": value.success,
         "error": value.error,
     }
 
 
 def _serialize_step_input(step_input: StepInput) -> dict[str, Any]:
-    """Serialize the fields users need to debug how a node was invoked."""
+    """Serialize the fields users need to debug how a node was invoked.
+
+    Captures the pre-injection StepInput (before _with_intention_data enriches
+    additional_data) so the snapshot reflects the raw agno-level input, not the
+    rendered prompt.
+    """
     previous_outputs = step_input.previous_step_outputs or {}
     return {
-        "input": _json_safe(_try_parse_json(step_input.input)),
-        "previous_step_content": _json_safe(step_input.previous_step_content),
+        "input": json_safe(try_parse_json(step_input.input)),
+        "previous_step_content": json_safe(step_input.previous_step_content),
         "previous_step_outputs": {
             str(name): _serialize_step_output(output) for name, output in previous_outputs.items()
         },
-        "additional_data": _json_safe(step_input.additional_data),
-        "images": _json_safe(step_input.images),
-        "videos": _json_safe(step_input.videos),
-        "audio": _json_safe(step_input.audio),
-        "files": _json_safe(step_input.files),
+        "additional_data": json_safe(step_input.additional_data),
+        "images": json_safe(step_input.images),
+        "videos": json_safe(step_input.videos),
+        "audio": json_safe(step_input.audio),
+        "files": json_safe(step_input.files),
     }
 
 
@@ -135,40 +106,45 @@ def _with_input_capture(
     return _capturing
 
 
-def _content_to_str(content: Any) -> str:
-    """Normalize StepOutput.content to a string for prompt injection."""
-    normalized = _json_safe(content)
-    if isinstance(normalized, (dict, list)):
-        return json.dumps(normalized, ensure_ascii=False, indent=2)
-    return str(normalized) if normalized is not None else ""
-
-
-def _with_referenced_outputs(
-    referenced_node_names: list[str],
+def _with_intention_data(
+    node: WorkflowNode,
     executor: StepExecutor,
+    node_by_name: dict[str, WorkflowNode],
+    workflow_description: str | None,
 ) -> StepExecutor:
-    """Prepend explicitly-referenced upstream outputs into the step's input prompt."""
+    """Inject per-node intention into ``StepInput.additional_data`` before calling the executor.
+
+    Constructed fresh per ``WorkflowNode`` in ``_build`` so per-node objective and
+    dependency data can never leak across nodes that share the same executor in
+    ``executor_registry`` (two nodes with the same ``executorKey`` share one executor
+    object, but each gets its own wrapper closure with its own captured variables).
+
+    The wrapper uses ``copy.copy(step_input)`` so the original object is never
+    mutated — ``_with_input_capture`` (outermost) therefore snapshots the
+    pre-injection ``StepInput``, exactly preserving today's ``NodeRun.input_snapshot``
+    semantics.
+
+    Keys written to ``additional_data`` are the constants defined in ``prompt.py``
+    (``ADDITIONAL_DATA_*``).  ``build_prompt`` in ``helpers.py`` reads them back
+    and calls ``render_step_prompt`` to assemble the final Markdown prompt.
+    """
+    dependency_node_names = list(node.referenced_node_names)
+    dependency_objectives: dict[str, str] = {
+        name: node_by_name[name].step_objective or "" for name in dependency_node_names if name in node_by_name
+    }
 
     async def _wrapped(step_input: StepInput, session_state: dict | None = None) -> StepOutput:
-        previous = step_input.previous_step_outputs or {}
-        injected_parts: list[str] = []
+        enriched = copy.copy(step_input)
+        enriched.additional_data = {
+            **(step_input.additional_data or {}),
+            ADDITIONAL_DATA_STEP_OBJECTIVE: node.step_objective or "",
+            ADDITIONAL_DATA_WORKFLOW_DESCRIPTION: workflow_description,
+            ADDITIONAL_DATA_DEPENDENCY_NODE_NAMES: dependency_node_names,
+            ADDITIONAL_DATA_DEPENDENCY_OBJECTIVES: dependency_objectives,
+        }
+        return await executor(enriched, session_state)
 
-        for name in referenced_node_names:
-            out = previous.get(name)
-            if out is None or out.content is None:
-                continue
-            injected_parts.append(f"[Output from '{name}']\n{_content_to_str(out.content)}")
-
-        if injected_parts:
-            prefix = "\n\n".join(injected_parts)
-            original_input = step_input.input or ""
-            new_input = f"{prefix}\n\n{original_input}" if original_input else prefix
-            step_input = copy.copy(step_input)
-            step_input.input = new_input
-
-        return await executor(step_input, session_state)
-
-    _wrapped.__name__ = f"ref_outputs_wrapper({', '.join(referenced_node_names)})"
+    _wrapped.__name__ = f"intention_wrapper({node.name})"
     return _wrapped
 
 
@@ -238,9 +214,12 @@ def compile_workflow(
     if (db_client is None) != (db_name is None):
         raise ValueError("compile_workflow requires db_client and db_name together")
 
+    # Build unconditionally — needed for dependency-goal resolution in
+    # _with_intention_data regardless of whether DB sync is active.
+    node_by_name: dict[str, WorkflowNode] = {n.name: n for n in flatten_workflow_nodes(definition.nodes)}
+
     db: WorkflowRunSyncer | None = None
     if db_client is not None and db_name is not None:
-        node_by_name = {n.name: n for n in flatten_workflow_nodes(definition.nodes)}
         db = WorkflowRunSyncer(
             workflow_run=run,
             node_by_name=node_by_name,
@@ -291,12 +270,12 @@ def compile_workflow(
                         f"executor key {lookup_key!r} not found in executor_registry "
                         f"(registered: {list(executor_registry)})"
                     )
+                # Live executors rely on build_prompt(), so inject per-node intention
+                # into StepInput.additional_data before invoking the underlying executor.
+                executor = _with_intention_data(node, executor, node_by_name, definition.description)
 
-            if node.referenced_node_names:
-                executor = _with_referenced_outputs(node.referenced_node_names, executor)
-
-            # _with_input_capture must wrap outermost so the snapshot records the
-            # original (pre-injection) input rather than the injected prompt.
+            # _with_input_capture snapshots the pre-injection StepInput, so it
+            # must be the outermost wrapper around both live and injected paths.
             executor = _with_input_capture(node, executor)
 
             # Wrap with directive checking and retry backoff when a queue is present.

@@ -281,6 +281,7 @@ node type does not use them. This lets clients access any field without null che
       "nodeType": "step",
       "position": { "x": 80, "y": 220 },
       "executorKey": "mcp-email-validator",
+      "stepObjective": "validate the customer's email address before onboarding continues",
       "stepConfig": {
         "maxRetries": 3,
         "onError": "retry",
@@ -308,6 +309,7 @@ node type does not use them. This lets clients access any field without null che
               "nodeType": "step",
               "position": { "x": 920, "y": 120 },
               "executorKey": "mcp-email-sender",
+              "stepObjective": "send the correct enterprise welcome email",
               "stepConfig": {
                 "maxRetries": 2,
                 "onError": "skip"
@@ -320,6 +322,7 @@ node type does not use them. This lets clients access any field without null che
             {
               "name": "Create Premium Account",
               "nodeType": "step",
+              "stepObjective": "create the customer's premium account with enterprise features",
               "a2aPool": [
                 "account-manager-v1",
                 "account-manager-v2",
@@ -340,6 +343,7 @@ node type does not use them. This lets clients access any field without null che
               "name": "Notify Sales Team",
               "nodeType": "step",
               "executorKey": "mcp-slack-notifier",
+              "stepObjective": "notify the sales team about the new enterprise customer",
               "config": {
                 "channel": "#sales-enterprise",
                 "messageTemplate": "New enterprise customer: {{customerName}}"
@@ -353,6 +357,7 @@ node type does not use them. This lets clients access any field without null che
           "name": "Standard Onboarding",
           "nodeType": "step",
           "executorKey": "a2a-standard-onboarding-agent",
+          "stepObjective": "complete the standard onboarding path",
           "config": {
             "accountType": "standard",
             "trialDays": 14
@@ -364,6 +369,7 @@ node type does not use them. This lets clients access any field without null che
       "name": "Send Onboarding Complete Email",
       "nodeType": "step",
       "executorKey": "mcp-email-sender",
+      "stepObjective": "send the final onboarding-complete email using validated upstream information",
       "referencedNodeNames": ["Validate Customer Email"],
       "config": {
         "template": "onboarding_complete",
@@ -376,7 +382,7 @@ node type does not use them. This lets clients access any field without null che
 
 **Request Fields**:
 - `name` (required, string): Workflow name
-- `description` (optional, string): Workflow description
+- `description` (optional, string): Workflow description. Rendered into every step prompt as high-level workflow context.
 - `canvas` (required, object): Frontend canvas metadata
   - `viewport` (required, object): Canvas viewport state
     - `x` (optional, number): Viewport x offset (default: 0)
@@ -391,6 +397,7 @@ node type does not use them. This lets clients access any field without null che
     - `y` (optional, number): Node y coordinate (default: 0)
   - `executorKey` (optional for `step` nodes, string): MCP tool name or A2A agent name (required if `a2aPool` is not provided)
   - `a2aPool` (optional for `step` nodes, array): A2A agent pool (max 5 agents, alternative to `executorKey`)
+  - `stepObjective` (required for `step` nodes, string): Plain-language statement of what this individual step must accomplish. Rendered at the top of the executor prompt; rejected on non-step nodes.
   - `stepConfig` (optional for `step` nodes, object): Step-level retry and error handling configuration
     - `maxRetries` (optional, number): Maximum number of retries (default: 0, min: 0)
     - `onError` (optional, string): Error handling strategy: `fail`, `skip`, or `retry` (default: `fail`)
@@ -403,7 +410,7 @@ node type does not use them. This lets clients access any field without null che
   - `choices` (optional, array): Named choices for ROUTER nodes (≥ 2 required); each entry is a `RouterChoice` object
     - `name` (required, string): Choice name — must match the value returned by the router's `conditionCel` selector
     - `steps` (required, array): One or more `WorkflowNode` steps executed sequentially when this choice is selected
-  - `referencedNodeNames` (optional, array of strings, `step` nodes only): Names of previously-executed nodes whose outputs should be injected into this node's prompt at runtime. The runtime reads each name from `previous_step_outputs` and prepends `[Output from '<name>']\n<content>` before this node's own input. Names that do not match an executed node (e.g. a skipped condition branch) are silently omitted. Only valid on `step` nodes — sending this on a non-step node returns `400`.
+  - `referencedNodeNames` (optional, array of strings, `step` nodes only): Names of upstream nodes whose outputs should be made available to this step. The executor prompt lists every referenced node under `Dependencies` with that node's `stepObjective`; when runtime output exists in `previous_step_outputs`, the output is rendered under `Current Step Inputs`. Referenced nodes that have not produced output are still listed as dependencies but are omitted from `Current Step Inputs`. Only valid on `step` nodes — sending this on a non-step node returns `400`.
   - `conditionCel` (optional, string): CEL expression for condition/router nodes
     - Condition: returns bool; available variables: `input`, `previous_step_content`, `previous_step_outputs`, `additional_data`, `session_state`
     - Router: returns a choice name string; additional variable: `step_choices` (list of all choice names)
@@ -412,7 +419,7 @@ node type does not use them. This lets clients access any field without null che
     - `endConditionCel` (optional, string): CEL expression for loop termination
 
 **Validation Rules**:
-- `step` nodes must have either `executorKey` or `a2aPool` (but not both) and no `children` / `trueSteps` / `falseSteps` / `choices`
+- `step` nodes must have `stepObjective`, either `executorKey` or `a2aPool` (but not both), and no `children` / `trueSteps` / `falseSteps` / `choices`
 - `parallel` nodes must have at least 2 `children` and no `executorKey` / `trueSteps` / `falseSteps` / `choices`
 - `condition` nodes must have non-empty `trueSteps` (optional `falseSteps`) and `conditionCel`; `children` and `choices` are forbidden
 - `loop` nodes must have `loopConfig` and at least 1 child; `trueSteps` / `falseSteps` / `choices` are forbidden
@@ -420,6 +427,8 @@ node type does not use them. This lets clients access any field without null che
 - Each `RouterChoice` must have a non-empty `steps` list
 - `condition` and `router` nodes must not define `stepConfig` (it is meaningful only for `step` nodes)
 - `referencedNodeNames` is only valid on `step` nodes; sending it on any other node type is rejected
+- `stepObjective` is required on `step` nodes and rejected on all non-step nodes
+- Node names must be unique across the entire workflow tree, because `referencedNodeNames` resolves against one flat name-to-node map
 
 **Response**: `201 Created`
 ```json
@@ -444,7 +453,7 @@ node type does not use them. This lets clients access any field without null che
 - This two-step process (create → enable) ensures workflows are reviewed and verified before execution
 
 **Error**:
-- `400` Validation error (invalid node structure, duplicate node names in router, unknown `executorKey`, unresolvable `a2aPool` agent path, `referencedNodeNames` set on a non-step node, or `referencedNodeNames` referencing a node name that does not exist in the definition)
+- `400` Validation error (invalid node structure, duplicate node names anywhere in the workflow, missing `stepObjective` on a step node, `stepObjective` set on a non-step node, unknown `executorKey`, unresolvable `a2aPool` agent path, `referencedNodeNames` set on a non-step node, or `referencedNodeNames` referencing a node name that does not exist in the definition)
 - `500` Internal server error
 
 ---
@@ -467,6 +476,7 @@ node type does not use them. This lets clients access any field without null che
       "nodeType": "step",
       "position": { "x": 80, "y": 220 },
       "executorKey": "mcp-email-validator",
+      "stepObjective": "validate the customer's email address with the updated validation rules",
       "config": {
         "validationRules": ["format", "domain", "mx_record", "disposable_check"],
         "allowedDomains": ["company.com", "partner.com", "newpartner.com"]
@@ -476,6 +486,7 @@ node type does not use them. This lets clients access any field without null che
       "name": "Verify Phone Number",
       "nodeType": "step",
       "executorKey": "mcp-phone-verifier",
+      "stepObjective": "verify the customer's phone number before account setup",
       "config": {
         "countryCode": "US",
         "sendVerificationSMS": true,
@@ -498,6 +509,7 @@ node type does not use them. This lets clients access any field without null che
                   "name": "Send Enterprise Welcome Email",
                   "nodeType": "step",
                   "executorKey": "mcp-email-sender",
+                  "stepObjective": "send the updated enterprise welcome email",
                   "config": {
                     "template": "enterprise_welcome_v2",
                     "fromAddress": "onboarding@company.com",
@@ -508,6 +520,7 @@ node type does not use them. This lets clients access any field without null che
                   "name": "Create Premium Account",
                   "nodeType": "step",
                   "executorKey": "a2a-account-manager",
+                  "stepObjective": "create the premium account with updated enterprise features",
                   "config": {
                     "accountType": "premium",
                     "features": ["sso", "api_access", "priority_support", "custom_branding"],
@@ -518,6 +531,7 @@ node type does not use them. This lets clients access any field without null che
                   "name": "Assign Account Manager",
                   "nodeType": "step",
                   "executorKey": "mcp-crm-integration",
+                  "stepObjective": "assign the correct account manager in CRM",
                   "config": {
                     "action": "assign_account_manager",
                     "tier": "enterprise"
@@ -534,6 +548,7 @@ node type does not use them. This lets clients access any field without null che
               "name": "Business Onboarding",
               "nodeType": "step",
               "executorKey": "a2a-business-onboarding-agent",
+              "stepObjective": "complete the business onboarding path",
               "config": {
                 "accountType": "business",
                 "trialDays": 30,
@@ -549,6 +564,7 @@ node type does not use them. This lets clients access any field without null che
               "name": "Standard Onboarding",
               "nodeType": "step",
               "executorKey": "a2a-standard-onboarding-agent",
+              "stepObjective": "complete the standard onboarding path",
               "config": {
                 "accountType": "standard",
                 "trialDays": 14,
@@ -563,6 +579,7 @@ node type does not use them. This lets clients access any field without null che
       "name": "Setup Complete Notification",
       "nodeType": "step",
       "executorKey": "mcp-email-sender",
+      "stepObjective": "send a setup-complete notification using validated email and phone information",
       "referencedNodeNames": ["Validate Customer Email", "Verify Phone Number"],
       "config": {
         "template": "onboarding_complete_v2",
@@ -579,7 +596,7 @@ node type does not use them. This lets clients access any field without null che
 - `name` (string): Update workflow name
 - `description` (string): Update workflow description
 - `canvas` (object): Update frontend canvas metadata
-- `nodes` (array): Update workflow nodes (follows same structure and validation as create, including `referencedNodeNames` on `step` nodes)
+- `nodes` (array): Update workflow nodes (follows same structure and validation as create, including required `stepObjective` and `referencedNodeNames` on `step` nodes)
 - `enabled` (boolean): Update workflow enabled status
 
 **Response**: `200 OK`
@@ -599,7 +616,7 @@ node type does not use them. This lets clients access any field without null che
 ```
 
 **Error**:
-- `400` Validation error or invalid workflow ID (invalid node structure, duplicate node names in router, unknown `executorKey`, unresolvable `a2aPool` agent path, `referencedNodeNames` set on a non-step node, or `referencedNodeNames` referencing a node name that does not exist in the definition)
+- `400` Validation error or invalid workflow ID (invalid node structure, duplicate node names anywhere in the workflow, missing `stepObjective` on a step node, `stepObjective` set on a non-step node, unknown `executorKey`, unresolvable `a2aPool` agent path, `referencedNodeNames` set on a non-step node, or `referencedNodeNames` referencing a node name that does not exist in the definition)
 - `404` Workflow not found
 - `500` Internal server error
 
@@ -1364,12 +1381,12 @@ All endpoints return errors in the following format:
   };
   executorKey?: string;          // MCP tool name or A2A agent name (required for step nodes if a2aPool is not provided)
   a2aPool?: string[];            // A2A agent pool (max 5 agents, alternative to executorKey for step nodes)
+  stepObjective?: string;        // Required for step nodes, rejected elsewhere. Rendered as the step's primary prompt goal.
   stepConfig?: StepConfig;       // Step-level retry and error handling configuration (step nodes only)
   referencedNodeNames?: string[]; // step nodes only — names of upstream nodes whose outputs are injected into this node's prompt at runtime.
-                                  // At runtime the compiler reads each name from StepInput.previous_step_outputs and prepends
-                                  // "[Output from '<name>']\n<content>" before the node's own input.
-                                  // Names that do not appear in previous_step_outputs (e.g. a skipped Condition branch)
-                                  // are silently omitted — no error is raised.
+                                  // Runtime prompts list referenced nodes and their stepObjective values under Dependencies.
+                                  // Outputs present in StepInput.previous_step_outputs are rendered under Current Step Inputs.
+                                  // Names without runtime output are still listed as dependencies but omitted from Current Step Inputs.
                                   // Sending this field on non-step nodes returns 400.
   config: object;                // Node configuration
   children: WorkflowNode[];      // Child nodes for parallel and loop nodes only
