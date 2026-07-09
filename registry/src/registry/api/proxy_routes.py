@@ -128,6 +128,11 @@ def _sanitize_hop_by_hop_headers(headers: httpx.Headers) -> dict[str, str]:
 # URL mode elicitation, which most MCP clients cannot process at this stage.
 _INIT_METHODS = frozenset({"initialize", "tools/list"})
 
+# Custom JSON-RPC error code signaling that a URL mode elicitation (out-of-band browser step) is
+# required before the request can proceed — shared by the downstream-OAuth-expired and
+# consent-required elicitation paths.
+_URL_ELICITATION_REQUIRED_ERROR_CODE = -32042
+
 
 def _build_jsonrpc_error_result(request_id: str | int | None, error_text: str) -> dict[str, Any]:
     """Build JSON-RPC result response with isError=true."""
@@ -267,7 +272,7 @@ async def proxy_to_mcp_server(
             status_code=200,
             content=_build_jsonrpc_error(
                 request_id,
-                -32042,
+                _URL_ELICITATION_REQUIRED_ERROR_CODE,
                 llm_msg,
                 error_data,
             ),
@@ -768,7 +773,10 @@ async def dynamic_mcp_post_proxy(
                 }
             ]
         }
-        return JSONResponse(status_code=200, content=_build_jsonrpc_error(request_id, -32042, llm_msg, error_data))
+        return JSONResponse(
+            status_code=200,
+            content=_build_jsonrpc_error(request_id, _URL_ELICITATION_REQUIRED_ERROR_CODE, llm_msg, error_data),
+        )
 
     # Check if server is enabled
     config = server.config or {}
