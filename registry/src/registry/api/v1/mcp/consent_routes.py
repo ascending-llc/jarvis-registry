@@ -159,3 +159,58 @@ async def approve_server_consent(
     except Exception as e:
         logger.exception(f"[Server Consent] failed to approve consent: user={user_context['user_id']}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error") from e
+
+
+async def _deny_consent(
+    nonce: str,
+    user_context: CurrentUser,
+    pending_store: PendingConsentStore,
+    session_store: SessionStore,
+    *,
+    log_tag: str,
+) -> dict[str, str | None]:
+    """Shared deny logic for both consent flows.
+
+    Denying records nothing new: the pending record is proactively removed (rather than left to
+    expire on its own TTL) and no consent is granted, so the next call from this
+    ``(user_id, client_id, server_path)`` is gated exactly as if the user had never clicked
+    anything. The MCP client is still notified (when a live session exists) so a blocked tool
+    call can retry immediately instead of waiting out its own timeout — the notification only
+    means "the out-of-band step concluded," not "access was granted"; the retry itself hits the
+    gate again and gets a fresh elicitation since consent was never recorded.
+    """
+    try:
+        # Peek (non-destructive) before consuming: an ownership mismatch must not delete a nonce
+        # that still legitimately belongs to its rightful owner.
+        pending = pending_store.peek(nonce)
+        if pending is None or pending["user_id"] != user_context["user_id"]:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This consent link has expired.")
+
+        pending_store.consume(nonce)
+        client_branding = await _notify_elicitation_complete(pending, session_store)
+        return {"status": "denied", "client_branding": client_branding}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"[{log_tag}] failed to deny consent: user={user_context['user_id']}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error") from e
+
+
+@router.post("/consent/downstream/deny")
+async def deny_downstream_consent(
+    body: ApproveConsentRequest,
+    user_context: CurrentUser,
+    pending_store: PendingConsentStore = Depends(get_pending_consent_store),
+    session_store: SessionStore = Depends(get_session_store),
+) -> dict[str, str | None]:
+    return await _deny_consent(body.nonce, user_context, pending_store, session_store, log_tag="Downstream Consent")
+
+
+@router.post("/consent/server/deny")
+async def deny_server_consent(
+    body: ApproveConsentRequest,
+    user_context: CurrentUser,
+    pending_store: PendingConsentStore = Depends(get_pending_consent_store),
+    session_store: SessionStore = Depends(get_session_store),
+) -> dict[str, str | None]:
+    return await _deny_consent(body.nonce, user_context, pending_store, session_store, log_tag="Server Consent")

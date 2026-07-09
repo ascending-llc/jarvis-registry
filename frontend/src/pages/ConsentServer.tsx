@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 
 import { AuthPageLayout } from '@/components/auth/AuthPageLayout';
 import ConsentPrompt from '@/components/consent/ConsentPrompt';
-import { approveServerConsent, getServerConsentContext } from '@/services/consent';
+import { approveServerConsent, DEEP_LINK_BRANDS, denyServerConsent, getServerConsentContext } from '@/services/consent';
 
 const getErrorDetail = (err: unknown): string | undefined => {
   if (err && typeof err === 'object' && 'detail' in err && typeof err.detail === 'string') {
@@ -11,8 +11,6 @@ const getErrorDetail = (err: unknown): string | undefined => {
   }
   return undefined;
 };
-
-const DEEP_LINK_BRANDS = ['cursor', 'vscode', 'claude'];
 
 const ConsentServer: React.FC = () => {
   const [searchParams] = useSearchParams();
@@ -22,6 +20,8 @@ const ConsentServer: React.FC = () => {
   const [errorDetails, setErrorDetails] = useState<string | undefined>(undefined);
   const [approving, setApproving] = useState(false);
   const [approved, setApproved] = useState(false);
+  const [denying, setDenying] = useState(false);
+  const [denied, setDenied] = useState(false);
   const [clientBranding, setClientBranding] = useState<string | null>(null);
 
   useEffect(() => {
@@ -51,19 +51,34 @@ const ConsentServer: React.FC = () => {
     }
   }, [nonce]);
 
-  // Deep link back to the MCP client (VS Code, Claude, Cursor) once consent is granted,
-  // mirroring OAuthCallback.tsx's post-authorization deep link.
+  const handleDeny = useCallback(async () => {
+    setDenying(true);
+    try {
+      const result = await denyServerConsent(nonce);
+      setClientBranding(result.client_branding);
+      setDenied(true);
+    } catch (err) {
+      setError('Failed to record your decision. Please retry your request.');
+      setErrorDetails(getErrorDetail(err));
+    } finally {
+      setDenying(false);
+    }
+  }, [nonce]);
+
+  // Deep link back to the MCP client (VS Code, Claude, Cursor) once the decision is recorded
+  // (approve or deny), mirroring OAuthCallback.tsx's post-authorization deep link. The MCP client
+  // is only ever told "the human responded" either way — its retry is what surfaces the outcome.
   useEffect(() => {
-    if (approved && clientBranding && DEEP_LINK_BRANDS.includes(clientBranding)) {
+    if ((approved || denied) && clientBranding && DEEP_LINK_BRANDS.includes(clientBranding)) {
       const deepLinkTimer = setTimeout(() => {
         const link = document.createElement('a');
         link.href = `${clientBranding}://`;
         link.click();
-      }, 1000); // Give user time to see success message
+      }, 1000); // Give user time to see the result message
 
       return () => clearTimeout(deepLinkTimer);
     }
-  }, [approved, clientBranding]);
+  }, [approved, denied, clientBranding]);
 
   return (
     <AuthPageLayout>
@@ -74,6 +89,8 @@ const ConsentServer: React.FC = () => {
           message='You can now close this window and retry your original command.'
           submessage='Your explicit consent has been securely recorded.'
         />
+      ) : denied ? (
+        <ConsentPrompt.Declined message="You can close this window. If this application tries again, you'll be asked to review this request again." />
       ) : !context ? (
         <ConsentPrompt.Loading />
       ) : (
@@ -84,7 +101,9 @@ const ConsentServer: React.FC = () => {
           registeredAt={context.registered_at}
           description={`This will let it call the '${context.server_name}' MCP server on your behalf.`}
           onApprove={handleApprove}
+          onDeny={handleDeny}
           approving={approving}
+          denying={denying}
         />
       )}
     </AuthPageLayout>

@@ -432,6 +432,41 @@ def test_approve_downstream_consent_rejects_reused_nonce(client):
     assert resp.status_code == 404
 
 
+def test_deny_downstream_consent_removes_pending_without_granting(
+    client,
+    pending_consent_store,
+    consent_store_mock,
+    session_store_mock,
+):
+    pending_consent_store.save(
+        "nonce-1",
+        {"user_id": USER_A, "server_path": "github", "client_id": "claude"},
+    )
+
+    resp = client.post("/mcp/consent/downstream/deny", json={"nonce": "nonce-1"})
+
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "denied", "client_branding": None}
+    consent_store_mock.grant_client_consent.assert_not_called()
+    assert pending_consent_store.peek("nonce-1") is None
+    session_store_mock.pop.assert_not_called()
+
+
+def test_deny_downstream_consent_rejects_other_user(client, pending_consent_store):
+    pending_consent_store.save("nonce-1", {"user_id": USER_B, "server_path": "github", "client_id": "claude"})
+
+    resp = client.post("/mcp/consent/downstream/deny", json={"nonce": "nonce-1"})
+
+    assert resp.status_code == 404
+    assert pending_consent_store.peek("nonce-1") is not None
+
+
+def test_deny_downstream_consent_rejects_reused_nonce(client):
+    resp = client.post("/mcp/consent/downstream/deny", json={"nonce": "missing"})
+
+    assert resp.status_code == 404
+
+
 def test_get_server_consent_context_returns_client_and_server_metadata(
     client,
     pending_consent_store,
@@ -531,6 +566,74 @@ def test_approve_server_consent_notifies_mode1_session_and_returns_branding(
 
 def test_approve_server_consent_rejects_reused_nonce(client):
     resp = client.post("/mcp/consent/server", json={"nonce": "missing"})
+
+    assert resp.status_code == 404
+
+
+def test_deny_server_consent_removes_pending_without_granting(
+    client,
+    pending_consent_store,
+    consent_store_mock,
+    session_store_mock,
+):
+    pending_consent_store.save(
+        "nonce-1",
+        {"user_id": USER_A, "server_path": "/github", "client_id": "claude"},
+    )
+
+    resp = client.post("/mcp/consent/server/deny", json={"nonce": "nonce-1"})
+
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "denied", "client_branding": None}
+    consent_store_mock.grant_server_consent.assert_not_called()
+    assert pending_consent_store.peek("nonce-1") is None
+    session_store_mock.pop.assert_not_called()
+
+
+def test_deny_server_consent_notifies_mode1_session_and_returns_branding(
+    client,
+    pending_consent_store,
+    consent_store_mock,
+    session_store_mock,
+):
+    """Denying a Mode 1 (mcpgw) elicitation still notifies the paused session so the blocked tool
+    call can retry immediately — the notification just means "the human responded," not "access
+    was granted"; the retry will hit the gate again and get a fresh elicitation."""
+    fake_session = Mock()
+    fake_session.send_elicit_complete = AsyncMock()
+    session_store_mock.pop.return_value = fake_session
+    pending_consent_store.save(
+        "nonce-1",
+        {
+            "user_id": USER_A,
+            "server_path": "/github",
+            "client_id": "claude",
+            "elicitation_id": "elicit-1",
+            "client_branding": "claude",
+            "notify_elicitation_complete": True,
+        },
+    )
+
+    resp = client.post("/mcp/consent/server/deny", json={"nonce": "nonce-1"})
+
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "denied", "client_branding": "claude"}
+    consent_store_mock.grant_server_consent.assert_not_called()
+    session_store_mock.pop.assert_called_once_with("elicit-1")
+    fake_session.send_elicit_complete.assert_awaited_once_with("elicit-1")
+
+
+def test_deny_server_consent_rejects_other_user(client, pending_consent_store):
+    pending_consent_store.save("nonce-1", {"user_id": USER_B, "server_path": "/github", "client_id": "claude"})
+
+    resp = client.post("/mcp/consent/server/deny", json={"nonce": "nonce-1"})
+
+    assert resp.status_code == 404
+    assert pending_consent_store.peek("nonce-1") is not None
+
+
+def test_deny_server_consent_rejects_reused_nonce(client):
+    resp = client.post("/mcp/consent/server/deny", json={"nonce": "missing"})
 
     assert resp.status_code == 404
 

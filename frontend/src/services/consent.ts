@@ -12,6 +12,9 @@ export interface ConsentContext {
 
 const MOCK_ENABLED = import.meta.env.VITE_MOCK_CONSENT_API === 'true';
 
+// MCP clients recognized for browser deep-link-back (matches OAuthCallback.tsx's list).
+export const DEEP_LINK_BRANDS = ['cursor', 'vscode', 'claude'];
+
 const MOCK_DOWNSTREAM_CONTEXT: ConsentContext = {
   client_name: 'Claude Desktop (mock)',
   client_uri: 'https://claude.ai',
@@ -32,17 +35,27 @@ export async function approveDownstreamConsent(nonce: string): Promise<{ redirec
   return service.post(API.approveDownstreamConsent, { nonce }) as Promise<{ redirect_url: string }>;
 }
 
+export interface ConsentDecisionResponse {
+  status: string;
+  client_branding: string | null;
+}
+
+export async function denyDownstreamConsent(nonce: string): Promise<ConsentDecisionResponse> {
+  if (MOCK_ENABLED) return { status: 'denied', client_branding: null };
+  return service.post(API.denyDownstreamConsent, { nonce }) as Promise<ConsentDecisionResponse>;
+}
+
 export async function getServerConsentContext(nonce: string): Promise<ConsentContext> {
   if (MOCK_ENABLED) return MOCK_SERVER_CONTEXT;
   return service.get(API.getServerConsent(nonce)) as Promise<ConsentContext>;
 }
 
-export interface ApproveServerConsentResponse {
-  status: string;
-  client_branding: string | null;
+export async function approveServerConsent(nonce: string): Promise<ConsentDecisionResponse> {
+  if (MOCK_ENABLED) return { status: 'ok', client_branding: null };
+  return service.post(API.approveServerConsent, { nonce }) as Promise<ConsentDecisionResponse>;
 }
 
-export async function approveServerConsent(nonce: string): Promise<ApproveServerConsentResponse> {
-  if (MOCK_ENABLED) return { status: 'ok', client_branding: null };
-  return service.post(API.approveServerConsent, { nonce }) as Promise<ApproveServerConsentResponse>;
+export async function denyServerConsent(nonce: string): Promise<ConsentDecisionResponse> {
+  if (MOCK_ENABLED) return { status: 'denied', client_branding: null };
+  return service.post(API.denyServerConsent, { nonce }) as Promise<ConsentDecisionResponse>;
 }
