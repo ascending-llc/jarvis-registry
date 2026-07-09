@@ -84,6 +84,7 @@ exclude-signatures = [
     {signature = '8f45dd284bd4efd3e0784852777133fb19f36f99c3c5ee6446122588232ab9e6', reason = 'example opaque mock principalId is not a credential'},
     {signature = '9f5bdee1190a259a85019ee82bb0d13e367016045fa7255602fa744ac48ee34b', reason = 'example opaque mock principalId is not a credential'},
     {signature = 'f848ccdd1f99495fac11bee79c21028ba550e0c90d45cbeaab0c256502a40453', reason = 'README.md rewrite diff is not a credential'},
+    {signature = 'ccd137f9be11feb48154b40be428a5adc4d3873e671de3c7e682c3f54993f104', reason = 'README Star History sealed_token is a read-only chart token locked to this repository'},
     {signature = '6bc68f3bd5356dbe6d0d5938a8860df3cee1d044a4a65b51627729b21e9c4e26', reason = '.env.example template refactor diff is not a credential'},
     {signature = '3fea73da33954da2832bea4a98adf64a6297bf62ec9f07779adcf2fd0b460e15', reason = '.env.example template refactor diff is not a credential'},
     {signature = '4ed70aac7135b0061b06f3c4d026ed2357f6444530bef4cc96d4933e2bf9e574', reason = '.env.example template refactor diff is not a credential'},
