@@ -10,8 +10,10 @@ def _condition_node(*, on_reject: OnRejectPolicy, with_false_steps: bool) -> dic
         "name": "branch",
         "node_type": WorkflowNodeType.CONDITION,
         "condition_cel": "session_state.x != ''",
-        "true_steps": [WorkflowNode(name="t", executor_key="tool")],
-        "false_steps": [WorkflowNode(name="f", executor_key="tool")] if with_false_steps else [],
+        "true_steps": [WorkflowNode(name="t", executor_key="tool", step_objective="run true branch")],
+        "false_steps": [WorkflowNode(name="f", executor_key="tool", step_objective="run false branch")]
+        if with_false_steps
+        else [],
         "human_review": HumanReviewSpec(requires_confirmation=True, on_reject=on_reject),
     }
 

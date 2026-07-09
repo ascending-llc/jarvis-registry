@@ -28,7 +28,15 @@ async def test_send_retry_child_inherits_workflow_version(monkeypatch: pytest.Mo
         definition_snapshot={
             "name": "wf",
             "version": 2,
-            "nodes": [{"id": "n1", "name": "s", "node_type": "step", "executor_key": "tool"}],
+            "nodes": [
+                {
+                    "id": "n1",
+                    "name": "s",
+                    "node_type": "step",
+                    "executor_key": "tool",
+                    "step_objective": "run s",
+                }
+            ],
         },
     )
 
@@ -339,8 +347,20 @@ async def test_rerun_single_node_rejects_missing_upstream_snapshot(monkeypatch: 
         definition_snapshot={
             "name": "test-workflow",
             "nodes": [
-                {"id": "node-1", "name": "step-1", "node_type": "step", "executor_key": "tool"},
-                {"id": "node-2", "name": "step-2", "node_type": "step", "executor_key": "tool"},
+                {
+                    "id": "node-1",
+                    "name": "step-1",
+                    "node_type": "step",
+                    "executor_key": "tool",
+                    "step_objective": "run step 1",
+                },
+                {
+                    "id": "node-2",
+                    "name": "step-2",
+                    "node_type": "step",
+                    "executor_key": "tool",
+                    "step_objective": "run step 2",
+                },
             ],
         },
     )
@@ -400,8 +420,20 @@ async def test_rerun_single_node_uses_highest_attempt_output_on_retry(monkeypatc
         definition_snapshot={
             "name": "wf",
             "nodes": [
-                {"id": "node-1", "name": "step-1", "node_type": "step", "executor_key": "tool"},
-                {"id": "node-2", "name": "step-2", "node_type": "step", "executor_key": "tool"},
+                {
+                    "id": "node-1",
+                    "name": "step-1",
+                    "node_type": "step",
+                    "executor_key": "tool",
+                    "step_objective": "run step 1",
+                },
+                {
+                    "id": "node-2",
+                    "name": "step-2",
+                    "node_type": "step",
+                    "executor_key": "tool",
+                    "step_objective": "run step 2",
+                },
             ],
         },
     )
@@ -501,9 +533,23 @@ async def test_rerun_single_node_injects_nested_step_outputs_for_container_nodes
                     "name": "condition-block",
                     "node_type": "condition",
                     "condition_cel": "true",
-                    "true_steps": [{"id": step_a_id, "name": "step-a", "node_type": "step", "executor_key": "tool"}],
+                    "true_steps": [
+                        {
+                            "id": step_a_id,
+                            "name": "step-a",
+                            "node_type": "step",
+                            "executor_key": "tool",
+                            "step_objective": "run step a",
+                        }
+                    ],
                 },
-                {"id": target_id, "name": "target-step", "node_type": "step", "executor_key": "tool"},
+                {
+                    "id": target_id,
+                    "name": "target-step",
+                    "node_type": "step",
+                    "executor_key": "tool",
+                    "step_objective": "run target step",
+                },
             ],
         },
     )
