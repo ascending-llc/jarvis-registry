@@ -12,10 +12,15 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 DEFAULT_BEDROCK_MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+DEFAULT_BEDROCK_MODEL_SOURCE = "default"
 
 
-def _get_bedrock_model_id() -> str:
-    return os.getenv("BEDROCK_MODEL_ID") or os.getenv("AWS_BEDROCK_SONNET_AIP_ARN") or DEFAULT_BEDROCK_MODEL_ID
+def _get_bedrock_model_config() -> tuple[str, str]:
+    for key in ("BEDROCK_MODEL_ID", "AWS_BEDROCK_SONNET_AIP_ARN"):
+        value = (os.getenv(key) or "").strip()
+        if value:
+            return value, key
+    return DEFAULT_BEDROCK_MODEL_ID, DEFAULT_BEDROCK_MODEL_SOURCE
 
 
 class EnvSettings:
@@ -25,7 +30,9 @@ class EnvSettings:
         """Initialize environment settings."""
         self.db_path: str = os.getenv("DB_PATH", "/app/data/bookings.db")
         self.aws_region: str = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION", "us-east-1")
-        self.bedrock_model_id: str = _get_bedrock_model_id()
+        self.bedrock_model_id: str
+        self.bedrock_model_source: str
+        self.bedrock_model_id, self.bedrock_model_source = _get_bedrock_model_config()
         self.agent_name: str = os.getenv("AGENT_NAME", "flight-booking")
         self.agent_version: str = os.getenv("AGENT_VERSION", "1.0.0")
 
@@ -41,7 +48,7 @@ class EnvSettings:
 
         logger.info(
             f"EnvSettings initialized: agent_name={self.agent_name}, "
-            f"version={self.agent_version}, bedrock_model_configured={bool(self.bedrock_model_id)}"
+            f"version={self.agent_version}, bedrock_model_source={self.bedrock_model_source}"
         )
         logger.debug(f"Database path: {self.db_path}")
         logger.debug(f"Agent URL: {self.agent_url}")
