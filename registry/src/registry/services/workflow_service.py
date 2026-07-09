@@ -898,6 +898,7 @@ class WorkflowService:
             false_steps=false_steps,
             choices=choices,
             referenced_node_names=api_node.referencedNodeNames,
+            step_objective=api_node.stepObjective,
             condition_cel=api_node.conditionCel,
             loop_config=loop_config,
             human_review=human_review,

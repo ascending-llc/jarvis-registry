@@ -158,6 +158,7 @@ class TestHumanReviewModelValidation:
             name="s",
             node_type="step",
             executor_key="tool",
+            step_objective="run step",
             human_review=HumanReviewSpec(
                 requires_confirmation=True,
                 requires_user_input=True,
@@ -177,8 +178,8 @@ class TestHumanReviewModelValidation:
                 name="p",
                 node_type="parallel",
                 children=[
-                    WorkflowNode(name="a", executor_key="x"),
-                    WorkflowNode(name="b", executor_key="y"),
+                    WorkflowNode(name="a", executor_key="x", step_objective="run a"),
+                    WorkflowNode(name="b", executor_key="y", step_objective="run b"),
                 ],
                 human_review=HumanReviewSpec(requires_confirmation=True),
             )
@@ -191,7 +192,7 @@ class TestHumanReviewModelValidation:
             name="loop_ok",
             node_type="loop",
             loop_config=LoopConfig(max_iterations=3),
-            children=[WorkflowNode(name="c", executor_key="x")],
+            children=[WorkflowNode(name="c", executor_key="x", step_objective="run c")],
             human_review=HumanReviewSpec(requires_iteration_review=True),
         )
         assert loop_ok.human_review.requires_iteration_review is True
@@ -202,7 +203,7 @@ class TestHumanReviewModelValidation:
                 name="loop_bad",
                 node_type="loop",
                 loop_config=LoopConfig(max_iterations=3),
-                children=[WorkflowNode(name="c", executor_key="x")],
+                children=[WorkflowNode(name="c", executor_key="x", step_objective="run c")],
                 human_review=HumanReviewSpec(requires_user_input=True),
             )
 
@@ -214,7 +215,7 @@ class TestHumanReviewModelValidation:
                 name="c",
                 node_type="condition",
                 condition_cel="true",
-                true_steps=[WorkflowNode(name="t", executor_key="x")],
+                true_steps=[WorkflowNode(name="t", executor_key="x", step_objective="run t")],
                 human_review=HumanReviewSpec(requires_user_input=True),
             )
 
@@ -226,5 +227,6 @@ class TestHumanReviewModelValidation:
                 name="s",
                 node_type="step",
                 executor_key="tool",
+                step_objective="run step",
                 human_review=HumanReviewSpec(requires_iteration_review=True),
             )

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections import Counter
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -218,10 +219,16 @@ class WorkflowNode(BaseModel):
 
     # Names of previously-executed nodes whose outputs should be explicitly injected
     # into this node's prompt at runtime.  The compiler wraps the executor with
-    # _with_referenced_outputs which pulls each name from StepInput.previous_step_outputs
-    # and prepends the content before the node's own input.  Only valid on STEP nodes;
+    # _with_intention_data which pulls each name from StepInput.previous_step_outputs
+    # and includes it in the structured prompt.  Only valid on STEP nodes;
     # non-STEP nodes raise ValueError in _validate_shape.
     referenced_node_names: list[str] = Field(default_factory=list)
+
+    # Plain-language statement of what this step must accomplish.
+    # Required on STEP nodes; forbidden on all other node types.
+    # Rendered into the executor's prompt alongside WorkflowDefinition.description
+    # and referenced nodes' objectives via render_step_prompt().
+    step_objective: str | None = None
 
     # CEL expression used by condition / router nodes.
     # Condition: returns bool; available variables: input, previous_step_content,
@@ -230,6 +237,14 @@ class WorkflowNode(BaseModel):
     #            step_choices (list of all choice names)
     condition_cel: str | None = None
     loop_config: LoopConfig | None = None
+
+    @field_validator("step_objective")
+    @classmethod
+    def _normalize_step_objective(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        collapsed = re.sub(r"\s+", " ", value).strip()
+        return collapsed or None
 
     @field_validator("a2a_pool")
     @classmethod
@@ -261,10 +276,14 @@ class WorkflowNode(BaseModel):
                 raise ValueError("step node must not define condition_cel")
             if self.loop_config is not None:
                 raise ValueError("step node must not define loop_config")
+            if not self.step_objective:
+                raise ValueError("step node requires step_objective")
             return self
 
         if self.referenced_node_names:
             raise ValueError("referenced_node_names is only supported on step nodes")
+        if self.step_objective is not None:
+            raise ValueError("step_objective is only valid on step nodes")
 
         if self.node_type == WorkflowNodeType.PARALLEL:
             if len(self.children) < 2:
@@ -414,6 +433,19 @@ class ResolvedDependency(BaseModel):
     source_node_run_id: PydanticObjectId | None = None
 
 
+def _collect_node_names_with_duplicates(nodes: list[WorkflowNode]) -> list[str]:
+    """Depth-first collect of every node name, preserving duplicates for Counter-based uniqueness check."""
+    names: list[str] = []
+    for node in nodes:
+        names.append(node.name)
+        names.extend(_collect_node_names_with_duplicates(node.children))
+        names.extend(_collect_node_names_with_duplicates(node.true_steps))
+        names.extend(_collect_node_names_with_duplicates(node.false_steps))
+        for choice in node.choices:
+            names.extend(_collect_node_names_with_duplicates(choice.steps))
+    return names
+
+
 def _collect_all_node_names(nodes: list[WorkflowNode]) -> set[str]:
     """Recursively collect every node name in the workflow tree."""
     names: set[str] = set()
@@ -459,6 +491,21 @@ class WorkflowDefinition(Document):
         if not value:
             raise ValueError("workflow definition requires at least 1 root node")
         return value
+
+    @model_validator(mode="after")
+    def _validate_node_names_unique(self) -> WorkflowDefinition:
+        """Every node name must be unique across the entire workflow tree.
+
+        referenced_node_names resolution relies on one flat name→node map spanning
+        the whole tree, so two nodes sharing a name in different branches are already
+        ambiguous even if they never execute concurrently.
+        """
+        duplicates = sorted(
+            name for name, count in Counter(_collect_node_names_with_duplicates(self.nodes)).items() if count > 1
+        )
+        if duplicates:
+            raise ValueError(f"node names must be unique across the workflow; duplicates found: {duplicates}")
+        return self
 
     @model_validator(mode="after")
     def _validate_referenced_node_names_exist(self) -> WorkflowDefinition:
