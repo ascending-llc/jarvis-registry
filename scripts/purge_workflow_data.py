@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
 import traceback
 from dataclasses import dataclass, field
@@ -46,9 +47,8 @@ from beanie import PydanticObjectId
 
 from registry_pkgs.core.config import MongoConfig
 from registry_pkgs.database.mongodb import MongoDB
-from registry_pkgs.models.workflow import NodeRun, WorkflowDefinition, WorkflowRun, WorkflowVersion
 
-MONGO_URI = "mongodb://127.0.0.1:27017/jarvis"
+MONGO_URI = os.environ.get("MONGO_URI", "mongodb://127.0.0.1:27017/jarvis")
 
 logging.basicConfig(
     level=logging.WARNING,
@@ -56,10 +56,21 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+_COL_DEFINITIONS = "workflow_definitions"
+_COL_VERSIONS = "workflow_versions"
+_COL_RUNS = "workflow_runs"
+_COL_NODE_RUNS = "node_runs"
+_COL_SESSIONS = "agno_workflow_sessions"
+
+
+def _col(name: str) -> Any:
+    return MongoDB.get_database().get_collection(name)
+
 
 @dataclass
 class PurgePlan:
-    workflows: list[WorkflowDefinition] = field(default_factory=list)
+    # Raw dicts with only {_id, name} projected — no Pydantic deserialization.
+    workflow_docs: list[dict[str, Any]] = field(default_factory=list)
     version_count: int = 0
     run_count: int = 0
     node_run_count: int = 0
@@ -77,7 +88,7 @@ class PurgeOutcome:
 
 
 async def collect_plan(workflow_id: str | None) -> PurgePlan:
-    """Query counts without deleting anything."""
+    """Query counts without deleting anything (raw motor, no Pydantic)."""
     plan = PurgePlan()
 
     if workflow_id:
@@ -85,55 +96,64 @@ async def collect_plan(workflow_id: str | None) -> PurgePlan:
             oid = PydanticObjectId(workflow_id)
         except Exception as exc:
             raise ValueError(f"--workflow-id is not a valid ObjectId: {workflow_id}") from exc
-        workflow = await WorkflowDefinition.get(oid)
-        if workflow is None:
+        doc = await _col(_COL_DEFINITIONS).find_one({"_id": oid}, projection={"_id": 1, "name": 1})
+        if doc is None:
             raise ValueError(f"WorkflowDefinition not found: {workflow_id}")
-        plan.workflows = [workflow]
+        plan.workflow_docs = [doc]
     else:
-        plan.workflows = await WorkflowDefinition.find_all().to_list()
-
-    if not plan.workflows:
-        return plan
-
-    wf_ids = [w.id for w in plan.workflows if w.id is not None]
-
-    runs = await WorkflowRun.find({"workflow_definition_id": {"$in": wf_ids}}).to_list()
-    run_ids = [r.id for r in runs if r.id is not None]
-    plan.run_count = len(runs)
-
-    plan.node_run_count = await NodeRun.find({"workflow_run_id": {"$in": run_ids}}).count() if run_ids else 0
-
-    db = MongoDB.get_database()
-    if run_ids:
-        session_ids = [str(rid) for rid in run_ids]
-        plan.session_count = await db.get_collection("agno_workflow_sessions").count_documents(
-            {"session_id": {"$in": session_ids}}
+        plan.workflow_docs = (
+            await _col(_COL_DEFINITIONS).find({}, projection={"_id": 1, "name": 1}).to_list(length=None)
         )
 
-    plan.version_count = await WorkflowVersion.find({"workflow_id": {"$in": wf_ids}}).count()
+    if not plan.workflow_docs:
+        return plan
+
+    wf_ids = [d["_id"] for d in plan.workflow_docs]
+
+    run_docs = (
+        await _col(_COL_RUNS)
+        .find({"workflow_definition_id": {"$in": wf_ids}}, projection={"_id": 1})
+        .to_list(length=None)
+    )
+    run_ids = [r["_id"] for r in run_docs]
+    plan.run_count = len(run_ids)
+
+    if run_ids:
+        plan.node_run_count = await _col(_COL_NODE_RUNS).count_documents({"workflow_run_id": {"$in": run_ids}})
+        session_ids = [str(rid) for rid in run_ids]
+        plan.session_count = await _col(_COL_SESSIONS).count_documents({"session_id": {"$in": session_ids}})
+
+    plan.version_count = await _col(_COL_VERSIONS).count_documents({"workflow_id": {"$in": wf_ids}})
 
     return plan
 
 
 async def apply_purge(plan: PurgePlan) -> PurgeOutcome:
-    """Delete everything in the plan. Returns per-stage counters."""
+    """Delete everything in the plan using raw motor queries.
+
+    Order mirrors WorkflowService.delete_workflow:
+      NodeRun → agno_workflow_sessions → WorkflowRun → WorkflowVersion → WorkflowDefinition
+    """
     outcome = PurgeOutcome()
 
-    if not plan.workflows:
+    if not plan.workflow_docs:
         return outcome
 
-    wf_ids = [w.id for w in plan.workflows if w.id is not None]
-    db = MongoDB.get_database()
+    wf_ids = [d["_id"] for d in plan.workflow_docs]
 
-    # 1. Collect run ids (needed for children).
-    runs = await WorkflowRun.find({"workflow_definition_id": {"$in": wf_ids}}).to_list()
-    run_ids = [r.id for r in runs if r.id is not None]
+    # Re-fetch run ids at apply time so counts stay accurate even if new runs arrived.
+    run_docs = (
+        await _col(_COL_RUNS)
+        .find({"workflow_definition_id": {"$in": wf_ids}}, projection={"_id": 1})
+        .to_list(length=None)
+    )
+    run_ids = [r["_id"] for r in run_docs]
 
-    # 2. NodeRun first — leaf documents.
     if run_ids:
+        # 2. NodeRun — leaf documents.
         try:
-            result = await NodeRun.find({"workflow_run_id": {"$in": run_ids}}).delete()
-            outcome.node_runs_deleted = _deleted_count(result, fallback=0)
+            result = await _col(_COL_NODE_RUNS).delete_many({"workflow_run_id": {"$in": run_ids}})
+            outcome.node_runs_deleted = result.deleted_count
         except Exception as exc:
             outcome.errors.append(f"NodeRun delete: {exc}")
             return outcome
@@ -141,7 +161,7 @@ async def apply_purge(plan: PurgePlan) -> PurgeOutcome:
         # 3. agno session state — keyed by str(run_id).
         try:
             session_ids = [str(rid) for rid in run_ids]
-            result = await db.get_collection("agno_workflow_sessions").delete_many({"session_id": {"$in": session_ids}})
+            result = await _col(_COL_SESSIONS).delete_many({"session_id": {"$in": session_ids}})
             outcome.sessions_deleted = result.deleted_count
         except Exception as exc:
             outcome.errors.append(f"agno_workflow_sessions delete: {exc}")
@@ -149,37 +169,28 @@ async def apply_purge(plan: PurgePlan) -> PurgeOutcome:
 
         # 4. WorkflowRun documents.
         try:
-            result = await WorkflowRun.find({"_id": {"$in": run_ids}}).delete()
-            outcome.runs_deleted = _deleted_count(result, fallback=len(run_ids))
+            result = await _col(_COL_RUNS).delete_many({"_id": {"$in": run_ids}})
+            outcome.runs_deleted = result.deleted_count
         except Exception as exc:
             outcome.errors.append(f"WorkflowRun delete: {exc}")
             return outcome
 
     # 5. WorkflowVersion documents.
     try:
-        result = await WorkflowVersion.find({"workflow_id": {"$in": wf_ids}}).delete()
-        outcome.versions_deleted = _deleted_count(result, fallback=0)
+        result = await _col(_COL_VERSIONS).delete_many({"workflow_id": {"$in": wf_ids}})
+        outcome.versions_deleted = result.deleted_count
     except Exception as exc:
         outcome.errors.append(f"WorkflowVersion delete: {exc}")
         return outcome
 
     # 6. WorkflowDefinition documents — last.
     try:
-        result = await WorkflowDefinition.find({"_id": {"$in": wf_ids}}).delete()
-        outcome.definitions_deleted = _deleted_count(result, fallback=len(wf_ids))
+        result = await _col(_COL_DEFINITIONS).delete_many({"_id": {"$in": wf_ids}})
+        outcome.definitions_deleted = result.deleted_count
     except Exception as exc:
         outcome.errors.append(f"WorkflowDefinition delete: {exc}")
 
     return outcome
-
-
-def _deleted_count(result: Any, *, fallback: int) -> int:
-    count = getattr(result, "deleted_count", None)
-    if count is not None:
-        return int(count)
-    if isinstance(result, int):
-        return result
-    return fallback
 
 
 def _print_plan(plan: PurgePlan, *, workflow_id: str | None) -> None:
@@ -188,18 +199,18 @@ def _print_plan(plan: PurgePlan, *, workflow_id: str | None) -> None:
     print("WORKFLOW PURGE PLAN")
     print("=" * 70)
     print(f"Scope:                    {scope}")
-    print(f"WorkflowDefinitions:      {len(plan.workflows)}")
+    print(f"WorkflowDefinitions:      {len(plan.workflow_docs)}")
     print(f"WorkflowVersions:         {plan.version_count}")
     print(f"WorkflowRuns:             {plan.run_count}")
     print(f"NodeRuns:                 {plan.node_run_count}")
     print(f"agno_workflow_sessions:   {plan.session_count}")
     print("=" * 70)
-    if plan.workflows:
+    if plan.workflow_docs:
         print("\n-- WorkflowDefinitions --")
-        for w in plan.workflows[:30]:
-            print(f"  - {w.id}  {w.name}")
-        if len(plan.workflows) > 30:
-            print(f"  ... and {len(plan.workflows) - 30} more")
+        for w in plan.workflow_docs[:30]:
+            print(f"  - {w['_id']}  {w.get('name', '<no-name>')}")
+        if len(plan.workflow_docs) > 30:
+            print(f"  ... and {len(plan.workflow_docs) - 30} more")
     print("=" * 70)
 
 
@@ -264,7 +275,7 @@ async def _run(argv: list[str] | None = None) -> int:
         plan = await collect_plan(opts.workflow_id)
         _print_plan(plan, workflow_id=opts.workflow_id)
 
-        total = len(plan.workflows) + plan.version_count + plan.run_count + plan.node_run_count + plan.session_count
+        total = len(plan.workflow_docs) + plan.version_count + plan.run_count + plan.node_run_count + plan.session_count
         if total == 0:
             print("Nothing to purge.")
             return 0
@@ -274,7 +285,7 @@ async def _run(argv: list[str] | None = None) -> int:
             return 0
 
         if not opts.assume_yes:
-            scope = f"workflow {opts.workflow_id}" if opts.workflow_id else f"all {len(plan.workflows)} workflow(s)"
+            scope = f"workflow {opts.workflow_id}" if opts.workflow_id else f"all {len(plan.workflow_docs)} workflow(s)"
             answer = input(f"\nPermanently delete data for {scope}? Type 'yes' to proceed: ")
             if answer.strip().lower() != "yes":
                 print("Aborted.")
