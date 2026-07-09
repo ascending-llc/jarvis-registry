@@ -343,6 +343,28 @@ class TestPermissionChecking:
         assert middleware._has_permission(["mcp-proxy-ops"], "/proxy/knowledgebase", "PATCH") is True
         assert middleware._has_permission(["mcp-proxy-ops"], "/proxy/knowledgebase", "OPTIONS") is True
 
+    def test_mcp_proxy_ops_allows_consent_routes(self, monkeypatch):
+        """Consent approval APIs must be reachable by managed-agent tokens."""
+        from registry.middleware import rbac as rbac_module
+
+        mock_settings = MagicMock()
+        mock_settings.api_version = "v1"
+        mock_settings.scopes_config = {
+            "mcp-proxy-ops": [
+                {"endpoint": "/mcp/consent/downstream", "method": "GET"},
+                {"endpoint": "/mcp/consent/downstream", "method": "POST"},
+                {"endpoint": "/mcp/consent/server", "method": "GET"},
+                {"endpoint": "/mcp/consent/server", "method": "POST"},
+            ],
+        }
+        monkeypatch.setattr(rbac_module, "settings", mock_settings)
+
+        middleware = ScopePermissionMiddleware(app=MagicMock())
+        assert middleware._has_permission(["mcp-proxy-ops"], "/mcp/consent/downstream", "GET") is True
+        assert middleware._has_permission(["mcp-proxy-ops"], "/mcp/consent/downstream", "POST") is True
+        assert middleware._has_permission(["mcp-proxy-ops"], "/mcp/consent/server", "GET") is True
+        assert middleware._has_permission(["mcp-proxy-ops"], "/mcp/consent/server", "POST") is True
+
 
 @pytest.mark.unit
 class TestIntegrationScenarios:
