@@ -285,10 +285,16 @@ def _build_url_elicitation_result(
     llm_template: str,
     human_message: str,
     *,
-    generate_elicitation_id: bool = False,
+    elicitation_id: str | None = None,
 ) -> CallToolResult:
-    """Build a URL elicitation response or a fallback tool result for clients without URL mode."""
-    elicitation_id = str(uuid4()) if generate_elicitation_id else parse_elicitation_id(auth_url)
+    """Build a URL elicitation response or a fallback tool result for clients without URL mode.
+
+    ``elicitation_id`` should be passed explicitly when the caller already minted one (e.g. the
+    consent flow, whose ``auth_url`` has no ``state`` param for ``parse_elicitation_id`` to recover
+    it from). When omitted, it's recovered from ``auth_url`` (the OAuth-expired flow's ``state``).
+    """
+    if elicitation_id is None:
+        elicitation_id = parse_elicitation_id(auth_url)
     if elicitation_id is not None and _support_url_elicitation(ctx.session.client_params):
         msg = llm_template.format("provided URL")
         logger.info(f"sending back the URL mode elicitation error response with ID {elicitation_id}.")
@@ -401,15 +407,24 @@ async def execute_tool_impl(
             client_id = user_context["client_id"]
             if not lifespan.consent_store.has_server_consent(user_id, client_id, server.path):
                 nonce = secrets.token_urlsafe(32)
+                elicitation_id = str(uuid4())
+                state_metadata = _get_state_metadata(ctx.session.client_params)
                 lifespan.pending_consent_store.save(
                     nonce,
-                    {"user_id": user_id, "client_id": client_id, "server_path": server.path},
+                    {
+                        "user_id": user_id,
+                        "client_id": client_id,
+                        "server_path": server.path,
+                        **state_metadata,
+                        "elicitation_id": elicitation_id,
+                    },
                 )
                 auth_url = f"{settings.registry_client_url}/consent/server?nonce={nonce}"
                 raise ConsentRequiredException(
                     "Consent required to call this MCP server",
                     auth_url=auth_url,
                     server_name=server.serverName,
+                    elicitation_id=elicitation_id,
                 )
 
             # Track server request count
@@ -546,7 +561,7 @@ async def execute_tool_impl(
                 exc.auth_url,
                 template,
                 human_message,
-                generate_elicitation_id=True,
+                elicitation_id=exc.elicitation_id,
             )
         except (McpGatewayException, McpError):
             # These exceptions have been logged and should just bubble up to the caller as a way of communication.

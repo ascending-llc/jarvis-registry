@@ -37,7 +37,12 @@ export async function getServerConsentContext(nonce: string): Promise<ConsentCon
   return service.get(API.getServerConsent(nonce)) as Promise<ConsentContext>;
 }
 
-export async function approveServerConsent(nonce: string): Promise<{ status: string }> {
-  if (MOCK_ENABLED) return { status: 'ok' };
-  return service.post(API.approveServerConsent, { nonce }) as Promise<{ status: string }>;
+export interface ApproveServerConsentResponse {
+  status: string;
+  client_branding: string | null;
+}
+
+export async function approveServerConsent(nonce: string): Promise<ApproveServerConsentResponse> {
+  if (MOCK_ENABLED) return { status: 'ok', client_branding: null };
+  return service.post(API.approveServerConsent, { nonce }) as Promise<ApproveServerConsentResponse>;
 }

@@ -26,11 +26,13 @@ class ConsentRequiredException(McpGatewayException):
 
     auth_url: str
     server_name: str
+    elicitation_id: str
 
-    def __init__(self, msg: str, /, *, auth_url: str, server_name: str):
+    def __init__(self, msg: str, /, *, auth_url: str, server_name: str, elicitation_id: str):
         super().__init__(msg)
         self.auth_url = auth_url
         self.server_name = server_name
+        self.elicitation_id = elicitation_id
 
 
 class DownstreamHttpFailureException(McpGatewayException):

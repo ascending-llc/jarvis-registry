@@ -306,7 +306,11 @@ async def test_execute_tool_impl_without_server_consent_returns_elicitation_fall
     assert "/consent/server?nonce=" in result.content[0].text
     ctx.request_context.lifespan_context.pending_consent_store.save.assert_called_once()
     _, pending = ctx.request_context.lifespan_context.pending_consent_store.save.call_args.args
-    assert pending == {"user_id": "507f1f77bcf86cd799439011", "client_id": "claude", "server_path": "/github"}
+    assert pending["user_id"] == "507f1f77bcf86cd799439011"
+    assert pending["client_id"] == "claude"
+    assert pending["server_path"] == "/github"
+    assert pending["elicitation_id"]
+    assert pending["notify_elicitation_complete"] is True
     ctx.request_context.lifespan_context.consent_store.has_server_consent.assert_called_once_with(
         "507f1f77bcf86cd799439011",
         "claude",
@@ -338,6 +342,11 @@ async def test_execute_tool_impl_without_server_consent_raises_url_elicitation(m
     elicitation_id, saved_session = ctx.request_context.lifespan_context.session_store.append.call_args.args
     assert elicitation_id
     assert saved_session is ctx.session
+
+    # The same elicitation_id must be threaded into the pending-consent payload so that
+    # approve_server_consent can later find this exact paused session to notify.
+    _, pending = ctx.request_context.lifespan_context.pending_consent_store.save.call_args.args
+    assert pending["elicitation_id"] == elicitation_id
     downstream_call.assert_not_awaited()
 
 

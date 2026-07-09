@@ -203,15 +203,19 @@ async def _reconnect_after_oauth(
 
 
 async def _notify_elicitation_complete(
-    state_dict: dict[str, Any],
+    meta: dict[str, Any] | None,
     session_store: SessionStore,
 ) -> ClientBranding | None:
     """Best-effort ``elicitation/complete`` notification for mcpgw-initiated flows.
 
-    Returns the client branding carried in the flow state (used to deep-link the user back to their
-    AI app), or None. Never raises.
+    ``meta`` is the ``{elicitation_id, client_branding, notify_elicitation_complete}`` bag carried
+    by whichever flow raised the URL mode elicitation (OAuth-expired flow state's ``meta``, or the
+    server-consent flow's pending-consent payload) — shared so both callers get identical
+    notify/deep-link behavior instead of duplicating it.
+
+    Returns the client branding carried in ``meta`` (used to deep-link the user back to their AI
+    app), or None. Never raises.
     """
-    meta = state_dict.get("meta")
     if not meta or "elicitation_id" not in meta:
         return None
 
@@ -332,7 +336,7 @@ async def oauth_callback(
 
         # 5. Best-effort post-completion side effects (never block the redirect).
         await _reconnect_after_oauth(mcp_service, reconnection_manager, flow, server_path)
-        client_branding = await _notify_elicitation_complete(state_dict, session_store)
+        client_branding = await _notify_elicitation_complete(state_dict.get("meta"), session_store)
 
         # 6. MCP-client-initiated flows redirect back to the client;
         downstream_redirect = _build_downstream_client_redirect(flow, redis_client)

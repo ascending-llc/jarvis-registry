@@ -9,16 +9,18 @@ from registry_pkgs.core.consent_store import ConsentStore, PendingConsentStore
 from registry_pkgs.core.oauth_state_store import DownstreamOAuthStoreProtocol
 
 from ....auth.dependencies import CurrentUser
+from ....core.session_store import SessionStore
 from ....deps import (
     get_consent_store,
     get_mcp_service,
     get_oauth_state_store,
     get_pending_consent_store,
     get_server_service,
+    get_session_store,
 )
 from ....services.oauth.mcp_service import MCPService
 from ....services.server_service import ServerServiceV1
-from .oauth_router import _build_downstream_authorize_redirect
+from .oauth_router import _build_downstream_authorize_redirect, _notify_elicitation_complete
 
 logger = logging.getLogger(__name__)
 
@@ -138,14 +140,20 @@ async def approve_server_consent(
     user_context: CurrentUser,
     consent_store: ConsentStore = Depends(get_consent_store),
     pending_store: PendingConsentStore = Depends(get_pending_consent_store),
-) -> dict[str, str]:
+    session_store: SessionStore = Depends(get_session_store),
+) -> dict[str, str | None]:
     try:
         pending = pending_store.consume(body.nonce)
         if pending is None or pending["user_id"] != user_context["user_id"]:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This consent link has expired.")
 
         consent_store.grant_server_consent(pending["user_id"], pending["client_id"], pending["server_path"])
-        return {"status": "ok"}
+
+        # Best-effort: Mode 1 (mcpgw) pending records carry elicitation_id/client_branding so the
+        # paused MCP session can be notified and the frontend can deep-link back. Mode 2
+        # (direct-connect) records have no such session to notify, so this is a no-op for them.
+        client_branding = await _notify_elicitation_complete(pending, session_store)
+        return {"status": "ok", "client_branding": client_branding}
     except HTTPException:
         raise
     except Exception as e:

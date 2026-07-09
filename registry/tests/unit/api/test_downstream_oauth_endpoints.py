@@ -21,6 +21,7 @@ from registry.deps import (
     get_pending_consent_store,
     get_redis_client,
     get_server_service,
+    get_session_store,
 )
 from registry_pkgs.core.downstream_oauth import downstream_mcp_code_key
 from registry_pkgs.core.jwt_tokens import verify_managed_agent_token
@@ -93,6 +94,13 @@ def pending_consent_store() -> _InMemoryPendingConsentStore:
 
 
 @pytest.fixture
+def session_store_mock() -> Mock:
+    store = Mock()
+    store.pop = Mock(return_value=None)
+    return store
+
+
+@pytest.fixture
 def mcp_service_mock() -> Mock:
     svc = Mock()
     svc.oauth_service.initiate_oauth_flow = AsyncMock(
@@ -120,6 +128,7 @@ def client(
     store_mock,
     consent_store_mock,
     pending_consent_store,
+    session_store_mock,
 ) -> TestClient:
     app = FastAPI()
     app.include_router(router)
@@ -130,6 +139,7 @@ def client(
     app.dependency_overrides[get_oauth_state_store] = lambda: store_mock
     app.dependency_overrides[get_consent_store] = lambda: consent_store_mock
     app.dependency_overrides[get_pending_consent_store] = lambda: pending_consent_store
+    app.dependency_overrides[get_session_store] = lambda: session_store_mock
     # By default the authorize endpoint sees a session for USER_A (matches the URL user_id).
     app.dependency_overrides[get_current_user] = lambda: _session_user(USER_A)
     return TestClient(app)
@@ -467,6 +477,7 @@ def test_approve_server_consent_grants_and_consumes_nonce(
     client,
     pending_consent_store,
     consent_store_mock,
+    session_store_mock,
 ):
     pending_consent_store.save(
         "nonce-1",
@@ -480,9 +491,42 @@ def test_approve_server_consent_grants_and_consumes_nonce(
     resp = client.post("/mcp/consent/server", json={"nonce": "nonce-1"})
 
     assert resp.status_code == 200
-    assert resp.json() == {"status": "ok"}
+    assert resp.json() == {"status": "ok", "client_branding": None}
     consent_store_mock.grant_server_consent.assert_called_once_with(USER_A, "claude", "/github")
     assert pending_consent_store.peek("nonce-1") is None
+    session_store_mock.pop.assert_not_called()
+
+
+def test_approve_server_consent_notifies_mode1_session_and_returns_branding(
+    client,
+    pending_consent_store,
+    consent_store_mock,
+    session_store_mock,
+):
+    """Mode 1 (mcpgw) pending records carry elicitation_id/client_branding; approval should pop
+    the paused session, send the elicitation/complete notification, and echo the branding back
+    so the frontend can deep-link the user back to their AI app."""
+    fake_session = Mock()
+    fake_session.send_elicit_complete = AsyncMock()
+    session_store_mock.pop.return_value = fake_session
+    pending_consent_store.save(
+        "nonce-1",
+        {
+            "user_id": USER_A,
+            "server_path": "/github",
+            "client_id": "claude",
+            "elicitation_id": "elicit-1",
+            "client_branding": "vscode",
+            "notify_elicitation_complete": True,
+        },
+    )
+
+    resp = client.post("/mcp/consent/server", json={"nonce": "nonce-1"})
+
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok", "client_branding": "vscode"}
+    session_store_mock.pop.assert_called_once_with("elicit-1")
+    fake_session.send_elicit_complete.assert_awaited_once_with("elicit-1")
 
 
 def test_approve_server_consent_rejects_reused_nonce(client):

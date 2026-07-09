@@ -12,6 +12,8 @@ const getErrorDetail = (err: unknown): string | undefined => {
   return undefined;
 };
 
+const DEEP_LINK_BRANDS = ['cursor', 'vscode', 'claude'];
+
 const ConsentServer: React.FC = () => {
   const [searchParams] = useSearchParams();
   const nonce = searchParams.get('nonce') || '';
@@ -20,6 +22,7 @@ const ConsentServer: React.FC = () => {
   const [errorDetails, setErrorDetails] = useState<string | undefined>(undefined);
   const [approving, setApproving] = useState(false);
   const [approved, setApproved] = useState(false);
+  const [clientBranding, setClientBranding] = useState<string | null>(null);
 
   useEffect(() => {
     if (!nonce) {
@@ -37,7 +40,8 @@ const ConsentServer: React.FC = () => {
   const handleApprove = useCallback(async () => {
     setApproving(true);
     try {
-      await approveServerConsent(nonce);
+      const result = await approveServerConsent(nonce);
+      setClientBranding(result.client_branding);
       setApproved(true);
     } catch (err) {
       setError('Authorization failed. Please retry your request.');
@@ -46,6 +50,20 @@ const ConsentServer: React.FC = () => {
       setApproving(false);
     }
   }, [nonce]);
+
+  // Deep link back to the MCP client (VS Code, Claude, Cursor) once consent is granted,
+  // mirroring OAuthCallback.tsx's post-authorization deep link.
+  useEffect(() => {
+    if (approved && clientBranding && DEEP_LINK_BRANDS.includes(clientBranding)) {
+      const deepLinkTimer = setTimeout(() => {
+        const link = document.createElement('a');
+        link.href = `${clientBranding}://`;
+        link.click();
+      }, 1000); // Give user time to see success message
+
+      return () => clearTimeout(deepLinkTimer);
+    }
+  }, [approved, clientBranding]);
 
   return (
     <AuthPageLayout>
