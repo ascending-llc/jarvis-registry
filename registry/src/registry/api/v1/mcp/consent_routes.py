@@ -69,10 +69,13 @@ async def approve_downstream_consent(
     pending_store: PendingConsentStore = Depends(get_pending_consent_store),
 ) -> dict[str, str]:
     try:
-        pending = pending_store.consume(body.nonce)
+        # Peek (non-destructive) before consuming: an ownership mismatch must not delete a nonce
+        # that still legitimately belongs to its rightful owner.
+        pending = pending_store.peek(body.nonce)
         if pending is None or pending["user_id"] != user_context["user_id"]:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This consent link has expired.")
 
+        pending_store.consume(body.nonce)
         consent_store.grant_client_consent(pending["user_id"], pending["client_id"])
 
         redirect = await _build_downstream_authorize_redirect(
@@ -143,10 +146,13 @@ async def approve_server_consent(
     session_store: SessionStore = Depends(get_session_store),
 ) -> dict[str, str | None]:
     try:
-        pending = pending_store.consume(body.nonce)
+        # Peek (non-destructive) before consuming: an ownership mismatch must not delete a nonce
+        # that still legitimately belongs to its rightful owner.
+        pending = pending_store.peek(body.nonce)
         if pending is None or pending["user_id"] != user_context["user_id"]:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This consent link has expired.")
 
+        pending_store.consume(body.nonce)
         consent_store.grant_server_consent(pending["user_id"], pending["client_id"], pending["server_path"])
 
         # Best-effort: Mode 1 (mcpgw) pending records carry elicitation_id/client_branding so the

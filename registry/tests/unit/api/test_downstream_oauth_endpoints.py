@@ -432,6 +432,34 @@ def test_approve_downstream_consent_rejects_reused_nonce(client):
     assert resp.status_code == 404
 
 
+def test_approve_downstream_consent_rejects_other_user_without_consuming_nonce(
+    client,
+    pending_consent_store,
+    consent_store_mock,
+):
+    """A wrong-user approval attempt must not destroy the nonce for its rightful owner."""
+    pending_consent_store.save(
+        "nonce-1",
+        {
+            "user_id": USER_A,
+            "server_path": "github",
+            "client_id": "claude",
+            "response_type": "code",
+            "redirect_uri": "http://localhost:33418/cb",
+            "code_challenge": "abc",
+            "code_challenge_method": "S256",
+            "state": "state-1",
+        },
+    )
+    client.app.dependency_overrides[get_current_user] = lambda: _session_user(USER_B)
+
+    resp = client.post("/mcp/consent/downstream", json={"nonce": "nonce-1"})
+
+    assert resp.status_code == 404
+    assert pending_consent_store.peek("nonce-1") is not None
+    consent_store_mock.grant_client_consent.assert_not_called()
+
+
 def test_deny_downstream_consent_removes_pending_without_granting(
     client,
     pending_consent_store,
@@ -568,6 +596,25 @@ def test_approve_server_consent_rejects_reused_nonce(client):
     resp = client.post("/mcp/consent/server", json={"nonce": "missing"})
 
     assert resp.status_code == 404
+
+
+def test_approve_server_consent_rejects_other_user_without_consuming_nonce(
+    client,
+    pending_consent_store,
+    consent_store_mock,
+):
+    """A wrong-user approval attempt must not destroy the nonce for its rightful owner."""
+    pending_consent_store.save(
+        "nonce-1",
+        {"user_id": USER_A, "server_path": "/github", "client_id": "claude"},
+    )
+    client.app.dependency_overrides[get_current_user] = lambda: _session_user(USER_B)
+
+    resp = client.post("/mcp/consent/server", json={"nonce": "nonce-1"})
+
+    assert resp.status_code == 404
+    assert pending_consent_store.peek("nonce-1") is not None
+    consent_store_mock.grant_server_consent.assert_not_called()
 
 
 def test_deny_server_consent_removes_pending_without_granting(
