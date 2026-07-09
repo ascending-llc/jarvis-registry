@@ -13,13 +13,24 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_BEDROCK_MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 DEFAULT_BEDROCK_MODEL_SOURCE = "default"
+DEFAULT_BEDROCK_SONNET_AIP_ARN = "arn:aws:bedrock:us-east-1:189772910973:application-inference-profile/1rh94q6d583t"
+DEFAULT_BEDROCK_SONNET_AIP_SOURCE = "default_sonnet_aip"
 
 
 def _get_bedrock_model_config() -> tuple[str, str]:
-    for key in ("BEDROCK_MODEL_ID", "AWS_BEDROCK_SONNET_AIP_ARN"):
-        value = (os.getenv(key) or "").strip()
-        if value:
-            return value, key
+    bedrock_model_id = (os.getenv("BEDROCK_MODEL_ID") or "").strip()
+    if bedrock_model_id:
+        return bedrock_model_id, "BEDROCK_MODEL_ID"
+
+    aip_arn = os.environ.get("AWS_BEDROCK_SONNET_AIP_ARN", DEFAULT_BEDROCK_SONNET_AIP_ARN).strip()
+    if aip_arn:
+        source = (
+            "AWS_BEDROCK_SONNET_AIP_ARN"
+            if "AWS_BEDROCK_SONNET_AIP_ARN" in os.environ
+            else DEFAULT_BEDROCK_SONNET_AIP_SOURCE
+        )
+        return aip_arn, source
+
     return DEFAULT_BEDROCK_MODEL_ID, DEFAULT_BEDROCK_MODEL_SOURCE
 
 
