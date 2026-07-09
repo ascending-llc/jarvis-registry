@@ -836,7 +836,6 @@ async def dynamic_mcp_get_proxy(
     proxy_client: httpx.AsyncClient = Depends(get_mcp_proxy_client),
     redis_client: Redis = Depends(get_redis_client),
     acl_service: ACLService = Depends(get_acl_service),
-    consent_store: ConsentStore = Depends(get_consent_store),
 ):
     """
     Dynamic catch-all route for MCP server proxying, but only works for GET, i.e. the event stream.
@@ -848,6 +847,14 @@ async def dynamic_mcp_get_proxy(
     FastAPI matches routes in order, so this will capture all unmatched routes.
 
     MCP protocol only uses GET and POST methods.
+
+    Not consent-gated: this route carries no JSON-RPC method (it only opens the transport-level
+    channel MCP servers push notifications through), so unlike the POST handler it has no way to
+    exempt handshake calls from a consent check by method name. MCP clients such as VS Code
+    Copilot open this GET concurrently with the POST `initialize`, so gating it produces a 403
+    before consent could possibly exist yet — perceived by the client as a second, spurious
+    re-auth prompt alongside the correctly-gated one from the first real `tools/call` over POST.
+    The ACL check above remains the access-control boundary for this route.
     """
     if not ObjectId.is_valid(user_id):
         return JSONResponse(
@@ -888,17 +895,6 @@ async def dynamic_mcp_get_proxy(
         return JSONResponse(
             status_code=403,
             content={"detail": "Access denied to this MCP server."},
-        )
-
-    user_id = auth_context["user_id"]
-    client_id = auth_context["client_id"]
-    if not consent_store.has_server_consent(user_id, client_id, server.path):
-        return JSONResponse(
-            status_code=403,
-            content={
-                "detail": f"Consent required before calling '{server.serverName}'. "
-                "Complete consent via the Jarvis Registry dashboard."
-            },
         )
 
     # Check if server is enabled

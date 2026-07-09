@@ -297,31 +297,8 @@ async def test_get_proxy_acl_allowed_continues():
         proxy_client=Mock(),
         redis_client=Mock(),
         acl_service=_acl_service(),
-        consent_store=_consent_store(),
     )
 
     body = json.loads(resp.body)
     assert resp.status_code == 404
     assert "disabled" in body["detail"].lower()
-
-
-async def test_get_proxy_without_server_consent_returns_403():
-    consent_store = _consent_store(has_server_consent=False)
-
-    resp = await dynamic_mcp_get_proxy(
-        request=_get_request(VALID_OBJECT_ID),
-        user_id=VALID_OBJECT_ID,
-        server_path="github",
-        auth_context=_AUTH_CONTEXT,
-        server_service=_server_service(_make_server()),
-        oauth_service=Mock(),
-        proxy_client=Mock(),
-        redis_client=Mock(),
-        acl_service=_acl_service(),
-        consent_store=consent_store,
-    )
-
-    body = json.loads(resp.body)
-    assert resp.status_code == 403
-    assert "Consent required" in body["detail"]
-    consent_store.has_server_consent.assert_called_once_with(VALID_OBJECT_ID, "claude", "/github")
