@@ -11,6 +11,9 @@ Environment variables:
                      If not set, a self-signed JWT is generated from JWT_PRIVATE_KEY.
     REGISTRY_URL     Registry base URL (default: http://localhost:8000)
     MONGO_URI        MongoDB connection string (default: mongodb://127.0.0.1:27017/jarvis)
+    AWS_BEDROCK_SONNET_AIP_ARN
+                     AIP ARN used before BEDROCK_MODEL when set.
+    BEDROCK_MODEL    Bedrock model ID fallback (default: us.amazon.nova-lite-v1:0).
 
 Example:
     uv run python scripts/run_workflow_by_id.py 6650f1a2b3c4d5e6f7890123 "Summarise AI news"
@@ -26,6 +29,7 @@ import sys
 from pathlib import Path
 
 from agno.models.aws import AwsBedrock
+from bedrock_model import resolve_bedrock_model_id
 from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
@@ -170,7 +174,10 @@ async def main(definition_id: str, user_text: str, *, list_agents: bool = False)
         await _print_definition_agents(definition_id)
 
         llm = AwsBedrock(
-            id=os.getenv("BEDROCK_MODEL", "us.amazon.nova-lite-v1:0"),
+            id=resolve_bedrock_model_id(
+                model_env_var="BEDROCK_MODEL",
+                fallback_model_id="us.amazon.nova-lite-v1:0",
+            ),
             aws_region=settings.aws_region,
             aws_session_token=settings.aws_session_token,
             aws_access_key_id=settings.aws_access_key_id,
