@@ -21,6 +21,18 @@ class UrlElicitationRequiredException(McpGatewayException):
         self.server_name = server_name
 
 
+class ConsentRequiredException(McpGatewayException):
+    """Raised when the user must consent before this client calls a downstream MCP server."""
+
+    auth_url: str
+    server_name: str
+
+    def __init__(self, msg: str, /, *, auth_url: str, server_name: str):
+        super().__init__(msg)
+        self.auth_url = auth_url
+        self.server_name = server_name
+
+
 class DownstreamHttpFailureException(McpGatewayException):
     """Raised on >=300 downstream HTTP responses from proxied MCP calls."""
 

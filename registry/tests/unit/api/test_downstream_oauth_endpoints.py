@@ -82,6 +82,8 @@ def consent_store_mock() -> Mock:
     store = Mock()
     store.has_client_consent = Mock(return_value=True)
     store.grant_client_consent = Mock()
+    store.has_server_consent = Mock(return_value=True)
+    store.grant_server_consent = Mock()
     return store
 
 
@@ -416,6 +418,75 @@ def test_approve_downstream_consent_grants_and_returns_redirect(
 
 def test_approve_downstream_consent_rejects_reused_nonce(client):
     resp = client.post("/mcp/consent/downstream", json={"nonce": "missing"})
+
+    assert resp.status_code == 404
+
+
+def test_get_server_consent_context_returns_client_and_server_metadata(
+    client,
+    pending_consent_store,
+    store_mock,
+):
+    pending_consent_store.save(
+        "nonce-1",
+        {
+            "user_id": USER_A,
+            "server_path": "/github",
+            "client_id": "claude",
+        },
+    )
+    store_mock.get_client.return_value = {
+        "client_name": "Claude",
+        "client_uri": "https://claude.ai",
+        "ip_address": "203.0.113.7",
+        "registered_at": 1_700_000_000,
+    }
+
+    resp = client.get("/mcp/consent/server", params={"nonce": "nonce-1"})
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "client_name": "Claude",
+        "client_uri": "https://claude.ai",
+        "ip_address": "203.0.113.7",
+        "registered_at": 1_700_000_000,
+        "server_path": "/github",
+        "server_name": "github",
+    }
+
+
+def test_get_server_consent_context_rejects_other_user(client, pending_consent_store):
+    pending_consent_store.save("nonce-1", {"user_id": USER_B, "server_path": "/github", "client_id": "claude"})
+
+    resp = client.get("/mcp/consent/server", params={"nonce": "nonce-1"})
+
+    assert resp.status_code == 404
+
+
+def test_approve_server_consent_grants_and_consumes_nonce(
+    client,
+    pending_consent_store,
+    consent_store_mock,
+):
+    pending_consent_store.save(
+        "nonce-1",
+        {
+            "user_id": USER_A,
+            "server_path": "/github",
+            "client_id": "claude",
+        },
+    )
+
+    resp = client.post("/mcp/consent/server", json={"nonce": "nonce-1"})
+
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok"}
+    consent_store_mock.grant_server_consent.assert_called_once_with(USER_A, "claude", "/github")
+    assert pending_consent_store.peek("nonce-1") is None
+
+
+def test_approve_server_consent_rejects_reused_nonce(client):
+    resp = client.post("/mcp/consent/server", json={"nonce": "missing"})
 
     assert resp.status_code == 404
 

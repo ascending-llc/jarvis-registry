@@ -35,10 +35,14 @@ def _make_ctx(
         mcp_client_service=MagicMock(),
         oauth_service=MagicMock(),
         redis_client=MagicMock(),
+        session_store=MagicMock(),
+        consent_store=MagicMock(),
+        pending_consent_store=MagicMock(),
     )
+    lifespan_context.consent_store.has_server_consent.return_value = True
     request_state = SimpleNamespace()
     if include_user_context:
-        request_state.user = {"user_id": user_id, "username": "test"}
+        request_state.user = {"user_id": user_id, "username": "test", "client_id": "claude"}
     request_context = SimpleNamespace(
         lifespan_context=lifespan_context,
         request=SimpleNamespace(state=request_state),
@@ -283,6 +287,57 @@ async def test_execute_tool_impl_acl_runtime_error_returns_retryable_error(monke
 
     assert result.isError is True
     assert "Service temporarily unavailable" in result.content[0].text
+    downstream_call.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_impl_without_server_consent_returns_elicitation_fallback(monkeypatch):
+    server_id = str(PydanticObjectId())
+    ctx = _make_ctx(accessible_server_ids=[server_id])
+    ctx.request_context.lifespan_context.server_service.get_server_by_id.return_value = _make_server(server_id)
+    ctx.request_context.lifespan_context.consent_store.has_server_consent.return_value = False
+    downstream_call = AsyncMock()
+    monkeypatch.setattr(server, "_downstream_tool_call", downstream_call)
+
+    result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
+
+    assert result.isError is True
+    assert "explicitly consent" in result.content[0].text
+    assert "/consent/server?nonce=" in result.content[0].text
+    ctx.request_context.lifespan_context.pending_consent_store.save.assert_called_once()
+    _, pending = ctx.request_context.lifespan_context.pending_consent_store.save.call_args.args
+    assert pending == {"user_id": "507f1f77bcf86cd799439011", "client_id": "claude", "server_path": "/github"}
+    ctx.request_context.lifespan_context.consent_store.has_server_consent.assert_called_once_with(
+        "507f1f77bcf86cd799439011",
+        "claude",
+        "/github",
+    )
+    downstream_call.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_impl_without_server_consent_raises_url_elicitation(monkeypatch):
+    server_id = str(PydanticObjectId())
+    ctx = _make_ctx(accessible_server_ids=[server_id])
+    ctx.request_context.lifespan_context.server_service.get_server_by_id.return_value = _make_server(server_id)
+    ctx.request_context.lifespan_context.consent_store.has_server_consent.return_value = False
+    downstream_call = AsyncMock()
+    monkeypatch.setattr(server, "_downstream_tool_call", downstream_call)
+    monkeypatch.setattr(server, "_support_url_elicitation", lambda _client_params: True)
+
+    with pytest.raises(server.UrlElicitationRequiredError):
+        await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
+
+    ctx.request_context.lifespan_context.pending_consent_store.save.assert_called_once()
+    ctx.request_context.lifespan_context.consent_store.has_server_consent.assert_called_once_with(
+        "507f1f77bcf86cd799439011",
+        "claude",
+        "/github",
+    )
+    ctx.request_context.lifespan_context.session_store.append.assert_called_once()
+    elicitation_id, saved_session = ctx.request_context.lifespan_context.session_store.append.call_args.args
+    assert elicitation_id
+    assert saved_session is ctx.session
     downstream_call.assert_not_awaited()
 
 

@@ -100,3 +100,54 @@ async def approve_downstream_consent(
     except Exception as e:
         logger.exception(f"[Downstream Consent] failed to approve consent: user={user_context['user_id']}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error") from e
+
+
+@router.get("/consent/server")
+async def get_server_consent_context(
+    nonce: str,
+    user_context: CurrentUser,
+    store: DownstreamOAuthStoreProtocol = Depends(get_oauth_state_store),
+    pending_store: PendingConsentStore = Depends(get_pending_consent_store),
+    server_service: ServerServiceV1 = Depends(get_server_service),
+) -> dict[str, str | int | None]:
+    try:
+        pending = pending_store.peek(nonce)
+        if pending is None or pending["user_id"] != user_context["user_id"]:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This consent link has expired.")
+
+        client_metadata = store.get_client(pending["client_id"]) or {}
+        server = await server_service.get_server_by_path(pending["server_path"])
+        return {
+            "client_name": client_metadata.get("client_name", "Unknown application"),
+            "client_uri": client_metadata.get("client_uri"),
+            "ip_address": client_metadata.get("ip_address"),
+            "registered_at": client_metadata.get("registered_at"),
+            "server_path": pending["server_path"],
+            "server_name": server.serverName if server else pending["server_path"],
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"[Server Consent] failed to fetch consent context: user={user_context['user_id']}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error") from e
+
+
+@router.post("/consent/server")
+async def approve_server_consent(
+    body: ApproveConsentRequest,
+    user_context: CurrentUser,
+    consent_store: ConsentStore = Depends(get_consent_store),
+    pending_store: PendingConsentStore = Depends(get_pending_consent_store),
+) -> dict[str, str]:
+    try:
+        pending = pending_store.consume(body.nonce)
+        if pending is None or pending["user_id"] != user_context["user_id"]:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This consent link has expired.")
+
+        consent_store.grant_server_consent(pending["user_id"], pending["client_id"], pending["server_path"])
+        return {"status": "ok"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"[Server Consent] failed to approve consent: user={user_context['user_id']}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error") from e

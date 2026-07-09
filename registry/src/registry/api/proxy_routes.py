@@ -4,6 +4,7 @@ Dynamic MCP server proxy routes.
 
 import json
 import logging
+import secrets
 from typing import Any
 from uuid import uuid4
 
@@ -14,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from redis import Redis
 
+from registry_pkgs.core.consent_store import ConsentStore, PendingConsentStore
 from registry_pkgs.models import ResourceType
 from registry_pkgs.models.a2a_agent import AgentConfig
 from registry_pkgs.models.enums import AgentCoreRuntimeAccessMode, FederationProviderType
@@ -28,8 +30,10 @@ from ..deps import (
     get_a2a_agent_service,
     get_a2a_proxy_client_registry,
     get_acl_service,
+    get_consent_store,
     get_mcp_proxy_client,
     get_oauth_service,
+    get_pending_consent_store,
     get_redis_client,
     get_server_service,
 )
@@ -658,6 +662,8 @@ async def dynamic_mcp_post_proxy(
     proxy_client: httpx.AsyncClient = Depends(get_mcp_proxy_client),
     redis_client: Redis = Depends(get_redis_client),
     acl_service: ACLService = Depends(get_acl_service),
+    consent_store: ConsentStore = Depends(get_consent_store),
+    pending_store: PendingConsentStore = Depends(get_pending_consent_store),
 ):
     """
     Dynamic catch-all route for MCP server proxying, but only works for POST.
@@ -735,6 +741,34 @@ async def dynamic_mcp_post_proxy(
             content=_build_jsonrpc_error_result(request_id, "Access denied to this MCP server."),
         )
 
+    user_id = auth_context["user_id"]
+    client_id = auth_context["client_id"]
+    if not consent_store.has_server_consent(user_id, client_id, server.path):
+        nonce = secrets.token_urlsafe(32)
+        pending_store.save(nonce, {"user_id": user_id, "client_id": client_id, "server_path": server.path})
+        auth_url = f"{settings.registry_client_url}/consent/server?nonce={nonce}"
+        elicitation_id = str(uuid4())
+        llm_msg = (
+            "Jarvis Registry needs the user's explicit consent before this client can call the "
+            f"'{server.serverName}' MCP server. Please direct the user to open the provided URL in a browser "
+            "window, grant consent, and come back to retry the same request again."
+        )
+        user_msg = (
+            "Jarvis Registry needs your explicit consent before this application can call the "
+            f"'{server.serverName}' MCP server on your behalf. Please follow the URL to review and approve."
+        )
+        error_data = {
+            "elicitations": [
+                {
+                    "mode": "url",
+                    "message": user_msg,
+                    "url": auth_url,
+                    "elicitationId": elicitation_id,
+                }
+            ]
+        }
+        return JSONResponse(status_code=200, content=_build_jsonrpc_error(request_id, -32042, llm_msg, error_data))
+
     # Check if server is enabled
     config = server.config or {}
     if not config.get("enabled", False):
@@ -793,6 +827,7 @@ async def dynamic_mcp_get_proxy(
     proxy_client: httpx.AsyncClient = Depends(get_mcp_proxy_client),
     redis_client: Redis = Depends(get_redis_client),
     acl_service: ACLService = Depends(get_acl_service),
+    consent_store: ConsentStore = Depends(get_consent_store),
 ):
     """
     Dynamic catch-all route for MCP server proxying, but only works for GET, i.e. the event stream.
@@ -844,6 +879,17 @@ async def dynamic_mcp_get_proxy(
         return JSONResponse(
             status_code=403,
             content={"detail": "Access denied to this MCP server."},
+        )
+
+    user_id = auth_context["user_id"]
+    client_id = auth_context["client_id"]
+    if not consent_store.has_server_consent(user_id, client_id, server.path):
+        return JSONResponse(
+            status_code=403,
+            content={
+                "detail": f"Consent required before calling '{server.serverName}'. "
+                "Complete consent via the Jarvis Registry dashboard."
+            },
         )
 
     # Check if server is enabled
