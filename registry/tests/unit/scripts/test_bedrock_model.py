@@ -14,6 +14,9 @@ assert _SPEC.loader is not None
 bedrock_model = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(bedrock_model)
 
+_GOVERNANCE_HAIKU_AIP_ARN = "arn:aws:bedrock:us-east-1:897729109735:application-inference-profile/rbi3mxnqa5vz"
+_GOVERNANCE_SONNET_AIP_ARN = "arn:aws:bedrock:us-east-1:897729109735:application-inference-profile/1rh94g6d583t"
+
 
 @pytest.mark.unit
 def test_resolve_bedrock_model_id_defaults_to_sonnet_aip(monkeypatch) -> None:
@@ -25,7 +28,21 @@ def test_resolve_bedrock_model_id_defaults_to_sonnet_aip(monkeypatch) -> None:
         fallback_model_id="us.amazon.nova-lite-v1:0",
     )
 
-    assert model_id == bedrock_model.DEFAULT_BEDROCK_SONNET_AIP_ARN
+    assert bedrock_model.DEFAULT_BEDROCK_SONNET_AIP_ARN == _GOVERNANCE_SONNET_AIP_ARN
+    assert model_id == _GOVERNANCE_SONNET_AIP_ARN
+
+
+@pytest.mark.unit
+def test_resolve_bedrock_model_id_accepts_governance_haiku_aip(monkeypatch) -> None:
+    monkeypatch.setenv("AWS_BEDROCK_SONNET_AIP_ARN", f" {_GOVERNANCE_HAIKU_AIP_ARN} ")
+    monkeypatch.setenv("BEDROCK_MODEL", "us.amazon.nova-lite-v1:0")
+
+    model_id = bedrock_model.resolve_bedrock_model_id(
+        model_env_var="BEDROCK_MODEL",
+        fallback_model_id="fallback",
+    )
+
+    assert model_id == _GOVERNANCE_HAIKU_AIP_ARN
 
 
 @pytest.mark.unit
