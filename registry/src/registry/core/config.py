@@ -17,7 +17,7 @@ MCP_CLIENT_INFO = {
     "name": "jarvis-registry",
     "version": "1.0.0",
 }
-DEFAULT_AWS_BEDROCK_SONNET_AIP_ARN = "arn:aws:bedrock:us-east-1:189772910973:application-inference-profile/1rh94q6d583t"
+DEFAULT_AWS_BEDROCK_SONNET_AIP_ARN = "arn:aws:bedrock:us-east-1:897729109735:application-inference-profile/1rh94g6d583t"
 
 
 class Settings(JarvisBaseSettings):

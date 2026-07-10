@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_BEDROCK_MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 DEFAULT_BEDROCK_MODEL_SOURCE = "default"
-DEFAULT_BEDROCK_SONNET_AIP_ARN = "arn:aws:bedrock:us-east-1:189772910973:application-inference-profile/1rh94q6d583t"
+DEFAULT_BEDROCK_SONNET_AIP_ARN = "arn:aws:bedrock:us-east-1:897729109735:application-inference-profile/1rh94g6d583t"
 DEFAULT_BEDROCK_SONNET_AIP_SOURCE = "default_sonnet_aip"
 
 
