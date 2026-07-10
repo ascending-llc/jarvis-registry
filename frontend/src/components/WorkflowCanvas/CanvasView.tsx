@@ -4,7 +4,7 @@ import type React from 'react';
 import { createContext, useCallback, useMemo } from 'react';
 import { AiOutlineApartment } from 'react-icons/ai';
 import { useTheme } from '@/contexts/ThemeContext';
-import { EDGE_CONFIG } from './constants';
+import { EDGE_CONFIG, REF_EDGE_CONFIG } from './constants';
 import type { useWorkflowCanvas } from './hooks/useWorkflowCanvas';
 import { nodeTypes } from './Nodes';
 
@@ -61,9 +61,29 @@ export const CanvasView: React.FC<CanvasViewProps> = ({ canvas, defaultViewport,
     [isReadOnly, canvas.nodes],
   );
   const displayEdges = useMemo(() => {
-    if (!isReadOnly) return canvas.edges;
-    const addNodeIds = new Set(canvas.nodes.filter(n => n.type === 'add').map(n => n.id));
-    return canvas.edges.filter(e => !addNodeIds.has(e.source) && !addNodeIds.has(e.target));
+    let baseEdges = canvas.edges;
+    if (isReadOnly) {
+      const addNodeIds = new Set(canvas.nodes.filter(n => n.type === 'add').map(n => n.id));
+      baseEdges = canvas.edges.filter(e => !addNodeIds.has(e.source) && !addNodeIds.has(e.target));
+    }
+    const refEdges: typeof baseEdges = [];
+    canvas.nodes.forEach(n => {
+      const refs = n.data.refs as string[] | undefined;
+      if (refs && Array.isArray(refs)) {
+        refs.forEach(refId => {
+          refEdges.push({
+            id: `ref-${refId}-${n.id}`,
+            source: refId,
+            target: n.id,
+            type: 'default',
+            interactionWidth: 0,
+            selectable: false,
+            ...REF_EDGE_CONFIG,
+          });
+        });
+      }
+    });
+    return [...baseEdges, ...refEdges];
   }, [isReadOnly, canvas.edges, canvas.nodes]);
 
   const handleNodesChange: typeof canvas.onNodesChange = useCallback(

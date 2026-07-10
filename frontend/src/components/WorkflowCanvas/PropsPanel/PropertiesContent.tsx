@@ -3,6 +3,7 @@ import type { Node } from '@xyflow/react';
 import type React from 'react';
 import type { NodeData, PanelMode } from '../types';
 import { ConditionNodeProperties } from './Nodes/ConditionNodeProperties';
+import { ExecutionNodeProperties } from './Nodes/ExecutionNodeProperties';
 import { GateNodeProperties } from './Nodes/GateNodeProperties';
 import { LoopNodeProperties } from './Nodes/LoopNodeProperties';
 import { ParallelNodeProperties } from './Nodes/ParallelNodeProperties';
@@ -80,6 +81,7 @@ export const PropertiesContent: React.FC<PropertiesContentProps> = ({ panelMode,
       {nodeType === 'loop' && <LoopNodeProperties node={selectedNode as Node<any>} />}
       {nodeType === 'parallel' && <ParallelNodeProperties node={selectedNode as Node<any>} />}
       {nodeType === 'pool' && <PoolNodeProperties node={selectedNode as Node<any>} />}
+      {(nodeType === 'agent' || nodeType === 'mcp') && <ExecutionNodeProperties node={selectedNode as Node<any>} />}
 
       {/* Delete Node Button */}
       <div className='px-4 py-3 border-t border-[var(--jarvis-border)] shrink-0'>

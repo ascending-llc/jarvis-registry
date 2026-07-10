@@ -81,7 +81,7 @@ const mapNodeToApi = (node: Node<NodeData>, branchData: { [handle: string]: Inte
     nodeType,
     position: { x: Math.round(node.position?.x ?? 0), y: Math.round(node.position?.y ?? 0) },
     // Store canvasType for round-trip fidelity (mcp vs agent distinction)
-    config: { description: data.description ?? '', canvasType: node.type },
+    config: { description: data.description ?? '', canvasType: node.type, refs: data.refs ?? [] },
   };
 
   if (branchData) {
@@ -355,6 +355,7 @@ const apiNodeToCanvas = (w: InternalNode): CanvasNode => {
     label: w.name,
     description: (w.config?.description as string | undefined) ?? '',
     executorKey: w.executorKey,
+    refs: (w.config?.refs as string[] | undefined) ?? [],
   } as NodeData;
 
   if (canvasType === 'cond' && w.conditionCel) {

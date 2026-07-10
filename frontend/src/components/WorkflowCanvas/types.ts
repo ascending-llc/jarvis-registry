@@ -32,6 +32,7 @@ export interface BaseNodeData extends Record<string, unknown> {
   description?: string;
   executorKey?: string;
   onAdd?: () => void;
+  refs?: string[];
 }
 
 /** Specific node data types */

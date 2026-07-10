@@ -3,6 +3,7 @@ import { useCallback } from 'react';
 import { ADD_NODE_MARGIN_X, BRANCH_SPACING, DASHED_EDGE, NODE_WIDTH } from '../constants';
 import { estimateNodeHeight } from '../layout';
 import type { AgentInfo, AgentNodeData, LogicStep, McpNodeData, NodeData, PickerItem, WorkflowNode } from '../types';
+import { validateRefs } from '../utils/dag';
 
 const CATEGORY_TYPE: Record<string, (item: PickerItem | LogicStep) => string> = {
   agent: _item => 'agent',
@@ -125,8 +126,12 @@ export const useCanvasMutations = ({
         });
       }
 
-      setNodes(prev => prev.filter(n => n.id !== nodeId && !addNodesToRemove.has(n.id)).concat(newAddNodes));
-      setEdges(prev => prev.filter(e => e.source !== nodeId && e.target !== nodeId).concat(newEdges));
+      const nextEdges = edges.filter(e => e.source !== nodeId && e.target !== nodeId).concat(newEdges);
+      const nextNodes = nodes.filter(n => n.id !== nodeId && !addNodesToRemove.has(n.id)).concat(newAddNodes);
+      const validatedNodes = validateRefs(nextNodes, nextEdges) as WorkflowNode[];
+      
+      setNodes(validatedNodes);
+      setEdges(nextEdges);
       setSelected(null);
       onChange?.();
     },
@@ -176,8 +181,12 @@ export const useCanvasMutations = ({
       }
 
       if (newAddNodes.length > 0) {
-        setNodes(prev => [...prev, ...newAddNodes]);
-        setEdges(prev => [...prev.filter(e => !edgesToDelete.find(del => del.id === e.id)), ...newEdges]);
+        const nextNodes = [...nodes, ...newAddNodes];
+        const nextEdges = [...edges.filter(e => !edgesToDelete.find(del => del.id === e.id)), ...newEdges];
+        const validatedNodes = validateRefs(nextNodes, nextEdges) as WorkflowNode[];
+
+        setNodes(validatedNodes);
+        setEdges(nextEdges);
         onChange?.();
       }
     },
@@ -250,7 +259,8 @@ export const useCanvasMutations = ({
           },
         ];
 
-        setNodes(nextNodes as WorkflowNode[]);
+        const validatedNodes = validateRefs(nextNodes, nextEdges) as WorkflowNode[];
+        setNodes(validatedNodes);
         setEdges(nextEdges);
         setSelected(prev =>
           prev?.id === nodeId ? { ...prev, data: { ...prev.data, [dataKey]: nextBranches } } : prev,
@@ -303,7 +313,8 @@ export const useCanvasMutations = ({
           });
 
         const safeNodes = nextNodes as WorkflowNode[];
-        setNodes(safeNodes);
+        const validatedNodes = validateRefs(safeNodes, nextEdges) as WorkflowNode[];
+        setNodes(validatedNodes);
         setEdges(nextEdges);
         setSelected(prev =>
           prev?.id === nodeId ? { ...prev, data: { ...prev.data, [dataKey]: nextBranches } } : prev,
@@ -438,7 +449,8 @@ export const useCanvasMutations = ({
         ];
       })();
 
-      setNodes(nextNodes as WorkflowNode[]);
+      const validatedNodes = validateRefs(nextNodes as WorkflowNode[], nextEdges) as WorkflowNode[];
+      setNodes(validatedNodes);
       setEdges(nextEdges);
 
       setSelected(newNode);
