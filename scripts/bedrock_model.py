@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 
 BEDROCK_AIP_ARN_ENV = "AWS_BEDROCK_SONNET_AIP_ARN"
-DEFAULT_BEDROCK_SONNET_AIP_ARN = "arn:aws:bedrock:us-east-1:189772910973:application-inference-profile/1rh94q6d583t"
+DEFAULT_BEDROCK_SONNET_AIP_ARN = "arn:aws:bedrock:us-east-1:897729109735:application-inference-profile/1rh94g6d583t"
 
 
 def resolve_bedrock_model_id(*, model_env_var: str, fallback_model_id: str) -> str:
