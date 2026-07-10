@@ -28,8 +28,6 @@ dependencies = [
     "langchain-mcp-adapters>=0.0.11",
     "langgraph>=0.4.3",
     "langchain-anthropic>=0.3.17",
-    "strands-agents>=0.1.6",
-    "strands-agents-tools>=0.1.4",
     # Utilities
     "pytz>=2025.2",
     "typing-extensions>=4.8.0",
