@@ -8,6 +8,7 @@ format. These tests verify that both handlers reject non-ObjectId user_id values
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
+from uuid import UUID
 
 import pytest
 from beanie import PydanticObjectId
@@ -19,7 +20,7 @@ from registry.api.proxy_routes import dynamic_mcp_get_proxy, dynamic_mcp_post_pr
 VALID_OBJECT_ID = "507f1f77bcf86cd799439011"
 INVALID_USER_IDS = ["mcpgw", "not-an-objectid", "123", ""]
 
-_AUTH_CONTEXT = {"auth_method": "bearer", "user_id": VALID_OBJECT_ID, "username": "test"}
+_AUTH_CONTEXT = {"auth_method": "bearer", "user_id": VALID_OBJECT_ID, "username": "test", "client_id": "claude"}
 
 
 def _make_server(*, enabled: bool = True):
@@ -45,6 +46,20 @@ def _acl_service(*, denied: bool = False):
     else:
         service.check_user_permission.return_value = None
     return service
+
+
+def _consent_store(*, has_server_consent: bool = True):
+    store = Mock()
+    store.has_server_consent.return_value = has_server_consent
+    return store
+
+
+class _PendingConsentStore:
+    def __init__(self) -> None:
+        self.pending: dict[str, dict] = {}
+
+    def save(self, nonce: str, data: dict) -> None:
+        self.pending[nonce] = data
 
 
 def _post_request(user_id: str, server_path: str = "github") -> Request:
@@ -182,11 +197,75 @@ async def test_post_proxy_acl_allowed_continues(monkeypatch):
         proxy_client=Mock(),
         redis_client=Mock(),
         acl_service=_acl_service(),
+        consent_store=_consent_store(),
     )
 
     body = json.loads(resp.body)
     assert body["result"]["isError"] is True
     assert "Access denied" not in body["result"]["content"][0]["text"]
+
+
+async def test_post_proxy_without_server_consent_returns_url_elicitation(monkeypatch):
+    monkeypatch.setattr(
+        "registry.api.proxy_routes._parse_json_rpc_body",
+        AsyncMock(return_value={"jsonrpc": "2.0", "method": "tools/call", "id": 1}),
+    )
+    pending_store = _PendingConsentStore()
+    consent_store = _consent_store(has_server_consent=False)
+
+    resp = await dynamic_mcp_post_proxy(
+        request=_post_request(VALID_OBJECT_ID),
+        user_id=VALID_OBJECT_ID,
+        server_path="github",
+        auth_context=_AUTH_CONTEXT,
+        server_service=_server_service(_make_server()),
+        oauth_service=Mock(),
+        proxy_client=Mock(),
+        redis_client=Mock(),
+        acl_service=_acl_service(),
+        consent_store=consent_store,
+        pending_store=pending_store,
+    )
+
+    body = json.loads(resp.body)
+    assert resp.status_code == 200
+    assert body["error"]["code"] == -32042
+    assert body["error"]["data"]["elicitations"][0]["mode"] == "url"
+    assert "/consent/server?nonce=" in body["error"]["data"]["elicitations"][0]["url"]
+    UUID(body["error"]["data"]["elicitations"][0]["elicitationId"])
+    assert len(pending_store.pending) == 1
+    pending = next(iter(pending_store.pending.values()))
+    assert pending == {"user_id": VALID_OBJECT_ID, "client_id": "claude", "server_path": "/github"}
+    consent_store.has_server_consent.assert_called_once_with(VALID_OBJECT_ID, "claude", "/github")
+
+
+@pytest.mark.parametrize("method", ["initialize", "tools/list"])
+async def test_post_proxy_without_server_consent_allows_handshake_methods(monkeypatch, method):
+    monkeypatch.setattr(
+        "registry.api.proxy_routes._parse_json_rpc_body",
+        AsyncMock(return_value={"jsonrpc": "2.0", "method": method, "id": 1}),
+    )
+    consent_store = _consent_store(has_server_consent=False)
+
+    resp = await dynamic_mcp_post_proxy(
+        request=_post_request(VALID_OBJECT_ID),
+        user_id=VALID_OBJECT_ID,
+        server_path="github",
+        auth_context=_AUTH_CONTEXT,
+        server_service=_server_service(_make_server(enabled=False)),
+        oauth_service=Mock(),
+        proxy_client=Mock(),
+        redis_client=Mock(),
+        acl_service=_acl_service(),
+        consent_store=consent_store,
+        pending_store=_PendingConsentStore(),
+    )
+
+    body = json.loads(resp.body)
+    assert resp.status_code == 200
+    assert "error" not in body
+    assert "disabled" in body["result"]["content"][0]["text"].lower()
+    consent_store.has_server_consent.assert_not_called()
 
 
 async def test_get_proxy_acl_denied_returns_403():

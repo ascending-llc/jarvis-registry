@@ -4,6 +4,7 @@ Dynamic MCP server proxy routes.
 
 import json
 import logging
+import secrets
 from typing import Any
 from uuid import uuid4
 
@@ -14,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from redis import Redis
 
+from registry_pkgs.core.consent_store import ConsentStore, PendingConsentStore
 from registry_pkgs.models import ResourceType
 from registry_pkgs.models.a2a_agent import AgentConfig
 from registry_pkgs.models.enums import AgentCoreRuntimeAccessMode, FederationProviderType
@@ -28,8 +30,10 @@ from ..deps import (
     get_a2a_agent_service,
     get_a2a_proxy_client_registry,
     get_acl_service,
+    get_consent_store,
     get_mcp_proxy_client,
     get_oauth_service,
+    get_pending_consent_store,
     get_redis_client,
     get_server_service,
 )
@@ -123,6 +127,11 @@ def _sanitize_hop_by_hop_headers(headers: httpx.Headers) -> dict[str, str]:
 # server requires authorization, these get an HTTP 401 RFC 9728 discovery challenge instead of a
 # URL mode elicitation, which most MCP clients cannot process at this stage.
 _INIT_METHODS = frozenset({"initialize", "tools/list"})
+
+# Custom JSON-RPC error code signaling that a URL mode elicitation (out-of-band browser step) is
+# required before the request can proceed — shared by the downstream-OAuth-expired and
+# consent-required elicitation paths.
+_URL_ELICITATION_REQUIRED_ERROR_CODE = -32042
 
 
 def _build_jsonrpc_error_result(request_id: str | int | None, error_text: str) -> dict[str, Any]:
@@ -263,7 +272,7 @@ async def proxy_to_mcp_server(
             status_code=200,
             content=_build_jsonrpc_error(
                 request_id,
-                -32042,
+                _URL_ELICITATION_REQUIRED_ERROR_CODE,
                 llm_msg,
                 error_data,
             ),
@@ -658,6 +667,8 @@ async def dynamic_mcp_post_proxy(
     proxy_client: httpx.AsyncClient = Depends(get_mcp_proxy_client),
     redis_client: Redis = Depends(get_redis_client),
     acl_service: ACLService = Depends(get_acl_service),
+    consent_store: ConsentStore = Depends(get_consent_store),
+    pending_store: PendingConsentStore = Depends(get_pending_consent_store),
 ):
     """
     Dynamic catch-all route for MCP server proxying, but only works for POST.
@@ -735,6 +746,38 @@ async def dynamic_mcp_post_proxy(
             content=_build_jsonrpc_error_result(request_id, "Access denied to this MCP server."),
         )
 
+    user_id = auth_context["user_id"]
+    client_id = auth_context["client_id"]
+    mcp_method = msg_body.get("method")
+    if mcp_method not in _INIT_METHODS and not consent_store.has_server_consent(user_id, client_id, server.path):
+        nonce = secrets.token_urlsafe(32)
+        pending_store.save(nonce, {"user_id": user_id, "client_id": client_id, "server_path": server.path})
+        auth_url = f"{settings.registry_client_url}/consent/server?nonce={nonce}"
+        elicitation_id = str(uuid4())
+        llm_msg = (
+            "Jarvis Registry needs the user's explicit consent before this client can call the "
+            f"'{server.serverName}' MCP server. Please direct the user to open the provided URL in a browser "
+            "window, grant consent, and come back to retry the same request again."
+        )
+        user_msg = (
+            "Jarvis Registry needs your explicit consent before this application can call the "
+            f"'{server.serverName}' MCP server on your behalf. Please follow the URL to review and approve."
+        )
+        error_data = {
+            "elicitations": [
+                {
+                    "mode": "url",
+                    "message": user_msg,
+                    "url": auth_url,
+                    "elicitationId": elicitation_id,
+                }
+            ]
+        }
+        return JSONResponse(
+            status_code=200,
+            content=_build_jsonrpc_error(request_id, _URL_ELICITATION_REQUIRED_ERROR_CODE, llm_msg, error_data),
+        )
+
     # Check if server is enabled
     config = server.config or {}
     if not config.get("enabled", False):
@@ -778,7 +821,7 @@ async def dynamic_mcp_post_proxy(
         oauth_service=oauth_service,
         proxy_client=proxy_client,
         redis_client=redis_client,
-        mcp_method=msg_body.get("method"),
+        mcp_method=mcp_method,
     )
 
 
@@ -804,6 +847,14 @@ async def dynamic_mcp_get_proxy(
     FastAPI matches routes in order, so this will capture all unmatched routes.
 
     MCP protocol only uses GET and POST methods.
+
+    Not consent-gated: this route carries no JSON-RPC method (it only opens the transport-level
+    channel MCP servers push notifications through), so unlike the POST handler it has no way to
+    exempt handshake calls from a consent check by method name. MCP clients such as VS Code
+    Copilot open this GET concurrently with the POST `initialize`, so gating it produces a 403
+    before consent could possibly exist yet — perceived by the client as a second, spurious
+    re-auth prompt alongside the correctly-gated one from the first real `tools/call` over POST.
+    The ACL check above remains the access-control boundary for this route.
     """
     if not ObjectId.is_valid(user_id):
         return JSONResponse(

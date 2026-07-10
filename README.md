@@ -112,7 +112,7 @@ Licensed under the Apache 2.0 License — see the [LICENSE](LICENSE) file for de
 
 <div align="center">
 
-[![Star History Chart](https://api.star-history.com/svg?repos=ascending-llc/jarvis-registry&type=Date)](https://star-history.com/#ascending-llc/jarvis-registry&Date)
+[![Star History Chart](https://api.star-history.com/chart?repos=ascending-llc/jarvis-registry&type=date&legend=top-left&sealed_token=LAdDtlKrSN-LqVGsdUYveTcE0gB-kYxMH7fj2pUfa1UClilq9YPD_HYKgtGokeeqGefFmO-NQGrkrW603D2X0n2siW4C6Q6yl4EvG9r1OIZnvGhJwDE3rxzXNypJjbxpwKpInTiFZCREdN7qMMlOkHeLadg-Y7Lvrk8dRs8X_fWAiXPROIMScqOslRcd)](https://www.star-history.com/?repos=ascending-llc%2Fjarvis-registry&type=date&legend=top-left)
 
 </div>
 
