@@ -8,15 +8,19 @@ interface ConsentPromptProps {
   registeredAt: number | null;
   description: string;
   onApprove: () => void;
+  onDeny: () => void;
   approving: boolean;
+  denying: boolean;
 }
 
 const ConsentPrompt: React.FC<ConsentPromptProps> & {
   Loading: React.FC;
   Error: React.FC<{ message: string; details?: string }>;
   Success: React.FC<{ message: string; submessage?: string }>;
-} = ({ clientName, clientUri, ipAddress, registeredAt, description, onApprove, approving }) => {
+  Declined: React.FC<{ message: string }>;
+} = ({ clientName, clientUri, ipAddress, registeredAt, description, onApprove, onDeny, approving, denying }) => {
   const registeredLabel = registeredAt ? new Date(registeredAt * 1000).toLocaleString() : null;
+  const busy = approving || denying;
 
   return (
     <div className='card p-10 max-w-md w-full text-center animate-slide-up'>
@@ -31,14 +35,24 @@ const ConsentPrompt: React.FC<ConsentPromptProps> & {
         </p>
       )}
       <p className='text-base text-[var(--jarvis-text)] mb-6'>{description}</p>
-      <button
-        type='button'
-        onClick={onApprove}
-        disabled={approving}
-        className='btn-primary w-full shadow-md hover:shadow-lg transition-all duration-200'
-      >
-        {approving ? 'Authorizing…' : 'Authorize'}
-      </button>
+      <div className='flex gap-3'>
+        <button
+          type='button'
+          onClick={onDeny}
+          disabled={busy}
+          className='bg-[var(--jarvis-card-muted)] text-[var(--jarvis-text)] flex-1 rounded-lg font-semibold py-3 hover:bg-[var(--jarvis-card-muted)] transition-all duration-200'
+        >
+          {denying ? 'Declining…' : 'Deny'}
+        </button>
+        <button
+          type='button'
+          onClick={onApprove}
+          disabled={busy}
+          className='btn-primary flex-1 shadow-md hover:shadow-lg transition-all duration-200'
+        >
+          {approving ? 'Authorizing…' : 'Authorize'}
+        </button>
+      </div>
       <p className='text-xs text-[var(--jarvis-muted)] mt-6'>Only authorize applications you recognize and trust.</p>
     </div>
   );
@@ -77,6 +91,16 @@ ConsentPrompt.Success = ({ message, submessage }) => (
     <h1 className='text-2xl font-semibold text-[var(--jarvis-text-strong)] mb-6'>Authorization Successful</h1>
     <p className='text-base text-[var(--jarvis-text)] mb-4 leading-relaxed'>{message}</p>
     {submessage && <p className='text-sm text-[var(--jarvis-muted)]'>{submessage}</p>}
+  </div>
+);
+
+ConsentPrompt.Declined = ({ message }) => (
+  <div className='card p-10 max-w-md w-full text-center animate-slide-up'>
+    <div className='mx-auto mb-8 w-16 h-16 bg-[var(--jarvis-card-muted)] rounded-full flex items-center justify-center'>
+      <XMarkIcon className='w-10 h-10 text-[var(--jarvis-muted)]' strokeWidth={3} />
+    </div>
+    <h1 className='text-2xl font-semibold text-[var(--jarvis-text-strong)] mb-6'>Request Declined</h1>
+    <p className='text-base text-[var(--jarvis-text)] mb-4 leading-relaxed'>{message}</p>
   </div>
 );
 

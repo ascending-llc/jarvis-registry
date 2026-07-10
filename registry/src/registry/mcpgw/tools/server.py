@@ -7,8 +7,10 @@ MCP Gateway Registry API Tools
 
 import json
 import logging
+import secrets
 from collections.abc import Callable
 from typing import Annotated, Any
+from uuid import uuid4
 
 from beanie import PydanticObjectId
 from bson import ObjectId
@@ -32,7 +34,9 @@ from registry_pkgs.models import ResourceType
 
 from ...auth.dependencies import UserContextDict
 from ...auth.oauth.types import ClientBranding, StateMetadata
+from ...core.config import settings
 from ...core.exceptions import (
+    ConsentRequiredException,
     DownstreamHttpFailureException,
     InternalServerException,
     McpGatewayException,
@@ -275,6 +279,44 @@ def _support_url_elicitation(client_params: InitializeRequestParams | None) -> b
     return elicitation.url is not None
 
 
+def _build_url_elicitation_result(
+    ctx: Context[ServerSession, McpAppContext],
+    auth_url: str,
+    llm_template: str,
+    human_message: str,
+    *,
+    elicitation_id: str | None = None,
+) -> CallToolResult:
+    """Build a URL elicitation response or a fallback tool result for clients without URL mode.
+
+    ``elicitation_id`` should be passed explicitly when the caller already minted one (e.g. the
+    consent flow, whose ``auth_url`` has no ``state`` param for ``parse_elicitation_id`` to recover
+    it from). When omitted, it's recovered from ``auth_url`` (the OAuth-expired flow's ``state``).
+    """
+    if elicitation_id is None:
+        elicitation_id = parse_elicitation_id(auth_url)
+    if elicitation_id is not None and _support_url_elicitation(ctx.session.client_params):
+        msg = llm_template.format("provided URL")
+        logger.info(f"sending back the URL mode elicitation error response with ID {elicitation_id}.")
+        _get_session_store(ctx).append(elicitation_id, ctx.session)
+        raise UrlElicitationRequiredError(
+            message=msg,
+            elicitations=[
+                ElicitRequestURLParams(
+                    elicitationId=elicitation_id,
+                    url=auth_url,
+                    message=human_message,
+                )
+            ],
+        )
+
+    logger.info("Client doesn't support URL mode elicitation. Sending back a tool call result with the URL.")
+    return CallToolResult(
+        content=[TextContent(type="text", text=llm_template.format(f"URL `{auth_url}`"))],
+        isError=True,
+    )
+
+
 async def execute_tool_impl(
     ctx: Context[ServerSession, McpAppContext],
     tool_name: str,
@@ -360,6 +402,29 @@ async def execute_tool_impl(
                         )
                     ],
                     isError=True,
+                )
+
+            client_id = user_context["client_id"]
+            if not lifespan.consent_store.has_server_consent(user_id, client_id, server.path):
+                nonce = secrets.token_urlsafe(32)
+                elicitation_id = str(uuid4())
+                state_metadata = _get_state_metadata(ctx.session.client_params)
+                lifespan.pending_consent_store.save(
+                    nonce,
+                    {
+                        "user_id": user_id,
+                        "client_id": client_id,
+                        "server_path": server.path,
+                        **state_metadata,
+                        "elicitation_id": elicitation_id,
+                    },
+                )
+                auth_url = f"{settings.registry_client_url}/consent/server?nonce={nonce}"
+                raise ConsentRequiredException(
+                    "Consent required to call this MCP server",
+                    auth_url=auth_url,
+                    server_name=server.serverName,
+                    elicitation_id=elicitation_id,
                 )
 
             # Track server request count
@@ -470,50 +535,33 @@ async def execute_tool_impl(
         except UrlElicitationRequiredException as exc:
             # Re-auth required: a handled failure mode, not a downstream/internal error.
             metrics_ctx.set_error_type("url_elicitation")
-            auth_url, server_name = exc.auth_url, exc.server_name
-
             template = (
-                f"In order to make tool calls to the '{server_name}' MCP server, the client must first perform "
+                f"In order to make tool calls to the '{exc.server_name}' MCP server, the client must first perform "
                 "out-of-band re-authorization in a browser window. Please direct the client to open the {} "
                 "in a browser window, finish re-authorization, and come back to retry the same tool call again."
             )
-
-            elicitation_id = parse_elicitation_id(auth_url)
-            if elicitation_id is not None and _support_url_elicitation(ctx.session.client_params):
-                msg = template.format("provided URL")
-
-                logger.info(f"sending back the URL mode elicitation error response with ID {elicitation_id}.")
-
-                _get_session_store(ctx).append(elicitation_id, ctx.session)
-
-                raise UrlElicitationRequiredError(
-                    # This message is for LLM.
-                    message=msg,
-                    elicitations=[
-                        ElicitRequestURLParams(
-                            elicitationId=elicitation_id,
-                            url=auth_url,
-                            # This message is for human users.
-                            message=(
-                                f"The tokens for the '{server_name}' MCP server managed by Jarvis Registry have expired. "
-                                "Please follow the URL to perform re-authorization in a browser window and come back again."
-                            ),
-                        )
-                    ],
-                )
-
-            logger.info(
-                "Client doesn't support URL mode elicitation. Sending back a tool call result to prompt LLM for re-auth."
+            human_message = (
+                f"The tokens for the '{exc.server_name}' MCP server managed by Jarvis Registry have expired. "
+                "Please follow the URL to perform re-authorization in a browser window and come back again."
             )
-
-            return CallToolResult(
-                content=[
-                    TextContent(
-                        type="text",
-                        text=template.format(f"URL `{auth_url}`"),
-                    )
-                ],
-                isError=True,
+            return _build_url_elicitation_result(ctx, exc.auth_url, template, human_message)
+        except ConsentRequiredException as exc:
+            metrics_ctx.set_error_type("consent_required")
+            template = (
+                f"In order to call the '{exc.server_name}' MCP server, the user must explicitly consent in a browser "
+                "window. Please direct the client to open the {} in a browser window, grant consent, and come back to "
+                "retry the same tool call again."
+            )
+            human_message = (
+                "Jarvis Registry needs your explicit consent before this application can call the "
+                f"'{exc.server_name}' MCP server on your behalf. Please follow the URL to review and approve."
+            )
+            return _build_url_elicitation_result(
+                ctx,
+                exc.auth_url,
+                template,
+                human_message,
+                elicitation_id=exc.elicitation_id,
             )
         except (McpGatewayException, McpError):
             # These exceptions have been logged and should just bubble up to the caller as a way of communication.
