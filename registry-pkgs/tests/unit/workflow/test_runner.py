@@ -25,7 +25,7 @@ def _definition() -> WorkflowDefinition:
     return WorkflowDefinition.model_construct(
         id=PydanticObjectId(),
         name="demo-workflow",
-        nodes=[WorkflowNode(name="fetch", executor_key="tool")],
+        nodes=[WorkflowNode(name="fetch", executor_key="tool", step_objective="fetch data")],
     )
 
 
@@ -223,8 +223,8 @@ class TestBuildRegistry:
             id=PydanticObjectId(),
             name="test",
             nodes=[
-                WorkflowNode(name="mcp-step", executor_key="mcp-tool"),
-                WorkflowNode(name="pool-step", a2a_pool=["agent-a", "agent-b"]),
+                WorkflowNode(name="mcp-step", executor_key="mcp-tool", step_objective="run MCP step"),
+                WorkflowNode(name="pool-step", a2a_pool=["agent-a", "agent-b"], step_objective="run pool step"),
             ],
         )
 

@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from mcp.server.session import ServerSession
 from redis import Redis
 
+from registry_pkgs.core.consent_store import ConsentStore, PendingConsentStore
 from registry_pkgs.core.downstream_oauth import downstream_mcp_code_key, oauth_error_payload
 from registry_pkgs.core.jwt_tokens import mint_managed_agent_token
 from registry_pkgs.core.oauth_state_store import DownstreamOAuthStoreProtocol
@@ -25,8 +26,10 @@ from ....core.config import settings
 from ....core.mcp_client import get_oauth_metadata_from_server
 from ....core.session_store import SessionStore
 from ....deps import (
+    get_consent_store,
     get_mcp_service,
     get_oauth_state_store,
+    get_pending_consent_store,
     get_reconnection_manager,
     get_redis_client,
     get_server_service,
@@ -200,15 +203,19 @@ async def _reconnect_after_oauth(
 
 
 async def _notify_elicitation_complete(
-    state_dict: dict[str, Any],
+    meta: dict[str, Any] | None,
     session_store: SessionStore,
 ) -> ClientBranding | None:
     """Best-effort ``elicitation/complete`` notification for mcpgw-initiated flows.
 
-    Returns the client branding carried in the flow state (used to deep-link the user back to their
-    AI app), or None. Never raises.
+    ``meta`` is the ``{elicitation_id, client_branding, notify_elicitation_complete}`` bag carried
+    by whichever flow raised the URL mode elicitation (OAuth-expired flow state's ``meta``, or the
+    server-consent flow's pending-consent payload) — shared so both callers get identical
+    notify/deep-link behavior instead of duplicating it.
+
+    Returns the client branding carried in ``meta`` (used to deep-link the user back to their AI
+    app), or None. Never raises.
     """
-    meta = state_dict.get("meta")
     if not meta or "elicitation_id" not in meta:
         return None
 
@@ -329,7 +336,7 @@ async def oauth_callback(
 
         # 5. Best-effort post-completion side effects (never block the redirect).
         await _reconnect_after_oauth(mcp_service, reconnection_manager, flow, server_path)
-        client_branding = await _notify_elicitation_complete(state_dict, session_store)
+        client_branding = await _notify_elicitation_complete(state_dict.get("meta"), session_store)
 
         # 6. MCP-client-initiated flows redirect back to the client;
         downstream_redirect = _build_downstream_client_redirect(flow, redis_client)
@@ -656,6 +663,8 @@ async def _build_downstream_authorize_redirect(
     mcp_service: MCPService,
     server_service: ServerServiceV1,
     store: DownstreamOAuthStoreProtocol,
+    consent_store: ConsentStore,
+    pending_store: PendingConsentStore,
 ) -> RedirectResponse:
     """Validate and initiate the per-server downstream authorization flow."""
     if not ObjectId.is_valid(user_id):
@@ -675,6 +684,26 @@ async def _build_downstream_authorize_redirect(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Server not found for path '{server_path}'")
 
     _validate_registered_redirect_uri(store.get_client(client_id), redirect_uri)
+
+    if client_id != settings.jwt_token_config.registry_client_id and not consent_store.has_client_consent(
+        user_id, client_id
+    ):
+        nonce = secrets.token_urlsafe(32)
+        pending_store.save(
+            nonce,
+            {
+                "user_id": user_id,
+                "server_path": server_path,
+                "response_type": response_type,
+                "client_id": client_id,
+                "redirect_uri": redirect_uri,
+                "code_challenge": code_challenge,
+                "code_challenge_method": code_challenge_method,
+                "state": state,
+            },
+        )
+        consent_url = f"{settings.registry_client_url}/consent/downstream?nonce={nonce}"
+        return RedirectResponse(url=consent_url)
 
     ctx: MCPClientContext = {
         "redirect_uri": redirect_uri,
@@ -712,6 +741,8 @@ async def downstream_oauth_authorize(
     mcp_service: MCPService = Depends(get_mcp_service),
     server_service: ServerServiceV1 = Depends(get_server_service),
     store: DownstreamOAuthStoreProtocol = Depends(get_oauth_state_store),
+    consent_store: ConsentStore = Depends(get_consent_store),
+    pending_store: PendingConsentStore = Depends(get_pending_consent_store),
 ) -> RedirectResponse:
     """Per-server downstream OAuth authorization endpoint (Layer B: registry-as-AS).
 
@@ -732,6 +763,8 @@ async def downstream_oauth_authorize(
             mcp_service=mcp_service,
             server_service=server_service,
             store=store,
+            consent_store=consent_store,
+            pending_store=pending_store,
         )
     except HTTPException:
         raise

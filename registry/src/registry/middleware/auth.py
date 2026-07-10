@@ -279,6 +279,7 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
 
         return self._build_user_context(
             user_id=user_id,
+            client_id=claims.get("client_id", ""),
             username=username,
             groups=groups,
             scopes=scopes,
@@ -321,6 +322,7 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
 
             return self._build_user_context(
                 username=username,
+                client_id=claims.get("client_id", ""),
                 groups=groups,
                 scopes=scopes,
                 auth_method=auth_method,
@@ -341,6 +343,7 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
         auth_method: str,
         provider: str,
         auth_source: str,
+        client_id: str,
         user_id: str | None = None,
     ) -> UserContextDict:
         """
@@ -348,6 +351,7 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
         """
         user_context: UserContextDict = {
             "user_id": user_id,
+            "client_id": client_id,
             "username": username,
             "groups": groups,
             "scopes": scopes,

@@ -238,6 +238,24 @@ user-read:
   - action: downstream_oauth_authorize
     method: GET
     endpoint: /mcp/downstream/oauth/authorize/{user_id}/{path}
+  - action: get_downstream_consent_context
+    method: GET
+    endpoint: /mcp/consent/downstream
+  - action: approve_downstream_consent
+    method: POST
+    endpoint: /mcp/consent/downstream
+  - action: deny_downstream_consent
+    method: POST
+    endpoint: /mcp/consent/downstream/deny
+  - action: get_server_consent_context
+    method: GET
+    endpoint: /mcp/consent/server
+  - action: approve_server_consent
+    method: POST
+    endpoint: /mcp/consent/server
+  - action: deny_server_consent
+    method: POST
+    endpoint: /mcp/consent/server/deny
   - action: oauth_callback
     method: GET
     endpoint: /mcp/{server_path}/oauth/callback

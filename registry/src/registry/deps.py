@@ -2,6 +2,7 @@ import httpx
 from fastapi import Depends, Request
 from redis import Redis
 
+from registry_pkgs.core.consent_store import ConsentStore, PendingConsentStore
 from registry_pkgs.core.oauth_state_store import DownstreamOAuthStoreProtocol
 from registry_pkgs.workflows.runner import WorkflowRunner
 
@@ -121,6 +122,14 @@ def get_redis_client(container: RegistryContainer = Depends(get_container)) -> R
 def get_oauth_state_store(container: RegistryContainer = Depends(get_container)) -> DownstreamOAuthStoreProtocol:
     """Redis-backed OAuth state store for the direct-connect downstream flow."""
     return container.oauth_state_store
+
+
+def get_consent_store(container: RegistryContainer = Depends(get_container)) -> ConsentStore:
+    return container.consent_store
+
+
+def get_pending_consent_store(container: RegistryContainer = Depends(get_container)) -> PendingConsentStore:
+    return container.pending_consent_store
 
 
 def get_workflow_control_service(

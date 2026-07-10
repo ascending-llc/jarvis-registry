@@ -9,6 +9,7 @@ from agno.models.aws import AwsBedrock
 from beanie import PydanticObjectId
 from redis import Redis
 
+from registry_pkgs.core.consent_store import ConsentStore, PendingConsentStore
 from registry_pkgs.core.oauth_state_store import DownstreamOAuthStateStore, OAuthClientStore, OAuthStateStore
 from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.vector.client import DatabaseClient
@@ -174,6 +175,21 @@ class RegistryContainer:
             redis_client=self.redis_client,
             key_prefix=self.settings.auth_server_redis_key_prefix,
             client_secret_hash_key=self.settings.secret_key,
+        )
+
+    @cached_property
+    def consent_store(self) -> ConsentStore:
+        """Share auth-server's consent namespace for cross-service OAuth flows."""
+        return ConsentStore(
+            redis_client=self.redis_client,
+            key_prefix=self.settings.auth_server_redis_key_prefix,
+        )
+
+    @cached_property
+    def pending_consent_store(self) -> PendingConsentStore:
+        return PendingConsentStore(
+            redis_client=self.redis_client,
+            key_prefix=self.settings.auth_server_redis_key_prefix,
         )
 
     @cached_property

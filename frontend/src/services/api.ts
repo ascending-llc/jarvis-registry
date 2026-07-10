@@ -22,6 +22,14 @@ const API = {
   revokeAuth: (id: string) => `${MCP_BASE_URL}/oauth/token/${id}`,
   getDiscover: `${MCP_BASE_URL}/oauth/discover`,
 
+  // consent (as-1522 / as-1524)
+  getDownstreamConsent: (nonce: string) => `${MCP_BASE_URL}/consent/downstream?nonce=${encodeURIComponent(nonce)}`,
+  approveDownstreamConsent: `${MCP_BASE_URL}/consent/downstream`,
+  denyDownstreamConsent: `${MCP_BASE_URL}/consent/downstream/deny`,
+  getServerConsent: (nonce: string) => `${MCP_BASE_URL}/consent/server?nonce=${encodeURIComponent(nonce)}`,
+  approveServerConsent: `${MCP_BASE_URL}/consent/server`,
+  denyServerConsent: `${MCP_BASE_URL}/consent/server/deny`,
+
   // server
   getSearch: `${BASE_URL}/search`,
   getVersion: '/api/version',
