@@ -233,8 +233,16 @@ def _get_state_metadata(client_params: InitializeRequestParams | None) -> StateM
     If yes, relay this info all the way to frontend for it to use the deep link technology with them.
     """
 
+    # `notify_elicitation_complete` must match whatever `_build_url_elicitation_result` decides at
+    # elicitation time: it only registers the session in `SessionStore` (making a later notification
+    # possible) when the client supports URL mode elicitation.
+    notify_elicitation_complete = _support_url_elicitation(client_params)
+
     if client_params is None:
-        return {"client_branding": ClientBranding.UNRECOGNIZED, "notify_elicitation_complete": True}
+        return {
+            "client_branding": ClientBranding.UNRECOGNIZED,
+            "notify_elicitation_complete": notify_elicitation_complete,
+        }
 
     # As of 2026-03-17, below are how mainstream AI agents support URL mode elicitation and how that relate to deep link.
     # VSCode: Perfect support. Its client name is "Visual Studio Code". We recognize this and provide deep link
@@ -255,13 +263,16 @@ def _get_state_metadata(client_params: InitializeRequestParams | None) -> StateM
     #   and we recognize them to provide deep link back to Cursor.
     name = client_params.clientInfo.name.strip().lower()
     if name == "visual studio code":
-        return {"client_branding": ClientBranding.VSCODE, "notify_elicitation_complete": True}
+        return {"client_branding": ClientBranding.VSCODE, "notify_elicitation_complete": notify_elicitation_complete}
     elif name.startswith("claude-ai"):
-        return {"client_branding": ClientBranding.CLAUDE, "notify_elicitation_complete": True}
+        return {"client_branding": ClientBranding.CLAUDE, "notify_elicitation_complete": notify_elicitation_complete}
     elif name.startswith("probe (via mcp-remote") or name.startswith("mcp-stdio-client (via mcp-remote"):
-        return {"client_branding": ClientBranding.CURSOR, "notify_elicitation_complete": True}
+        return {"client_branding": ClientBranding.CURSOR, "notify_elicitation_complete": notify_elicitation_complete}
     else:
-        return {"client_branding": ClientBranding.UNRECOGNIZED, "notify_elicitation_complete": True}
+        return {
+            "client_branding": ClientBranding.UNRECOGNIZED,
+            "notify_elicitation_complete": notify_elicitation_complete,
+        }
 
 
 def _support_url_elicitation(client_params: InitializeRequestParams | None) -> bool:
