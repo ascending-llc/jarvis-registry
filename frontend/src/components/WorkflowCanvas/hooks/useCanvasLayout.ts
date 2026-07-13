@@ -9,6 +9,7 @@ export const useCanvasLayout = (
   setNodes: React.Dispatch<React.SetStateAction<WorkflowNode[]>>,
   setEdges: React.Dispatch<React.SetStateAction<Edge[]>>,
   onChange?: () => void,
+  isReadOnly = false,
 ) => {
   const generateNodeId = useCallback(
     () => `n_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
@@ -20,11 +21,12 @@ export const useCanvasLayout = (
   );
 
   const runLayout = useCallback(() => {
+    if (isReadOnly) return;
     const { nodes: ln, edges: le } = getLayoutedElements(nodes, edges);
     setNodes(ln);
     setEdges(le);
     onChange?.();
-  }, [nodes, edges, setNodes, setEdges, onChange]);
+  }, [nodes, edges, setNodes, setEdges, onChange, isReadOnly]);
 
   return {
     generateNodeId,

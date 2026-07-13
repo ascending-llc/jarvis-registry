@@ -11,7 +11,7 @@ interface Props {
 }
 
 export const LoopNodeProperties: React.FC<Props> = ({ node }) => {
-  const { nodes, edges, agentSchemas, onNodeDataChange, onOpenAgentPicker } = useWorkflowPanel();
+  const { nodes, edges, agentSchemas, isReadOnly, onNodeDataChange, onOpenAgentPicker } = useWorkflowPanel();
   const { upstreamSchema, sourceLabel } = useUpstreamSchema(node, nodes, edges, agentSchemas);
 
   const nodeData = node.data;
@@ -40,7 +40,9 @@ export const LoopNodeProperties: React.FC<Props> = ({ node }) => {
               <div className='text-[10px] text-[var(--jarvis-subtle)]'>{loopAgent.desc}</div>
             </div>
             <button
-              className='shrink-0 rounded p-0.5 transition-colors hover:bg-[var(--jarvis-danger-soft)] hover:text-[var(--jarvis-danger-text)] bg-none border-none text-[var(--jarvis-subtle)] cursor-pointer text-[13px]'
+              type='button'
+              disabled={isReadOnly}
+              className='shrink-0 rounded p-0.5 transition-colors hover:bg-[var(--jarvis-danger-soft)] hover:text-[var(--jarvis-danger-text)] bg-none border-none text-[var(--jarvis-subtle)] cursor-pointer text-[13px] disabled:cursor-not-allowed disabled:opacity-50'
               onClick={() => onNodeDataChange(node.id, { agents: [] })}
             >
               ×
@@ -48,6 +50,7 @@ export const LoopNodeProperties: React.FC<Props> = ({ node }) => {
           </div>
         ) : (
           <AddButton
+            disabled={isReadOnly}
             onClick={() => {
               onOpenAgentPicker(agent => {
                 onNodeDataChange(node.id, { agents: [agent] });
@@ -66,6 +69,7 @@ export const LoopNodeProperties: React.FC<Props> = ({ node }) => {
           value={nodeData.maxIterations ?? 5}
           onChange={e => onNodeDataChange(node.id, { maxIterations: parseInt(e.target.value, 10) || 1 })}
           min={1}
+          disabled={isReadOnly}
         />
       </div>
       <div className='mb-2'>
@@ -74,6 +78,7 @@ export const LoopNodeProperties: React.FC<Props> = ({ node }) => {
           className='w-full bg-[var(--jarvis-card-muted)] border border-[var(--jarvis-border)] rounded-md text-[var(--jarvis-text-strong)] font-mono text-[11px] px-2 py-1.5 outline-none'
           value={nodeData.exitCondition ?? 'session_state.done == true'}
           onChange={e => onNodeDataChange(node.id, { exitCondition: e.target.value })}
+          disabled={isReadOnly}
         />
       </div>
       <p className='text-[11px] text-[var(--jarvis-subtle)] leading-relaxed'>

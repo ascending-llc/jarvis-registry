@@ -5,7 +5,7 @@ export type PanelMode = 'node' | 'workflow';
 
 export interface WorkflowCanvasRef {
   save: () => void;
-  getElements: () => { nodes: Node[]; edges: Edge[] };
+  getElements: () => { nodes: WorkflowNode[]; edges: Edge[] };
   clearSelection: () => void;
   /** Toggle panel: expand if collapsed, collapse if expanded and workflow mode */
   togglePanel: () => void;
@@ -16,13 +16,13 @@ export interface WorkflowCanvasProps {
   workflowId?: string;
   workflow?: Partial<Workflow> | null;
   refreshRunHistoryKey?: number;
-  initialNodes?: Node[];
+  initialNodes?: WorkflowNode[];
   initialEdges?: Edge[];
   isReadOnly: boolean;
   isNewWorkflow: boolean;
   onDeleteWorkflow: () => void;
   onWorkflowChange: (patch: Partial<Pick<Workflow, 'name' | 'description'>>) => void;
-  onSave?: (nodes: Node[], edges: Edge[], viewport: { x: number; y: number; zoom: number }) => void;
+  onSave?: (nodes: WorkflowNode[], edges: Edge[], viewport: { x: number; y: number; zoom: number }) => void;
   onChange?: () => void;
 }
 
@@ -33,6 +33,7 @@ export interface BaseNodeData extends Record<string, unknown> {
   executorKey?: string;
   onAdd?: () => void;
   refs?: string[];
+  stepObjective?: string;
 }
 
 /** Specific node data types */
@@ -90,7 +91,6 @@ export type WorkflowNode = Node<NodeData>;
 /** PropsPanel Props */
 export interface PropsPanelProps {
   panelMode: PanelMode;
-  isReadOnly: boolean;
   isNewWorkflow: boolean;
   collapsed: boolean;
   onCollapsedChange: (collapsed: boolean | ((prev: boolean) => boolean)) => void;

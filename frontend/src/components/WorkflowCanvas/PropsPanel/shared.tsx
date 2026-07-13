@@ -4,12 +4,15 @@ import { useEffect, useState } from 'react';
 export interface AddButtonProps {
   children: React.ReactNode;
   onClick: () => void;
+  disabled?: boolean;
 }
 
-export const AddButton: React.FC<AddButtonProps> = ({ children, onClick }) => {
+export const AddButton: React.FC<AddButtonProps> = ({ children, onClick, disabled = false }) => {
   return (
     <button
-      className='w-full bg-none border border-dashed border-[var(--jarvis-border-strong)] rounded-md text-[var(--jarvis-subtle)] font-sans text-xs py-1.5 cursor-pointer transition-colors duration-150 hover:border-[var(--jarvis-primary)] hover:text-[var(--jarvis-primary-text)]'
+      type='button'
+      disabled={disabled}
+      className='w-full bg-none border border-dashed border-[var(--jarvis-border-strong)] rounded-md text-[var(--jarvis-subtle)] font-sans text-xs py-1.5 cursor-pointer transition-colors duration-150 hover:border-[var(--jarvis-primary)] hover:text-[var(--jarvis-primary-text)] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-[var(--jarvis-border-strong)] disabled:hover:text-[var(--jarvis-subtle)]'
       onClick={onClick}
     >
       {children}
@@ -24,9 +27,18 @@ export interface BranchListProps {
   onChange?: (i: number, val: string) => void;
   addLabel: string;
   prefix?: string;
+  disabled?: boolean;
 }
 
-export const BranchList: React.FC<BranchListProps> = ({ items, onAdd, onRm, onChange, addLabel, prefix }) => {
+export const BranchList: React.FC<BranchListProps> = ({
+  items,
+  onAdd,
+  onRm,
+  onChange,
+  addLabel,
+  prefix,
+  disabled = false,
+}) => {
   return (
     <>
       <div className='branch-list'>
@@ -40,9 +52,12 @@ export const BranchList: React.FC<BranchListProps> = ({ items, onAdd, onRm, onCh
               className='font-mono text-[11px] text-[var(--jarvis-text)] flex-1 bg-transparent border-none outline-none'
               value={item}
               onChange={val => onChange?.(i, val)}
+              disabled={disabled}
             />
             <button
-              className='shrink-0 rounded p-0.5 transition-colors hover:bg-[var(--jarvis-danger-soft)] hover:text-[var(--jarvis-danger-text)] bg-none border-none text-[var(--jarvis-subtle)] cursor-pointer text-[13px]'
+              type='button'
+              disabled={disabled}
+              className='shrink-0 rounded p-0.5 transition-colors hover:bg-[var(--jarvis-danger-soft)] hover:text-[var(--jarvis-danger-text)] bg-none border-none text-[var(--jarvis-subtle)] cursor-pointer text-[13px] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-[var(--jarvis-subtle)]'
               onClick={() => onRm(i)}
             >
               ×
@@ -50,7 +65,9 @@ export const BranchList: React.FC<BranchListProps> = ({ items, onAdd, onRm, onCh
           </div>
         ))}
       </div>
-      <AddButton onClick={onAdd}>{addLabel}</AddButton>
+      <AddButton onClick={onAdd} disabled={disabled}>
+        {addLabel}
+      </AddButton>
     </>
   );
 };
@@ -60,7 +77,7 @@ export interface LocalStateInputProps extends Omit<React.InputHTMLAttributes<HTM
   onChange: (val: string) => void;
 }
 
-export const LocalStateInput: React.FC<LocalStateInputProps> = ({ value, onChange, ...props }) => {
+export const LocalStateInput: React.FC<LocalStateInputProps> = ({ value, onChange, disabled, ...props }) => {
   const [localValue, setLocalValue] = useState(value);
 
   // Sync with upstream value if it changes externally
@@ -71,11 +88,16 @@ export const LocalStateInput: React.FC<LocalStateInputProps> = ({ value, onChang
   return (
     <input
       {...props}
+      disabled={disabled}
       value={localValue}
-      onChange={e => setLocalValue(e.target.value)}
-      onBlur={() => onChange(localValue)}
+      onChange={e => {
+        if (!disabled) setLocalValue(e.target.value);
+      }}
+      onBlur={() => {
+        if (!disabled) onChange(localValue);
+      }}
       onKeyDown={e => {
-        if (e.key === 'Enter') {
+        if (!disabled && e.key === 'Enter') {
           e.currentTarget.blur(); // Trigger onBlur and thus onChange
         }
       }}

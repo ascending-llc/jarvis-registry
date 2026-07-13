@@ -1,16 +1,17 @@
-import type { Edge, Node } from '@xyflow/react';
+import type { Edge } from '@xyflow/react';
 import type React from 'react';
 import { createContext, useContext } from 'react';
 import type { Workflow } from '@/services/workflow/type';
-import type { AgentInfo, NodeData, SchemaField } from '../types';
+import type { AgentInfo, NodeData, SchemaField, WorkflowNode } from '../types';
 
 export interface WorkflowPanelContextValue {
   workflowId?: string;
   refreshRunHistoryKey?: number;
   workflow: Partial<Workflow> | null;
-  selectedNode: Node | null;
-  nodes: Node[];
+  selectedNode: WorkflowNode | null;
+  nodes: WorkflowNode[];
   edges: Edge[];
+  isReadOnly: boolean;
   agentSchemas: Record<string, { output: SchemaField[] }>;
   onOpenAgentPicker: (callback: (agent: AgentInfo) => void) => void;
   onNodeDataChange: (nodeId: string, patch: Partial<NodeData>) => void;

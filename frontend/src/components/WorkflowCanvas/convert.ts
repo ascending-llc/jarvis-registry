@@ -3,6 +3,7 @@ import type { WorkflowNode as ApiWorkflowNode } from '@/services/workflow/type';
 import { DASHED_EDGE, EDGE_CONFIG } from './constants';
 import { getLayoutedElements } from './layout';
 import type { AgentInfo, WorkflowNode as CanvasNode, NodeData } from './types';
+import { getReferenceCandidates, isExecutionNode } from './utils/dag';
 
 // ─── canvas type ↔ API nodeType maps ─────────────────────────────────────────
 
@@ -60,6 +61,37 @@ const API_TO_CANVAS_TYPE: Record<string, string> = {
 
 // ─── canvas → API ─────────────────────────────────────────────────────────────
 
+export const validateCanvasNodes = (nodes: Node<NodeData>[], edges: Edge[]): string | null => {
+  const workflowNodes = nodes.filter(node => node.type !== 'add');
+  const names = new Set<string>();
+
+  for (const node of workflowNodes) {
+    const name = node.data.label.trim();
+    if (!name) return `Node ${node.id} requires a title`;
+    if (names.has(name)) return `Node title "${name}" must be unique across the workflow`;
+    names.add(name);
+
+    if (isExecutionNode(node) && !node.data.stepObjective?.trim()) {
+      return `Step node "${name}" requires a step objective`;
+    }
+
+    const refs = node.data.refs ?? [];
+    if (!isExecutionNode(node) && refs.length > 0) {
+      return `Non-step node "${name}" must not reference upstream outputs`;
+    }
+
+    const validIds = new Set(getReferenceCandidates(node.id, workflowNodes, edges).map(candidate => candidate.id));
+    for (const refId of refs) {
+      const referencedNode = workflowNodes.find(candidate => candidate.id === refId);
+      if (!referencedNode) return `Step node "${name}" references a missing node`;
+      if (!referencedNode.data.label.trim()) return `Referenced node ${refId} requires a title`;
+      if (!validIds.has(refId)) return `Step node "${name}" contains an invalid upstream reference`;
+    }
+  }
+
+  return null;
+};
+
 const sortEdgesByHandle = (edges: Edge[]): Edge[] =>
   [...edges].sort((a, b) => {
     const ha = a.sourceHandle ?? '';
@@ -71,18 +103,34 @@ const sortEdgesByHandle = (edges: Edge[]): Edge[] =>
     return ia - ib;
   });
 
-const mapNodeToApi = (node: Node<NodeData>, branchData: { [handle: string]: InternalNode[] } | null): InternalNode => {
+const mapNodeToApi = (
+  node: Node<NodeData>,
+  branchData: { [handle: string]: InternalNode[] } | null,
+  nodeMap: Map<string, Node<NodeData>>,
+): InternalNode => {
   const data = node.data;
   const nodeType = CANVAS_TO_API_NODE_TYPE[node.type ?? ''] ?? 'step';
 
   const apiNode: InternalNode = {
     id: node.id,
-    name: data.label || node.id,
+    name: data.label.trim(),
     nodeType,
     position: { x: Math.round(node.position?.x ?? 0), y: Math.round(node.position?.y ?? 0) },
     // Store canvasType for round-trip fidelity (mcp vs agent distinction)
-    config: { description: data.description ?? '', canvasType: node.type, refs: data.refs ?? [] },
+    config: { description: data.description ?? '', canvasType: node.type },
   };
+
+  if (nodeType === 'step') {
+    apiNode.stepObjective = data.stepObjective?.trim();
+    const referencedNodeNames = (data.refs ?? []).map(refId => {
+      const referencedNode = nodeMap.get(refId);
+      if (!referencedNode) throw new Error(`Referenced node ${refId} does not exist`);
+      const name = referencedNode.data.label.trim();
+      if (!name) throw new Error(`Referenced node ${refId} requires a title`);
+      return name;
+    });
+    if (referencedNodeNames.length > 0) apiNode.referencedNodeNames = referencedNodeNames;
+  }
 
   if (branchData) {
     if (nodeType === 'condition') {
@@ -186,10 +234,10 @@ const buildSequence = (
         branchData[handle] = buildSequence(e.target, nodeMap, edgesFromNode, addNodeIds, new Set(visited));
       }
 
-      result.push(mapNodeToApi(node, branchData));
+      result.push(mapNodeToApi(node, branchData, nodeMap));
       currentId = null;
     } else {
-      result.push(mapNodeToApi(node, null));
+      result.push(mapNodeToApi(node, null, nodeMap));
       const next: Edge | undefined = outEdges.find((e: Edge) => nodeMap.has(e.target));
       currentId = next?.target ?? null;
     }
@@ -200,11 +248,18 @@ const buildSequence = (
 
 /** Walk API tree and return first validation error message, or null if valid. */
 export const validateApiNodes = (apiNodes: InternalNode[]): string | null => {
+  const seenNames = new Set<string>();
+
   const visit = (node: InternalNode): string | null => {
     const children = node.children ?? [];
     const trueSteps = node.trueSteps ?? [];
     const falseSteps = node.falseSteps ?? [];
     const choices = node.choices ?? [];
+
+    const normalizedName = node.name.trim();
+    if (!normalizedName) return 'Every workflow node requires a title';
+    if (seenNames.has(normalizedName)) return `Node title "${normalizedName}" must be unique across the workflow`;
+    seenNames.add(normalizedName);
 
     if (node.nodeType === 'gate_placeholder') {
       return `Approval Gate node "${node.name}" must be immediately followed by an Agent or MCP execution node`;
@@ -215,6 +270,9 @@ export const validateApiNodes = (apiNodes: InternalNode[]): string | null => {
         return `Step node "${node.name}" must not have nested branches`;
       if (!node.executorKey && (!node.a2aPool || node.a2aPool.length === 0)) {
         return `Node "${node.name}" requires an executor key or agent pool`;
+      }
+      if (!node.stepObjective || !node.stepObjective.trim()) {
+        return `Step node "${node.name}" requires a step objective`;
       }
     }
 
@@ -342,21 +400,39 @@ interface CanvasResult {
   edges: Edge[];
 }
 
+interface CanvasIdentity {
+  canvasIdByApiNode: Map<InternalNode, string>;
+  nameToId: Map<string, string>;
+}
+
 let _nodeSeq = 0;
 let _edgeSeq = 0;
 const nextAddId = () => `add${_nodeSeq++}`;
 const nextEdgeId = () => `e_load_${_edgeSeq++}`;
 
-const apiNodeToCanvas = (w: InternalNode): CanvasNode => {
+const resolveReferencedNodeIds = (node: InternalNode, nameToId: Map<string, string>): string[] =>
+  (node.referencedNodeNames ?? []).map(name => {
+    const id = nameToId.get(name.trim());
+    if (!id) throw new Error(`Step node "${node.name}" references unknown node "${name}"`);
+    return id;
+  });
+
+const apiNodeToCanvas = (w: InternalNode, identity: CanvasIdentity): CanvasNode => {
   // Restore original canvas type if stored; fall back to API-type mapping
   const canvasType: string = (w.config?.canvasType as string | undefined) ?? API_TO_CANVAS_TYPE[w.nodeType] ?? 'agent';
 
   const data = {
     label: w.name,
     description: (w.config?.description as string | undefined) ?? '',
-    executorKey: w.executorKey,
-    refs: (w.config?.refs as string[] | undefined) ?? [],
   } as NodeData;
+
+  if (w.nodeType === 'step') {
+    data.executorKey = w.executorKey ?? undefined;
+    data.stepObjective = w.stepObjective ?? '';
+    data.refs = resolveReferencedNodeIds(w, identity.nameToId);
+  } else if ((w.referencedNodeNames?.length ?? 0) > 0) {
+    throw new Error(`Non-step node "${w.name}" must not reference upstream outputs`);
+  }
 
   if (canvasType === 'cond' && w.conditionCel) {
     (data as import('./types').CondNodeData).expression = w.conditionCel;
@@ -397,7 +473,7 @@ const apiNodeToCanvas = (w: InternalNode): CanvasNode => {
   }
 
   return {
-    id: w.id ?? `n_${Date.now()}_${Math.random()}`,
+    id: identity.canvasIdByApiNode.get(w) ?? w.id ?? `n_load_${_nodeSeq++}`,
     type: canvasType,
     position: w.position ? { x: w.position.x ?? 0, y: w.position.y ?? 0 } : { x: 0, y: 0 },
     data,
@@ -413,6 +489,7 @@ const processApiSequence = (
   prevId: string | null,
   prevHandle: string | null,
   result: CanvasResult,
+  identity: CanvasIdentity,
 ): string | null => {
   let lastStepId: string | null = prevId;
   let lastHandle: string | null = prevHandle;
@@ -420,8 +497,9 @@ const processApiSequence = (
   const flatNodes: InternalNode[] = [];
   for (const apiNode of apiNodes) {
     if (apiNode.humanReview) {
+      const executionNodeId = identity.canvasIdByApiNode.get(apiNode) ?? apiNode.id ?? `n_load_${_nodeSeq++}`;
       const gateApiNode: InternalNode = {
-        id: `gate_${apiNode.id}`,
+        id: `gate_${executionNodeId}`,
         name: 'Approval Gate',
         nodeType: 'gate_placeholder',
         position: apiNode.position ? { x: (apiNode.position.x ?? 0) - 220, y: apiNode.position.y ?? 0 } : undefined,
@@ -436,7 +514,7 @@ const processApiSequence = (
   }
 
   for (const apiNode of flatNodes) {
-    const canvasNode = apiNodeToCanvas(apiNode);
+    const canvasNode = apiNodeToCanvas(apiNode, identity);
     result.nodes.push(canvasNode);
 
     if (lastStepId !== null) {
@@ -472,9 +550,10 @@ const processApiSequence = (
         if (cases.length === 0 && apiNode.children?.length) {
           // fallback to children
           const routerCases = (apiNode.config?.cases as string[]) ?? [];
-          cases = apiNode.children.map((c, i) => {
-            const name = routerCases[i] ?? (i === apiNode.children!.length - 1 ? 'default' : `case-${i}`);
-            return { name, steps: [c] };
+          const children = apiNode.children;
+          cases = children.map((child, index) => {
+            const name = routerCases[index] ?? (index === children.length - 1 ? 'default' : `case-${index}`);
+            return { name, steps: [child] };
           });
         }
         const routerCases = (apiNode.config?.cases as string[]) ?? [];
@@ -502,7 +581,7 @@ const processApiSequence = (
 
       for (let i = 0; i < branches.length; i++) {
         const branch = branches[i];
-        const branchLastId = processApiSequence(branch.sequence, canvasNode.id, branch.handle, result);
+        const branchLastId = processApiSequence(branch.sequence, canvasNode.id, branch.handle, result, identity);
 
         if (branchLastId !== null) {
           const finalBranchNodeId = branchLastId;
@@ -562,8 +641,37 @@ export const apiNodesToCanvas = (apiNodes: ApiWorkflowNode[]): { nodes: CanvasNo
     };
   }
 
+  const identity: CanvasIdentity = {
+    canvasIdByApiNode: new Map<InternalNode, string>(),
+    nameToId: new Map<string, string>(),
+  };
+  const usedIds = new Set<string>();
+  const collectNodeIdentity = (nodes: InternalNode[]) => {
+    for (const node of nodes) {
+      const normalizedName = node.name.trim();
+      if (!normalizedName) throw new Error('Workflow contains a node without a title');
+      if (identity.nameToId.has(normalizedName)) {
+        throw new Error(`Workflow contains duplicate node title "${normalizedName}"`);
+      }
+
+      const savedId = node.id && !usedIds.has(node.id) ? node.id : undefined;
+      const canvasId = savedId ?? `n_load_${_nodeSeq++}`;
+      usedIds.add(canvasId);
+      identity.canvasIdByApiNode.set(node, canvasId);
+      identity.nameToId.set(normalizedName, canvasId);
+
+      if (node.children) collectNodeIdentity(node.children);
+      if (node.trueSteps) collectNodeIdentity(node.trueSteps);
+      if (node.falseSteps) collectNodeIdentity(node.falseSteps);
+      node.choices?.forEach(choice => {
+        collectNodeIdentity(choice.steps);
+      });
+    }
+  };
+  collectNodeIdentity(apiNodes as InternalNode[]);
+
   const result: CanvasResult = { nodes: [], edges: [] };
-  const lastStepId = processApiSequence(apiNodes, null, null, result);
+  const lastStepId = processApiSequence(apiNodes as InternalNode[], null, null, result, identity);
 
   // Trailing 'add' node after the last step in the linear chain
   if (lastStepId !== null) {

@@ -3,12 +3,11 @@ import type React from 'react';
 import { useWorkflowPanel } from './WorkflowPanelContext';
 
 interface WorkflowPropsProps {
-  isReadOnly: boolean;
   isNewWorkflow: boolean;
 }
 
-const WorkflowProps: React.FC<WorkflowPropsProps> = ({ isReadOnly, isNewWorkflow }) => {
-  const { workflow, onWorkflowChange: onChange, onDeleteWorkflow } = useWorkflowPanel();
+const WorkflowProps: React.FC<WorkflowPropsProps> = ({ isNewWorkflow }) => {
+  const { workflow, isReadOnly, onWorkflowChange: onChange, onDeleteWorkflow } = useWorkflowPanel();
   if (!workflow) return null;
 
   return (
@@ -36,7 +35,7 @@ const WorkflowProps: React.FC<WorkflowPropsProps> = ({ isReadOnly, isNewWorkflow
             value={workflow.description ?? ''}
             onChange={e => onChange({ description: e.target.value })}
             disabled={isReadOnly}
-            placeholder='Add a description for this workflow'
+            placeholder='Add a description for this workflow — shown to every step as context for what the overall workflow is trying to accomplish'
           />
         </div>
       </div>

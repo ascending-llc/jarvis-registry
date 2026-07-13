@@ -42,7 +42,7 @@ const WorkflowCanvasInner = forwardRef<WorkflowCanvasRef, WorkflowCanvasProps>(
       setPickerOpen(true);
     };
 
-    const canvas = useWorkflowCanvas(initialNodes, initialEdges, onChange, handleOpenNodePicker);
+    const canvas = useWorkflowCanvas(initialNodes, initialEdges, onChange, handleOpenNodePicker, isReadOnly);
 
     // Switch panel mode based on selection
     useEffect(() => {
@@ -59,7 +59,9 @@ const WorkflowCanvasInner = forwardRef<WorkflowCanvasRef, WorkflowCanvasProps>(
     const reactFlow = useReactFlow();
 
     useImperativeHandle(ref, () => ({
-      save: () => onSave?.(canvas.nodes, canvas.edges, reactFlow.getViewport()),
+      save: () => {
+        if (!isReadOnly) onSave?.(canvas.nodes, canvas.edges, reactFlow.getViewport());
+      },
       getElements: () => ({ nodes: canvas.nodes, edges: canvas.edges }),
       clearSelection: canvas.clearSelection,
       togglePanel: () => {
@@ -80,6 +82,7 @@ const WorkflowCanvasInner = forwardRef<WorkflowCanvasRef, WorkflowCanvasProps>(
     }));
 
     const onOpenAgentPicker = (cb: (agent: AgentInfo) => void) => {
+      if (isReadOnly) return;
       agentPickerCb.current = cb;
       setAgentPickerOpen(true);
     };
@@ -96,6 +99,7 @@ const WorkflowCanvasInner = forwardRef<WorkflowCanvasRef, WorkflowCanvasProps>(
             selectedNode={canvas.selectedNode}
             nodes={canvas.nodes}
             edges={canvas.edges}
+            isReadOnly={isReadOnly}
             agentSchemas={AGENT_SCHEMAS}
             onOpenAgentPicker={onOpenAgentPicker}
             onNodeDataChange={canvas.onNodeDataChange}
@@ -107,7 +111,6 @@ const WorkflowCanvasInner = forwardRef<WorkflowCanvasRef, WorkflowCanvasProps>(
           >
             <PropsPanel
               panelMode={panelMode}
-              isReadOnly={isReadOnly}
               isNewWorkflow={isNewWorkflow}
               collapsed={canvas.panelCollapsed}
               onCollapsedChange={canvas.setPanelCollapsed}
@@ -120,6 +123,7 @@ const WorkflowCanvasInner = forwardRef<WorkflowCanvasRef, WorkflowCanvasProps>(
             tab={pickerTab}
             onTabChange={setPickerTab}
             onPick={(category, item) => {
+              if (isReadOnly) return;
               setPickerOpen(false);
               canvas.onPick(pendingAdd, category, item);
               setPendingAdd(null);
@@ -135,11 +139,12 @@ const WorkflowCanvasInner = forwardRef<WorkflowCanvasRef, WorkflowCanvasProps>(
           <NodePicker
             agentOnly
             onPick={(_, agent) => {
+              if (isReadOnly) return;
               agentPickerCb.current?.({
                 id: agent.id,
                 label: agent.label,
                 desc: agent.desc,
-                path: (agent as any).executorKey,
+                path: 'executorKey' in agent ? agent.executorKey : agent.id,
               });
               setAgentPickerOpen(false);
             }}

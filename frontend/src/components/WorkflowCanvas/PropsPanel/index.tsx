@@ -20,13 +20,7 @@ const NODE_TYPE_ICON_MAP: Record<string, string> = {
 };
 
 /** PropsPanel - collapsible properties panel. */
-const PropsPanel: React.FC<PropsPanelProps> = ({
-  panelMode,
-  isReadOnly,
-  isNewWorkflow,
-  collapsed = false,
-  onCollapsedChange,
-}) => {
+const PropsPanel: React.FC<PropsPanelProps> = ({ panelMode, isNewWorkflow, collapsed = false, onCollapsedChange }) => {
   const [tab, setTab] = useState<'props' | 'hist'>('props');
   const { workflow, selectedNode } = useWorkflowPanel();
 
@@ -58,9 +52,7 @@ const PropsPanel: React.FC<PropsPanelProps> = ({
       onTabChange={setTab}
       showHistoryTab={!isLogicNode}
     >
-      {tab === 'props' && (
-        <PropertiesContent panelMode={panelMode} isReadOnly={isReadOnly} isNewWorkflow={isNewWorkflow} />
-      )}
+      {tab === 'props' && <PropertiesContent panelMode={panelMode} isNewWorkflow={isNewWorkflow} />}
 
       {tab === 'hist' && <RunHistory panelMode={panelMode} />}
     </ResizablePanel>

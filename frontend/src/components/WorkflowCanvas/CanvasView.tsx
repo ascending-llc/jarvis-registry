@@ -122,35 +122,39 @@ export const CanvasView: React.FC<CanvasViewProps> = ({ canvas, defaultViewport,
           nodeTypes={nodeTypes}
           defaultEdgeOptions={EDGE_CONFIG}
           isValidConnection={canvas.isValidConnection}
-          deleteKeyCode={['Backspace', 'Delete']}
-          onDelete={({ nodes: nodesToDelete, edges: edgesToDelete }) => {
-            const deletedNodeIds = new Set(nodesToDelete.map(n => n.id));
+          deleteKeyCode={isReadOnly ? null : ['Backspace', 'Delete']}
+          onDelete={
+            isReadOnly
+              ? undefined
+              : ({ nodes: nodesToDelete, edges: edgesToDelete }) => {
+                  const deletedNodeIds = new Set(nodesToDelete.map(n => n.id));
 
-            // Delete edges that aren't attached to deleted nodes
-            const isolatedEdgesToDelete = edgesToDelete.filter(
-              e => !deletedNodeIds.has(e.source) && !deletedNodeIds.has(e.target),
-            );
+                  // Delete edges that aren't attached to deleted nodes
+                  const isolatedEdgesToDelete = edgesToDelete.filter(
+                    e => !deletedNodeIds.has(e.source) && !deletedNodeIds.has(e.target),
+                  );
 
-            // Find orphaned add nodes: if an isolated edge points to an add node, that add node is orphaned
-            const orphanedAddNodeIds = new Set<string>();
-            isolatedEdgesToDelete.forEach(edge => {
-              const targetNode = canvas.nodes.find(n => n.id === edge.target);
-              if (targetNode?.type === 'add') {
-                orphanedAddNodeIds.add(targetNode.id);
-              }
-            });
+                  // Find orphaned add nodes: if an isolated edge points to an add node, that add node is orphaned
+                  const orphanedAddNodeIds = new Set<string>();
+                  isolatedEdgesToDelete.forEach(edge => {
+                    const targetNode = canvas.nodes.find(n => n.id === edge.target);
+                    if (targetNode?.type === 'add') {
+                      orphanedAddNodeIds.add(targetNode.id);
+                    }
+                  });
 
-            if (isolatedEdgesToDelete.length > 0) {
-              canvas.onDeleteEdges(isolatedEdgesToDelete);
-            }
+                  if (isolatedEdgesToDelete.length > 0) {
+                    canvas.onDeleteEdges(isolatedEdgesToDelete);
+                  }
 
-            // Collect all nodes to delete: the explicitly selected ones + the orphaned add nodes
-            const allNodesToDeleteIds = new Set([...nodesToDelete.map(n => n.id), ...orphanedAddNodeIds]);
+                  // Collect all nodes to delete: the explicitly selected ones + the orphaned add nodes
+                  const allNodesToDeleteIds = new Set([...nodesToDelete.map(n => n.id), ...orphanedAddNodeIds]);
 
-            allNodesToDeleteIds.forEach(id => {
-              canvas.onDeleteNode(id);
-            });
-          }}
+                  allNodesToDeleteIds.forEach(id => {
+                    canvas.onDeleteNode(id);
+                  });
+                }
+          }
           defaultViewport={
             defaultViewport
               ? { x: defaultViewport.x ?? 0, y: defaultViewport.y ?? 0, zoom: defaultViewport.zoom ?? 1 }
@@ -170,13 +174,15 @@ export const CanvasView: React.FC<CanvasViewProps> = ({ canvas, defaultViewport,
             color={isDark ? 'rgba(42,51,68,.7)' : 'rgba(15,23,42,.18)'}
           />
           <Controls>
-            <button
-              title='Auto layout'
-              onClick={canvas.runLayout}
-              className='flex items-center justify-center w-6 h-6 bg-none border-none cursor-pointer text-[var(--jarvis-subtle)] hover:text-[var(--jarvis-text-strong)]'
-            >
-              <AiOutlineApartment className='-rotate-90' />
-            </button>
+            {!isReadOnly && (
+              <button
+                title='Auto layout'
+                onClick={canvas.runLayout}
+                className='flex items-center justify-center w-6 h-6 bg-none border-none cursor-pointer text-[var(--jarvis-subtle)] hover:text-[var(--jarvis-text-strong)]'
+              >
+                <AiOutlineApartment className='-rotate-90' />
+              </button>
+            )}
           </Controls>
           <MiniMap nodeColor={miniMapNodeColor} maskColor={isDark ? 'rgba(11,16,32,.7)' : 'rgba(241,245,249,.8)'} />
         </ReactFlow>
