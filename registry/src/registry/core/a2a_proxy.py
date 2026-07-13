@@ -92,7 +92,7 @@ class A2AProxyClientRegistry:
             cached_config, cached_client = cached
             if cached_config == cache_config:
                 return cached_client
-            cached_client.auth = self._build_auth(
+            cached_client.auth = self._build_auth(  # type: ignore[assignment]
                 agentcore_jwt=agentcore_jwt,
                 runtime_jwt_config=runtime_jwt_config,
             )
