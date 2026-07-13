@@ -22,6 +22,7 @@ from beanie import PydanticObjectId
 from pymongo.asynchronous.client_session import AsyncClientSession
 from redis import Redis
 
+from registry_pkgs.core.agentcore_jwt import mint_agentcore_runtime_jwt
 from registry_pkgs.models import (
     ExtendedMCPServer,
     Token,
@@ -178,9 +179,10 @@ async def build_complete_headers_for_server(
                     logger.info(f"Added cached AgentCore Runtime JWT for {server.serverName}")
                     return headers
 
-                # Generate new JWT token (AWS only validates iss, aud, and signature)
-                token = generate_service_jwt(
-                    for_agentcore_runtime=True,
+                token = mint_agentcore_runtime_jwt(
+                    access_config.jwt,
+                    subject=settings.registry_app_name,
+                    signing=settings.jwt_signing_config,
                     expires_in_seconds=300,
                 )
 

@@ -72,21 +72,17 @@ def generate_service_jwt(
     user_id: str | None = None,
     username: str | None = None,
     scopes: list[str] | None = None,
-    for_agentcore_runtime: bool = False,
     expires_in_seconds: int = 300,
 ) -> str:
     """
     Generate service JWT for MCP server authentication.
 
-    Supports two modes:
-    1. Internal service JWT: Registry -> MCP server requests with user context
-    2. AgentCore Runtime JWT: Simple JWT for AWS AgentCore Runtime authentication
+    Generates an internal service JWT for Registry -> MCP server requests with user context.
 
     Args:
         user_id: User ID to include in JWT (required for internal mode)
-        username: Optional username/email (for internal mode)
-        scopes: Optional list of scopes (for internal mode)
-        for_agentcore_runtime: If True, generates simplified JWT for AgentCore Runtime
+        username: Optional username/email
+        scopes: Optional list of scopes
         expires_in_seconds: Token expiration in seconds (default: 300 = 5 minutes)
 
     Returns:
@@ -94,49 +90,28 @@ def generate_service_jwt(
     """
     now = int(datetime.now(UTC).timestamp())
 
-    if for_agentcore_runtime:
-        # AgentCore Runtime mode: AWS only validates iss, aud, and signature
-        # Generate minimal JWT with only required claims
-        payload = build_jwt_payload(
-            subject=settings.registry_app_name,
-            issuer=settings.jwt_issuer,
-            audience=settings.jwt_audience,
-            expires_in_seconds=expires_in_seconds,
-            iat=now,
-            extra_claims=None,
-        )
-    else:
-        # Internal service mode: Include user context
-        if not user_id:
-            raise ValueError("user_id is required for internal service JWT")
+    if not user_id:
+        raise ValueError("user_id is required for internal service JWT")
 
-        # Build extra claims
-        extra_claims = {
-            "user_id": user_id,
-            "jti": f"registry-{now}",
-            "client_id": settings.registry_app_name,
-            "token_type": "service",
-        }
+    extra_claims = {
+        "user_id": user_id,
+        "jti": f"registry-{now}",
+        "client_id": settings.registry_app_name,
+        "token_type": "service",
+    }
 
-        # Add optional scopes
-        if scopes:
-            extra_claims["scope"] = " ".join(scopes)
+    if scopes:
+        extra_claims["scope"] = " ".join(scopes)
 
-        # Build JWT payload using centralized helper
-        payload = build_jwt_payload(
-            subject=username or user_id,
-            issuer=settings.jwt_issuer,
-            audience=settings.jwt_audience,
-            expires_in_seconds=expires_in_seconds,
-            iat=now,
-            extra_claims=extra_claims,
-        )
-
-    # Sign with the registry JWT private key. `kid` header claim is optional according to RFC 7515,
-    # but AgentCore Runtime requires it.
-    token = encode_jwt(payload, settings.jwt_private_key, kid=settings.jwt_self_signed_kid)
-
-    return token
+    payload = build_jwt_payload(
+        subject=username or user_id,
+        issuer=settings.jwt_issuer,
+        audience=settings.jwt_audience,
+        expires_in_seconds=expires_in_seconds,
+        iat=now,
+        extra_claims=extra_claims,
+    )
+    return encode_jwt(payload, settings.jwt_private_key, kid=settings.jwt_self_signed_kid)
 
 
 def encrypt_value(plaintext: str) -> str:
