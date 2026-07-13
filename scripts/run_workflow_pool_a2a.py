@@ -16,6 +16,8 @@ Environment variables:
     REGISTRY_TOKEN     User-scoped Bearer token. Auto-generated from JWT_PRIVATE_KEY when absent.
     REGISTRY_URL       Registry base URL (default: http://localhost:7860)
     MONGO_URI          MongoDB connection string (default: mongodb://127.0.0.1:27017/jarvis)
+    AWS_BEDROCK_SONNET_AIP_ARN
+                       AIP ARN used before BEDROCK_MODEL / SELECTOR_MODEL when set.
     BEDROCK_MODEL      Bedrock model ID for MCP steps (default: us.amazon.nova-lite-v1:0)
     SELECTOR_MODEL     Bedrock model ID for A2A pool selection (default: us.amazon.nova-micro-v1:0)
 """
@@ -31,6 +33,7 @@ import urllib.request
 from pathlib import Path
 
 from agno.models.aws import AwsBedrock
+from bedrock_model import resolve_bedrock_model_id
 from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
@@ -184,14 +187,20 @@ async def main() -> int:
     try:
         registry_token = os.getenv("REGISTRY_TOKEN") or await _make_registry_token(args.a2a_pool, args.registry_url)
         llm = AwsBedrock(
-            id=os.getenv("BEDROCK_MODEL", "us.amazon.nova-lite-v1:0"),
+            id=resolve_bedrock_model_id(
+                model_env_var="BEDROCK_MODEL",
+                fallback_model_id="us.amazon.nova-lite-v1:0",
+            ),
             aws_region=settings.aws_region,
             aws_session_token=settings.aws_session_token,
             aws_access_key_id=settings.aws_access_key_id,
             aws_secret_access_key=settings.aws_secret_access_key,
         )
         selector_llm = AwsBedrock(
-            id=os.getenv("SELECTOR_MODEL", "us.amazon.nova-micro-v1:0"),
+            id=resolve_bedrock_model_id(
+                model_env_var="SELECTOR_MODEL",
+                fallback_model_id="us.amazon.nova-micro-v1:0",
+            ),
             aws_region=settings.aws_region,
             aws_session_token=settings.aws_session_token,
             aws_access_key_id=settings.aws_access_key_id,

@@ -273,7 +273,7 @@ class RegistryContainer:
         """Build the app-scoped WorkflowRunner used by API-triggered runs."""
         try:
             llm = AwsBedrock(
-                id=self.settings.aws_workflow_llm_model,
+                id=self.settings.workflow_llm_model_id,
                 aws_region=self.settings.aws_region,
                 aws_access_key_id=self.settings.aws_access_key_id,
                 aws_secret_access_key=self.settings.aws_secret_access_key,
