@@ -349,7 +349,11 @@ class RegistryContainer:
 
     @cached_property
     def a2a_proxy_client_registry(self) -> A2AProxyClientRegistry:
-        return A2AProxyClientRegistry(jwt_expires_in_seconds=3600)
+        return A2AProxyClientRegistry(
+            jwt_signing_config=self.settings.jwt_signing_config,
+            jwt_subject=self.settings.registry_app_name,
+            jwt_expires_in_seconds=3600,
+        )
 
     async def startup(self) -> None:
         """Warm services that need async initialization before the app can serve traffic."""

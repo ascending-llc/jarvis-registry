@@ -7,6 +7,7 @@ from agno.workflow import StepInput
 from beanie import PydanticObjectId
 from pydantic import HttpUrl
 
+from registry_pkgs.core import agentcore_jwt
 from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.models.a2a_agent import A2AAgent, AgentConfig
 from registry_pkgs.models.enums import AgentCoreRuntimeAccessMode
@@ -352,8 +353,8 @@ class TestA2AExecutor:
             )
             return {"sub": subject}
 
-        monkeypatch.setattr(a2a_client, "build_jwt_payload", fake_build_payload)
-        monkeypatch.setattr(a2a_client, "encode_jwt", lambda *args, **kwargs: "signed-jwt")
+        monkeypatch.setattr(agentcore_jwt, "build_jwt_payload", fake_build_payload)
+        monkeypatch.setattr(agentcore_jwt, "encode_jwt", lambda *args, **kwargs: "signed-jwt")
 
         agent = _a2a_agent()
         agent.config.runtimeAccess = AgentCoreRuntimeAccessConfig(
