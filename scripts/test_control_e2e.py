@@ -15,6 +15,12 @@ Tests:
 
 Usage:
     uv run python scripts/test_control_e2e.py
+
+Environment variables:
+    AWS_BEDROCK_SONNET_AIP_ARN
+        AIP ARN used before BEDROCK_MODEL when set.
+    BEDROCK_MODEL
+        Bedrock model ID fallback (default: us.amazon.nova-lite-v1:0).
 """
 
 from __future__ import annotations
@@ -31,6 +37,7 @@ from uuid import uuid4
 from agno.models.aws import AwsBedrock
 from agno.workflow import StepInput, StepOutput
 from agno.workflow.step import StepExecutor
+from bedrock_model import resolve_bedrock_model_id
 from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
@@ -96,7 +103,10 @@ class MockWorkflowRunner(WorkflowRunner):
 def _make_runner(queue: DirectiveQueue) -> MockWorkflowRunner:
     """Build a MockWorkflowRunner wired to *queue*."""
     llm = AwsBedrock(
-        id=os.getenv("BEDROCK_MODEL", "us.amazon.nova-lite-v1:0"),
+        id=resolve_bedrock_model_id(
+            model_env_var="BEDROCK_MODEL",
+            fallback_model_id="us.amazon.nova-lite-v1:0",
+        ),
         aws_region=settings.aws_region,
         aws_session_token=settings.aws_session_token,
         aws_access_key_id=settings.aws_access_key_id,
