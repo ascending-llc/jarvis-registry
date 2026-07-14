@@ -111,7 +111,7 @@ class AzureAiFoundrySyncHandler(BaseFederationSyncHandler):
         self,
         federation: Federation,
         *,
-        author_id: PydanticObjectId | None = None,
+        author_id: PydanticObjectId,
     ) -> dict[str, list[Any]]:
         provider_config = AzureAiFoundryProviderConfig(**dict(federation.providerConfig or {}))
         async with AzureFoundryAuthService(provider_config) as auth:

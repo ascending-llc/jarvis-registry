@@ -24,7 +24,7 @@ from registry_pkgs.models.federation_sync_job import FederationSyncJob
 
 logger = logging.getLogger(__name__)
 
-_AZURE_REQUIRED_FIELDS = ("projectEndpoint", "tenantId", "clientId", "clientSecret")
+_AZURE_SP_CREDENTIAL_FIELDS = ("tenantId", "clientId", "clientSecret")
 
 
 class FederationCrudService:
@@ -70,12 +70,16 @@ class FederationCrudService:
                 missing_field_list = ", ".join(f"providerConfig.{field_name}" for field_name in missing_fields)
                 raise ValueError(f"AWS AgentCore federation requires {missing_field_list}")
         elif provider_type == FederationProviderType.AZURE_AI_FOUNDRY:
-            missing_fields = [
-                field_name for field_name in _AZURE_REQUIRED_FIELDS if not provider_config.get(field_name)
-            ]
-            if missing_fields:
-                missing_field_list = ", ".join(f"providerConfig.{field_name}" for field_name in missing_fields)
-                raise ValueError(f"Azure AI Foundry federation requires {missing_field_list}")
+            if not provider_config.get("projectEndpoint"):
+                raise ValueError("Azure AI Foundry federation requires providerConfig.projectEndpoint")
+            sp_present = [f for f in _AZURE_SP_CREDENTIAL_FIELDS if provider_config.get(f)]
+            if sp_present and len(sp_present) < len(_AZURE_SP_CREDENTIAL_FIELDS):
+                missing = [f for f in _AZURE_SP_CREDENTIAL_FIELDS if f not in sp_present]
+                missing_list = ", ".join(f"providerConfig.{f}" for f in missing)
+                raise ValueError(
+                    f"Azure AI Foundry federation requires all service principal fields when any is set; "
+                    f"missing {missing_list}"
+                )
         return provider_config
 
     async def create_federation(

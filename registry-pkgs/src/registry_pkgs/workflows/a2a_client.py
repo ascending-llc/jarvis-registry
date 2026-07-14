@@ -117,12 +117,7 @@ def is_agentcore_runtime(agent: A2AAgent) -> bool:
 def is_azure_foundry_runtime(agent: A2AAgent) -> bool:
     """Return True when the agent is a federated Azure AI Foundry hosted agent."""
     meta = agent.federationMetadata or {}
-    provider = meta.get("providerType")
-    if provider == FederationProviderType.AZURE_AI_FOUNDRY:
-        return True
-    # FederationProviderType is a str-Enum so dict-stored .value matches too.
-    value = getattr(FederationProviderType.AZURE_AI_FOUNDRY, "value", None)
-    return value is not None and provider == value
+    return meta.get("providerType") == FederationProviderType.AZURE_AI_FOUNDRY
 
 
 def get_agentcore_auth_mode(agent: A2AAgent) -> str:

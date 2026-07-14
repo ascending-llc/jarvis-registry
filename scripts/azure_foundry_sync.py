@@ -121,7 +121,7 @@ async def main() -> None:
             meta = a.federationMetadata or {}
             print(
                 f"  path={a.path} name={meta.get('agentName')} ver={meta.get('agentVersion')} "
-                f"transport={a.config.type if a.config else '?'} enabled={a.isEnabled} "
+                f"transport={a.config.type if a.config else '?'} enabled={a.config.enabled if a.config else False} "
                 f"federationRefId={a.federationRefId} wellKnown={getattr(a.wellKnown, 'lastSyncStatus', None)}"
             )
         if agents:

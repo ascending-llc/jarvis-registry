@@ -105,11 +105,10 @@ class AzureAiFoundryProviderConfig(BaseModel):
     clientSecret: str | None = Field(
         default=None,
         description="Service principal client secret; stored encrypted at rest. "
-        "Required for service-principal auth (provide together with tenantId and clientId). "
-        "Leave empty to use managed identity: DefaultAzureCredential then resolves credentials "
-        "from the runtime — Managed Identity on Azure, or the "
-        "AZURE_TENANT_ID/AZURE_CLIENT_ID/AZURE_CLIENT_SECRET environment variables on AWS "
-        "(set on the host, not in this config).",
+        "Required together with tenantId and clientId for service-principal auth. "
+        "Leave all three empty when the registry itself runs on Azure with Workload Identity "
+        "configured (e.g. AKS) — DefaultAzureCredential then resolves the pod's managed identity, "
+        "which must be granted the Foundry User (formerly Azure AI User) role on this project.",
     )
     agentNames: list[str] = Field(
         default_factory=list,

@@ -213,14 +213,34 @@ def test_normalize_provider_config_azure_encrypts_client_secret(monkeypatch):
     assert second["clientSecret"] == normalized["clientSecret"]
 
 
-def test_validate_provider_config_azure_requires_all_credentials():
+def test_validate_provider_config_azure_requires_project_endpoint():
     service = FederationCrudService()
 
-    with pytest.raises(ValueError, match="Azure AI Foundry federation requires"):
+    with pytest.raises(ValueError, match="projectEndpoint"):
         service.validate_provider_config(
             FederationProviderType.AZURE_AI_FOUNDRY,
-            {"projectEndpoint": "https://x"},
+            {"tenantId": "t", "clientId": "c", "clientSecret": "s"},
         )
+
+
+def test_validate_provider_config_azure_rejects_partial_sp_credentials():
+    service = FederationCrudService()
+
+    with pytest.raises(ValueError, match="all service principal fields"):
+        service.validate_provider_config(
+            FederationProviderType.AZURE_AI_FOUNDRY,
+            {"projectEndpoint": "https://x", "tenantId": "t"},
+        )
+
+
+def test_validate_provider_config_azure_accepts_project_endpoint_only():
+    service = FederationCrudService()
+    normalized = service.validate_provider_config(
+        FederationProviderType.AZURE_AI_FOUNDRY,
+        {"projectEndpoint": "https://acc.services.ai.azure.com/api/projects/p"},
+    )
+    assert normalized["projectEndpoint"].startswith("https://")
+    assert normalized.get("tenantId") is None
 
 
 def test_validate_provider_config_azure_accepts_full_config(monkeypatch):

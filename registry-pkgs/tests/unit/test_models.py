@@ -466,10 +466,9 @@ class TestExtendedMCPServerStructure:
                 title="A2a1ForFederationTesting",  # user-provided title, differs from card.name
                 description="A test A2A agent",
                 type="jsonrpc",
+                enabled=True,
             ),
             tags=["agentcore"],
-            status="active",
-            isEnabled=True,
             author=PydanticObjectId(),
         )
 

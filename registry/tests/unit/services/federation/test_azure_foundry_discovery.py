@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from azure.ai.projects.models import AgentEndpointProtocol
+from beanie import PydanticObjectId
 
 from registry.services.federation.azure_foundry_auth import AzureFoundryAuthService
 from registry.services.federation.azure_foundry_discovery import AzureFoundryDiscoveryClient
@@ -13,6 +14,7 @@ from registry_pkgs.models.a2a_agent import AgentConfig, WellKnownConfig
 from registry_pkgs.models.federation import AzureAiFoundryProviderConfig
 
 PROJECT_ENDPOINT = "https://acc.services.ai.azure.com/api/projects/p"
+AUTHOR_ID = PydanticObjectId()
 
 
 def _provider_config(**overrides) -> AzureAiFoundryProviderConfig:
@@ -35,6 +37,7 @@ def _agent_detail(
     *,
     a2a: bool = True,
     version: str = "3",
+    status: str = "active",
     description: str = "",
     skills: list[dict] | None = None,
     metadata: dict | None = None,
@@ -53,7 +56,7 @@ def _agent_detail(
         "id": f"{name}:{version}",
         "version": version,
         "description": description,
-        "status": "active",
+        "status": status,
         "agent_guid": "guid-" + name,
         "created_at": 1,
         "metadata": dict(metadata or {}),
@@ -156,8 +159,6 @@ def _make_fake_agent_card(card_data: dict, registry_fields: dict) -> SimpleNames
         card=card,
         config=config,
         author=registry_fields.get("author"),
-        isEnabled=registry_fields.get("isEnabled", False),
-        status=registry_fields.get("status", "active"),
         tags=registry_fields.get("tags", []),
         registeredBy=registry_fields.get("registeredBy"),
         registeredAt=registry_fields.get("registeredAt"),
@@ -217,6 +218,7 @@ async def test_discover_filters_to_a2a_enabled_agents_only(fake_a2a_agent_factor
         result = await client.discover_a2a_agents(
             provider_config=_provider_config(),
             auth=_make_auth_stub(),
+            author_id=AUTHOR_ID,
         )
 
     assert len(result) == 1
@@ -251,6 +253,7 @@ async def test_discover_marks_enrichment_failure_when_card_fetch_fails(fake_a2a_
         result = await client.discover_a2a_agents(
             provider_config=_provider_config(),
             auth=_make_auth_stub(),
+            author_id=AUTHOR_ID,
         )
 
     assert len(result) == 1
@@ -273,6 +276,7 @@ async def test_discover_raises_with_recognised_prefix_when_list_fails():
             await client.discover_a2a_agents(
                 provider_config=_provider_config(),
                 auth=_make_auth_stub(),
+                author_id=AUTHOR_ID,
             )
 
 
@@ -298,6 +302,7 @@ async def test_agent_names_bypass_list_call(fake_a2a_agent_factory):
         result = await client.discover_a2a_agents(
             provider_config=_provider_config(agentNames=["explicit"]),
             auth=_make_auth_stub(),
+            author_id=AUTHOR_ID,
         )
 
     assert [a.federationMetadata["agentName"] for a in result] == ["explicit"]
@@ -328,6 +333,44 @@ async def test_discover_applies_metadata_filter(fake_a2a_agent_factory):
         result = await client.discover_a2a_agents(
             provider_config=_provider_config(metadataFilter={"env": "prod"}),
             auth=_make_auth_stub(),
+            author_id=AUTHOR_ID,
         )
 
     assert [a.federationMetadata["agentName"] for a in result] == ["keep"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "version_status, expected_enabled",
+    [
+        ("active", True),
+        ("inactive", False),
+        ("draft", False),
+    ],
+)
+async def test_config_enabled_reflects_foundry_version_status(fake_a2a_agent_factory, version_status, expected_enabled):
+    agents_fake = _FakeAgents(
+        summaries=[_agent_summary("agent")],
+        details_map={"agent": _agent_detail("agent", a2a=True, status=version_status)},
+    )
+
+    resolver = MagicMock()
+    resolver.get_agent_card = AsyncMock(return_value=_fake_card_payload("agent"))
+
+    with (
+        _patch_project(agents_fake),
+        _patch_httpx(),
+        patch(
+            "registry.services.federation.azure_foundry_discovery.A2ACardResolver",
+            return_value=resolver,
+        ),
+    ):
+        client = AzureFoundryDiscoveryClient()
+        result = await client.discover_a2a_agents(
+            provider_config=_provider_config(),
+            auth=_make_auth_stub(),
+            author_id=AUTHOR_ID,
+        )
+
+    assert len(result) == 1
+    assert result[0].config.enabled is expected_enabled

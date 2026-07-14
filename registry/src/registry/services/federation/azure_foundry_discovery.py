@@ -39,7 +39,7 @@ class AzureFoundryDiscoveryClient:
         *,
         provider_config: AzureAiFoundryProviderConfig,
         auth: AzureFoundryAuthService,
-        author_id: PydanticObjectId | None = None,
+        author_id: PydanticObjectId,
     ) -> list[A2AAgent]:
         project_endpoint = provider_config.projectEndpoint
         if not project_endpoint:
@@ -165,7 +165,7 @@ class AzureFoundryDiscoveryClient:
         *,
         detail: Any,
         project_endpoint: str,
-        author_id: PydanticObjectId | None,
+        author_id: PydanticObjectId,
     ) -> A2AAgent:
         name = getattr(detail, "name", None)
         if not name:
@@ -204,17 +204,16 @@ class AzureFoundryDiscoveryClient:
         return A2AAgent.from_a2a_agent_card(
             card_data=card_data,
             path=f"/{self._slug(name)}",
-            author=author_id or PydanticObjectId(),
+            author=author_id,
             config=AgentConfig(
                 title=name,
                 description=description or f"Azure Foundry agent {name}",
                 url=a2a_base_url,
+                enabled=is_ready,
                 # A Foundry A2A endpoint serves both JSONRPC and HTTP+JSON at the
                 # same URL; we use JSONRPC (its advertised preferredTransport).
                 type=TRANSPORT_JSONRPC,
             ),
-            isEnabled=is_ready,
-            status="active" if is_ready else "inactive",
             tags=list(PROVIDER_TAGS),
             registeredBy="azure-foundry-federation",
             registeredAt=datetime.now(UTC),
@@ -282,8 +281,6 @@ class AzureFoundryDiscoveryClient:
                 description=fallback.get("description", "") or "",
                 type=TRANSPORT_JSONRPC,
             ),
-            isEnabled=agent.isEnabled,
-            status=agent.status,
             tags=agent.tags,
             registeredBy=agent.registeredBy,
             registeredAt=agent.registeredAt,
