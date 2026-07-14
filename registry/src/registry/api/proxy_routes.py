@@ -20,6 +20,7 @@ from registry_pkgs.models import ResourceType
 from registry_pkgs.models.a2a_agent import AgentConfig
 from registry_pkgs.models.enums import AgentCoreRuntimeAccessMode, FederationProviderType
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
+from registry_pkgs.models.federation import AgentCoreRuntimeJwtConfig
 
 from ..auth.dependencies import CurrentUser, UserContextDict
 from ..auth.oauth.types import ClientBranding
@@ -524,6 +525,12 @@ def _is_agentcore_jwt(
     )
 
 
+def _get_agentcore_runtime_jwt_config(agent_config: AgentConfig | None) -> AgentCoreRuntimeJwtConfig | None:
+    if agent_config is None or agent_config.runtimeAccess is None:
+        return None
+    return agent_config.runtimeAccess.jwt
+
+
 # Route 1: JSON-RPC binding — bare base path, POST only
 @router.post("/a2a/{agent_path}")
 async def jsonrpc_proxy(
@@ -576,7 +583,11 @@ async def jsonrpc_proxy(
             return _jsonrpc_a2a_error_response(-32603, f"No invocation URL available for agent '{agent_path}'")
 
         agentcore_jwt = _is_agentcore_jwt(agent.config, agent.federationMetadata)
-        proxy_client = proxy_client_registry.get(agent_path, agentcore_jwt=agentcore_jwt)
+        proxy_client = proxy_client_registry.get(
+            agent_path,
+            agentcore_jwt=agentcore_jwt,
+            runtime_jwt_config=_get_agentcore_runtime_jwt_config(agent.config) if agentcore_jwt else None,
+        )
 
         logger.info(f"A2A JSON-RPC proxy: agent={agent_path} agentcore={agentcore_jwt} {base_url}")
 
@@ -642,7 +653,11 @@ async def http_json_proxy(
             )
 
         agentcore_jwt = _is_agentcore_jwt(agent.config, agent.federationMetadata)
-        proxy_client = proxy_client_registry.get(agent_path, agentcore_jwt=agentcore_jwt)
+        proxy_client = proxy_client_registry.get(
+            agent_path,
+            agentcore_jwt=agentcore_jwt,
+            runtime_jwt_config=_get_agentcore_runtime_jwt_config(agent.config) if agentcore_jwt else None,
+        )
 
         target_url = base_url.rstrip("/") + "/" + http_json_path.lstrip("/")
 

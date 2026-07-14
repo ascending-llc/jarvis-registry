@@ -6,8 +6,6 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any
-from urllib.parse import urlparse
 
 import httpx
 from a2a.client import ClientConfig, ClientFactory
@@ -26,8 +24,8 @@ from a2a.types import (
 from a2a.utils.artifact import get_artifact_text
 from a2a.utils.message import get_message_text
 
+from registry_pkgs.core.agentcore_jwt import mint_agentcore_runtime_jwt
 from registry_pkgs.core.config import JwtSigningConfig
-from registry_pkgs.core.jwt_utils import build_jwt_payload, encode_jwt
 from registry_pkgs.models.a2a_agent import TRANSPORT_HTTP_JSON, TRANSPORT_JSONRPC, A2AAgent
 from registry_pkgs.models.enums import FederationProviderType
 
@@ -96,18 +94,6 @@ class A2ACallResult:
         return "\n\n".join(blocks)
 
 
-def _normalize_claim_value(value: Any) -> Any:
-    if isinstance(value, str):
-        return value.strip()
-    if isinstance(value, list):
-        return [_normalize_claim_value(item) for item in value]
-    if isinstance(value, tuple):
-        return tuple(_normalize_claim_value(item) for item in value)
-    if isinstance(value, dict):
-        return {key: _normalize_claim_value(item) for key, item in value.items()}
-    return value
-
-
 def is_agentcore_runtime(agent: A2AAgent) -> bool:
     """Return True when the agent is a federated AWS Bedrock AgentCore runtime."""
     meta = agent.federationMetadata or {}
@@ -153,33 +139,12 @@ def _make_agentcore_jwt(
     if agent.config and agent.config.runtimeAccess and agent.config.runtimeAccess.jwt:
         runtime_jwt = agent.config.runtimeAccess.jwt
 
-    extra_claims: dict[str, Any] = {}
-    issuer = jwt_config.jwt_issuer
-    audience = jwt_config.jwt_audience
-
-    if runtime_jwt:
-        if runtime_jwt.allowedClients:
-            extra_claims["client_id"] = _normalize_claim_value(runtime_jwt.allowedClients[0])
-        if runtime_jwt.allowedScopes:
-            cleaned = [s for s in (_normalize_claim_value(s) for s in runtime_jwt.allowedScopes) if s]
-            if cleaned:
-                extra_claims["scope"] = " ".join(cleaned)
-        if runtime_jwt.customClaims:
-            extra_claims.update(_normalize_claim_value(runtime_jwt.customClaims))
-        if runtime_jwt.discoveryUrl:
-            parsed = urlparse(runtime_jwt.discoveryUrl)
-            issuer = f"{parsed.scheme}://{parsed.netloc}"
-        if runtime_jwt.audiences:
-            audience = _normalize_claim_value(runtime_jwt.audiences[0])
-
-    payload = build_jwt_payload(
+    return mint_agentcore_runtime_jwt(
+        runtime_jwt,
         subject="jarvis-workflow",
-        issuer=issuer,
-        audience=audience,
+        signing=jwt_config,
         expires_in_seconds=expires_in_seconds,
-        extra_claims=extra_claims or None,
     )
-    return encode_jwt(payload, jwt_config.jwt_private_key, kid=jwt_config.jwt_self_signed_kid)
 
 
 def agent_base_url(agent: A2AAgent) -> str:

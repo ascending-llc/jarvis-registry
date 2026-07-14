@@ -3,6 +3,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from beanie import PydanticObjectId
+from mcp.types import (
+    ClientCapabilities,
+    ElicitationCapability,
+    Implementation,
+    InitializeRequestParams,
+    UrlElicitationCapability,
+)
 
 from registry.core.exceptions import InternalServerException
 from registry.mcpgw.tools import server
@@ -67,6 +74,15 @@ def _make_server(server_id: str | None = None):
             "type": "streamable-http",
             "url": "https://example.com/mcp",
         },
+    )
+
+
+def _make_client_params(name: str, *, supports_url_elicitation: bool) -> InitializeRequestParams:
+    elicitation = ElicitationCapability(url=UrlElicitationCapability()) if supports_url_elicitation else None
+    return InitializeRequestParams(
+        protocolVersion="2025-11-25",
+        capabilities=ClientCapabilities(elicitation=elicitation),
+        clientInfo=Implementation(name=name, version="1.0"),
     )
 
 
@@ -290,6 +306,41 @@ async def test_execute_tool_impl_acl_runtime_error_returns_retryable_error(monke
     downstream_call.assert_not_awaited()
 
 
+def test_get_state_metadata_returns_unrecognized_and_no_notify_for_missing_client_params():
+    result = server._get_state_metadata(None)
+
+    assert result["client_branding"] == server.ClientBranding.UNRECOGNIZED
+    assert result["notify_elicitation_complete"] is False
+
+
+@pytest.mark.parametrize(
+    ("client_name", "expected_branding"),
+    [
+        ("Visual Studio Code", server.ClientBranding.VSCODE),
+        ("claude-ai/1.0", server.ClientBranding.CLAUDE),
+        ("probe (via mcp-remote 1.0)", server.ClientBranding.CURSOR),
+        ("mcp-stdio-client (via mcp-remote 1.0)", server.ClientBranding.CURSOR),
+        ("claude-code", server.ClientBranding.UNRECOGNIZED),
+        ("some-other-client", server.ClientBranding.UNRECOGNIZED),
+    ],
+)
+@pytest.mark.parametrize("supports_url_elicitation", [True, False])
+def test_get_state_metadata_notify_flag_matches_url_elicitation_support(
+    client_name,
+    expected_branding,
+    supports_url_elicitation,
+):
+    """notify_elicitation_complete must mirror _support_url_elicitation for every branding: a session
+    is only ever registered in SessionStore (making a later notification possible) when the client
+    supports URL mode elicitation, regardless of which brand it's recognized as."""
+    client_params = _make_client_params(client_name, supports_url_elicitation=supports_url_elicitation)
+
+    result = server._get_state_metadata(client_params)
+
+    assert result["client_branding"] == expected_branding
+    assert result["notify_elicitation_complete"] is supports_url_elicitation
+
+
 @pytest.mark.asyncio
 async def test_execute_tool_impl_without_server_consent_returns_elicitation_fallback(monkeypatch):
     server_id = str(PydanticObjectId())
@@ -310,7 +361,9 @@ async def test_execute_tool_impl_without_server_consent_returns_elicitation_fall
     assert pending["client_id"] == "claude"
     assert pending["server_path"] == "/github"
     assert pending["elicitation_id"]
-    assert pending["notify_elicitation_complete"] is True
+    # ctx.session.client_params is None here, so the client is treated as not supporting URL mode
+    # elicitation: no session gets registered in SessionStore, so there's nothing to notify later.
+    assert pending["notify_elicitation_complete"] is False
     ctx.request_context.lifespan_context.consent_store.has_server_consent.assert_called_once_with(
         "507f1f77bcf86cd799439011",
         "claude",
@@ -347,6 +400,9 @@ async def test_execute_tool_impl_without_server_consent_raises_url_elicitation(m
     # approve_server_consent can later find this exact paused session to notify.
     _, pending = ctx.request_context.lifespan_context.pending_consent_store.save.call_args.args
     assert pending["elicitation_id"] == elicitation_id
+    # A session was registered above, so the pending payload must say so, or approve_server_consent
+    # will skip the notification even though a session is waiting for it.
+    assert pending["notify_elicitation_complete"] is True
     downstream_call.assert_not_awaited()
 
 
