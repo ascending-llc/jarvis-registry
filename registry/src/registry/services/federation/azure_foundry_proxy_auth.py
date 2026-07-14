@@ -44,8 +44,7 @@ class A2aHeadersProvider:
         if federation is None:
             raise ValueError(f"Federation {federation_id} not found while resolving Azure A2A headers")
 
-        azure = FederationProviderType.AZURE_AI_FOUNDRY
-        if federation.providerType not in (azure, getattr(azure, "value", None)):
+        if federation.providerType != FederationProviderType.AZURE_AI_FOUNDRY:
             raise ValueError(
                 f"Federation {federation_id} providerType={federation.providerType!r} is not azure_ai_foundry"
             )
