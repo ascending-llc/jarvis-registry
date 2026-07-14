@@ -62,6 +62,8 @@ export interface WorkflowNode {
   name: string;
   nodeType: 'step' | 'parallel' | 'loop' | 'condition' | 'router';
   executorKey?: string | null;
+  stepObjective?: string | null;
+  referencedNodeNames?: string[] | null;
   a2aPool?: string[];
   stepConfig?: StepConfig | null;
   config: Record<string, any>;

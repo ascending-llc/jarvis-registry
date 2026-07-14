@@ -11,7 +11,7 @@ interface Props {
 }
 
 export const RouterNodeProperties: React.FC<Props> = ({ node }) => {
-  const { nodes, edges, agentSchemas, onNodeDataChange, onRouterCasesChange } = useWorkflowPanel();
+  const { nodes, edges, agentSchemas, isReadOnly, onNodeDataChange, onRouterCasesChange } = useWorkflowPanel();
   const { upstreamSchema, sourceLabel } = useUpstreamSchema(node, nodes, edges, agentSchemas);
 
   const nodeData = node.data;
@@ -29,6 +29,7 @@ export const RouterNodeProperties: React.FC<Props> = ({ node }) => {
           className='w-full bg-[var(--jarvis-card-muted)] border border-[var(--jarvis-border)] rounded-md text-[var(--jarvis-text-strong)] font-mono text-[11px] px-2 py-1.5 outline-none'
           value={nodeData.routeBy ?? 'session_state.severity'}
           onChange={e => onNodeDataChange(node.id, { routeBy: e.target.value })}
+          disabled={isReadOnly}
         />
       </div>
       <div className='mb-1.5'>
@@ -51,6 +52,7 @@ export const RouterNodeProperties: React.FC<Props> = ({ node }) => {
           }}
           addLabel='+ Add case'
           prefix='case'
+          disabled={isReadOnly}
         />
       </div>
       <div className='mb-2'>
@@ -59,6 +61,7 @@ export const RouterNodeProperties: React.FC<Props> = ({ node }) => {
           className='w-full bg-[var(--jarvis-card-muted)] border border-[var(--jarvis-border)] rounded-md text-[var(--jarvis-text-strong)] font-sans text-[11.5px] px-2 py-1.5 outline-none'
           value={nodeData.defaultCase ?? 'low-priority'}
           onChange={e => onNodeDataChange(node.id, { defaultCase: e.target.value })}
+          disabled={isReadOnly}
         />
       </div>
     </div>

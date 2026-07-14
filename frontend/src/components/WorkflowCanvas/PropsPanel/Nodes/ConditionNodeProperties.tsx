@@ -10,7 +10,7 @@ interface Props {
 }
 
 export const ConditionNodeProperties: React.FC<Props> = ({ node }) => {
-  const { nodes, edges, agentSchemas, onNodeDataChange } = useWorkflowPanel();
+  const { nodes, edges, agentSchemas, isReadOnly, onNodeDataChange } = useWorkflowPanel();
   const { upstreamSchema, sourceLabel } = useUpstreamSchema(node, nodes, edges, agentSchemas);
 
   const nodeData = node.data;
@@ -82,6 +82,7 @@ export const ConditionNodeProperties: React.FC<Props> = ({ node }) => {
           className='w-full bg-[var(--jarvis-card-muted)] border border-[var(--jarvis-border)] rounded-md text-[var(--jarvis-text-strong)] font-mono text-[11px] px-2 py-1.5 outline-none'
           value={nodeData.expression ?? 'session_state.score > 0.8'}
           onChange={e => onNodeDataChange(node.id, { expression: e.target.value })}
+          disabled={isReadOnly}
         />
       </div>
       <div className='grid grid-cols-2 gap-2 mt-1'>

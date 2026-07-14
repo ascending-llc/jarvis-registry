@@ -1,11 +1,16 @@
 import { CheckIcon, CogIcon, PlayIcon } from '@heroicons/react/24/outline';
-import type { Edge, Node } from '@xyflow/react';
+import type { Edge } from '@xyflow/react';
 import type React from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useBlocker, useNavigate, useSearchParams } from 'react-router-dom';
 import WorkflowCanvas from '@/components/WorkflowCanvas';
-import { apiNodesToCanvas, canvasToApiNodes, validateApiNodes } from '@/components/WorkflowCanvas/convert';
-import type { WorkflowCanvasRef } from '@/components/WorkflowCanvas/types';
+import {
+  apiNodesToCanvas,
+  canvasToApiNodes,
+  validateApiNodes,
+  validateCanvasNodes,
+} from '@/components/WorkflowCanvas/convert';
+import type { WorkflowNode as CanvasWorkflowNode, WorkflowCanvasRef } from '@/components/WorkflowCanvas/types';
 import { useGlobal } from '@/contexts/GlobalContext';
 import { useServer } from '@/contexts/ServerContext';
 import SERVICES from '@/services';
@@ -103,15 +108,45 @@ const WorkflowRegistryOrEdit: React.FC = () => {
   };
 
   // ── Derive initial canvas elements from loaded workflow ────────────────────
-  const { nodes: initialNodes, edges: initialEdges } = useMemo(() => {
-    if (!isEditMode || !workflow) return { nodes: undefined, edges: undefined };
-    const { nodes, edges } = apiNodesToCanvas(workflow.nodes ?? []);
-    return { nodes: nodes as Node[], edges };
+  const initialCanvas = useMemo(() => {
+    if (!isEditMode || !workflow) return { nodes: undefined, edges: undefined, error: null };
+    try {
+      const converted = apiNodesToCanvas(workflow.nodes ?? []);
+      return { ...converted, error: null };
+    } catch (error) {
+      return {
+        nodes: undefined,
+        edges: undefined,
+        error: error instanceof Error ? error.message : 'Failed to load workflow graph',
+      };
+    }
   }, [isEditMode, workflow]);
 
+  useEffect(() => {
+    if (initialCanvas.error) showToast(initialCanvas.error, 'error');
+  }, [initialCanvas.error, showToast]);
+
   // ── Actions: Save ────────────────────────────────────────────────────────────
-  const handleSave = async (nodes: Node[], edges: Edge[], viewport: { x: number; y: number; zoom: number }) => {
-    const apiNodes = canvasToApiNodes(nodes as unknown as Parameters<typeof canvasToApiNodes>[0], edges);
+  const handleSave = async (
+    nodes: CanvasWorkflowNode[],
+    edges: Edge[],
+    viewport: { x: number; y: number; zoom: number },
+  ) => {
+    if (isReadOnly) return;
+    const canvasValidationError = validateCanvasNodes(nodes, edges);
+    if (canvasValidationError) {
+      showToast(canvasValidationError, 'error');
+      return;
+    }
+
+    let apiNodes: ReturnType<typeof canvasToApiNodes>;
+    try {
+      apiNodes = canvasToApiNodes(nodes, edges);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Failed to convert workflow', 'error');
+      return;
+    }
+
     if (apiNodes.length === 0) {
       showToast('Add at least one node before saving', 'error');
       return;
@@ -181,12 +216,14 @@ const WorkflowRegistryOrEdit: React.FC = () => {
 
   // ── Actions: Workflow metadata change (from PropsPanel) ──────────────────────
   const handleWorkflowChange = (patch: Partial<Pick<Workflow, 'name' | 'description'>>) => {
+    if (isReadOnly) return;
     setWorkflow(prev => (prev ? { ...prev, ...patch } : prev));
     setHasChanges(true);
   };
 
   // ── Actions: Delete workflow ─────────────────────────────────────────────────
   const handleDeleteWorkflow = async () => {
+    if (isReadOnly) return;
     if (!id) return;
 
     setMutatingAction('deleting');
@@ -278,6 +315,12 @@ const WorkflowRegistryOrEdit: React.FC = () => {
           <div className='flex h-full items-center justify-center'>
             <div className='h-8 w-8 animate-spin rounded-full border-b-2 border-[var(--jarvis-primary)]' />
           </div>
+        ) : initialCanvas.error ? (
+          <div className='flex h-full items-center justify-center p-8'>
+            <div className='max-w-lg rounded-lg border border-[var(--jarvis-danger)] bg-[var(--jarvis-danger-soft)] p-4 text-sm text-[var(--jarvis-danger-text)]'>
+              Unable to load workflow graph: {initialCanvas.error}
+            </div>
+          </div>
         ) : (
           // key forces canvas remount when switching between workflows
           <WorkflowCanvas
@@ -286,11 +329,13 @@ const WorkflowRegistryOrEdit: React.FC = () => {
             workflowId={id ?? undefined}
             workflow={workflow}
             refreshRunHistoryKey={runHistoryRefresh}
-            initialNodes={initialNodes}
-            initialEdges={initialEdges}
+            initialNodes={initialCanvas.nodes}
+            initialEdges={initialCanvas.edges}
             isReadOnly={isReadOnly}
             isNewWorkflow={!isEditMode}
-            onDeleteWorkflow={() => setDeleteDialogOpen(true)}
+            onDeleteWorkflow={() => {
+              if (!isReadOnly) setDeleteDialogOpen(true);
+            }}
             onWorkflowChange={handleWorkflowChange}
             onSave={handleSave}
             onChange={() => setHasChanges(true)}

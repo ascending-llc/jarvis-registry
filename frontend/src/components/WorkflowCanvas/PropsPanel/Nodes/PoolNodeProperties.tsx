@@ -6,7 +6,7 @@ import { useWorkflowPanel } from '../WorkflowPanelContext';
 
 /** PoolNodeProperties - handles Agent Pool node configuration (up to 5 delegate agents). */
 export const PoolNodeProperties: React.FC<{ node: Node<PoolNodeData> }> = ({ node }) => {
-  const { onNodeDataChange, onOpenAgentPicker } = useWorkflowPanel();
+  const { isReadOnly, onNodeDataChange, onOpenAgentPicker } = useWorkflowPanel();
   const nodeData = node.data as PoolNodeData;
   const poolAgents = nodeData?.agents ?? [];
 
@@ -37,7 +37,9 @@ export const PoolNodeProperties: React.FC<{ node: Node<PoolNodeData> }> = ({ nod
               <div className='text-[10px] text-[var(--jarvis-subtle)]'>{a.desc}</div>
             </div>
             <button
-              className='shrink-0 rounded p-0.5 transition-colors hover:bg-[var(--jarvis-danger-soft)] hover:text-[var(--jarvis-danger-text)] bg-none border-none text-[var(--jarvis-subtle)] cursor-pointer text-[13px]'
+              type='button'
+              disabled={isReadOnly}
+              className='shrink-0 rounded p-0.5 transition-colors hover:bg-[var(--jarvis-danger-soft)] hover:text-[var(--jarvis-danger-text)] bg-none border-none text-[var(--jarvis-subtle)] cursor-pointer text-[13px] disabled:cursor-not-allowed disabled:opacity-50'
               onClick={() => onDataChange(poolAgents.filter((_, j) => j !== i))}
             >
               ×
@@ -46,6 +48,7 @@ export const PoolNodeProperties: React.FC<{ node: Node<PoolNodeData> }> = ({ nod
         ))}
         {poolAgents.length < 5 && (
           <AddButton
+            disabled={isReadOnly}
             onClick={() =>
               onOpenAgentPicker(agent => {
                 if (!poolAgents.find(a => a.id === agent.id)) {
