@@ -161,7 +161,7 @@ class TestExecutorResolver:
         monkeypatch.setattr(executor_resolver.A2AAgent, "find_one", find_one)
         captured_agents: list = []
 
-        def fake_make_a2a_executor(agent, *, jwt_config, httpx_client=None):
+        def fake_make_a2a_executor(agent, *, jwt_config, httpx_client=None, headers_provider=None):
             captured_agents.append(agent)
             return "a2a-executor"
 

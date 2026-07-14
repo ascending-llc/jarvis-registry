@@ -4,6 +4,7 @@ import asyncio
 import logging
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 import httpx
@@ -35,6 +36,7 @@ _A2A_HTTP_TIMEOUT = 300
 # a2a poll timeout needs to be strictly less than _A2A_JWT_TTL_SECONDS and _A2A_HTTP_TIMEOUT
 _A2A_POLL_TIMEOUT = _A2A_HTTP_TIMEOUT * 0.6
 
+HeadersProvider = Callable[[A2AAgent], Awaitable[dict[str, str]]]
 _IN_PROGRESS_STATES: frozenset[TaskState] = frozenset({TaskState.submitted, TaskState.working})
 
 _AGENTCORE_IAM_UNSUPPORTED_MSG = (
@@ -96,6 +98,12 @@ def is_agentcore_runtime(agent: A2AAgent) -> bool:
     """Return True when the agent is a federated AWS Bedrock AgentCore runtime."""
     meta = agent.federationMetadata or {}
     return meta.get("providerType") == FederationProviderType.AWS_AGENTCORE
+
+
+def is_azure_foundry_runtime(agent: A2AAgent) -> bool:
+    """Return True when the agent is a federated Azure AI Foundry hosted agent."""
+    meta = agent.federationMetadata or {}
+    return meta.get("providerType") == FederationProviderType.AZURE_AI_FOUNDRY
 
 
 def get_agentcore_auth_mode(agent: A2AAgent) -> str:
@@ -324,6 +332,7 @@ async def call_a2a(
     *,
     jwt_config: JwtSigningConfig,
     httpx_client: httpx.AsyncClient | None = None,
+    headers_provider: HeadersProvider | None = None,
 ) -> A2ACallResult:
     """Invoke an A2A agent via the a2a-sdk ClientFactory.
 
@@ -335,6 +344,7 @@ async def call_a2a(
         text:         User message string or pre-parsed A2A Message to send.
         jwt_config:   JWT signing config for service-to-agent auth.
         httpx_client: Optional shared httpx client.
+        headers_provider: Optional shared headers provider.
 
     Returns:
         A2ACallResult. `success=True` requires content present AND (for the
@@ -365,10 +375,15 @@ async def call_a2a(
         t for t in (TransportProtocol.jsonrpc, TransportProtocol.http_json) if t != configured
     ]
 
+    if headers_provider is not None:
+        headers = await headers_provider(agent)
+    else:
+        headers = build_headers(agent, jwt_config=jwt_config)
+
     context = ClientCallContext(
         state={
             "http_kwargs": {
-                "headers": build_headers(agent, jwt_config=jwt_config),
+                "headers": headers,
                 "timeout": _A2A_HTTP_TIMEOUT,
             }
         }

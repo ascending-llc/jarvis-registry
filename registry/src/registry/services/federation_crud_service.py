@@ -6,6 +6,7 @@ from beanie import PydanticObjectId
 from bson.errors import InvalidId
 from pymongo.asynchronous.client_session import AsyncClientSession
 
+from registry.utils.crypto_utils import encrypt_value, is_encrypted
 from registry_pkgs.models.enums import (
     FederationProviderType,
     FederationStateMachine,
@@ -14,6 +15,7 @@ from registry_pkgs.models.enums import (
 )
 from registry_pkgs.models.federation import (
     AwsAgentCoreProviderConfig,
+    AzureAiFoundryProviderConfig,
     Federation,
     FederationLastSync,
     FederationStats,
@@ -22,7 +24,7 @@ from registry_pkgs.models.federation_sync_job import FederationSyncJob
 
 logger = logging.getLogger(__name__)
 
-AZURE_AI_FOUNDRY_NOT_IMPLEMENTED = "Azure AI Foundry federation sync is not implemented yet"
+_AZURE_SP_CREDENTIAL_FIELDS = ("tenantId", "clientId", "clientSecret")
 
 
 class FederationCrudService:
@@ -44,7 +46,11 @@ class FederationCrudService:
             return AwsAgentCoreProviderConfig(**raw_provider_config).model_dump(mode="json", exclude_none=True)
 
         if provider_type == FederationProviderType.AZURE_AI_FOUNDRY:
-            raise ValueError(AZURE_AI_FOUNDRY_NOT_IMPLEMENTED)
+            normalized = AzureAiFoundryProviderConfig(**raw_provider_config).model_dump(mode="json", exclude_none=True)
+            secret = normalized.get("clientSecret")
+            if secret and not is_encrypted(str(secret)):
+                normalized["clientSecret"] = encrypt_value(str(secret))
+            return normalized
 
         raise ValueError(f"Unsupported federation provider type: {provider_type}")
 
@@ -53,7 +59,7 @@ class FederationCrudService:
         provider_type: FederationProviderType, provider_config: dict[str, Any]
     ) -> dict[str, Any]:
         """
-        region、assumeRoleArn fields must have values
+        Required field check per provider type.
         """
         provider_config = FederationCrudService.normalize_provider_config(provider_type, provider_config)
         if provider_type == FederationProviderType.AWS_AGENTCORE:
@@ -63,6 +69,17 @@ class FederationCrudService:
             if missing_fields:
                 missing_field_list = ", ".join(f"providerConfig.{field_name}" for field_name in missing_fields)
                 raise ValueError(f"AWS AgentCore federation requires {missing_field_list}")
+        elif provider_type == FederationProviderType.AZURE_AI_FOUNDRY:
+            if not provider_config.get("projectEndpoint"):
+                raise ValueError("Azure AI Foundry federation requires providerConfig.projectEndpoint")
+            sp_present = [f for f in _AZURE_SP_CREDENTIAL_FIELDS if provider_config.get(f)]
+            if sp_present and len(sp_present) < len(_AZURE_SP_CREDENTIAL_FIELDS):
+                missing = [f for f in _AZURE_SP_CREDENTIAL_FIELDS if f not in sp_present]
+                missing_list = ", ".join(f"providerConfig.{f}" for f in missing)
+                raise ValueError(
+                    f"Azure AI Foundry federation requires all service principal fields when any is set; "
+                    f"missing {missing_list}"
+                )
         return provider_config
 
     async def create_federation(

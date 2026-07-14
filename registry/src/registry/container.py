@@ -27,6 +27,7 @@ from .health.service import HealthMonitoringService
 from .services.a2a_agent_service import A2AAgentService
 from .services.access_control_service import ACLService, load_role_cache
 from .services.agent_scanner import AgentScannerService
+from .services.federation.azure_foundry_proxy_auth import A2aHeadersProvider, make_a2a_headers_provider
 from .services.federation_crud_service import FederationCrudService
 from .services.federation_job_service import FederationJobService
 from .services.federation_service import FederationService
@@ -269,6 +270,11 @@ class RegistryContainer:
         return WorkflowService()
 
     @cached_property
+    def a2a_headers_provider(self) -> A2aHeadersProvider:
+        """App-scoped A2A headers provider; resolves Azure Entra credentials fresh per call (no caching)."""
+        return make_a2a_headers_provider(jwt_config=self.settings.jwt_signing_config)
+
+    @cached_property
     def workflow_runner(self) -> WorkflowRunner:
         """Build the app-scoped WorkflowRunner used by API-triggered runs."""
         try:
@@ -288,6 +294,7 @@ class RegistryContainer:
                 jwt_config=self.settings.jwt_signing_config,
                 directive_queue=self.directive_queue,
                 a2a_httpx_client=self.a2a_httpx_client,
+                headers_provider=self.a2a_headers_provider,
             )
 
         except Exception:
