@@ -62,7 +62,8 @@ const API_TO_CANVAS_TYPE: Record<string, string> = {
 // ─── canvas → API ─────────────────────────────────────────────────────────────
 
 export const validateCanvasNodes = (nodes: Node<NodeData>[], edges: Edge[]): string | null => {
-  const workflowNodes = nodes.filter(node => node.type !== 'add');
+  // Approval Gates are transient UI markers and are merged into their following execution node.
+  const workflowNodes = nodes.filter(node => node.type !== 'add' && node.type !== 'gate');
   const names = new Set<string>();
 
   for (const node of workflowNodes) {
@@ -402,7 +403,8 @@ interface CanvasResult {
 
 interface CanvasIdentity {
   canvasIdByApiNode: Map<InternalNode, string>;
-  nameToId: Map<string, string>;
+  /** A null value marks a duplicated title that cannot safely resolve a name-based reference. */
+  nameToId: Map<string, string | null>;
 }
 
 let _nodeSeq = 0;
@@ -410,10 +412,12 @@ let _edgeSeq = 0;
 const nextAddId = () => `add${_nodeSeq++}`;
 const nextEdgeId = () => `e_load_${_edgeSeq++}`;
 
-const resolveReferencedNodeIds = (node: InternalNode, nameToId: Map<string, string>): string[] =>
+const resolveReferencedNodeIds = (node: InternalNode, nameToId: Map<string, string | null>): string[] =>
   (node.referencedNodeNames ?? []).map(name => {
-    const id = nameToId.get(name.trim());
-    if (!id) throw new Error(`Step node "${node.name}" references unknown node "${name}"`);
+    const normalizedName = name.trim();
+    const id = nameToId.get(normalizedName);
+    if (id === undefined) throw new Error(`Step node "${node.name}" references unknown node "${name}"`);
+    if (id === null) throw new Error(`Step node "${node.name}" references ambiguous node title "${name}"`);
     return id;
   });
 
@@ -650,15 +654,12 @@ export const apiNodesToCanvas = (apiNodes: ApiWorkflowNode[]): { nodes: CanvasNo
     for (const node of nodes) {
       const normalizedName = node.name.trim();
       if (!normalizedName) throw new Error('Workflow contains a node without a title');
-      if (identity.nameToId.has(normalizedName)) {
-        throw new Error(`Workflow contains duplicate node title "${normalizedName}"`);
-      }
 
       const savedId = node.id && !usedIds.has(node.id) ? node.id : undefined;
       const canvasId = savedId ?? `n_load_${_nodeSeq++}`;
       usedIds.add(canvasId);
       identity.canvasIdByApiNode.set(node, canvasId);
-      identity.nameToId.set(normalizedName, canvasId);
+      identity.nameToId.set(normalizedName, identity.nameToId.has(normalizedName) ? null : canvasId);
 
       if (node.children) collectNodeIdentity(node.children);
       if (node.trueSteps) collectNodeIdentity(node.trueSteps);
