@@ -1,9 +1,9 @@
-import { ExclamationTriangleIcon } from '@heroicons/react/24/outline';
+import { ExclamationTriangleIcon, InformationCircleIcon } from '@heroicons/react/24/outline';
 import type React from 'react';
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import SERVICES from '@/services';
-import { getBasePath } from '../config';
+import { getBasePath, getBasePathForUrl } from '../config';
 
 interface OAuthProvider {
   name: string;
@@ -18,6 +18,12 @@ const Login: React.FC = () => {
   const [loginInProgress, setLoginInProgress] = useState<string | null>(null);
   const [searchParams] = useSearchParams();
   const nextParam = searchParams.get('next') || '';
+  // Mirrors the shape checks in the backend's `_sanitize_return_path` — the backend remains the
+  // authoritative sanitizer; this only decides whether `nextParam` is worth previewing to the
+  // user, so we don't show a destination the backend would actually reject and fall back from.
+  const isSameOriginReturnPath = nextParam.startsWith('/') && !nextParam.startsWith('//') && nextParam[1] !== '\\';
+  const showReturnPathNotice = isSameOriginReturnPath && nextParam !== '/';
+  const returnPathDisplayUrl = `${window.location.origin}${getBasePathForUrl()}${nextParam}`;
 
   useEffect(() => {
     console.log('[Login] Component mounted, fetching OAuth providers...');
@@ -82,6 +88,16 @@ const Login: React.FC = () => {
 
       <div className='mt-8 sm:mx-auto sm:w-full sm:max-w-md'>
         <div className='card p-8'>
+          {showReturnPathNotice && (
+            <div className='mb-6 p-4 text-sm bg-[var(--jarvis-info-soft)] border border-[color:var(--jarvis-blue)] text-[var(--jarvis-info-text)] rounded-lg flex items-start space-x-2'>
+              <InformationCircleIcon className='h-5 w-5 flex-shrink-0 mt-0.5' />
+              <span>
+                You'll be redirected to <span className='font-mono break-all'>{returnPathDisplayUrl}</span> after
+                signing in.
+              </span>
+            </div>
+          )}
+
           {error && (
             <div className='mb-6 p-4 text-sm text-[var(--jarvis-danger-text)] bg-[var(--jarvis-danger-soft)] border border-[color:var(--jarvis-danger-soft)] rounded-lg bg-[var(--jarvis-danger-soft)] text-[var(--jarvis-danger-text)] border-[color:var(--jarvis-danger-soft)] flex items-start space-x-2'>
               <ExclamationTriangleIcon className='h-5 w-5 flex-shrink-0 mt-0.5' />
