@@ -13,6 +13,7 @@ from pymongo.asynchronous.client_session import AsyncClientSession
 
 from registry_pkgs.models.enums import NodeRunStatus, WorkflowRunStatus
 from registry_pkgs.models.workflow import NodeRun, WorkflowNode, WorkflowRun
+from registry_pkgs.workflows.media_snapshot import serialize_step_output_media
 from registry_pkgs.workflows.types import NODE_INPUT_SNAPSHOTS_KEY
 
 logger = logging.getLogger(__name__)
@@ -200,8 +201,11 @@ class WorkflowRunSyncer(AsyncMongoDb):
         node_run.attempt = max(node_run.attempt, 1)
         node_run.finished_at = datetime.now(UTC)
         node_run.error = step_output.error
-        if step_output.content is not None:
-            node_run.output_snapshot = {"content": str(step_output.content)}
+        media_snapshot = serialize_step_output_media(step_output)
+        if step_output.content is not None or media_snapshot:
+            output_snapshot: dict[str, Any] = {"content": str(step_output.content or "")}
+            output_snapshot.update(media_snapshot)
+            node_run.output_snapshot = output_snapshot
 
         if session_data is not None:
             # agno nests the workflow's shared `session_state` dict (where compiler.py
