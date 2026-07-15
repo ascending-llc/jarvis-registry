@@ -1532,6 +1532,7 @@ class TestIntentionData:
                     File(
                         content='{"title": "Result"}',
                         mime_type="application/json",
+                        file_type="application/json",
                         filename="metadata.json",
                     )
                 ],
@@ -1550,7 +1551,7 @@ class TestIntentionData:
         assert "Audio:" in prompt
         assert "- audio-1, mime_type=audio/mpeg" in prompt
         assert "Files:" in prompt
-        assert "- metadata.json, mime_type=application/json" in prompt
+        assert "- metadata.json, mime_type=application/json, file_type=application/json" in prompt
         assert '{"title": "Result"}' in prompt
         assert "image-bytes" not in prompt
         assert "video-bytes" not in prompt

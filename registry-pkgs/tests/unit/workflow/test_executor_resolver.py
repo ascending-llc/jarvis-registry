@@ -527,7 +527,6 @@ class TestA2AExecutor:
 
         from registry_pkgs.workflows.a2a_client import A2ACallResult
         from registry_pkgs.workflows.a2a_executor import make_a2a_executor
-        from registry_pkgs.workflows.helpers import step_output_to_prompt_text
 
         msg = Message(
             kind="message",
@@ -557,7 +556,6 @@ class TestA2AExecutor:
         assert output.files and output.files[0].filename == "bundle.zip"
         assert output.files[0].mime_type is None
         assert output.files[0].file_type == "application/zip"
-        assert "file_type=application/zip" in step_output_to_prompt_text(output)
 
 
 @pytest.mark.unit
