@@ -3,7 +3,8 @@ import type React from 'react';
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import SERVICES from '@/services';
-import { getBasePath } from '../config';
+import { markAuthLoginStarted } from '@/utils/authReturnTo';
+import { getBasePathForUrl } from '../config';
 
 interface OAuthProvider {
   name: string;
@@ -53,7 +54,8 @@ const Login: React.FC = () => {
 
   const handleOAuthLogin = (provider: string) => {
     setLoginInProgress(provider);
-    window.location.href = `${getBasePath()}/redirect/${provider}`;
+    markAuthLoginStarted();
+    window.location.href = `${getBasePathForUrl()}/redirect/${provider}`;
   };
 
   const LoadingSpinner = () => (

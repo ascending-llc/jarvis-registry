@@ -1,27 +1,7 @@
+import { getBrowserStorageValue, setBrowserStorageValue } from './browserStorage';
+
 export const setLocalStorage = (key: string, value: string, expireMinutes: number) => {
-  const now = Date.now();
-  const expireTime = now + expireMinutes * 60 * 1000;
-
-  const data = { value: value, expire: expireTime };
-
-  localStorage.setItem(key, JSON.stringify(data));
+  setBrowserStorageValue('local', key, value, expireMinutes);
 };
 
-export const getLocalStorage = (key: string) => {
-  const dataStr = localStorage.getItem(key);
-  if (!dataStr) return null;
-
-  try {
-    const data = JSON.parse(dataStr);
-    const now = Date.now();
-
-    if (now > data.expire) {
-      localStorage.removeItem(key);
-      return null;
-    }
-
-    return data.value;
-  } catch (_error) {
-    return null;
-  }
-};
+export const getLocalStorage = (key: string): string | null => getBrowserStorageValue<string>('local', key);

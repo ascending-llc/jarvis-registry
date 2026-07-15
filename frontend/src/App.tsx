@@ -16,12 +16,13 @@ import OAuthCallback from './pages/OAuthCallback';
 import ServerRegistryOrEdit from './pages/ServerRegistryOrEdit';
 import TokenGeneration from './pages/TokenGeneration';
 import WorkflowRegistryOrEdit from './pages/WorkflowRegistryOrEdit';
+import { APP_ROUTES } from './routes';
 
 const router = createBrowserRouter(
   [
-    { path: '/login', element: <Login /> },
+    { path: APP_ROUTES.login, element: <Login /> },
     {
-      path: '/oauth-callback',
+      path: APP_ROUTES.oauthCallback,
       element: (
         <ProtectedRoute>
           <OAuthCallback />
@@ -29,7 +30,7 @@ const router = createBrowserRouter(
       ),
     },
     {
-      path: '/consent/downstream',
+      path: APP_ROUTES.consentDownstream,
       element: (
         <ProtectedRoute>
           <ConsentDownstream />
@@ -37,7 +38,7 @@ const router = createBrowserRouter(
       ),
     },
     {
-      path: '/consent/server',
+      path: APP_ROUTES.consentServer,
       element: (
         <ProtectedRoute>
           <ConsentServer />
@@ -45,7 +46,7 @@ const router = createBrowserRouter(
       ),
     },
     {
-      path: '/',
+      path: APP_ROUTES.root,
       element: (
         <ProtectedRoute>
           <Layout>
@@ -55,7 +56,7 @@ const router = createBrowserRouter(
       ),
     },
     {
-      path: '/server-registry',
+      path: APP_ROUTES.serverRegistry,
       element: (
         <ProtectedRoute>
           <Layout>
@@ -65,7 +66,7 @@ const router = createBrowserRouter(
       ),
     },
     {
-      path: '/server-edit',
+      path: APP_ROUTES.serverEdit,
       element: (
         <ProtectedRoute>
           <Layout>
@@ -75,7 +76,7 @@ const router = createBrowserRouter(
       ),
     },
     {
-      path: '/agent-registry',
+      path: APP_ROUTES.agentRegistry,
       element: (
         <ProtectedRoute>
           <Layout>
@@ -85,7 +86,7 @@ const router = createBrowserRouter(
       ),
     },
     {
-      path: '/agent-edit',
+      path: APP_ROUTES.agentEdit,
       element: (
         <ProtectedRoute>
           <Layout>
@@ -95,7 +96,7 @@ const router = createBrowserRouter(
       ),
     },
     {
-      path: '/federation-registry',
+      path: APP_ROUTES.federationRegistry,
       element: (
         <ProtectedRoute>
           <Layout>
@@ -105,7 +106,7 @@ const router = createBrowserRouter(
       ),
     },
     {
-      path: '/federation-edit',
+      path: APP_ROUTES.federationEdit,
       element: (
         <ProtectedRoute>
           <Layout>
@@ -115,7 +116,7 @@ const router = createBrowserRouter(
       ),
     },
     {
-      path: '/workflow-registry',
+      path: APP_ROUTES.workflowRegistry,
       element: (
         <ProtectedRoute>
           <Layout>
@@ -125,7 +126,7 @@ const router = createBrowserRouter(
       ),
     },
     {
-      path: '/workflow-edit',
+      path: APP_ROUTES.workflowEdit,
       element: (
         <ProtectedRoute>
           <Layout>
@@ -135,7 +136,7 @@ const router = createBrowserRouter(
       ),
     },
     {
-      path: '/generate-token',
+      path: APP_ROUTES.generateToken,
       element: (
         <ProtectedRoute>
           <Layout>

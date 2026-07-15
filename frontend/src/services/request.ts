@@ -1,7 +1,9 @@
 import axios, { type AxiosError, type AxiosRequestConfig } from 'axios';
 
 import { getBasePath } from '@/config';
+import { APP_ROUTES, getBrowserPath, isLoginBrowserPath } from '@/routes';
 import API from '@/services/api';
+import { capturePassiveAuthReturnTo } from '@/utils/authReturnTo';
 import type { GetTokenResponse } from './auth/type';
 
 const cancelSources: Record<string, () => void> = {};
@@ -17,6 +19,7 @@ type RequestConfig = AxiosRequestConfig & {
   skipTokenBarrier?: boolean;
   __isRetry?: boolean;
   __isRefresh?: boolean;
+  skipAuthRecovery?: boolean;
 };
 
 let tokenInitPromise: Promise<GetTokenResponse> | null = null;
@@ -65,15 +68,20 @@ service.interceptors.response.use(
     }
     const status = error.response?.status;
     const originalConfig = (error.config || {}) as RequestConfig;
-    if (status === 401 && !originalConfig.__isRetry && !originalConfig.__isRefresh) {
+    if (
+      status === 401 &&
+      !originalConfig.__isRetry &&
+      !originalConfig.__isRefresh &&
+      !originalConfig.skipAuthRecovery
+    ) {
       if (!refreshTokenPromise) {
         refreshTokenPromise = service
           .post(API.refreshToken, undefined, { skipTokenBarrier: true, __isRefresh: true } as RequestConfig)
           .then(() => undefined)
           .catch(async () => {
-            const isOnLoginPage =
-              typeof window !== 'undefined' && window.location.pathname === `${getBasePath()}/login`;
+            const isOnLoginPage = typeof window !== 'undefined' && isLoginBrowserPath(window.location.pathname);
             if (!isOnLoginPage) {
+              capturePassiveAuthReturnTo();
               try {
                 await service.post(API.logout, undefined, {
                   skipTokenBarrier: true,
@@ -83,7 +91,7 @@ service.interceptors.response.use(
                 // ignore logout error
               }
               if (typeof window !== 'undefined') {
-                window.location.href = `${getBasePath()}/login`;
+                window.location.replace(getBrowserPath(APP_ROUTES.login));
               }
             }
             throw {
@@ -106,7 +114,7 @@ service.interceptors.response.use(
   },
 );
 
-type RequestType = { url: string; method: string; data?: object; config?: AxiosRequestConfig; reTry?: boolean };
+type RequestType = { url: string; method: string; data?: object; config?: RequestConfig; reTry?: boolean };
 const request = async ({ url, method, data = {}, config = {} }: RequestType) => {
   const body = method.toUpperCase() === 'GET' ? { params: data } : { data };
   try {
@@ -124,11 +132,16 @@ const request = async ({ url, method, data = {}, config = {} }: RequestType) => 
   }
 };
 
-const requestGet = (url: string, data?: object, config = {}) => request({ url, data, config, method: 'GET' });
-const requestPut = (url: string, data?: object, config = {}) => request({ url, data, config, method: 'PUT' });
-const requestPost = (url: string, data?: object, config = {}) => request({ url, data, config, method: 'POST' });
-const requestPatch = (url: string, data?: object, config = {}) => request({ url, data, config, method: 'PATCH' });
-const requestDelete = (url: string, data?: object, config = {}) => request({ url, data, config, method: 'DELETE' });
+const requestGet = (url: string, data?: object, config: RequestConfig = {}) =>
+  request({ url, data, config, method: 'GET' });
+const requestPut = (url: string, data?: object, config: RequestConfig = {}) =>
+  request({ url, data, config, method: 'PUT' });
+const requestPost = (url: string, data?: object, config: RequestConfig = {}) =>
+  request({ url, data, config, method: 'POST' });
+const requestPatch = (url: string, data?: object, config: RequestConfig = {}) =>
+  request({ url, data, config, method: 'PATCH' });
+const requestDelete = (url: string, data?: object, config: RequestConfig = {}) =>
+  request({ url, data, config, method: 'DELETE' });
 
 const Request = {
   get: requestGet,
