@@ -11,12 +11,12 @@ from fastapi.responses import RedirectResponse
 
 from registry.api.redirect_routes import (
     MAX_RETURN_PATH_LENGTH,
-    OAUTH2_STATE_NONCE_COOKIE_NAME,
     _decode_client_state,
     _prepare_return_path_for_state,
     _sanitize_return_path,
     oauth2_callback,
     oauth2_login_redirect,
+    settings,
 )
 
 
@@ -53,6 +53,8 @@ def mock_settings():
         settings.jwt_issuer = "test-issuer"
         settings.jwt_public_key = "test-public-key"
         settings.oauth_session_ttl_seconds = 600
+        settings.oauth2_code_verifier_cookie_name = "registry_oauth2_code_verifier"
+        settings.oauth2_state_nonce_cookie_name = "registry_oauth2_state_nonce"
         settings.refresh_cookie_name = "refresh"
         settings.registry_app_name = "jarvis-registry-client"
         settings.registry_client_secret = "test-secret"
@@ -137,7 +139,7 @@ async def test_oauth2_login_redirect_carries_next_in_state(mock_settings) -> Non
     assert decoded["next"] == "/consent/server?nonce=abc"
     assert decoded["nonce"]
     set_cookie_headers = [value.decode() for key, value in response.raw_headers if key == b"set-cookie"]
-    assert any(OAUTH2_STATE_NONCE_COOKIE_NAME in header for header in set_cookie_headers)
+    assert any(mock_settings.oauth2_state_nonce_cookie_name in header for header in set_cookie_headers)
 
 
 @pytest.mark.unit
@@ -263,8 +265,8 @@ async def test_oauth2_callback_clears_login_cookies_after_valid_state_error(mock
 
     cookies = _cookies_from_response(response)
     assert response.headers["location"].endswith("/login?error=oauth2_missing_code_verifier")
-    assert cookies["registry_oauth2_code_verifier"]["max-age"] == "0"
-    assert cookies[OAUTH2_STATE_NONCE_COOKIE_NAME]["max-age"] == "0"
+    assert cookies[settings.oauth2_code_verifier_cookie_name]["max-age"] == "0"
+    assert cookies[settings.oauth2_state_nonce_cookie_name]["max-age"] == "0"
 
 
 @pytest.mark.unit
@@ -293,5 +295,5 @@ async def test_oauth2_callback_clears_login_cookies_on_early_valid_state_errors(
 
     cookies = _cookies_from_response(response)
     assert expected_error in response.headers["location"]
-    assert cookies["registry_oauth2_code_verifier"]["max-age"] == "0"
-    assert cookies[OAUTH2_STATE_NONCE_COOKIE_NAME]["max-age"] == "0"
+    assert cookies[settings.oauth2_code_verifier_cookie_name]["max-age"] == "0"
+    assert cookies[settings.oauth2_state_nonce_cookie_name]["max-age"] == "0"

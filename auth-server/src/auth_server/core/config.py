@@ -14,6 +14,10 @@ from registry_pkgs.core.config import JarvisBaseSettings, RedisConfig
 class AuthSettings(JarvisBaseSettings):
     """Auth server settings with environment variable support."""
 
+    # ==================== Cookies ====================
+    oauth2_temp_session_cookie_name: str = "oauth2_temp_session"
+    oauth2_consent_nonce_cookie_name: str = "oauth2_consent_nonce"
+
     # ==================== Core Settings ====================
     # JWT Settings
     max_token_lifetime_hours: int = 24

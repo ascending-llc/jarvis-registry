@@ -38,7 +38,6 @@ router = APIRouter()
 ACCESS_TOKEN_COOKIE_MAX_AGE_SECONDS = 86400
 SESSION_STARTED_AT_CLOCK_SKEW_SECONDS = 300
 MAX_RETURN_PATH_LENGTH = 2048
-OAUTH2_STATE_NONCE_COOKIE_NAME = "registry_oauth2_state_nonce"
 
 
 def _set_csrf_cookie(response: Response, access_token: str, cookie_secure: bool) -> None:
@@ -60,8 +59,8 @@ def _delete_auth_cookies(response: Response) -> None:
 
 
 def _delete_oauth2_login_cookies(response: Response) -> None:
-    response.delete_cookie("registry_oauth2_code_verifier")
-    response.delete_cookie(OAUTH2_STATE_NONCE_COOKIE_NAME)
+    response.delete_cookie(settings.oauth2_code_verifier_cookie_name)
+    response.delete_cookie(settings.oauth2_state_nonce_cookie_name)
 
 
 def _oauth2_login_error_response(
@@ -207,7 +206,7 @@ async def oauth2_login_redirect(
         logger.info(f"Redirecting to OAuth2 login for provider {provider}: {auth_url}")
         resp = RedirectResponse(url=auth_url, status_code=302)
         resp.set_cookie(
-            key="registry_oauth2_code_verifier",
+            key=settings.oauth2_code_verifier_cookie_name,
             value=encrypt_value(code_verifier),
             max_age=settings.oauth_session_ttl_seconds,
             httponly=True,
@@ -215,7 +214,7 @@ async def oauth2_login_redirect(
             samesite="lax",
         )
         resp.set_cookie(
-            key=OAUTH2_STATE_NONCE_COOKIE_NAME,
+            key=settings.oauth2_state_nonce_cookie_name,
             value=state_nonce,
             max_age=settings.oauth_session_ttl_seconds,
             httponly=True,
@@ -235,8 +234,8 @@ async def oauth2_callback(
     state: str | None = None,
     error: str | None = None,
     details: str | None = None,
-    registry_oauth2_code_verifier: str | None = Cookie(None),
-    registry_oauth2_state_nonce: str | None = Cookie(None),
+    registry_oauth2_code_verifier: str | None = Cookie(None, alias=settings.oauth2_code_verifier_cookie_name),
+    registry_oauth2_state_nonce: str | None = Cookie(None, alias=settings.oauth2_state_nonce_cookie_name),
     user_service: UserService = Depends(get_user_service),
     group_service: GroupService = Depends(get_group_service),
     is_https: bool = Depends(check_if_https),
@@ -410,9 +409,6 @@ async def oauth2_callback(
             secure=cookie_secure,
             path="/",
         )
-
-        # Clean up temporary cookies
-        resp.delete_cookie("oauth2_temp_session")
 
         logger.info(f"OAuth2 login successful for user {user_obj.username}, JWT tokens set in httpOnly cookies")
         return resp

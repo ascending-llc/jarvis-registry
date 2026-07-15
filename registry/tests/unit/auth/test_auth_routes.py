@@ -84,6 +84,8 @@ class TestAuthRoutes:
             mock_settings.session_cookie_name = "session"
             mock_settings.refresh_cookie_name = "refresh"
             mock_settings.csrf_cookie_name = "csrf"
+            mock_settings.oauth2_code_verifier_cookie_name = "registry_oauth2_code_verifier"
+            mock_settings.oauth2_state_nonce_cookie_name = "registry_oauth2_state_nonce"
             mock_settings.session_max_age_seconds = 3600
             mock_settings.session_cookie_secure = False
             mock_settings.templates_dir = "/templates"
