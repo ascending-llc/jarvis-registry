@@ -2,7 +2,8 @@ import json
 from types import SimpleNamespace
 
 import pytest
-from agno.workflow import StepInput
+from agno.media import File, Image
+from agno.workflow import StepInput, StepOutput
 from agno.workflow.step import OnError
 from beanie import PydanticObjectId
 
@@ -17,7 +18,7 @@ from registry_pkgs.models.workflow import (
 )
 from registry_pkgs.workflows import compiler
 from registry_pkgs.workflows.compiler import step_kwargs
-from registry_pkgs.workflows.helpers import build_prompt
+from registry_pkgs.workflows.helpers import build_prompt, step_output_to_prompt_text
 
 
 async def _executor(*args, **kwargs):
@@ -316,6 +317,86 @@ class TestWorkflowCompiler:
 
         snapshots = session_state[compiler.NODE_INPUT_SNAPSHOTS_KEY]
         assert snapshots[node.id]["input"] == [{"id": 1}, {"id": 2}]
+
+
+@pytest.mark.unit
+class TestMediaSnapshotIntegration:
+    """P2: media metadata round-trips through snapshots and rerun/retry replay."""
+
+    def test_serialize_step_output_includes_media_metadata(self):
+        output = StepOutput(
+            step_name="draw",
+            content="see image",
+            success=True,
+            images=[Image(content=b"raw-bytes", id="pic.jpg", mime_type="image/jpeg")],
+            files=[File(id="doc.pdf", filename="doc.pdf", file_type="application/pdf")],
+        )
+
+        serialized = compiler._serialize_step_output(output)
+
+        assert serialized["content"] == "see image"
+        assert serialized["images"] == [{"id": "pic.jpg", "mime_type": "image/jpeg"}]
+        assert serialized["files"] == [{"id": "doc.pdf", "filename": "doc.pdf", "file_type": "application/pdf"}]
+        assert b"raw-bytes" not in repr(serialized).encode()
+
+    def test_serialize_step_output_text_only_has_no_media_keys(self):
+        serialized = compiler._serialize_step_output(StepOutput(step_name="echo", content="ok", success=True))
+
+        assert "images" not in serialized
+        assert "files" not in serialized
+
+    @pytest.mark.asyncio
+    async def test_injected_executor_replays_media_shells(self):
+        node = _step_node("draw", "painter")
+        definition = _workflow_definition([node])
+        workflow = compiler.compile_workflow(
+            definition,
+            _workflow_run(),
+            executor_registry={"painter": _executor},
+            injected_outputs={
+                node.id: {
+                    "content": "generated an image",
+                    "session_state": {"restored": True},
+                    "images": [{"id": "pic.jpg", "mime_type": "image/jpeg"}],
+                    "files": [{"id": "doc.pdf", "filename": "doc.pdf", "file_type": "application/pdf"}],
+                }
+            },
+        )
+        session_state: dict = {}
+
+        output = await workflow.steps[0].executor(StepInput(input="ignored"), session_state)
+
+        assert output.content == "generated an image"
+        assert session_state["restored"] is True
+        (image,) = output.images
+        assert image.id == "pic.jpg"
+        assert image.mime_type == "image/jpeg"
+        (file,) = output.files
+        assert file.filename == "doc.pdf"
+        # Replayed shells must render the same dependency-prompt media summary
+        # as the live run so downstream prompts are identical on rerun/retry.
+        summary = step_output_to_prompt_text(output)
+        assert "Images:\n- pic.jpg, mime_type=image/jpeg" in summary
+        assert "Files:\n- doc.pdf" in summary
+
+    @pytest.mark.asyncio
+    async def test_injected_executor_without_media_replays_content_only(self):
+        node = _step_node("echo", "tool")
+        definition = _workflow_definition([node])
+        workflow = compiler.compile_workflow(
+            definition,
+            _workflow_run(),
+            executor_registry={"tool": _executor},
+            injected_outputs={node.id: {"content": "plain text", "session_state": {}}},
+        )
+
+        output = await workflow.steps[0].executor(StepInput(input="ignored"), {})
+
+        assert output.content == "plain text"
+        assert output.images is None
+        assert output.videos is None
+        assert output.audio is None
+        assert output.files is None
 
 
 @pytest.mark.unit

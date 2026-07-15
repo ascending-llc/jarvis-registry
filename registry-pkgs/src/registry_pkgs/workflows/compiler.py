@@ -27,6 +27,7 @@ from registry_pkgs.models.workflow import (
     WorkflowRun,
 )
 from registry_pkgs.workflows.hitl.field_types import field_type_to_agno
+from registry_pkgs.workflows.media_snapshot import media_from_snapshot, serialize_step_output_media
 from registry_pkgs.workflows.persistence import WorkflowRunSyncer
 from registry_pkgs.workflows.prompt import (
     ADDITIONAL_DATA_DEPENDENCY_NODE_NAMES,
@@ -59,14 +60,20 @@ _ON_TIMEOUT_TO_AGNO: dict[OnTimeoutPolicy, str] = {
 
 
 def _serialize_step_output(value: StepOutput) -> dict[str, Any]:
-    """Serialize a previous StepOutput without recursively storing full internals."""
-    return {
+    """Serialize a previous StepOutput without recursively storing full internals.
+
+    Media fields are persisted as metadata only (no bytes) via
+    ``serialize_step_output_media`` so snapshots stay Mongo-safe and small.
+    """
+    serialized = {
         "step_name": value.step_name,
         "step_id": value.step_id,
         "content": json_safe(value.content),
         "success": value.success,
         "error": value.error,
     }
+    serialized.update(serialize_step_output_media(value))
+    return serialized
 
 
 def _serialize_step_input(step_input: StepInput) -> dict[str, Any]:
@@ -283,14 +290,26 @@ def compile_workflow(
         nodes_to_compile = definition.nodes[: cut + 1]
 
     def _make_injected_executor(data: dict[str, Any]) -> StepExecutor:
-        """Return a pass-through executor that replays *content* and *session_state*."""
+        """Return a pass-through executor that replays *content*, *media metadata* and *session_state*.
+
+        Media are rebuilt as metadata-only shells (no bytes) so downstream
+        dependency prompts render the same media summary as a live run.
+        """
+        media = media_from_snapshot(data)
 
         async def _injected(step_input: StepInput, session_state: dict | None = None) -> StepOutput:
             if session_state is not None:
                 state_updates = data.get("session_state")
                 if state_updates:
                     session_state.update(state_updates)
-            return StepOutput(content=data.get("content"), success=True)
+            return StepOutput(
+                content=data.get("content"),
+                images=media["images"],
+                videos=media["videos"],
+                audio=media["audio"],
+                files=media["files"],
+                success=True,
+            )
 
         return _injected
 
