@@ -708,3 +708,53 @@ async def test_replay_run_forwards_json_fallback_for_non_user_text_input(monkeyp
     assert json.loads(forwarded_user_text) == payload, (
         f"replay must forward the full payload as JSON, not drop it; got {forwarded_user_text!r}"
     )
+
+
+class TestInjectedOutputFromNodeRun:
+    """P2: media metadata from output_snapshot must flow into injected_outputs."""
+
+    def test_carries_content_and_media_keys(self):
+        node_run = SimpleNamespace(
+            output_snapshot={
+                "content": "made a picture",
+                "images": [{"id": "pic.jpg", "mime_type": "image/jpeg"}],
+                "files": [{"id": "doc.pdf", "filename": "doc.pdf"}],
+            },
+            session_state_snapshot={"step": "done"},
+        )
+
+        injected = wcs._injected_output_from_node_run(node_run)
+
+        assert injected == {
+            "content": "made a picture",
+            "session_state": {"step": "done"},
+            "images": [{"id": "pic.jpg", "mime_type": "image/jpeg"}],
+            "files": [{"id": "doc.pdf", "filename": "doc.pdf"}],
+        }
+
+    def test_text_only_snapshot_has_no_media_keys(self):
+        node_run = SimpleNamespace(
+            output_snapshot={"content": "ok"},
+            session_state_snapshot=None,
+        )
+
+        injected = wcs._injected_output_from_node_run(node_run)
+
+        assert injected == {"content": "ok", "session_state": {}}
+
+    def test_empty_media_lists_are_not_injected(self):
+        node_run = SimpleNamespace(
+            output_snapshot={"content": "ok", "images": [], "videos": []},
+            session_state_snapshot={},
+        )
+
+        injected = wcs._injected_output_from_node_run(node_run)
+
+        assert injected == {"content": "ok", "session_state": {}}
+
+    def test_missing_snapshot_defaults_to_empty_content(self):
+        node_run = SimpleNamespace(output_snapshot=None, session_state_snapshot=None)
+
+        injected = wcs._injected_output_from_node_run(node_run)
+
+        assert injected == {"content": "", "session_state": {}}
