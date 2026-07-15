@@ -99,21 +99,21 @@ def _serialize_step_input(step_input: StepInput) -> dict[str, Any]:
 
 
 def _dedupe_preserve_order(names: list[str]) -> list[str]:
-    seen: set[str] = set()
-    result: list[str] = []
-    for name in names:
-        if name in seen:
-            continue
-        seen.add(name)
-        result.append(name)
-    return result
+    """Dedupe while keeping first-occurrence order (implicit dep stays ahead of explicit refs)."""
+    return list(dict.fromkeys(names))
 
 
 def _build_implicit_previous_step_names(nodes: list[WorkflowNode]) -> dict[str, str]:
-    """Map each STEP node id to the immediately previous STEP in the same ordered list."""
+    """Map each STEP node id to the immediately previous STEP in the same ordered list.
+
+    Branch containers (Loop / Condition / Router) form independent chains inside
+    each branch; Parallel siblings never depend on each other; a container node
+    breaks the chain (a STEP never implicitly depends on a container).
+    """
     implicit_by_node_id: dict[str, str] = {}
 
     def visit_sequence(sequence: list[WorkflowNode]) -> None:
+        """Walk one ordered node list, linking STEP→previous-STEP and recursing into containers."""
         previous_node: WorkflowNode | None = None
         for node in sequence:
             if node.node_type == WorkflowNodeType.STEP:

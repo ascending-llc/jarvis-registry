@@ -17,14 +17,26 @@ from registry_pkgs.workflows.serialization import content_to_str
 
 _MAX_DEPENDENCY_CONTENT_CHARS = 8000
 
+_MediaSummaryFields = tuple[tuple[str, int | None], ...]
+_IMAGE_SUMMARY_FIELDS: _MediaSummaryFields = (("mime_type", None), ("format", None), ("alt_text", 500))
+_VIDEO_SUMMARY_FIELDS: _MediaSummaryFields = (("mime_type", None), ("format", None), ("duration", None))
+_AUDIO_SUMMARY_FIELDS: _MediaSummaryFields = (
+    ("mime_type", None),
+    ("format", None),
+    ("duration", None),
+    ("transcript", 500),
+)
+
 
 def _truncate(value: str, *, limit: int = _MAX_DEPENDENCY_CONTENT_CHARS) -> str:
+    """Cap prompt-bound text at *limit* chars, appending a note about what was cut."""
     if len(value) <= limit:
         return value
     return f"{value[:limit]}\n[truncated: {len(value)} chars total, showing first {limit}]"
 
 
 def _safe_file_preview(file_content: Any, mime_type: str | None) -> str | None:
+    """Return decodable json/text file content for prompt preview; None for anything binary."""
     if file_content is None:
         return None
     if isinstance(file_content, bytes):
@@ -39,55 +51,34 @@ def _safe_file_preview(file_content: Any, mime_type: str | None) -> str | None:
     return None
 
 
+def _media_summary_lines(items: list[Any], fallback_label: str, fields: _MediaSummaryFields) -> str:
+    """Render one '- label, attr=value, ...' bullet per media item from its metadata fields."""
+    lines = []
+    for item in items:
+        details = [item.id or item.mime_type or fallback_label]
+        for attr, limit in fields:
+            value = getattr(item, attr, None)
+            if value is None or value == "":
+                continue
+            details.append(f"{attr}={_truncate(str(value), limit=limit) if limit else value}")
+        lines.append(f"- {', '.join(details)}")
+    return "\n".join(lines)
+
+
 def step_output_to_prompt_text(output: StepOutput) -> str:
-    """Render a StepOutput into a compact, prompt-safe text summary."""
+    """Render a StepOutput into a compact, prompt-safe text summary (metadata only, never bytes)."""
     sections: list[str] = []
     if output.content is not None:
         sections.append(f"Text output:\n{_truncate(content_to_str(output.content))}")
 
     if output.images:
-        lines = []
-        for image in output.images:
-            label = image.id or image.mime_type or "image"
-            details = [label]
-            if image.mime_type:
-                details.append(f"mime_type={image.mime_type}")
-            if image.format:
-                details.append(f"format={image.format}")
-            if image.alt_text:
-                details.append(f"alt_text={_truncate(image.alt_text, limit=500)}")
-            lines.append(f"- {', '.join(details)}")
-        sections.append("Images:\n" + "\n".join(lines))
+        sections.append("Images:\n" + _media_summary_lines(output.images, "image", _IMAGE_SUMMARY_FIELDS))
 
     if output.videos:
-        lines = []
-        for video in output.videos:
-            label = video.id or video.mime_type or "video"
-            details = [label]
-            if video.mime_type:
-                details.append(f"mime_type={video.mime_type}")
-            if video.format:
-                details.append(f"format={video.format}")
-            if video.duration is not None:
-                details.append(f"duration={video.duration}")
-            lines.append(f"- {', '.join(details)}")
-        sections.append("Videos:\n" + "\n".join(lines))
+        sections.append("Videos:\n" + _media_summary_lines(output.videos, "video", _VIDEO_SUMMARY_FIELDS))
 
     if output.audio:
-        lines = []
-        for audio in output.audio:
-            label = audio.id or audio.mime_type or "audio"
-            details = [label]
-            if audio.mime_type:
-                details.append(f"mime_type={audio.mime_type}")
-            if audio.format:
-                details.append(f"format={audio.format}")
-            if audio.duration is not None:
-                details.append(f"duration={audio.duration}")
-            if audio.transcript:
-                details.append(f"transcript={_truncate(audio.transcript, limit=500)}")
-            lines.append(f"- {', '.join(details)}")
-        sections.append("Audio:\n" + "\n".join(lines))
+        sections.append("Audio:\n" + _media_summary_lines(output.audio, "audio", _AUDIO_SUMMARY_FIELDS))
 
     if output.files:
         lines = []
@@ -106,7 +97,7 @@ def step_output_to_prompt_text(output: StepOutput) -> str:
                 lines.append(f"  Preview:\n{_truncate(preview)}")
         sections.append("Files:\n" + "\n".join(lines))
 
-    if output.success is False:
+    if not output.success:
         sections.append(f"Success: false\nError: {output.error or '(no error detail)'}")
     elif output.error:
         sections.append(f"Error: {output.error}")

@@ -47,6 +47,7 @@ _INDENT = "  "
 
 
 def _indented_block(value: str) -> str:
+    """Indent every line two spaces so multi-line content nests inside the prompt without code fences."""
     return "\n".join(f"{_INDENT}{line}" if line else _INDENT for line in value.splitlines())
 
 

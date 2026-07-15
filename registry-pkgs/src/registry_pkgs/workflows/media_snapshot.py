@@ -35,6 +35,7 @@ _FIELDS_BY_KEY: dict[str, tuple[str, ...]] = {
 
 
 def _metadata_dict(item: Any, fields: tuple[str, ...]) -> dict[str, Any]:
+    """Pick the whitelisted non-None attributes off a media object into a Mongo-safe dict."""
     metadata: dict[str, Any] = {}
     for field in fields:
         value = getattr(item, field, None)
@@ -45,7 +46,7 @@ def _metadata_dict(item: Any, fields: tuple[str, ...]) -> dict[str, Any]:
 
 
 def serialize_step_output_media(output: StepOutput) -> dict[str, list[dict[str, Any]]]:
-    """Extract Mongo-safe media metadata (no bytes) from a StepOutput."""
+    """Extract Mongo-safe media metadata (no bytes) from a StepOutput; only non-empty keys are emitted."""
     snapshot: dict[str, list[dict[str, Any]]] = {}
     for key in MEDIA_SNAPSHOT_KEYS:
         items = getattr(output, key, None)
@@ -56,42 +57,30 @@ def serialize_step_output_media(output: StepOutput) -> dict[str, list[dict[str, 
 
 
 def _shell_kwargs(metadata: Mapping[str, Any], fields: tuple[str, ...]) -> dict[str, Any]:
+    """Pick the whitelisted non-None snapshot values as constructor kwargs for a shell."""
     return {field: metadata[field] for field in fields if metadata.get(field) is not None}
 
 
-def _image_shell(metadata: Mapping[str, Any]) -> Image:
-    kwargs = _shell_kwargs(metadata, _IMAGE_FIELDS)
+def _media_shell(metadata: Mapping[str, Any], fields: tuple[str, ...], cls: type[Audio | Image | Video]) -> Any:
+    """Rebuild an Image/Video/Audio shell; content=b'' placates agno's url/filepath/content requirement."""
+    kwargs = _shell_kwargs(metadata, fields)
     if not kwargs.get("url"):
-        kwargs["content"] = b""  # agno requires url/filepath/content; bytes were not persisted
-    return Image(**kwargs)
-
-
-def _video_shell(metadata: Mapping[str, Any]) -> Video:
-    kwargs = _shell_kwargs(metadata, _VIDEO_FIELDS)
-    if not kwargs.get("url"):
-        kwargs["content"] = b""
-    return Video(**kwargs)
-
-
-def _audio_shell(metadata: Mapping[str, Any]) -> Audio:
-    kwargs = _shell_kwargs(metadata, _AUDIO_FIELDS)
-    if not kwargs.get("url"):
-        kwargs["content"] = b""
-    return Audio(**kwargs)
+        kwargs["content"] = b""  # bytes were never persisted — this is a metadata-only shell
+    return cls(**kwargs)
 
 
 def _file_shell(metadata: Mapping[str, Any]) -> File:
+    """Rebuild a File shell; agno File needs an identity field, so fall back to filename/name."""
     kwargs = _shell_kwargs(metadata, _FILE_FIELDS)
     if not (kwargs.get("id") or kwargs.get("url")):
-        # agno File requires at least one identity field
         kwargs["id"] = kwargs.get("filename") or kwargs.get("name") or "file"
     return File(**kwargs)
 
 
-_SHELL_BUILDERS = {
-    "images": _image_shell,
-    "videos": _video_shell,
-    "audio": _audio_shell,
+_SHELL_BUILDERS: dict[str, Any] = {
+    "images": lambda metadata: _media_shell(metadata, _IMAGE_FIELDS, Image),
+    "videos": lambda metadata: _media_shell(metadata, _VIDEO_FIELDS, Video),
+    "audio": lambda metadata: _media_shell(metadata, _AUDIO_FIELDS, Audio),
     "files": _file_shell,
 }
 

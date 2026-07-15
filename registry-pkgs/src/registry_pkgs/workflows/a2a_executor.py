@@ -26,11 +26,13 @@ logger = logging.getLogger(__name__)
 
 
 def _safe_file_mime_type(mime_type: str | None) -> str | None:
+    """Return the MIME type if agno File accepts it, else None (original is kept in file_type)."""
     media_type = (mime_type or "").split(";", 1)[0].strip().lower()
     return media_type if media_type in File.valid_mime_types() else None
 
 
 def _file_payload_to_media(payload: FileWithBytes | FileWithUri) -> Audio | File | Image | Video | None:
+    """Convert one A2A file payload into Image/Video/Audio/File by MIME prefix (bytes→from_base64, uri→url)."""
     mime_type = payload.mime_type
     media_type = (mime_type or "").split(";", 1)[0].strip().lower()
     safe_mime_type = _safe_file_mime_type(mime_type)
@@ -82,6 +84,7 @@ def _append_parts_media(
     audio: list[Audio],
     data_prefix: str,
 ) -> None:
+    """Sort a parts list into the media buckets; DataParts become '{data_prefix}-data-{n}.json' JSON Files."""
     data_index = 0
     for part in parts:
         root = getattr(part, "root", part)
@@ -117,7 +120,7 @@ def _append_message_media(
     audio: list[Audio],
     data_prefix: str,
 ) -> None:
-    """message"""
+    """Collect media from a Message's parts into the shared buckets."""
     _append_parts_media(
         message.parts or [],
         files=files,
@@ -136,7 +139,7 @@ def _append_task_media(
     videos: list[Video],
     audio: list[Audio],
 ) -> None:
-    """task"""
+    """Collect media from a Task's status message and artifacts into the shared buckets."""
     if task.status.message is not None:
         _append_message_media(
             task.status.message,
