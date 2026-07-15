@@ -6,7 +6,7 @@ import { useWorkflowPanel } from '../WorkflowPanelContext';
 
 /** ParallelNodeProperties - handles Parallel node configuration with unlimited branches. */
 export const ParallelNodeProperties: React.FC<{ node: Node<ParallelNodeData> }> = ({ node }) => {
-  const { onNodeDataChange, onParallelBranchesChange } = useWorkflowPanel();
+  const { isReadOnly, onNodeDataChange, onParallelBranchesChange } = useWorkflowPanel();
   const nodeData = node.data as ParallelNodeData;
 
   const parBranches = Array.isArray(nodeData?.branches) ? nodeData.branches : ['Branch A', 'Branch B'];
@@ -42,6 +42,7 @@ export const ParallelNodeProperties: React.FC<{ node: Node<ParallelNodeData> }> 
         onRm={i => parBranches.length > 1 && rmPar(i)}
         onChange={updatePar}
         addLabel='+ Add branch'
+        disabled={isReadOnly}
       />
       <p className='text-[11px] text-[var(--jarvis-subtle)] mt-1.5 leading-relaxed'>
         Each branch fans out independently. Add the next node after each branch output on the canvas.

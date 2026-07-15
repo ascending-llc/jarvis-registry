@@ -137,12 +137,14 @@ export const getLayoutedElements = (nodes: WorkflowNode[], edges: Edge[]): { nod
       });
     }
 
-    const childrenWithTrees = tree.children.filter(c => c.targetTree);
+    const childrenWithTrees = tree.children.filter(
+      (child): child is (typeof tree.children)[number] & { targetTree: LayoutTree } => child.targetTree !== null,
+    );
     if (childrenWithTrees.length === 0) return;
 
     // Distribute subtrees vertically relative to the parent's center
     const totalH =
-      childrenWithTrees.reduce((sum, c) => sum + c.targetTree!.subtreeHeight, 0) +
+      childrenWithTrees.reduce((sum, child) => sum + child.targetTree.subtreeHeight, 0) +
       (childrenWithTrees.length - 1) * NODE_SEP_Y;
     let currentY = centerY - totalH / 2;
 

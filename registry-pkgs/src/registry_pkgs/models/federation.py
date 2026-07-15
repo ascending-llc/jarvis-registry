@@ -81,15 +81,46 @@ class AwsAgentCoreProviderConfig(BaseModel):
 class AzureAiFoundryProviderConfig(BaseModel):
     """
     Azure AI Foundry federation-level provider configuration.
+
+    These fields describe how the federation connects to the Foundry project
+    (control plane + A2A data plane). They are not child-resource attributes.
     """
 
     projectEndpoint: str | None = Field(
         default=None,
-        description="Azure AI Foundry project endpoint used to create AIProjectClient",
+        description="Azure AI Foundry project endpoint used to create AIProjectClient, "
+        "form: https://{account}.services.ai.azure.com/api/projects/{project}. "
+        "Always required, regardless of auth mode.",
+    )
+    tenantId: str | None = Field(
+        default=None,
+        description="Microsoft Entra tenant id. "
+        "Required for service-principal auth; leave empty when using managed identity.",
+    )
+    clientId: str | None = Field(
+        default=None,
+        description="Service principal (App Registration) client id. "
+        "Required for service-principal auth; leave empty when using managed identity.",
+    )
+    clientSecret: str | None = Field(
+        default=None,
+        description="Service principal client secret; stored encrypted at rest. "
+        "Required together with tenantId and clientId for service-principal auth. "
+        "Leave all three empty when the registry itself runs on Azure with Workload Identity "
+        "configured (e.g. AKS) — DefaultAzureCredential then resolves the pod's managed identity, "
+        "which must be granted the Foundry User (formerly Azure AI User) role on this project.",
+    )
+    agentNames: list[str] = Field(
+        default_factory=list,
+        description="Optional explicit agent name allowlist; when empty all A2A-enabled agents are discovered",
     )
     metadataFilter: dict[str, str] = Field(
         default_factory=dict,
         description="Agent metadata key/value filters applied during discovery",
+    )
+    sendPreviewHeader: bool = Field(
+        default=False,
+        description="When true, attach Foundry-Features: HostedAgents=V1Preview to A2A requests",
     )
 
     model_config = ConfigDict(populate_by_name=True)
