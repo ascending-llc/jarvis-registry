@@ -17,6 +17,7 @@ const Login: React.FC = () => {
   const [loadingProviders, setLoadingProviders] = useState(true);
   const [loginInProgress, setLoginInProgress] = useState<string | null>(null);
   const [searchParams] = useSearchParams();
+  const nextParam = searchParams.get('next') || '';
 
   useEffect(() => {
     console.log('[Login] Component mounted, fetching OAuth providers...');
@@ -53,7 +54,8 @@ const Login: React.FC = () => {
 
   const handleOAuthLogin = (provider: string) => {
     setLoginInProgress(provider);
-    window.location.href = `${getBasePath()}/redirect/${provider}`;
+    const query = nextParam ? `?next=${encodeURIComponent(nextParam)}` : '';
+    window.location.href = `${getBasePath()}/redirect/${provider}${query}`;
   };
 
   const LoadingSpinner = () => (

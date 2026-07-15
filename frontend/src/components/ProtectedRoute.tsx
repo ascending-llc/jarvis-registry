@@ -1,4 +1,5 @@
 import { Navigate } from 'react-router-dom';
+import { captureReturnPath } from '../config';
 import { useAuth } from '../contexts/AuthContext';
 
 interface ProtectedRouteProps {
@@ -17,7 +18,7 @@ const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ children }) => {
   }
 
   if (!user) {
-    return <Navigate to='/login' replace />;
+    return <Navigate to={`/login?next=${encodeURIComponent(captureReturnPath())}`} replace />;
   }
 
   return <>{children}</>;

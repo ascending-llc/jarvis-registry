@@ -1,14 +1,15 @@
 import base64
+import binascii
 import json
 import logging
 import secrets
 from datetime import UTC, datetime
 from typing import Annotated, Any
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlparse
 
 import httpx
 from authlib.oauth2.rfc7636 import create_s256_code_challenge
-from fastapi import APIRouter, Cookie, Depends, Request, status
+from fastapi import APIRouter, Cookie, Depends, Query, Request, status
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 
 from registry_pkgs.core.jwt_utils import decode_jwt
@@ -94,6 +95,35 @@ def _get_string_list_claim(claims: dict[str, Any], claim_name: str) -> list[str]
     return [item.strip() for item in value if isinstance(item, str) and item.strip()]
 
 
+def _decode_client_state(raw: str | None) -> dict[str, Any]:
+    """Decode base64-JSON client state round-tripped through auth-server."""
+    if not raw:
+        return {}
+    try:
+        padded = raw + "=" * (-len(raw) % 4)
+        decoded = json.loads(base64.urlsafe_b64decode(padded))
+    except (binascii.Error, json.JSONDecodeError, TypeError, UnicodeDecodeError):
+        logger.warning("Failed to decode OAuth2 client_state")
+        return {}
+    return decoded if isinstance(decoded, dict) else {}
+
+
+def _sanitize_return_path(raw: object) -> str:
+    """Return a safe same-origin SPA path, or an empty string if absent or unsafe."""
+    if not isinstance(raw, str) or not raw:
+        return ""
+    if "\r" in raw or "\n" in raw:
+        return ""
+    if not raw.startswith("/") or raw[1:2] in ("/", "\\"):
+        return ""
+
+    parsed = urlparse(raw)
+    if parsed.scheme or parsed.netloc:
+        return ""
+
+    return raw
+
+
 async def get_oauth2_providers():
     """Fetch available OAuth2 providers from auth server"""
     try:
@@ -115,14 +145,18 @@ async def get_oauth2_providers():
 
 # OAuth2 login redirect avoid /auth/ route collision with auth server
 @router.get("/redirect/{provider}")
-async def oauth2_login_redirect(provider: str, is_https: bool = Depends(check_if_https)):
+async def oauth2_login_redirect(
+    provider: str,
+    next_path: Annotated[str | None, Query(alias="next")] = None,
+    is_https: bool = Depends(check_if_https),
+):
     """Redirect to auth server for OAuth2 login"""
     try:
         # Registry backend receives `code` from auth-server, and calls the /token endpoint of auth-server.
         # Therefore the redirect URI should be a route on Registry backend.
         registry_url = settings.registry_url
         auth_external_url = settings.auth_server_external_url
-        state_data = {"nonce": secrets.token_urlsafe(24)}
+        state_data = {"nonce": secrets.token_urlsafe(24), "next": next_path}
         client_state = base64.urlsafe_b64encode(json.dumps(state_data).encode()).decode().rstrip("=")
         code_verifier = secrets.token_urlsafe(32)
         code_challenge = create_s256_code_challenge(code_verifier)
@@ -157,6 +191,7 @@ async def oauth2_login_redirect(provider: str, is_https: bool = Depends(check_if
 async def oauth2_callback(
     request: Request,
     code: str | None = None,
+    state: str | None = None,
     error: str | None = None,
     details: str | None = None,
     registry_oauth2_code_verifier: str | None = Cookie(None),
@@ -292,7 +327,8 @@ async def oauth2_callback(
         # Generate JWT access and refresh tokens, honoring OAuth token timing
         access_token, refresh_token = generate_token_pair(user_info=user_info)
 
-        resp = RedirectResponse(url=settings.registry_client_url.rstrip("/"), status_code=302)
+        next_path = _sanitize_return_path(_decode_client_state(state).get("next"))
+        resp = RedirectResponse(url=f"{settings.registry_client_url.rstrip('/')}{next_path}", status_code=302)
 
         # Delete ephemeral cookie that holds PKCE code_verifier.
         resp.delete_cookie("registry_oauth2_code_verifier")

@@ -1,6 +1,6 @@
 import axios, { type AxiosError, type AxiosRequestConfig } from 'axios';
 
-import { getBasePath } from '@/config';
+import { captureReturnPath, getBasePath } from '@/config';
 import API from '@/services/api';
 import type { GetTokenResponse } from './auth/type';
 
@@ -83,7 +83,7 @@ service.interceptors.response.use(
                 // ignore logout error
               }
               if (typeof window !== 'undefined') {
-                window.location.href = `${getBasePath()}/login`;
+                window.location.href = `${getBasePath()}/login?next=${encodeURIComponent(captureReturnPath())}`;
               }
             }
             throw {
