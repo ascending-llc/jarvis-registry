@@ -30,9 +30,7 @@ _AUDIO_SUMMARY_FIELDS: _MediaSummaryFields = (
 
 def _truncate(value: str, *, limit: int = _MAX_DEPENDENCY_CONTENT_CHARS) -> str:
     """Cap prompt-bound text at *limit* chars, appending a note about what was cut."""
-    if len(value) <= limit:
-        return value
-    return f"{value[:limit]}\n[truncated: {len(value)} chars total, showing first {limit}]"
+    return value
 
 
 def _safe_file_preview(file_content: Any, mime_type: str | None) -> str | None:
