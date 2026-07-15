@@ -2,6 +2,7 @@
 
 import base64
 import json
+from http.cookies import SimpleCookie
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -9,7 +10,10 @@ from fastapi import Request
 from fastapi.responses import RedirectResponse
 
 from registry.api.redirect_routes import (
+    MAX_RETURN_PATH_LENGTH,
+    OAUTH2_STATE_NONCE_COOKIE_NAME,
     _decode_client_state,
+    _prepare_return_path_for_state,
     _sanitize_return_path,
     oauth2_callback,
     oauth2_login_redirect,
@@ -18,6 +22,14 @@ from registry.api.redirect_routes import (
 
 def _encode_state(data: object) -> str:
     return base64.urlsafe_b64encode(json.dumps(data).encode("utf-8")).decode("utf-8").rstrip("=")
+
+
+def _cookies_from_response(response: RedirectResponse) -> SimpleCookie:
+    cookies = SimpleCookie()
+    for key, value in response.raw_headers:
+        if key == b"set-cookie":
+            cookies.load(value.decode())
+    return cookies
 
 
 @pytest.fixture
@@ -93,6 +105,11 @@ def test_sanitize_return_path_rejects_unsafe_values(raw: object) -> None:
 
 
 @pytest.mark.unit
+def test_prepare_return_path_for_state_rejects_oversized_path() -> None:
+    assert _prepare_return_path_for_state("/a" * MAX_RETURN_PATH_LENGTH) is None
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
@@ -117,6 +134,20 @@ async def test_oauth2_login_redirect_carries_next_in_state(mock_settings) -> Non
     state = location.split("state=", 1)[1].split("&", 1)[0]
     decoded = _decode_client_state(state)
     assert decoded["next"] == "/consent/server?nonce=abc"
+    assert decoded["nonce"]
+    set_cookie_headers = [value.decode() for key, value in response.raw_headers if key == b"set-cookie"]
+    assert any(OAUTH2_STATE_NONCE_COOKIE_NAME in header for header in set_cookie_headers)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_oauth2_login_redirect_drops_unsafe_next_from_state(mock_settings) -> None:
+    response = await oauth2_login_redirect("entra", next_path="https://evil.com")
+
+    location = response.headers["location"]
+    state = location.split("state=", 1)[1].split("&", 1)[0]
+    decoded = _decode_client_state(state)
+    assert decoded["next"] is None
 
 
 async def _successful_callback(
@@ -124,6 +155,7 @@ async def _successful_callback(
     mock_request: Mock,
     mock_user: Mock,
     state: str | None,
+    state_nonce: str | None = "state-nonce",
 ) -> RedirectResponse:
     token_response = Mock()
     token_response.status_code = 200
@@ -151,6 +183,7 @@ async def _successful_callback(
             code="test-auth-code",
             state=state,
             registry_oauth2_code_verifier="a-cookie",
+            registry_oauth2_state_nonce=state_nonce,
             user_service=user_service,
             group_service=group_service,
         )
@@ -161,7 +194,7 @@ async def _successful_callback(
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_oauth2_callback_redirects_to_safe_next_path(mock_request, mock_settings, mock_user) -> None:
-    state = _encode_state({"nonce": "abc", "next": "/consent/server?nonce=abc"})
+    state = _encode_state({"nonce": "state-nonce", "next": "/consent/server?nonce=abc"})
 
     response = await _successful_callback(mock_request=mock_request, mock_user=mock_user, state=state)
 
@@ -173,9 +206,8 @@ async def test_oauth2_callback_redirects_to_safe_next_path(mock_request, mock_se
 @pytest.mark.parametrize(
     "state",
     [
-        None,
-        _encode_state({"nonce": "abc"}),
-        _encode_state({"nonce": "abc", "next": "https://evil.com"}),
+        _encode_state({"nonce": "state-nonce"}),
+        _encode_state({"nonce": "state-nonce", "next": "https://evil.com"}),
     ],
 )
 async def test_oauth2_callback_falls_back_to_registry_client_url(
@@ -187,3 +219,78 @@ async def test_oauth2_callback_falls_back_to_registry_client_url(
     response = await _successful_callback(mock_request=mock_request, mock_user=mock_user, state=state)
 
     assert response.headers["location"] == mock_settings.registry_client_url
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("state", "state_nonce"),
+    [
+        (None, "state-nonce"),
+        (_encode_state({"nonce": "state-nonce", "next": "/server-registry"}), None),
+        (_encode_state({"nonce": "state-nonce", "next": "/server-registry"}), "wrong-nonce"),
+    ],
+)
+async def test_oauth2_callback_rejects_invalid_state_nonce(
+    mock_request,
+    mock_user,
+    state: str | None,
+    state_nonce: str | None,
+) -> None:
+    response = await _successful_callback(
+        mock_request=mock_request,
+        mock_user=mock_user,
+        state=state,
+        state_nonce=state_nonce,
+    )
+
+    assert response.headers["location"].endswith("/login?error=oauth2_invalid_state")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_oauth2_callback_clears_login_cookies_after_valid_state_error(mock_request) -> None:
+    state = _encode_state({"nonce": "state-nonce", "next": "/server-registry"})
+
+    response = await oauth2_callback(
+        mock_request,
+        code="test-auth-code",
+        state=state,
+        registry_oauth2_state_nonce="state-nonce",
+        user_service=Mock(),
+    )
+
+    cookies = _cookies_from_response(response)
+    assert response.headers["location"].endswith("/login?error=oauth2_missing_code_verifier")
+    assert cookies["registry_oauth2_code_verifier"]["max-age"] == "0"
+    assert cookies[OAUTH2_STATE_NONCE_COOKIE_NAME]["max-age"] == "0"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("callback_kwargs", "expected_error"),
+    [
+        ({"error": "oauth2_error", "details": "Provider error"}, "OAuth2%20provider%20error"),
+        ({}, "oauth2_missing_code"),
+    ],
+)
+async def test_oauth2_callback_clears_login_cookies_on_early_valid_state_errors(
+    mock_request,
+    callback_kwargs: dict[str, str],
+    expected_error: str,
+) -> None:
+    state = _encode_state({"nonce": "state-nonce", "next": "/server-registry"})
+
+    response = await oauth2_callback(
+        mock_request,
+        state=state,
+        registry_oauth2_state_nonce="state-nonce",
+        user_service=Mock(),
+        **callback_kwargs,
+    )
+
+    cookies = _cookies_from_response(response)
+    assert expected_error in response.headers["location"]
+    assert cookies["registry_oauth2_code_verifier"]["max-age"] == "0"
+    assert cookies[OAUTH2_STATE_NONCE_COOKIE_NAME]["max-age"] == "0"

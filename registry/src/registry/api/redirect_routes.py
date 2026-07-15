@@ -37,6 +37,8 @@ router = APIRouter()
 
 ACCESS_TOKEN_COOKIE_MAX_AGE_SECONDS = 86400
 SESSION_STARTED_AT_CLOCK_SKEW_SECONDS = 300
+MAX_RETURN_PATH_LENGTH = 2048
+OAUTH2_STATE_NONCE_COOKIE_NAME = "registry_oauth2_state_nonce"
 
 
 def _set_csrf_cookie(response: Response, access_token: str, cookie_secure: bool) -> None:
@@ -55,6 +57,23 @@ def _delete_auth_cookies(response: Response) -> None:
     response.delete_cookie(key=settings.session_cookie_name, path="/")
     response.delete_cookie(key=settings.refresh_cookie_name, path="/")
     response.delete_cookie(key=settings.csrf_cookie_name, path="/")
+
+
+def _delete_oauth2_login_cookies(response: Response) -> None:
+    response.delete_cookie("registry_oauth2_code_verifier")
+    response.delete_cookie(OAUTH2_STATE_NONCE_COOKIE_NAME)
+
+
+def _oauth2_login_error_response(
+    error_code: str,
+    clear_oauth2_login_cookies: bool = False,
+    quote_error: bool = False,
+) -> RedirectResponse:
+    error_value = quote(error_code) if quote_error else error_code
+    response = RedirectResponse(url=f"{settings.registry_client_url}/login?error={error_value}", status_code=302)
+    if clear_oauth2_login_cookies:
+        _delete_oauth2_login_cookies(response)
+    return response
 
 
 def _parse_session_started_at(raw_value: object, now: int) -> int | None:
@@ -124,6 +143,19 @@ def _sanitize_return_path(raw: object) -> str:
     return raw
 
 
+def _prepare_return_path_for_state(raw: str | None) -> str | None:
+    """Return a bounded safe return path for OAuth state, or None if unusable."""
+    sanitized = _sanitize_return_path(raw)
+    if not sanitized or len(sanitized) > MAX_RETURN_PATH_LENGTH:
+        return None
+    return sanitized
+
+
+def _is_valid_oauth2_state(client_state: dict[str, Any], expected_nonce: str | None) -> bool:
+    nonce = client_state.get("nonce")
+    return isinstance(nonce, str) and bool(expected_nonce) and secrets.compare_digest(nonce, expected_nonce)
+
+
 async def get_oauth2_providers():
     """Fetch available OAuth2 providers from auth server"""
     try:
@@ -156,7 +188,8 @@ async def oauth2_login_redirect(
         # Therefore the redirect URI should be a route on Registry backend.
         registry_url = settings.registry_url
         auth_external_url = settings.auth_server_external_url
-        state_data = {"nonce": secrets.token_urlsafe(24), "next": next_path}
+        state_nonce = secrets.token_urlsafe(24)
+        state_data = {"nonce": state_nonce, "next": _prepare_return_path_for_state(next_path)}
         client_state = base64.urlsafe_b64encode(json.dumps(state_data).encode()).decode().rstrip("=")
         code_verifier = secrets.token_urlsafe(32)
         code_challenge = create_s256_code_challenge(code_verifier)
@@ -181,6 +214,14 @@ async def oauth2_login_redirect(
             secure=settings.session_cookie_secure and is_https,
             samesite="lax",
         )
+        resp.set_cookie(
+            key=OAUTH2_STATE_NONCE_COOKIE_NAME,
+            value=state_nonce,
+            max_age=settings.oauth_session_ttl_seconds,
+            httponly=True,
+            secure=settings.session_cookie_secure and is_https,
+            samesite="lax",
+        )
         return resp
     except Exception as e:
         logger.error(f"Error redirecting to OAuth2 login for {provider}: {e}")
@@ -195,6 +236,7 @@ async def oauth2_callback(
     error: str | None = None,
     details: str | None = None,
     registry_oauth2_code_verifier: str | None = Cookie(None),
+    registry_oauth2_state_nonce: str | None = Cookie(None),
     user_service: UserService = Depends(get_user_service),
     group_service: GroupService = Depends(get_group_service),
     is_https: bool = Depends(check_if_https),
@@ -203,7 +245,14 @@ async def oauth2_callback(
     This endpoint receives an authorization code and exchanges it for a JWT access token.
     The user_id has already been resolved by auth_server from MongoDB and included in the JWT.
     """
+    state_verified = False
     try:
+        client_state = _decode_client_state(state)
+        if not _is_valid_oauth2_state(client_state, registry_oauth2_state_nonce):
+            logger.warning("OAuth2 callback received invalid or missing state nonce")
+            return _oauth2_login_error_response("oauth2_invalid_state", clear_oauth2_login_cookies=True)
+        state_verified = True
+
         if error:
             logger.warning(f"OAuth2 callback received error: {error}, details: {details}")
             error_message = "Authentication failed"
@@ -214,19 +263,20 @@ async def oauth2_callback(
             elif error == "oauth2_callback_failed":
                 error_message = "OAuth2 authentication failed"
 
-            return RedirectResponse(
-                url=f"{settings.registry_client_url}/login?error={quote(error_message)}", status_code=302
+            return _oauth2_login_error_response(
+                error_message,
+                clear_oauth2_login_cookies=True,
+                quote_error=True,
             )
 
         if not code:
             logger.error("Missing authorization code in OAuth2 callback")
-            return RedirectResponse(
-                url=f"{settings.registry_client_url}/login?error=oauth2_missing_code", status_code=302
-            )
+            return _oauth2_login_error_response("oauth2_missing_code", clear_oauth2_login_cookies=True)
 
         if registry_oauth2_code_verifier is None:
-            return RedirectResponse(
-                url=f"{settings.registry_client_url}/login?error=oauth2_missing_code_verifier", status_code=302
+            return _oauth2_login_error_response(
+                "oauth2_missing_code_verifier",
+                clear_oauth2_login_cookies=True,
             )
 
         try:
@@ -234,8 +284,9 @@ async def oauth2_callback(
         except Exception:
             logger.exception("failed to decrypt registry_oauth2_code_verifier cookie.")
 
-            return RedirectResponse(
-                url=f"{settings.registry_client_url}/login?error=oauth2_missing_code_verifier", status_code=302
+            return _oauth2_login_error_response(
+                "oauth2_missing_code_verifier",
+                clear_oauth2_login_cookies=True,
             )
 
         # Exchange authorization code for JWT access token (standard OAuth2 flow)
@@ -256,8 +307,9 @@ async def oauth2_callback(
 
                 if response.status_code != 200:
                     logger.error(f"Failed to exchange code for token: {response.status_code} - {response.text}")
-                    return RedirectResponse(
-                        url=f"{settings.registry_client_url}/login?error=oauth2_token_exchange_failed", status_code=302
+                    return _oauth2_login_error_response(
+                        "oauth2_token_exchange_failed",
+                        clear_oauth2_login_cookies=True,
                     )
 
                 token_response = response.json()
@@ -265,8 +317,9 @@ async def oauth2_callback(
 
                 if not access_token:
                     logger.error("No access_token returned from auth server")
-                    return RedirectResponse(
-                        url=f"{settings.registry_client_url}/login?error=oauth2_invalid_response", status_code=302
+                    return _oauth2_login_error_response(
+                        "oauth2_invalid_response",
+                        clear_oauth2_login_cookies=True,
                     )
 
                 user_claims = decode_jwt(access_token, settings.jwt_public_key, settings.jwt_issuer)
@@ -275,13 +328,11 @@ async def oauth2_callback(
 
         except httpx.TimeoutException:
             logger.error("Timeout exchanging authorization code with auth server")
-            return RedirectResponse(url=f"{settings.registry_client_url}/login?error=oauth2_timeout", status_code=302)
+            return _oauth2_login_error_response("oauth2_timeout", clear_oauth2_login_cookies=True)
         except Exception:
             logger.exception("Failed to exchange authorization code for token")
 
-            return RedirectResponse(
-                url=f"{settings.registry_client_url}/login?error=oauth2_exchange_error", status_code=302
-            )
+            return _oauth2_login_error_response("oauth2_exchange_error", clear_oauth2_login_cookies=True)
 
         if not user_claims.get("user_id"):
             logger.warning(f"User {user_claims.get('sub')} has no user_id - not found in MongoDB. Creating new user.")
@@ -291,8 +342,9 @@ async def oauth2_callback(
 
         if not user_obj:
             logger.error(f"Failed to find or create user for claims: {user_claims}")
-            return RedirectResponse(
-                url=f"{settings.registry_client_url}/login?error=User+not+found+in+registry", status_code=302
+            return _oauth2_login_error_response(
+                "User+not+found+in+registry",
+                clear_oauth2_login_cookies=True,
             )
 
         try:
@@ -327,11 +379,11 @@ async def oauth2_callback(
         # Generate JWT access and refresh tokens, honoring OAuth token timing
         access_token, refresh_token = generate_token_pair(user_info=user_info)
 
-        next_path = _sanitize_return_path(_decode_client_state(state).get("next"))
+        next_path = _sanitize_return_path(client_state.get("next"))
         resp = RedirectResponse(url=f"{settings.registry_client_url.rstrip('/')}{next_path}", status_code=302)
 
-        # Delete ephemeral cookie that holds PKCE code_verifier.
-        resp.delete_cookie("registry_oauth2_code_verifier")
+        # Delete ephemeral cookies that bind this OAuth login attempt.
+        _delete_oauth2_login_cookies(resp)
 
         # Determine cookie security settings
         cookie_secure = settings.session_cookie_secure and is_https
@@ -367,8 +419,9 @@ async def oauth2_callback(
 
     except Exception as e:
         logger.error(f"Error in OAuth2 callback: {e}")
-        return RedirectResponse(
-            url=f"{settings.registry_client_url}/login?error=oauth2_callback_error", status_code=302
+        return _oauth2_login_error_response(
+            "oauth2_callback_error",
+            clear_oauth2_login_cookies=state_verified,
         )
 
 
