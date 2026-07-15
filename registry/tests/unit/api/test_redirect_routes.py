@@ -98,6 +98,7 @@ def test_sanitize_return_path_allows_same_origin_paths(raw: str) -> None:
         "/\\evil.com/x",
         "https://evil.com",
         "/x\r\nSet-Cookie: a=b",
+        "/\t\\evil.com",
     ],
 )
 def test_sanitize_return_path_rejects_unsafe_values(raw: object) -> None:

@@ -131,7 +131,7 @@ def _sanitize_return_path(raw: object) -> str:
     """Return a safe same-origin SPA path, or an empty string if absent or unsafe."""
     if not isinstance(raw, str) or not raw:
         return ""
-    if "\r" in raw or "\n" in raw:
+    if any(ord(c) < 0x20 for c in raw):
         return ""
     if not raw.startswith("/") or raw[1:2] in ("/", "\\"):
         return ""
