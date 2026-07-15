@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from agno.workflow import StepInput
+from agno.workflow import StepInput, StepOutput
 
 from registry_pkgs.workflows.prompt import (
     ADDITIONAL_DATA_DEPENDENCY_NODE_NAMES,
@@ -14,6 +14,104 @@ from registry_pkgs.workflows.prompt import (
     render_step_prompt,
 )
 from registry_pkgs.workflows.serialization import content_to_str
+
+_MAX_DEPENDENCY_CONTENT_CHARS = 8000
+
+
+def _truncate(value: str, *, limit: int = _MAX_DEPENDENCY_CONTENT_CHARS) -> str:
+    if len(value) <= limit:
+        return value
+    return f"{value[:limit]}\n[truncated: {len(value)} chars total, showing first {limit}]"
+
+
+def _safe_file_preview(file_content: Any, mime_type: str | None) -> str | None:
+    if file_content is None:
+        return None
+    if isinstance(file_content, bytes):
+        if mime_type == "application/json" or (mime_type or "").startswith("text/"):
+            try:
+                return file_content.decode("utf-8")
+            except UnicodeDecodeError:
+                return None
+        return None
+    if isinstance(file_content, str) and (mime_type == "application/json" or (mime_type or "").startswith("text/")):
+        return file_content
+    return None
+
+
+def step_output_to_prompt_text(output: StepOutput) -> str:
+    """Render a StepOutput into a compact, prompt-safe text summary."""
+    sections: list[str] = []
+    if output.content is not None:
+        sections.append(f"Text output:\n{_truncate(content_to_str(output.content))}")
+
+    if output.images:
+        lines = []
+        for image in output.images:
+            label = image.id or image.mime_type or "image"
+            details = [label]
+            if image.mime_type:
+                details.append(f"mime_type={image.mime_type}")
+            if image.format:
+                details.append(f"format={image.format}")
+            if image.alt_text:
+                details.append(f"alt_text={_truncate(image.alt_text, limit=500)}")
+            lines.append(f"- {', '.join(details)}")
+        sections.append("Images:\n" + "\n".join(lines))
+
+    if output.videos:
+        lines = []
+        for video in output.videos:
+            label = video.id or video.mime_type or "video"
+            details = [label]
+            if video.mime_type:
+                details.append(f"mime_type={video.mime_type}")
+            if video.format:
+                details.append(f"format={video.format}")
+            if video.duration is not None:
+                details.append(f"duration={video.duration}")
+            lines.append(f"- {', '.join(details)}")
+        sections.append("Videos:\n" + "\n".join(lines))
+
+    if output.audio:
+        lines = []
+        for audio in output.audio:
+            label = audio.id or audio.mime_type or "audio"
+            details = [label]
+            if audio.mime_type:
+                details.append(f"mime_type={audio.mime_type}")
+            if audio.format:
+                details.append(f"format={audio.format}")
+            if audio.duration is not None:
+                details.append(f"duration={audio.duration}")
+            if audio.transcript:
+                details.append(f"transcript={_truncate(audio.transcript, limit=500)}")
+            lines.append(f"- {', '.join(details)}")
+        sections.append("Audio:\n" + "\n".join(lines))
+
+    if output.files:
+        lines = []
+        for file in output.files:
+            label = file.filename or file.name or file.id or file.url or "file"
+            details = [str(label)]
+            if file.mime_type:
+                details.append(f"mime_type={file.mime_type}")
+            if file.file_type:
+                details.append(f"file_type={file.file_type}")
+            if file.size is not None:
+                details.append(f"size={file.size}")
+            lines.append(f"- {', '.join(details)}")
+            preview = _safe_file_preview(file.content, file.mime_type)
+            if preview:
+                lines.append(f"  Preview:\n{_truncate(preview)}")
+        sections.append("Files:\n" + "\n".join(lines))
+
+    if output.success is False:
+        sections.append(f"Success: false\nError: {output.error or '(no error detail)'}")
+    elif output.error:
+        sections.append(f"Error: {output.error}")
+
+    return "\n\n".join(sections)
 
 
 def extract_user_text(initial_input: dict[str, Any] | None) -> str:
@@ -51,16 +149,19 @@ def build_prompt(step_input: StepInput) -> str:
     # produced output yet (e.g. a not-yet-executed parallel branch).  Those deps
     # still appear in the Dependencies section so the LLM knows the intended
     # source, but are omitted from Current Step Inputs.
-    dependencies: list[DependencySpec] = [
-        DependencySpec(
-            name=name,
-            objective=dependency_objectives.get(name, ""),
-            content=content_to_str(previous[name].content)
-            if name in previous and previous[name].content is not None
-            else None,
+    dependencies: list[DependencySpec] = []
+    for name in dependency_node_names:
+        content = None
+        if name in previous:
+            summary = step_output_to_prompt_text(previous[name])
+            content = summary or None
+        dependencies.append(
+            DependencySpec(
+                name=name,
+                objective=dependency_objectives.get(name, ""),
+                content=content,
+            )
         )
-        for name in dependency_node_names
-    ]
 
     # Entry-node condition: no upstream step has executed yet in this run.
     # Generalises correctly to multiple parallel entry points.
