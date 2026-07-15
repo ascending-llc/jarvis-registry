@@ -74,7 +74,6 @@ JWT_SELF_SIGNED_KID = settings.jwt_self_signed_kid
 JWT_TOKEN_CONFIG = settings.jwt_token_config
 
 _OIDC_TOKEN_ALGORITHMS = ["RS256"]
-CONSENT_NONCE_COOKIE = "oauth2_consent_nonce"
 
 
 def oauth_error_response(error: str, error_description: str | None = None, status_code: int = 400) -> JSONResponse:
@@ -276,7 +275,7 @@ def _finish_oauth2_callback(
     logger.info("OAuth2 login successful, redirecting to %s...", redirect_url)
 
     response = RedirectResponse(url=redirect_url, status_code=302)
-    response.delete_cookie("oauth2_temp_session")
+    response.delete_cookie(settings.oauth2_temp_session_cookie_name)
     return response
 
 
@@ -887,7 +886,7 @@ async def oauth2_login(
 
         response = RedirectResponse(url=auth_url, status_code=302)
         response.set_cookie(
-            key="oauth2_temp_session",
+            key=settings.oauth2_temp_session_cookie_name,
             value=temp_session,
             max_age=settings.oauth_session_ttl_seconds,
             httponly=True,
@@ -904,7 +903,7 @@ async def oauth2_login(
 @router.get("/oauth2/consent", response_class=HTMLResponse)
 async def consent_page(
     nonce: str | None = None,
-    oauth2_consent_nonce: str | None = Cookie(None),
+    oauth2_consent_nonce: str | None = Cookie(None, alias=settings.oauth2_consent_nonce_cookie_name),
     store: OAuthStateStoreProtocol = Depends(get_oauth_state_store),
     pending_store: PendingConsentStore = Depends(get_pending_consent_store),
 ) -> HTMLResponse:
@@ -940,7 +939,7 @@ async def consent_page(
 @router.post("/oauth2/consent/approve")
 async def approve_consent(
     nonce: str = Form(...),
-    oauth2_consent_nonce: str | None = Cookie(None),
+    oauth2_consent_nonce: str | None = Cookie(None, alias=settings.oauth2_consent_nonce_cookie_name),
     store: OAuthStateStoreProtocol = Depends(get_oauth_state_store),
     consent_store: ConsentStore = Depends(get_consent_store),
     pending_store: PendingConsentStore = Depends(get_pending_consent_store),
@@ -970,7 +969,7 @@ async def approve_consent(
             pending["resolved_scopes"],
             store,
         )
-        response.delete_cookie(CONSENT_NONCE_COOKIE)
+        response.delete_cookie(settings.oauth2_consent_nonce_cookie_name)
         return response
     except HTTPException:
         raise
@@ -988,7 +987,7 @@ async def deny_consent(
         pending_store.consume(nonce)
         params = {"error": "access_denied", "error_description": "User denied the authorization request"}
         response = RedirectResponse(url=f"{settings.registry_error_redirect}?{urlencode(params)}", status_code=302)
-        response.delete_cookie(CONSENT_NONCE_COOKIE)
+        response.delete_cookie(settings.oauth2_consent_nonce_cookie_name)
         return response
     except HTTPException:
         raise
@@ -1003,7 +1002,7 @@ async def oauth2_callback(
     code: str | None = None,
     state: str | None = None,
     error: str | None = None,
-    oauth2_temp_session: str | None = Cookie(None),
+    oauth2_temp_session: str | None = Cookie(None, alias=settings.oauth2_temp_session_cookie_name),
     oauth2_config: OAuth2Config = Depends(get_oauth2_config),
     user_service: UserService = Depends(get_user_service),
     signer: URLSafeTimedSerializer = Depends(get_signer),
@@ -1138,7 +1137,7 @@ async def oauth2_callback(
                     f"requested={requested_scopes}, available={default_user_scopes}"
                 )
                 response = RedirectResponse(url=redirect_url, status_code=302)
-                response.delete_cookie("oauth2_temp_session")
+                response.delete_cookie(settings.oauth2_temp_session_cookie_name)
                 return response
 
             logger.info(
@@ -1166,14 +1165,14 @@ async def oauth2_callback(
             consent_url = f"{_auth_server_external_url('/oauth2/consent')}?nonce={nonce}"
             response = RedirectResponse(url=consent_url, status_code=302)
             response.set_cookie(
-                key=CONSENT_NONCE_COOKIE,
+                key=settings.oauth2_consent_nonce_cookie_name,
                 value=nonce,
                 max_age=PENDING_CONSENT_TTL_SECONDS,
                 httponly=True,
                 secure=settings.session_cookie_secure and is_https,
                 samesite="lax",
             )
-            response.delete_cookie("oauth2_temp_session")
+            response.delete_cookie(settings.oauth2_temp_session_cookie_name)
             return response
 
         return _finish_oauth2_callback(token_data, mapped_user, session_data, resolved_scopes, store)

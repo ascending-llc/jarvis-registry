@@ -14,6 +14,7 @@ import pytest
 from authlib.oauth2.rfc7636 import create_s256_code_challenge
 from fastapi.testclient import TestClient
 
+from auth_server.core.config import settings
 from auth_server.deps import get_auth_provider, get_oauth2_config, get_oauth_state_store, get_signer, get_user_service
 from auth_server.server import app
 from registry_pkgs.core.jwt_utils import decode_jwt_unverified
@@ -231,6 +232,8 @@ class TestAccessTokenScoping:
             mock_settings.auth_server_external_url = "http://localhost:8888"
             mock_settings.oauth_session_ttl_seconds = 600
             mock_settings.secret_key = "test-secret-key"
+            mock_settings.oauth2_temp_session_cookie_name = settings.oauth2_temp_session_cookie_name
+            mock_settings.oauth2_consent_nonce_cookie_name = settings.oauth2_consent_nonce_cookie_name
 
             test_signer = URLSafeTimedSerializer("test-secret-key")
 
@@ -261,7 +264,7 @@ class TestAccessTokenScoping:
             response = test_client.get(
                 f"{API_PREFIX}/oauth2/callback/keycloak",
                 params={"code": "auth_code_123", "state": "test_state"},
-                cookies={"oauth2_temp_session": oauth2_temp_session},
+                cookies={settings.oauth2_temp_session_cookie_name: oauth2_temp_session},
                 follow_redirects=False,
             )
 
@@ -361,6 +364,8 @@ class TestAccessTokenScoping:
             mock_settings.auth_server_external_url = "http://localhost:8888"
             mock_settings.oauth_session_ttl_seconds = 600
             mock_settings.secret_key = "test-secret-key"
+            mock_settings.oauth2_temp_session_cookie_name = settings.oauth2_temp_session_cookie_name
+            mock_settings.oauth2_consent_nonce_cookie_name = settings.oauth2_consent_nonce_cookie_name
 
             test_signer = URLSafeTimedSerializer("test-secret-key")
 
@@ -391,7 +396,7 @@ class TestAccessTokenScoping:
             response = test_client.get(
                 f"{API_PREFIX}/oauth2/callback/keycloak",
                 params={"code": "auth_code_456", "state": "test_state"},
-                cookies={"oauth2_temp_session": oauth2_temp_session},
+                cookies={settings.oauth2_temp_session_cookie_name: oauth2_temp_session},
                 follow_redirects=False,
             )
 

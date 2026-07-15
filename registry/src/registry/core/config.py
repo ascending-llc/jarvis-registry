@@ -31,6 +31,8 @@ class Settings(JarvisBaseSettings):
     csrf_cookie_name: str = "jarvis_registry_csrf"
     session_max_age_seconds: int = 60 * 60 * 8
     session_cookie_domain: str | None = None
+    oauth2_code_verifier_cookie_name: str = "registry_oauth2_code_verifier"
+    oauth2_state_nonce_cookie_name: str = "registry_oauth2_state_nonce"
 
     # ==================== Service URLs ====================
     registry_internal_url: str = "http://localhost:7860"

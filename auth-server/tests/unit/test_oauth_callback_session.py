@@ -12,6 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
+from auth_server.core.config import settings
 from auth_server.deps import get_oauth2_config, get_oauth_state_store, get_signer
 from auth_server.server import app
 from tests.support.oauth_state_store import test_oauth_state_store
@@ -96,7 +97,7 @@ class TestStateEncoding:
         # Verify resource is preserved
         assert "nonce" in state_decoded
 
-        temp_session_cookie = response.cookies.get("oauth2_temp_session")
+        temp_session_cookie = response.cookies.get(settings.oauth2_temp_session_cookie_name)
         assert temp_session_cookie is not None
 
         session_data = mock_signer.loads(temp_session_cookie, max_age=10 * 60)
@@ -153,7 +154,7 @@ class TestStateEncoding:
         assert "nonce" in state_decoded
 
         # Resource should be None
-        temp_session_cookie = response.cookies.get("oauth2_temp_session")
+        temp_session_cookie = response.cookies.get(settings.oauth2_temp_session_cookie_name)
         assert temp_session_cookie is not None
 
         session_data = mock_signer.loads(temp_session_cookie, max_age=10 * 60)
@@ -182,7 +183,7 @@ class TestSessionExpiration:
         response = test_client.get(
             "/auth/oauth2/callback/entra",
             params={"code": "fake_code", "state": state},
-            cookies={"oauth2_temp_session": "expired_session"},
+            cookies={settings.oauth2_temp_session_cookie_name: "expired_session"},
         )
 
         # Should return 401
@@ -216,7 +217,7 @@ class TestSessionExpiration:
         response = test_client.get(
             "/auth/oauth2/callback/entra",
             params={"code": "fake_code", "state": state},
-            cookies={"oauth2_temp_session": "invalid_session"},
+            cookies={settings.oauth2_temp_session_cookie_name: "invalid_session"},
         )
 
         # Should return 401 (not 400)
@@ -248,7 +249,7 @@ class TestMissingParameters:
         response = test_client.get(
             "/auth/oauth2/callback/entra",
             params={"state": "test_state"},
-            cookies={"oauth2_temp_session": "test_session"},
+            cookies={settings.oauth2_temp_session_cookie_name: "test_session"},
         )
 
         assert response.status_code == 400
@@ -266,7 +267,7 @@ class TestMissingParameters:
         response = test_client.get(
             "/auth/oauth2/callback/entra",
             params={"code": "test_code"},
-            cookies={"oauth2_temp_session": "test_session"},
+            cookies={settings.oauth2_temp_session_cookie_name: "test_session"},
         )
 
         assert response.status_code == 400
