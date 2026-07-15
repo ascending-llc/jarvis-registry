@@ -2,7 +2,9 @@ import { CheckIcon, CogIcon, PlayIcon } from '@heroicons/react/24/outline';
 import type { Edge } from '@xyflow/react';
 import type React from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { HiOutlineShare } from 'react-icons/hi2';
 import { useBlocker, useNavigate, useSearchParams } from 'react-router-dom';
+import ShareModal from '@/components/ShareModal';
 import WorkflowCanvas from '@/components/WorkflowCanvas';
 import {
   apiNodesToCanvas,
@@ -14,7 +16,11 @@ import type { WorkflowNode as CanvasWorkflowNode, WorkflowCanvasRef } from '@/co
 import { useGlobal } from '@/contexts/GlobalContext';
 import { useServer } from '@/contexts/ServerContext';
 import SERVICES from '@/services';
-import type { WorkflowNode as ApiWorkflowNode, Workflow } from '@/services/workflow/type';
+import {
+  type WorkflowNode as ApiWorkflowNode,
+  EMPTY_WORKFLOW_PERMISSIONS,
+  type Workflow,
+} from '@/services/workflow/type';
 import DeleteWorkflowDialog from './DeleteWorkflowDialog';
 import TriggerRunModal from './TriggerRunModal';
 import UnsavedChangesDialog from './UnsavedChangesDialog';
@@ -49,7 +55,9 @@ const WorkflowRegistryOrEdit: React.FC = () => {
   };
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [triggerModalOpen, setTriggerModalOpen] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
   const [runHistoryRefresh, setRunHistoryRefresh] = useState(0);
+  const canShareWorkflow = isEditMode && !!id && workflow?.permissions?.SHARE === true;
 
   // ── Side Effects: Block navigation & BeforeUnload ──────────────────────────────
   const blocker = useBlocker(({ currentLocation, nextLocation }) => {
@@ -99,7 +107,7 @@ const WorkflowRegistryOrEdit: React.FC = () => {
     setLoadingDetail(true);
     try {
       const data = await SERVICES.WORKFLOW.getWorkflowDetail(workflowId);
-      setWorkflow(data);
+      setWorkflow({ ...data, permissions: data.aclPermission ?? EMPTY_WORKFLOW_PERMISSIONS });
     } catch (error: any) {
       showToast(error?.detail?.message || 'Failed to fetch workflow', 'error');
     } finally {
@@ -278,35 +286,52 @@ const WorkflowRegistryOrEdit: React.FC = () => {
           )}
         </div>
 
-        {!isReadOnly && (
+        {canShareWorkflow || !isReadOnly ? (
           <div className='flex items-center gap-2 flex-shrink-0'>
-            <button
-              onClick={() => setTriggerModalOpen(true)}
-              disabled={mutatingAction !== 'idle' || !id}
-              className='inline-flex items-center gap-1 px-2.5 py-1 border border-transparent rounded-md text-xs font-medium text-white bg-[var(--jarvis-primary)] hover:opacity-90 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed'
-            >
-              {mutatingAction === 'triggering' ? (
-                <span className='h-3.5 w-3.5 animate-spin rounded-full border-b-2 border-white' />
-              ) : (
-                <PlayIcon className='h-3.5 w-3.5' />
-              )}
-              Trigger run
-            </button>
+            {canShareWorkflow && (
+              <button
+                type='button'
+                onClick={() => setShareOpen(true)}
+                disabled={loadingDetail}
+                title='Share workflow'
+                aria-label='Share workflow'
+                className='inline-flex items-center justify-center rounded-md border border-transparent bg-[var(--jarvis-primary-soft)] p-1.5 text-[var(--jarvis-primary-text)] hover:bg-[var(--jarvis-primary)]/20 focus:outline-none focus:ring-2 focus:ring-[var(--jarvis-primary)] focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50'
+              >
+                <HiOutlineShare className='h-4 w-4' />
+              </button>
+            )}
 
-            <button
-              onClick={() => canvasRef.current?.save()}
-              disabled={mutatingAction !== 'idle' || loadingDetail}
-              className='inline-flex items-center justify-center gap-1 px-2.5 py-1 border border-transparent rounded-md text-xs font-medium text-white bg-[var(--jarvis-primary-hover)] hover:opacity-90 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed'
-            >
-              {mutatingAction === 'saving' ? (
-                <span className='h-3.5 w-3.5 animate-spin rounded-full border-b-2 border-white' />
-              ) : (
-                <CheckIcon className='h-3.5 w-3.5' />
-              )}
-              {isEditMode ? 'Update' : 'Save'}
-            </button>
+            {!isReadOnly && (
+              <>
+                <button
+                  onClick={() => setTriggerModalOpen(true)}
+                  disabled={mutatingAction !== 'idle' || !id}
+                  className='inline-flex items-center gap-1 px-2.5 py-1 border border-transparent rounded-md text-xs font-medium text-white bg-[var(--jarvis-primary)] hover:opacity-90 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed'
+                >
+                  {mutatingAction === 'triggering' ? (
+                    <span className='h-3.5 w-3.5 animate-spin rounded-full border-b-2 border-white' />
+                  ) : (
+                    <PlayIcon className='h-3.5 w-3.5' />
+                  )}
+                  Trigger run
+                </button>
+
+                <button
+                  onClick={() => canvasRef.current?.save()}
+                  disabled={mutatingAction !== 'idle' || loadingDetail}
+                  className='inline-flex items-center justify-center gap-1 px-2.5 py-1 border border-transparent rounded-md text-xs font-medium text-white bg-[var(--jarvis-primary-hover)] hover:opacity-90 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed'
+                >
+                  {mutatingAction === 'saving' ? (
+                    <span className='h-3.5 w-3.5 animate-spin rounded-full border-b-2 border-white' />
+                  ) : (
+                    <CheckIcon className='h-3.5 w-3.5' />
+                  )}
+                  {isEditMode ? 'Update' : 'Save'}
+                </button>
+              </>
+            )}
           </div>
-        )}
+        ) : null}
       </div>
 
       {/* ── Canvas ──────────────────────────────────────────────────────────── */}
@@ -367,6 +392,16 @@ const WorkflowRegistryOrEdit: React.FC = () => {
         onTrigger={handleTrigger}
         triggering={mutatingAction === 'triggering'}
       />
+
+      {shareOpen && id && (
+        <ShareModal
+          itemName={workflow?.name ?? 'Workflow'}
+          resourceId={id}
+          resourceType='workflow'
+          isOpen={shareOpen}
+          onClose={() => setShareOpen(false)}
+        />
+      )}
     </div>
   );
 };

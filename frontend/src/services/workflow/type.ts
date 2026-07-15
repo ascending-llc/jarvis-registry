@@ -2,6 +2,14 @@ export type WorkflowPermissionType = {
   VIEW?: boolean;
   EDIT?: boolean;
   DELETE?: boolean;
+  SHARE?: boolean;
+};
+
+export const EMPTY_WORKFLOW_PERMISSIONS: WorkflowPermissionType = {
+  VIEW: false,
+  EDIT: false,
+  DELETE: false,
+  SHARE: false,
 };
 
 export type WorkflowItem = {
@@ -86,6 +94,8 @@ export interface Workflow {
   canvas?: { viewport: { x?: number; y?: number; zoom?: number } };
   createdAt: string;
   updatedAt: string;
+  aclPermission?: WorkflowPermissionType | null;
+  permissions?: WorkflowPermissionType;
 }
 
 export interface GetWorkflowsListRequest {

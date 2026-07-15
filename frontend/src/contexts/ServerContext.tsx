@@ -6,7 +6,7 @@ import type { AgentItem } from '@/services/agent/type';
 import type { Federation } from '@/services/federation/type';
 import { ServerConnection } from '@/services/mcp/type';
 import type { PermissionType, Server } from '@/services/server/type';
-import type { WorkflowItem } from '@/services/workflow/type';
+import { EMPTY_WORKFLOW_PERMISSIONS, type WorkflowItem } from '@/services/workflow/type';
 
 export interface ServerInfo {
   id: string;
@@ -298,7 +298,7 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
         status: w.status || 'active',
         lastRunAt: w.lastRunAt,
         runCount: w.runCount ?? 0,
-        permissions: w.permissions || { VIEW: true, EDIT: true },
+        permissions: w.aclPermission ?? EMPTY_WORKFLOW_PERMISSIONS,
       }));
       setWorkflows(transformedWorkflows);
     } catch (error: any) {
