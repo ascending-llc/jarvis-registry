@@ -5,7 +5,8 @@ import logging
 from typing import Any
 
 import httpx
-from a2a.types import DataPart, FilePart, FileWithBytes, FileWithUri, Message, Task
+from a2a.types import FileWithBytes, FileWithUri, Message, Task
+from a2a.utils.parts import get_data_parts, get_file_parts
 from agno.agent import Agent
 from agno.media import Audio, File, Image, Video
 from agno.models.base import Model
@@ -85,30 +86,27 @@ def _append_parts_media(
     data_prefix: str,
 ) -> None:
     """Sort a parts list into the media buckets; DataParts become '{data_prefix}-data-{n}.json' JSON Files."""
-    data_index = 0
-    for part in parts:
-        root = getattr(part, "root", part)
-        if isinstance(root, FilePart):
-            media = _file_payload_to_media(root.file)
-            if isinstance(media, Image):
-                images.append(media)
-            elif isinstance(media, Video):
-                videos.append(media)
-            elif isinstance(media, Audio):
-                audio.append(media)
-            elif isinstance(media, File):
-                files.append(media)
-        elif isinstance(root, DataPart):
-            data_index += 1
-            filename = f"{data_prefix}-data-{data_index}.json"
-            files.append(
-                File(
-                    content=json.dumps(root.data, ensure_ascii=False, default=str),
-                    mime_type="application/json",
-                    filename=filename,
-                    name=filename,
-                )
+    for payload in get_file_parts(parts):
+        media = _file_payload_to_media(payload)
+        if isinstance(media, Image):
+            images.append(media)
+        elif isinstance(media, Video):
+            videos.append(media)
+        elif isinstance(media, Audio):
+            audio.append(media)
+        elif isinstance(media, File):
+            files.append(media)
+
+    for data_index, data in enumerate(get_data_parts(parts), start=1):
+        filename = f"{data_prefix}-data-{data_index}.json"
+        files.append(
+            File(
+                content=json.dumps(data, ensure_ascii=False, default=str),
+                mime_type="application/json",
+                filename=filename,
+                name=filename,
             )
+        )
 
 
 def _append_message_media(

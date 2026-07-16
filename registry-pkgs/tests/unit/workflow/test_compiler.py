@@ -1301,7 +1301,7 @@ class TestIntentionData:
 
         prompt = received_prompts[0]
         assert "x" * 8000 in prompt
-        assert "[truncated: 10000 chars total, showing first 8000]" in prompt
+        assert "[truncated: 2000 chars omitted]" in prompt
 
     @pytest.mark.asyncio
     async def test_no_dependencies_entry_node_renders_initial_input(self):
