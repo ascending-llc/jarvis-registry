@@ -35,3 +35,17 @@ export const getBasePathForUrl = (): string => {
   const basePath = getBasePath();
   return basePath.endsWith('/') ? basePath.slice(0, -1) : basePath;
 };
+
+/**
+ * Capture the current in-app SPA path so login can return the user to it.
+ * The returned path intentionally omits BASE_PATH because the backend appends
+ * it to REGISTRY_CLIENT_URL, which may already include "/gateway".
+ */
+export const captureReturnPath = (): string => {
+  const basePath = getBasePathForUrl();
+  const pathname = window.location.pathname;
+  const hasBasePath = basePath !== '' && (pathname === basePath || pathname.startsWith(`${basePath}/`));
+  const appPath = hasBasePath ? pathname.slice(basePath.length) || '/' : pathname;
+
+  return `${appPath}${window.location.search}`;
+};

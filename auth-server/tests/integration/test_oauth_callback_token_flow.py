@@ -13,6 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 from itsdangerous import URLSafeTimedSerializer
 
+from auth_server.core.config import settings
 from auth_server.deps import get_auth_provider, get_oauth2_config, get_oauth_state_store, get_signer, get_user_service
 from auth_server.server import app
 from registry_pkgs.core.jwt_utils import InvalidSignatureError, InvalidTokenError
@@ -96,6 +97,8 @@ class TestOAuth2CallbackStandardFlow:
             mock_settings.auth_server_url = "http://localhost:8888"
             mock_settings.oauth_session_ttl_seconds = 600
             mock_settings.secret_key = "test-secret-key"
+            mock_settings.oauth2_temp_session_cookie_name = settings.oauth2_temp_session_cookie_name
+            mock_settings.oauth2_consent_nonce_cookie_name = settings.oauth2_consent_nonce_cookie_name
 
             test_signer = URLSafeTimedSerializer("test-secret-key")
 
@@ -126,7 +129,7 @@ class TestOAuth2CallbackStandardFlow:
             response = test_client.get(
                 f"{API_PREFIX}/oauth2/callback/keycloak",
                 params={"code": "provider_auth_code", "state": "test-state-123"},
-                cookies={"oauth2_temp_session": temp_session},
+                cookies={settings.oauth2_temp_session_cookie_name: temp_session},
                 follow_redirects=False,
             )
 
@@ -212,6 +215,8 @@ class TestOAuth2CallbackStandardFlow:
             mock_settings.auth_server_url = "http://localhost:8888"
             mock_settings.oauth_session_ttl_seconds = 600
             mock_settings.secret_key = "test-secret-key"
+            mock_settings.oauth2_temp_session_cookie_name = settings.oauth2_temp_session_cookie_name
+            mock_settings.oauth2_consent_nonce_cookie_name = settings.oauth2_consent_nonce_cookie_name
 
             test_signer = URLSafeTimedSerializer("test-secret-key")
 
@@ -241,7 +246,7 @@ class TestOAuth2CallbackStandardFlow:
             response = test_client.get(
                 f"{API_PREFIX}/oauth2/callback/keycloak",
                 params={"code": "provider_auth_code", "state": "test-state-456"},
-                cookies={"oauth2_temp_session": temp_session},
+                cookies={settings.oauth2_temp_session_cookie_name: temp_session},
                 follow_redirects=False,
             )
 
@@ -303,6 +308,8 @@ class TestOAuth2CallbackStandardFlow:
             mock_settings.auth_server_url = "http://localhost:8888"
             mock_settings.oauth_session_ttl_seconds = 600
             mock_settings.secret_key = "test-secret-key"
+            mock_settings.oauth2_temp_session_cookie_name = settings.oauth2_temp_session_cookie_name
+            mock_settings.oauth2_consent_nonce_cookie_name = settings.oauth2_consent_nonce_cookie_name
 
             test_signer = URLSafeTimedSerializer("test-secret-key")
 
@@ -331,7 +338,7 @@ class TestOAuth2CallbackStandardFlow:
             response = test_client.get(
                 f"{API_PREFIX}/oauth2/callback/keycloak",
                 params={"code": "keycloak_code", "state": "test-state-789"},
-                cookies={"oauth2_temp_session": temp_session},
+                cookies={settings.oauth2_temp_session_cookie_name: temp_session},
                 follow_redirects=False,
             )
 
@@ -391,6 +398,8 @@ class TestOAuth2CallbackStandardFlow:
             mock_settings.auth_server_url = "http://localhost:8888"
             mock_settings.oauth_session_ttl_seconds = 600
             mock_settings.secret_key = "test-secret-key"
+            mock_settings.oauth2_temp_session_cookie_name = settings.oauth2_temp_session_cookie_name
+            mock_settings.oauth2_consent_nonce_cookie_name = settings.oauth2_consent_nonce_cookie_name
 
             test_signer = URLSafeTimedSerializer("test-secret-key")
             app.dependency_overrides = {}
@@ -416,7 +425,7 @@ class TestOAuth2CallbackStandardFlow:
             response = test_client.get(
                 f"{API_PREFIX}/oauth2/callback/keycloak",
                 params={"code": "keycloak_code", "state": "test-state-invalid-signature"},
-                cookies={"oauth2_temp_session": temp_session},
+                cookies={settings.oauth2_temp_session_cookie_name: temp_session},
                 follow_redirects=False,
             )
 
@@ -461,6 +470,8 @@ class TestOAuth2CallbackStandardFlow:
             mock_settings.auth_server_url = "http://localhost:8888"
             mock_settings.oauth_session_ttl_seconds = 600
             mock_settings.secret_key = "test-secret-key"
+            mock_settings.oauth2_temp_session_cookie_name = settings.oauth2_temp_session_cookie_name
+            mock_settings.oauth2_consent_nonce_cookie_name = settings.oauth2_consent_nonce_cookie_name
 
             test_signer = URLSafeTimedSerializer("test-secret-key")
             app.dependency_overrides = {}
@@ -486,7 +497,7 @@ class TestOAuth2CallbackStandardFlow:
             response = test_client.get(
                 f"{API_PREFIX}/oauth2/callback/entra",
                 params={"code": "entra_code", "state": "test-state-entra-invalid-sig"},
-                cookies={"oauth2_temp_session": temp_session},
+                cookies={settings.oauth2_temp_session_cookie_name: temp_session},
                 follow_redirects=False,
             )
 
@@ -538,6 +549,8 @@ class TestOAuth2CallbackStandardFlow:
             mock_settings.auth_server_url = "http://localhost:8888"
             mock_settings.oauth_session_ttl_seconds = 600
             mock_settings.secret_key = "test-secret-key"
+            mock_settings.oauth2_temp_session_cookie_name = settings.oauth2_temp_session_cookie_name
+            mock_settings.oauth2_consent_nonce_cookie_name = settings.oauth2_consent_nonce_cookie_name
 
             test_signer = URLSafeTimedSerializer("test-secret-key")
             app.dependency_overrides = {}
@@ -563,7 +576,7 @@ class TestOAuth2CallbackStandardFlow:
             response = test_client.get(
                 f"{API_PREFIX}/oauth2/callback/keycloak",
                 params={"code": "keycloak_code", "state": "test-state-access-token-only"},
-                cookies={"oauth2_temp_session": temp_session},
+                cookies={settings.oauth2_temp_session_cookie_name: temp_session},
                 follow_redirects=False,
             )
 
@@ -625,6 +638,8 @@ class TestOAuth2CallbackStandardFlow:
             mock_settings.auth_server_url = "http://localhost:8888"
             mock_settings.oauth_session_ttl_seconds = 600
             mock_settings.secret_key = "test-secret-key"
+            mock_settings.oauth2_temp_session_cookie_name = settings.oauth2_temp_session_cookie_name
+            mock_settings.oauth2_consent_nonce_cookie_name = settings.oauth2_consent_nonce_cookie_name
 
             test_signer = URLSafeTimedSerializer("test-secret-key")
 
@@ -656,7 +671,7 @@ class TestOAuth2CallbackStandardFlow:
             response = test_client.get(
                 f"{API_PREFIX}/oauth2/callback/keycloak",
                 params={"code": "code", "state": "test-state"},
-                cookies={"oauth2_temp_session": temp_session},
+                cookies={settings.oauth2_temp_session_cookie_name: temp_session},
                 follow_redirects=False,
             )
 
