@@ -1,9 +1,8 @@
 import axios, { type AxiosError, type AxiosRequestConfig } from 'axios';
 
-import { getBasePath } from '@/config';
+import { captureReturnPath, getBasePath } from '@/config';
 import { APP_ROUTES, getBrowserPath, isLoginBrowserPath } from '@/routes';
 import API from '@/services/api';
-import { capturePassiveAuthReturnTo } from '@/utils/authReturnTo';
 import type { GetTokenResponse } from './auth/type';
 
 const cancelSources: Record<string, () => void> = {};
@@ -81,7 +80,6 @@ service.interceptors.response.use(
           .catch(async () => {
             const isOnLoginPage = typeof window !== 'undefined' && isLoginBrowserPath(window.location.pathname);
             if (!isOnLoginPage) {
-              capturePassiveAuthReturnTo();
               try {
                 await service.post(API.logout, undefined, {
                   skipTokenBarrier: true,
@@ -91,7 +89,7 @@ service.interceptors.response.use(
                 // ignore logout error
               }
               if (typeof window !== 'undefined') {
-                window.location.replace(getBrowserPath(APP_ROUTES.login));
+                window.location.href = `${getBrowserPath(APP_ROUTES.login)}?next=${encodeURIComponent(captureReturnPath())}`;
               }
             }
             throw {

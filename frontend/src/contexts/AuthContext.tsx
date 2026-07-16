@@ -1,14 +1,8 @@
 import type React from 'react';
 import { createContext, type ReactNode, useContext, useEffect, useState } from 'react';
 
-import { APP_ROUTES, getBrowserPath, isAppRootPath, isLoginBrowserPath } from '@/routes';
+import { APP_ROUTES, getBrowserPath, isLoginBrowserPath } from '@/routes';
 import SERVICES from '@/services';
-import {
-  clearAuthReturnTo,
-  isCurrentDestination,
-  suppressAuthReturnToCapture,
-  takeStartedAuthReturnTo,
-} from '@/utils/authReturnTo';
 
 interface User {
   username: string;
@@ -57,14 +51,8 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   }, []);
 
   const checkAuth = async () => {
-    let isRedirecting = false;
-
     try {
       const userData = await SERVICES.AUTH.getAuthMe();
-      const isOAuthLandingPage = isAppRootPath(window.location.pathname);
-      const returnToDestination = isOAuthLandingPage ? takeStartedAuthReturnTo() : null;
-      if (!isOAuthLandingPage) clearAuthReturnTo();
-
       setUser({
         username: userData.username,
         userId: userData.userId,
@@ -76,33 +64,20 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         canModifyServers: userData.canModifyServers || false,
         isAdmin: userData.isAdmin || false,
       });
-
-      if (returnToDestination && !isCurrentDestination(returnToDestination)) {
-        try {
-          isRedirecting = true;
-          window.location.replace(returnToDestination);
-          return;
-        } catch (_error) {
-          isRedirecting = false;
-        }
-      }
     } catch (_error) {
       // User not authenticated
       setUser(null);
     } finally {
-      if (!isRedirecting) setLoading(false);
+      setLoading(false);
     }
   };
 
   const logout = async () => {
-    suppressAuthReturnToCapture();
-
     try {
       await SERVICES.AUTH.logout();
     } catch (_error) {
       // Ignore errors during logout
     } finally {
-      clearAuthReturnTo();
       const loginPath = getBrowserPath(APP_ROUTES.login);
       try {
         window.location.replace(loginPath);

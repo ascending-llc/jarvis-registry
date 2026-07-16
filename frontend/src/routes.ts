@@ -40,7 +40,7 @@ export const getBrowserPath = (route: string): string => {
   return `${basePath}${normalizedRoute}`;
 };
 
-export const getAppRoutePath = (pathname: string): string | null => {
+const getAppRoutePath = (pathname: string): string | null => {
   const normalizedPathname = normalizePathname(pathname);
   const basePath = getNormalizedBasePath();
   const comparablePathname = normalizedPathname.toLowerCase();
@@ -61,5 +61,3 @@ export const isProtectedBrowserPath = (pathname: string): boolean => {
 
 export const isLoginBrowserPath = (pathname: string): boolean =>
   getAppRoutePath(pathname)?.toLowerCase() === APP_ROUTES.login;
-
-export const isAppRootPath = (pathname: string): boolean => getAppRoutePath(pathname) === APP_ROUTES.root;
