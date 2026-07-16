@@ -84,6 +84,19 @@ class TestRenderStepPrompt:
         assert "actual output" in result
         assert '"No Content" outputs:' not in result
 
+    def test_dependency_content_with_code_fence_is_rendered_as_indented_block(self):
+        deps = [DependencySpec(name="Markdown", objective="emit markdown", content="before\n```json\n{}\n```\nafter")]
+        result = render_step_prompt(
+            step_objective="consume markdown",
+            workflow_description=None,
+            dependencies=deps,
+            initial_input=None,
+        )
+
+        assert "  ```json" in result
+        assert "\n  {}\n" in result
+        assert "\n  ```\n" in result
+
     def test_current_step_inputs_omitted_when_all_deps_have_no_content(self):
         deps = [DependencySpec(name="Pending", objective="fetch", content=None)]
         result = render_step_prompt(

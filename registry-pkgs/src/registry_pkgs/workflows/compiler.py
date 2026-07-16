@@ -27,6 +27,11 @@ from registry_pkgs.models.workflow import (
     WorkflowRun,
 )
 from registry_pkgs.workflows.hitl.field_types import field_type_to_agno
+from registry_pkgs.workflows.media_snapshot import (
+    media_from_snapshot,
+    serialize_media_items,
+    serialize_step_output_media,
+)
 from registry_pkgs.workflows.persistence import WorkflowRunSyncer
 from registry_pkgs.workflows.prompt import (
     ADDITIONAL_DATA_DEPENDENCY_NODE_NAMES,
@@ -59,14 +64,20 @@ _ON_TIMEOUT_TO_AGNO: dict[OnTimeoutPolicy, str] = {
 
 
 def _serialize_step_output(value: StepOutput) -> dict[str, Any]:
-    """Serialize a previous StepOutput without recursively storing full internals."""
-    return {
+    """Serialize a previous StepOutput without recursively storing full internals.
+
+    Media fields are persisted as metadata only (no bytes) via
+    ``serialize_step_output_media`` so snapshots stay Mongo-safe and small.
+    """
+    serialized = {
         "step_name": value.step_name,
         "step_id": value.step_id,
         "content": json_safe(value.content),
         "success": value.success,
         "error": value.error,
     }
+    serialized.update(serialize_step_output_media(value))
+    return serialized
 
 
 def _serialize_step_input(step_input: StepInput) -> dict[str, Any]:
@@ -84,11 +95,52 @@ def _serialize_step_input(step_input: StepInput) -> dict[str, Any]:
             str(name): _serialize_step_output(output) for name, output in previous_outputs.items()
         },
         "additional_data": json_safe(step_input.additional_data),
-        "images": json_safe(step_input.images),
-        "videos": json_safe(step_input.videos),
-        "audio": json_safe(step_input.audio),
-        "files": json_safe(step_input.files),
+        "images": serialize_media_items(step_input.images, "images"),
+        "videos": serialize_media_items(step_input.videos, "videos"),
+        "audio": serialize_media_items(step_input.audio, "audio"),
+        "files": serialize_media_items(step_input.files, "files"),
     }
+
+
+def _dedupe_preserve_order(names: list[str]) -> list[str]:
+    """Dedupe while keeping first-occurrence order (implicit dep stays ahead of explicit refs)."""
+    return list(dict.fromkeys(names))
+
+
+def _build_implicit_previous_step_names(nodes: list[WorkflowNode]) -> dict[str, str]:
+    """Map each STEP node id to the immediately previous STEP in the same ordered list.
+
+    Branch containers (Loop / Condition / Router) form independent chains inside
+    each branch; Parallel siblings never depend on each other; a container node
+    breaks the chain (a STEP never implicitly depends on a container).
+    """
+    implicit_by_node_id: dict[str, str] = {}
+
+    def visit_sequence(sequence: list[WorkflowNode]) -> None:
+        """Walk one ordered node list, linking STEP→previous-STEP and recursing into containers."""
+        previous_node: WorkflowNode | None = None
+        for node in sequence:
+            if node.node_type == WorkflowNodeType.STEP:
+                if previous_node is not None and previous_node.node_type == WorkflowNodeType.STEP:
+                    implicit_by_node_id[node.id] = previous_node.name
+
+            if node.node_type == WorkflowNodeType.LOOP:
+                visit_sequence(node.children)
+            elif node.node_type == WorkflowNodeType.CONDITION:
+                visit_sequence(node.true_steps)
+                visit_sequence(node.false_steps)
+            elif node.node_type == WorkflowNodeType.ROUTER:
+                for choice in node.choices:
+                    visit_sequence(choice.steps)
+            elif node.node_type == WorkflowNodeType.PARALLEL:
+                # Parallel children have no ordering semantics, so do not create
+                # implicit dependencies between siblings.
+                for child in node.children:
+                    visit_sequence([child])
+            previous_node = node
+
+    visit_sequence(nodes)
+    return implicit_by_node_id
 
 
 def _with_input_capture(
@@ -111,6 +163,7 @@ def _with_intention_data(
     executor: StepExecutor,
     node_by_name: dict[str, WorkflowNode],
     workflow_description: str | None,
+    dependency_node_names: list[str],
 ) -> StepExecutor:
     """Inject per-node intention into ``StepInput.additional_data`` before calling the executor.
 
@@ -128,7 +181,6 @@ def _with_intention_data(
     (``ADDITIONAL_DATA_*``).  ``build_prompt`` in ``helpers.py`` reads them back
     and calls ``render_step_prompt`` to assemble the final Markdown prompt.
     """
-    dependency_node_names = list(node.referenced_node_names)
     dependency_objectives: dict[str, str] = {
         name: node_by_name[name].step_objective or "" for name in dependency_node_names if name in node_by_name
     }
@@ -217,6 +269,7 @@ def compile_workflow(
     # Build unconditionally — needed for dependency-goal resolution in
     # _with_intention_data regardless of whether DB sync is active.
     node_by_name: dict[str, WorkflowNode] = {n.name: n for n in flatten_workflow_nodes(definition.nodes)}
+    implicit_previous_step_names = _build_implicit_previous_step_names(definition.nodes)
 
     db: WorkflowRunSyncer | None = None
     if db_client is not None and db_name is not None:
@@ -241,14 +294,26 @@ def compile_workflow(
         nodes_to_compile = definition.nodes[: cut + 1]
 
     def _make_injected_executor(data: dict[str, Any]) -> StepExecutor:
-        """Return a pass-through executor that replays *content* and *session_state*."""
+        """Return a pass-through executor that replays *content*, *media metadata* and *session_state*.
+
+        Media are rebuilt as metadata-only shells (no bytes) so downstream
+        dependency prompts render the same media summary as a live run.
+        """
+        media = media_from_snapshot(data)
 
         async def _injected(step_input: StepInput, session_state: dict | None = None) -> StepOutput:
             if session_state is not None:
                 state_updates = data.get("session_state")
                 if state_updates:
                     session_state.update(state_updates)
-            return StepOutput(content=data.get("content"), success=True)
+            return StepOutput(
+                content=data.get("content"),
+                images=media["images"],
+                videos=media["videos"],
+                audio=media["audio"],
+                files=media["files"],
+                success=True,
+            )
 
         return _injected
 
@@ -272,7 +337,17 @@ def compile_workflow(
                     )
                 # Live executors rely on build_prompt(), so inject per-node intention
                 # into StepInput.additional_data before invoking the underlying executor.
-                executor = _with_intention_data(node, executor, node_by_name, definition.description)
+                implicit_name = implicit_previous_step_names.get(node.id)
+                dependency_node_names = _dedupe_preserve_order(
+                    ([implicit_name] if implicit_name else []) + list(node.referenced_node_names)
+                )
+                executor = _with_intention_data(
+                    node,
+                    executor,
+                    node_by_name,
+                    definition.description,
+                    dependency_node_names,
+                )
 
             # _with_input_capture snapshots the pre-injection StepInput, so it
             # must be the outermost wrapper around both live and injected paths.

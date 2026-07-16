@@ -414,6 +414,149 @@ class TestA2AExecutor:
         finally:
             await shared.aclose()
 
+    @pytest.mark.asyncio
+    async def test_make_a2a_executor_preserves_message_files_and_data(self, monkeypatch: pytest.MonkeyPatch):
+        from a2a.types import DataPart, FilePart, FileWithBytes, Message, Part, Role, TextPart
+
+        from registry_pkgs.workflows.a2a_client import A2ACallResult
+        from registry_pkgs.workflows.a2a_executor import make_a2a_executor
+
+        msg = Message(
+            kind="message",
+            role=Role.agent,
+            message_id="m",
+            parts=[
+                Part(root=TextPart(kind="text", text="done")),
+                Part(
+                    root=FilePart(
+                        kind="file",
+                        file=FileWithBytes(
+                            bytes="aW1hZ2U=",
+                            mimeType="image/jpeg",
+                            name="result.jpg",
+                        ),
+                    )
+                ),
+                Part(
+                    root=FilePart(
+                        kind="file",
+                        file=FileWithBytes(
+                            bytes="dmlkZW8=",
+                            mimeType="video/mp4",
+                            name="clip.mp4",
+                        ),
+                    )
+                ),
+                Part(
+                    root=FilePart(
+                        kind="file",
+                        file=FileWithBytes(
+                            bytes="YXVkaW8=",
+                            mimeType="audio/mpeg",
+                            name="sound.mp3",
+                        ),
+                    )
+                ),
+                Part(root=DataPart(kind="data", data={"title": "Result"})),
+            ],
+        )
+
+        async def fake_call_a2a(*args, **kwargs):
+            return A2ACallResult(message=msg, success=True)
+
+        monkeypatch.setattr(a2a_exec, "call_a2a", fake_call_a2a)
+
+        output = await make_a2a_executor(_a2a_agent(), jwt_config=_jwt_config())(StepInput(input="hello"))
+
+        assert output.content == "done"
+        assert output.images and output.images[0].mime_type == "image/jpeg"
+        assert output.videos and output.videos[0].mime_type == "video/mp4"
+        assert output.audio and output.audio[0].mime_type == "audio/mpeg"
+        assert output.files and output.files[0].mime_type == "application/json"
+        assert '"title": "Result"' in output.files[0].content
+
+    @pytest.mark.asyncio
+    async def test_make_a2a_executor_preserves_task_artifact_files_and_data(self, monkeypatch: pytest.MonkeyPatch):
+        from a2a.types import Artifact, DataPart, FilePart, FileWithBytes, Part, Task, TaskState, TaskStatus
+
+        from registry_pkgs.workflows.a2a_client import A2ACallResult
+        from registry_pkgs.workflows.a2a_executor import make_a2a_executor
+
+        task = Task(
+            id="task",
+            context_id="ctx",
+            kind="task",
+            status=TaskStatus(state=TaskState.completed),
+            artifacts=[
+                Artifact(
+                    artifact_id="a1",
+                    name="report",
+                    parts=[
+                        Part(root=DataPart(kind="data", data={"rows": 2})),
+                        Part(
+                            root=FilePart(
+                                kind="file",
+                                file=FileWithBytes(
+                                    bytes="eyJvayI6IHRydWV9",
+                                    mimeType="application/json",
+                                    name="report.json",
+                                ),
+                            )
+                        ),
+                    ],
+                )
+            ],
+        )
+
+        async def fake_call_a2a(*args, **kwargs):
+            return A2ACallResult(task=task, success=True)
+
+        monkeypatch.setattr(a2a_exec, "call_a2a", fake_call_a2a)
+
+        output = await make_a2a_executor(_a2a_agent(), jwt_config=_jwt_config())(StepInput(input="hello"))
+
+        assert output.files and len(output.files) == 2
+        assert output.files[0].filename == "report-data-1.json"
+        assert '"rows": 2' in output.files[0].content
+        assert output.files[1].filename == "report.json"
+        assert output.files[1].mime_type == "application/json"
+
+    @pytest.mark.asyncio
+    async def test_make_a2a_executor_keeps_unsupported_file_mime_metadata(self, monkeypatch: pytest.MonkeyPatch):
+        from a2a.types import FilePart, FileWithBytes, Message, Part, Role
+
+        from registry_pkgs.workflows.a2a_client import A2ACallResult
+        from registry_pkgs.workflows.a2a_executor import make_a2a_executor
+
+        msg = Message(
+            kind="message",
+            role=Role.agent,
+            message_id="m",
+            parts=[
+                Part(
+                    root=FilePart(
+                        kind="file",
+                        file=FileWithBytes(
+                            bytes="emlw",
+                            mimeType="application/zip",
+                            name="bundle.zip",
+                        ),
+                    )
+                ),
+            ],
+        )
+
+        async def fake_call_a2a(*args, **kwargs):
+            return A2ACallResult(message=msg, success=True)
+
+        monkeypatch.setattr(a2a_exec, "call_a2a", fake_call_a2a)
+
+        output = await make_a2a_executor(_a2a_agent(), jwt_config=_jwt_config())(StepInput(input="hello"))
+
+        assert output.files and output.files[0].filename == "bundle.zip"
+        assert output.files[0].mime_type is None
+        assert output.files[0].file_type == "application/zip"
+
 
 @pytest.mark.unit
 class TestHelpers:

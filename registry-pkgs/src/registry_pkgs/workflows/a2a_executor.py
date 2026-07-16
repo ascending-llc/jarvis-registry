@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
 import httpx
+from a2a.types import DataPart, FilePart, FileWithBytes, FileWithUri, Message, Task
 from agno.agent import Agent
+from agno.media import Audio, File, Image, Video
 from agno.models.base import Model
 from agno.workflow import StepInput, StepOutput
 from agno.workflow.step import StepExecutor
@@ -12,6 +15,7 @@ from agno.workflow.step import StepExecutor
 from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.models.a2a_agent import A2AAgent
 from registry_pkgs.workflows.a2a_client import (
+    A2ACallResult,
     HeadersProvider,
     call_a2a,
     raise_if_iam_unsupported,
@@ -19,6 +23,173 @@ from registry_pkgs.workflows.a2a_client import (
 from registry_pkgs.workflows.helpers import build_prompt
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_file_mime_type(mime_type: str | None) -> str | None:
+    """Return the MIME type if agno File accepts it, else None (original is kept in file_type)."""
+    media_type = (mime_type or "").split(";", 1)[0].strip().lower()
+    return media_type if media_type in File.valid_mime_types() else None
+
+
+def _file_payload_to_media(payload: FileWithBytes | FileWithUri) -> Audio | File | Image | Video | None:
+    """Convert one A2A file payload into Image/Video/Audio/File by MIME prefix (bytes→from_base64, uri→url)."""
+    mime_type = payload.mime_type
+    media_type = (mime_type or "").split(";", 1)[0].strip().lower()
+    safe_mime_type = _safe_file_mime_type(mime_type)
+    original_file_type = media_type if media_type and safe_mime_type is None else None
+
+    if isinstance(payload, FileWithBytes):
+        if media_type.startswith("image/"):
+            return Image.from_base64(payload.bytes, id=payload.name, mime_type=mime_type)
+        if media_type.startswith("video/"):
+            return Video.from_base64(payload.bytes, id=payload.name, mime_type=mime_type)
+        if media_type.startswith("audio/"):
+            return Audio.from_base64(payload.bytes, id=payload.name, mime_type=mime_type)
+        file = File.from_base64(
+            payload.bytes,
+            id=payload.name,
+            mime_type=safe_mime_type,
+            filename=payload.name,
+            name=payload.name,
+        )
+        file.file_type = original_file_type
+        return file
+
+    if isinstance(payload, FileWithUri):
+        if media_type.startswith("image/"):
+            return Image(url=str(payload.uri), id=payload.name, mime_type=mime_type)
+        if media_type.startswith("video/"):
+            return Video(url=str(payload.uri), id=payload.name, mime_type=mime_type)
+        if media_type.startswith("audio/"):
+            return Audio(url=str(payload.uri), id=payload.name, mime_type=mime_type)
+        return File(
+            url=str(payload.uri),
+            id=payload.name,
+            mime_type=safe_mime_type,
+            file_type=original_file_type,
+            filename=payload.name,
+            name=payload.name,
+        )
+
+    logger.warning("Skipping unsupported A2A file payload type: %s", type(payload).__name__)
+    return None
+
+
+def _append_parts_media(
+    parts: list[Any],
+    *,
+    files: list[File],
+    images: list[Image],
+    videos: list[Video],
+    audio: list[Audio],
+    data_prefix: str,
+) -> None:
+    """Sort a parts list into the media buckets; DataParts become '{data_prefix}-data-{n}.json' JSON Files."""
+    data_index = 0
+    for part in parts:
+        root = getattr(part, "root", part)
+        if isinstance(root, FilePart):
+            media = _file_payload_to_media(root.file)
+            if isinstance(media, Image):
+                images.append(media)
+            elif isinstance(media, Video):
+                videos.append(media)
+            elif isinstance(media, Audio):
+                audio.append(media)
+            elif isinstance(media, File):
+                files.append(media)
+        elif isinstance(root, DataPart):
+            data_index += 1
+            filename = f"{data_prefix}-data-{data_index}.json"
+            files.append(
+                File(
+                    content=json.dumps(root.data, ensure_ascii=False, default=str),
+                    mime_type="application/json",
+                    filename=filename,
+                    name=filename,
+                )
+            )
+
+
+def _append_message_media(
+    message: Message,
+    *,
+    files: list[File],
+    images: list[Image],
+    videos: list[Video],
+    audio: list[Audio],
+    data_prefix: str,
+) -> None:
+    """Collect media from a Message's parts into the shared buckets."""
+    _append_parts_media(
+        message.parts or [],
+        files=files,
+        images=images,
+        videos=videos,
+        audio=audio,
+        data_prefix=data_prefix,
+    )
+
+
+def _append_task_media(
+    task: Task,
+    *,
+    files: list[File],
+    images: list[Image],
+    videos: list[Video],
+    audio: list[Audio],
+) -> None:
+    """Collect media from a Task's status message and artifacts into the shared buckets."""
+    if task.status.message is not None:
+        _append_message_media(
+            task.status.message,
+            files=files,
+            images=images,
+            videos=videos,
+            audio=audio,
+            data_prefix="status-message",
+        )
+    for artifact_index, artifact in enumerate(task.artifacts or [], start=1):
+        data_prefix = artifact.name or artifact.artifact_id or f"artifact-{artifact_index}"
+        _append_parts_media(
+            artifact.parts or [],
+            files=files,
+            images=images,
+            videos=videos,
+            audio=audio,
+            data_prefix=data_prefix,
+        )
+
+
+def _a2a_result_to_step_output(result: A2ACallResult) -> StepOutput:
+    """Convert A2A text and artifacts into Agno's StepOutput media model."""
+    files: list[File] = []
+    images: list[Image] = []
+    videos: list[Video] = []
+    audio: list[Audio] = []
+
+    if result.message is not None:
+        _append_message_media(
+            result.message,
+            files=files,
+            images=images,
+            videos=videos,
+            audio=audio,
+            data_prefix="message",
+        )
+    elif result.task is not None:
+        _append_task_media(result.task, files=files, images=images, videos=videos, audio=audio)
+
+    text = result.render_text()
+    return StepOutput(
+        content=text if text else None,
+        images=images or None,
+        videos=videos or None,
+        audio=audio or None,
+        files=files or None,
+        success=result.success,
+        error=result.error,
+    )
 
 
 def make_a2a_executor(
@@ -47,7 +218,7 @@ def make_a2a_executor(
             httpx_client=httpx_client,
             headers_provider=headers_provider,
         )
-        return StepOutput(content=result.render_text(), success=result.success, error=result.error)
+        return _a2a_result_to_step_output(result)
 
     executor.__name__ = f"{agent.path}_a2a_executor"
     return executor
@@ -152,7 +323,7 @@ def make_a2a_pool_executor(
             httpx_client=httpx_client,
             headers_provider=headers_provider,
         )
-        return StepOutput(content=result.render_text(), success=result.success, error=result.error)
+        return _a2a_result_to_step_output(result)
 
     executor.__name__ = f"{node_name}_pool_executor"
     return executor
