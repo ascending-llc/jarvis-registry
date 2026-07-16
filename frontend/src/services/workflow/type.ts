@@ -1,8 +1,8 @@
 export type WorkflowPermissionType = {
-  VIEW?: boolean;
-  EDIT?: boolean;
-  DELETE?: boolean;
-  SHARE?: boolean;
+  VIEW: boolean;
+  EDIT: boolean;
+  DELETE: boolean;
+  SHARE: boolean;
 };
 
 export const EMPTY_WORKFLOW_PERMISSIONS: WorkflowPermissionType = {
@@ -95,7 +95,7 @@ export interface Workflow {
   createdAt: string;
   updatedAt: string;
   aclPermission?: WorkflowPermissionType | null;
-  permissions?: WorkflowPermissionType;
+  permissions: WorkflowPermissionType;
 }
 
 export interface GetWorkflowsListRequest {

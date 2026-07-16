@@ -16,11 +16,7 @@ import type { WorkflowNode as CanvasWorkflowNode, WorkflowCanvasRef } from '@/co
 import { useGlobal } from '@/contexts/GlobalContext';
 import { useServer } from '@/contexts/ServerContext';
 import SERVICES from '@/services';
-import {
-  type WorkflowNode as ApiWorkflowNode,
-  EMPTY_WORKFLOW_PERMISSIONS,
-  type Workflow,
-} from '@/services/workflow/type';
+import type { WorkflowNode as ApiWorkflowNode, Workflow } from '@/services/workflow/type';
 import DeleteWorkflowDialog from './DeleteWorkflowDialog';
 import TriggerRunModal from './TriggerRunModal';
 import UnsavedChangesDialog from './UnsavedChangesDialog';
@@ -57,7 +53,7 @@ const WorkflowRegistryOrEdit: React.FC = () => {
   const [triggerModalOpen, setTriggerModalOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
   const [runHistoryRefresh, setRunHistoryRefresh] = useState(0);
-  const canShareWorkflow = isEditMode && !!id && workflow?.permissions?.SHARE === true;
+  const canShareWorkflow = isEditMode && workflow?.permissions?.SHARE === true;
 
   // ── Side Effects: Block navigation & BeforeUnload ──────────────────────────────
   const blocker = useBlocker(({ currentLocation, nextLocation }) => {
@@ -107,7 +103,7 @@ const WorkflowRegistryOrEdit: React.FC = () => {
     setLoadingDetail(true);
     try {
       const data = await SERVICES.WORKFLOW.getWorkflowDetail(workflowId);
-      setWorkflow({ ...data, permissions: data.aclPermission ?? EMPTY_WORKFLOW_PERMISSIONS });
+      setWorkflow(data);
     } catch (error: any) {
       showToast(error?.detail?.message || 'Failed to fetch workflow', 'error');
     } finally {
