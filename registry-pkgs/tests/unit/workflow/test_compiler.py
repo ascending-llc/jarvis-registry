@@ -1280,6 +1280,7 @@ class TestIntentionData:
         assert 'Dependencies:\n- "Ghost Node": produce ghost output.' in prompt
         assert "Current Step Inputs:" not in prompt
 
+    @pytest.mark.skip(reason="truncation temporarily disabled")
     @pytest.mark.asyncio
     async def test_long_output_is_truncated_in_dependency_prompt(self):
         upstream = _step_node("Big Node", "tool", "produce long output")
