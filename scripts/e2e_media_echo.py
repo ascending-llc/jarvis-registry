@@ -28,7 +28,7 @@ import httpx
 from a2a.client import A2ACardResolver, ClientConfig, ClientFactory
 from a2a.client.base_client import BaseClient
 from a2a.client.middleware import ClientCallContext
-from a2a.types import Message, Part, Role, TextPart
+from a2a.types import Message, Part, Role, Task, TextPart
 
 from registry_pkgs.workflows.a2a_client import A2ACallResult, _consume_stream, _result_from_task
 from registry_pkgs.workflows.a2a_executor import _a2a_result_to_step_output
@@ -49,7 +49,7 @@ def _check(label: str, condition: bool, detail: str = "") -> None:
     _failures.append(label)
 
 
-async def _invoke(hc: httpx.AsyncClient, agent_card, text: str) -> Message | None:
+async def _invoke(hc: httpx.AsyncClient, agent_card, text: str) -> Message | Task | None:
     """Send a text message and return the raw A2A response."""
     session_id = str(uuid.uuid4())
     headers = {
@@ -125,7 +125,7 @@ def _validate_common(step_out, mode: str) -> None:
 
 
 async def _test_message_mode(hc: httpx.AsyncClient, agent_card) -> None:
-    print("\n{'='*60}")
+    print("\n" + "=" * 60)
     print("=== MESSAGE MODE ===")
     print("Sending 'message' to trigger Message response...\n")
 
@@ -144,7 +144,7 @@ async def _test_message_mode(hc: httpx.AsyncClient, agent_card) -> None:
 
 
 async def _test_task_mode(hc: httpx.AsyncClient, agent_card) -> None:
-    print("\n{'='*60}")
+    print("\n" + "=" * 60)
     print("=== TASK MODE ===")
     print("Sending 'hello media test' to trigger Task response...\n")
 
@@ -152,8 +152,6 @@ async def _test_task_mode(hc: httpx.AsyncClient, agent_card) -> None:
     if outcome is None:
         _check("[task] got response", False, "agent returned no events")
         return
-
-    from a2a.types import Task
 
     _check("[task] response is Task", isinstance(outcome, Task), f"got {type(outcome).__name__}")
     if not isinstance(outcome, Task):

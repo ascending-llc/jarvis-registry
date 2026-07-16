@@ -203,7 +203,8 @@ class WorkflowRunSyncer(AsyncMongoDb):
         node_run.error = step_output.error
         media_snapshot = serialize_step_output_media(step_output)
         if step_output.content is not None or media_snapshot:
-            output_snapshot: dict[str, Any] = {"content": str(step_output.content or "")}
+            content = "" if step_output.content is None else str(step_output.content)
+            output_snapshot: dict[str, Any] = {"content": content}
             output_snapshot.update(media_snapshot)
             node_run.output_snapshot = output_snapshot
 
