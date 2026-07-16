@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from itsdangerous import URLSafeTimedSerializer
 
+from auth_server.core.config import settings
 from auth_server.deps import (
     get_auth_provider,
     get_consent_store,
@@ -17,7 +18,7 @@ from auth_server.deps import (
     get_signer,
     get_user_service,
 )
-from auth_server.routes.oauth_flow import CONSENT_NONCE_COOKIE, router
+from auth_server.routes.oauth_flow import router
 from tests.support.oauth_state_store import InMemoryOAuthStateStore
 
 
@@ -129,7 +130,7 @@ def test_consent_page_requires_query_and_cookie_nonce_match() -> None:
     response = client.get(
         "/auth/oauth2/consent",
         params={"nonce": "nonce-1"},
-        cookies={CONSENT_NONCE_COOKIE: "different"},
+        cookies={settings.oauth2_consent_nonce_cookie_name: "different"},
     )
 
     assert response.status_code == 400
@@ -143,7 +144,7 @@ def test_consent_page_renders_client_metadata_and_post_forms() -> None:
     response = client.get(
         "/auth/oauth2/consent",
         params={"nonce": "nonce-1"},
-        cookies={CONSENT_NONCE_COOKIE: "nonce-1"},
+        cookies={settings.oauth2_consent_nonce_cookie_name: "nonce-1"},
     )
 
     assert response.status_code == 200
@@ -159,7 +160,7 @@ def test_approve_consent_rejects_form_cookie_nonce_mismatch() -> None:
     response = client.post(
         "/auth/oauth2/consent/approve",
         data={"nonce": "nonce-1"},
-        cookies={CONSENT_NONCE_COOKIE: "different"},
+        cookies={settings.oauth2_consent_nonce_cookie_name: "different"},
     )
 
     assert response.status_code == 400
@@ -174,7 +175,7 @@ def test_approve_consent_grants_and_finishes_oauth_callback() -> None:
     response = client.post(
         "/auth/oauth2/consent/approve",
         data={"nonce": "nonce-1"},
-        cookies={CONSENT_NONCE_COOKIE: "nonce-1"},
+        cookies={settings.oauth2_consent_nonce_cookie_name: "nonce-1"},
         follow_redirects=False,
     )
 
@@ -239,7 +240,7 @@ def test_oauth_callback_without_client_consent_redirects_to_consent(
     response = client.get(
         "/auth/oauth2/callback/keycloak",
         params={"code": "idp-code", "state": "internal-state"},
-        cookies={"oauth2_temp_session": signer.dumps(session_data)},
+        cookies={settings.oauth2_temp_session_cookie_name: signer.dumps(session_data)},
         follow_redirects=False,
     )
 
@@ -291,7 +292,7 @@ def test_oauth_callback_with_cached_client_consent_skips_consent(
     response = client.get(
         "/auth/oauth2/callback/keycloak",
         params={"code": "idp-code", "state": "internal-state"},
-        cookies={"oauth2_temp_session": signer.dumps(session_data)},
+        cookies={settings.oauth2_temp_session_cookie_name: signer.dumps(session_data)},
         follow_redirects=False,
     )
 
@@ -342,7 +343,7 @@ def test_oauth_callback_registry_client_skips_consent(
     response = client.get(
         "/auth/oauth2/callback/keycloak",
         params={"code": "idp-code", "state": "internal-state"},
-        cookies={"oauth2_temp_session": signer.dumps(session_data)},
+        cookies={settings.oauth2_temp_session_cookie_name: signer.dumps(session_data)},
         follow_redirects=False,
     )
 
