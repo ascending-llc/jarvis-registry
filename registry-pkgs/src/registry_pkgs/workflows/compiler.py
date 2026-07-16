@@ -27,7 +27,11 @@ from registry_pkgs.models.workflow import (
     WorkflowRun,
 )
 from registry_pkgs.workflows.hitl.field_types import field_type_to_agno
-from registry_pkgs.workflows.media_snapshot import media_from_snapshot, serialize_step_output_media
+from registry_pkgs.workflows.media_snapshot import (
+    media_from_snapshot,
+    serialize_media_items,
+    serialize_step_output_media,
+)
 from registry_pkgs.workflows.persistence import WorkflowRunSyncer
 from registry_pkgs.workflows.prompt import (
     ADDITIONAL_DATA_DEPENDENCY_NODE_NAMES,
@@ -91,10 +95,10 @@ def _serialize_step_input(step_input: StepInput) -> dict[str, Any]:
             str(name): _serialize_step_output(output) for name, output in previous_outputs.items()
         },
         "additional_data": json_safe(step_input.additional_data),
-        "images": json_safe(step_input.images),
-        "videos": json_safe(step_input.videos),
-        "audio": json_safe(step_input.audio),
-        "files": json_safe(step_input.files),
+        "images": serialize_media_items(step_input.images, "images"),
+        "videos": serialize_media_items(step_input.videos, "videos"),
+        "audio": serialize_media_items(step_input.audio, "audio"),
+        "files": serialize_media_items(step_input.files, "files"),
     }
 
 

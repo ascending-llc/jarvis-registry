@@ -5,8 +5,23 @@ from agno.workflow import StepOutput
 
 from registry_pkgs.workflows.media_snapshot import (
     media_from_snapshot,
+    serialize_media_items,
     serialize_step_output_media,
 )
+
+_PNG_BYTES = b"\x89PNG\r\n\x1a\nrest-of-binary"
+
+
+class TestSerializeMediaItems:
+    def test_none_and_empty_yield_empty_list(self):
+        assert serialize_media_items(None, "images") == []
+        assert serialize_media_items([], "files") == []
+
+    def test_binary_image_does_not_trigger_utf8_decode(self):
+        items = [Image(content=_PNG_BYTES, id="pic.png", mime_type="image/png")]
+        serialized = serialize_media_items(items, "images")
+        assert serialized == [{"id": "pic.png", "mime_type": "image/png"}]
+        assert b"\x89PNG" not in repr(serialized).encode()
 
 
 class TestSerializeStepOutputMedia:

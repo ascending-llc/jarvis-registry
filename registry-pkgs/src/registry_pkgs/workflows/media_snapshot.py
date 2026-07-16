@@ -45,14 +45,21 @@ def _metadata_dict(item: Any, fields: tuple[str, ...]) -> dict[str, Any]:
     return metadata
 
 
+def serialize_media_items(items: Any, key: str) -> list[dict[str, Any]]:
+    """Serialize a raw list of agno media objects (Image/Video/Audio/File) to metadata-only dicts."""
+    if not items:
+        return []
+    fields = _FIELDS_BY_KEY[key]
+    return [_metadata_dict(item, fields) for item in items]
+
+
 def serialize_step_output_media(output: StepOutput) -> dict[str, list[dict[str, Any]]]:
     """Extract Mongo-safe media metadata (no bytes) from a StepOutput; only non-empty keys are emitted."""
     snapshot: dict[str, list[dict[str, Any]]] = {}
     for key in MEDIA_SNAPSHOT_KEYS:
-        items = getattr(output, key, None)
-        if not items:
-            continue
-        snapshot[key] = [_metadata_dict(item, _FIELDS_BY_KEY[key]) for item in items]
+        serialized = serialize_media_items(getattr(output, key, None), key)
+        if serialized:
+            snapshot[key] = serialized
     return snapshot
 
 
