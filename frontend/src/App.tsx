@@ -12,6 +12,7 @@ import ConsentServer from './pages/ConsentServer';
 import Dashboard from './pages/Dashboard';
 import FederationRegistryOrEdit from './pages/FederationRegistryOrEdit';
 import Login from './pages/Login';
+import NotFound from './pages/NotFound';
 import OAuthCallback from './pages/OAuthCallback';
 import ServerRegistryOrEdit from './pages/ServerRegistryOrEdit';
 import TokenGeneration from './pages/TokenGeneration';
@@ -145,6 +146,7 @@ const router = createBrowserRouter(
         </ProtectedRoute>
       ),
     },
+    { path: '*', element: <NotFound /> },
   ],
   { basename: getBasePath() || '/' },
 );
