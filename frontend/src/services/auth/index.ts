@@ -3,7 +3,8 @@ import Request from '@/services/request';
 
 import type * as TOKEN_TYPE from './type';
 
-const logout: () => Promise<void> = async () => await Request.post(API.logout);
+const logout: () => Promise<void> = async () =>
+  await Request.post(API.logout, undefined, { skipTokenBarrier: true, skipAuthRecovery: true });
 
 const refreshToken: () => Promise<any> = async () => await Request.post(API.refreshToken);
 

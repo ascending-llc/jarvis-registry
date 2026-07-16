@@ -2,6 +2,8 @@
 Unit tests for authentication routes.
 """
 
+import base64
+import json
 import time
 from http.cookies import SimpleCookie
 from typing import Any
@@ -23,6 +25,16 @@ from registry.api.redirect_routes import (
 from registry.utils.crypto_utils import REFRESH_TOKEN_EXPIRES_SECONDS
 from registry.utils.csrf import compute_csrf_token
 from registry_pkgs.core.jwt_utils import InvalidSignatureError
+
+_TEST_STATE_NONCE = "test-state-nonce"
+
+
+def _encode_oauth2_state(data: object) -> str:
+    return base64.urlsafe_b64encode(json.dumps(data).encode("utf-8")).decode("utf-8").rstrip("=")
+
+
+def _valid_oauth2_state() -> str:
+    return _encode_oauth2_state({"nonce": _TEST_STATE_NONCE})
 
 
 def _cookies_from_response(response: Response) -> SimpleCookie:
@@ -72,6 +84,8 @@ class TestAuthRoutes:
             mock_settings.session_cookie_name = "session"
             mock_settings.refresh_cookie_name = "refresh"
             mock_settings.csrf_cookie_name = "csrf"
+            mock_settings.oauth2_code_verifier_cookie_name = "registry_oauth2_code_verifier"
+            mock_settings.oauth2_state_nonce_cookie_name = "registry_oauth2_state_nonce"
             mock_settings.session_max_age_seconds = 3600
             mock_settings.session_cookie_secure = False
             mock_settings.templates_dir = "/templates"
@@ -229,7 +243,9 @@ class TestAuthRoutes:
             response = await oauth2_callback(
                 mock_request,
                 code=mock_code,
+                state=_valid_oauth2_state(),
                 registry_oauth2_code_verifier="a-cookie",
+                registry_oauth2_state_nonce=_TEST_STATE_NONCE,
                 user_service=mock_user_service,
             )
 
@@ -267,7 +283,9 @@ class TestAuthRoutes:
             response = await oauth2_callback(
                 mock_request,
                 code=mock_code,
+                state=_valid_oauth2_state(),
                 registry_oauth2_code_verifier="a-cookie",
+                registry_oauth2_state_nonce=_TEST_STATE_NONCE,
                 user_service=mock_user_service,
             )
 
@@ -320,7 +338,9 @@ class TestAuthRoutes:
             response = await oauth2_callback(
                 mock_request,
                 code=mock_code,
+                state=_valid_oauth2_state(),
                 registry_oauth2_code_verifier="a-cookie",
+                registry_oauth2_state_nonce=_TEST_STATE_NONCE,
                 user_service=mock_user_service,
             )
 
@@ -333,8 +353,10 @@ class TestAuthRoutes:
         """Test OAuth2 callback with error parameter."""
         response = await oauth2_callback(
             mock_request,
+            state=_valid_oauth2_state(),
             error="oauth2_error",
             details="Provider error",
+            registry_oauth2_state_nonce=_TEST_STATE_NONCE,
             user_service=Mock(),
         )
 
@@ -348,7 +370,9 @@ class TestAuthRoutes:
         """Test OAuth2 callback with init failed error."""
         response = await oauth2_callback(
             mock_request,
+            state=_valid_oauth2_state(),
             error="oauth2_init_failed",
+            registry_oauth2_state_nonce=_TEST_STATE_NONCE,
             user_service=Mock(),
         )
 
@@ -361,7 +385,9 @@ class TestAuthRoutes:
         """Test OAuth2 callback with callback failed error."""
         response = await oauth2_callback(
             mock_request,
+            state=_valid_oauth2_state(),
             error="oauth2_callback_failed",
+            registry_oauth2_state_nonce=_TEST_STATE_NONCE,
             user_service=Mock(),
         )
 
@@ -390,6 +416,9 @@ class TestAuthRoutes:
                 response = await oauth2_callback(
                     mock_request,
                     code=mock_code,
+                    state=_valid_oauth2_state(),
+                    registry_oauth2_code_verifier="a-cookie",
+                    registry_oauth2_state_nonce=_TEST_STATE_NONCE,
                     user_service=Mock(),
                 )
 
@@ -899,7 +928,9 @@ class TestAuthRoutes:
             await oauth2_callback(
                 mock_request,
                 code=mock_code,
+                state=_valid_oauth2_state(),
                 registry_oauth2_code_verifier="a-cookie",
+                registry_oauth2_state_nonce=_TEST_STATE_NONCE,
                 user_service=mock_user_service,
             )
 
@@ -961,7 +992,9 @@ class TestAuthRoutes:
             response = await oauth2_callback(
                 mock_request,
                 code=mock_code,
+                state=_valid_oauth2_state(),
                 registry_oauth2_code_verifier="a-cookie",
+                registry_oauth2_state_nonce=_TEST_STATE_NONCE,
                 user_service=mock_user_service,
             )
 
