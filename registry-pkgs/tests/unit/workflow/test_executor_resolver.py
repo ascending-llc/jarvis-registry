@@ -516,10 +516,10 @@ class TestA2AExecutor:
         output = await make_a2a_executor(_a2a_agent(), jwt_config=_jwt_config())(StepInput(input="hello"))
 
         assert output.files and len(output.files) == 2
-        assert output.files[0].filename == "report-data-1.json"
-        assert '"rows": 2' in output.files[0].content
-        assert output.files[1].filename == "report.json"
-        assert output.files[1].mime_type == "application/json"
+        data_file = next(f for f in output.files if f.filename == "report-data-1.json")
+        assert '"rows": 2' in data_file.content
+        report_file = next(f for f in output.files if f.filename == "report.json")
+        assert report_file.mime_type == "application/json"
 
     @pytest.mark.asyncio
     async def test_make_a2a_executor_keeps_unsupported_file_mime_metadata(self, monkeypatch: pytest.MonkeyPatch):
