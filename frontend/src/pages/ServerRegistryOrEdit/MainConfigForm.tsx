@@ -147,21 +147,23 @@ const MainConfigForm: React.FC<MainConfigFormProps> = ({
             }}
             helperText='Internal URL where your MCP server is running'
             suffix={
-              <button
-                type='button'
-                onClick={handleTestUrl}
-                disabled={isReadOnly || !formData.url}
-                className='btn-input-suffix'
-                title={testingUrl ? 'Cancel test' : 'Test URL'}
-              >
-                {testingUrl ? (
-                  <div className='animate-spin rounded-full h-4 w-4 border-b-2 border-[color:var(--jarvis-border)]' />
-                ) : urlTestPassed ? (
-                  <HiCheckCircle className='h-5 w-5 text-[var(--jarvis-success-text)]' aria-hidden='true' />
-                ) : (
-                  <HiBolt className='h-5 w-5' aria-hidden='true' />
-                )}
-              </button>
+              serverDetail?.tags?.includes('federated') ? undefined : (
+                <button
+                  type='button'
+                  onClick={handleTestUrl}
+                  disabled={isReadOnly || !formData.url}
+                  className='btn-input-suffix'
+                  title={testingUrl ? 'Cancel test' : 'Test URL'}
+                >
+                  {testingUrl ? (
+                    <div className='animate-spin rounded-full h-4 w-4 border-b-2 border-[color:var(--jarvis-border)]' />
+                  ) : urlTestPassed ? (
+                    <HiCheckCircle className='h-5 w-5 text-[var(--jarvis-success-text)]' aria-hidden='true' />
+                  ) : (
+                    <HiBolt className='h-5 w-5' aria-hidden='true' />
+                  )}
+                </button>
+              )
             }
             error={errors?.url}
           />
