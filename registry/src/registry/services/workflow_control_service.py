@@ -41,9 +41,28 @@ from registry_pkgs.models.workflow import NodeRun, ResolvedDependency, WorkflowR
 from registry_pkgs.workflows.compiler import flatten_workflow_nodes
 from registry_pkgs.workflows.control import DirectiveQueue
 from registry_pkgs.workflows.helpers import extract_user_text
+from registry_pkgs.workflows.media_snapshot import MEDIA_SNAPSHOT_KEYS
 from registry_pkgs.workflows.types import WorkflowConfigError
 
 logger = logging.getLogger(__name__)
+
+
+def _injected_output_from_node_run(node_run: NodeRun) -> dict[str, Any]:
+    """Build the ``injected_outputs`` entry replayed for a cached node.
+
+    Carries content, persisted media metadata (no bytes) and session state so
+    the pass-through executor in compiler.py reproduces the original StepOutput
+    shape — dependency prompts then render identically to the live run.
+    """
+    snapshot = node_run.output_snapshot or {}
+    injected: dict[str, Any] = {
+        "content": snapshot.get("content", ""),
+        "session_state": node_run.session_state_snapshot or {},
+    }
+    for key in MEDIA_SNAPSHOT_KEYS:
+        if snapshot.get(key):
+            injected[key] = snapshot[key]
+    return injected
 
 
 def _log_task_exception(task: asyncio.Task) -> None:
@@ -394,10 +413,7 @@ class WorkflowControlService:
                     )
                 )
                 if nr.output_snapshot:
-                    injected_outputs[node.id] = {
-                        "content": nr.output_snapshot.get("content", ""),
-                        "session_state": nr.session_state_snapshot or {},
-                    }
+                    injected_outputs[node.id] = _injected_output_from_node_run(nr)
             else:
                 resolved_deps.append(
                     ResolvedDependency(
@@ -526,10 +542,7 @@ class WorkflowControlService:
                                 "All upstream nodes must have completed successfully."
                             ),
                         )
-                    injected_outputs[node.id] = {
-                        "content": nr.output_snapshot.get("content", ""),
-                        "session_state": nr.session_state_snapshot or {},
-                    }
+                    injected_outputs[node.id] = _injected_output_from_node_run(nr)
                     resolved_deps.append(
                         ResolvedDependency(
                             node_id=node.id,
@@ -547,10 +560,7 @@ class WorkflowControlService:
                             continue
                         nested_nr = node_run_by_id.get(nested.id)
                         if nested_nr and nested_nr.output_snapshot:
-                            injected_outputs[nested.id] = {
-                                "content": nested_nr.output_snapshot.get("content", ""),
-                                "session_state": nested_nr.session_state_snapshot or {},
-                            }
+                            injected_outputs[nested.id] = _injected_output_from_node_run(nested_nr)
                     resolved_deps.append(
                         ResolvedDependency(
                             node_id=node.id,

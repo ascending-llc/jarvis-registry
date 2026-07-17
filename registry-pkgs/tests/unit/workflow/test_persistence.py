@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from agno.media import File, Image
 from agno.run.base import RunStatus
 from agno.run.workflow import WorkflowRunOutput
 from agno.session import WorkflowSession
@@ -204,6 +205,56 @@ class TestWorkflowPersistence:
         assert node_run.session_state_snapshot == {"kept": "state"}
         assert node_run.finished_at is not None
         assert save_kwargs == {"session": None}
+
+    @pytest.mark.asyncio
+    async def test_upsert_node_run_persists_media_metadata_in_output_snapshot(self, monkeypatch: pytest.MonkeyPatch):
+        saved = []
+
+        class FakeNodeRun:
+            workflow_run_id = _FieldExpr("workflow_run_id")
+            node_id = _FieldExpr("node_id")
+
+            def __init__(self, **kwargs):
+                self.__dict__.update(kwargs)
+                self.attempt = 0
+                self.status = NodeRunStatus.PENDING
+                self.input_snapshot = None
+                self.output_snapshot = None
+                self.session_state_snapshot = None
+                self.finished_at = None
+                self.error = None
+                self.selected_a2a_key = None
+
+            @classmethod
+            async def find_one(cls, *args, **kwargs):
+                return None
+
+            async def save(self, **kwargs):
+                saved.append((self, kwargs))
+
+        monkeypatch.setattr(persistence, "NodeRun", FakeNodeRun)
+
+        sync = _sync_with_fake_run()
+        sync._node_by_name = {"draw": WorkflowNode(name="draw", executor_key="tool", step_objective="draw")}
+
+        await sync._upsert_node_run(
+            StepOutput(
+                step_name="draw",
+                content=None,
+                success=True,
+                images=[Image(content=b"raw-bytes", id="pic.jpg", mime_type="image/jpeg")],
+                files=[File(id="doc.pdf", filename="doc.pdf", file_type="application/pdf")],
+            ),
+        )
+
+        node_run, _ = saved[0]
+        # Media-only output (content is None) must still produce a snapshot,
+        # and only metadata — never bytes — may be persisted.
+        assert node_run.output_snapshot == {
+            "content": "",
+            "images": [{"id": "pic.jpg", "mime_type": "image/jpeg"}],
+            "files": [{"id": "doc.pdf", "filename": "doc.pdf", "file_type": "application/pdf"}],
+        }
 
     @pytest.mark.asyncio
     async def test_upsert_node_run_updates_existing_node_run(self, monkeypatch: pytest.MonkeyPatch):

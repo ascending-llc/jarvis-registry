@@ -27,7 +27,7 @@ class DependencySpec:
         name:      The node name as it appears in referenced_node_names.
         objective: The upstream node's own step_objective — shown even when
                    content is absent so the LLM knows the intended source.
-        content:   Stringified output of the upstream node, or None when that
+        content:   Stringified output summary of the upstream node, or None when that
                    node has not yet produced a result (e.g. a not-yet-executed
                    parallel branch).  None means "list in Dependencies but omit
                    from Current Step Inputs".
@@ -43,6 +43,12 @@ _WORKFLOW_CTX_PREFIX = "This step is part of a larger workflow:"
 _DEPS_HEADER = "Dependencies:"
 _INPUTS_HEADER = "Current Step Inputs:"
 _TRIGGER_LABEL = "Workflow trigger input"
+_INDENT = "  "
+
+
+def _indented_block(value: str) -> str:
+    """Indent every line two spaces so multi-line content nests inside the prompt without code fences."""
+    return "\n".join(f"{_INDENT}{line}" if line else _INDENT for line in value.splitlines())
 
 
 def render_step_prompt(
@@ -67,9 +73,7 @@ def render_step_prompt(
         Current Step Inputs:
         - "{dep.name}" outputs:
 
-          ```
-          {dep.content}
-          ```
+          <indented output summary>
         [... one block per dependency that has produced output ...]
 
     Rules:
@@ -111,12 +115,14 @@ def render_step_prompt(
         # 3b. Current Step Inputs — only dependencies that have produced output
         with_content = [d for d in dependencies if d.content is not None]
         if with_content:
-            input_blocks = "\n\n".join(f'- "{d.name}" outputs:\n\n  ```\n  {d.content}\n  ```' for d in with_content)
+            input_blocks = "\n\n".join(
+                f'- "{d.name}" outputs:\n\n{_indented_block(d.content or "")}' for d in with_content
+            )
             sections.append(f"{_INPUTS_HEADER}\n{input_blocks}")
 
     elif initial_input:
         # 3c. Entry node with no dependencies — show original trigger
-        sections.append(f"{_INPUTS_HEADER}\n- {_TRIGGER_LABEL}:\n\n  ```\n  {initial_input}\n  ```")
+        sections.append(f"{_INPUTS_HEADER}\n- {_TRIGGER_LABEL}:\n\n{_indented_block(initial_input)}")
 
     return "\n\n".join(sections)
 
