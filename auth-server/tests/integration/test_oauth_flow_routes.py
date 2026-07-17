@@ -77,8 +77,12 @@ def _configure_user_service(test_client: TestClient, user_id: str = "user-123") 
     return user_service
 
 
+def _mock_auth_provider_override() -> Mock:
+    return Mock()
+
+
 def _configure_auth_provider(test_client: TestClient) -> None:
-    test_client.app.dependency_overrides[get_auth_provider] = lambda: Mock()
+    test_client.app.dependency_overrides[get_auth_provider] = _mock_auth_provider_override
 
 
 def _seed_legacy_client_without_device_grant() -> None:
