@@ -13,6 +13,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import agentcoreIcon from '@/assets/agentcore.svg';
 import IconButton from '@/components/IconButton';
+import { FEDERATED_TAG } from '@/constants/tags';
 import { useGlobal } from '@/contexts/GlobalContext';
 import type { ServerInfo } from '@/contexts/ServerContext';
 import { useServer } from '@/contexts/ServerContext';
@@ -181,7 +182,7 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
   const isSecurityPending = server.tags?.includes('security-pending');
 
   const hasAgentCoreTags =
-    server.tags?.includes('federated') && server.tags?.includes('aws') && server.tags?.includes('agentcore');
+    server.tags?.includes(FEDERATED_TAG) && server.tags?.includes('aws') && server.tags?.includes('agentcore');
 
   return (
     <>
