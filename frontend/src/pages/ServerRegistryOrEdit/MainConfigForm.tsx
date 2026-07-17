@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { HiBolt, HiCheckCircle } from 'react-icons/hi2';
 import FormFields from '@/components/FormFields';
+import { FEDERATED_TAG } from '@/constants/tags';
 import { useGlobal } from '@/contexts/GlobalContext';
 import SERVICES from '@/services';
 import Request from '@/services/request';
@@ -147,7 +148,7 @@ const MainConfigForm: React.FC<MainConfigFormProps> = ({
             }}
             helperText='Internal URL where your MCP server is running'
             suffix={
-              serverDetail?.tags?.includes('federated') ? undefined : (
+              serverDetail?.tags?.includes(FEDERATED_TAG) ? undefined : (
                 <button
                   type='button'
                   onClick={handleTestUrl}

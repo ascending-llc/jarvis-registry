@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { HiBolt, HiCheckCircle } from 'react-icons/hi2';
 
 import FormFields from '@/components/FormFields';
+import { FEDERATED_TAG } from '@/constants/tags';
 import { useGlobal } from '@/contexts/GlobalContext';
 import SERVICES from '@/services';
 import type { Agent, GetWellKnownAgentCardsResponse } from '@/services/agent/type';
@@ -129,7 +130,7 @@ const MainConfigForm: React.FC<MainConfigFormProps> = ({ formData, agentDetail, 
   };
 
   useEffect(() => {
-    if (agentDetail && !isSameUrl && formData.url) {
+    if (agentDetail && !agentDetail.tags?.includes(FEDERATED_TAG) && !isSameUrl && formData.url) {
       handleTestUrl(true);
     }
   }, [agentDetail, isSameUrl, formData.url]);
@@ -162,7 +163,7 @@ const MainConfigForm: React.FC<MainConfigFormProps> = ({ formData, agentDetail, 
             }}
             helperText='The base URL where your agent is running.'
             suffix={
-              agentDetail?.tags?.includes('federated') ? undefined : (
+              agentDetail?.tags?.includes(FEDERATED_TAG) ? undefined : (
                 <button
                   type='button'
                   onClick={() => handleTestUrl()}
