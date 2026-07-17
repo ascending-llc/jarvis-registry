@@ -133,8 +133,15 @@ class AzureFoundryDiscoveryClient:
     @staticmethod
     def _is_a2a_enabled(detail: Any) -> bool:
         endpoint = getattr(detail, "agent_endpoint", None)
-        protocols = getattr(endpoint, "protocols", None) or []
+        protocols = AzureFoundryDiscoveryClient._endpoint_protocols(endpoint)
         return any(str(getattr(p, "value", p)).lower() == A2A_PROTOCOL_VALUE for p in protocols)
+
+    @staticmethod
+    def _endpoint_protocols(endpoint: Any) -> list[Any]:
+        protocols = getattr(endpoint, "protocols", None)
+        if protocols is None and hasattr(endpoint, "get"):
+            protocols = endpoint.get("protocols")
+        return list(protocols or [])
 
     @staticmethod
     def _matches_metadata_filter(detail: Any, required: dict[str, str]) -> bool:
