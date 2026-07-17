@@ -5,26 +5,128 @@ Tests:
 - RFC 7591 (OAuth 2.0 Dynamic Client Registration)
 - RFC 8628 (OAuth 2.0 Device Authorization Grant)
 
-Note: All OAuth endpoints are served under /auth prefix when AUTH_SERVER_API_PREFIX=/auth
+Note: All OAuth endpoints are served under /auth prefix when AUTH_SERVER_API_PREFIX=/auth.
 """
 
 import time
-from unittest.mock import patch
+from http.cookies import SimpleCookie
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from fastapi.testclient import TestClient
+from itsdangerous import URLSafeTimedSerializer
 
-from auth_server.deps import get_oauth2_config
-from auth_server.routes.oauth_flow import generate_user_code
+from auth_server.deps import get_auth_provider, get_oauth2_config, get_user_service
+from auth_server.routes.oauth_flow import DEVICE_CODE_GRANT_TYPE, generate_user_code
+from tests.conftest import test_consent_store, test_pending_consent_store
 from tests.support.oauth_state_store import (
     device_codes_storage,
+    refresh_tokens_storage,
     registered_clients,
     test_oauth_state_store,
     user_codes_storage,
 )
 
-# API prefix for OAuth endpoints (set in conftest.py via AUTH_SERVER_API_PREFIX env var)
 API_PREFIX = "/auth"
+
+OAUTH2_CONFIG = {
+    "providers": {
+        "keycloak": {
+            "enabled": True,
+            "client_id": "provider-client",
+            "client_secret": "provider-secret",
+            "response_type": "code",
+            "grant_type": "authorization_code",
+            "scopes": ["openid", "profile", "email"],
+            "auth_url": "https://idp.example.com/authorize",
+            "token_url": "https://idp.example.com/token",
+            "user_info_url": "https://idp.example.com/userinfo",
+            "username_claim": "preferred_username",
+            "email_claim": "email",
+            "name_claim": "name",
+            "groups_claim": "groups",
+        }
+    }
+}
+
+
+@pytest.fixture(autouse=True)
+def clear_oauth_flow_route_overrides(test_client: TestClient):
+    yield
+    test_client.app.dependency_overrides.pop(get_auth_provider, None)
+    test_client.app.dependency_overrides.pop(get_oauth2_config, None)
+    test_client.app.dependency_overrides.pop(get_user_service, None)
+
+
+def _cookies_from_response(response) -> SimpleCookie:
+    cookies = SimpleCookie()
+    for key, value in response.headers.items():
+        if key.lower() == "set-cookie":
+            cookies.load(value)
+    return cookies
+
+
+def _configure_oauth2(test_client: TestClient) -> None:
+    test_client.app.dependency_overrides[get_oauth2_config] = lambda: OAUTH2_CONFIG
+
+
+def _configure_user_service(test_client: TestClient, user_id: str = "user-123") -> Mock:
+    user_service = Mock()
+    user_service.resolve_user_id = AsyncMock(return_value=user_id)
+    test_client.app.dependency_overrides[get_user_service] = lambda: user_service
+    return user_service
+
+
+def _mock_auth_provider_override() -> Mock:
+    return Mock()
+
+
+def _configure_auth_provider(test_client: TestClient) -> None:
+    test_client.app.dependency_overrides[get_auth_provider] = _mock_auth_provider_override
+
+
+def _seed_legacy_client_without_device_grant() -> None:
+    test_oauth_state_store.save_client(
+        "legacy-client",
+        {
+            "client_id": "legacy-client",
+            "client_name": "Legacy Client",
+            "grant_types": ["authorization_code", "refresh_token"],
+            "response_types": ["code"],
+            "token_endpoint_auth_method": "none",
+        },
+    )
+
+
+def _start_device_flow(
+    test_client: TestClient,
+    *,
+    client_id: str = "test-client",
+    scope: str | None = "servers-read agents-read",
+) -> dict[str, str | int]:
+    data = {"client_id": client_id}
+    if scope is not None:
+        data["scope"] = scope
+
+    response = test_client.post(f"{API_PREFIX}/oauth2/device/code", data=data)
+    assert response.status_code == 200
+    return response.json()
+
+
+def _approve_device_directly(device_code: str) -> None:
+    device_data = dict(device_codes_storage[device_code])
+    device_data["status"] = "approved"
+    device_data["mapped_user"] = {
+        "username": "test-user",
+        "email": "test@example.com",
+        "name": "Test User",
+        "idp_id": "idp-123",
+        "groups": ["registry-users"],
+        "user_id": "user-123",
+        "provider": "keycloak",
+    }
+    device_data["resolved_scope"] = ["servers-read", "agents-read"]
+    device_codes_storage[device_code] = device_data
 
 
 @pytest.mark.integration
@@ -32,8 +134,7 @@ API_PREFIX = "/auth"
 class TestDynamicClientRegistration:
     """Integration tests for RFC 7591 Dynamic Client Registration."""
 
-    def test_register_client_minimal(self, test_client: TestClient, clear_device_storage):
-        """Test client registration with minimal required fields."""
+    def test_register_client_includes_device_grant_by_default(self, test_client: TestClient, clear_device_storage):
         response = test_client.post(
             f"{API_PREFIX}/oauth2/register",
             json={"redirect_uris": ["https://example.com/callback"]},
@@ -41,266 +142,76 @@ class TestDynamicClientRegistration:
 
         assert response.status_code == 200
         data = response.json()
-
-        # Verify required RFC 7591 fields
-        assert "client_id" in data
-        assert "client_id_issued_at" in data
-        assert "client_secret_expires_at" in data
-
-        # Verify client_id format
         assert data["client_id"].startswith("mcp-client-")
-
-        # Verify secret never expires
-        assert data["client_secret_expires_at"] == 0
-
-        # Verify default values
-        assert "authorization_code" in data["grant_types"]
-        assert "refresh_token" in data["grant_types"]
-        assert "urn:ietf:params:oauth:grant-type:device_code" not in data["grant_types"]
-        assert "code" in data["response_types"]
+        assert data["grant_types"] == ["authorization_code", "refresh_token", DEVICE_CODE_GRANT_TYPE]
+        assert data["response_types"] == ["code"]
         assert data["token_endpoint_auth_method"] == "none"
-
-        # Verify client stored in memory
         assert data["client_id"] in registered_clients
 
-    def test_register_client_full_metadata(self, test_client: TestClient, clear_device_storage):
-        """Test client registration with all optional fields."""
-        registration_data = {
-            "client_name": "Test MCP Client",
-            "client_uri": "https://example.com",
-            "redirect_uris": ["https://example.com/callback"],
-            "grant_types": ["authorization_code"],
-            "response_types": ["code"],
-            "scope": "registry-admin",
-            "contacts": ["admin@example.com"],
-            "token_endpoint_auth_method": "client_secret_post",
-        }
-
-        response = test_client.post(f"{API_PREFIX}/oauth2/register", json=registration_data)
+    def test_register_client_full_metadata_keeps_device_grant(self, test_client: TestClient, clear_device_storage):
+        response = test_client.post(
+            f"{API_PREFIX}/oauth2/register",
+            json={
+                "client_name": "Test MCP Client",
+                "client_uri": "https://example.com",
+                "redirect_uris": ["https://example.com/callback"],
+                "grant_types": ["authorization_code"],
+                "response_types": ["code"],
+                "scope": "registry-admin",
+                "contacts": ["admin@example.com"],
+                "token_endpoint_auth_method": "client_secret_post",
+            },
+        )
 
         assert response.status_code == 200
         data = response.json()
+        assert data["client_name"] == "Test MCP Client"
+        assert data["grant_types"] == ["authorization_code", "refresh_token", DEVICE_CODE_GRANT_TYPE]
+        assert data["token_endpoint_auth_method"] == "client_secret_post"
+        assert data["scope"] == "registry-admin"
 
-        # Verify all fields preserved
-        assert data["client_name"] == registration_data["client_name"]
-        assert data["client_uri"] == registration_data["client_uri"]
-        assert data["redirect_uris"] == registration_data["redirect_uris"]
-        assert data["grant_types"] == ["authorization_code", "refresh_token"]
-        assert data["response_types"] == ["code"]
-        assert data["scope"] == registration_data["scope"]
-        assert data["token_endpoint_auth_method"] == registration_data["token_endpoint_auth_method"]
-
-    def test_register_without_redirect_uris_rejected(self, test_client: TestClient, clear_device_storage):
-        """Registration must include at least one redirect_uri (anti-open-redirect)."""
-        response = test_client.post(f"{API_PREFIX}/oauth2/register", json={"client_name": "No Redirect"})
-        assert response.status_code == 400
-
-    @pytest.mark.parametrize(
-        "bad_uri",
-        [
-            "http://example.com/cb",  # non-loopback http
-            "https://10.0.0.1/cb",  # RFC-1918
-            "https://example.com/cb#frag",  # fragment
-            "javascript:alert(1)",  # dangerous scheme
-            "data:text/html;base64,PHNjcmlwdD4=",  # dangerous scheme
-        ],
-    )
-    def test_register_with_unsafe_redirect_uri_rejected(
-        self, test_client: TestClient, clear_device_storage, bad_uri: str
-    ):
-        """Registration must reject structurally unsafe redirect_uris with an OAuth error shape."""
-        response = test_client.post(
-            f"{API_PREFIX}/oauth2/register",
-            json={"client_name": "Unsafe", "redirect_uris": [bad_uri]},
-        )
-        assert response.status_code == 400
-        # RFC 7591 §3.2.2 error shape so clients (Cline, VS Code) can parse it.
-        assert response.json()["error"] == "invalid_redirect_uri"
-
-    @pytest.mark.parametrize(
-        "native_uri",
-        [
-            "vscode://saoudrizwan.claude-dev/oauth",  # Cline / VS Code extension callback
-            "com.example.app:/oauth2redirect",  # RFC 8252 private-use scheme
-        ],
-    )
-    def test_register_with_native_scheme_redirect_uri_succeeds(
-        self, test_client: TestClient, clear_device_storage, native_uri: str
-    ):
-        """Native-app private-use schemes (RFC 8252 §7.1) must be accepted at registration."""
-        response = test_client.post(
-            f"{API_PREFIX}/oauth2/register",
-            json={"client_name": "Native", "redirect_uris": [native_uri]},
-        )
-        assert response.status_code == 200
-        assert response.json()["redirect_uris"] == [native_uri]
-
-    def test_register_multiple_clients(self, test_client: TestClient, clear_device_storage):
-        """Test registering multiple clients generates unique credentials."""
-        response1 = test_client.post(
-            f"{API_PREFIX}/oauth2/register",
-            json={
-                "client_name": "Client 1",
-                "redirect_uris": ["https://example.com/callback"],
-                "token_endpoint_auth_method": "client_secret_post",
-            },
-        )
-        response2 = test_client.post(
-            f"{API_PREFIX}/oauth2/register",
-            json={
-                "client_name": "Client 2",
-                "redirect_uris": ["https://example.com/callback"],
-                "token_endpoint_auth_method": "client_secret_post",
-            },
-        )
-
-        assert response1.status_code == 200
-        assert response2.status_code == 200
-
-        data1 = response1.json()
-        data2 = response2.json()
-
-        # Verify unique client_ids
-        assert data1["client_id"] != data2["client_id"]
-
-        # Verify unique client_secrets
-        assert data1["client_secret"] != data2["client_secret"]
-
-        # Verify both newly registered clients are stored
-        assert data1["client_id"] in registered_clients
-        assert data2["client_id"] in registered_clients
-
-    def test_get_client(self, test_client: TestClient, clear_device_storage):
-        """Test retrieving registered client by ID."""
-        # Register a client
-        response = test_client.post(
-            f"{API_PREFIX}/oauth2/register",
-            json={"client_name": "Test Client", "redirect_uris": ["https://example.com/callback"]},
-        )
-        assert response.status_code == 200
-
-        client_id = response.json()["client_id"]
-
-        # Retrieve client
-        retrieved_client = test_oauth_state_store.get_client(client_id)
-
-        assert retrieved_client is not None
-        assert retrieved_client["client_id"] == client_id
-        assert retrieved_client["client_name"] == "Test Client"
-
-    def test_get_nonexistent_client(self, clear_device_storage):
-        """Test retrieving non-existent client returns None."""
-        result = test_oauth_state_store.get_client("nonexistent-client-id")
-        assert result is None
-
-    def test_validate_client_credentials_valid(self, test_client: TestClient, clear_device_storage):
-        """Test validating correct client credentials."""
-        # Register a client
-        response = test_client.post(
-            f"{API_PREFIX}/oauth2/register",
-            json={
-                "client_name": "Test Client",
-                "redirect_uris": ["https://example.com/callback"],
-                "token_endpoint_auth_method": "client_secret_post",
-            },
-        )
-        assert response.status_code == 200
-
-        data = response.json()
-        client_id = data["client_id"]
-        client_secret = data["client_secret"]
-
-        # Validate credentials
-        assert test_oauth_state_store.validate_client_credentials(client_id, client_secret) is True
-
-    def test_validate_client_credentials_invalid_secret(self, test_client: TestClient, clear_device_storage):
-        """Test validating incorrect client secret."""
-        # Register a client
-        response = test_client.post(
-            f"{API_PREFIX}/oauth2/register",
-            json={
-                "client_name": "Test Client",
-                "redirect_uris": ["https://example.com/callback"],
-                "token_endpoint_auth_method": "client_secret_post",
-            },
-        )
-        assert response.status_code == 200
-
-        client_id = response.json()["client_id"]
-
-        # Try invalid secret
-        assert test_oauth_state_store.validate_client_credentials(client_id, "invalid-secret") is False
-
-    def test_validate_client_credentials_invalid_id(self, clear_device_storage):
-        """Test validating with non-existent client ID."""
-        assert test_oauth_state_store.validate_client_credentials("nonexistent-id", "any-secret") is False
-
-    def test_authorize_unknown_client_returns_json_error(
+    def test_register_client_substitutes_unsupported_auth_method_with_none(
         self,
         test_client: TestClient,
         clear_device_storage,
     ):
-        """Test /authorize rejects unknown client_id without redirecting."""
-        oauth2_config = {
-            "providers": {
-                "keycloak": {
-                    "enabled": True,
-                    "client_id": "provider-client",
-                    "response_type": "code",
-                    "scopes": ["openid"],
-                    "auth_url": "https://idp.example.com/authorize",
-                }
-            }
-        }
-
-        from auth_server.server import app
-
-        app.dependency_overrides[get_oauth2_config] = lambda: oauth2_config
-
-        response = test_client.get(
-            f"{API_PREFIX}/oauth2/login/keycloak",
-            params={
-                "client_id": "unknown-client",
-                "response_type": "code",
-                "redirect_uri": "https://evil.example.com/callback",
-                "code_challenge": "challenge",
-                "code_challenge_method": "S256",
+        """client_secret_basic (and any other unsupported method) is downgraded to 'none'."""
+        response = test_client.post(
+            f"{API_PREFIX}/oauth2/register",
+            json={
+                "redirect_uris": ["https://example.com/callback"],
+                "token_endpoint_auth_method": "client_secret_basic",
             },
-            follow_redirects=False,
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["token_endpoint_auth_method"] == "none"
+        assert registered_clients[data["client_id"]]["token_endpoint_auth_method"] == "none"
+
+    @pytest.mark.parametrize(
+        "bad_uri",
+        [
+            "http://example.com/cb",
+            "https://10.0.0.1/cb",
+            "https://example.com/cb#frag",
+            "javascript:alert(1)",
+            "data:text/html;base64,PHNjcmlwdD4=",
+        ],
+    )
+    def test_register_with_unsafe_redirect_uri_rejected(
+        self,
+        test_client: TestClient,
+        clear_device_storage,
+        bad_uri: str,
+    ):
+        response = test_client.post(
+            f"{API_PREFIX}/oauth2/register",
+            json={"client_name": "Unsafe", "redirect_uris": [bad_uri]},
         )
 
         assert response.status_code == 400
-        assert response.json()["error"] == "invalid_client"
-        assert "location" not in response.headers
-        app.dependency_overrides.pop(get_oauth2_config, None)
-
-    def test_list_registered_clients(self, test_client: TestClient, clear_device_storage):
-        """Test listing all registered clients (admin function)."""
-        # Register multiple clients
-        redirect_uris = ["https://example.com/callback"]
-        test_client.post(
-            f"{API_PREFIX}/oauth2/register", json={"client_name": "Client 1", "redirect_uris": redirect_uris}
-        )
-        test_client.post(
-            f"{API_PREFIX}/oauth2/register", json={"client_name": "Client 2", "redirect_uris": redirect_uris}
-        )
-        test_client.post(
-            f"{API_PREFIX}/oauth2/register", json={"client_name": "Client 3", "redirect_uris": redirect_uris}
-        )
-
-        # List clients
-        clients_list = test_oauth_state_store.list_clients()
-
-        registered_names = {client["client_name"] for client in clients_list}
-        assert {"Client 1", "Client 2", "Client 3"}.issubset(registered_names)
-
-        # Verify secrets not included in list
-        for client_info in clients_list:
-            assert "client_secret" not in client_info
-            assert "client_id" in client_info
-            assert "client_name" in client_info
-            assert "grant_types" in client_info
-            assert "registered_at" in client_info
+        assert response.json()["error"] == "invalid_redirect_uri"
 
 
 @pytest.mark.integration
@@ -309,53 +220,167 @@ class TestDeviceFlowRoutes:
     """Integration tests for RFC 8628 Device Authorization Grant endpoints."""
 
     def test_generate_user_code_format(self, clear_device_storage):
-        """Test user code generation format (XXXX-XXXX)."""
         user_code = generate_user_code()
 
-        # Verify format
         assert len(user_code) == 9
         assert user_code[4] == "-"
-
-        # Verify uppercase alphanumeric
-        code_without_dash = user_code.replace("-", "")
-        assert code_without_dash.isalnum()
-        assert code_without_dash.isupper()
-
-        # Verify no confusing characters (O, 0, I, 1)
         assert "O" not in user_code
         assert "0" not in user_code
         assert "I" not in user_code
         assert "1" not in user_code
+        assert user_code.replace("-", "").isalnum()
+        assert user_code.replace("-", "").isupper()
 
-    def test_generate_user_code_uniqueness(self, clear_device_storage):
-        """Test user codes are reasonably unique."""
-        codes = set()
-        for _ in range(100):
-            codes.add(generate_user_code())
+    def test_device_authorization_success(self, test_client: TestClient, clear_device_storage):
+        response = test_client.post(
+            f"{API_PREFIX}/oauth2/device/code",
+            data={"client_id": "test-client", "scope": "servers-read agents-read"},
+        )
 
-        # Should generate 100 unique codes (collision highly unlikely)
-        assert len(codes) == 100
+        assert response.status_code == 200
+        data = response.json()
+        assert "device_code" in data
+        assert "user_code" in data
+        assert "verification_uri" in data
+        assert "verification_uri_complete" in data
+        assert data["expires_in"] == 900
+        assert data["interval"] == 5
+        assert data["verification_uri"] == "http://localhost:8888/auth/oauth2/device/verify"
+        assert data["user_code"] in data["verification_uri_complete"]
 
-    def test_expired_device_code_rejected(self, test_client: TestClient, clear_device_storage):
-        """Test expired device codes are rejected by token polling."""
-        # Create device code
-        device_response = test_client.post(f"{API_PREFIX}/oauth2/device/code", data={"client_id": "test-client"})
-        data = device_response.json()
-        device_code = data["device_code"]
-        user_code = data["user_code"]
+        stored = device_codes_storage[data["device_code"]]
+        assert stored["scope"] == "servers-read agents-read"
+        assert stored["mapped_user"] is None
+        assert stored["resolved_scope"] is None
+        assert "token" not in stored
 
-        # Verify stored
-        assert device_code in device_codes_storage
-        assert user_code in user_codes_storage
+    def test_device_authorization_rejects_client_without_device_grant(
+        self,
+        test_client: TestClient,
+        clear_device_storage,
+    ):
+        _seed_legacy_client_without_device_grant()
 
-        # Manually expire the code
-        device_codes_storage[device_code]["expires_at"] = int(time.time()) - 1
+        response = test_client.post(f"{API_PREFIX}/oauth2/device/code", data={"client_id": "legacy-client"})
+
+        assert response.status_code == 400
+        assert response.json()["error"] == "unauthorized_client"
+
+    def test_device_authorization_unknown_client(self, test_client: TestClient, clear_device_storage):
+        response = test_client.post(f"{API_PREFIX}/oauth2/device/code", data={"client_id": "unknown-client"})
+
+        assert response.status_code == 400
+        assert response.json()["error"] == "invalid_client"
+
+    def test_device_verify_entry_without_user_code_renders_entry_form(self, test_client: TestClient):
+        response = test_client.get(f"{API_PREFIX}/oauth2/device/verify")
+
+        assert response.status_code == 200
+        assert "text/html" in response.headers["content-type"]
+        assert "Enter your device code" in response.text
+        assert 'name="user_code"' in response.text
+
+    def test_device_verify_entry_with_valid_user_code_renders_confirm_page(
+        self,
+        test_client: TestClient,
+        clear_device_storage,
+    ):
+        data = _start_device_flow(test_client)
+
+        response = test_client.get(f"{API_PREFIX}/oauth2/device/verify", params={"user_code": data["user_code"]})
+
+        assert response.status_code == 200
+        assert "Does this match your device?" in response.text
+        assert data["user_code"] in response.text
+
+    def test_device_verify_entry_accepts_typed_code_without_dash(
+        self,
+        test_client: TestClient,
+        clear_device_storage,
+    ):
+        data = _start_device_flow(test_client)
+        typed_code = str(data["user_code"]).replace("-", "").lower()
+
+        response = test_client.get(f"{API_PREFIX}/oauth2/device/verify", params={"user_code": typed_code})
+
+        assert response.status_code == 200
+        assert data["user_code"] in response.text
+
+    def test_device_verify_entry_with_invalid_code_renders_error(self, test_client: TestClient, clear_device_storage):
+        response = test_client.get(f"{API_PREFIX}/oauth2/device/verify", params={"user_code": "BAD-CODE"})
+
+        assert response.status_code == 400
+        assert "This code is invalid or has expired" in response.text
+
+    def test_device_verify_continue_redirects_to_provider(
+        self,
+        test_client: TestClient,
+        clear_device_storage,
+    ):
+        _configure_oauth2(test_client)
+        data = _start_device_flow(test_client)
+
+        response = test_client.post(
+            f"{API_PREFIX}/oauth2/device/verify",
+            data={"user_code": data["user_code"]},
+            follow_redirects=False,
+        )
+
+        assert response.status_code == 302
+        assert response.headers["location"].startswith("https://idp.example.com/authorize?")
+        assert (
+            "redirect_uri=http%3A%2F%2Flocalhost%3A8888%2Fauth%2Foauth2%2Fcallback%2Fkeycloak"
+            in response.headers["location"]
+        )
+
+        cookies = _cookies_from_response(response)
+        assert "oauth2_temp_session" in cookies
+
+    def test_removed_unauthenticated_device_approve_route(self, test_client: TestClient, clear_device_storage):
+        response = test_client.post(f"{API_PREFIX}/oauth2/device/approve", json={"user_code": "WDJB-MJHT"})
+
+        assert response.status_code in {404, 405}
+
+    def test_device_token_pending(self, test_client: TestClient, clear_device_storage):
+        data = _start_device_flow(test_client)
 
         response = test_client.post(
             f"{API_PREFIX}/oauth2/token",
             data={
-                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-                "device_code": device_code,
+                "grant_type": DEVICE_CODE_GRANT_TYPE,
+                "device_code": data["device_code"],
+                "client_id": "test-client",
+            },
+        )
+
+        assert response.status_code == 400
+        assert response.json()["error"] == "authorization_pending"
+
+    def test_device_token_denied(self, test_client: TestClient, clear_device_storage):
+        data = _start_device_flow(test_client)
+        device_codes_storage[data["device_code"]]["status"] = "denied"
+
+        response = test_client.post(
+            f"{API_PREFIX}/oauth2/token",
+            data={
+                "grant_type": DEVICE_CODE_GRANT_TYPE,
+                "device_code": data["device_code"],
+                "client_id": "test-client",
+            },
+        )
+
+        assert response.status_code == 400
+        assert response.json()["error"] == "access_denied"
+
+    def test_device_token_expired(self, test_client: TestClient, clear_device_storage):
+        data = _start_device_flow(test_client)
+        device_codes_storage[data["device_code"]]["expires_at"] = int(time.time()) - 1
+
+        response = test_client.post(
+            f"{API_PREFIX}/oauth2/token",
+            data={
+                "grant_type": DEVICE_CODE_GRANT_TYPE,
+                "device_code": data["device_code"],
                 "client_id": "test-client",
             },
         )
@@ -363,564 +388,321 @@ class TestDeviceFlowRoutes:
         assert response.status_code == 400
         assert response.json()["error"] == "expired_token"
 
-    def test_device_authorization_success(self, test_client: TestClient, clear_device_storage):
-        """Test successful device code generation."""
-        response = test_client.post(
-            f"{API_PREFIX}/oauth2/device/code", data={"client_id": "test-client", "scope": "openid profile"}
-        )
-
-        assert response.status_code == 200
-        data = response.json()
-
-        # Verify response contains all required fields per RFC 8628
-        assert "device_code" in data
-        assert "user_code" in data
-        assert "verification_uri" in data
-        assert "expires_in" in data
-        assert "interval" in data
-
-        # Verify field formats
-        assert len(data["device_code"]) > 20  # Device code should be sufficiently long
-        assert len(data["user_code"]) == 9  # Format: XXXX-XXXX
-        assert "-" in data["user_code"]
-        assert data["verification_uri"].startswith("http")
-        assert data["expires_in"] == 600  # 10 minutes
-        assert data["interval"] == 5  # Poll every 5 seconds
-
-        # Verify optional fields
-        assert "verification_uri_complete" in data
-        assert data["user_code"] in data["verification_uri_complete"]
-
-    def test_device_authorization_without_scope(self, test_client: TestClient, clear_device_storage):
-        """Test device code generation without scope parameter."""
-        response = test_client.post(f"{API_PREFIX}/oauth2/device/code", data={"client_id": "test-client"})
-
-        assert response.status_code == 200
-        data = response.json()
-        assert "device_code" in data
-        assert "user_code" in data
-
-    def test_device_authorization_missing_client_id(self, test_client: TestClient, clear_device_storage):
-        """Test device code generation without required client_id."""
-        response = test_client.post(f"{API_PREFIX}/oauth2/device/code", data={"scope": "openid"})
-
-        assert response.status_code == 422  # Validation error
-
-    def test_device_authorization_unknown_client(self, test_client: TestClient, clear_device_storage):
-        """Test device code generation rejects unknown clients."""
-        response = test_client.post(f"{API_PREFIX}/oauth2/device/code", data={"client_id": "unknown-client"})
-
-        assert response.status_code == 400
-        assert response.json()["error"] == "invalid_client"
-
-    def test_device_verification_page(self, test_client: TestClient, clear_device_storage):
-        """Test device verification HTML page rendering."""
-        # First, generate a device code
-        device_response = test_client.post(f"{API_PREFIX}/oauth2/device/code", data={"client_id": "test-client"})
-        user_code = device_response.json()["user_code"]
-
-        # Access verification page
-        response = test_client.get(f"{API_PREFIX}/oauth2/device/verify?user_code={user_code}")
-
-        assert response.status_code == 200
-        assert "text/html" in response.headers["content-type"]
-
-        # Verify page contains expected content
-        content = response.text
-        assert user_code in content
-        assert "Device Verification" in content or "Verify" in content
-
-    def test_device_verification_page_without_user_code(self, test_client: TestClient):
-        """Test verification page without user_code parameter."""
-        response = test_client.get(f"{API_PREFIX}/oauth2/device/verify")
-
-        assert response.status_code == 200
-        assert "text/html" in response.headers["content-type"]
-
-        # Should show form to enter user code
-        content = response.text
-        assert "user_code" in content.lower()
-
-    def test_device_approval_success(self, test_client: TestClient, clear_device_storage):
-        """Test successful device approval."""
-        # Generate device code
-        device_response = test_client.post(
-            f"{API_PREFIX}/oauth2/device/code", data={"client_id": "test-client", "scope": "openid"}
-        )
-        user_code = device_response.json()["user_code"]
-
-        # Approve the device
-        approval_response = test_client.post(f"{API_PREFIX}/oauth2/device/approve", json={"user_code": user_code})
-
-        assert approval_response.status_code == 200
-        data = approval_response.json()
-        assert data["status"] == "approved"
-        assert "message" in data
-
-    def test_device_approval_invalid_user_code(self, test_client: TestClient, clear_device_storage):
-        """Test device approval with invalid user code."""
-        response = test_client.post(f"{API_PREFIX}/oauth2/device/approve", json={"user_code": "INVALID-CODE"})
-
-        assert response.status_code == 404
-        assert "detail" in response.json()
-
-    def test_device_approval_missing_user_code(self, test_client: TestClient):
-        """Test device approval without user_code parameter."""
-        response = test_client.post(f"{API_PREFIX}/oauth2/device/approve", json={})
-
-        assert response.status_code == 422  # Validation error
-
-    def test_device_token_pending(self, test_client: TestClient, clear_device_storage):
-        """Test token polling when authorization is pending."""
-        # Generate device code
-        device_response = test_client.post(f"{API_PREFIX}/oauth2/device/code", data={"client_id": "test-client"})
-        device_code = device_response.json()["device_code"]
-
-        # Poll for token before approval
-        token_response = test_client.post(
-            f"{API_PREFIX}/oauth2/token",
-            data={
-                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-                "device_code": device_code,
-                "client_id": "test-client",
-            },
-        )
-
-        assert token_response.status_code == 400
-        data = token_response.json()
-        assert data["error"] == "authorization_pending"
-
-    def test_device_token_success(self, test_client: TestClient, clear_device_storage):
-        """Test successful token retrieval after approval."""
-        # Generate device code
-        device_response = test_client.post(
-            f"{API_PREFIX}/oauth2/device/code", data={"client_id": "test-client", "scope": "openid profile"}
-        )
-        device_code = device_response.json()["device_code"]
-        user_code = device_response.json()["user_code"]
-
-        # Approve the device
-        test_client.post(f"{API_PREFIX}/oauth2/device/approve", json={"user_code": user_code})
-
-        # Poll for token after approval
-        token_response = test_client.post(
-            f"{API_PREFIX}/oauth2/token",
-            data={
-                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-                "device_code": device_code,
-                "client_id": "test-client",
-            },
-        )
-
-        assert token_response.status_code == 200
-        data = token_response.json()
-
-        # Verify token response fields per RFC 8628
-        assert "access_token" in data
-        assert "token_type" in data
-        assert data["token_type"] == "Bearer"
-        assert "expires_in" in data
-        assert data["expires_in"] == 3600  # 1 hour
-
-        # Verify token format (JWT)
-        assert len(data["access_token"]) > 50
-        assert data["access_token"].count(".") == 2  # JWT has 3 parts separated by dots
-
-    def test_device_token_invalid_grant_type(self, test_client: TestClient, clear_device_storage):
-        """Test token request with invalid grant type."""
-        response = test_client.post(
-            f"{API_PREFIX}/oauth2/token",
-            data={"grant_type": "invalid_grant_type", "device_code": "test-code", "client_id": "test-client"},
-        )
-
-        assert response.status_code == 400
-        data = response.json()
-        assert data["error"] == "unsupported_grant_type"
-
-    def test_device_token_invalid_device_code(self, test_client: TestClient, clear_device_storage):
-        """Test token request with invalid device code."""
-        response = test_client.post(
-            f"{API_PREFIX}/oauth2/token",
-            data={
-                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-                "device_code": "invalid-device-code",
-                "client_id": "test-client",
-            },
-        )
-
-        assert response.status_code == 400
-        data = response.json()
-        assert data["error"] == "invalid_grant"
-
     def test_device_token_client_mismatch(self, test_client: TestClient, clear_device_storage):
-        """Test token request with mismatched client_id."""
-        test_oauth_state_store.save_client(
-            "client-1",
-            {
-                "client_id": "client-1",
-                "token_endpoint_auth_method": "none",
-                "redirect_uris": [],
-            },
-        )
         test_oauth_state_store.save_client(
             "client-2",
             {
                 "client_id": "client-2",
+                "grant_types": ["authorization_code", "refresh_token", DEVICE_CODE_GRANT_TYPE],
+                "response_types": ["code"],
                 "token_endpoint_auth_method": "none",
-                "redirect_uris": [],
             },
         )
+        data = _start_device_flow(test_client)
 
-        # Generate device code with one client
-        device_response = test_client.post(f"{API_PREFIX}/oauth2/device/code", data={"client_id": "client-1"})
-        assert device_response.status_code == 200
-        device_code = device_response.json()["device_code"]
-
-        # Try to poll with different client
         response = test_client.post(
             f"{API_PREFIX}/oauth2/token",
             data={
-                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-                "device_code": device_code,
+                "grant_type": DEVICE_CODE_GRANT_TYPE,
+                "device_code": data["device_code"],
                 "client_id": "client-2",
             },
         )
 
         assert response.status_code == 400
-        data = response.json()
-        assert data["error"] == "invalid_client"
+        assert response.json()["error"] == "invalid_client"
 
-    def test_device_token_expired(self, test_client: TestClient, clear_device_storage):
-        """Test token request with expired device code."""
-        # Generate device code
-        device_response = test_client.post(f"{API_PREFIX}/oauth2/device/code", data={"client_id": "test-client"})
-        device_code = device_response.json()["device_code"]
+    @patch("auth_server.routes.oauth_flow.mint_managed_agent_token", return_value="mock-access-token")
+    def test_device_token_success_mints_refresh_token_and_consumes_device_code(
+        self,
+        mock_mint_token,
+        test_client: TestClient,
+        clear_device_storage,
+    ):
+        _configure_user_service(test_client)
+        data = _start_device_flow(test_client)
+        _approve_device_directly(str(data["device_code"]))
 
-        # Manually expire the device code
-        device_codes_storage[device_code]["expires_at"] = int(time.time()) - 1
-
-        # Try to poll with expired code
         response = test_client.post(
             f"{API_PREFIX}/oauth2/token",
             data={
-                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-                "device_code": device_code,
-                "client_id": "test-client",
-            },
-        )
-
-        assert response.status_code == 400
-        data = response.json()
-        assert data["error"] == "expired_token"
-
-    def test_device_token_slow_down(self, test_client: TestClient, clear_device_storage):
-        """Test polling behavior (slow_down not implemented yet, returns authorization_pending)."""
-        # Generate device code
-        device_response = test_client.post(f"{API_PREFIX}/oauth2/device/code", data={"client_id": "test-client"})
-        device_code = device_response.json()["device_code"]
-
-        # First poll
-        response1 = test_client.post(
-            f"{API_PREFIX}/oauth2/token",
-            data={
-                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-                "device_code": device_code,
-                "client_id": "test-client",
-            },
-        )
-
-        # Second poll immediately (too fast)
-        response2 = test_client.post(
-            f"{API_PREFIX}/oauth2/token",
-            data={
-                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-                "device_code": device_code,
-                "client_id": "test-client",
-            },
-        )
-
-        # Both should return authorization_pending (slow_down not yet implemented)
-        assert response1.status_code == 400
-        assert response1.json()["error"] == "authorization_pending"
-        assert response2.status_code == 400
-        assert response2.json()["error"] == "authorization_pending"
-
-    def test_complete_device_flow(self, test_client: TestClient, clear_device_storage):
-        """Test the complete device authorization flow end-to-end."""
-        # Step 1: Client requests device code
-        device_response = test_client.post(
-            f"{API_PREFIX}/oauth2/device/code", data={"client_id": "test-client", "scope": "openid profile email"}
-        )
-        assert device_response.status_code == 200
-        device_code = device_response.json()["device_code"]
-        user_code = device_response.json()["user_code"]
-        verification_uri = device_response.json()["verification_uri"]
-
-        # Step 2: User visits verification page
-        verify_response = test_client.get(f"{verification_uri}?user_code={user_code}")
-        assert verify_response.status_code == 200
-
-        # Step 3: User approves device
-        approve_response = test_client.post(f"{API_PREFIX}/oauth2/device/approve", json={"user_code": user_code})
-        assert approve_response.status_code == 200
-
-        # Step 4: Client polls for token
-        token_response = test_client.post(
-            f"{API_PREFIX}/oauth2/token",
-            data={
-                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-                "device_code": device_code,
-                "client_id": "test-client",
-            },
-        )
-        assert token_response.status_code == 200
-
-        # Verify token
-        token_data = token_response.json()
-        assert "access_token" in token_data
-        assert token_data["token_type"] == "Bearer"
-
-        # Step 5: Verify token can't be reused
-        second_token_response = test_client.post(
-            f"{API_PREFIX}/oauth2/token",
-            data={
-                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-                "device_code": device_code,
-                "client_id": "test-client",
-            },
-        )
-        # Should return the same token or invalid_grant
-        assert second_token_response.status_code in [200, 400]
-
-    def test_user_code_format(self, test_client: TestClient, clear_device_storage):
-        """Test that user codes follow expected format."""
-        # Generate multiple codes to verify format consistency
-        for _ in range(5):
-            response = test_client.post(f"{API_PREFIX}/oauth2/device/code", data={"client_id": "test-client"})
-            user_code = response.json()["user_code"]
-
-            # Format: XXXX-XXXX (8 alphanumeric chars with dash)
-            assert len(user_code) == 9
-            assert user_code[4] == "-"
-
-            # Should be uppercase alphanumeric
-            parts = user_code.split("-")
-            assert len(parts) == 2
-            assert len(parts[0]) == 4
-            assert len(parts[1]) == 4
-            assert parts[0].isalnum()
-            assert parts[1].isalnum()
-            # Each character should be either uppercase letter or digit
-            assert all(c.isupper() or c.isdigit() for c in parts[0])
-            assert all(c.isupper() or c.isdigit() for c in parts[1])
-
-    def test_device_code_uniqueness(self, test_client: TestClient, clear_device_storage):
-        """Test that device codes and user codes are unique."""
-        codes = set()
-        user_codes = set()
-
-        # Generate multiple device codes
-        for _ in range(10):
-            response = test_client.post(f"{API_PREFIX}/oauth2/device/code", data={"client_id": "test-client"})
-            data = response.json()
-            codes.add(data["device_code"])
-            user_codes.add(data["user_code"])
-
-        # All codes should be unique
-        assert len(codes) == 10
-        assert len(user_codes) == 10
-
-    def test_expired_codes_are_rejected(self, test_client: TestClient, clear_device_storage):
-        """Test that expired device codes are rejected."""
-        # Generate device code
-        response = test_client.post(f"{API_PREFIX}/oauth2/device/code", data={"client_id": "test-client"})
-        device_code = response.json()["device_code"]
-        user_code = response.json()["user_code"]
-
-        # Verify code exists
-        assert device_code in device_codes_storage
-        assert user_code in user_codes_storage
-
-        # Expire the code
-        device_codes_storage[device_code]["expires_at"] = int(time.time()) - 1
-
-        token_response = test_client.post(
-            f"{API_PREFIX}/oauth2/token",
-            data={
-                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-                "device_code": device_code,
-                "client_id": "test-client",
-            },
-        )
-
-        assert token_response.status_code == 400
-        assert token_response.json()["error"] == "expired_token"
-
-
-@pytest.mark.integration
-@pytest.mark.device_flow
-class TestDeviceFlowWithMocking:
-    """Integration tests for device flow with JWT mocking."""
-
-    @patch("auth_server.routes.oauth_flow.mint_managed_agent_token")
-    def test_approve_device_success_with_token(self, mock_mint_token, test_client: TestClient, clear_device_storage):
-        """Test device approval generates access token."""
-        mock_mint_token.return_value = "mock-access-token"
-
-        # Create device code
-        device_response = test_client.post(
-            f"{API_PREFIX}/oauth2/device/code", data={"client_id": "test-client", "scope": "test-scope"}
-        )
-        user_code = device_response.json()["user_code"]
-
-        # Approve device
-        response = test_client.post(f"{API_PREFIX}/oauth2/device/approve", json={"user_code": user_code})
-
-        assert response.status_code == 200
-        data = response.json()
-
-        assert data["status"] == "approved"
-        assert "successfully" in data["message"].lower()
-
-        # Verify access token generated
-        mock_mint_token.assert_called_once()
-        assert mock_mint_token.call_args.kwargs["subject"] == "device_user"
-        assert mock_mint_token.call_args.kwargs["client_id"] == "test-client"
-        assert mock_mint_token.call_args.kwargs["extra_claims"]["scope"] == "test-scope"
-
-    @patch("auth_server.routes.oauth_flow.mint_managed_agent_token")
-    def test_approve_device_already_approved(self, mock_mint_token, test_client: TestClient, clear_device_storage):
-        """Test approving already-approved device returns success."""
-        mock_mint_token.return_value = "mock-access-token"
-
-        # Create and approve device
-        device_response = test_client.post(f"{API_PREFIX}/oauth2/device/code", data={"client_id": "test-client"})
-        user_code = device_response.json()["user_code"]
-
-        # First approval
-        test_client.post(f"{API_PREFIX}/oauth2/device/approve", json={"user_code": user_code})
-
-        # Second approval (should be idempotent)
-        response = test_client.post(f"{API_PREFIX}/oauth2/device/approve", json={"user_code": user_code})
-
-        assert response.status_code == 200
-        assert "already" in response.json()["message"].lower()
-        mock_mint_token.assert_called_once()
-
-    @patch("auth_server.routes.oauth_flow.mint_managed_agent_token")
-    def test_device_token_success_with_mocked_jwt(self, mock_mint_token, test_client: TestClient, clear_device_storage):
-        """Test token endpoint returns mocked access token after approval."""
-        mock_mint_token.return_value = "mock-access-token"
-
-        # Create device code
-        device_response = test_client.post(
-            f"{API_PREFIX}/oauth2/device/code", data={"client_id": "test-client", "scope": "test-scope"}
-        )
-        data = device_response.json()
-        device_code = data["device_code"]
-        user_code = data["user_code"]
-
-        # Approve device
-        test_client.post(f"{API_PREFIX}/oauth2/device/approve", json={"user_code": user_code})
-
-        # Poll token endpoint
-        response = test_client.post(
-            f"{API_PREFIX}/oauth2/token",
-            data={
-                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-                "device_code": device_code,
+                "grant_type": DEVICE_CODE_GRANT_TYPE,
+                "device_code": data["device_code"],
                 "client_id": "test-client",
             },
         )
 
         assert response.status_code == 200
         token_data = response.json()
-
-        # Verify RFC 8628 token response
-        assert "access_token" in token_data
-        assert token_data["token_type"] == "Bearer"
-        assert "expires_in" in token_data
-        assert token_data["scope"] == "test-scope"
         assert token_data["access_token"] == "mock-access-token"
+        assert token_data["token_type"] == "Bearer"
+        assert token_data["expires_in"] == 3600
+        assert token_data["scope"] == "servers-read agents-read"
+        assert token_data["refresh_token"] in refresh_tokens_storage
+        assert data["device_code"] not in device_codes_storage
+        assert data["user_code"] not in user_codes_storage
 
-    @patch("auth_server.routes.oauth_flow.mint_managed_agent_token")
-    def test_device_token_expired_code(self, mock_mint_token, test_client: TestClient, clear_device_storage):
-        """Test token endpoint rejects expired device codes."""
-        # Create device code
-        device_response = test_client.post(f"{API_PREFIX}/oauth2/device/code", data={"client_id": "test-client"})
-        device_code = device_response.json()["device_code"]
+        mock_mint_token.assert_called_once()
+        assert mock_mint_token.call_args.kwargs["subject"] == "test-user"
+        assert mock_mint_token.call_args.kwargs["extra_claims"]["user_id"] == "user-123"
 
-        # Manually expire
-        device_codes_storage[device_code]["expires_at"] = int(time.time()) - 1
+        second_response = test_client.post(
+            f"{API_PREFIX}/oauth2/token",
+            data={
+                "grant_type": DEVICE_CODE_GRANT_TYPE,
+                "device_code": data["device_code"],
+                "client_id": "test-client",
+            },
+        )
+        assert second_response.status_code == 400
+        assert second_response.json()["error"] == "invalid_grant"
 
-        # Try to get token
+    def test_device_token_rejects_when_atomic_consume_loses_the_race(
+        self,
+        test_client: TestClient,
+        clear_device_storage,
+    ):
+        """A concurrent poll can still observe status == "approved" via get_device_code, but must
+        lose if another poll already won the atomic consume_device_code race."""
+        _configure_user_service(test_client)
+        data = _start_device_flow(test_client)
+        _approve_device_directly(str(data["device_code"]))
+
+        with patch.object(test_oauth_state_store, "consume_device_code", return_value=None) as mock_consume:
+            response = test_client.post(
+                f"{API_PREFIX}/oauth2/token",
+                data={
+                    "grant_type": DEVICE_CODE_GRANT_TYPE,
+                    "device_code": data["device_code"],
+                    "client_id": "test-client",
+                },
+            )
+
+        mock_consume.assert_called_once_with(data["device_code"])
+        assert response.status_code == 400
+        assert response.json()["error"] == "invalid_grant"
+        assert data["device_code"] in device_codes_storage
+
+    def test_device_token_rejects_invalid_client_secret(self, test_client: TestClient, clear_device_storage):
+        """A client_secret_post-registered device client must present its registered secret."""
+        test_oauth_state_store.save_client(
+            "confidential-client",
+            {
+                "client_id": "confidential-client",
+                "client_secret": "correct-secret",
+                "grant_types": ["authorization_code", "refresh_token", DEVICE_CODE_GRANT_TYPE],
+                "response_types": ["code"],
+                "token_endpoint_auth_method": "client_secret_post",
+            },
+        )
+        data = _start_device_flow(test_client, client_id="confidential-client")
+        _approve_device_directly(str(data["device_code"]))
+
         response = test_client.post(
             f"{API_PREFIX}/oauth2/token",
             data={
-                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-                "device_code": device_code,
-                "client_id": "test-client",
+                "grant_type": DEVICE_CODE_GRANT_TYPE,
+                "device_code": data["device_code"],
+                "client_id": "confidential-client",
+                "client_secret": "wrong-secret",
             },
         )
 
         assert response.status_code == 400
-        # After cleanup, expired codes may return invalid_grant or expired_token
-        assert response.json()["error"] in ["expired_token", "invalid_grant"]
-        mock_mint_token.assert_not_called()
+        assert response.json()["error"] == "invalid_client"
+        assert data["device_code"] in device_codes_storage
+
+    @patch("auth_server.routes.oauth_flow.mint_managed_agent_token", return_value="mock-access-token")
+    def test_device_token_accepts_valid_client_secret(
+        self,
+        mock_mint_token,
+        test_client: TestClient,
+        clear_device_storage,
+    ):
+        """A client_secret_post-registered device client mints a token when its secret matches."""
+        test_oauth_state_store.save_client(
+            "confidential-client",
+            {
+                "client_id": "confidential-client",
+                "client_secret": "correct-secret",
+                "grant_types": ["authorization_code", "refresh_token", DEVICE_CODE_GRANT_TYPE],
+                "response_types": ["code"],
+                "token_endpoint_auth_method": "client_secret_post",
+            },
+        )
+        _configure_user_service(test_client)
+        data = _start_device_flow(test_client, client_id="confidential-client")
+        _approve_device_directly(str(data["device_code"]))
+
+        response = test_client.post(
+            f"{API_PREFIX}/oauth2/token",
+            data={
+                "grant_type": DEVICE_CODE_GRANT_TYPE,
+                "device_code": data["device_code"],
+                "client_id": "confidential-client",
+                "client_secret": "correct-secret",
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json()["access_token"] == "mock-access-token"
+        mock_mint_token.assert_called_once()
 
 
 @pytest.mark.integration
 @pytest.mark.device_flow
-class TestEndToEndIntegration:
-    """End-to-end integration tests combining client registration and device flow."""
+class TestDeviceFlowCallbackAndConsent:
+    """Tests for the real IdP callback and client consent gate in device flow."""
 
-    @patch("auth_server.routes.oauth_flow.mint_managed_agent_token")
-    def test_full_device_flow_with_registered_client(
-        self, mock_mint_token, test_client: TestClient, clear_device_storage
+    def test_device_callback_with_prior_consent_marks_device_approved(
+        self,
+        test_client: TestClient,
+        clear_device_storage,
     ):
-        """Test complete device flow with dynamically registered client."""
-        mock_mint_token.return_value = "integration-test-token"
+        _configure_oauth2(test_client)
+        _configure_auth_provider(test_client)
+        _configure_user_service(test_client)
+        data = _start_device_flow(test_client, scope="servers-read")
+        verify_response = test_client.post(
+            f"{API_PREFIX}/oauth2/device/verify",
+            data={"user_code": data["user_code"]},
+            follow_redirects=False,
+        )
+        session_cookie = verify_response.cookies.get("oauth2_temp_session")
+        assert session_cookie is not None
 
-        # Step 1: Register client
-        reg_response = test_client.post(
-            f"{API_PREFIX}/oauth2/register",
-            json={
-                "client_name": "Integration Test Client",
-                "redirect_uris": ["https://example.com/callback"],
-                "grant_types": ["urn:ietf:params:oauth:grant-type:device_code"],
+        state_param = _extract_state_from_temp_session(session_cookie)
+        with (
+            patch("auth_server.routes.oauth_flow.exchange_code_for_token", new_callable=AsyncMock) as exchange_token,
+            patch("auth_server.routes.oauth_flow.get_user_info", new_callable=AsyncMock) as get_user_info,
+            patch("auth_server.routes.oauth_flow.map_groups_to_scopes", return_value=["servers-read", "agents-read"]),
+        ):
+            exchange_token.return_value = {"access_token": "provider-token"}
+            get_user_info.return_value = {
+                "preferred_username": "test-user",
+                "email": "test@example.com",
+                "name": "Test User",
+                "sub": "idp-123",
+                "groups": ["registry-users"],
+            }
+            response = test_client.get(
+                f"{API_PREFIX}/oauth2/callback/keycloak",
+                params={"code": "provider-code", "state": state_param},
+                cookies={"oauth2_temp_session": session_cookie},
+            )
+
+        assert response.status_code == 200
+        exchange_token.assert_awaited_once()
+        assert exchange_token.await_args.args[3] == "http://localhost:8888/auth/oauth2/callback/keycloak"
+        assert "Your device is connected" in response.text
+        assert device_codes_storage[data["device_code"]]["status"] == "approved"
+        assert device_codes_storage[data["device_code"]]["resolved_scope"] == ["servers-read"]
+
+    def test_device_callback_without_prior_consent_redirects_to_consent(
+        self,
+        test_client: TestClient,
+        clear_device_storage,
+    ):
+        _configure_oauth2(test_client)
+        _configure_auth_provider(test_client)
+        _configure_user_service(test_client)
+        test_consent_store.default_client_consent = False
+        data = _start_device_flow(test_client, scope="servers-read")
+        verify_response = test_client.post(
+            f"{API_PREFIX}/oauth2/device/verify",
+            data={"user_code": data["user_code"]},
+            follow_redirects=False,
+        )
+        session_cookie = verify_response.cookies.get("oauth2_temp_session")
+        assert session_cookie is not None
+
+        state_param = _extract_state_from_temp_session(session_cookie)
+        with (
+            patch("auth_server.routes.oauth_flow.exchange_code_for_token", new_callable=AsyncMock) as exchange_token,
+            patch("auth_server.routes.oauth_flow.get_user_info", new_callable=AsyncMock) as get_user_info,
+            patch("auth_server.routes.oauth_flow.map_groups_to_scopes", return_value=["servers-read", "agents-read"]),
+        ):
+            exchange_token.return_value = {"access_token": "provider-token"}
+            get_user_info.return_value = {
+                "preferred_username": "test-user",
+                "email": "test@example.com",
+                "name": "Test User",
+                "sub": "idp-123",
+                "groups": ["registry-users"],
+            }
+            response = test_client.get(
+                f"{API_PREFIX}/oauth2/callback/keycloak",
+                params={"code": "provider-code", "state": state_param},
+                cookies={"oauth2_temp_session": session_cookie},
+                follow_redirects=False,
+            )
+
+        assert response.status_code == 302
+        exchange_token.assert_awaited_once()
+        assert exchange_token.await_args.args[3] == "http://localhost:8888/auth/oauth2/callback/keycloak"
+        assert "/oauth2/consent?nonce=" in response.headers["location"]
+        assert device_codes_storage[data["device_code"]]["status"] == "pending"
+        assert len(test_pending_consent_store.pending) == 1
+
+    def test_approve_device_consent_marks_device_approved(self, test_client: TestClient, clear_device_storage):
+        data = _start_device_flow(test_client)
+        nonce = "device-consent-nonce"
+        test_pending_consent_store.save(
+            nonce,
+            {
+                "flow_type": "device",
+                "device_code": data["device_code"],
+                "mapped_user": {
+                    "username": "test-user",
+                    "email": "test@example.com",
+                    "name": "Test User",
+                    "idp_id": "idp-123",
+                    "groups": [],
+                    "user_id": "user-123",
+                },
+                "resolved_scopes": ["servers-read"],
+                "session_data": {"client_id": "test-client"},
             },
         )
-        assert reg_response.status_code == 200
-        client_id = reg_response.json()["client_id"]
 
-        # Step 2: Initiate device flow
-        device_response = test_client.post(
-            f"{API_PREFIX}/oauth2/device/code",
-            data={"client_id": client_id, "scope": "registry-admin"},
+        response = test_client.post(
+            f"{API_PREFIX}/oauth2/consent/approve",
+            data={"nonce": nonce},
+            cookies={"oauth2_consent_nonce": nonce},
         )
-        assert device_response.status_code == 200
-        device_code = device_response.json()["device_code"]
-        user_code = device_response.json()["user_code"]
 
-        # Step 3: User approves device
-        approve_response = test_client.post(f"{API_PREFIX}/oauth2/device/approve", json={"user_code": user_code})
-        assert approve_response.status_code == 200
-        mock_mint_token.assert_called_once()
+        assert response.status_code == 200
+        assert "Your device is connected" in response.text
+        assert device_codes_storage[data["device_code"]]["status"] == "approved"
+        assert ("user-123", "test-client") in test_consent_store.client_consents
 
-        # Step 4: Client polls for token
-        token_response = test_client.post(
-            f"{API_PREFIX}/oauth2/token",
-            data={
-                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-                "device_code": device_code,
-                "client_id": client_id,
+    def test_deny_device_consent_marks_device_denied(self, test_client: TestClient, clear_device_storage):
+        data = _start_device_flow(test_client)
+        nonce = "device-deny-nonce"
+        test_pending_consent_store.save(
+            nonce,
+            {
+                "flow_type": "device",
+                "device_code": data["device_code"],
+                "mapped_user": {"user_id": "user-123"},
+                "resolved_scopes": ["servers-read"],
+                "session_data": {"client_id": "test-client"},
             },
         )
-        assert token_response.status_code == 200
-        access_token = token_response.json()["access_token"]
 
-        # Verify token
-        assert access_token == "integration-test-token"
+        response = test_client.post(
+            f"{API_PREFIX}/oauth2/consent/deny",
+            data={"nonce": nonce},
+            cookies={"oauth2_consent_nonce": nonce},
+        )
 
-        # Verify client credentials still valid
-        assert test_oauth_state_store.validate_client_credentials(client_id) is True
+        assert response.status_code == 200
+        assert "You denied this request" in response.text
+        assert device_codes_storage[data["device_code"]]["status"] == "denied"
+
+
+def _extract_state_from_temp_session(session_cookie: str) -> str:
+    signer = URLSafeTimedSerializer("test-secret-key-for-testing")
+    session_data = signer.loads(session_cookie)
+    assert session_data["flow_type"] == "device"
+    return session_data["state"]

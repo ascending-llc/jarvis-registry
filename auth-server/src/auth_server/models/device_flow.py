@@ -23,12 +23,6 @@ class DeviceCodeResponse(BaseModel):
     interval: int
 
 
-class DeviceApprovalRequest(BaseModel):
-    """Request model for device approval"""
-
-    user_code: str
-
-
 class DeviceTokenRequest(BaseModel):
     """Request model for device token polling"""
 

@@ -95,6 +95,7 @@ class TestOAuth2CallbackStandardFlow:
             mock_settings.registry_app_name = "registry-internal-client"
             mock_settings.auth_server_external_url = "http://localhost:8888"
             mock_settings.auth_server_url = "http://localhost:8888"
+            mock_settings.auth_server_api_prefix = ""
             mock_settings.oauth_session_ttl_seconds = 600
             mock_settings.secret_key = "test-secret-key"
             mock_settings.oauth2_temp_session_cookie_name = settings.oauth2_temp_session_cookie_name
@@ -213,6 +214,7 @@ class TestOAuth2CallbackStandardFlow:
             mock_settings.registry_url = "http://localhost:3000"
             mock_settings.auth_server_external_url = "http://localhost:8888"
             mock_settings.auth_server_url = "http://localhost:8888"
+            mock_settings.auth_server_api_prefix = ""
             mock_settings.oauth_session_ttl_seconds = 600
             mock_settings.secret_key = "test-secret-key"
             mock_settings.oauth2_temp_session_cookie_name = settings.oauth2_temp_session_cookie_name
@@ -306,6 +308,7 @@ class TestOAuth2CallbackStandardFlow:
             mock_settings.registry_app_name = "registry-internal-client"
             mock_settings.auth_server_external_url = "http://localhost:8888"
             mock_settings.auth_server_url = "http://localhost:8888"
+            mock_settings.auth_server_api_prefix = ""
             mock_settings.oauth_session_ttl_seconds = 600
             mock_settings.secret_key = "test-secret-key"
             mock_settings.oauth2_temp_session_cookie_name = settings.oauth2_temp_session_cookie_name
@@ -396,6 +399,7 @@ class TestOAuth2CallbackStandardFlow:
             mock_settings.registry_url = "http://localhost:3000"
             mock_settings.auth_server_external_url = "http://localhost:8888"
             mock_settings.auth_server_url = "http://localhost:8888"
+            mock_settings.auth_server_api_prefix = ""
             mock_settings.oauth_session_ttl_seconds = 600
             mock_settings.secret_key = "test-secret-key"
             mock_settings.oauth2_temp_session_cookie_name = settings.oauth2_temp_session_cookie_name
@@ -468,6 +472,7 @@ class TestOAuth2CallbackStandardFlow:
             mock_settings.registry_url = "http://localhost:3000"
             mock_settings.auth_server_external_url = "http://localhost:8888"
             mock_settings.auth_server_url = "http://localhost:8888"
+            mock_settings.auth_server_api_prefix = ""
             mock_settings.oauth_session_ttl_seconds = 600
             mock_settings.secret_key = "test-secret-key"
             mock_settings.oauth2_temp_session_cookie_name = settings.oauth2_temp_session_cookie_name
@@ -547,6 +552,7 @@ class TestOAuth2CallbackStandardFlow:
             mock_settings.registry_url = "http://localhost:3000"
             mock_settings.auth_server_external_url = "http://localhost:8888"
             mock_settings.auth_server_url = "http://localhost:8888"
+            mock_settings.auth_server_api_prefix = ""
             mock_settings.oauth_session_ttl_seconds = 600
             mock_settings.secret_key = "test-secret-key"
             mock_settings.oauth2_temp_session_cookie_name = settings.oauth2_temp_session_cookie_name
@@ -636,6 +642,7 @@ class TestOAuth2CallbackStandardFlow:
             mock_settings.registry_url = "http://localhost:3000"
             mock_settings.auth_server_external_url = "http://localhost:8888"
             mock_settings.auth_server_url = "http://localhost:8888"
+            mock_settings.auth_server_api_prefix = ""
             mock_settings.oauth_session_ttl_seconds = 600
             mock_settings.secret_key = "test-secret-key"
             mock_settings.oauth2_temp_session_cookie_name = settings.oauth2_temp_session_cookie_name

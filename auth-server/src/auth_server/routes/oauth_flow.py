@@ -15,7 +15,7 @@ from urllib.parse import urlencode, urlparse
 import httpx
 from authlib.oauth2.rfc7636 import create_s256_code_challenge
 from fastapi import APIRouter, Cookie, Depends, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from pydantic import BaseModel
 
@@ -49,7 +49,7 @@ from ..deps import (
     get_user_service,
     get_validator,
 )
-from ..models.device_flow import DeviceApprovalRequest, DeviceCodeResponse, DeviceTokenResponse
+from ..models.device_flow import DeviceCodeResponse, DeviceTokenResponse
 from ..providers.base import AuthProvider
 from ..services.cognito_validator_service import SimplifiedCognitoValidator
 from ..services.user_service import UserService
@@ -60,7 +60,15 @@ from ..utils.security_mask import (
     mask_sensitive_id,
     parse_server_and_tool_from_url,
 )
-from .consent_templates import render_consent_error_page, render_consent_page
+from .consent_templates import (
+    render_consent_error_page,
+    render_consent_page,
+    render_device_approved_page,
+    render_device_code_confirm_page,
+    render_device_code_entry_page,
+    render_device_denied_page,
+    render_device_link_error_page,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -161,6 +169,7 @@ class ClientRegistrationResponse(BaseModel):
 
 
 DEVICE_CODE_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code"
+SUPPORTED_TOKEN_ENDPOINT_AUTH_METHODS = frozenset({"none", "client_secret_post"})
 
 
 def _is_registry_client(client_id: str) -> bool:
@@ -237,6 +246,72 @@ def _auth_server_external_url(path: str) -> str:
     return f"{base_url}{prefix}{path}"
 
 
+def _normalize_user_code(user_code: str) -> str:
+    compact = "".join(char for char in user_code.upper() if char.isalnum())
+    if len(compact) == 8:
+        return f"{compact[:4]}-{compact[4:]}"
+    return user_code.strip().upper()
+
+
+def _redirect_to_provider(
+    provider: AllowedProvider,
+    provider_config: AuthProviderConfig | EntraConfig,
+    session_data: dict[str, Any],
+    is_https: bool,
+    signer: URLSafeTimedSerializer,
+) -> RedirectResponse:
+    """Build the signed temp session cookie and 302 to the configured IdP."""
+    temp_session = signer.dumps(session_data)
+    callback_uri = _auth_server_external_url(f"/oauth2/callback/{provider}")
+
+    auth_params = {
+        "client_id": provider_config["client_id"],
+        "response_type": provider_config["response_type"],
+        "scope": " ".join(provider_config["scopes"]),
+        "state": session_data["state"],
+        "redirect_uri": callback_uri,
+    }
+    auth_url = f"{provider_config['auth_url']}?{urlencode(auth_params)}"
+
+    response = RedirectResponse(url=auth_url, status_code=302)
+    response.set_cookie(
+        key=settings.oauth2_temp_session_cookie_name,
+        value=temp_session,
+        max_age=settings.oauth_session_ttl_seconds,
+        httponly=True,
+        secure=settings.session_cookie_secure and is_https,
+        samesite="lax",
+    )
+    return response
+
+
+def _redirect_to_pending_consent(
+    pending_payload: dict[str, Any],
+    ttl_seconds: int,
+    is_https: bool,
+    pending_store: PendingConsentStore,
+) -> RedirectResponse:
+    """Save a pending-consent nonce and 302 to /oauth2/consent; shared tail of the device-flow and
+    Authorization-Code-Grant consent detours in oauth2_callback — the only difference between
+    callers is what they put in pending_payload and how long the detour should live for.
+    """
+    nonce = secrets.token_urlsafe(32)
+    pending_store.save(nonce, pending_payload, ttl_seconds=ttl_seconds)
+
+    consent_url = f"{_auth_server_external_url('/oauth2/consent')}?nonce={nonce}"
+    response = RedirectResponse(url=consent_url, status_code=302)
+    response.set_cookie(
+        key=settings.oauth2_consent_nonce_cookie_name,
+        value=nonce,
+        max_age=ttl_seconds,
+        httponly=True,
+        secure=settings.session_cookie_secure and is_https,
+        samesite="lax",
+    )
+    response.delete_cookie(settings.oauth2_temp_session_cookie_name)
+    return response
+
+
 def _finish_oauth2_callback(
     token_data: dict[str, Any],
     mapped_user: dict[str, Any],
@@ -279,6 +354,34 @@ def _finish_oauth2_callback(
     return response
 
 
+def _finish_device_callback(
+    device_code: str,
+    mapped_user: dict[str, Any],
+    resolved_scopes: list[str],
+    store: OAuthStateStoreProtocol,
+) -> HTMLResponse:
+    """Record a verified user's approval; token minting happens when the device polls /oauth2/token."""
+    device_data = store.get_device_code(device_code)
+    if device_data is None:
+        return HTMLResponse(render_device_link_error_page(), status_code=400)
+
+    updated = dict(device_data)
+    updated["status"] = "approved"
+    updated["mapped_user"] = mapped_user
+    updated["resolved_scope"] = resolved_scopes
+    store.update_device_code(device_code, updated)
+    return HTMLResponse(render_device_approved_page())
+
+
+def _finish_device_denial(device_code: str, store: OAuthStateStoreProtocol) -> HTMLResponse:
+    device_data = store.get_device_code(device_code)
+    if device_data is not None:
+        updated = dict(device_data)
+        updated["status"] = "denied"
+        store.update_device_code(device_code, updated)
+    return HTMLResponse(render_device_denied_page())
+
+
 @router.post("/oauth2/register", response_model=ClientRegistrationResponse, response_model_exclude_none=True)
 async def register_client(
     registration: ClientRegistrationRequest,
@@ -303,20 +406,23 @@ async def register_client(
 
         client_id = f"mcp-client-{secrets.token_urlsafe(16)}"
 
-        if registration.token_endpoint_auth_method == "client_secret_post":
-            token_endpoint_auth_method = "client_secret_post"
+        requested_auth_method = registration.token_endpoint_auth_method
+        if requested_auth_method in SUPPORTED_TOKEN_ENDPOINT_AUTH_METHODS:
+            token_endpoint_auth_method = requested_auth_method
         else:
+            logger.warning(
+                "DCR client requested unsupported token_endpoint_auth_method=%s; substituting 'none'. client_name=%s",
+                requested_auth_method,
+                registration.client_name,
+            )
             token_endpoint_auth_method = "none"
 
         client_secret: str | None = None
         if token_endpoint_auth_method == "client_secret_post":
             client_secret = secrets.token_urlsafe(32)
 
-        grant_types = ["authorization_code", "refresh_token"]
+        grant_types = ["authorization_code", "refresh_token", DEVICE_CODE_GRANT_TYPE]
         response_types = ["code"]
-
-        if isinstance(registration.grant_types, list) and DEVICE_CODE_GRANT_TYPE in registration.grant_types:
-            grant_types.append(DEVICE_CODE_GRANT_TYPE)
 
         issued_at = int(time.time())
 
@@ -385,16 +491,21 @@ async def device_authorization(
         if client_error is not None:
             return client_error
 
+        client_metadata = store.get_client(client_id) or {}
+        if DEVICE_CODE_GRANT_TYPE not in (client_metadata.get("grant_types") or []):
+            return oauth_error_response(
+                "unauthorized_client",
+                "client is not registered for the device_code grant type",
+            )
+
         device_code = secrets.token_urlsafe(32)
         user_code = generate_user_code()
 
-        auth_server_url = settings.auth_server_external_url
-        if not auth_server_url:
+        verification_uri = _auth_server_external_url("/oauth2/device/verify")
+        if not settings.auth_server_external_url:
             host = req.headers.get("host", "localhost:8888")
             scheme = "https" if req.headers.get("x-forwarded-proto") == "https" or req.url.scheme == "https" else "http"
-            auth_server_url = f"{scheme}://{host}"
-
-        verification_uri = f"{auth_server_url}/oauth2/device/verify"
+            verification_uri = f"{scheme}://{host}{_auth_server_route_path('/oauth2/device/verify')}"
         verification_uri_complete = f"{verification_uri}?user_code={user_code}"
 
         current_time = int(time.time())
@@ -408,7 +519,8 @@ async def device_authorization(
             "status": "pending",
             "created_at": current_time,
             "expires_at": expires_at,
-            "token": None,
+            "mapped_user": None,
+            "resolved_scope": None,
         }
 
         store.save_device_authorization(
@@ -436,61 +548,63 @@ async def device_authorization(
 
 
 @router.get("/oauth2/device/verify", response_class=HTMLResponse)
-async def device_verification_page(user_code: str | None = None):
-    settings.auth_server_external_url.rstrip("/")
-    # simplified HTML omitted for brevity - keep original UX
-    html_content = f"""
-    <!DOCTYPE html>
-    <html><body><h1>Device Verification</h1>
-    <form id="verifyForm"><input id="user_code" value="{user_code or ""}"/></form>
-    <script>/* simple form */</script></body></html>
-    """
-    return HTMLResponse(content=html_content)
-
-
-@router.post("/oauth2/device/approve")
-async def approve_device(
-    request: DeviceApprovalRequest,
+async def device_verify_entry(
+    user_code: str | None = None,
     store: OAuthStateStoreProtocol = Depends(get_oauth_state_store),
-):
-    try:
-        device_code = store.get_user_code(request.user_code)
-        if not device_code:
-            raise HTTPException(status_code=404, detail="Invalid or expired user code")
-        device_data = store.get_device_code(device_code)
-        if not device_data:
-            raise HTTPException(status_code=404, detail="Device code not found")
-        current_time = int(time.time())
-        if current_time > device_data["expires_at"]:
-            raise HTTPException(status_code=400, detail="Device code expired")
-        if device_data["status"] == "approved":
-            return {"status": "already_approved", "message": "Device already approved"}
-
-        # Generate token (managed-agent / proxy class)
-        access_token = mint_managed_agent_token(
-            JWT_TOKEN_CONFIG,
-            subject="device_user",
-            client_id=device_data["client_id"],
-            expires_in_seconds=3600,
-            iat=current_time,
-            extra_claims={
-                "scope": device_data["scope"],
-                "token_use": "access",
-                "auth_provider": settings.auth_provider,
-            },
+) -> HTMLResponse:
+    if not user_code:
+        return HTMLResponse(
+            render_device_code_entry_page(verify_action=_auth_server_route_path("/oauth2/device/verify"))
         )
-        updated_device_data = dict(device_data)
-        updated_device_data["status"] = "approved"
-        updated_device_data["token"] = access_token
-        updated_device_data["approved_at"] = current_time
-        if not store.update_device_code(device_code, updated_device_data):
-            raise HTTPException(status_code=400, detail="Device code expired")
-        logger.info(f"Device approved for user_code: {request.user_code}")
-        return {"status": "approved", "message": "Device verified successfully"}
+
+    normalized = _normalize_user_code(user_code)
+    device_code = store.get_user_code(normalized)
+    device_data = store.get_device_code(device_code) if device_code else None
+    if device_data is None or device_data["status"] != "pending":
+        return HTMLResponse(render_device_link_error_page(), status_code=400)
+
+    return HTMLResponse(
+        render_device_code_confirm_page(
+            user_code=device_data["user_code"],
+            verify_action=_auth_server_route_path("/oauth2/device/verify"),
+        )
+    )
+
+
+@router.post("/oauth2/device/verify", response_class=HTMLResponse)
+async def device_verify_continue(
+    user_code: str = Form(...),
+    is_https: bool = Depends(check_if_https),
+    signer: URLSafeTimedSerializer = Depends(get_signer),
+    oauth2_config: OAuth2Config = Depends(get_oauth2_config),
+    store: OAuthStateStoreProtocol = Depends(get_oauth_state_store),
+) -> Response:
+    try:
+        normalized = _normalize_user_code(user_code)
+        device_code = store.get_user_code(normalized)
+        device_data = store.get_device_code(device_code) if device_code else None
+        if device_data is None or device_data["status"] != "pending":
+            return HTMLResponse(render_device_link_error_page(), status_code=400)
+
+        provider = settings.auth_provider
+        provider_config = oauth2_config["providers"][provider]
+        internal_state = (
+            base64.urlsafe_b64encode(json.dumps({"nonce": secrets.token_urlsafe(24)}).encode("utf-8"))
+            .decode()
+            .rstrip("=")
+        )
+
+        session_data = {
+            "flow_type": "device",
+            "device_code": device_code,
+            "provider": provider,
+            "state": internal_state,
+        }
+        return _redirect_to_provider(provider, provider_config, session_data, is_https, signer)
     except HTTPException:
         raise
     except Exception:
-        logger.exception("Device approval failed for user_code=%s", request.user_code)
+        logger.exception("Device verification failed for user_code=%s", user_code)
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -673,7 +787,7 @@ async def _device_token_handler(
             JWT_TOKEN_CONFIG,
             subject=user_info["username"],
             client_id=client_id,
-            expires_in_seconds=3600,
+            expires_in_seconds=settings.oauth_access_token_expiry_seconds,
             iat=current_time,
             extra_claims={
                 "name": user_info.get("name"),
@@ -701,7 +815,7 @@ async def _device_token_handler(
         return DeviceTokenResponse(
             access_token=access_token,
             token_type="Bearer",
-            expires_in=3600,
+            expires_in=settings.oauth_access_token_expiry_seconds,
             scope=scope_claim,
             refresh_token=rt,
         )
@@ -714,6 +828,8 @@ async def _device_token_handler(
             return oauth_error_response("invalid_grant", "device_code not found")
         if device_data["client_id"] != client_id:
             return oauth_error_response("invalid_client", "client_id mismatch")
+        if not store.validate_client_credentials(client_id, client_secret):
+            return oauth_error_response("invalid_client", "invalid client credentials")
         current_time = int(time.time())
         if current_time > device_data["expires_at"]:
             return oauth_error_response("expired_token", "device_code has expired")
@@ -721,11 +837,57 @@ async def _device_token_handler(
             return oauth_error_response("authorization_pending", "user has not yet authorized this request")
         if device_data["status"] == "denied":
             return oauth_error_response("access_denied", "user denied authorization")
-        if device_data["status"] == "approved" and device_data["token"]:
-            return DeviceTokenResponse(
-                access_token=device_data["token"], token_type="Bearer", expires_in=3600, scope=device_data["scope"]
-            )
-        return oauth_error_response("server_error", "unexpected server state", 500)
+        if device_data["status"] != "approved":
+            return oauth_error_response("server_error", "unexpected server state", 500)
+
+        # Atomically consume the device_code so a concurrent poll can't also mint from it.
+        device_data = store.consume_device_code(device_code)
+        if device_data is None:
+            return oauth_error_response("invalid_grant", "device_code already used")
+
+        mapped_user = device_data["mapped_user"]
+        resolved_scopes = device_data["resolved_scope"]
+        if not isinstance(mapped_user, dict) or resolved_scopes is None:
+            return oauth_error_response("server_error", "approved device code is missing user context", 500)
+
+        user_id = await user_service.resolve_user_id(mapped_user)
+        scope_claim = " ".join(resolved_scopes) if isinstance(resolved_scopes, list) else resolved_scopes
+
+        access_token = mint_managed_agent_token(
+            JWT_TOKEN_CONFIG,
+            subject=mapped_user["username"],
+            client_id=client_id,
+            expires_in_seconds=settings.oauth_access_token_expiry_seconds,
+            iat=current_time,
+            extra_claims={
+                "name": mapped_user.get("name"),
+                "idp_id": mapped_user.get("idp_id"),
+                "user_id": user_id,
+                "scope": scope_claim,
+                "groups": mapped_user.get("groups", []),
+                "token_use": "access",
+                "auth_provider": settings.auth_provider,
+            },
+        )
+        rt = secrets.token_urlsafe(32)
+        store.save_refresh_token(
+            rt,
+            {
+                "client_id": client_id,
+                "user_info": mapped_user,
+                "scope": scope_claim,
+                "expires_at": current_time + REFRESH_TOKEN_TTL_SECONDS,
+            },
+        )
+        store.delete_user_code(device_data["user_code"])
+
+        return DeviceTokenResponse(
+            access_token=access_token,
+            token_type="Bearer",
+            expires_in=settings.oauth_access_token_expiry_seconds,
+            scope=scope_claim,
+            refresh_token=rt,
+        )
 
     elif grant_type == "refresh_token":
         if not refresh_token:
@@ -768,7 +930,7 @@ async def _device_token_handler(
             JWT_TOKEN_CONFIG,
             subject=user_info["username"],
             client_id=client_id,
-            expires_in_seconds=3600,
+            expires_in_seconds=settings.oauth_access_token_expiry_seconds,
             iat=now,
             extra_claims={
                 "user_id": user_id,
@@ -784,7 +946,7 @@ async def _device_token_handler(
         return DeviceTokenResponse(
             access_token=access_token,
             token_type="Bearer",
-            expires_in=3600,
+            expires_in=settings.oauth_access_token_expiry_seconds,
             scope=rt_data.get("scope", ""),
             refresh_token=new_refresh_token,
         )
@@ -870,30 +1032,7 @@ async def oauth2_login(
         if scope:
             session_data["requested_scope"] = scope
 
-        temp_session = signer.dumps(session_data)
-
-        auth_server_url = settings.auth_server_external_url.rstrip("/")
-        callback_uri = f"{auth_server_url}/oauth2/callback/{provider}"
-
-        auth_params = {
-            "client_id": provider_config["client_id"],
-            "response_type": provider_config["response_type"],
-            "scope": " ".join(provider_config["scopes"]),
-            "state": internal_state,
-            "redirect_uri": callback_uri,
-        }
-        auth_url = f"{provider_config['auth_url']}?{urlencode(auth_params)}"
-
-        response = RedirectResponse(url=auth_url, status_code=302)
-        response.set_cookie(
-            key=settings.oauth2_temp_session_cookie_name,
-            value=temp_session,
-            max_age=settings.oauth_session_ttl_seconds,
-            httponly=True,
-            secure=settings.session_cookie_secure and is_https,
-            samesite="lax",
-        )
-        return response
+        return _redirect_to_provider(provider, provider_config, session_data, is_https, signer)
     except Exception:
         logger.exception(f"Error initiating OAuth2 login for {provider}")
 
@@ -962,6 +1101,16 @@ async def approve_consent(
 
         consent_store.grant_client_consent(user_id, client_id)
 
+        if pending.get("flow_type") == "device":
+            response = _finish_device_callback(
+                pending["device_code"],
+                pending["mapped_user"],
+                pending["resolved_scopes"],
+                store,
+            )
+            response.delete_cookie(settings.oauth2_consent_nonce_cookie_name)
+            return response
+
         response = _finish_oauth2_callback(
             pending["token_data"],
             mapped_user,
@@ -981,10 +1130,20 @@ async def approve_consent(
 @router.post("/oauth2/consent/deny")
 async def deny_consent(
     nonce: str = Form(...),
+    oauth2_consent_nonce: str | None = Cookie(None, alias=settings.oauth2_consent_nonce_cookie_name),
+    store: OAuthStateStoreProtocol = Depends(get_oauth_state_store),
     pending_store: PendingConsentStore = Depends(get_pending_consent_store),
-) -> RedirectResponse:
+) -> Response:
     try:
-        pending_store.consume(nonce)
+        if not oauth2_consent_nonce or not hmac.compare_digest(oauth2_consent_nonce, nonce):
+            return JSONResponse({"detail": "Invalid or expired consent request"}, status_code=400)
+
+        pending = pending_store.consume(nonce)
+        if pending and pending.get("flow_type") == "device":
+            response = _finish_device_denial(pending["device_code"], store)
+            response.delete_cookie(settings.oauth2_consent_nonce_cookie_name)
+            return response
+
         params = {"error": "access_denied", "error_description": "User denied the authorization request"}
         response = RedirectResponse(url=f"{settings.registry_error_redirect}?{urlencode(params)}", status_code=302)
         response.delete_cookie(settings.oauth2_consent_nonce_cookie_name)
@@ -1044,9 +1203,8 @@ async def oauth2_callback(
 
         provider_config = oauth2_config["providers"][provider]
 
-        auth_server_url = settings.auth_server_external_url.rstrip("/")
-
-        token_data = await exchange_code_for_token(provider, code, provider_config, auth_server_url)
+        callback_uri = _auth_server_external_url(f"/oauth2/callback/{provider}")
+        token_data = await exchange_code_for_token(provider, code, provider_config, callback_uri)
 
         # Extract user information from tokens or userinfo
         mapped_user: dict[str, Any] | None = None
@@ -1104,8 +1262,13 @@ async def oauth2_callback(
 
         mapped_user["provider"] = provider
 
-        # Always use OAuth client flow (both external clients and registry)
-        client_redirect_uri = session_data["client_redirect_uri"]
+        is_device_flow = session_data.get("flow_type") == "device"
+        device_code = session_data.get("device_code") if is_device_flow else None
+        device_data = store.get_device_code(device_code) if isinstance(device_code, str) else None
+        if is_device_flow and (device_data is None or device_data["status"] != "pending"):
+            response = HTMLResponse(render_device_link_error_page(), status_code=400)
+            response.delete_cookie(settings.oauth2_temp_session_cookie_name)
+            return response
 
         # Resolve scope: intersection of requested scope and user's default scope
         user_groups = mapped_user.get("groups", [])
@@ -1115,7 +1278,7 @@ async def oauth2_callback(
             else mapped_user.get("scopes", [])
         )
 
-        requested_scope_str = session_data.get("requested_scope")
+        requested_scope_str = device_data.get("scope") if device_data else session_data.get("requested_scope")
         if requested_scope_str:
             # Client requested specific scopes, compute intersection
             requested_scopes = requested_scope_str.split()
@@ -1123,6 +1286,15 @@ async def oauth2_callback(
 
             if not resolved_scopes:
                 # Intersection is empty, return error
+                logger.warning(
+                    f"Scope negotiation failed for user {mapped_user['username']}: "
+                    f"requested={requested_scopes}, available={default_user_scopes}"
+                )
+                if is_device_flow:
+                    response = HTMLResponse(render_device_link_error_page(), status_code=400)
+                    response.delete_cookie(settings.oauth2_temp_session_cookie_name)
+                    return response
+
                 error_params = {
                     "error": "invalid_scope",
                     "error_description": "Requested scopes are not available for this user",
@@ -1131,11 +1303,8 @@ async def oauth2_callback(
                 if client_state:
                     error_params["state"] = client_state
 
+                client_redirect_uri = session_data["client_redirect_uri"]
                 redirect_url = f"{client_redirect_uri}?{urlencode(error_params)}"
-                logger.warning(
-                    f"Scope negotiation failed for user {mapped_user['username']}: "
-                    f"requested={requested_scopes}, available={default_user_scopes}"
-                )
                 response = RedirectResponse(url=redirect_url, status_code=302)
                 response.delete_cookie(settings.oauth2_temp_session_cookie_name)
                 return response
@@ -1149,31 +1318,47 @@ async def oauth2_callback(
             resolved_scopes = default_user_scopes
             logger.info(f"No scope requested, using default user scopes: {resolved_scopes}")
 
+        if is_device_flow:
+            assert isinstance(device_code, str)
+            assert device_data is not None
+            client_id = device_data["client_id"]
+            user_id = mapped_user.get("user_id")
+            if (
+                user_id
+                and not _is_registry_client(client_id)
+                and not consent_store.has_client_consent(user_id, client_id)
+            ):
+                return _redirect_to_pending_consent(
+                    {
+                        "flow_type": "device",
+                        "device_code": device_code,
+                        "mapped_user": mapped_user,
+                        "resolved_scopes": resolved_scopes,
+                        "session_data": {"client_id": client_id},
+                    },
+                    settings.device_code_expiry_seconds,
+                    is_https,
+                    pending_store,
+                )
+
+            response = _finish_device_callback(device_code, mapped_user, resolved_scopes, store)
+            response.delete_cookie(settings.oauth2_temp_session_cookie_name)
+            return response
+
         client_id = session_data["client_id"]
         user_id = mapped_user.get("user_id")
         if user_id and not _is_registry_client(client_id) and not consent_store.has_client_consent(user_id, client_id):
-            nonce = secrets.token_urlsafe(32)
-            pending_store.save(
-                nonce,
+            return _redirect_to_pending_consent(
                 {
                     "token_data": token_data,
                     "mapped_user": mapped_user,
                     "session_data": session_data,
                     "resolved_scopes": resolved_scopes,
                 },
+                PENDING_CONSENT_TTL_SECONDS,
+                is_https,
+                pending_store,
             )
-            consent_url = f"{_auth_server_external_url('/oauth2/consent')}?nonce={nonce}"
-            response = RedirectResponse(url=consent_url, status_code=302)
-            response.set_cookie(
-                key=settings.oauth2_consent_nonce_cookie_name,
-                value=nonce,
-                max_age=PENDING_CONSENT_TTL_SECONDS,
-                httponly=True,
-                secure=settings.session_cookie_secure and is_https,
-                samesite="lax",
-            )
-            response.delete_cookie(settings.oauth2_temp_session_cookie_name)
-            return response
 
         return _finish_oauth2_callback(token_data, mapped_user, session_data, resolved_scopes, store)
 
@@ -1184,16 +1369,18 @@ async def oauth2_callback(
 
 
 async def exchange_code_for_token(
-    provider: AllowedProvider, code: str, provider_config: AuthProviderConfig | EntraConfig, auth_server_url: str
+    provider: AllowedProvider,
+    code: str,
+    provider_config: AuthProviderConfig | EntraConfig,
+    callback_uri: str,
 ) -> dict[str, Any]:
-    redirect_uri = f"{auth_server_url}/oauth2/callback/{provider}"
     async with httpx.AsyncClient() as client:
         token_data = {
             "grant_type": provider_config["grant_type"],
             "client_id": provider_config["client_id"],
             "client_secret": provider_config["client_secret"],
             "code": code,
-            "redirect_uri": redirect_uri,
+            "redirect_uri": callback_uri,
         }
         headers = {"Accept": "application/json"}
         response = await client.post(provider_config["token_url"], data=token_data, headers=headers)
