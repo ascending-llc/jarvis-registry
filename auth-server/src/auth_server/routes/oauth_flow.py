@@ -233,15 +233,13 @@ def _validate_known_client(
 
 
 def _auth_server_route_path(path: str) -> str:
-    configured_prefix = getattr(settings, "auth_server_api_prefix", "")
-    prefix = configured_prefix.rstrip("/") if isinstance(configured_prefix, str) and configured_prefix else ""
+    prefix = settings.auth_server_api_prefix.rstrip("/") if settings.auth_server_api_prefix else ""
     return f"{prefix}{path}"
 
 
 def _auth_server_external_url(path: str) -> str:
     base_url = settings.auth_server_external_url.rstrip("/")
-    configured_prefix = getattr(settings, "auth_server_api_prefix", "")
-    prefix = configured_prefix.rstrip("/") if isinstance(configured_prefix, str) and configured_prefix else ""
+    prefix = settings.auth_server_api_prefix.rstrip("/") if settings.auth_server_api_prefix else ""
     if prefix and base_url.endswith(prefix):
         return f"{base_url}{path}"
     return f"{base_url}{prefix}{path}"
@@ -283,6 +281,33 @@ def _redirect_to_provider(
         secure=settings.session_cookie_secure and is_https,
         samesite="lax",
     )
+    return response
+
+
+def _redirect_to_pending_consent(
+    pending_payload: dict[str, Any],
+    ttl_seconds: int,
+    is_https: bool,
+    pending_store: PendingConsentStore,
+) -> RedirectResponse:
+    """Save a pending-consent nonce and 302 to /oauth2/consent; shared tail of the device-flow and
+    Authorization-Code-Grant consent detours in oauth2_callback — the only difference between
+    callers is what they put in pending_payload and how long the detour should live for.
+    """
+    nonce = secrets.token_urlsafe(32)
+    pending_store.save(nonce, pending_payload, ttl_seconds=ttl_seconds)
+
+    consent_url = f"{_auth_server_external_url('/oauth2/consent')}?nonce={nonce}"
+    response = RedirectResponse(url=consent_url, status_code=302)
+    response.set_cookie(
+        key=settings.oauth2_consent_nonce_cookie_name,
+        value=nonce,
+        max_age=ttl_seconds,
+        httponly=True,
+        secure=settings.session_cookie_secure and is_https,
+        samesite="lax",
+    )
+    response.delete_cookie(settings.oauth2_temp_session_cookie_name)
     return response
 
 
@@ -806,6 +831,11 @@ async def _device_token_handler(
         if device_data["status"] != "approved":
             return oauth_error_response("server_error", "unexpected server state", 500)
 
+        # Atomically consume the device_code so a concurrent poll can't also mint from it.
+        device_data = store.consume_device_code(device_code)
+        if device_data is None:
+            return oauth_error_response("invalid_grant", "device_code already used")
+
         mapped_user = device_data["mapped_user"]
         resolved_scopes = device_data["resolved_scope"]
         if not isinstance(mapped_user, dict) or resolved_scopes is None:
@@ -840,7 +870,6 @@ async def _device_token_handler(
                 "expires_at": current_time + REFRESH_TOKEN_TTL_SECONDS,
             },
         )
-        store.delete_device_code(device_code)
         store.delete_user_code(device_data["user_code"])
 
         return DeviceTokenResponse(
@@ -1290,9 +1319,7 @@ async def oauth2_callback(
                 and not _is_registry_client(client_id)
                 and not consent_store.has_client_consent(user_id, client_id)
             ):
-                nonce = secrets.token_urlsafe(32)
-                pending_store.save(
-                    nonce,
+                return _redirect_to_pending_consent(
                     {
                         "flow_type": "device",
                         "device_code": device_code,
@@ -1300,20 +1327,10 @@ async def oauth2_callback(
                         "resolved_scopes": resolved_scopes,
                         "session_data": {"client_id": client_id},
                     },
-                    ttl_seconds=settings.device_code_expiry_seconds,
+                    settings.device_code_expiry_seconds,
+                    is_https,
+                    pending_store,
                 )
-                consent_url = f"{_auth_server_external_url('/oauth2/consent')}?nonce={nonce}"
-                response = RedirectResponse(url=consent_url, status_code=302)
-                response.set_cookie(
-                    key=settings.oauth2_consent_nonce_cookie_name,
-                    value=nonce,
-                    max_age=settings.device_code_expiry_seconds,
-                    httponly=True,
-                    secure=settings.session_cookie_secure and is_https,
-                    samesite="lax",
-                )
-                response.delete_cookie(settings.oauth2_temp_session_cookie_name)
-                return response
 
             response = _finish_device_callback(device_code, mapped_user, resolved_scopes, store)
             response.delete_cookie(settings.oauth2_temp_session_cookie_name)
@@ -1322,28 +1339,17 @@ async def oauth2_callback(
         client_id = session_data["client_id"]
         user_id = mapped_user.get("user_id")
         if user_id and not _is_registry_client(client_id) and not consent_store.has_client_consent(user_id, client_id):
-            nonce = secrets.token_urlsafe(32)
-            pending_store.save(
-                nonce,
+            return _redirect_to_pending_consent(
                 {
                     "token_data": token_data,
                     "mapped_user": mapped_user,
                     "session_data": session_data,
                     "resolved_scopes": resolved_scopes,
                 },
+                PENDING_CONSENT_TTL_SECONDS,
+                is_https,
+                pending_store,
             )
-            consent_url = f"{_auth_server_external_url('/oauth2/consent')}?nonce={nonce}"
-            response = RedirectResponse(url=consent_url, status_code=302)
-            response.set_cookie(
-                key=settings.oauth2_consent_nonce_cookie_name,
-                value=nonce,
-                max_age=PENDING_CONSENT_TTL_SECONDS,
-                httponly=True,
-                secure=settings.session_cookie_secure and is_https,
-                samesite="lax",
-            )
-            response.delete_cookie(settings.oauth2_temp_session_cookie_name)
-            return response
 
         return _finish_oauth2_callback(token_data, mapped_user, session_data, resolved_scopes, store)
 

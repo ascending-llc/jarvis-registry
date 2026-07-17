@@ -438,6 +438,32 @@ class TestDeviceFlowRoutes:
         assert second_response.status_code == 400
         assert second_response.json()["error"] == "invalid_grant"
 
+    def test_device_token_rejects_when_atomic_consume_loses_the_race(
+        self,
+        test_client: TestClient,
+        clear_device_storage,
+    ):
+        """A concurrent poll can still observe status == "approved" via get_device_code, but must
+        lose if another poll already won the atomic consume_device_code race."""
+        _configure_user_service(test_client)
+        data = _start_device_flow(test_client)
+        _approve_device_directly(str(data["device_code"]))
+
+        with patch.object(test_oauth_state_store, "consume_device_code", return_value=None) as mock_consume:
+            response = test_client.post(
+                f"{API_PREFIX}/oauth2/token",
+                data={
+                    "grant_type": DEVICE_CODE_GRANT_TYPE,
+                    "device_code": data["device_code"],
+                    "client_id": "test-client",
+                },
+            )
+
+        mock_consume.assert_called_once_with(data["device_code"])
+        assert response.status_code == 400
+        assert response.json()["error"] == "invalid_grant"
+        assert data["device_code"] in device_codes_storage
+
 
 @pytest.mark.integration
 @pytest.mark.device_flow

@@ -318,6 +318,17 @@ def test_get_update_and_delete_device_state(
     assert store.get_user_code("USER-1234") is None
 
 
+def test_consume_device_code_is_single_use(
+    store: OAuthStateStore,
+    fake_redis: _FakeRedis,
+) -> None:
+    store.save_device_code("device-1", {"status": "approved"}, 600)
+
+    assert store.consume_device_code("device-1") == {"status": "approved"}
+    assert store.consume_device_code("device-1") is None
+    assert store.get_device_code("device-1") is None
+
+
 @pytest.mark.parametrize("ttl_value", [-2, -1, 0])
 def test_update_device_code_returns_false_when_ttl_is_not_positive(
     store: OAuthStateStore,
