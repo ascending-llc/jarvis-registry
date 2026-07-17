@@ -169,6 +169,7 @@ class ClientRegistrationResponse(BaseModel):
 
 
 DEVICE_CODE_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code"
+SUPPORTED_TOKEN_ENDPOINT_AUTH_METHODS = frozenset({"none", "client_secret_post"})
 
 
 def _is_registry_client(client_id: str) -> bool:
@@ -405,9 +406,15 @@ async def register_client(
 
         client_id = f"mcp-client-{secrets.token_urlsafe(16)}"
 
-        if registration.token_endpoint_auth_method == "client_secret_post":
-            token_endpoint_auth_method = "client_secret_post"
+        requested_auth_method = registration.token_endpoint_auth_method
+        if requested_auth_method in SUPPORTED_TOKEN_ENDPOINT_AUTH_METHODS:
+            token_endpoint_auth_method = requested_auth_method
         else:
+            logger.warning(
+                "DCR client requested unsupported token_endpoint_auth_method=%s; substituting 'none'. client_name=%s",
+                requested_auth_method,
+                registration.client_name,
+            )
             token_endpoint_auth_method = "none"
 
         client_secret: str | None = None
@@ -821,6 +828,8 @@ async def _device_token_handler(
             return oauth_error_response("invalid_grant", "device_code not found")
         if device_data["client_id"] != client_id:
             return oauth_error_response("invalid_client", "client_id mismatch")
+        if not store.validate_client_credentials(client_id, client_secret):
+            return oauth_error_response("invalid_client", "invalid client credentials")
         current_time = int(time.time())
         if current_time > device_data["expires_at"]:
             return oauth_error_response("expired_token", "device_code has expired")

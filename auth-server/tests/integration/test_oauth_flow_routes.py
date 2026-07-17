@@ -170,6 +170,25 @@ class TestDynamicClientRegistration:
         assert data["token_endpoint_auth_method"] == "client_secret_post"
         assert data["scope"] == "registry-admin"
 
+    def test_register_client_substitutes_unsupported_auth_method_with_none(
+        self,
+        test_client: TestClient,
+        clear_device_storage,
+    ):
+        """client_secret_basic (and any other unsupported method) is downgraded to 'none'."""
+        response = test_client.post(
+            f"{API_PREFIX}/oauth2/register",
+            json={
+                "redirect_uris": ["https://example.com/callback"],
+                "token_endpoint_auth_method": "client_secret_basic",
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["token_endpoint_auth_method"] == "none"
+        assert registered_clients[data["client_id"]]["token_endpoint_auth_method"] == "none"
+
     @pytest.mark.parametrize(
         "bad_uri",
         [
@@ -463,6 +482,71 @@ class TestDeviceFlowRoutes:
         assert response.status_code == 400
         assert response.json()["error"] == "invalid_grant"
         assert data["device_code"] in device_codes_storage
+
+    def test_device_token_rejects_invalid_client_secret(self, test_client: TestClient, clear_device_storage):
+        """A client_secret_post-registered device client must present its registered secret."""
+        test_oauth_state_store.save_client(
+            "confidential-client",
+            {
+                "client_id": "confidential-client",
+                "client_secret": "correct-secret",
+                "grant_types": ["authorization_code", "refresh_token", DEVICE_CODE_GRANT_TYPE],
+                "response_types": ["code"],
+                "token_endpoint_auth_method": "client_secret_post",
+            },
+        )
+        data = _start_device_flow(test_client, client_id="confidential-client")
+        _approve_device_directly(str(data["device_code"]))
+
+        response = test_client.post(
+            f"{API_PREFIX}/oauth2/token",
+            data={
+                "grant_type": DEVICE_CODE_GRANT_TYPE,
+                "device_code": data["device_code"],
+                "client_id": "confidential-client",
+                "client_secret": "wrong-secret",
+            },
+        )
+
+        assert response.status_code == 400
+        assert response.json()["error"] == "invalid_client"
+        assert data["device_code"] in device_codes_storage
+
+    @patch("auth_server.routes.oauth_flow.mint_managed_agent_token", return_value="mock-access-token")
+    def test_device_token_accepts_valid_client_secret(
+        self,
+        mock_mint_token,
+        test_client: TestClient,
+        clear_device_storage,
+    ):
+        """A client_secret_post-registered device client mints a token when its secret matches."""
+        test_oauth_state_store.save_client(
+            "confidential-client",
+            {
+                "client_id": "confidential-client",
+                "client_secret": "correct-secret",
+                "grant_types": ["authorization_code", "refresh_token", DEVICE_CODE_GRANT_TYPE],
+                "response_types": ["code"],
+                "token_endpoint_auth_method": "client_secret_post",
+            },
+        )
+        _configure_user_service(test_client)
+        data = _start_device_flow(test_client, client_id="confidential-client")
+        _approve_device_directly(str(data["device_code"]))
+
+        response = test_client.post(
+            f"{API_PREFIX}/oauth2/token",
+            data={
+                "grant_type": DEVICE_CODE_GRANT_TYPE,
+                "device_code": data["device_code"],
+                "client_id": "confidential-client",
+                "client_secret": "correct-secret",
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json()["access_token"] == "mock-access-token"
+        mock_mint_token.assert_called_once()
 
 
 @pytest.mark.integration
