@@ -11,10 +11,11 @@ export type JobStatus = 'pending' | 'syncing' | 'success' | 'failed';
 export interface ProviderConfig {
   region?: string;
   assumeRoleArn?: string;
-  tenantId?: string;
-  subscriptionId?: string;
-  resourceGroup?: string;
   resourceTagsFilter?: Record<string, string>;
+  projectEndpoint?: string;
+  tenantId?: string;
+  clientId?: string;
+  clientSecret?: string;
 }
 
 export interface FederationStats {

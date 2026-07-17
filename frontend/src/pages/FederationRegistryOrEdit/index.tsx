@@ -22,9 +22,10 @@ const INIT_DATA: FederationFormConfig = {
   region: '',
   assumeRoleArn: '',
   resourceTagsFilter: '',
-  azureTenantId: '',
-  azureSubscriptionId: '',
-  azureResourceGroup: '',
+  projectEndpoint: '',
+  tenantId: '',
+  clientId: '',
+  clientSecret: '',
 };
 
 const FederationRegistryOrEdit: React.FC = () => {
@@ -77,9 +78,12 @@ const FederationRegistryOrEdit: React.FC = () => {
               .map(([k, v]) => `${k}:${v}`)
               .join(', ')
           : '',
-        azureTenantId: data.providerConfig?.tenantId || '',
-        azureSubscriptionId: data.providerConfig?.subscriptionId || '',
-        azureResourceGroup: data.providerConfig?.resourceGroup || '',
+        projectEndpoint: data.providerConfig?.projectEndpoint || '',
+        tenantId: data.providerConfig?.tenantId || '',
+        clientId: data.providerConfig?.clientId || '',
+        // clientSecret is stored encrypted server-side and never returned by the API;
+        // leave blank and only resubmit it when the user retypes a new value.
+        clientSecret: '',
       });
     } catch (_error: any) {
       showToast(_error?.detail?.message || 'Failed to fetch external registry details', 'error');
@@ -99,10 +103,24 @@ const FederationRegistryOrEdit: React.FC = () => {
       if (!formData.region.trim()) newErrors.region = 'AWS Region is required';
       if (!formData.assumeRoleArn.trim()) newErrors.assumeRoleArn = 'Role ARN is required';
     } else if (formData.providerType === 'azure_ai_foundry') {
-      if (!formData.region.trim()) newErrors.region = 'Azure Region is required';
-      if (!formData.azureTenantId.trim()) newErrors.azureTenantId = 'Tenant ID is required';
-      if (!formData.azureSubscriptionId.trim()) newErrors.azureSubscriptionId = 'Subscription ID is required';
-      if (!formData.azureResourceGroup.trim()) newErrors.azureResourceGroup = 'Resource Group is required';
+      if (!formData.projectEndpoint.trim()) newErrors.projectEndpoint = 'Project Endpoint is required';
+
+      // Service-principal auth is all-or-nothing: either leave all three blank to fall
+      // back to managed identity, or fill in all three (mirrors the backend validation
+      // in FederationCrudService.validate_provider_config).
+      const servicePrincipalFields: { key: 'tenantId' | 'clientId' | 'clientSecret'; label: string }[] = [
+        { key: 'tenantId', label: 'Tenant ID' },
+        { key: 'clientId', label: 'Client ID' },
+        { key: 'clientSecret', label: 'Client Secret' },
+      ];
+      const filledCount = servicePrincipalFields.filter(({ key }) => formData[key].trim()).length;
+      if (filledCount > 0 && filledCount < servicePrincipalFields.length) {
+        servicePrincipalFields.forEach(({ key, label }) => {
+          if (!formData[key].trim()) {
+            newErrors[key] = `${label} is required when configuring service-principal authentication`;
+          }
+        });
+      }
     }
 
     setErrors(newErrors);
@@ -163,11 +181,10 @@ const FederationRegistryOrEdit: React.FC = () => {
             resourceTagsFilter: parseTagsFilter(formData.resourceTagsFilter),
           }
         : {
-            region: formData.region,
-            tenantId: formData.azureTenantId,
-            subscriptionId: formData.azureSubscriptionId,
-            resourceGroup: formData.azureResourceGroup,
-            resourceTagsFilter: parseTagsFilter(formData.resourceTagsFilter),
+            projectEndpoint: formData.projectEndpoint,
+            tenantId: formData.tenantId,
+            clientId: formData.clientId,
+            clientSecret: formData.clientSecret,
           };
 
       const result = await SERVICES.FEDERATION.syncFederation(
@@ -224,11 +241,10 @@ const FederationRegistryOrEdit: React.FC = () => {
             resourceTagsFilter: parseTagsFilter(formData.resourceTagsFilter),
           }
         : {
-            region: formData.region,
-            tenantId: formData.azureTenantId,
-            subscriptionId: formData.azureSubscriptionId,
-            resourceGroup: formData.azureResourceGroup,
-            resourceTagsFilter: parseTagsFilter(formData.resourceTagsFilter),
+            projectEndpoint: formData.projectEndpoint,
+            tenantId: formData.tenantId,
+            clientId: formData.clientId,
+            clientSecret: formData.clientSecret,
           };
 
       if (isEditMode && id && federation) {

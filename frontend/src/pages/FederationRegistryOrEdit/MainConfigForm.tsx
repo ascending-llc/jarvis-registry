@@ -142,29 +142,38 @@ const MainConfigForm: React.FC<MainConfigFormProps> = ({
       {isAzure && (
         <>
           <div className='mb-6 p-4 bg-[var(--jarvis-primary-soft)] rounded-lg border border-[var(--jarvis-primary-soft)] text-sm text-[var(--jarvis-primary-text)] text-[var(--jarvis-primary)]'>
-            Jarvis will authenticate using the managed identity to discover agents and MCP servers.
+            Jarvis authenticates using the managed identity by default. To use a service principal instead, fill in
+            Tenant ID, Client ID, and Client Secret together.
           </div>
-          {renderInput(isEditMode || isReadOnly ? 'Azure Region' : 'Region', 'region', 'e.g., eastus', 'text', true)}
-          {renderInput('Tenant ID', 'azureTenantId', 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx', 'text', true)}
-          {renderInput('Subscription ID', 'azureSubscriptionId', 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx', 'text', true)}
-          {renderInput('Resource Group', 'azureResourceGroup', 'e.g., rg-ai-foundry-prod', 'text', true)}
+          {renderInput(
+            'Project Endpoint',
+            'projectEndpoint',
+            'https://{account}.services.ai.azure.com/api/projects/{project}',
+            'text',
+            true,
+          )}
+          {renderInput('Tenant ID', 'tenantId', 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx')}
+          {renderInput('Client ID', 'clientId', 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx')}
+          {renderInput('Client Secret', 'clientSecret', 'Service principal client secret', 'password')}
         </>
       )}
 
-      <div className='mb-6'>
-        <label className='block text-sm font-medium text-[var(--jarvis-text)] mb-2'>Resource Tags Filter</label>
-        <input
-          type='text'
-          value={formData.resourceTagsFilter}
-          onChange={e => updateField('resourceTagsFilter', e.target.value)}
-          disabled={isReadOnly}
-          className={`w-full px-4 py-2 border border-[color:var(--jarvis-border)] rounded-md shadow-sm text-sm disabled:opacity-50 disabled:bg-[var(--jarvis-card-muted)] disabled:cursor-not-allowed disabled:bg-[var(--jarvis-card-muted)] bg-[var(--jarvis-card)] text-[var(--jarvis-text-strong)] focus:ring-[var(--jarvis-primary)] focus:border-[var(--jarvis-primary)]`}
-          placeholder='e.g., env:production, team:platform'
-        />
-        <p className='mt-1 text-xs text-[var(--jarvis-muted)]'>
-          Optional. Only import resources matching these tags. Comma-separated key:value pairs.
-        </p>
-      </div>
+      {isAws && (
+        <div className='mb-6'>
+          <label className='block text-sm font-medium text-[var(--jarvis-text)] mb-2'>Resource Tags Filter</label>
+          <input
+            type='text'
+            value={formData.resourceTagsFilter}
+            onChange={e => updateField('resourceTagsFilter', e.target.value)}
+            disabled={isReadOnly}
+            className={`w-full px-4 py-2 border border-[color:var(--jarvis-border)] rounded-md shadow-sm text-sm disabled:opacity-50 disabled:bg-[var(--jarvis-card-muted)] disabled:cursor-not-allowed disabled:bg-[var(--jarvis-card-muted)] bg-[var(--jarvis-card)] text-[var(--jarvis-text-strong)] focus:ring-[var(--jarvis-primary)] focus:border-[var(--jarvis-primary)]`}
+            placeholder='e.g., env:production, team:platform'
+          />
+          <p className='mt-1 text-xs text-[var(--jarvis-muted)]'>
+            Optional. Only import resources matching these tags. Comma-separated key:value pairs.
+          </p>
+        </div>
+      )}
 
       {isEditMode && !isReadOnly && onTestConnection && (
         <div className='mb-6 p-4 bg-[var(--jarvis-bg)] bg-[var(--jarvis-card)]/50 rounded-lg border border-[color:var(--jarvis-border)]'>
