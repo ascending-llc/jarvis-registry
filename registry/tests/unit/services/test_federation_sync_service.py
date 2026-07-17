@@ -17,6 +17,7 @@ from registry_pkgs.models import A2AAgent, ExtendedMCPServer, PrincipalType, Res
 from registry_pkgs.models.enums import FederationProviderType, FederationStatus, FederationSyncStatus, RoleBits
 from registry_pkgs.models.extended_access_role import RegistryResourceType
 from registry_pkgs.models.extended_acl_entry import RegistryAclEntry
+from registry_pkgs.models.federation import AgentCoreRuntimeAccessConfig, AgentCoreRuntimeJwtConfig
 from registry_pkgs.models.federation_sync_job import FederationApplySummary
 
 _DEFAULT_USER_OBJECT_ID = PydanticObjectId()
@@ -527,13 +528,13 @@ async def test_build_sync_plan_updates_a2a_when_only_runtime_access_mode_changes
         federationRefId=federation.id,
         federationMetadata={"runtimeArn": runtime_arn, "runtimeVersion": "1"},
         path=agent_path,
-        config=SimpleNamespace(type="jsonrpc", runtimeAccess=SimpleNamespace(mode="iam")),
+        config=SimpleNamespace(type="jsonrpc", runtimeAccess=AgentCoreRuntimeAccessConfig(mode="iam")),
     )
     discovered_a2a = SimpleNamespace(
         federationMetadata={"runtimeArn": runtime_arn, "runtimeVersion": "1"},
         path=agent_path,
         card=SimpleNamespace(name="auth-mode-a2a"),
-        config=SimpleNamespace(type="jsonrpc", runtimeAccess=SimpleNamespace(mode="jwt")),
+        config=SimpleNamespace(type="jsonrpc", runtimeAccess=AgentCoreRuntimeAccessConfig(mode="jwt")),
     )
 
     def _fake_mcp_find(query, session=None):
@@ -575,13 +576,13 @@ async def test_build_sync_plan_ignores_a2a_transport_type_only_change(
         federationRefId=federation.id,
         federationMetadata={"runtimeArn": runtime_arn, "runtimeVersion": "1"},
         path=agent_path,
-        config=SimpleNamespace(type="http_json", runtimeAccess=SimpleNamespace(mode="jwt")),
+        config=SimpleNamespace(type="http_json", runtimeAccess=AgentCoreRuntimeAccessConfig(mode="jwt")),
     )
     discovered_a2a = SimpleNamespace(
         federationMetadata={"runtimeArn": runtime_arn, "runtimeVersion": "1"},
         path=agent_path,
         card=SimpleNamespace(name="transport-only-a2a"),
-        config=SimpleNamespace(type="jsonrpc", runtimeAccess=SimpleNamespace(mode="jwt")),
+        config=SimpleNamespace(type="jsonrpc", runtimeAccess=AgentCoreRuntimeAccessConfig(mode="jwt")),
     )
 
     def _fake_mcp_find(query, session=None):
@@ -609,6 +610,158 @@ async def test_build_sync_plan_ignores_a2a_transport_type_only_change(
     assert sync_plan.summary.unchangedAgents == 1
     assert sync_plan.a2a_updates == []
     assert sync_plan.a2a_pre_existing_acl_targets == [existing_a2a.id]
+
+
+@pytest.mark.asyncio
+async def test_build_sync_plan_updates_mcp_when_only_jwt_audiences_change(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
+    """Regression test: AWS rotating a JWT authorizer's allowedAudience (with mode and
+    runtimeVersion unchanged) must still be classified as an update, not silently dropped."""
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    runtime_arn = "arn:aws:bedrock-agentcore:us-east-1:123:runtime/audience-rotation-mcp"
+    existing_mcp = SimpleNamespace(
+        id=PydanticObjectId(),
+        federationRefId=federation.id,
+        federationMetadata={"runtimeArn": runtime_arn, "runtimeVersion": "1"},
+        serverName="audience-rotation-mcp",
+        config={"runtimeAccess": {"mode": "jwt", "jwt": {"audiences": ["jarvis-services"]}}},
+    )
+    discovered_mcp = SimpleNamespace(
+        federationMetadata={"runtimeArn": runtime_arn, "runtimeVersion": "1"},
+        serverName="audience-rotation-mcp",
+        config={"runtimeAccess": {"mode": "jwt", "jwt": {"audiences": ["jarvis-managed-agents"]}}},
+    )
+
+    def _fake_mcp_find(query, session=None):
+        if query == {"federationRefId": federation.id}:
+            return _FakeQuery([existing_mcp])
+        raise AssertionError(f"Unexpected MCP query: {query}")
+
+    def _fake_a2a_find(query, session=None):
+        if query == {"federationRefId": federation.id}:
+            return _FakeQuery([])
+        raise AssertionError(f"Unexpected A2A query: {query}")
+
+    monkeypatch.setattr("registry.services.federation_sync_service.ExtendedMCPServer.find", _fake_mcp_find)
+    monkeypatch.setattr("registry.services.federation_sync_service.A2AAgent.find", _fake_a2a_find)
+
+    sync_plan = await federation_sync_service._build_sync_plan(
+        federation=federation,
+        discovered_mcp=[discovered_mcp],
+        discovered_a2a=[],
+    )
+
+    assert sync_plan.summary.updatedMcpServers == 1
+    assert sync_plan.summary.unchangedMcpServers == 0
+    assert sync_plan.mcp_updates == [(existing_mcp, discovered_mcp, runtime_arn)]
+
+
+@pytest.mark.asyncio
+async def test_build_sync_plan_updates_a2a_when_only_jwt_audiences_change(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
+    """Regression test: same audience-rotation scenario as the MCP case above, for A2A agents."""
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    runtime_arn = "arn:aws:bedrock-agentcore:us-east-1:123:runtime/audience-rotation-a2a"
+    agent_path = "/agentcore/a2a/audience-rotation-a2a"
+    existing_a2a = SimpleNamespace(
+        id=PydanticObjectId(),
+        federationRefId=federation.id,
+        federationMetadata={"runtimeArn": runtime_arn, "runtimeVersion": "1"},
+        path=agent_path,
+        config=SimpleNamespace(
+            type="jsonrpc",
+            runtimeAccess=AgentCoreRuntimeAccessConfig(
+                mode="jwt", jwt=AgentCoreRuntimeJwtConfig(audiences=["jarvis-services"])
+            ),
+        ),
+    )
+    discovered_a2a = SimpleNamespace(
+        federationMetadata={"runtimeArn": runtime_arn, "runtimeVersion": "1"},
+        path=agent_path,
+        card=SimpleNamespace(name="audience-rotation-a2a"),
+        config=SimpleNamespace(
+            type="jsonrpc",
+            runtimeAccess=AgentCoreRuntimeAccessConfig(
+                mode="jwt", jwt=AgentCoreRuntimeJwtConfig(audiences=["jarvis-managed-agents"])
+            ),
+        ),
+    )
+
+    def _fake_mcp_find(query, session=None):
+        if query == {"federationRefId": federation.id}:
+            return _FakeQuery([])
+        raise AssertionError(f"Unexpected MCP query: {query}")
+
+    def _fake_a2a_find(query, session=None):
+        if query == {"federationRefId": federation.id}:
+            return _FakeQuery([existing_a2a])
+        if query == {"path": {"$in": [agent_path]}}:
+            return _FakeQuery([existing_a2a])
+        raise AssertionError(f"Unexpected A2A query: {query}")
+
+    monkeypatch.setattr("registry.services.federation_sync_service.ExtendedMCPServer.find", _fake_mcp_find)
+    monkeypatch.setattr("registry.services.federation_sync_service.A2AAgent.find", _fake_a2a_find)
+
+    sync_plan = await federation_sync_service._build_sync_plan(
+        federation=federation,
+        discovered_mcp=[],
+        discovered_a2a=[discovered_a2a],
+    )
+
+    assert sync_plan.summary.updatedAgents == 1
+    assert sync_plan.summary.unchangedAgents == 0
+    assert sync_plan.a2a_updates == [(existing_a2a, discovered_a2a, runtime_arn)]
+
+
+@pytest.mark.asyncio
+async def test_build_sync_plan_treats_unparseable_existing_runtime_access_as_changed(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
+    """Fail-open regression test: a stored runtimeAccess dict that no longer matches
+    AgentCoreRuntimeAccessConfig's schema must force an update (refresh from AWS), not
+    crash the sync or get silently treated as unchanged."""
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    runtime_arn = "arn:aws:bedrock-agentcore:us-east-1:123:runtime/malformed-runtime-access-mcp"
+    existing_mcp = SimpleNamespace(
+        id=PydanticObjectId(),
+        federationRefId=federation.id,
+        federationMetadata={"runtimeArn": runtime_arn, "runtimeVersion": "1"},
+        serverName="malformed-runtime-access-mcp",
+        config={"runtimeAccess": {"mode": "jwt", "jwt": "not-a-mapping"}},
+    )
+    discovered_mcp = SimpleNamespace(
+        federationMetadata={"runtimeArn": runtime_arn, "runtimeVersion": "1"},
+        serverName="malformed-runtime-access-mcp",
+        config={"runtimeAccess": {"mode": "jwt", "jwt": {"audiences": ["jarvis-services"]}}},
+    )
+
+    def _fake_mcp_find(query, session=None):
+        if query == {"federationRefId": federation.id}:
+            return _FakeQuery([existing_mcp])
+        raise AssertionError(f"Unexpected MCP query: {query}")
+
+    def _fake_a2a_find(query, session=None):
+        if query == {"federationRefId": federation.id}:
+            return _FakeQuery([])
+        raise AssertionError(f"Unexpected A2A query: {query}")
+
+    monkeypatch.setattr("registry.services.federation_sync_service.ExtendedMCPServer.find", _fake_mcp_find)
+    monkeypatch.setattr("registry.services.federation_sync_service.A2AAgent.find", _fake_a2a_find)
+
+    sync_plan = await federation_sync_service._build_sync_plan(
+        federation=federation,
+        discovered_mcp=[discovered_mcp],
+        discovered_a2a=[],
+    )
+
+    assert sync_plan.summary.updatedMcpServers == 1
+    assert sync_plan.summary.unchangedMcpServers == 0
+    assert sync_plan.mcp_updates == [(existing_mcp, discovered_mcp, runtime_arn)]
 
 
 @pytest.mark.asyncio

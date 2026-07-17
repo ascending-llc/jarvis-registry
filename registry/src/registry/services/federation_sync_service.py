@@ -4,10 +4,12 @@ from datetime import UTC, datetime
 from typing import Any
 
 from beanie import PydanticObjectId
+from pydantic import ValidationError
 from pymongo.asynchronous.client_session import AsyncClientSession
 
 from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.models import A2AAgent, ExtendedMCPServer, PrincipalType, RegistryAccessRole, ResourceType
+from registry_pkgs.models.a2a_agent import AgentConfig
 from registry_pkgs.models.enums import (
     FederationJobPhase,
     FederationJobType,
@@ -18,6 +20,7 @@ from registry_pkgs.models.enums import (
 from registry_pkgs.models.extended_access_role import RegistryResourceType
 from registry_pkgs.models.extended_acl_entry import RegistryAclEntry
 from registry_pkgs.models.federation import (
+    AgentCoreRuntimeAccessConfig,
     Federation,
     FederationLastSync,
     FederationLastSyncSummary,
@@ -47,32 +50,49 @@ def _acl_key_part(value: Any) -> str:
     return str(_enum_value(value))
 
 
-def _runtime_access_mode(config: Any) -> str | None:
+def _normalize_runtime_access(
+    config: AgentConfig | dict[str, Any] | None,
+) -> AgentCoreRuntimeAccessConfig | None:
+    """Extract and parse a resource's config.runtimeAccess into a canonical model.
+
+    ExtendedMCPServer.config is an untyped dict (inherited from the codegen'd MCPServer base),
+    so its runtimeAccess arrives as a plain dict; A2AAgent.config is the typed AgentConfig, so
+    its runtimeAccess is already an AgentCoreRuntimeAccessConfig instance. Parsing both
+    representations into the same model type here means equality comparison covers every JWT
+    field (audiences, discoveryUrl, allowedClients, allowedScopes, customClaims) instead of just
+    mode, and is immune to default-key drift between differently-aged stored dicts.
+    """
     if not config:
         return None
 
     if isinstance(config, dict):
-        runtime_access = config.get("runtimeAccess")
+        raw_runtime_access = config.get("runtimeAccess")
     else:
-        runtime_access = getattr(config, "runtimeAccess", None)
+        raw_runtime_access = getattr(config, "runtimeAccess", None)
 
-    if runtime_access is None:
+    if raw_runtime_access is None:
         return None
 
-    if isinstance(runtime_access, dict):
-        mode = runtime_access.get("mode")
-    else:
-        mode = getattr(runtime_access, "mode", None)
+    if isinstance(raw_runtime_access, AgentCoreRuntimeAccessConfig):
+        return raw_runtime_access
 
-    if mode is None:
-        return None
-
-    normalized = str(_enum_value(mode)).strip().upper()
-    return normalized or None
+    return AgentCoreRuntimeAccessConfig(**raw_runtime_access)
 
 
-def _runtime_access_mode_changed(existing_config: Any, new_config: Any) -> bool:
-    return _runtime_access_mode(existing_config) != _runtime_access_mode(new_config)
+def _runtime_access_changed(
+    existing_config: AgentConfig | dict[str, Any] | None,
+    new_config: AgentConfig | dict[str, Any] | None,
+) -> bool:
+    try:
+        existing_runtime_access = _normalize_runtime_access(existing_config)
+        new_runtime_access = _normalize_runtime_access(new_config)
+    except (TypeError, ValidationError):
+        logger.warning(
+            "Failed to parse stored runtimeAccess for change detection; treating as changed",
+            exc_info=True,
+        )
+        return True
+    return existing_runtime_access != new_runtime_access
 
 
 @dataclass
@@ -635,7 +655,7 @@ class FederationSyncService:
                 apply_summary.createdMcpServers += 1
                 sync_plan.mcp_creates.append((item, remote_id))
             else:
-                runtime_access_changed = _runtime_access_mode_changed(
+                runtime_access_changed = _runtime_access_changed(
                     getattr(existing, "config", None),
                     getattr(item, "config", None),
                 )
@@ -733,7 +753,7 @@ class FederationSyncService:
                         f"(owned by federation {path_conflict.federationRefId or 'unknown'})"
                     )
                     continue
-                runtime_access_changed = _runtime_access_mode_changed(
+                runtime_access_changed = _runtime_access_changed(
                     getattr(existing, "config", None),
                     getattr(item, "config", None),
                 )
