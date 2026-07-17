@@ -110,6 +110,8 @@ class DeviceCodeStore(Protocol):
 
     def delete_user_code(self, user_code: str) -> None: ...
 
+    def delete_device_code(self, device_code: str) -> None: ...
+
 
 class DownstreamOAuthStoreProtocol(OAuthClientReader, RefreshTokenStore, Protocol):
     """Narrow store surface required by registry's per-server downstream OAuth flow."""
@@ -426,6 +428,13 @@ class OAuthStateStore:
             self._redis.delete(self._user_code_key(user_code))
         except RedisError:
             logger.exception("Failed to delete OAuth user code")
+            raise
+
+    def delete_device_code(self, device_code: str) -> None:
+        try:
+            self._redis.delete(self._device_key(device_code))
+        except RedisError:
+            logger.exception("Failed to delete OAuth device code")
             raise
 
     def _authcode_key(self, code: str) -> str:

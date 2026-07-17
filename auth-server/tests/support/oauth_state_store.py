@@ -132,6 +132,9 @@ class InMemoryOAuthStateStore(OAuthStateStoreProtocol):
     def delete_user_code(self, user_code: str) -> None:
         self.user_codes_storage.pop(user_code, None)
 
+    def delete_device_code(self, device_code: str) -> None:
+        self.device_codes_storage.pop(device_code, None)
+
 
 test_oauth_state_store = InMemoryOAuthStateStore()
 registered_clients = test_oauth_state_store.registered_clients
