@@ -232,6 +232,41 @@ class TestIsA2aEnabled:
         detail.agent_endpoint = _SdkEndpointModel({"authorization_schemes": []})
         assert AzureFoundryDiscoveryClient._is_a2a_enabled(detail) is False
 
+    def test_mapping_backed_non_dict_sdk_model(self):
+        """SDK models are MutableMapping subclasses, not necessarily dict subclasses."""
+        from collections.abc import Mapping
+
+        class _MappingModel(Mapping):
+            def __init__(self, data):
+                self._data = data
+
+            def __getitem__(self, key):
+                return self._data[key]
+
+            def __iter__(self):
+                return iter(self._data)
+
+            def __len__(self):
+                return len(self._data)
+
+        detail = _agent_detail("a", a2a=True)
+        detail.agent_endpoint = _MappingModel({"protocols": ["a2a"]})
+        assert AzureFoundryDiscoveryClient._is_a2a_enabled(detail) is True
+
+    def test_non_mapping_object_with_get_method_is_not_treated_as_mapping(self):
+        class _HttpishClient:
+            def get(self, url, timeout=30):  # non-mapping `get` semantics
+                raise AssertionError("must not be called")
+
+        detail = _agent_detail("a", a2a=True)
+        detail.agent_endpoint = _HttpishClient()
+        assert AzureFoundryDiscoveryClient._is_a2a_enabled(detail) is False
+
+    def test_string_protocols_value_is_not_split_into_characters(self):
+        detail = _agent_detail("a", a2a=True)
+        detail.agent_endpoint = _SdkEndpointModel({"protocols": "a2a"})
+        assert AzureFoundryDiscoveryClient._is_a2a_enabled(detail) is True
+
 
 @pytest.mark.asyncio
 async def test_discover_includes_agents_from_dict_backed_sdk_models(fake_a2a_agent_factory):
