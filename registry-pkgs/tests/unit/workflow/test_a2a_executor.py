@@ -1,6 +1,8 @@
+import base64
 from unittest.mock import patch
 
 from a2a.types import Artifact, Part, Task, TaskState, TaskStatus, TextPart
+from agno.media import File
 
 from registry_pkgs.workflows.a2a_client import A2ACallResult
 from registry_pkgs.workflows.a2a_executor import (
@@ -25,6 +27,22 @@ def _datauri_block(name: str, mime: str, b64: str) -> str:
     return f"### {name} ({mime})\ndata:{mime};base64,{b64}\n"
 
 
+def test_agno_file_from_base64_does_not_decode_text_mime_types():
+    """Pins agno's documented text/* convention in File.from_base64: for text/* MIME
+    types the input is treated as already-raw text, not base64 (unlike Image/Video/Audio,
+    which always decode).
+
+    If this starts failing, agno has changed that convention to decode text/* content
+    too — remove _file_content_for_from_base64's reconciliation in a2a_executor.py,
+    it's no longer needed.
+    """
+    encoded = base64.b64encode(b"hello world").decode()
+
+    file = File.from_base64(encoded, mime_type="text/plain")
+
+    assert file.content == encoded.encode("utf-8")  # NOT b"hello world" — agno's quirk
+
+
 def test_extracts_all_media_types_into_buckets():
     text = (
         "Media echo (datauri mode): hello\n\n"
@@ -41,6 +59,7 @@ def test_extracts_all_media_types_into_buckets():
     assert [v.id for v in buckets["videos"]] == ["minimal.mp4"]
     assert [a.id for a in buckets["audio"]] == ["silence.wav"]
     assert [f.name for f in buckets["files"]] == ["sample.csv"]
+    assert buckets["files"][0].content == base64.b64decode(CSV_B64)
     assert "base64," not in cleaned
     assert "[media: red_pixel.png (image/png)]" in cleaned
     assert "[media: sample.csv (text/csv)]" in cleaned

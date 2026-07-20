@@ -44,6 +44,23 @@ def _safe_file_mime_type(mime_type: str | None) -> str | None:
     return media_type if media_type in File.valid_mime_types() else None
 
 
+def _file_content_for_from_base64(b64_content: str, mime_type: str | None) -> str:
+    """Pre-decode base64 content for `text/*` MIME types before handing it to `File.from_base64`.
+
+    `agno.media.File.from_base64` documents that for `text/*` MIME types its input is
+    already raw text, not base64 (unlike Image/Video/Audio, which always decode) — this
+    avoids corrupting plain text that happens to look like valid base64. A2A
+    `FileWithBytes.bytes` is always base64-encoded regardless of MIME type, so callers
+    must reconcile the two conventions here before the text/* content reaches agno.
+    """
+    if not mime_type or not mime_type.startswith("text/"):
+        return b64_content
+    try:
+        return base64.b64decode(b64_content, validate=True).decode("utf-8")
+    except (binascii.Error, ValueError, UnicodeDecodeError):
+        return b64_content
+
+
 def _file_payload_to_media(payload: FileWithBytes | FileWithUri) -> Audio | File | Image | Video | None:
     """Convert one A2A file payload into Image/Video/Audio/File by MIME prefix (bytes→from_base64, uri→url)."""
     mime_type = payload.mime_type
@@ -59,7 +76,7 @@ def _file_payload_to_media(payload: FileWithBytes | FileWithUri) -> Audio | File
         if media_type.startswith("audio/"):
             return Audio.from_base64(payload.bytes, id=payload.name, mime_type=mime_type)
         file = File.from_base64(
-            payload.bytes,
+            _file_content_for_from_base64(payload.bytes, safe_mime_type),
             id=payload.name,
             mime_type=safe_mime_type,
             filename=payload.name,
