@@ -119,4 +119,5 @@ exclude-signatures = [
     {signature = 'f2ac4fcc348b1cb33ff986992ce2934685075ab8635c54f660df243eeebf8817', reason = 'new observability docs file — high entropy false positive from mermaid diagram and YAML snippets, no credentials'},
     {signature = 'fc499204ab43adce07c0d0308e0e4d6b3310baceb359a11111086a2ff7d2c21f', reason = 'test_server.py expansion — synthetic MongoDB ObjectIds and mock data in unit tests are not credentials'},
     {signature = '106fdc9de93fafffff0f42f31d3f6b3284aefd08cc839b04342103cbd9b00f7a', reason = 'consent route unit test uses synthetic OAuth fixtures and mocked tokens, not real credentials'},
+    {signature = '62df927a97f0a0def09c24a1a6a94278b15bb82892f1e4a33a4d7a7274203036', reason = 'base64 test media fixtures (1x1 PNG, silent WAV, minimal MP4/CSV) in data-URI extraction unit test are not credentials'},
 ]

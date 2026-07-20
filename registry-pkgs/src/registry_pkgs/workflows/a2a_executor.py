@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import logging
+import mimetypes
+import re
 from typing import Any
 
 import httpx
@@ -24,6 +28,14 @@ from registry_pkgs.workflows.a2a_client import (
 from registry_pkgs.workflows.helpers import build_prompt
 
 logger = logging.getLogger(__name__)
+
+# data: URIs embedded in agent text (the only media channel that survives the
+# Azure Foundry responses→A2A bridge, which strips all non-text content).
+_DATA_URI_RE = re.compile(r"data:(?P<mime>[\w.+-]+/[\w.+-]+);base64,(?P<b64>[A-Za-z0-9+/=]+)")
+# Optional "### <filename> (<mime>)" header line the media-echo agents emit above each URI.
+_MEDIA_HEADER_RE = re.compile(r"#+\s*(?P<name>\S+)\s*\((?P<mime>[^)]+)\)\s*$")
+_DATA_URI_MAX_DECODED_BYTES = 10 * 1024 * 1024
+_DATA_URI_MAX_COUNT = 20
 
 
 def _safe_file_mime_type(mime_type: str | None) -> str | None:
@@ -159,6 +171,74 @@ def _append_task_media(
         )
 
 
+def _data_uri_filename(text: str, match_start: int, mime: str, index: int) -> str:
+    """Resolve a filename for an inline data URI: preceding '### name (mime)' header, else generated."""
+    preceding_lines = [line.strip() for line in text[:match_start].splitlines() if line.strip()]
+    if preceding_lines:
+        header = _MEDIA_HEADER_RE.match(preceding_lines[-1])
+        if header and header.group("mime").split(";", 1)[0].strip().lower() == mime:
+            return header.group("name")
+    extension = mimetypes.guess_extension(mime) or ".bin"
+    return f"inline-{index}{extension}"
+
+
+def _extract_data_uri_media(
+    text: str,
+    *,
+    files: list[File],
+    images: list[Image],
+    videos: list[Video],
+    audio: list[Audio],
+) -> str:
+    """Promote base64 data: URIs embedded in agent text into the structured media buckets.
+
+    Azure Foundry's responses→A2A bridge strips every non-text content item, so
+    federated Foundry agents can only deliver media as data: URIs inside their
+    text output. Each extracted URI goes through the same FilePart pathway as
+    native A2A media and is replaced in the text with a short placeholder so the
+    base64 payload does not flow into downstream prompts. Invalid, oversized, or
+    over-the-cap URIs are left in the text untouched.
+    """
+    pieces: list[str] = []
+    cursor = 0
+    extracted = 0
+
+    for match in _DATA_URI_RE.finditer(text):
+        mime = match.group("mime").lower()
+        b64 = match.group("b64")
+
+        if extracted >= _DATA_URI_MAX_COUNT or len(b64) * 3 // 4 > _DATA_URI_MAX_DECODED_BYTES:
+            continue
+        try:
+            base64.b64decode(b64, validate=True)
+        except (binascii.Error, ValueError):
+            continue
+
+        extracted += 1
+        filename = _data_uri_filename(text, match.start(), mime, extracted)
+        media = _file_payload_to_media(FileWithBytes(bytes=b64, mime_type=mime, name=filename))
+        if isinstance(media, Image):
+            images.append(media)
+        elif isinstance(media, Video):
+            videos.append(media)
+        elif isinstance(media, Audio):
+            audio.append(media)
+        elif isinstance(media, File):
+            files.append(media)
+        else:
+            extracted -= 1
+            continue
+
+        pieces.append(text[cursor : match.start()])
+        pieces.append(f"[media: {filename} ({mime})]")
+        cursor = match.end()
+
+    if not pieces:
+        return text
+    pieces.append(text[cursor:])
+    return "".join(pieces)
+
+
 def _a2a_result_to_step_output(result: A2ACallResult) -> StepOutput:
     """Convert A2A text and artifacts into Agno's StepOutput media model."""
     files: list[File] = []
@@ -179,6 +259,8 @@ def _a2a_result_to_step_output(result: A2ACallResult) -> StepOutput:
         _append_task_media(result.task, files=files, images=images, videos=videos, audio=audio)
 
     text = result.render_text()
+    if text:
+        text = _extract_data_uri_media(text, files=files, images=images, videos=videos, audio=audio)
     return StepOutput(
         content=text if text else None,
         images=images or None,
