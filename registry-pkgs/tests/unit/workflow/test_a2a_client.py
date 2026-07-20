@@ -776,11 +776,13 @@ async def test_call_a2a_accepts_pre_parsed_message():
     mock_create.assert_not_called()
 
 
-def _azure_foundry_agent() -> A2AAgent:
+def _real_client_agent(*, name: str = "Test Agent") -> A2AAgent:
+    """Agent with a fully-realized AgentCard (real AgentCapabilities, not `_make_agent`'s
+    bare `{}`), needed by any test that exercises the real ClientFactory/BaseClient instead
+    of mocking it — BaseClient reads `card.capabilities.streaming` directly."""
     agent = _make_agent(transport="jsonrpc")
-    agent.federationMetadata = {"providerType": FederationProviderType.AZURE_AI_FOUNDRY}
     agent.card = AgentCard.model_construct(
-        name="Azure Test Agent",
+        name=name,
         url="https://agent.example.com",
         version="1.0.0",
         protocol_version="0.3.0",
@@ -789,6 +791,12 @@ def _azure_foundry_agent() -> A2AAgent:
         defaultOutputModes=["text/plain"],
         skills=[],
     )
+    return agent
+
+
+def _azure_foundry_agent() -> A2AAgent:
+    agent = _real_client_agent(name="Azure Test Agent")
+    agent.federationMetadata = {"providerType": FederationProviderType.AZURE_AI_FOUNDRY}
     return agent
 
 
@@ -880,15 +888,37 @@ async def test_call_a2a_tolerates_azure_foundry_missing_artifact_id():
 
 @pytest.mark.asyncio
 async def test_call_a2a_uses_standard_transport_for_non_azure_jsonrpc_agent():
-    """Non-Azure JSON-RPC agents must keep the default strict transport; the base
-    JsonRpcTransport._send_request should be used without our tolerant subclass."""
-    agent = _make_agent(transport="jsonrpc")
-    mock_factory, _ = _mock_client([_msg("ok")])
+    """Non-Azure JSON-RPC agents must keep the default strict transport: a Task response
+    missing artifact_id must fail Pydantic validation exactly like the standard a2a-sdk
+    JsonRpcTransport would, proving the Azure-tolerant subclass is not registered here.
+
+    Uses the real ClientFactory (unlike other call_a2a tests, which mock it out) so the
+    transport-registration branch in call_a2a actually runs.
+    """
+    agent = _real_client_agent()  # federationMetadata={} → not Azure Foundry
+
+    raw_response = {
+        "jsonrpc": "2.0",
+        "id": "rpc-1",
+        "result": {
+            "kind": "task",
+            "id": "task-1",
+            "context_id": "ctx-1",
+            "status": {"state": "completed"},
+            "artifacts": [{"parts": [{"kind": "text", "text": "hello"}]}],
+        },
+    }
 
     with (
         patch("registry_pkgs.workflows.a2a_client.build_headers", return_value={}),
-        patch("registry_pkgs.workflows.a2a_client.ClientFactory", return_value=mock_factory),
+        patch(
+            "a2a.client.transports.jsonrpc.JsonRpcTransport._send_request",
+            new_callable=AsyncMock,
+            return_value=raw_response,
+        ) as send_request_spy,
     ):
         result = await call_a2a(agent, "test", jwt_config=_jwt_config())
 
-    assert result.success is True
+    send_request_spy.assert_awaited_once()
+    assert result.success is False
+    assert "artifactid" in (result.error or "").lower()
