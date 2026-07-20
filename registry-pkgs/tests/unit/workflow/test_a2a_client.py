@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from a2a.client import ClientConfig
 from a2a.types import (
+    AgentCapabilities,
     AgentCard,
     Artifact,
     Message,
@@ -22,7 +23,12 @@ from beanie import PydanticObjectId
 from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.models.a2a_agent import A2AAgent, AgentConfig
 from registry_pkgs.models.enums import FederationProviderType
-from registry_pkgs.workflows.a2a_client import A2ACallResult, build_headers, call_a2a
+from registry_pkgs.workflows.a2a_client import (
+    A2ACallResult,
+    _ensure_a2a_result_fields,
+    build_headers,
+    call_a2a,
+)
 
 
 def _jwt_config() -> JwtSigningConfig:
@@ -768,3 +774,151 @@ async def test_call_a2a_accepts_pre_parsed_message():
 
     assert result.success is True
     mock_create.assert_not_called()
+
+
+def _real_client_agent(*, name: str = "Test Agent") -> A2AAgent:
+    """Agent with a fully-realized AgentCard (real AgentCapabilities, not `_make_agent`'s
+    bare `{}`), needed by any test that exercises the real ClientFactory/BaseClient instead
+    of mocking it — BaseClient reads `card.capabilities.streaming` directly."""
+    agent = _make_agent(transport="jsonrpc")
+    agent.card = AgentCard.model_construct(
+        name=name,
+        url="https://agent.example.com",
+        version="1.0.0",
+        protocol_version="0.3.0",
+        capabilities=AgentCapabilities(streaming=False),
+        defaultInputModes=["text/plain"],
+        defaultOutputModes=["text/plain"],
+        skills=[],
+    )
+    return agent
+
+
+def _azure_foundry_agent() -> A2AAgent:
+    agent = _real_client_agent(name="Azure Test Agent")
+    agent.federationMetadata = {"providerType": FederationProviderType.AZURE_AI_FOUNDRY}
+    return agent
+
+
+def test_ensure_a2a_result_fields_adds_missing_artifact_id():
+    result = {
+        "kind": "task",
+        "id": "task-1",
+        "context_id": "ctx-1",
+        "status": {"state": "completed"},
+        "artifacts": [
+            {"parts": [{"kind": "text", "text": "first"}]},
+            {"parts": [{"kind": "text", "text": "second"}]},
+        ],
+    }
+    _ensure_a2a_result_fields(result)
+
+    assert result["artifacts"][0]["artifact_id"]
+    assert result["artifacts"][1]["artifact_id"]
+    assert result["artifacts"][0]["artifact_id"] != result["artifacts"][1]["artifact_id"]
+
+
+def test_ensure_a2a_result_fields_is_idempotent():
+    result = {
+        "kind": "task",
+        "artifacts": [{"artifact_id": "existing-id", "parts": [{"kind": "text", "text": "keep"}]}],
+    }
+    _ensure_a2a_result_fields(result)
+
+    assert result["artifacts"][0]["artifact_id"] == "existing-id"
+
+
+def test_ensure_a2a_result_fields_respects_camelcase_artifact_id():
+    """A spec-compliant response using the camelCase wire alias must not be touched."""
+    result = {
+        "kind": "task",
+        "artifacts": [{"artifactId": "wire-id", "parts": [{"kind": "text", "text": "keep"}]}],
+    }
+    _ensure_a2a_result_fields(result)
+
+    assert result["artifacts"][0]["artifactId"] == "wire-id"
+    assert "artifact_id" not in result["artifacts"][0]
+
+
+def test_ensure_a2a_result_fields_leaves_message_result_untouched():
+    result = {
+        "kind": "message",
+        "message_id": "msg-1",
+        "role": "user",
+        "parts": [{"kind": "text", "text": "hello"}],
+    }
+    _ensure_a2a_result_fields(result)
+
+    assert "artifact_id" not in result
+
+
+@pytest.mark.asyncio
+async def test_call_a2a_tolerates_azure_foundry_missing_artifact_id():
+    """Azure Foundry returns Task artifacts without artifact_id; the call must succeed."""
+    agent = _azure_foundry_agent()
+
+    raw_response = {
+        "jsonrpc": "2.0",
+        "id": "rpc-1",
+        "result": {
+            "kind": "task",
+            "id": "task-1",
+            "context_id": "ctx-1",
+            "status": {"state": "completed"},
+            "artifacts": [{"parts": [{"kind": "text", "text": "hello from azure"}]}],
+        },
+    }
+
+    with (
+        patch("registry_pkgs.workflows.a2a_client.build_headers", return_value={}),
+        patch(
+            "a2a.client.transports.jsonrpc.JsonRpcTransport._send_request",
+            new_callable=AsyncMock,
+            return_value=raw_response,
+        ) as send_request_spy,
+    ):
+        result = await call_a2a(agent, "test", jwt_config=_jwt_config())
+
+    send_request_spy.assert_awaited_once()
+    assert result.success is True
+    assert result.task is not None
+    assert result.task.artifacts[0].artifact_id
+    assert result.render_text() == "hello from azure"
+
+
+@pytest.mark.asyncio
+async def test_call_a2a_uses_standard_transport_for_non_azure_jsonrpc_agent():
+    """Non-Azure JSON-RPC agents must keep the default strict transport: a Task response
+    missing artifact_id must fail Pydantic validation exactly like the standard a2a-sdk
+    JsonRpcTransport would, proving the Azure-tolerant subclass is not registered here.
+
+    Uses the real ClientFactory (unlike other call_a2a tests, which mock it out) so the
+    transport-registration branch in call_a2a actually runs.
+    """
+    agent = _real_client_agent()  # federationMetadata={} → not Azure Foundry
+
+    raw_response = {
+        "jsonrpc": "2.0",
+        "id": "rpc-1",
+        "result": {
+            "kind": "task",
+            "id": "task-1",
+            "context_id": "ctx-1",
+            "status": {"state": "completed"},
+            "artifacts": [{"parts": [{"kind": "text", "text": "hello"}]}],
+        },
+    }
+
+    with (
+        patch("registry_pkgs.workflows.a2a_client.build_headers", return_value={}),
+        patch(
+            "a2a.client.transports.jsonrpc.JsonRpcTransport._send_request",
+            new_callable=AsyncMock,
+            return_value=raw_response,
+        ) as send_request_spy,
+    ):
+        result = await call_a2a(agent, "test", jwt_config=_jwt_config())
+
+    send_request_spy.assert_awaited_once()
+    assert result.success is False
+    assert "artifactid" in (result.error or "").lower()
