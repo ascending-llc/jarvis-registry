@@ -40,19 +40,11 @@ def _run() -> WorkflowRun:
 
 def _make_runner(**kwargs) -> runner.WorkflowRunner:
     """Return a WorkflowRunner with sensible test defaults."""
-    from registry_pkgs.core.config import JwtSigningConfig
-
     defaults = {
         "llm": object(),
         "registry_url": "http://localhost:7860",
         "db_client": object(),
         "db_name": "jarvis",
-        "jwt_config": JwtSigningConfig(
-            jwt_private_key="fake-pem",
-            jwt_issuer="https://jarvis.example.com",
-            jwt_self_signed_kid="kid-v1",
-            jwt_audience="jarvis-services",
-        ),
     }
     defaults.update(kwargs)
     return runner.WorkflowRunner(**defaults)
@@ -236,17 +228,16 @@ class TestBuildRegistry:
             llm,
             registry_url,
             registry_token,
-            jwt_config,
             user_id,
             pool_nodes,
             selector_llm,
-            a2a_httpx_client=None,
-            headers_provider=None,
+            client_provider=None,
         ):
             captured["executor_keys"] = executor_keys
             captured["pool_nodes"] = [n.name for n in pool_nodes]
             captured["registry_token"] = registry_token
             captured["user_id"] = user_id
+            captured["client_provider"] = client_provider
             return {}
 
         monkeypatch.setattr(runner, "build_executor_registry", fake_build)
@@ -258,6 +249,7 @@ class TestBuildRegistry:
         assert captured["pool_nodes"] == ["pool-step"]
         assert captured["registry_token"] == "my-token"
         assert captured["user_id"] == "user-1"
+        assert captured["client_provider"] is None
 
 
 @pytest.mark.unit

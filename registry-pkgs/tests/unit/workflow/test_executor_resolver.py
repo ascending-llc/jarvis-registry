@@ -102,7 +102,6 @@ class TestExecutorResolver:
             llm=SimpleNamespace(),
             registry_url="https://registry.example.com",
             registry_token="token",
-            jwt_config=_jwt_config(),
             user_id=None,
         )
 
@@ -124,7 +123,6 @@ class TestExecutorResolver:
             llm=SimpleNamespace(),
             registry_url="https://registry.example.com",
             registry_token="token",
-            jwt_config=_jwt_config(),
             accessible_agent_ids=None,
         )
 
@@ -142,7 +140,6 @@ class TestExecutorResolver:
             llm=SimpleNamespace(),
             registry_url="https://registry.example.com",
             registry_token="token",
-            jwt_config=_jwt_config(),
             accessible_agent_ids=None,
         )
 
@@ -161,8 +158,9 @@ class TestExecutorResolver:
         monkeypatch.setattr(executor_resolver.A2AAgent, "find_one", find_one)
         captured_agents: list = []
 
-        def fake_make_a2a_executor(agent, *, jwt_config, httpx_client=None, headers_provider=None):
+        def fake_make_a2a_executor(agent, *, client_provider=None):
             captured_agents.append(agent)
+            assert client_provider is None
             return "a2a-executor"
 
         monkeypatch.setattr(executor_resolver, "make_a2a_executor", fake_make_a2a_executor)
@@ -172,7 +170,6 @@ class TestExecutorResolver:
             llm=SimpleNamespace(),
             registry_url="https://registry.example.com",
             registry_token="token",
-            jwt_config=_jwt_config(),
             accessible_agent_ids=None,
         )
 
@@ -193,7 +190,6 @@ class TestExecutorResolver:
                 llm=SimpleNamespace(),
                 registry_url="https://registry.example.com",
                 registry_token="token",
-                jwt_config=_jwt_config(),
                 accessible_agent_ids=None,
             )
 
@@ -213,7 +209,6 @@ class TestExecutorResolver:
                 llm=SimpleNamespace(),
                 registry_url="https://registry.example.com",
                 registry_token="token",
-                jwt_config=_jwt_config(),
                 accessible_agent_ids=set(),  # explicitly empty: no access
             )
 
@@ -230,7 +225,6 @@ class TestExecutorResolver:
             llm=SimpleNamespace(),
             registry_url="https://registry.example.com",
             registry_token="token",
-            jwt_config=_jwt_config(),
             accessible_agent_ids={str(agent.id)},
         )
 
@@ -382,9 +376,9 @@ class TestA2AExecutor:
         }
 
     @pytest.mark.asyncio
-    async def test_make_a2a_executor_passes_httpx_client_to_call_a2a(self):
-        """The closure returned by make_a2a_executor must forward its captured
-        httpx_client to call_a2a so the workflow step reuses the shared pool."""
+    async def test_make_a2a_executor_resolves_client_provider_before_call_a2a(self):
+        """The closure returned by make_a2a_executor must resolve an agent-specific
+        client before calling call_a2a."""
         from unittest.mock import patch
 
         import httpx
@@ -395,10 +389,10 @@ class TestA2AExecutor:
         agent = _a2a_agent()
         shared = httpx.AsyncClient()
         try:
+            client_provider = AsyncMock(return_value=shared)
             executor = make_a2a_executor(
                 agent,
-                jwt_config=_jwt_config(),
-                httpx_client=shared,
+                client_provider=client_provider,
             )
             captured_kwargs: dict = {}
 
@@ -411,6 +405,7 @@ class TestA2AExecutor:
                 await executor(step_input)
 
             assert captured_kwargs.get("httpx_client") is shared
+            client_provider.assert_awaited_once_with(agent)
         finally:
             await shared.aclose()
 
@@ -466,7 +461,7 @@ class TestA2AExecutor:
 
         monkeypatch.setattr(a2a_exec, "call_a2a", fake_call_a2a)
 
-        output = await make_a2a_executor(_a2a_agent(), jwt_config=_jwt_config())(StepInput(input="hello"))
+        output = await make_a2a_executor(_a2a_agent())(StepInput(input="hello"))
 
         assert output.content == "done"
         assert output.images and output.images[0].mime_type == "image/jpeg"
@@ -513,7 +508,7 @@ class TestA2AExecutor:
 
         monkeypatch.setattr(a2a_exec, "call_a2a", fake_call_a2a)
 
-        output = await make_a2a_executor(_a2a_agent(), jwt_config=_jwt_config())(StepInput(input="hello"))
+        output = await make_a2a_executor(_a2a_agent())(StepInput(input="hello"))
 
         assert output.files and len(output.files) == 2
         data_file = next(f for f in output.files if f.filename == "report-data-1.json")
@@ -551,7 +546,7 @@ class TestA2AExecutor:
 
         monkeypatch.setattr(a2a_exec, "call_a2a", fake_call_a2a)
 
-        output = await make_a2a_executor(_a2a_agent(), jwt_config=_jwt_config())(StepInput(input="hello"))
+        output = await make_a2a_executor(_a2a_agent())(StepInput(input="hello"))
 
         assert output.files and output.files[0].filename == "bundle.zip"
         assert output.files[0].mime_type is None
@@ -634,7 +629,6 @@ class TestLoadAccessibleAgentIds:
             llm=SimpleNamespace(),
             registry_url="https://registry.example.com",
             registry_token="token",
-            jwt_config=_jwt_config(),
             user_id="user-123",
         )
 
@@ -668,7 +662,6 @@ class TestA2APoolExecutorQueries:
             node_name="test-pool",
             pool_keys=["agent-a", "agent-b"],
             selector_llm=SimpleNamespace(),
-            jwt_config=_jwt_config(),
             accessible_agent_ids=None,
         )
 
@@ -698,7 +691,6 @@ class TestA2APoolExecutorQueries:
             node_name="retry-pool",
             pool_keys=["agent-a"],
             selector_llm=SimpleNamespace(),
-            jwt_config=_jwt_config(),
             accessible_agent_ids=None,
         )
 
