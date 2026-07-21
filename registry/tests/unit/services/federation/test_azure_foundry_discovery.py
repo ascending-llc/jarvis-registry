@@ -193,6 +193,109 @@ def _fake_card_payload(name: str, *, transport: str = "JSONRPC") -> SimpleNamesp
     return SimpleNamespace(model_dump=lambda **_: dict(payload))
 
 
+class _SdkEndpointModel(dict):
+    @property
+    def authorization_schemes(self):
+        return dict.get(self, "authorization_schemes")
+
+
+def _sdk_agent_detail(name: str, *, protocols: list[str]) -> SimpleNamespace:
+    detail = _agent_detail(name, a2a=True)
+    detail.agent_endpoint = _SdkEndpointModel(
+        {
+            "protocols": protocols,
+            "authorization_schemes": [{"type": "Entra"}],
+        }
+    )
+    return detail
+
+
+class TestIsA2aEnabled:
+    def test_attribute_based_protocols(self):
+        assert AzureFoundryDiscoveryClient._is_a2a_enabled(_agent_detail("a", a2a=True)) is True
+        assert AzureFoundryDiscoveryClient._is_a2a_enabled(_agent_detail("a", a2a=False)) is False
+
+    def test_dict_backed_sdk_model_without_protocols_attribute(self):
+        detail = _sdk_agent_detail("a", protocols=["a2a", "responses"])
+        assert getattr(detail.agent_endpoint, "protocols", None) is None  # precondition
+        assert AzureFoundryDiscoveryClient._is_a2a_enabled(detail) is True
+
+    def test_dict_backed_sdk_model_without_a2a(self):
+        detail = _sdk_agent_detail("a", protocols=["responses"])
+        assert AzureFoundryDiscoveryClient._is_a2a_enabled(detail) is False
+
+    def test_missing_endpoint(self):
+        assert AzureFoundryDiscoveryClient._is_a2a_enabled(SimpleNamespace(name="a")) is False
+
+    def test_endpoint_without_protocols_anywhere(self):
+        detail = _agent_detail("a", a2a=True)
+        detail.agent_endpoint = _SdkEndpointModel({"authorization_schemes": []})
+        assert AzureFoundryDiscoveryClient._is_a2a_enabled(detail) is False
+
+    def test_mapping_backed_non_dict_sdk_model(self):
+        """SDK models are MutableMapping subclasses, not necessarily dict subclasses."""
+        from collections.abc import Mapping
+
+        class _MappingModel(Mapping):
+            def __init__(self, data):
+                self._data = data
+
+            def __getitem__(self, key):
+                return self._data[key]
+
+            def __iter__(self):
+                return iter(self._data)
+
+            def __len__(self):
+                return len(self._data)
+
+        detail = _agent_detail("a", a2a=True)
+        detail.agent_endpoint = _MappingModel({"protocols": ["a2a"]})
+        assert AzureFoundryDiscoveryClient._is_a2a_enabled(detail) is True
+
+    def test_non_mapping_object_with_get_method_is_not_treated_as_mapping(self):
+        class _HttpishClient:
+            def get(self, url, timeout=30):  # non-mapping `get` semantics
+                raise AssertionError("must not be called")
+
+        detail = _agent_detail("a", a2a=True)
+        detail.agent_endpoint = _HttpishClient()
+        assert AzureFoundryDiscoveryClient._is_a2a_enabled(detail) is False
+
+    def test_string_protocols_value_is_not_split_into_characters(self):
+        detail = _agent_detail("a", a2a=True)
+        detail.agent_endpoint = _SdkEndpointModel({"protocols": "a2a"})
+        assert AzureFoundryDiscoveryClient._is_a2a_enabled(detail) is True
+
+
+@pytest.mark.asyncio
+async def test_discover_includes_agents_from_dict_backed_sdk_models(fake_a2a_agent_factory):
+    agents_fake = _FakeAgents(
+        summaries=[_agent_summary("echo-a2a")],
+        details_map={"echo-a2a": _sdk_agent_detail("echo-a2a", protocols=["a2a", "responses"])},
+    )
+
+    resolver = MagicMock()
+    resolver.get_agent_card = AsyncMock(return_value=_fake_card_payload("echo-a2a"))
+
+    with (
+        _patch_project(agents_fake),
+        _patch_httpx(),
+        patch(
+            "registry.services.federation.azure_foundry_discovery.A2ACardResolver",
+            return_value=resolver,
+        ),
+    ):
+        client = AzureFoundryDiscoveryClient()
+        result = await client.discover_a2a_agents(
+            provider_config=_provider_config(),
+            auth=_make_auth_stub(),
+            author_id=AUTHOR_ID,
+        )
+
+    assert [a.federationMetadata["agentName"] for a in result] == ["echo-a2a"]
+
+
 @pytest.mark.asyncio
 async def test_discover_filters_to_a2a_enabled_agents_only(fake_a2a_agent_factory):
     agents_fake = _FakeAgents(
