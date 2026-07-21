@@ -38,6 +38,14 @@ def _build_app() -> FastAPI:
     async def ds_token_ep(user_id: str, server_path: str):
         return JSONResponse({"ok": "token"})
 
+    @app.post("/api/v1/mcp/downstream/oauth/device/{user_id}/{server_path:path}")
+    async def ds_device_ep(user_id: str, server_path: str):
+        return JSONResponse({"ok": "device"})
+
+    @app.get("/api/v1/mcp/consent/device/resolve")
+    async def ds_device_resolve_ep():
+        return JSONResponse({"ok": "resolve"})
+
     return app
 
 
@@ -179,6 +187,16 @@ def test_direct_connect_accepts_root_as_token_without_server_path(client):
 def test_downstream_token_endpoint_is_public(client):
     # The PKCE-protected /token exchange carries no registry credential, so it must be public.
     resp = client.post(f"/api/v1/mcp/downstream/oauth/token/{USER_A}/github")
+    assert resp.status_code == 200
+
+
+def test_downstream_device_endpoint_is_public(client):
+    resp = client.post(f"/api/v1/mcp/downstream/oauth/device/{USER_A}/github")
+    assert resp.status_code == 200
+
+
+def test_downstream_device_resolver_is_public(client):
+    resp = client.get("/api/v1/mcp/consent/device/resolve")
     assert resp.status_code == 200
 
 

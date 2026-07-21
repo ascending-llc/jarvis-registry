@@ -20,7 +20,12 @@ from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from pydantic import BaseModel
 
 from registry_pkgs.core.consent_store import PENDING_CONSENT_TTL_SECONDS, ConsentStore, PendingConsentStore
-from registry_pkgs.core.downstream_oauth import oauth_error_payload
+from registry_pkgs.core.downstream_oauth import (
+    DEVICE_CODE_GRANT_TYPE,
+    generate_user_code,
+    normalize_user_code,
+    oauth_error_payload,
+)
 from registry_pkgs.core.jwt_tokens import mint_managed_agent_token
 from registry_pkgs.core.jwt_utils import (
     InvalidAudienceError,
@@ -168,7 +173,6 @@ class ClientRegistrationResponse(BaseModel):
     scope: str | None = None
 
 
-DEVICE_CODE_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code"
 SUPPORTED_TOKEN_ENDPOINT_AUTH_METHODS = frozenset({"none", "client_secret_post"})
 
 
@@ -244,13 +248,6 @@ def _auth_server_external_url(path: str) -> str:
     if prefix and base_url.endswith(prefix):
         return f"{base_url}{path}"
     return f"{base_url}{prefix}{path}"
-
-
-def _normalize_user_code(user_code: str) -> str:
-    compact = "".join(char for char in user_code.upper() if char.isalnum())
-    if len(compact) == 8:
-        return f"{compact[:4]}-{compact[4:]}"
-    return user_code.strip().upper()
 
 
 def _redirect_to_provider(
@@ -468,16 +465,6 @@ async def register_client(
         raise HTTPException(status_code=500, detail="Client registration failed")
 
 
-# Device Flow helpers
-def generate_user_code() -> str:
-    import string
-
-    chars = string.ascii_uppercase + string.digits
-    chars = chars.replace("O", "").replace("0", "").replace("I", "").replace("1", "")
-    code = "".join(secrets.choice(chars) for _ in range(8))
-    return f"{code[:4]}-{code[4:]}"
-
-
 @router.post("/oauth2/device/code", response_model=DeviceCodeResponse, response_model_exclude_none=True)
 async def device_authorization(
     req: Request,
@@ -557,7 +544,7 @@ async def device_verify_entry(
             render_device_code_entry_page(verify_action=_auth_server_route_path("/oauth2/device/verify"))
         )
 
-    normalized = _normalize_user_code(user_code)
+    normalized = normalize_user_code(user_code)
     device_code = store.get_user_code(normalized)
     device_data = store.get_device_code(device_code) if device_code else None
     if device_data is None or device_data["status"] != "pending":
@@ -580,7 +567,7 @@ async def device_verify_continue(
     store: OAuthStateStoreProtocol = Depends(get_oauth_state_store),
 ) -> Response:
     try:
-        normalized = _normalize_user_code(user_code)
+        normalized = normalize_user_code(user_code)
         device_code = store.get_user_code(normalized)
         device_data = store.get_device_code(device_code) if device_code else None
         if device_data is None or device_data["status"] != "pending":

@@ -11,13 +11,25 @@ by hand. It intentionally only talks to `auth-server` over HTTP and only reads
 JWT-decoding helpers from `registry_pkgs` — the same public surface a real,
 external device-flow client would have.
 
-Runs the full flow twice:
+Runs the full flow twice against auth-server's root device-code endpoint:
   - "Mode 1" client:      DCR with token_endpoint_auth_method=none (public client)
   - "Mode 2 sub-case B":  DCR with token_endpoint_auth_method=client_secret_post (confidential client)
 
 Both are DCR-registered clients (never `registry_app_name`, the registry's own
 first-party SPA client, which never uses device flow) and both go through
 Consent Type 1 (client-id consent) since neither is the registry's own client.
+
+Then runs it twice more (AS-1727) against the per-`(user_id, server_path)` downstream
+device-code endpoint hosted by `registry` itself (Mode 2 sub-case A, e.g. a
+`requiresOAuth=True` server like GitHub):
+  - Mode 2 sub-case A / public:       DCR with token_endpoint_auth_method=none
+  - Mode 2 sub-case A / confidential: DCR with token_endpoint_auth_method=client_secret_post
+
+The `(user_id, server_path)` pair is read from `DOWNSTREAM_USER_ID` /
+`DOWNSTREAM_SERVER_PATH` (see Configuration below) and must already exist —
+`server_path` needs a registered MCP server, and whoever completes the consent
+step in the browser must already be logged into the registry frontend as that
+exact `user_id` (the confused-deputy check at `/consent/downstream` requires it).
 
 Usage:
     uv run python scripts/test_device_flow.py
@@ -49,6 +61,12 @@ from registry_pkgs.core.jwt_utils import (
 AUTH_SERVER_EXTERNAL_URL = os.environ.get("AUTH_SERVER_EXTERNAL_URL", "http://localhost:8888")
 JWT_AUDIENCE_MANAGED_AGENTS = os.environ.get("JWT_AUDIENCE_MANAGED_AGENTS", "jarvis-managed-agents")
 
+# Mode 2 sub-case A (AS-1727) target: an already-registered (user_id, server_path), e.g. a
+# GitHub MCP server a real user has previously connected to. Neither has a sensible default, so
+# both must be set explicitly.
+DOWNSTREAM_USER_ID = os.environ.get("DOWNSTREAM_USER_ID")
+DOWNSTREAM_SERVER_PATH = os.environ.get("DOWNSTREAM_SERVER_PATH")
+
 # DCR requires at least one redirect_uri, but device flow never redirects to it.
 DCR_REDIRECT_URI = "https://example.com/callback"
 
@@ -76,6 +94,25 @@ def fetch_as_metadata(client: httpx.Client) -> dict:
     print(f"device_authorization_endpoint: {metadata['device_authorization_endpoint']}")
     print(f"registration_endpoint:         {metadata['registration_endpoint']}")
     print(f"jwks_uri:                      {metadata['jwks_uri']}")
+    return metadata
+
+
+def fetch_downstream_as_metadata(client: httpx.Client, user_id: str, server_path: str) -> dict:
+    """Fetch the per-(user_id, server_path) virtual AS metadata (AS-1727, Mode 2 sub-case A).
+
+    Hosted by auth-server, but `authorization_endpoint`/`token_endpoint`/`device_authorization_endpoint`
+    all point at `registry` — this is `registry`'s own per-server downstream OAuth broker, not
+    auth-server's root device flow.
+    """
+    _print_header(f"Downstream AS Metadata (user_id={user_id}, server_path={server_path})")
+    response = client.get(
+        f"{AUTH_SERVER_EXTERNAL_URL}/.well-known/oauth-authorization-server/proxy/server/oauth/{user_id}/{server_path}"
+    )
+    response.raise_for_status()
+    metadata = response.json()
+    print(f"issuer:                        {metadata['issuer']}")
+    print(f"token_endpoint:                {metadata['token_endpoint']}")
+    print(f"device_authorization_endpoint: {metadata['device_authorization_endpoint']}")
     return metadata
 
 
@@ -197,7 +234,75 @@ def run_device_flow(client: httpx.Client, metadata: dict, jwks: dict, *, label: 
     decode_and_print_tokens(token_response, jwks, metadata["issuer"])
 
 
+def run_downstream_device_flow(
+    client: httpx.Client,
+    downstream_metadata: dict,
+    root_metadata: dict,
+    jwks: dict,
+    *,
+    label: str,
+    dcr_client: dict,
+) -> None:
+    """Mode 2 sub-case A (AS-1727): device flow against `registry`'s per-server downstream broker.
+
+    `device_authorization_endpoint`/`token_endpoint` come from `downstream_metadata` (the
+    per-(user_id, server_path) virtual AS), but the minted access/refresh tokens are still issued
+    under the registry's plain `jwt_issuer` — `downstream_metadata["issuer"]` is only descriptive
+    metadata about this virtual AS, not what's embedded as the JWT's `iss` claim — so decoding uses
+    `root_metadata["issuer"]` instead, same as Mode 1 / Mode 2 sub-case B.
+    """
+    _print_header(f"Downstream Device Flow (Mode 2 sub-case A) — {label}")
+    device_data = start_device_flow(
+        client, downstream_metadata["device_authorization_endpoint"], client_id=dcr_client["client_id"]
+    )
+    token_response = poll_for_token(
+        client,
+        downstream_metadata["token_endpoint"],
+        device_code=device_data["device_code"],
+        client_id=dcr_client["client_id"],
+        client_secret=dcr_client.get("client_secret"),
+        interval_seconds=device_data["interval"],
+        expires_in_seconds=device_data["expires_in"],
+    )
+    _print_json("Token response", token_response)
+    decode_and_print_tokens(token_response, jwks, root_metadata["issuer"])
+
+
+def verify_downstream_device_grant_rejects_wrong_client_secret(
+    client: httpx.Client,
+    token_endpoint: str,
+    *,
+    client_id: str,
+) -> None:
+    """Confirm the downstream device_code grant now enforces client_secret for confidential
+    clients, mirroring Mode 1 / Mode 2 sub-case B. Validation happens before the device_code is
+    even looked up, so a bogus device_code is fine here — no real device flow needed for this check.
+    """
+    _print_header("Negative Check — wrong client_secret must be rejected (confidential client)")
+    response = client.post(
+        token_endpoint,
+        data={
+            "grant_type": DEVICE_CODE_GRANT_TYPE,
+            "device_code": "not-a-real-device-code",
+            "client_id": client_id,
+            "client_secret": "definitely-wrong-secret",
+        },
+    )
+    body = response.json()
+    _print_json(f"[negative check] HTTP {response.status_code}", body)
+    if body.get("error") != "invalid_client":
+        raise RuntimeError(f"expected invalid_client for a wrong client_secret, got error={body.get('error')!r}")
+    print("OK: wrong client_secret correctly rejected before the device_code was ever looked up.")
+
+
 def main() -> None:
+    if not DOWNSTREAM_USER_ID or not DOWNSTREAM_SERVER_PATH:
+        raise SystemExit(
+            "DOWNSTREAM_USER_ID and DOWNSTREAM_SERVER_PATH env vars are required (Mode 2 sub-case A, "
+            "AS-1727) — set them to an already-registered (user_id, server_path), e.g. a GitHub MCP "
+            "server a real user has already connected to."
+        )
+
     with httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS) as client:
         metadata = fetch_as_metadata(client)
         jwks = client.get(metadata["jwks_uri"]).json()
@@ -228,6 +333,44 @@ def main() -> None:
             jwks,
             label="Mode 2 sub-case B (confidential client, token_endpoint_auth_method=client_secret_post)",
             dcr_client=confidential_client,
+        )
+
+        downstream_metadata = fetch_downstream_as_metadata(client, DOWNSTREAM_USER_ID, DOWNSTREAM_SERVER_PATH)
+
+        downstream_public_client = register_client(
+            client,
+            metadata["registration_endpoint"],
+            label="Mode 2 sub-case A / public",
+            token_endpoint_auth_method="none",
+        )
+        downstream_confidential_client = register_client(
+            client,
+            metadata["registration_endpoint"],
+            label="Mode 2 sub-case A / confidential",
+            token_endpoint_auth_method="client_secret_post",
+        )
+
+        verify_downstream_device_grant_rejects_wrong_client_secret(
+            client,
+            downstream_metadata["token_endpoint"],
+            client_id=downstream_confidential_client["client_id"],
+        )
+
+        run_downstream_device_flow(
+            client,
+            downstream_metadata,
+            metadata,
+            jwks,
+            label="Mode 2 sub-case A (public client, token_endpoint_auth_method=none)",
+            dcr_client=downstream_public_client,
+        )
+        run_downstream_device_flow(
+            client,
+            downstream_metadata,
+            metadata,
+            jwks,
+            label="Mode 2 sub-case A (confidential client, token_endpoint_auth_method=client_secret_post)",
+            dcr_client=downstream_confidential_client,
         )
 
 

@@ -18,6 +18,13 @@ from ....deps import (
     get_server_service,
     get_session_store,
 )
+from ....services.oauth.downstream_device_service import (
+    DeviceCodeNotFoundError,
+    initiate_device_layer_a,
+    mark_device_denied,
+    mark_device_failed,
+    resolve_device_nonce,
+)
 from ....services.oauth.mcp_service import MCPService
 from ....services.server_service import ServerServiceV1
 from .oauth_router import _build_downstream_authorize_redirect, _notify_elicitation_complete
@@ -29,6 +36,24 @@ router = APIRouter(prefix="/mcp", tags=["mcp-consent"])
 
 class ApproveConsentRequest(BaseModel):
     nonce: str
+
+
+@router.get("/consent/device/resolve")
+async def resolve_device_code(
+    user_code: str,
+    store: DownstreamOAuthStoreProtocol = Depends(get_oauth_state_store),
+) -> dict[str, str]:
+    """Resolve a human-entered code to the stable nonce consumed by the existing consent UI."""
+    try:
+        return {"nonce": resolve_device_nonce(user_code, store)}
+    except DeviceCodeNotFoundError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="This code is invalid or has expired.",
+        ) from e
+    except Exception as e:
+        logger.exception("[Downstream Consent] failed to resolve device code")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error") from e
 
 
 @router.get("/consent/downstream")
@@ -75,9 +100,40 @@ async def approve_downstream_consent(
         if pending is None or pending["user_id"] != user_context["user_id"]:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This consent link has expired.")
 
-        pending_store.consume(body.nonce)
-        consent_store.grant_client_consent(pending["user_id"], pending["client_id"])
+        consumed = pending_store.consume(body.nonce)
+        if consumed is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This consent link has expired.")
+        pending = consumed
 
+        if pending.get("flow_type") == "device":
+            try:
+                auth_url = await initiate_device_layer_a(
+                    user_id=pending["user_id"],
+                    server_path=pending["server_path"],
+                    device_code=pending["device_code"],
+                    mcp_service=mcp_service,
+                    server_service=server_service,
+                )
+            except Exception:
+                if not mark_device_failed(pending["device_code"], store):
+                    logger.warning("Device authorization expired while recording a Layer A startup failure")
+                raise
+            if auth_url is None:
+                if not mark_device_failed(pending["device_code"], store):
+                    logger.warning("Device authorization expired while recording a Layer A startup failure")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Failed to initiate downstream OAuth flow",
+                )
+            try:
+                consent_store.grant_client_consent(pending["user_id"], pending["client_id"])
+            except Exception:
+                if not mark_device_failed(pending["device_code"], store):
+                    logger.warning("Device authorization expired while recording a consent persistence failure")
+                raise
+            return {"redirect_url": auth_url}
+
+        consent_store.grant_client_consent(pending["user_id"], pending["client_id"])
         redirect = await _build_downstream_authorize_redirect(
             user_id=pending["user_id"],
             server_path=pending["server_path"],
@@ -152,7 +208,10 @@ async def approve_server_consent(
         if pending is None or pending["user_id"] != user_context["user_id"]:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This consent link has expired.")
 
-        pending_store.consume(body.nonce)
+        consumed = pending_store.consume(body.nonce)
+        if consumed is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This consent link has expired.")
+        pending = consumed
         consent_store.grant_server_consent(pending["user_id"], pending["client_id"], pending["server_path"])
 
         # Best-effort: Mode 1 (mcpgw) pending records carry elicitation_id/client_branding so the
@@ -174,16 +233,14 @@ async def _deny_consent(
     session_store: SessionStore,
     *,
     log_tag: str,
+    store: DownstreamOAuthStoreProtocol | None = None,
 ) -> dict[str, str | None]:
     """Shared deny logic for both consent flows.
 
-    Denying records nothing new: the pending record is proactively removed (rather than left to
-    expire on its own TTL) and no consent is granted, so the next call from this
-    ``(user_id, client_id, server_path)`` is gated exactly as if the user had never clicked
-    anything. The MCP client is still notified (when a live session exists) so a blocked tool
-    call can retry immediately instead of waiting out its own timeout — the notification only
-    means "the out-of-band step concluded," not "access was granted"; the retry itself hits the
-    gate again and gets a fresh elicitation since consent was never recorded.
+    The pending record is proactively removed and no consent is granted. Device-flow denials are
+    additionally persisted on the device code so the polling client immediately receives
+    ``access_denied``; other consent flows record nothing new and are gated again on retry. A live
+    MCP session is still notified that the out-of-band step concluded.
     """
     try:
         # Peek (non-destructive) before consuming: an ownership mismatch must not delete a nonce
@@ -192,7 +249,13 @@ async def _deny_consent(
         if pending is None or pending["user_id"] != user_context["user_id"]:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This consent link has expired.")
 
-        pending_store.consume(nonce)
+        consumed = pending_store.consume(nonce)
+        if consumed is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This consent link has expired.")
+        pending = consumed
+        if pending.get("flow_type") == "device" and store is not None:
+            if not mark_device_denied(pending["device_code"], store):
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This consent link has expired.")
         client_branding = await _notify_elicitation_complete(pending, session_store)
         return {"status": "denied", "client_branding": client_branding}
     except HTTPException:
@@ -208,8 +271,16 @@ async def deny_downstream_consent(
     user_context: CurrentUser,
     pending_store: PendingConsentStore = Depends(get_pending_consent_store),
     session_store: SessionStore = Depends(get_session_store),
+    store: DownstreamOAuthStoreProtocol = Depends(get_oauth_state_store),
 ) -> dict[str, str | None]:
-    return await _deny_consent(body.nonce, user_context, pending_store, session_store, log_tag="Downstream Consent")
+    return await _deny_consent(
+        body.nonce,
+        user_context,
+        pending_store,
+        session_store,
+        log_tag="Downstream Consent",
+        store=store,
+    )
 
 
 @router.post("/consent/server/deny")
