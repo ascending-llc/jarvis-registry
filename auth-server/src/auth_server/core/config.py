@@ -54,8 +54,9 @@ class AuthSettings(JarvisBaseSettings):
     metrics_api_key: str | None = None
 
     # ==================== OAuth Device Flow Settings ====================
-    device_code_expiry_seconds: int = 600  # 10 minutes
+    device_code_expiry_seconds: int = 900  # 15 minutes for real IdP login and possible MFA
     device_code_poll_interval: int = 5  # Poll every 5 seconds
+    oauth_access_token_expiry_seconds: int = 3600
 
     # ==================== Redis ====================
     redis_uri: str = "redis://registry-redis:6379/1"

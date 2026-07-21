@@ -10,6 +10,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import agentcoreIcon from '@/assets/agentcore.svg';
 import IconButton from '@/components/IconButton';
+import { FEDERATED_TAG } from '@/constants/tags';
 import { useGlobal } from '@/contexts/GlobalContext';
 import { useServer } from '@/contexts/ServerContext';
 import SERVICES from '@/services';
@@ -75,7 +76,7 @@ const AgentCard: React.FC<AgentCardProps> = ({ agent }) => {
   const hasSkillsDetails = 'skills' in agent && Array.isArray(agent.skills) && agent.skills.length > 0;
 
   const hasAgentCoreTags =
-    agent.tags?.includes('federated') && agent.tags?.includes('aws') && agent.tags?.includes('agentcore');
+    agent.tags?.includes(FEDERATED_TAG) && agent.tags?.includes('aws') && agent.tags?.includes('agentcore');
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {

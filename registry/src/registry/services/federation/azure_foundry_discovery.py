@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
 
@@ -133,8 +134,17 @@ class AzureFoundryDiscoveryClient:
     @staticmethod
     def _is_a2a_enabled(detail: Any) -> bool:
         endpoint = getattr(detail, "agent_endpoint", None)
-        protocols = getattr(endpoint, "protocols", None) or []
+        protocols = AzureFoundryDiscoveryClient._endpoint_protocols(endpoint)
         return any(str(getattr(p, "value", p)).lower() == A2A_PROTOCOL_VALUE for p in protocols)
+
+    @staticmethod
+    def _endpoint_protocols(endpoint: Any) -> list[Any]:
+        protocols = getattr(endpoint, "protocols", None)
+        if protocols is None and isinstance(endpoint, Mapping):
+            protocols = endpoint.get("protocols")
+        if isinstance(protocols, str):
+            protocols = [protocols]
+        return list(protocols or [])
 
     @staticmethod
     def _matches_metadata_filter(detail: Any, required: dict[str, str]) -> bool:

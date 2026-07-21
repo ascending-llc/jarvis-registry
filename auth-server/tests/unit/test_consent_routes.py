@@ -194,11 +194,31 @@ def test_deny_consent_is_post_and_consumes_pending_nonce() -> None:
     client, _, _, pending_store = _client()
     pending_store.save("nonce-1", _pending_payload())
 
-    response = client.post("/auth/oauth2/consent/deny", data={"nonce": "nonce-1"}, follow_redirects=False)
+    response = client.post(
+        "/auth/oauth2/consent/deny",
+        data={"nonce": "nonce-1"},
+        cookies={settings.oauth2_consent_nonce_cookie_name: "nonce-1"},
+        follow_redirects=False,
+    )
 
     assert response.status_code == 302
     assert "error=access_denied" in response.headers["location"]
     assert pending_store.peek("nonce-1") is None
+
+
+def test_deny_consent_rejects_form_cookie_nonce_mismatch() -> None:
+    client, _, _, pending_store = _client()
+    pending_store.save("nonce-1", _pending_payload())
+
+    response = client.post(
+        "/auth/oauth2/consent/deny",
+        data={"nonce": "nonce-1"},
+        cookies={settings.oauth2_consent_nonce_cookie_name: "different"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Invalid or expired consent request"
+    assert pending_store.peek("nonce-1") is not None
 
 
 @patch("auth_server.routes.oauth_flow.exchange_code_for_token")

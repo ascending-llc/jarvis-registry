@@ -6,11 +6,13 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from typing import Any
 
 import httpx
 from a2a.client import ClientConfig, ClientFactory
 from a2a.client.base_client import BaseClient
 from a2a.client.middleware import ClientCallContext
+from a2a.client.transports.jsonrpc import JsonRpcTransport
 from a2a.types import (
     Message,
     Part,
@@ -180,6 +182,41 @@ def _create_message(text: str) -> Message:
         parts=[Part(root=TextPart(kind="text", text=text))],
         message_id=uuid.uuid4().hex,
     )
+
+
+def _ensure_a2a_result_fields(result: Any) -> None:
+    """Patch common A2A response omissions in-place so a2a-sdk validation passes.
+
+    Azure AI Foundry hosted agents return Task objects whose artifacts omit the
+    required ``artifact_id`` field. The a2a-sdk models enforce the field, so we
+    synthesize a UUID for any artifact that lacks one. This is a defensive,
+    idempotent workaround for a server-side spec deviation.
+    """
+    if not isinstance(result, dict) or result.get("kind") != "task":
+        return
+    for artifact in result.get("artifacts") or []:
+        # Accept both the camelCase wire alias and the snake_case field name;
+        # a2a-sdk models validate either (validate_by_name + validate_by_alias).
+        if isinstance(artifact, dict) and not (artifact.get("artifactId") or artifact.get("artifact_id")):
+            artifact["artifact_id"] = str(uuid.uuid4())
+
+
+class _AzureTolerantJsonRpcTransport(JsonRpcTransport):
+    """JSON-RPC transport that tolerates Azure Foundry A2A response omissions.
+
+    Overrides the raw request sender so the response body can be sanitized
+    before the a2a-sdk strict Pydantic models validate it.
+    """
+
+    async def _send_request(
+        self,
+        rpc_request_payload: dict[str, Any],
+        http_kwargs: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        response_data = await super()._send_request(rpc_request_payload, http_kwargs)
+        if isinstance(response_data, dict):
+            _ensure_a2a_result_fields(response_data.get("result"))
+        return response_data
 
 
 async def _consume_stream(
@@ -396,8 +433,26 @@ async def call_a2a(
             httpx_client=httpx_client,
         )
 
+        factory = ClientFactory(config)
+        if is_azure_foundry_runtime(agent):
+            # Azure AI Foundry agents omit required artifact_id on Task artifacts.
+            # Register a tolerant JSON-RPC transport that patches the raw response
+            # before the a2a-sdk strict Pydantic models validate it. Only the
+            # jsonrpc transport is covered: federation sync always registers
+            # Foundry agents with type=jsonrpc, so http_json is unreachable here.
+            factory.register(
+                TransportProtocol.jsonrpc,
+                lambda card, url, cfg, interceptors: _AzureTolerantJsonRpcTransport(
+                    cfg.httpx_client or httpx.AsyncClient(),
+                    card,
+                    url,
+                    interceptors,
+                    cfg.extensions or None,
+                ),
+            )
+
         # ClientFactory.create() is annotated -> Client, but always returns BaseClient in a2a-sdk==0.3.24.
-        client: BaseClient = ClientFactory(config).create(agent_card)  # type: ignore[assignment]
+        client: BaseClient = factory.create(agent_card)  # type: ignore[assignment]
         if httpx_client is None:
             async with client:
                 return await _call_with_open_client(client, agent_name, text, context)

@@ -16,7 +16,7 @@ CLIENT_TTL_SECONDS = 30 * 24 * 3600
 AUTH_CODE_TTL_SECONDS = 600
 REFRESH_TOKEN_TTL_SECONDS = 14 * 24 * 3600
 
-_CONSUME_AUTHCODE_SCRIPT = """
+_GET_AND_DELETE_SCRIPT = """
 local val = redis.call('GET', KEYS[1])
 if not val then return nil end
 redis.call('DEL', KEYS[1])
@@ -109,6 +109,8 @@ class DeviceCodeStore(Protocol):
     def get_user_code(self, user_code: str) -> str | None: ...
 
     def delete_user_code(self, user_code: str) -> None: ...
+
+    def consume_device_code(self, device_code: str) -> dict[str, Any] | None: ...
 
 
 class DownstreamOAuthStoreProtocol(OAuthClientReader, RefreshTokenStore, Protocol):
@@ -319,7 +321,7 @@ class OAuthStateStore:
 
     def consume_authcode(self, code: str) -> dict[str, Any] | None:
         try:
-            raw_data = self._redis.eval(_CONSUME_AUTHCODE_SCRIPT, 1, self._authcode_key(code))
+            raw_data = self._redis.eval(_GET_AND_DELETE_SCRIPT, 1, self._authcode_key(code))
         except RedisError:
             logger.exception("Failed to consume OAuth authorization code")
             raise
@@ -427,6 +429,15 @@ class OAuthStateStore:
         except RedisError:
             logger.exception("Failed to delete OAuth user code")
             raise
+
+    def consume_device_code(self, device_code: str) -> dict[str, Any] | None:
+        try:
+            raw_data = self._redis.eval(_GET_AND_DELETE_SCRIPT, 1, self._device_key(device_code))
+        except RedisError:
+            logger.exception("Failed to consume OAuth device code")
+            raise
+
+        return self._json_store.loads_json(raw_data)
 
     def _authcode_key(self, code: str) -> str:
         return self._key("authcode", code)
