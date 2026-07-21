@@ -266,21 +266,25 @@ class FederationSyncService:
                         discovered=discovered,
                         session=mongo_session,
                     )
-            if mutation_result.summary.errorMessages:
-                return job
-            await self._sync_vector_index_after_commit(
-                federation=federation,
-                job=job,
-                mutation_result=mutation_result,
-            )
+            vector_sync_error = None
+            try:
+                await self._sync_vector_index_after_commit(
+                    federation=federation,
+                    job=job,
+                    mutation_result=mutation_result,
+                )
+            except Exception as exc:
+                logger.exception(
+                    "Federation vector sync failed after commit: federation_id=%s job_id=%s",
+                    federation.id,
+                    job.id,
+                )
+                vector_sync_error = str(exc)
+
             if mutation_result.last_sync is None or mutation_result.stats is None:
                 raise RuntimeError("Federation sync completed without final stats or lastSync payload")
-            await self.federation_crud_service.mark_sync_success(
-                federation,
-                mutation_result.last_sync,
-                mutation_result.stats,
-            )
-            await self.federation_job_service.mark_success(job)
+
+            await self._finalize_sync_status(federation, job, mutation_result, vector_sync_error)
             return job
 
         except Exception as exc:
@@ -292,6 +296,43 @@ class FederationSyncService:
             )
             await self.federation_job_service.mark_failed(job, FederationJobPhase.FAILED, str(exc))
             raise
+
+    async def _finalize_sync_status(
+        self,
+        federation: Federation,
+        job: FederationSyncJob,
+        mutation_result: FederationSyncMutationResult,
+        vector_sync_error: str | None,
+    ) -> None:
+        """
+        Determine the final federation/job status after both the Mongo commit
+        and vector sync have completed (or attempted).
+
+        Three outcomes:
+        - apply errors + vector error → re-mark failed with combined message
+        - apply errors only            → preserve transaction-time failed status (no-op here)
+        - no errors                    → mark success
+        """
+        if mutation_result.summary.errorMessages or vector_sync_error:
+            if vector_sync_error:
+                combined_message = self._summarize_sync_errors(
+                    [*mutation_result.summary.errorMessages, vector_sync_error]
+                )
+                await self.federation_crud_service.mark_sync_failed(
+                    federation,
+                    combined_message,
+                    last_sync=mutation_result.last_sync,
+                    stats=mutation_result.stats,
+                )
+                await self.federation_job_service.mark_failed(job, FederationJobPhase.FAILED, combined_message)
+            return
+
+        await self.federation_crud_service.mark_sync_success(
+            federation,
+            mutation_result.last_sync,
+            mutation_result.stats,
+        )
+        await self.federation_job_service.mark_success(job)
 
     async def preview_manual_sync(
         self,
