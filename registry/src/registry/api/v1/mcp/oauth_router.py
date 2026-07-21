@@ -286,11 +286,18 @@ def _mark_completed_device_flow_approved(
     flow: OAuthFlow | None,
     store: DownstreamOAuthStoreProtocol,
 ) -> None:
-    """Idempotently finalize device state, including retries of an already-completed callback."""
+    """Best-effort: idempotently finalize device state, including retries of an already-completed
+    callback. Layer A has already succeeded by the time this runs, so a stale/expired device_code
+    must not fail the browser redirect — the device_code's own TTL is what tells the polling
+    client to give up, not this bookkeeping step.
+    """
     if not (flow and flow.metadata and flow.metadata.device_code):
         return
     if not mark_device_approved(flow.metadata.device_code, flow.user_id, store):
-        raise RuntimeError("Device authorization expired before the downstream OAuth callback completed")
+        logger.warning(
+            f"[MCP OAuth] Device authorization expired before the downstream OAuth callback "
+            f"completed: device_code={flow.metadata.device_code}"
+        )
 
 
 @router.get("/{server_path}/oauth/callback")

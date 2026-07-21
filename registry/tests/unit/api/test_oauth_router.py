@@ -327,6 +327,34 @@ class TestOAuthRouter:
             },
         )
 
+    def test_oauth_callback_succeeds_when_device_code_already_expired(self, client):
+        """Layer A already succeeded by the time the callback runs; a device_code that expired in
+        the meantime must not turn the browser redirect into a failure."""
+        mock_mcp_service.oauth_service.flow_manager.decode_state = lambda _: {
+            "flow_id": "test_user-flow123",
+            "security_token": "security_token",
+        }
+        mock_flow = Mock()
+        mock_flow.user_id = "test_user"
+        mock_flow.server_id = TEST_SERVER_ID
+        mock_flow.status = "pending"
+        mock_flow.metadata.mcp_client_context = None
+        mock_flow.metadata.device_code = "device-1"
+        mock_mcp_service.oauth_service.flow_manager.get_flow = lambda flow_id: mock_flow
+        mock_mcp_service.oauth_service.complete_oauth_flow = make_async(lambda *args, **kwargs: (True, None))
+        mock_mcp_service.connection_service.create_user_connection = AsyncMock(return_value=None)
+        mock_oauth_state_store.get_device_code.return_value = None
+        mock_oauth_state_store.update_device_code.reset_mock()
+
+        response = client.get(
+            "/mcp/github/oauth/callback?code=GHCODE&state=test_user-flow123##security_token",
+            follow_redirects=False,
+        )
+
+        assert response.status_code == 307
+        assert "oauth-callback?type=success" in response.headers["location"]
+        mock_oauth_state_store.update_device_code.assert_not_called()
+
     def test_oauth_callback_mcp_client_redirect(self, client):
         """MCP-client-initiated (Layer B) flow: callback redirects to the client's redirect_uri
         with a code + state instead of the registry success page."""
