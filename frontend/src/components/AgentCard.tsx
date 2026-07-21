@@ -336,7 +336,7 @@ const AgentCard: React.FC<AgentCardProps> = ({ agent }) => {
             title='AWS AgentCore'
           />
         )}
-        {!hasAgentCoreTags && hasAzureFoundryTags && (
+        {hasAzureFoundryTags && (
           <img
             src={azureAiIcon}
             alt='Azure AI Foundry'

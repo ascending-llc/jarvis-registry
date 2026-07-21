@@ -438,7 +438,7 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
             title='AWS AgentCore'
           />
         )}
-        {!hasAgentCoreTags && hasAzureFoundryTags && (
+        {hasAzureFoundryTags && (
           <img
             src={azureAiIcon}
             alt='Azure AI Foundry'
