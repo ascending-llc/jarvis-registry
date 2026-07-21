@@ -8,7 +8,6 @@ import mimetypes
 import re
 from typing import Any
 
-import httpx
 from a2a.types import FileWithBytes, FileWithUri, Message, Task
 from a2a.utils.parts import get_data_parts, get_file_parts
 from agno.agent import Agent
@@ -17,11 +16,10 @@ from agno.models.base import Model
 from agno.workflow import StepInput, StepOutput
 from agno.workflow.step import StepExecutor
 
-from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.models.a2a_agent import A2AAgent
 from registry_pkgs.workflows.a2a_client import (
     A2ACallResult,
-    HeadersProvider,
+    ClientProvider,
     call_a2a,
     raise_if_iam_unsupported,
 )
@@ -292,28 +290,22 @@ def _a2a_result_to_step_output(result: A2ACallResult) -> StepOutput:
 def make_a2a_executor(
     agent: A2AAgent,
     *,
-    jwt_config: JwtSigningConfig,
-    httpx_client: httpx.AsyncClient | None = None,
-    headers_provider: HeadersProvider | None = None,
+    client_provider: ClientProvider | None = None,
 ) -> StepExecutor:
     """Wrap an A2A agent as a workflow StepExecutor via a direct A2A call.
 
     Args:
         agent:        Beanie A2AAgent document.
-        jwt_config:   JWT signing config for service-to-agent auth.
-        httpx_client: Optional shared httpx pool. When None, call_a2a creates
-                      one per call (suitable for tests / one-off scripts).
-        headers_provider: Optional shared headers provider.
+        client_provider: Optional provider for an agent-specific authenticated client.
     """
 
     async def executor(step_input: StepInput, session_state: dict[str, Any] | None = None) -> StepOutput:
         raise_if_iam_unsupported(agent)
+        client = await client_provider(agent) if client_provider is not None else None
         result = await call_a2a(
             agent,
             build_prompt(step_input),
-            jwt_config=jwt_config,
-            httpx_client=httpx_client,
-            headers_provider=headers_provider,
+            httpx_client=client,
         )
         return _a2a_result_to_step_output(result)
 
@@ -326,31 +318,25 @@ def make_a2a_pool_executor(
     pool_keys: list[str],
     *,
     selector_llm: Model,
-    jwt_config: JwtSigningConfig,
     accessible_agent_ids: set[str] | None,
-    httpx_client: httpx.AsyncClient | None = None,
-    headers_provider: HeadersProvider | None = None,
+    client_provider: ClientProvider | None = None,
 ) -> StepExecutor:
     """Build a StepExecutor that picks the best A2A agent from a pool at runtime.
 
     Selection is performed by an LLM on first call, then cached in
     ``session_state`` so retries reuse the same agent without re-running the
-    LLM.  Each call generates a fresh short-lived JWT for the selected agent
-    using the supplied ``jwt_config``.
+    LLM.  Each call resolves an agent-specific authenticated client after the
+    target agent is known.
 
     Args:
         node_name:            Workflow node name — used for logging and cache keys.
         pool_keys:            Agent path segments (without leading ``/``) that form the pool.
         selector_llm:         Model used for LLM-based agent selection.
-        jwt_config:           JWT signing config (private key, issuer, kid, audience).
         accessible_agent_ids: ACL filter — set of A2AAgent ID strings the caller
                               is authorized to invoke. ``None`` = unrestricted.
                               Pool members outside this set are excluded BEFORE
                               LLM selection runs.
-        httpx_client:         Optional shared httpx pool forwarded to ``call_a2a``.
-                              When ``None``, ``call_a2a`` builds a fresh pool per
-                              invocation (slower but isolated; fine for tests).
-        headers_provider:     Optional shared headers provider.
+        client_provider:      Optional provider for an agent-specific authenticated client.
 
     Returns:
         An async callable that accepts ``(StepInput, session_state)`` and
@@ -413,12 +399,11 @@ def make_a2a_pool_executor(
                 )
 
         raise_if_iam_unsupported(selected_agent)
+        client = await client_provider(selected_agent) if client_provider is not None else None
         result = await call_a2a(
             selected_agent,
             task,
-            jwt_config=jwt_config,
-            httpx_client=httpx_client,
-            headers_provider=headers_provider,
+            httpx_client=client,
         )
         return _a2a_result_to_step_output(result)
 

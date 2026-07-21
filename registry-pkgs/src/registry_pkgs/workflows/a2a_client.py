@@ -38,7 +38,7 @@ _A2A_HTTP_TIMEOUT = 300
 # a2a poll timeout needs to be strictly less than _A2A_JWT_TTL_SECONDS and _A2A_HTTP_TIMEOUT
 _A2A_POLL_TIMEOUT = _A2A_HTTP_TIMEOUT * 0.6
 
-HeadersProvider = Callable[[A2AAgent], Awaitable[dict[str, str]]]
+ClientProvider = Callable[[A2AAgent], Awaitable[httpx.AsyncClient]]
 _IN_PROGRESS_STATES: frozenset[TaskState] = frozenset({TaskState.submitted, TaskState.working})
 
 _AGENTCORE_IAM_UNSUPPORTED_MSG = (
@@ -172,6 +172,13 @@ def build_headers(agent: A2AAgent, *, jwt_config: JwtSigningConfig) -> dict[str,
             "Authorization": f"Bearer {_make_agentcore_jwt(agent, jwt_config=jwt_config)}",
             "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": str(uuid.uuid4()),
         }
+    return {}
+
+
+def _extra_call_headers(agent: A2AAgent) -> dict[str, str]:
+    """Build per-invocation headers that must stay stable throughout one call_a2a call."""
+    if is_agentcore_runtime(agent):
+        return {"X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": str(uuid.uuid4())}
     return {}
 
 
@@ -367,21 +374,20 @@ async def call_a2a(
     agent: A2AAgent,
     text: str | Message,
     *,
-    jwt_config: JwtSigningConfig,
     httpx_client: httpx.AsyncClient | None = None,
-    headers_provider: HeadersProvider | None = None,
 ) -> A2ACallResult:
     """Invoke an A2A agent via the a2a-sdk ClientFactory.
 
     Transport (jsonrpc / http_json) is selected from agent.config.type.
-    Auth headers and timeout are injected per-call via ClientCallContext.
+    Federated agents must receive a pre-authenticated httpx client from the
+    caller. This function only adds per-invocation, non-credential headers.
 
     Args:
         agent:        A2AAgent document from MongoDB.
         text:         User message string or pre-parsed A2A Message to send.
-        jwt_config:   JWT signing config for service-to-agent auth.
-        httpx_client: Optional shared httpx client.
-        headers_provider: Optional shared headers provider.
+        httpx_client: Optional shared httpx client. Required for federated
+                      AgentCore/Azure agents; None is valid only for plain
+                      non-federated agents or isolated tests.
 
     Returns:
         A2ACallResult. `success=True` requires content present AND (for the
@@ -412,11 +418,7 @@ async def call_a2a(
         t for t in (TransportProtocol.jsonrpc, TransportProtocol.http_json) if t != configured
     ]
 
-    if headers_provider is not None:
-        headers = await headers_provider(agent)
-    else:
-        headers = build_headers(agent, jwt_config=jwt_config)
-
+    headers = _extra_call_headers(agent)
     context = ClientCallContext(
         state={
             "http_kwargs": {

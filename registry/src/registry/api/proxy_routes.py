@@ -17,19 +17,16 @@ from redis import Redis
 
 from registry_pkgs.core.consent_store import ConsentStore, PendingConsentStore
 from registry_pkgs.models import ResourceType
-from registry_pkgs.models.a2a_agent import AgentConfig
-from registry_pkgs.models.enums import AgentCoreRuntimeAccessMode, FederationProviderType
+from registry_pkgs.models.enums import AgentCoreRuntimeAccessMode
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
-from registry_pkgs.models.federation import AgentCoreRuntimeJwtConfig
 
 from ..auth.dependencies import CurrentUser, UserContextDict
 from ..auth.oauth.types import ClientBranding
-from ..core.a2a_proxy import A2AProxyClientRegistry
 from ..core.config import settings
 from ..core.exceptions import InternalServerException, UrlElicitationRequiredException
 from ..deps import (
     get_a2a_agent_service,
-    get_a2a_proxy_client_registry,
+    get_a2a_client_registry,
     get_acl_service,
     get_consent_store,
     get_mcp_proxy_client,
@@ -41,6 +38,7 @@ from ..deps import (
 from ..mcpgw.tools.utils import build_authenticated_headers, get_target_url, parse_elicitation_id
 from ..services.a2a_agent_service import A2AAgentService
 from ..services.access_control_service import ACLService
+from ..services.federation.a2a_client_registry import A2AClientRegistry
 from ..services.oauth.oauth_service import MCPOAuthService
 from ..services.server_service import ServerServiceV1
 
@@ -513,24 +511,6 @@ async def _forward_a2a(
         return JSONResponse(status_code=502, content={"error": "Failed to communicate with agent"})
 
 
-def _is_agentcore_jwt(
-    agent_config: AgentConfig | None,
-    federation_metadata: dict[str, Any] | None,
-) -> bool:
-    fed = federation_metadata or {}
-    return (
-        agent_config is not None
-        and agent_config.runtimeAccess is not None
-        and fed.get("providerType") == FederationProviderType.AWS_AGENTCORE
-    )
-
-
-def _get_agentcore_runtime_jwt_config(agent_config: AgentConfig | None) -> AgentCoreRuntimeJwtConfig | None:
-    if agent_config is None or agent_config.runtimeAccess is None:
-        return None
-    return agent_config.runtimeAccess.jwt
-
-
 # Route 1: JSON-RPC binding — bare base path, POST only
 @router.post("/a2a/{agent_path}")
 async def jsonrpc_proxy(
@@ -539,7 +519,7 @@ async def jsonrpc_proxy(
     user_context: CurrentUser,
     a2a_agent_service: A2AAgentService = Depends(get_a2a_agent_service),
     acl_service: ACLService = Depends(get_acl_service),
-    proxy_client_registry: A2AProxyClientRegistry = Depends(get_a2a_proxy_client_registry),
+    a2a_client_registry: A2AClientRegistry = Depends(get_a2a_client_registry),
 ):
     try:
         user_id = user_context.get("user_id")
@@ -582,14 +562,9 @@ async def jsonrpc_proxy(
         else:
             return _jsonrpc_a2a_error_response(-32603, f"No invocation URL available for agent '{agent_path}'")
 
-        agentcore_jwt = _is_agentcore_jwt(agent.config, agent.federationMetadata)
-        proxy_client = proxy_client_registry.get(
-            agent_path,
-            agentcore_jwt=agentcore_jwt,
-            runtime_jwt_config=_get_agentcore_runtime_jwt_config(agent.config) if agentcore_jwt else None,
-        )
+        proxy_client = await a2a_client_registry.get_client(agent)
 
-        logger.info(f"A2A JSON-RPC proxy: agent={agent_path} agentcore={agentcore_jwt} {base_url}")
+        logger.info(f"A2A JSON-RPC proxy: agent={agent_path} {base_url}")
 
         return await _forward_a2a(request, base_url, proxy_client, agent_path, is_jsonrpc=True)
     except Exception:
@@ -606,7 +581,7 @@ async def http_json_proxy(
     user_context: CurrentUser,
     a2a_agent_service: A2AAgentService = Depends(get_a2a_agent_service),
     acl_service: ACLService = Depends(get_acl_service),
-    proxy_client_registry: A2AProxyClientRegistry = Depends(get_a2a_proxy_client_registry),
+    a2a_client_registry: A2AClientRegistry = Depends(get_a2a_client_registry),
 ):
     try:
         user_id = user_context.get("user_id")
@@ -652,18 +627,11 @@ async def http_json_proxy(
                 content={"error": f"No invocation URL available for agent '{agent_path}'"},
             )
 
-        agentcore_jwt = _is_agentcore_jwt(agent.config, agent.federationMetadata)
-        proxy_client = proxy_client_registry.get(
-            agent_path,
-            agentcore_jwt=agentcore_jwt,
-            runtime_jwt_config=_get_agentcore_runtime_jwt_config(agent.config) if agentcore_jwt else None,
-        )
+        proxy_client = await a2a_client_registry.get_client(agent)
 
         target_url = base_url.rstrip("/") + "/" + http_json_path.lstrip("/")
 
-        logger.info(
-            f"A2A HTTP+JSON proxy: agent={agent_path} path=/{http_json_path} agentcore={agentcore_jwt} {target_url}"
-        )
+        logger.info(f"A2A HTTP+JSON proxy: agent={agent_path} path=/{http_json_path} {target_url}")
 
         return await _forward_a2a(request, target_url, proxy_client, agent_path)
     except Exception:

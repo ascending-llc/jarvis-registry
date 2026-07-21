@@ -48,14 +48,12 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
-import httpx
 from agno.exceptions import RunCancelledException
 from agno.models.base import Model
 from agno.run.cancel import acancel_run as agno_acancel_run
 from beanie import PydanticObjectId
 from beanie.exceptions import DocumentNotFound
 
-from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.models.enums import WorkflowRunStatus
 from registry_pkgs.models.workflow import (
     NodeRun,
@@ -64,7 +62,7 @@ from registry_pkgs.models.workflow import (
     WorkflowNode,
     WorkflowRun,
 )
-from registry_pkgs.workflows.a2a_client import HeadersProvider
+from registry_pkgs.workflows.a2a_client import ClientProvider
 from registry_pkgs.workflows.compiler import StepExecutor, compile_workflow, flatten_workflow_nodes
 from registry_pkgs.workflows.control import DirectiveQueue, WorkflowCancelledError
 from registry_pkgs.workflows.executor_resolver import build_executor_registry
@@ -111,10 +109,9 @@ class WorkflowRunner:
         registry_url:  Base URL of the Jarvis Registry gateway.
         db_client:     pymongo AsyncMongoClient for session + Beanie persistence.
         db_name:       MongoDB database name.
-        jwt_config:    JWT signing config used by A2A executors to mint
-                       short-lived service-to-agent tokens.
         selector_llm:  Optional cheaper/faster model for A2A pool selection.
                        Falls back to ``llm`` when not provided.
+        client_provider: Optional provider for agent-specific authenticated A2A clients.
     """
 
     def __init__(
@@ -124,11 +121,9 @@ class WorkflowRunner:
         registry_url: str,
         db_client: Any,
         db_name: str,
-        jwt_config: JwtSigningConfig,
         selector_llm: Model | None = None,
         directive_queue: DirectiveQueue | None = None,
-        a2a_httpx_client: httpx.AsyncClient | None = None,
-        headers_provider: HeadersProvider | None = None,
+        client_provider: ClientProvider | None = None,
     ) -> None:
         if db_client is None:
             raise ValueError("WorkflowRunner requires db_client")
@@ -140,12 +135,10 @@ class WorkflowRunner:
         self._registry_url = registry_url
         self._db_client = db_client
         self._db_name = db_name
-        self._jwt_config = jwt_config
         # Optional directive queue; when provided, every step executor is wrapped
         # with pause/cancel/retry-backoff logic via with_control().
         self._directive_queue = directive_queue
-        self._a2a_httpx_client = a2a_httpx_client
-        self._headers_provider = headers_provider
+        self._client_provider = client_provider
 
     async def run(
         self,
@@ -279,12 +272,10 @@ class WorkflowRunner:
             llm=self._llm,
             registry_url=self._registry_url,
             registry_token=registry_token,
-            jwt_config=self._jwt_config,
             user_id=user_id,
             pool_nodes=pool_nodes,
             selector_llm=self._selector_llm,
-            a2a_httpx_client=self._a2a_httpx_client,
-            headers_provider=self._headers_provider,
+            client_provider=self._client_provider,
         )
 
     async def continue_run(
