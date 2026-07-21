@@ -38,7 +38,7 @@ class _PermissiveAccessibleSet:
 
 def _make_ctx(
     jwt_config=None,
-    a2a_httpx_client=None,
+    a2a_client_registry=None,
     *,
     user_id: str = "507f1f77bcf86cd799439011",
     accessible_agent_ids: list[str] | None = None,
@@ -49,8 +49,8 @@ def _make_ctx(
 
     lifespan_context = SimpleNamespace(
         jwt_signing_config=jwt_config or SimpleNamespace(),
-        a2a_httpx_client=a2a_httpx_client,
-        a2a_headers_provider=MagicMock(),
+        a2a_client_registry=a2a_client_registry
+        or SimpleNamespace(get_client=AsyncMock(return_value=SimpleNamespace())),
         acl_service=acl_service,
     )
     request_state = SimpleNamespace(user={"user_id": user_id})
@@ -198,14 +198,14 @@ async def test_execute_agent_rejects_missing_user_context():
 
 
 @pytest.mark.asyncio
-async def test_execute_agent_forwards_a2a_httpx_client_to_call_a2a():
-    """The shared client on McpAppContext must flow into call_a2a so the
-    MCP tool reuses one connection pool across invocations."""
+async def test_execute_agent_resolves_registry_client_before_call_a2a():
+    """The McpAppContext registry must provide the client passed to call_a2a."""
     import httpx
 
     shared = httpx.AsyncClient()
     try:
-        ctx = _make_ctx(a2a_httpx_client=shared)
+        a2a_client_registry = SimpleNamespace(get_client=AsyncMock(return_value=shared))
+        ctx = _make_ctx(a2a_client_registry=a2a_client_registry)
         valid_id = str(PydanticObjectId())
         agent = _make_agent(valid_id)
         captured: dict = {}
@@ -223,6 +223,7 @@ async def test_execute_agent_forwards_a2a_httpx_client_to_call_a2a():
             await execute_agent_impl(valid_id, _msg("test"), ctx)
 
         assert captured.get("httpx_client") is shared
+        a2a_client_registry.get_client.assert_awaited_once_with(agent)
     finally:
         await shared.aclose()
 

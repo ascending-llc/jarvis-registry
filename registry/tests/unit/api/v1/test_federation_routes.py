@@ -320,6 +320,48 @@ async def test_update_federation_skips_resync_when_provider_config_is_unchanged(
 
 
 @pytest.mark.asyncio
+async def test_update_federation_invalidates_azure_client_cache(sample_user_context, sample_federation, acl_service):
+    azure_federation = SimpleNamespace(
+        **{
+            **sample_federation.__dict__,
+            "providerType": FederationProviderType.AZURE_AI_FOUNDRY,
+            "displayName": "Azure Federation",
+            "providerConfig": {"projectEndpoint": "https://old.projects.ai.azure.com"},
+        }
+    )
+    updated_federation = SimpleNamespace(
+        **{
+            **azure_federation.__dict__,
+            "providerConfig": {"projectEndpoint": "https://new.projects.ai.azure.com"},
+        }
+    )
+    federation_crud_service = MagicMock()
+    federation_crud_service.get_federation = AsyncMock(return_value=azure_federation)
+    federation_crud_service.get_recent_jobs = AsyncMock(return_value=[])
+    federation_sync_service = MagicMock()
+    federation_sync_service.update_federation_with_optional_resync = AsyncMock(return_value=(updated_federation, None))
+    a2a_client_registry = MagicMock()
+
+    await update_federation(
+        federation_id=str(azure_federation.id),
+        data=FederationUpdateRequest(
+            displayName="Azure Federation",
+            description="Updated federation",
+            tags=["prod"],
+            providerConfig={"projectEndpoint": "https://new.projects.ai.azure.com"},
+            syncAfterUpdate=False,
+        ),
+        user_context=sample_user_context,
+        federation_crud_service=federation_crud_service,
+        federation_sync_service=federation_sync_service,
+        acl_service=acl_service,
+        a2a_client_registry=a2a_client_registry,
+    )
+
+    a2a_client_registry.invalidate_azure_federation.assert_called_once_with(updated_federation.id)
+
+
+@pytest.mark.asyncio
 async def test_delete_federation_returns_deleted_status(
     sample_user_context, sample_federation, sample_job, acl_service
 ):
