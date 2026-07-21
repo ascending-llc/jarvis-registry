@@ -59,7 +59,7 @@ async def test_get_client_cache_hit_reuses_client_without_db_or_auth_rebuild():
     federation.id = federation_id
     cache = AzureFoundryClientCache()
     federation_get = AsyncMock(return_value=federation)
-    auth_factory = MagicMock()
+    auth_factory = MagicMock(return_value=MagicMock(close=AsyncMock()))
 
     with (
         patch("registry.services.federation.azure_foundry_proxy_auth.Federation.get", new=federation_get),
