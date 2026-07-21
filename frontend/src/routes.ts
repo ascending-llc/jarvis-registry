@@ -4,6 +4,7 @@ export const APP_ROUTES = {
   login: '/login',
   root: '/',
   oauthCallback: '/oauth-callback',
+  device: '/device',
   consentDownstream: '/consent/downstream',
   consentServer: '/consent/server',
   serverRegistry: '/server-registry',

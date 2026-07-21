@@ -22,7 +22,9 @@ const API = {
   revokeAuth: (id: string) => `${MCP_BASE_URL}/oauth/token/${id}`,
   getDiscover: `${MCP_BASE_URL}/oauth/discover`,
 
-  // consent (as-1522 / as-1524)
+  // consent (as-1522 / as-1524 / as-1727 / as-1728)
+  resolveDeviceCode: (userCode: string) =>
+    `${MCP_BASE_URL}/consent/device/resolve?user_code=${encodeURIComponent(userCode)}`,
   getDownstreamConsent: (nonce: string) => `${MCP_BASE_URL}/consent/downstream?nonce=${encodeURIComponent(nonce)}`,
   approveDownstreamConsent: `${MCP_BASE_URL}/consent/downstream`,
   denyDownstreamConsent: `${MCP_BASE_URL}/consent/downstream/deny`,
