@@ -894,10 +894,12 @@ async def test_run_sync_combines_apply_and_vector_errors_when_vector_sync_fails(
     combined_message = federation_sync_service.federation_crud_service.mark_sync_failed.await_args.args[1]
     assert "2 resource sync failures" in combined_message
     assert apply_error in combined_message
+    assert "weaviate timeout" in combined_message
     assert federation_sync_service.federation_job_service.mark_failed.await_count == 2
     job_error_message = federation_sync_service.federation_job_service.mark_failed.await_args.args[2]
     assert "2 resource sync failures" in job_error_message
     assert apply_error in job_error_message
+    assert "weaviate timeout" in job_error_message
 
 
 @pytest.mark.asyncio

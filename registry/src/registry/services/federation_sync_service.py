@@ -250,11 +250,11 @@ class FederationSyncService:
             3. persist stats and lastSync in the same transaction
             4. rebuild vector indexes outside the Mongo transaction
 
-        Mongo remains the source of truth, so vector rebuild still happens after
-        the transaction commits. However, vector sync is part of the externally
-        observed federation sync contract: if it fails, we surface the failure
-        to callers and move both the federation and the job into failed state
-        even though the Mongo transaction has already committed.
+        Mongo remains the source of truth, so the vector rebuild still happens after
+        the transaction commits. Vector sync runs in a best-effort sub-step: if it
+        fails, the exception is caught, logged, and reflected in the final
+        federation/job state by ``_finalize_sync_status``. The job is only reported
+        as successful when both the Mongo commit and the vector rebuild succeed.
         """
         try:
             discovered = await self._discover_entities(federation, author_id=author_id)
@@ -315,9 +315,15 @@ class FederationSyncService:
         """
         if mutation_result.summary.errorMessages or vector_sync_error:
             if vector_sync_error:
-                combined_message = self._summarize_sync_errors(
-                    [*mutation_result.summary.errorMessages, vector_sync_error]
-                )
+                apply_errors = mutation_result.summary.errorMessages
+                if apply_errors:
+                    combined_message = (
+                        f"{len(apply_errors) + 1} resource sync failures. "
+                        f"First apply error: {apply_errors[0]}. "
+                        f"Vector sync error: {vector_sync_error}"
+                    )
+                else:
+                    combined_message = f"Vector sync error: {vector_sync_error}"
                 await self.federation_crud_service.mark_sync_failed(
                     federation,
                     combined_message,
