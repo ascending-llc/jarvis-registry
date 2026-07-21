@@ -13,7 +13,12 @@ from mcp.server.session import ServerSession
 from redis import Redis
 
 from registry_pkgs.core.consent_store import ConsentStore, PendingConsentStore
-from registry_pkgs.core.downstream_oauth import downstream_mcp_code_key, oauth_error_payload
+from registry_pkgs.core.downstream_oauth import (
+    DEVICE_CODE_GRANT_TYPE,
+    DeviceCodeResponse,
+    downstream_mcp_code_key,
+    oauth_error_payload,
+)
 from registry_pkgs.core.jwt_tokens import mint_managed_agent_token
 from registry_pkgs.core.oauth_state_store import DownstreamOAuthStoreProtocol
 from registry_pkgs.core.redirect_uri import redirect_uri_matches, validate_registration_redirect_uri
@@ -44,6 +49,11 @@ from ....schemas.common_api_schemas import (
 )
 from ....schemas.enums import ConnectionState, OAuthFlowStatus
 from ....schemas.oauth_schema import MCPClientContext, OAuthFlow
+from ....services.oauth.downstream_device_service import (
+    DeviceAuthorizationError,
+    create_device_authorization,
+    mark_device_approved,
+)
 from ....services.oauth.mcp_service import MCPService
 from ....services.oauth.token_service import TokenService
 from ....services.server_service import ServerServiceV1
@@ -272,6 +282,17 @@ def _build_downstream_client_redirect(
     return RedirectResponse(url=_append_query_params(ctx["redirect_uri"], code=b_code, state=ctx["state"]))
 
 
+def _mark_completed_device_flow_approved(
+    flow: OAuthFlow | None,
+    store: DownstreamOAuthStoreProtocol,
+) -> None:
+    """Idempotently finalize device state, including retries of an already-completed callback."""
+    if not (flow and flow.metadata and flow.metadata.device_code):
+        return
+    if not mark_device_approved(flow.metadata.device_code, flow.user_id, store):
+        raise RuntimeError("Device authorization expired before the downstream OAuth callback completed")
+
+
 @router.get("/{server_path}/oauth/callback")
 async def oauth_callback(
     server_path: str,
@@ -283,6 +304,7 @@ async def oauth_callback(
     reconnection_manager: OAuthReconnectionManager = Depends(get_reconnection_manager),
     session_store: SessionStore = Depends(get_session_store),
     redis_client: Redis = Depends(get_redis_client),
+    store: DownstreamOAuthStoreProtocol = Depends(get_oauth_state_store),
 ) -> RedirectResponse:
     """
     OAuth callback handler
@@ -321,6 +343,7 @@ async def oauth_callback(
         flow = mcp_service.oauth_service.flow_manager.get_flow(flow_id)
         if flow and flow.status == OAuthFlowStatus.COMPLETED:
             logger.warning(f"[MCP OAuth] Flow already completed, preventing duplicate token exchange: {flow_id}")
+            _mark_completed_device_flow_approved(flow, store)
             return _redirect_to_page(request, server_path, flag="success")
 
         # 4. Complete the flow (validate state + exchange tokens for downstream MCP tokens).
@@ -334,9 +357,11 @@ async def oauth_callback(
 
         flow = mcp_service.oauth_service.flow_manager.get_flow(flow_id)
 
-        # 5. Best-effort post-completion side effects (never block the redirect).
+        # 5. Reconnect/notification are best effort; device-state finalization is required.
         await _reconnect_after_oauth(mcp_service, reconnection_manager, flow, server_path)
         client_branding = await _notify_elicitation_complete(state_dict.get("meta"), session_store)
+
+        _mark_completed_device_flow_approved(flow, store)
 
         # 6. MCP-client-initiated flows redirect back to the client;
         downstream_redirect = _build_downstream_client_redirect(flow, redis_client)
@@ -727,6 +752,41 @@ async def _build_downstream_authorize_redirect(
     return RedirectResponse(url=auth_url)
 
 
+@router.post(
+    "/downstream/oauth/device/{user_id}/{server_path:path}",
+    response_model=DeviceCodeResponse,
+)
+async def downstream_device_authorization(
+    user_id: str,
+    server_path: str,
+    client_id: str = Form(...),
+    scope: str | None = Form(None),
+    server_service: ServerServiceV1 = Depends(get_server_service),
+    store: DownstreamOAuthStoreProtocol = Depends(get_oauth_state_store),
+    pending_store: PendingConsentStore = Depends(get_pending_consent_store),
+) -> DeviceCodeResponse | JSONResponse:
+    """Create a per-server device authorization without trusting the path user identity."""
+    try:
+        return await create_device_authorization(
+            user_id=user_id,
+            server_path=server_path,
+            client_id=client_id,
+            scope=scope,
+            server_service=server_service,
+            store=store,
+            pending_store=pending_store,
+        )
+    except DeviceAuthorizationError as e:
+        return _oauth_token_error(
+            e.error,
+            e.description,
+            e.status_code,
+        )
+    except Exception:
+        logger.exception(f"[Downstream OAuth] device authorization failed: user={user_id} server={server_path}")
+        return _oauth_token_error("server_error", "internal server error", status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
 @router.get("/downstream/oauth/authorize/{user_id}/{server_path:path}")
 async def downstream_oauth_authorize(
     user_id: str,
@@ -929,6 +989,70 @@ def _downstream_refresh_token_grant(
     return _downstream_token_response(access_token, new_refresh_token)
 
 
+def _downstream_device_code_grant(
+    *,
+    store: DownstreamOAuthStoreProtocol,
+    user_id: str,
+    server_path: str,
+    device_code: str | None,
+    client_id: str,
+) -> JSONResponse:
+    """Exchange one approved device code for a downstream access/refresh token pair."""
+    if not device_code:
+        return _oauth_token_error("invalid_request", "device_code is required")
+
+    device_data = store.get_device_code(device_code)
+    if device_data is None:
+        return _oauth_token_error("invalid_grant", "device_code not found")
+
+    if (
+        device_data.get("client_id") != client_id
+        or device_data.get("user_id") != user_id
+        or device_data.get("server_path") != server_path
+    ):
+        return _oauth_token_error("invalid_grant", "device_code does not match this endpoint")
+
+    if int(time.time()) > device_data.get("expires_at", 0):
+        return _oauth_token_error("expired_token", "device_code has expired")
+
+    device_status = device_data.get("status")
+    if device_status == "pending":
+        return _oauth_token_error("authorization_pending", "user has not yet authorized this request")
+    if device_status == "denied":
+        return _oauth_token_error("access_denied", "user denied authorization")
+    if device_status == "failed":
+        return _oauth_token_error(
+            "server_error",
+            "downstream authorization failed",
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+    if device_status != "approved":
+        return _oauth_token_error(
+            "server_error",
+            "unexpected server state",
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+    access_token = _mint_downstream_access_token(user_id, client_id, server_path)
+    refresh_token = secrets.token_urlsafe(32)
+
+    # Atomically validate/consume the device code and persist the refresh token. A Redis failure
+    # leaves the approved device code intact so the client can safely retry.
+    consumed_data = store.consume_device_code_and_save_refresh_token(
+        device_code,
+        refresh_token,
+        _downstream_refresh_data(client_id, user_id, server_path),
+        expected_client_id=client_id,
+        expected_user_id=user_id,
+        expected_server_path=server_path,
+    )
+    if consumed_data is None:
+        return _oauth_token_error("invalid_grant", "device_code state changed")
+
+    logger.info(f"[Downstream OAuth] device token issued: user={user_id} server={server_path}")
+    return _downstream_token_response(access_token, refresh_token)
+
+
 @router.post("/downstream/oauth/token/{user_id}/{server_path:path}")
 async def downstream_oauth_token(
     user_id: str,
@@ -940,14 +1064,15 @@ async def downstream_oauth_token(
     code_verifier: str | None = Form(None),
     redirect_uri: str | None = Form(None),
     refresh_token: str | None = Form(None),
+    device_code: str | None = Form(None),
     redis_client: Redis = Depends(get_redis_client),
     store: DownstreamOAuthStoreProtocol = Depends(get_oauth_state_store),
 ) -> JSONResponse:
     """Per-server downstream OAuth token endpoint (Layer B: registry-as-AS).
 
-    Supports ``authorization_code`` (exchange the Layer B code + PKCE verifier) and ``refresh_token``
-    (rotate a stored refresh token). Both mint a managed-agent access token scoped to this
-    ``(user_id, server_path)`` direct-connect proxy. No registry Bearer token is required.
+    Supports ``authorization_code``, ``refresh_token``, and the RFC 8628 ``device_code`` grant.
+    All mint a managed-agent access token scoped to this ``(user_id, server_path)`` direct-connect
+    proxy. No registry Bearer token is required.
     """
     try:
         if grant_type == "authorization_code":
@@ -971,6 +1096,15 @@ async def downstream_oauth_token(
                 client_id=client_id,
                 client_secret=client_secret,
                 refresh_token=refresh_token,
+            )
+
+        if grant_type == DEVICE_CODE_GRANT_TYPE:
+            return _downstream_device_code_grant(
+                store=store,
+                user_id=user_id,
+                server_path=server_path,
+                device_code=device_code,
+                client_id=client_id,
             )
 
         return _oauth_token_error("unsupported_grant_type", f"grant_type '{grant_type}' is not supported")

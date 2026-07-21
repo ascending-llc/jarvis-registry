@@ -26,6 +26,7 @@ mock_connection_service = Mock()
 mock_mcp_service.connection_service = mock_connection_service
 
 mock_token_service = Mock()
+mock_oauth_state_store = Mock()
 mock_container = Mock()
 mock_container.reconnection_manager = Mock()
 
@@ -115,6 +116,7 @@ def client():
         mcp_service=mock_container.mcp_service,
         session_store=SessionStore(),
         redis_client=Mock(),
+        oauth_state_store=mock_oauth_state_store,
     )
     yield TestClient(app)
 
@@ -263,6 +265,7 @@ class TestOAuthRouter:
         mock_flow.status = "pending"
         # Registry-frontend-initiated flow (not an MCP client) → no downstream redirect branch.
         mock_flow.metadata.mcp_client_context = None
+        mock_flow.metadata.device_code = None
         mock_mcp_service.oauth_service.flow_manager.get_flow = lambda flow_id: mock_flow
 
         # Mock successful completion
@@ -285,6 +288,45 @@ class TestOAuthRouter:
         # The serverPath query parameter should contain the server_path from the URL
         assert "serverPath=test_server" in response.headers["location"]
 
+    def test_oauth_callback_marks_device_code_approved(self, client):
+        mock_mcp_service.oauth_service.flow_manager.decode_state = lambda _: {
+            "flow_id": "test_user-flow123",
+            "security_token": "security_token",
+        }
+        mock_flow = Mock()
+        mock_flow.user_id = "test_user"
+        mock_flow.server_id = TEST_SERVER_ID
+        mock_flow.status = "pending"
+        mock_flow.metadata.mcp_client_context = None
+        mock_flow.metadata.device_code = "device-1"
+        mock_mcp_service.oauth_service.flow_manager.get_flow = lambda flow_id: mock_flow
+        mock_mcp_service.oauth_service.complete_oauth_flow = make_async(lambda *args, **kwargs: (True, None))
+        mock_mcp_service.connection_service.create_user_connection = AsyncMock(return_value=None)
+        mock_oauth_state_store.get_device_code.return_value = {
+            "status": "pending",
+            "user_id": "test_user",
+            "client_id": "claude",
+            "server_path": "github",
+        }
+        mock_oauth_state_store.update_device_code.reset_mock()
+
+        response = client.get(
+            "/mcp/github/oauth/callback?code=GHCODE&state=test_user-flow123##security_token",
+            follow_redirects=False,
+        )
+
+        assert response.status_code == 307
+        assert "oauth-callback?type=success" in response.headers["location"]
+        mock_oauth_state_store.update_device_code.assert_called_once_with(
+            "device-1",
+            {
+                "status": "approved",
+                "user_id": "test_user",
+                "client_id": "claude",
+                "server_path": "github",
+            },
+        )
+
     def test_oauth_callback_mcp_client_redirect(self, client):
         """MCP-client-initiated (Layer B) flow: callback redirects to the client's redirect_uri
         with a code + state instead of the registry success page."""
@@ -304,6 +346,7 @@ class TestOAuthRouter:
             "state": "st123",
             "server_path": "github",
         }
+        mock_flow.metadata.device_code = None
         mock_mcp_service.oauth_service.flow_manager.get_flow = lambda flow_id: mock_flow
         mock_mcp_service.oauth_service.complete_oauth_flow = make_async(lambda *args, **kwargs: (True, None))
         mock_mcp_service.connection_service.create_user_connection = AsyncMock(return_value=None)
@@ -378,6 +421,7 @@ class TestOAuthRouter:
         # Mock get_flow to return completed flow - note: get_flow is NOT async in the actual code
         mock_flow = Mock()
         mock_flow.status = OAuthFlowStatus.COMPLETED
+        mock_flow.metadata.device_code = None
         mock_mcp_service.oauth_service.flow_manager.get_flow = lambda flow_id: mock_flow
 
         response = client.get(
@@ -389,6 +433,46 @@ class TestOAuthRouter:
         assert response.status_code == 307
         assert "oauth-callback?type=success" in response.headers["location"]
         assert "serverPath=test_server" in response.headers["location"]
+
+    def test_completed_device_callback_repairs_device_state_without_reexchange(self, client):
+        """A retry must finalize device state if the first callback completed before Redis failed."""
+        from registry.schemas.enums import OAuthFlowStatus
+
+        mock_mcp_service.oauth_service.flow_manager.decode_state = lambda _: {
+            "flow_id": "test_user-flow123",
+            "security_token": "security_token",
+        }
+        mock_flow = Mock()
+        mock_flow.status = OAuthFlowStatus.COMPLETED
+        mock_flow.user_id = "test_user"
+        mock_flow.metadata.device_code = "device-1"
+        mock_mcp_service.oauth_service.flow_manager.get_flow = lambda flow_id: mock_flow
+        mock_mcp_service.oauth_service.complete_oauth_flow = AsyncMock()
+        mock_oauth_state_store.get_device_code.return_value = {
+            "status": "pending",
+            "user_id": "test_user",
+            "client_id": "claude",
+            "server_path": "github",
+        }
+        mock_oauth_state_store.update_device_code.reset_mock()
+
+        response = client.get(
+            "/mcp/github/oauth/callback?code=GHCODE&state=test_user-flow123##security_token",
+            follow_redirects=False,
+        )
+
+        assert response.status_code == 307
+        assert "oauth-callback?type=success" in response.headers["location"]
+        mock_mcp_service.oauth_service.complete_oauth_flow.assert_not_awaited()
+        mock_oauth_state_store.update_device_code.assert_called_once_with(
+            "device-1",
+            {
+                "status": "approved",
+                "user_id": "test_user",
+                "client_id": "claude",
+                "server_path": "github",
+            },
+        )
 
     def test_delete_oauth_tokens_success(self, client):
         """Test successful deletion of OAuth tokens"""
