@@ -89,7 +89,10 @@ async def create_device_authorization(
             "expires_at": expires_at,
             "nonce": nonce,
         },
-        ttl_seconds=DownstreamOAuthConstants.DEVICE_CODE_TTL_SECONDS,
+        # Redis TTL intentionally outlives expires_at by the grace period (see constants.py) — the
+        # token endpoint's own expires_at check is what enforces the real 900s deadline.
+        ttl_seconds=DownstreamOAuthConstants.DEVICE_CODE_TTL_SECONDS
+        + DownstreamOAuthConstants.DEVICE_CODE_GRACE_PERIOD_SECONDS,
     )
     try:
         pending_store.save(

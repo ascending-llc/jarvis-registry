@@ -15,6 +15,7 @@ from httpx import Response
 from registry.api.v1.mcp.consent_routes import router as consent_router
 from registry.api.v1.mcp.oauth_router import router
 from registry.auth.dependencies import get_current_user
+from registry.constants import DownstreamOAuthConstants
 from registry.core.config import settings
 from registry.deps import (
     get_consent_store,
@@ -1018,6 +1019,12 @@ def test_device_authorization_creates_device_and_pending_consent(
         "server_path": "github",
         "device_code": body["device_code"],
     }
+    # Redis retains the device_code past its stated 900s so a late poll hits the expires_at check
+    # (expired_token) instead of the key already being gone (invalid_grant) — see constants.py.
+    assert store_mock.save_device_authorization.call_args.kwargs["ttl_seconds"] == (
+        DownstreamOAuthConstants.DEVICE_CODE_TTL_SECONDS + DownstreamOAuthConstants.DEVICE_CODE_GRACE_PERIOD_SECONDS
+    )
+    assert state["expires_at"] - int(time.time()) <= DownstreamOAuthConstants.DEVICE_CODE_TTL_SECONDS
 
 
 def test_device_authorization_rejects_client_without_device_grant(client, store_mock):
