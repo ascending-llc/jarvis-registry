@@ -1259,6 +1259,16 @@ def _post_device_token(client: TestClient, *, device_code: str = "device-1") -> 
     )
 
 
+def test_device_token_invalid_client_secret_returns_invalid_client(client, store_mock):
+    store_mock.device_codes["device-1"] = _device_state()
+    store_mock.validate_client_credentials.return_value = False
+
+    _assert_token_error(_post_device_token(client), "invalid_client", "invalid client credentials")
+    # The device_code must NOT be touched when client auth fails, matching the authorization_code
+    # and refresh_token grants' own client_secret validation (M4).
+    store_mock.get_device_code.assert_not_called()
+
+
 def test_device_token_polling_statuses(client, store_mock):
     store_mock.device_codes["device-1"] = _device_state()
     _assert_token_error(

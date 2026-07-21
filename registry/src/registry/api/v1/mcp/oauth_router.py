@@ -1003,10 +1003,14 @@ def _downstream_device_code_grant(
     server_path: str,
     device_code: str | None,
     client_id: str,
+    client_secret: str | None,
 ) -> JSONResponse:
     """Exchange one approved device code for a downstream access/refresh token pair."""
     if not device_code:
         return _oauth_token_error("invalid_request", "device_code is required")
+
+    if not store.validate_client_credentials(client_id, client_secret):
+        return _oauth_token_error("invalid_client", "invalid client credentials")
 
     device_data = store.get_device_code(device_code)
     if device_data is None:
@@ -1112,6 +1116,7 @@ async def downstream_oauth_token(
                 server_path=server_path,
                 device_code=device_code,
                 client_id=client_id,
+                client_secret=client_secret,
             )
 
         return _oauth_token_error("unsupported_grant_type", f"grant_type '{grant_type}' is not supported")
