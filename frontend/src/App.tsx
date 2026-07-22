@@ -10,6 +10,7 @@ import AgentRegistryOrEdit from './pages/AgentRegistryOrEdit';
 import ConsentDownstream from './pages/ConsentDownstream';
 import ConsentServer from './pages/ConsentServer';
 import Dashboard from './pages/Dashboard';
+import DeviceVerify from './pages/DeviceVerify';
 import FederationRegistryOrEdit from './pages/FederationRegistryOrEdit';
 import Login from './pages/Login';
 import NotFound from './pages/NotFound';
@@ -27,6 +28,14 @@ const router = createBrowserRouter(
       element: (
         <ProtectedRoute>
           <OAuthCallback />
+        </ProtectedRoute>
+      ),
+    },
+    {
+      path: APP_ROUTES.device,
+      element: (
+        <ProtectedRoute>
+          <DeviceVerify />
         </ProtectedRoute>
       ),
     },

@@ -205,12 +205,14 @@ class RegistryContainer:
     def oauth_state_store(self) -> DownstreamOAuthStateStore:
         """Redis-backed OAuth state for the direct-connect downstream flow.
 
-        Direct-connect refresh tokens live under registry's own ``redis_key_prefix``; DCR client
-        records are read through an explicit client facade over auth-server's namespace.
+        Direct-connect refresh tokens and device-flow state live under registry's own
+        ``redis_key_prefix``; DCR client records are read through an explicit client facade over
+        auth-server's namespace.
         """
         return DownstreamOAuthStateStore(
             client_store=self.oauth_client_store,
             refresh_token_store=self.downstream_refresh_token_store,
+            device_store=self.downstream_refresh_token_store,
         )
 
     @cached_property

@@ -116,6 +116,7 @@ class MCPOAuthService:
         *,
         state_metadata: StateMetadata | None = None,
         mcp_client_context: MCPClientContext | None = None,
+        device_code: str | None = None,
     ) -> tuple[str | None, str | None, str | None]:
         """
         Initialize OAuth flow with automatic DCR support.
@@ -280,6 +281,7 @@ class MCPOAuthService:
                 flow_id=flow_id,
                 state_metadata=state_metadata,
                 mcp_client_context=mcp_client_context,
+                device_code=device_code,
             )
 
             # Create OAuth flow

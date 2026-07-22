@@ -4,23 +4,14 @@ Pydantic models for OAuth 2.0 Device Flow.
 
 from pydantic import BaseModel
 
+from registry_pkgs.core.downstream_oauth import DeviceCodeResponse as DeviceCodeResponse
+
 
 class DeviceCodeRequest(BaseModel):
     """Request model for device code generation"""
 
     client_id: str
     scope: str | None = None
-
-
-class DeviceCodeResponse(BaseModel):
-    """Response model for device code generation"""
-
-    device_code: str
-    user_code: str
-    verification_uri: str
-    verification_uri_complete: str
-    expires_in: int
-    interval: int
 
 
 class DeviceTokenRequest(BaseModel):

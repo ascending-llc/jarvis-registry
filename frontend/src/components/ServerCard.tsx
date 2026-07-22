@@ -12,6 +12,7 @@ import type React from 'react';
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import agentcoreIcon from '@/assets/agentcore.svg';
+import azureAiIcon from '@/assets/azureai-color.svg';
 import IconButton from '@/components/IconButton';
 import { FEDERATED_TAG } from '@/constants/tags';
 import { useGlobal } from '@/contexts/GlobalContext';
@@ -183,6 +184,8 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
 
   const hasAgentCoreTags =
     server.tags?.includes(FEDERATED_TAG) && server.tags?.includes('aws') && server.tags?.includes('agentcore');
+  const hasAzureFoundryTags =
+    server.tags?.includes(FEDERATED_TAG) && server.tags?.includes('azure') && server.tags?.includes('foundry');
 
   return (
     <>
@@ -426,7 +429,7 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
           </div>
         </div>
 
-        {/* AgentCore Icon - Fixed position */}
+        {/* Federation Provider Icon - Fixed position */}
         {hasAgentCoreTags && (
           <img
             src={agentcoreIcon}
@@ -434,6 +437,16 @@ const ServerCard: React.FC<ServerCardProps> = ({ server }) => {
             className='absolute bottom-16 right-3 h-6 w-6 rounded-md'
             title='AWS AgentCore'
           />
+        )}
+        {hasAzureFoundryTags && (
+          <div className='absolute bottom-16 right-3 flex h-6 w-6 items-center justify-center rounded-md bg-[var(--jarvis-info-soft)] p-1 shadow-sm'>
+            <img
+              src={azureAiIcon}
+              alt='Azure AI Foundry'
+              className='h-full w-full object-contain'
+              title='Azure AI Foundry'
+            />
+          </div>
         )}
       </div>
 

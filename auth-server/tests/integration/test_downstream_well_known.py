@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 
 from auth_server.core.config import settings
 from auth_server.deps import get_server_service
-from registry_pkgs.core.downstream_oauth import downstream_mcp_issuer
+from registry_pkgs.core.downstream_oauth import DEVICE_CODE_GRANT_TYPE, downstream_mcp_issuer
 
 USER_ID = "507f1f77bcf86cd799439011"
 _PRM_BASE = f"/.well-known/oauth-protected-resource{settings.service_base_path}/proxy"
@@ -56,6 +56,7 @@ def test_downstream_as_metadata_issuer_and_endpoints(test_client: TestClient):
     assert body["issuer"] == downstream_mcp_issuer(settings.jwt_issuer, USER_ID, "github")
     assert body["authorization_endpoint"].endswith(f"/downstream/oauth/authorize/{USER_ID}/github")
     assert body["token_endpoint"].endswith(f"/downstream/oauth/token/{USER_ID}/github")
+    assert body["device_authorization_endpoint"].endswith(f"/downstream/oauth/device/{USER_ID}/github")
     assert body["jwks_uri"] == f"{settings.jwt_issuer}/.well-known/jwks.json"
     assert body["code_challenge_methods_supported"] == ["S256"]
 
@@ -66,6 +67,7 @@ def test_downstream_as_metadata_advertises_refresh_token_grant(test_client: Test
     body = test_client.get(f"/.well-known/oauth-authorization-server/proxy/server/oauth/{USER_ID}/github").json()
     assert "refresh_token" in body["grant_types_supported"]
     assert "authorization_code" in body["grant_types_supported"]
+    assert DEVICE_CODE_GRANT_TYPE in body["grant_types_supported"]
 
 
 def test_downstream_as_metadata_advertises_public_client_auth_method(test_client: TestClient):

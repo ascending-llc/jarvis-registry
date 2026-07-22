@@ -10,7 +10,12 @@ export interface ConsentContext {
   server_name?: string;
 }
 
+export interface ResolveDeviceCodeResponse {
+  nonce: string;
+}
+
 const MOCK_ENABLED = import.meta.env.VITE_MOCK_CONSENT_API === 'true';
+const MOCK_DEVICE_NONCE = 'mock-device-nonce';
 
 // MCP clients recognized for browser deep-link-back (matches OAuthCallback.tsx's list).
 export const DEEP_LINK_BRANDS = ['cursor', 'vscode', 'claude'];
@@ -24,6 +29,16 @@ const MOCK_DOWNSTREAM_CONTEXT: ConsentContext = {
 };
 
 const MOCK_SERVER_CONTEXT: ConsentContext = { ...MOCK_DOWNSTREAM_CONTEXT, server_name: 'GitHub' };
+
+export async function resolveDeviceCode(userCode: string): Promise<ResolveDeviceCodeResponse> {
+  if (MOCK_ENABLED) {
+    if (userCode === 'INVALID') {
+      return Promise.reject({ detail: 'This code is invalid or has expired.' });
+    }
+    return { nonce: MOCK_DEVICE_NONCE };
+  }
+  return service.get(API.resolveDeviceCode(userCode)) as Promise<ResolveDeviceCodeResponse>;
+}
 
 export async function getDownstreamConsentContext(nonce: string): Promise<ConsentContext> {
   if (MOCK_ENABLED) return MOCK_DOWNSTREAM_CONTEXT;

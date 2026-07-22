@@ -103,6 +103,10 @@ class MCPOAuthFlowMetadata(BaseModel):
         None,
         description="OAuth/PKCE context of an MCP client that initiated a downstream OAuth flow (Layer B)",
     )
+    device_code: str | None = Field(
+        None,
+        description="Device code when a browserless downstream client initiated the Layer B flow",
+    )
 
 
 @dataclass
