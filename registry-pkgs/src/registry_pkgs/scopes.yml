@@ -161,6 +161,9 @@ federations-read:
   - action: get_federation
     method: GET
     endpoint: /federations/{federation_id}
+  - action: get_federation_sync_job
+    method: GET
+    endpoint: /federations/{federation_id}/jobs/{job_id}
 
 federations-write:
   # Federation write scopes allow create/update/sync/delete endpoints.
