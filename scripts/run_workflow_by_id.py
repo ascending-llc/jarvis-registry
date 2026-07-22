@@ -7,13 +7,15 @@ Usage:
     uv run python scripts/run_workflow_by_id.py --list-agents
 
 Environment variables:
-    REGISTRY_TOKEN   User-scoped Bearer token for the MCP gateway proxy.
-                     If not set, a self-signed JWT is generated from JWT_PRIVATE_KEY.
+    REGISTRY_TOKEN   User-scoped Bearer token accepted by the Registry API.
+                     If omitted, a self-signed token is generated from JWT_PRIVATE_KEY.
+    REGISTRY_USER_ID Existing user ObjectId used by the generated token. The user must
+                     have VIEW access to the workflow and its MCP/A2A resources.
+    REGISTRY_CLIENT_ID
+                     Client identity used for per-client MCP consent (default: workflow-script).
     REGISTRY_URL     Registry base URL (default: http://localhost:8000)
     MONGO_URI        MongoDB connection string (default: mongodb://127.0.0.1:27017/jarvis)
-    AWS_BEDROCK_SONNET_AIP_ARN
-                     AIP ARN used before BEDROCK_MODEL when set.
-    BEDROCK_MODEL    Bedrock model ID fallback (default: us.amazon.nova-lite-v1:0).
+    WORKFLOW_TIMEOUT Maximum number of seconds to poll before failing (default: 300).
 
 Example:
     uv run python scripts/run_workflow_by_id.py 6650f1a2b3c4d5e6f7890123 "Summarise AI news"
@@ -26,26 +28,22 @@ import asyncio
 import logging
 import os
 import sys
+import time
 from pathlib import Path
 
-from agno.models.aws import AwsBedrock
-from bedrock_model import resolve_bedrock_model_id
+import httpx
 from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
-
-from beanie import PydanticObjectId
 
 from registry import settings
 from registry_pkgs.core.config import MongoConfig
 from registry_pkgs.core.jwt_utils import build_jwt_payload, encode_jwt
 from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.models.a2a_agent import A2AAgent
-from registry_pkgs.models.enums import WorkflowRunStatus
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
-from registry_pkgs.models.workflow import NodeRun, WorkflowDefinition, WorkflowRun
+from registry_pkgs.models.workflow import WorkflowDefinition
 from registry_pkgs.workflows.a2a_client import agent_base_url, get_agentcore_auth_mode, is_agentcore_runtime
-from registry_pkgs.workflows.runner import WorkflowRunner
 
 logging.basicConfig(
     level=logging.INFO,
@@ -57,33 +55,86 @@ def _make_registry_token() -> str:
     """Generate a self-signed registry token from JWT_PRIVATE_KEY when REGISTRY_TOKEN is not set."""
     if not settings.jwt_private_key:
         raise SystemExit("Set REGISTRY_TOKEN or JWT_PRIVATE_KEY in .env to authenticate against the registry.")
-    scopes = "servers-read agents-read mcp-proxy-ops federations-read"
+    user_id = os.getenv("REGISTRY_USER_ID")
+    if not user_id:
+        raise SystemExit("Set REGISTRY_USER_ID when REGISTRY_TOKEN is not provided.")
+    client_id = os.getenv("REGISTRY_CLIENT_ID", "workflow-script")
+    scopes = "workflows-control workflows-read servers-read agents-read federations-read"
     payload = build_jwt_payload(
         subject="smoke-test-user",
         issuer=settings.jwt_issuer,
         audience=settings.jwt_audience,
         expires_in_seconds=3600,
-        extra_claims={"scope": scopes},
+        extra_claims={"scope": scopes, "user_id": user_id, "client_id": client_id},
     )
     token = encode_jwt(payload, settings.jwt_private_key, kid=settings.jwt_self_signed_kid)
-    logging.getLogger(__name__).info("Generated registry token (sub=smoke-test-user, iss=%s)", settings.jwt_issuer)
+    logging.getLogger(__name__).info(
+        "Generated registry token (sub=smoke-test-user, user_id=%s, client_id=%s, iss=%s)",
+        user_id,
+        client_id,
+        settings.jwt_issuer,
+    )
     return token
 
 
-def _print_status(run: WorkflowRun, node_runs: list[NodeRun]) -> None:
+def _print_status(run: dict) -> None:
     icons = {"completed": "✓", "failed": "✗", "running": "→", "pending": "·", "skipped": "○"}
     print("\n── Per-node status ──────────────────────────────────────")
-    for nr in node_runs:
-        icon = icons.get(str(nr.status), "?")
-        error_info = f"  error={nr.error!r}" if nr.error else ""
-        print(f"  {icon} {nr.node_name:<25} status={nr.status}  attempt={nr.attempt}{error_info}")
+    for node in run.get("nodeRuns", []):
+        status = node.get("status", "unknown")
+        icon = icons.get(status, "?")
+        error_info = f"  error={node.get('error')!r}" if node.get("error") else ""
+        print(
+            f"  {icon} {node.get('nodeName', '?'):<25} status={status}  attempt={node.get('attempt', '?')}{error_info}"
+        )
     print("\n── Run result ────────────────────────────────────────────")
-    print(f"  status      : {run.status}")
-    if run.final_output:
-        print(f"  final_output: {run.final_output}")
-    if run.error_summary:
-        print(f"  error       : {run.error_summary}")
+    print(f"  status      : {run.get('status')}")
+    if run.get("finalOutput"):
+        print(f"  final_output: {run['finalOutput']}")
+    if run.get("errorSummary"):
+        print(f"  error       : {run['errorSummary']}")
+    for requirement in run.get("pendingRequirements", []):
+        print(f"  requirement : {requirement.get('requirementKind') or requirement.get('stepType')}")
+        if requirement.get("consentUrl"):
+            print(f"  consent_url : {requirement['consentUrl']}")
     print()
+
+
+def _api(registry_url: str, path: str) -> str:
+    return f"{registry_url.rstrip('/')}/api/{settings.api_version}{path}"
+
+
+async def _trigger_and_wait(
+    definition_id: str,
+    user_text: str,
+    *,
+    registry_url: str,
+    token: str,
+) -> dict:
+    headers = {"Authorization": f"Bearer {token}"}
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.post(
+            _api(registry_url, f"/workflows/{definition_id}/runs"),
+            headers=headers,
+            json={"initialInput": {"user_text": user_text}, "triggerSource": "script"},
+        )
+        response.raise_for_status()
+        run_id = response.json()["runId"]
+        print(f"Run queued: {run_id}")
+
+        timeout = float(os.getenv("WORKFLOW_TIMEOUT", "300"))
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            detail = await client.get(
+                _api(registry_url, f"/workflows/{definition_id}/runs/{run_id}"),
+                headers=headers,
+            )
+            detail.raise_for_status()
+            run = detail.json()
+            if run.get("status") in {"completed", "failed", "cancelled", "awaiting_approval"}:
+                return run
+            await asyncio.sleep(0.5)
+    raise TimeoutError(f"Workflow run {run_id} did not finish within {timeout:g}s")
 
 
 async def _print_definition_agents(definition_id: str) -> None:
@@ -157,6 +208,7 @@ async def _list_all_agents() -> None:
 
 async def main(definition_id: str, user_text: str, *, list_agents: bool = False) -> int:
     registry_token = os.getenv("REGISTRY_TOKEN") or _make_registry_token()
+    registry_url = os.getenv("REGISTRY_URL", "http://localhost:8000")
 
     await MongoDB.connect_db(
         config=MongoConfig(
@@ -173,43 +225,19 @@ async def main(definition_id: str, user_text: str, *, list_agents: bool = False)
 
         await _print_definition_agents(definition_id)
 
-        llm = AwsBedrock(
-            id=resolve_bedrock_model_id(
-                model_env_var="BEDROCK_MODEL",
-                fallback_model_id="us.amazon.nova-lite-v1:0",
-            ),
-            aws_region=settings.aws_region,
-            aws_session_token=settings.aws_session_token,
-            aws_access_key_id=settings.aws_access_key_id,
-            aws_secret_access_key=settings.aws_secret_access_key,
-        )
-
-        runner = WorkflowRunner(
-            llm=llm,
-            registry_url=os.getenv("REGISTRY_URL", "http://localhost:8000"),
-            db_client=MongoDB.get_client(),
-            db_name=MongoDB.database_name,
-            jwt_config=settings.jwt_signing_config,
-        )
-
         print(f"Running definition {definition_id!r} with prompt: {user_text!r}\n")
-        pending_run = WorkflowRun(
-            workflow_definition_id=PydanticObjectId(definition_id),
-            status=WorkflowRunStatus.PENDING,
-            trigger_source="script",
-            initial_input={"user_text": user_text},
-        )
-        await pending_run.insert()
-        run, node_runs = await runner.run(
+        run = await _trigger_and_wait(
             definition_id,
             user_text,
-            registry_token=registry_token,
-            user_id=None,  # script context: bypass ACL filtering
-            existing_run_id=str(pending_run.id),
+            registry_url=registry_url,
+            token=registry_token,
         )
-        _print_status(run, node_runs)
+        _print_status(run)
 
-        return 0 if str(run.status) == "completed" else 1
+        if run.get("status") == "awaiting_approval":
+            print("Run requires approval. Complete the displayed consent/HITL action, then poll it via the API.")
+            return 2
+        return 0 if run.get("status") == "completed" else 1
 
     finally:
         try:

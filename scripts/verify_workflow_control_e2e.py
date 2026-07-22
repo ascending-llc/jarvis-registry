@@ -103,7 +103,7 @@ USER_B = PydanticObjectId()
 class MockRunner(WorkflowRunner):
     """Replace MCP/A2A executors with instant in-process mocks."""
 
-    async def _build_registry(self, definition, registry_token, user_id):
+    async def _build_registry(self, definition, auth_context, user_id):
         all_nodes = flatten_workflow_nodes(definition.nodes)
         keys = list(dict.fromkeys(n.executor_key for n in all_nodes if n.executor_key))
 
@@ -140,7 +140,6 @@ def _build_runner(queue: DirectiveQueue) -> MockRunner:
     )
     return MockRunner(
         llm=llm,
-        registry_url=os.getenv("REGISTRY_URL", "http://localhost:7860"),
         db_client=MongoDB.get_client(),
         db_name=MongoDB.database_name,
         jwt_config=settings.jwt_signing_config,
@@ -162,7 +161,7 @@ class FailingMockRunner(WorkflowRunner):
         self._fail_counts = fail_counts or {}
         self.attempts: dict[str, int] = {}
 
-    async def _build_registry(self, definition, registry_token, user_id):
+    async def _build_registry(self, definition, auth_context, user_id):
         all_nodes = flatten_workflow_nodes(definition.nodes)
         keys = list(dict.fromkeys(n.executor_key for n in all_nodes if n.executor_key))
 
@@ -192,7 +191,6 @@ def _build_failing_runner(queue: DirectiveQueue, fail_counts: dict[str, int]) ->
     )
     return FailingMockRunner(
         llm=llm,
-        registry_url=os.getenv("REGISTRY_URL", "http://localhost:7860"),
         db_client=MongoDB.get_client(),
         db_name=MongoDB.database_name,
         jwt_config=settings.jwt_signing_config,
@@ -315,7 +313,7 @@ async def _trigger_run_inproc(
     )
     await run.insert()
     task = asyncio.create_task(
-        runner.run(workflow_id, "e2e", registry_token="test", user_id=str(USER_A), existing_run_id=str(run.id))
+        runner.run(workflow_id, "e2e", auth_context=None, user_id=str(USER_A), existing_run_id=str(run.id))
     )
     return str(run.id), task
 
@@ -1019,7 +1017,7 @@ async def module_g(workflow_service, control_service, acl_service, queue, runner
         str(wf.id),
         run_id,
         first_node_id,
-        registry_token="test",
+        auth_context=None,
         user_id=str(USER_A),
     )
     r.check(
@@ -1034,7 +1032,7 @@ async def module_g(workflow_service, control_service, acl_service, queue, runner
     # Reuses the G1 completed run (which has COMPLETED NodeRuns for a + b).
     second_node_id = wf.nodes[1].id
     child2 = await control_service.send_retry(
-        str(wf.id), run_id, second_node_id, registry_token="test", user_id=str(USER_A)
+        str(wf.id), run_id, second_node_id, auth_context=None, user_id=str(USER_A)
     )
     deps = {d.node_id: str(d.resolution).lower() for d in child2.resolved_dependencies}
     r.check(
@@ -1052,7 +1050,7 @@ async def module_g(workflow_service, control_service, acl_service, queue, runner
     parent_failed.status = WorkflowRunStatus.FAILED
     await parent_failed.save()
     child3 = await control_service.send_retry(
-        str(wf_f.id), str(parent_failed.id), wf_f.nodes[0].id, registry_token="test", user_id=str(USER_A)
+        str(wf_f.id), str(parent_failed.id), wf_f.nodes[0].id, auth_context=None, user_id=str(USER_A)
     )
     r.check(
         "G3 retry a FAILED run → child created",
@@ -1065,7 +1063,7 @@ async def module_g(workflow_service, control_service, acl_service, queue, runner
     raised_400 = False
     try:
         await control_service.send_retry(
-            str(wf_f.id), str(pending_run.id), wf_f.nodes[0].id, registry_token="test", user_id=str(USER_A)
+            str(wf_f.id), str(pending_run.id), wf_f.nodes[0].id, auth_context=None, user_id=str(USER_A)
         )
     except HTTPException as exc:
         raised_400 = exc.status_code == 400
@@ -1078,7 +1076,7 @@ async def module_g(workflow_service, control_service, acl_service, queue, runner
     raised_cancel = False
     try:
         await control_service.send_retry(
-            str(wf_f.id), str(cancelled_run.id), wf_f.nodes[0].id, registry_token="test", user_id=str(USER_A)
+            str(wf_f.id), str(cancelled_run.id), wf_f.nodes[0].id, auth_context=None, user_id=str(USER_A)
         )
     except HTTPException as exc:
         raised_cancel = exc.status_code == 400
@@ -1087,9 +1085,7 @@ async def module_g(workflow_service, control_service, acl_service, queue, runner
     # G6: retry with an unknown from_node_id → 400.
     raised_node = False
     try:
-        await control_service.send_retry(
-            str(wf.id), run_id, "no-such-node-id", registry_token="test", user_id=str(USER_A)
-        )
+        await control_service.send_retry(str(wf.id), run_id, "no-such-node-id", auth_context=None, user_id=str(USER_A))
     except HTTPException as exc:
         raised_node = exc.status_code == 400
     r.check("G6 retry with unknown from_node_id → 400", raised_node)
