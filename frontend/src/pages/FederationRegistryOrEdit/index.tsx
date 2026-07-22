@@ -1,6 +1,6 @@
 import { ArrowPathIcon, CalendarIcon, ClockIcon, TrashIcon } from '@heroicons/react/24/outline';
 import type React from 'react';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { FiServer } from 'react-icons/fi';
 import { HiOutlineShare } from 'react-icons/hi2';
 import { useNavigate, useSearchParams } from 'react-router-dom';
@@ -8,6 +8,11 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import ShareModal from '@/components/ShareModal';
 import { useGlobal } from '@/contexts/GlobalContext';
 import { useServer } from '@/contexts/ServerContext';
+import {
+  getFederationSyncErrorMessage,
+  getFederationSyncViewState,
+  useFederationSyncPolling,
+} from '@/hooks/useFederationSyncPolling';
 import SERVICES from '@/services';
 import type { Federation } from '@/services/federation/type';
 import UTILS from '@/utils';
@@ -38,8 +43,13 @@ const FederationRegistryOrEdit: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [federation, setFederation] = useState<Federation | null>(null);
-  const [isSyncing, setIsSyncing] = useState(false);
+  const [isStartingSync, setIsStartingSync] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
+  const currentFederationIdRef = useRef(id);
+  const detailRequestGenerationRef = useRef(0);
+  const syncRequestPendingRef = useRef(false);
+  const syncRequestGenerationRef = useRef(0);
+  currentFederationIdRef.current = id;
 
   const [formData, setFormData] = useState<FederationFormConfig>(INIT_DATA);
   const [errors, setErrors] = useState<Record<string, string | undefined>>({});
@@ -53,19 +63,24 @@ const FederationRegistryOrEdit: React.FC = () => {
   const isEditMode = !!id;
   const isReadOnly = searchParams.get('isReadOnly') === 'true';
 
-  useEffect(() => {
-    if (id) getDetail();
-  }, [id]);
-
   const goBack = () => {
     navigate(-1);
   };
 
   const getDetail = async () => {
-    if (!id) return;
+    const federationId = id;
+    if (!federationId) return;
+
+    const detailRequestGeneration = ++detailRequestGenerationRef.current;
     setLoadingDetail(true);
     try {
-      const data = await SERVICES.FEDERATION.getFederation(id);
+      const data = await SERVICES.FEDERATION.getFederation(federationId);
+      if (
+        detailRequestGeneration !== detailRequestGenerationRef.current ||
+        currentFederationIdRef.current !== federationId
+      ) {
+        return;
+      }
       setFederation(data);
       setFormData({
         providerType: data.providerType,
@@ -86,11 +101,64 @@ const FederationRegistryOrEdit: React.FC = () => {
         clientSecret: '',
       });
     } catch (_error: any) {
-      showToast(_error?.detail?.message || 'Failed to fetch external registry details', 'error');
+      if (detailRequestGeneration === detailRequestGenerationRef.current) {
+        showToast(_error?.detail?.message || 'Failed to fetch external registry details', 'error');
+      }
     } finally {
-      setLoadingDetail(false);
+      if (detailRequestGeneration === detailRequestGenerationRef.current) {
+        setLoadingDetail(false);
+      }
     }
   };
+
+  const { jobStatus, isPolling, pollingError, startPolling, retryPolling, stopPolling } = useFederationSyncPolling(
+    job => {
+      if (job.federationId !== currentFederationIdRef.current) return;
+      showToast(
+        job.status === 'success' ? 'Sync completed successfully' : job.error || 'Sync failed',
+        job.status === 'success' ? 'success' : 'error',
+      );
+      void getDetail();
+    },
+  );
+
+  useEffect(() => {
+    stopPolling();
+    detailRequestGenerationRef.current += 1;
+    syncRequestGenerationRef.current += 1;
+    syncRequestPendingRef.current = false;
+    setIsStartingSync(false);
+    setFederation(null);
+    if (id) void getDetail();
+    return () => {
+      detailRequestGenerationRef.current += 1;
+      syncRequestGenerationRef.current += 1;
+      syncRequestPendingRef.current = false;
+    };
+  }, [id, stopPolling]);
+
+  useEffect(() => {
+    const jobId = federation?.lastSync?.jobId;
+    if (
+      id &&
+      federation?.id === id &&
+      jobId &&
+      (federation.syncStatus === 'pending' || federation.syncStatus === 'syncing')
+    ) {
+      startPolling(id, jobId);
+      return;
+    }
+    stopPolling();
+  }, [federation?.id, federation?.lastSync?.jobId, federation?.syncStatus, id, startPolling, stopPolling]);
+
+  const syncView = getFederationSyncViewState({
+    serverStatus: federation?.syncStatus,
+    hasServerJobId: Boolean(federation?.lastSync?.jobId),
+    isStarting: isStartingSync,
+    isPolling,
+    pollingError,
+    jobStatus,
+  });
 
   const validate = () => {
     const newErrors: Record<string, string> = {};
@@ -196,8 +264,9 @@ const FederationRegistryOrEdit: React.FC = () => {
         { timeout: 120000 },
       );
 
-      const discoveredMcp = result?.summary?.discoveredMcpServers ?? 0;
-      const discoveredAgents = result?.summary?.discoveredAgents ?? 0;
+      const summary = 'summary' in result ? result.summary : null;
+      const discoveredMcp = summary?.discoveredMcpServers ?? 0;
+      const discoveredAgents = summary?.discoveredAgents ?? 0;
 
       setTestConnectionResult({
         success: true,
@@ -214,18 +283,42 @@ const FederationRegistryOrEdit: React.FC = () => {
   };
 
   const handleSync = async () => {
-    if (!id || isSyncing) return;
-    setIsSyncing(true);
+    if (!id || syncRequestPendingRef.current || isPolling) return;
+
+    if (syncView.action === 'retry') {
+      retryPolling();
+      return;
+    }
+    if (syncView.action === 'refresh') {
+      void getDetail();
+      return;
+    }
+    if (syncView.action === 'none') return;
+
+    const federationId = id;
+    syncRequestPendingRef.current = true;
+    const syncRequestGeneration = ++syncRequestGenerationRef.current;
+    setIsStartingSync(true);
     showToast('Sync started in background', 'info');
 
     try {
-      await SERVICES.FEDERATION.syncFederation(id, undefined, { timeout: 120000 });
-      showToast('Sync completed successfully', 'success');
-      getDetail();
-    } catch (error: any) {
-      showToast(error?.detail?.message || 'Failed to sync', 'error');
+      const job = await SERVICES.FEDERATION.syncFederation(federationId);
+      if (
+        syncRequestGeneration !== syncRequestGenerationRef.current ||
+        currentFederationIdRef.current !== federationId
+      ) {
+        return;
+      }
+      if (!('id' in job)) throw new Error('Failed to start sync');
+      startPolling(federationId, job.id);
+    } catch (error: unknown) {
+      if (syncRequestGeneration !== syncRequestGenerationRef.current) return;
+      showToast(getFederationSyncErrorMessage(error, 'Failed to start sync'), 'error');
     } finally {
-      setIsSyncing(false);
+      if (syncRequestGeneration === syncRequestGenerationRef.current) {
+        syncRequestPendingRef.current = false;
+        setIsStartingSync(false);
+      }
     }
   };
 
@@ -407,14 +500,21 @@ const FederationRegistryOrEdit: React.FC = () => {
               </button>
 
               {isReadOnly && (
-                <button
-                  onClick={handleSync}
-                  disabled={loading || loadingDetail || isSyncing}
-                  className='inline-flex items-center justify-center gap-2 min-w-[80px] sm:min-w-[120px] md:min-w-[160px] px-4 py-2 border border-[var(--jarvis-primary-soft)] rounded-md shadow-sm text-sm font-medium text-[var(--jarvis-primary)] bg-[var(--jarvis-card)] hover:bg-[var(--jarvis-primary-soft)] hover:bg-[var(--jarvis-primary-soft)] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[var(--jarvis-primary)] disabled:opacity-50 disabled:cursor-not-allowed'
-                >
-                  <ArrowPathIcon className='h-4 w-4' />
-                  Sync Now
-                </button>
+                <>
+                  {syncView.kind !== 'idle' && (
+                    <span className='self-center text-sm text-[var(--jarvis-muted)]' aria-live='polite'>
+                      {syncView.label}
+                    </span>
+                  )}
+                  <button
+                    onClick={handleSync}
+                    disabled={loading || loadingDetail || syncView.action === 'none'}
+                    className='inline-flex items-center justify-center gap-2 min-w-[80px] sm:min-w-[120px] md:min-w-[160px] px-4 py-2 border border-[var(--jarvis-primary-soft)] rounded-md shadow-sm text-sm font-medium text-[var(--jarvis-primary)] bg-[var(--jarvis-card)] hover:bg-[var(--jarvis-primary-soft)] hover:bg-[var(--jarvis-primary-soft)] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[var(--jarvis-primary)] disabled:opacity-50 disabled:cursor-not-allowed'
+                  >
+                    <ArrowPathIcon className={`h-4 w-4 ${syncView.isBusy ? 'animate-spin' : ''}`} />
+                    {syncView.actionLabel}
+                  </button>
+                </>
               )}
 
               {!isReadOnly && (
