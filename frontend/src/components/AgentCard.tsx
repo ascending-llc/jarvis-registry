@@ -327,7 +327,7 @@ const AgentCard: React.FC<AgentCardProps> = ({ agent }) => {
           </div>
         </div>
 
-        {/* AgentCore Icon - Fixed position */}
+        {/* Federation Provider Icon - Fixed position */}
         {hasAgentCoreTags && (
           <img
             src={agentcoreIcon}
@@ -337,12 +337,14 @@ const AgentCard: React.FC<AgentCardProps> = ({ agent }) => {
           />
         )}
         {hasAzureFoundryTags && (
-          <img
-            src={azureAiIcon}
-            alt='Azure AI Foundry'
-            className='absolute bottom-14 right-3 h-6 w-6 rounded-md'
-            title='Azure AI Foundry'
-          />
+          <div className='absolute bottom-14 right-3 flex h-6 w-6 items-center justify-center rounded-md bg-[var(--jarvis-info-soft)] p-1 shadow-sm'>
+            <img
+              src={azureAiIcon}
+              alt='Azure AI Foundry'
+              className='h-full w-full object-contain'
+              title='Azure AI Foundry'
+            />
+          </div>
         )}
       </div>
 

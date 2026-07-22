@@ -9,7 +9,11 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from registry_pkgs.core.downstream_oauth import DOWNSTREAM_OAUTH_NAMESPACE, downstream_mcp_issuer
+from registry_pkgs.core.downstream_oauth import (
+    DEVICE_CODE_GRANT_TYPE,
+    DOWNSTREAM_OAUTH_NAMESPACE,
+    downstream_mcp_issuer,
+)
 from registry_pkgs.core.jwt_utils import build_jwks
 
 # Import settings
@@ -56,7 +60,7 @@ async def oauth_authorization_server_metadata():
         "grant_types_supported": [
             "authorization_code",
             "refresh_token",
-            "urn:ietf:params:oauth:grant-type:device_code",
+            DEVICE_CODE_GRANT_TYPE,
         ],
         "token_endpoint_auth_methods_supported": ["client_secret_post", "none"],
         "code_challenge_methods_supported": ["S256"],
@@ -84,10 +88,11 @@ async def downstream_authorization_server_metadata(user_id: str, server_path: st
         "issuer": issuer,
         "authorization_endpoint": f"{registry_url}/api/v1/mcp/downstream/oauth/authorize/{user_id}/{server_path}",
         "token_endpoint": f"{registry_url}/api/v1/mcp/downstream/oauth/token/{user_id}/{server_path}",
+        "device_authorization_endpoint": (f"{registry_url}/api/v1/mcp/downstream/oauth/device/{user_id}/{server_path}"),
         "registration_endpoint": f"{auth_server_url}/oauth2/register",
         "jwks_uri": f"{settings.jwt_issuer}/.well-known/jwks.json",
         "response_types_supported": ["code"],
-        "grant_types_supported": ["authorization_code", "refresh_token"],
+        "grant_types_supported": ["authorization_code", "refresh_token", DEVICE_CODE_GRANT_TYPE],
         "token_endpoint_auth_methods_supported": ["none"],
         "code_challenge_methods_supported": ["S256"],
     }

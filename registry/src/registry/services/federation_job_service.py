@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from beanie import PydanticObjectId
+from bson.errors import InvalidId
 from pymongo.asynchronous.client_session import AsyncClientSession
 
 from registry_pkgs.models.enums import (
@@ -22,6 +23,25 @@ logger = logging.getLogger(__name__)
 
 
 class FederationJobService:
+    async def get_job(
+        self,
+        job_id: str,
+        *,
+        federation_id: PydanticObjectId,
+    ) -> FederationSyncJob | None:
+        """Return a job only when it belongs to the requested federation."""
+        try:
+            object_id = PydanticObjectId(job_id)
+        except (InvalidId, TypeError, ValueError):
+            return None
+
+        return await FederationSyncJob.find_one(
+            {
+                "_id": object_id,
+                "federationId": federation_id,
+            }
+        )
+
     async def get_active_job(
         self,
         federation_id: PydanticObjectId,

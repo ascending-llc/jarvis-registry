@@ -74,6 +74,8 @@ class _FakeRedis:
 
     def eval(self, script: str, numkeys: int, *args: Any) -> str | None:
         if numkeys == 2:
+            if len(args) == 7:
+                return self._issue_device_refresh_token(args)
             return self._rotate_refresh_token(args)
         return self._consume_authcode(args)
 
@@ -98,6 +100,31 @@ class _FakeRedis:
         self.delete(old_key)
         self.set(new_key, new_value, ex=ttl_seconds)
         return old_value
+
+    def _issue_device_refresh_token(self, args: tuple[Any, ...]) -> str | None:
+        device_key = str(args[0])
+        refresh_key = str(args[1])
+        expected_client_id = str(args[2])
+        expected_user_id = str(args[3])
+        expected_server_path = str(args[4])
+        ttl_seconds = int(args[5])
+        refresh_data = str(args[6])
+
+        raw_device = self.get(device_key)
+        if raw_device is None:
+            return None
+        device_data = json.loads(raw_device)
+        if (
+            device_data.get("status") != "approved"
+            or device_data.get("client_id") != expected_client_id
+            or device_data.get("user_id") != expected_user_id
+            or device_data.get("server_path") != expected_server_path
+        ):
+            return None
+
+        self.set(refresh_key, refresh_data, ex=ttl_seconds)
+        self.delete(device_key)
+        return raw_device
 
 
 @pytest.fixture
@@ -329,6 +356,66 @@ def test_consume_device_code_is_single_use(
     assert store.get_device_code("device-1") is None
 
 
+def test_atomically_consumes_approved_device_and_saves_refresh_token(
+    store: OAuthStateStore,
+    fake_redis: _FakeRedis,
+) -> None:
+    store.save_device_code(
+        "device-1",
+        {
+            "status": "approved",
+            "client_id": "client-1",
+            "user_id": "user-1",
+            "server_path": "github",
+        },
+        600,
+    )
+
+    consumed = store.consume_device_code_and_save_refresh_token(
+        "device-1",
+        "refresh-1",
+        {"client_id": "client-1", "user_id": "user-1", "server_path": "github"},
+        expected_client_id="client-1",
+        expected_user_id="user-1",
+        expected_server_path="github",
+    )
+
+    assert consumed is not None
+    assert consumed["status"] == "approved"
+    assert store.get_device_code("device-1") is None
+    refresh_data = store.get_refresh_token("refresh-1")
+    assert refresh_data is not None
+    assert refresh_data["client_id"] == "client-1"
+    assert "expires_at" in refresh_data
+    assert fake_redis.ttls["jarvis-auth-server-test:oauth:refresh:refresh-1"] == REFRESH_TOKEN_TTL_SECONDS
+
+
+def test_atomic_device_issue_preserves_code_when_binding_changed(store: OAuthStateStore) -> None:
+    store.save_device_code(
+        "device-1",
+        {
+            "status": "denied",
+            "client_id": "client-1",
+            "user_id": "user-1",
+            "server_path": "github",
+        },
+        600,
+    )
+
+    consumed = store.consume_device_code_and_save_refresh_token(
+        "device-1",
+        "refresh-1",
+        {"client_id": "client-1", "user_id": "user-1", "server_path": "github"},
+        expected_client_id="client-1",
+        expected_user_id="user-1",
+        expected_server_path="github",
+    )
+
+    assert consumed is None
+    assert store.get_device_code("device-1")["status"] == "denied"
+    assert store.get_refresh_token("refresh-1") is None
+
+
 @pytest.mark.parametrize("ttl_value", [-2, -1, 0])
 def test_update_device_code_returns_false_when_ttl_is_not_positive(
     store: OAuthStateStore,
@@ -386,12 +473,22 @@ def test_downstream_oauth_state_store_composes_client_and_refresh_stores(fake_re
     downstream_store = DownstreamOAuthStateStore(
         client_store=client_store,
         refresh_token_store=refresh_store,
+        device_store=refresh_store,
     )
 
     client_store.save_client("client-1", {"client_id": "client-1", "token_endpoint_auth_method": "none"})
     downstream_store.save_refresh_token("rt-1", {"client_id": "client-1", "user_id": "u1"})
+    downstream_store.save_device_authorization(
+        "device-1",
+        "ABCD-EFGH",
+        {"client_id": "client-1", "status": "pending"},
+        900,
+    )
 
     assert downstream_store.get_client("client-1") is not None
     assert downstream_store.get_refresh_token("rt-1")["user_id"] == "u1"
+    assert downstream_store.get_user_code("ABCD-EFGH") == "device-1"
+    assert downstream_store.get_device_code("device-1")["status"] == "pending"
     assert "jarvis-auth-server:oauth:client:client-1" in fake_redis.values
     assert "jarvis-registry:oauth:refresh:rt-1" in fake_redis.values
+    assert "jarvis-registry:oauth:device:device-1" in fake_redis.values

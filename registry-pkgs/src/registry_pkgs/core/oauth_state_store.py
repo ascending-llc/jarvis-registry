@@ -37,6 +37,31 @@ redis.call('SET', new_key, new_val, 'EX', ttl)
 return val
 """
 
+_ISSUE_DEVICE_REFRESH_TOKEN_SCRIPT = """
+local device_key = KEYS[1]
+local refresh_key = KEYS[2]
+local expected_client_id = ARGV[1]
+local expected_user_id = ARGV[2]
+local expected_server_path = ARGV[3]
+local refresh_ttl = tonumber(ARGV[4])
+local refresh_data = ARGV[5]
+
+local raw_device = redis.call('GET', device_key)
+if not raw_device then return nil end
+
+local device_data = cjson.decode(raw_device)
+if device_data['status'] ~= 'approved'
+    or device_data['client_id'] ~= expected_client_id
+    or device_data['user_id'] ~= expected_user_id
+    or device_data['server_path'] ~= expected_server_path then
+    return nil
+end
+
+redis.call('SET', refresh_key, refresh_data, 'EX', refresh_ttl)
+redis.call('DEL', device_key)
+return raw_device
+"""
+
 
 class OAuthClientReader(Protocol):
     def get_client(self, client_id: str) -> dict[str, Any] | None: ...
@@ -112,8 +137,19 @@ class DeviceCodeStore(Protocol):
 
     def consume_device_code(self, device_code: str) -> dict[str, Any] | None: ...
 
+    def consume_device_code_and_save_refresh_token(
+        self,
+        device_code: str,
+        refresh_token: str,
+        refresh_data: dict[str, Any],
+        *,
+        expected_client_id: str,
+        expected_user_id: str,
+        expected_server_path: str,
+    ) -> dict[str, Any] | None: ...
 
-class DownstreamOAuthStoreProtocol(OAuthClientReader, RefreshTokenStore, Protocol):
+
+class DownstreamOAuthStoreProtocol(OAuthClientReader, RefreshTokenStore, DeviceCodeStore, Protocol):
     """Narrow store surface required by registry's per-server downstream OAuth flow."""
 
 
@@ -439,6 +475,36 @@ class OAuthStateStore:
 
         return self._json_store.loads_json(raw_data)
 
+    def consume_device_code_and_save_refresh_token(
+        self,
+        device_code: str,
+        refresh_token: str,
+        refresh_data: dict[str, Any],
+        *,
+        expected_client_id: str,
+        expected_user_id: str,
+        expected_server_path: str,
+    ) -> dict[str, Any] | None:
+        stored_refresh_data = dict(refresh_data)
+        stored_refresh_data.setdefault("expires_at", int(time.time()) + REFRESH_TOKEN_TTL_SECONDS)
+        try:
+            raw_data = self._redis.eval(
+                _ISSUE_DEVICE_REFRESH_TOKEN_SCRIPT,
+                2,
+                self._device_key(device_code),
+                self._refresh_key(refresh_token),
+                expected_client_id,
+                expected_user_id,
+                expected_server_path,
+                REFRESH_TOKEN_TTL_SECONDS,
+                self._json_store.dumps_json(stored_refresh_data),
+            )
+        except RedisError:
+            logger.exception("Failed to atomically issue a refresh token from a device code")
+            raise
+
+        return self._json_store.loads_json(raw_data)
+
     def _authcode_key(self, code: str) -> str:
         return self._key("authcode", code)
 
@@ -456,15 +522,17 @@ class OAuthStateStore:
 
 
 class DownstreamOAuthStateStore:
-    """Compose registry's downstream OAuth store from narrow client and refresh-token stores."""
+    """Compose registry's downstream OAuth store from narrow state-store facets."""
 
     def __init__(
         self,
         client_store: OAuthClientReader,
         refresh_token_store: RefreshTokenStore,
+        device_store: DeviceCodeStore,
     ) -> None:
         self._client_store = client_store
         self._refresh_token_store = refresh_token_store
+        self._device_store = device_store
 
     def get_client(self, client_id: str) -> dict[str, Any] | None:
         return self._client_store.get_client(client_id)
@@ -489,3 +557,66 @@ class DownstreamOAuthStateStore:
         new_data: dict[str, Any],
     ) -> dict[str, Any] | None:
         return self._refresh_token_store.rotate_refresh_token(old_token, new_token, new_data)
+
+    def save_device_authorization(
+        self,
+        device_code: str,
+        user_code: str,
+        data: dict[str, Any],
+        ttl_seconds: int,
+    ) -> None:
+        self._device_store.save_device_authorization(device_code, user_code, data, ttl_seconds)
+
+    def save_device_code(
+        self,
+        device_code: str,
+        data: dict[str, Any],
+        ttl_seconds: int,
+    ) -> None:
+        self._device_store.save_device_code(device_code, data, ttl_seconds)
+
+    def get_device_code(self, device_code: str) -> dict[str, Any] | None:
+        return self._device_store.get_device_code(device_code)
+
+    def update_device_code(
+        self,
+        device_code: str,
+        data: dict[str, Any],
+    ) -> bool:
+        return self._device_store.update_device_code(device_code, data)
+
+    def save_user_code(
+        self,
+        user_code: str,
+        device_code: str,
+        ttl_seconds: int,
+    ) -> None:
+        self._device_store.save_user_code(user_code, device_code, ttl_seconds)
+
+    def get_user_code(self, user_code: str) -> str | None:
+        return self._device_store.get_user_code(user_code)
+
+    def delete_user_code(self, user_code: str) -> None:
+        self._device_store.delete_user_code(user_code)
+
+    def consume_device_code(self, device_code: str) -> dict[str, Any] | None:
+        return self._device_store.consume_device_code(device_code)
+
+    def consume_device_code_and_save_refresh_token(
+        self,
+        device_code: str,
+        refresh_token: str,
+        refresh_data: dict[str, Any],
+        *,
+        expected_client_id: str,
+        expected_user_id: str,
+        expected_server_path: str,
+    ) -> dict[str, Any] | None:
+        return self._device_store.consume_device_code_and_save_refresh_token(
+            device_code,
+            refresh_token,
+            refresh_data,
+            expected_client_id=expected_client_id,
+            expected_user_id=expected_user_id,
+            expected_server_path=expected_server_path,
+        )

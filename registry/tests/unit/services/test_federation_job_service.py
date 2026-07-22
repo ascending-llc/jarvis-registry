@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from beanie import PydanticObjectId
 
 from registry.services.federation_job_service import FederationJobService
 from registry_pkgs.models.enums import FederationJobPhase, FederationJobStatus
@@ -17,6 +18,44 @@ def _make_job(status: FederationJobStatus = FederationJobStatus.PENDING):
         finishedAt=None,
         save=AsyncMock(),
     )
+
+
+@pytest.mark.asyncio
+async def test_get_job_scopes_lookup_to_federation(monkeypatch):
+    service = FederationJobService()
+    job_id = PydanticObjectId()
+    federation_id = PydanticObjectId()
+    expected_job = _make_job()
+    find_one = AsyncMock(return_value=expected_job)
+    monkeypatch.setattr(
+        "registry.services.federation_job_service.FederationSyncJob.find_one",
+        find_one,
+    )
+
+    result = await service.get_job(str(job_id), federation_id=federation_id)
+
+    assert result is expected_job
+    find_one.assert_awaited_once_with(
+        {
+            "_id": job_id,
+            "federationId": federation_id,
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_job_returns_none_for_invalid_id(monkeypatch):
+    service = FederationJobService()
+    find_one = AsyncMock()
+    monkeypatch.setattr(
+        "registry.services.federation_job_service.FederationSyncJob.find_one",
+        find_one,
+    )
+
+    result = await service.get_job("not-an-object-id", federation_id=PydanticObjectId())
+
+    assert result is None
+    find_one.assert_not_awaited()
 
 
 @pytest.mark.asyncio

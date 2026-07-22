@@ -148,6 +148,7 @@ class FlowStateManager:
         *,
         state_metadata: StateMetadata | None = None,
         mcp_client_context: MCPClientContext | None = None,
+        device_code: str | None = None,
     ) -> MCPOAuthFlowMetadata:
         """Create OAuth flow metadata"""
         # Generate secure state parameter (base64url encoded JSON string)
@@ -171,6 +172,7 @@ class FlowStateManager:
             metadata=self._create_oauth_metadata(oauth_config),
             resource_metadata=resource_metadata,
             mcp_client_context=mcp_client_context,
+            device_code=device_code,
         )
 
     def create_flow(
