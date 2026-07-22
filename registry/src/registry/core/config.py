@@ -39,7 +39,6 @@ class Settings(JarvisBaseSettings):
 
     # ==================== Headers ====================
     auth_egress_header: str = "Authorization"
-    internal_auth_header: str = "X-Jarvis-Auth"
     csrf_header_name: str = "X-Jarvis-CSRF"
 
     # ==================== API ====================

@@ -415,9 +415,9 @@ class TestBuildCompleteHeaders:
     """Test suite for build_complete_headers_for_server function."""
 
     @pytest.fixture(autouse=True)
-    def mock_generate_service_jwt(self):
-        """Patch generate_service_jwt so tests don't need a real RSA private key."""
-        with patch("registry.services.server_service.generate_service_jwt", return_value="mock-service-jwt"):
+    def mock_sign_agentcore_jwt(self):
+        """Patch sign_agentcore_jwt so tests without explicit override don't need a real RSA private key."""
+        with patch("registry.services.server_service.sign_agentcore_jwt", return_value="mock-agentcore-jwt"):
             yield
 
     @pytest.fixture
@@ -520,6 +520,7 @@ class TestBuildCompleteHeaders:
             jwt_issuer="https://registry.example.com",
             jwt_self_signed_kid="server-service-test-key",
             jwt_audience="jarvis-services",
+            registry_app_name="jarvis-registry",
         )
 
     @pytest.mark.asyncio
@@ -529,7 +530,10 @@ class TestBuildCompleteHeaders:
         jwt_signing_config,
     ):
         """AgentCore MCP proxy JWT derives iss/aud from the specific server config."""
+        from unittest.mock import patch
+
         from registry.services.server_service import build_complete_headers_for_server
+        from registry_pkgs.core.agentcore_jwt import mint_agentcore_runtime_jwt
         from registry_pkgs.core.jwt_utils import decode_jwt_unverified
 
         with (
@@ -537,11 +541,17 @@ class TestBuildCompleteHeaders:
                 "registry.services.server_service.decrypt_auth_fields", return_value=mock_agentcore_jwt_server.config
             ),
             patch("registry.services.server_service.settings") as mock_settings,
+            patch("registry.services.server_service.sign_agentcore_jwt") as mock_sign,
         ):
             mock_settings.registry_app_name = "jarvis-registry"
             mock_settings.redis_key_prefix = "test-registry"
             mock_settings.jwt_signing_config = jwt_signing_config
-            mock_settings.internal_auth_header = "X-Internal-Authorization"
+            mock_sign.side_effect = lambda *args, **kwargs: mint_agentcore_runtime_jwt(
+                kwargs.get("runtime_jwt_config") or (args[0] if args else None),
+                subject=kwargs.get("subject", "jarvis-registry"),
+                signing=kwargs.get("signing", jwt_signing_config),
+                expires_in_seconds=3600,
+            )
 
             headers = await build_complete_headers_for_server(Mock(), mock_agentcore_jwt_server, None)
 

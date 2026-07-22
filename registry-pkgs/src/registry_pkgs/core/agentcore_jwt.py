@@ -1,11 +1,14 @@
 """JWT minting helpers for AWS Bedrock AgentCore Runtime access."""
 
+import logging
 from typing import Any
 from urllib.parse import urlparse
 
 from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.core.jwt_utils import build_jwt_payload, encode_jwt
-from registry_pkgs.models.federation import AgentCoreRuntimeJwtConfig
+from registry_pkgs.models.federation import AgentCoreRuntimeAccessConfig, AgentCoreRuntimeJwtConfig
+
+logger = logging.getLogger(__name__)
 
 
 def _normalize_claim_value(value: Any) -> Any:
@@ -69,3 +72,57 @@ def mint_agentcore_runtime_jwt(
         extra_claims=extra_claims or None,
     )
     return encode_jwt(payload, signing.jwt_private_key, kid=signing.jwt_self_signed_kid)
+
+
+_AGENTCORE_JWT_TTL_SECONDS = 3600
+_AGENTCORE_JWT_LEEWAY_SECONDS = 60
+
+
+def parse_agentcore_runtime_access(
+    runtime_access: AgentCoreRuntimeAccessConfig | dict[str, Any],
+) -> AgentCoreRuntimeAccessConfig:
+    """Return a validated runtime-access model from stored MCP/A2A config."""
+    if isinstance(runtime_access, AgentCoreRuntimeAccessConfig):
+        return runtime_access
+    return AgentCoreRuntimeAccessConfig.model_validate(runtime_access)
+
+
+def sign_agentcore_jwt(
+    runtime_jwt_config: AgentCoreRuntimeJwtConfig | None,
+    *,
+    subject: str,
+    signing: JwtSigningConfig,
+    cache_key: str,
+    redis_client: Any | None = None,
+) -> str:
+    """Mint (or return a cached) AgentCore Runtime JWT.
+
+    This function is synchronous so it can be used inside agno's
+    ``MCPTools.header_provider`` callback, which is never awaited.
+    """
+    if redis_client is not None:
+        try:
+            cached = redis_client.get(cache_key)
+            if cached:
+                return cached.decode("utf-8") if isinstance(cached, bytes) else cached
+        except Exception:
+            logger.exception("Failed to read cached AgentCore JWT for %s", cache_key)
+
+    token = mint_agentcore_runtime_jwt(
+        runtime_jwt_config,
+        subject=subject,
+        signing=signing,
+        expires_in_seconds=_AGENTCORE_JWT_TTL_SECONDS,
+    )
+
+    if redis_client is not None:
+        try:
+            redis_client.setex(
+                cache_key,
+                _AGENTCORE_JWT_TTL_SECONDS - _AGENTCORE_JWT_LEEWAY_SECONDS,
+                token,
+            )
+        except Exception:
+            logger.exception("Failed to cache AgentCore JWT for %s", cache_key)
+
+    return token
