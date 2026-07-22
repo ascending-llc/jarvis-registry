@@ -377,3 +377,20 @@ async def test_http_json_proxy_gets_client_from_a2a_client_registry(monkeypatch)
     assert response.status_code == 200
     registry.get_client.assert_awaited_once_with(agent)
     forward.assert_awaited_once_with(request, "https://agent.example.com/a2a/tasks/1", proxy_client, "test-agent")
+
+
+def test_httpx_decoders_supported_decoders_is_accessible():
+    """
+    Canary for the private-API coupling in `_HTTPX_DECODABLE_CONTENT_ENCODINGS`
+    (registry/src/registry/api/proxy_routes.py).
+
+    That constant is derived from `httpx._decoders.SUPPORTED_DECODERS`, an underscore-prefixed
+    module that is not part of httpx's public API and could be renamed, restructured, or removed
+    in a future httpx version without a deprecation warning. If that ever happens, we want it
+    caught here as a fast, obvious CI failure -- not later as a mystifying prod bug where the
+    proxy silently mis-forwards still-compressed bytes because the derived set quietly went empty
+    or the import broke in some less direct way.
+    """
+    import httpx
+
+    assert frozenset(httpx._decoders.SUPPORTED_DECODERS.keys())
