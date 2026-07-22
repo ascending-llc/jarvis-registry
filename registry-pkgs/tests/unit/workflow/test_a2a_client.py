@@ -690,6 +690,32 @@ def test_is_azure_foundry_runtime_false_for_unknown_provider():
 
 
 @pytest.mark.asyncio
+async def test_call_a2a_raises_when_httpx_client_missing_for_agentcore():
+    """Federated AgentCore agents require a pre-authenticated httpx client."""
+    agent = _make_agent()
+    agent.federationMetadata = {"providerType": FederationProviderType.AWS_AGENTCORE}
+
+    with pytest.raises(
+        ValueError,
+        match=r"httpx_client is required for federated agent .*providerType='aws_agentcore'",
+    ):
+        await call_a2a(agent, "test")
+
+
+@pytest.mark.asyncio
+async def test_call_a2a_raises_when_httpx_client_missing_for_azure_foundry():
+    """Federated Azure AI Foundry agents require a pre-authenticated httpx client."""
+    agent = _make_agent()
+    agent.federationMetadata = {"providerType": FederationProviderType.AZURE_AI_FOUNDRY}
+
+    with pytest.raises(
+        ValueError,
+        match=r"httpx_client is required for federated agent .*providerType='azure_ai_foundry'",
+    ):
+        await call_a2a(agent, "test")
+
+
+@pytest.mark.asyncio
 async def test_call_a2a_does_not_build_credentials_itself():
     """call_a2a now relies on the supplied httpx_client for Authorization."""
     agent = _make_agent()

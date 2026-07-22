@@ -458,7 +458,7 @@ async def update_federation(
         if job is not None:
             logger.info(f"Updated federation {federation_id}: {federation},job: {job}")
         if federation.providerType == FederationProviderType.AZURE_AI_FOUNDRY:
-            a2a_client_registry.invalidate_azure_federation(federation.id)
+            await a2a_client_registry.invalidate_azure_federation(federation.id)
     except ValueError as exc:
         logger.error(f"Failed to update federation {federation_id}: {exc}")
         _raise_federation_value_error(exc)

@@ -48,9 +48,8 @@ class AzureFoundryClientCache:
         if cached is not None:
             return cached
 
-        if federation_id not in self._locks:
-            self._locks[federation_id] = asyncio.Lock()
-        async with self._locks[federation_id]:
+        lock = self._locks.setdefault(federation_id, asyncio.Lock())
+        async with lock:
             cached = self._dict.get(federation_id)
             if cached is not None:
                 return cached
@@ -74,10 +73,19 @@ class AzureFoundryClientCache:
             self._dict[federation_id] = client
             return client
 
-    def invalidate(self, federation_id: PydanticObjectId) -> None:
-        """Drop a federation's cached client so the next call rebuilds from fresh config."""
-        self._dict.pop(federation_id, None)
+    async def invalidate(self, federation_id: PydanticObjectId) -> None:
+        """Drop a federation's cached client and close its resources.
+
+        This prevents connection/credential leaks when a federation is updated
+        and its pre-authenticated client must be rebuilt from fresh config.
+        """
         self._locks.pop(federation_id, None)
+        client = self._dict.pop(federation_id, None)
+        if client is not None:
+            auth = client.auth
+            await client.aclose()
+            if isinstance(auth, AzureEntraAuth):
+                await auth.close()
 
     async def close(self) -> None:
         clients = list(self._dict.values())

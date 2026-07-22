@@ -62,6 +62,7 @@ async def test_get_client_cache_hit_reuses_client_without_db_or_auth_rebuild():
     federation_get = AsyncMock(return_value=federation)
     auth_factory = MagicMock()
 
+    auth_factory.return_value.close = AsyncMock()
     with (
         patch("registry.services.federation.azure_foundry_proxy_auth.Federation.get", new=federation_get),
         patch("registry.services.federation.azure_foundry_proxy_auth.AzureFoundryAuthService", new=auth_factory),
@@ -89,13 +90,13 @@ async def test_invalidate_forces_rebuild():
         new=AsyncMock(return_value=federation),
     ):
         client = await cache.get_client(_agent(federation_id=federation_id))
-        cache.invalidate(federation_id)
+        await cache.invalidate(federation_id)
         rebuilt_client = await cache.get_client(_agent(federation_id=federation_id))
 
     try:
         assert rebuilt_client is not client
+        assert client.is_closed
     finally:
-        await client.aclose()
         await cache.close()
 
 
@@ -220,12 +221,12 @@ async def test_invalidate_clears_lock_allowing_fresh_build():
         patch("registry.services.federation.azure_foundry_proxy_auth.AzureFoundryAuthService", new=auth_factory),
     ):
         first_client = await cache.get_client(_agent(federation_id=federation_id))
-        cache.invalidate(federation_id)
+        await cache.invalidate(federation_id)
         second_client = await cache.get_client(_agent(federation_id=federation_id))
 
     try:
         assert second_client is not first_client
+        assert first_client.is_closed
         assert federation_id not in cache._locks or not cache._locks[federation_id].locked()
     finally:
-        await first_client.aclose()
         await cache.close()

@@ -404,9 +404,10 @@ async def call_a2a(
 
     if httpx_client is None and (is_agentcore_runtime(agent) or is_azure_foundry_runtime(agent)):
         provider = (agent.federationMetadata or {}).get("providerType", "unknown")
+        provider_value = provider.value if hasattr(provider, "value") else provider
         raise ValueError(
             f"call_a2a: httpx_client is required for federated agent {agent.path!r} "
-            f"(providerType={provider!r}). Callers must obtain a pre-authenticated client "
+            f"(providerType={provider_value!r}). Callers must obtain a pre-authenticated client "
             "from A2AClientRegistry before invoking a federated agent."
         )
 

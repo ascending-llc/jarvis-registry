@@ -113,11 +113,13 @@ async def test_close_closes_composed_registries():
     azure_cache.close.assert_awaited_once()
 
 
-def test_invalidate_azure_federation_delegates_to_cache():
+@pytest.mark.asyncio
+async def test_invalidate_azure_federation_delegates_to_cache():
     federation_id = PydanticObjectId()
     azure_cache = MagicMock()
+    azure_cache.invalidate = AsyncMock()
     registry = A2AClientRegistry(agentcore_registry=MagicMock(), azure_client_cache=azure_cache)
 
-    registry.invalidate_azure_federation(federation_id)
+    await registry.invalidate_azure_federation(federation_id)
 
-    azure_cache.invalidate.assert_called_once_with(federation_id)
+    azure_cache.invalidate.assert_awaited_once_with(federation_id)

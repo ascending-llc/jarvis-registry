@@ -55,8 +55,8 @@ class A2AClientRegistry:
             runtime_jwt_config=_get_agentcore_runtime_jwt_config(agent.config) if agentcore_jwt else None,
         )
 
-    def invalidate_azure_federation(self, federation_id: PydanticObjectId) -> None:
-        self._azure_client_cache.invalidate(federation_id)
+    async def invalidate_azure_federation(self, federation_id: PydanticObjectId) -> None:
+        await self._azure_client_cache.invalidate(federation_id)
 
     async def close(self) -> None:
         await self._agentcore_registry.close()
