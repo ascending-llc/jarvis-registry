@@ -10,6 +10,7 @@ from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.models import PrincipalType
 from registry_pkgs.models.enums import FederationStateMachine, FederationStatus, RoleBits
 from registry_pkgs.models.extended_access_role import RegistryResourceType
+from registry_pkgs.models.federation_sync_job import FederationSyncJob
 
 from ....auth.dependencies import CurrentUser
 from ....core.telemetry_decorators import track_registry_operation
@@ -97,7 +98,7 @@ def _raise_federation_value_error(exc: ValueError) -> NoReturn:
     ) from exc
 
 
-def _to_job_response(job) -> FederationSyncJobResponse:
+def _to_job_response(job: FederationSyncJob) -> FederationSyncJobResponse:
     return FederationSyncJobResponse(
         id=str(job.id),
         federationId=str(job.federationId),
@@ -106,7 +107,7 @@ def _to_job_response(job) -> FederationSyncJobResponse:
         phase=job.phase.value if hasattr(job.phase, "value") else str(job.phase),
         startedAt=job.startedAt,
         finishedAt=job.finishedAt,
-        error=getattr(job, "error", None),
+        error=job.error,
     )
 
 
@@ -449,12 +450,11 @@ async def get_federation_sync_job(
                 detail=create_error_detail(ErrorCode.NOT_FOUND, "Sync job not found"),
             )
         return _to_job_response(job)
-    except HTTPException as exc:
-        logger.warning(
-            "Federation sync job lookup rejected: federation_id=%s job_id=%s status_code=%s",
-            federation_id,
+    except HTTPException:
+        logger.exception(
+            "Failed to get federation sync job %s for federation %s due to HTTP exception",
             job_id,
-            exc.status_code,
+            federation_id,
         )
         raise
     except Exception as exc:
