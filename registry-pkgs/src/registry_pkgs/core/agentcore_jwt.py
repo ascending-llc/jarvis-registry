@@ -90,7 +90,6 @@ def parse_agentcore_runtime_access(
 def sign_agentcore_jwt(
     runtime_jwt_config: AgentCoreRuntimeJwtConfig | None,
     *,
-    subject: str,
     signing: JwtSigningConfig,
     cache_key: str,
     redis_client: Any | None = None,
@@ -110,7 +109,7 @@ def sign_agentcore_jwt(
 
     token = mint_agentcore_runtime_jwt(
         runtime_jwt_config,
-        subject=subject,
+        subject=signing.registry_app_name,
         signing=signing,
         expires_in_seconds=_AGENTCORE_JWT_TTL_SECONDS,
     )

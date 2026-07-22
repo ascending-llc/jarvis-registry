@@ -102,7 +102,6 @@ def test_sign_agentcore_jwt_returns_cached_token_without_minting():
 
     token = sign_agentcore_jwt(
         None,
-        subject="jarvis-registry",
         signing=_signing_config(),
         cache_key="test:agentcore_jwt:server-1",
         redis_client=redis_client,
@@ -119,7 +118,6 @@ def test_sign_agentcore_jwt_mints_and_caches_on_miss():
 
     token = sign_agentcore_jwt(
         None,
-        subject="jarvis-registry",
         signing=_signing_config(),
         cache_key="test:agentcore_jwt:server-2",
         redis_client=redis_client,
@@ -140,7 +138,6 @@ def test_sign_agentcore_jwt_mints_and_caches_on_miss():
 def test_sign_agentcore_jwt_mints_uncached_when_no_redis_client():
     token = sign_agentcore_jwt(
         None,
-        subject="jarvis-registry",
         signing=_signing_config(),
         cache_key="test:agentcore_jwt:server-3",
         redis_client=None,
@@ -156,7 +153,6 @@ def test_sign_agentcore_jwt_falls_back_when_cache_read_fails():
 
     token = sign_agentcore_jwt(
         None,
-        subject="jarvis-registry",
         signing=_signing_config(),
         cache_key="test:agentcore_jwt:read-failure",
         redis_client=redis_client,
@@ -173,7 +169,6 @@ def test_sign_agentcore_jwt_returns_token_when_cache_write_fails():
 
     token = sign_agentcore_jwt(
         None,
-        subject="jarvis-registry",
         signing=_signing_config(),
         cache_key="test:agentcore_jwt:write-failure",
         redis_client=redis_client,

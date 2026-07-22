@@ -548,7 +548,7 @@ class TestBuildCompleteHeaders:
             mock_settings.jwt_signing_config = jwt_signing_config
             mock_sign.side_effect = lambda *args, **kwargs: mint_agentcore_runtime_jwt(
                 kwargs.get("runtime_jwt_config") or (args[0] if args else None),
-                subject=kwargs.get("subject", "jarvis-registry"),
+                subject=kwargs.get("signing", jwt_signing_config).registry_app_name,
                 signing=kwargs.get("signing", jwt_signing_config),
                 expires_in_seconds=3600,
             )
