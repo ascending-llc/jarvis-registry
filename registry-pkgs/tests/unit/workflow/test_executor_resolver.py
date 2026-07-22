@@ -10,12 +10,12 @@ from pydantic import HttpUrl
 from registry_pkgs.core import agentcore_jwt
 from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.models.a2a_agent import A2AAgent, AgentConfig
-from registry_pkgs.models.enums import AgentCoreRuntimeAccessMode
+from registry_pkgs.models.enums import AgentCoreRuntimeAccessMode, PermissionBits
+from registry_pkgs.models.extended_acl_entry import RegistryAclEntry
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 from registry_pkgs.models.federation import AgentCoreRuntimeAccessConfig, AgentCoreRuntimeJwtConfig
 from registry_pkgs.workflows import a2a_client, executor_resolver
 from registry_pkgs.workflows import a2a_executor as a2a_exec
-from registry_pkgs.workflows import mcp_executor as mcp_exec
 from registry_pkgs.workflows.helpers import build_prompt
 
 
@@ -25,16 +25,20 @@ def _jwt_config(**overrides) -> JwtSigningConfig:
         "jwt_issuer": "https://jarvis.example.com",
         "jwt_self_signed_kid": "kid-v1",
         "jwt_audience": "jarvis-services",
+        "registry_app_name": "jarvis-registry-client",
     }
     defaults.update(overrides)
     return JwtSigningConfig(**defaults)
 
 
-def _mcp_server(name: str = "github") -> ExtendedMCPServer:
+def _mcp_server(name: str = "github", runtime_access: dict | None = None) -> ExtendedMCPServer:
+    config = {"description": "server description", "url": f"https://{name}.example.com/mcp"}
+    if runtime_access is not None:
+        config["runtimeAccess"] = runtime_access
     return ExtendedMCPServer.model_construct(
         id=PydanticObjectId(),
         serverName=name,
-        config={"description": "server description"},
+        config=config,
         author=PydanticObjectId(),
     )
 
@@ -100,8 +104,7 @@ class TestExecutorResolver:
         registry = await executor_resolver.build_executor_registry(
             ["alpha", "beta", "alpha"],
             llm=SimpleNamespace(),
-            registry_url="https://registry.example.com",
-            registry_token="token",
+            auth_context=None,
             jwt_config=_jwt_config(),
             user_id=None,
         )
@@ -122,10 +125,10 @@ class TestExecutorResolver:
         resolved = await executor_resolver._resolve_executor(
             "github",
             llm=SimpleNamespace(),
-            registry_url="https://registry.example.com",
-            registry_token="token",
+            auth_context=None,
             jwt_config=_jwt_config(),
             accessible_agent_ids=None,
+            accessible_mcp_server_ids=None,
         )
 
         assert resolved == "mcp-executor"
@@ -140,10 +143,10 @@ class TestExecutorResolver:
         resolved = await executor_resolver._resolve_executor(
             "echo",
             llm=SimpleNamespace(),
-            registry_url="https://registry.example.com",
-            registry_token="token",
+            auth_context=None,
             jwt_config=_jwt_config(),
             accessible_agent_ids=None,
+            accessible_mcp_server_ids=None,
         )
 
         output = await resolved(StepInput(input="hello", previous_step_content="ctx"), {"echo_count": 0})
@@ -170,10 +173,10 @@ class TestExecutorResolver:
         resolved = await executor_resolver._resolve_executor(
             "deep-intel",
             llm=SimpleNamespace(),
-            registry_url="https://registry.example.com",
-            registry_token="token",
+            auth_context=None,
             jwt_config=_jwt_config(),
             accessible_agent_ids=None,
+            accessible_mcp_server_ids=None,
         )
 
         assert resolved == "a2a-executor"
@@ -191,10 +194,10 @@ class TestExecutorResolver:
             await executor_resolver._resolve_executor(
                 "unknown",
                 llm=SimpleNamespace(),
-                registry_url="https://registry.example.com",
-                registry_token="token",
+                auth_context=None,
                 jwt_config=_jwt_config(),
                 accessible_agent_ids=None,
+                accessible_mcp_server_ids=None,
             )
 
     @pytest.mark.asyncio
@@ -211,10 +214,10 @@ class TestExecutorResolver:
             await executor_resolver._resolve_executor(
                 "deep-intel",
                 llm=SimpleNamespace(),
-                registry_url="https://registry.example.com",
-                registry_token="token",
+                auth_context=None,
                 jwt_config=_jwt_config(),
                 accessible_agent_ids=set(),  # explicitly empty: no access
+                accessible_mcp_server_ids=None,
             )
 
     @pytest.mark.asyncio
@@ -228,110 +231,59 @@ class TestExecutorResolver:
         resolved = await executor_resolver._resolve_executor(
             "deep-intel",
             llm=SimpleNamespace(),
-            registry_url="https://registry.example.com",
-            registry_token="token",
+            auth_context=None,
             jwt_config=_jwt_config(),
             accessible_agent_ids={str(agent.id)},
+            accessible_mcp_server_ids=None,
         )
 
         assert resolved == "a2a-executor"
 
 
 @pytest.mark.unit
-class TestMcpExecutor:
-    """Tests for mcp_executor.make_mcp_executor."""
+class TestMcpAcl:
+    """ACL checks for MCP servers in executor_resolver."""
 
-    def test_make_mcp_executor_requires_registry_token(self):
-        with pytest.raises(ValueError, match="registry_token is required"):
-            mcp_exec.make_mcp_executor(
-                _mcp_server("github"),
+    @pytest.mark.asyncio
+    async def test_resolve_executor_raises_permission_error_when_mcp_server_not_accessible(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        from registry_pkgs.workflows import executor_resolver as er
+
+        TestExecutorResolver._patch_beanie_filters(monkeypatch)
+        server = _mcp_server("github")
+        monkeypatch.setattr(er.ExtendedMCPServer, "find_one", AsyncMock(return_value=server))
+        monkeypatch.setattr(er, "make_mcp_executor", lambda *args, **kwargs: "mcp-executor")
+
+        with pytest.raises(PermissionError, match="user lacks access"):
+            await er._resolve_executor(
+                "github",
                 llm=SimpleNamespace(),
-                registry_url="https://registry.example.com",
-                registry_token="",
+                auth_context=None,
+                jwt_config=_jwt_config(),
+                accessible_agent_ids=None,
+                accessible_mcp_server_ids=set(),
             )
 
     @pytest.mark.asyncio
-    async def test_make_mcp_executor_returns_step_output(self, monkeypatch: pytest.MonkeyPatch):
-        fake_agent_instance = SimpleNamespace(arun=AsyncMock(return_value=SimpleNamespace(content="done")))
-        fake_mcp_tools = SimpleNamespace(initialized=True, connect=AsyncMock())
+    async def test_resolve_executor_allows_accessible_mcp_server(self, monkeypatch: pytest.MonkeyPatch):
+        from registry_pkgs.workflows import executor_resolver as er
 
-        monkeypatch.setattr(mcp_exec, "MCPTools", lambda *args, **kwargs: fake_mcp_tools)
-        monkeypatch.setattr(mcp_exec, "Agent", lambda **kwargs: fake_agent_instance)
+        TestExecutorResolver._patch_beanie_filters(monkeypatch)
+        server = _mcp_server("github")
+        monkeypatch.setattr(er.ExtendedMCPServer, "find_one", AsyncMock(return_value=server))
+        monkeypatch.setattr(er, "make_mcp_executor", lambda *args, **kwargs: "mcp-executor")
 
-        executor = mcp_exec.make_mcp_executor(
-            _mcp_server("github"),
+        resolved = await er._resolve_executor(
+            "github",
             llm=SimpleNamespace(),
-            registry_url="https://registry.example.com",
-            registry_token="token",
+            auth_context=None,
+            jwt_config=_jwt_config(),
+            accessible_agent_ids=None,
+            accessible_mcp_server_ids={str(server.id)},
         )
 
-        output = await executor(StepInput(input="hello", previous_step_content="ctx"), {})
-
-        assert output.success is True
-        assert output.content == "done"
-        fake_mcp_tools.connect.assert_awaited_once_with(force=False)
-        fake_agent_instance.arun.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_make_mcp_executor_reraises_agent_failures(self, monkeypatch: pytest.MonkeyPatch):
-        fake_agent_instance = SimpleNamespace(arun=AsyncMock(side_effect=RuntimeError("init failed")))
-        fake_mcp_tools = SimpleNamespace(initialized=True, connect=AsyncMock())
-
-        monkeypatch.setattr(mcp_exec, "MCPTools", lambda *args, **kwargs: fake_mcp_tools)
-        monkeypatch.setattr(mcp_exec, "Agent", lambda **kwargs: fake_agent_instance)
-
-        executor = mcp_exec.make_mcp_executor(
-            _mcp_server("github"),
-            llm=SimpleNamespace(),
-            registry_url="https://registry.example.com",
-            registry_token="token",
-        )
-
-        with pytest.raises(RuntimeError, match="MCP executor 'github' failed: init failed"):
-            await executor(StepInput(input="hello", previous_step_content="ctx"), {})
-
-    @pytest.mark.asyncio
-    async def test_make_mcp_executor_raises_when_agent_returns_error_status(self, monkeypatch: pytest.MonkeyPatch):
-        fake_agent_instance = SimpleNamespace(
-            arun=AsyncMock(return_value=SimpleNamespace(content="Unable to locate credentials", status="error"))
-        )
-        fake_mcp_tools = SimpleNamespace(initialized=True, connect=AsyncMock())
-
-        monkeypatch.setattr(mcp_exec, "MCPTools", lambda *args, **kwargs: fake_mcp_tools)
-        monkeypatch.setattr(mcp_exec, "Agent", lambda **kwargs: fake_agent_instance)
-
-        executor = mcp_exec.make_mcp_executor(
-            _mcp_server("github"),
-            llm=SimpleNamespace(),
-            registry_url="https://registry.example.com",
-            registry_token="token",
-        )
-
-        with pytest.raises(RuntimeError, match="Unable to locate credentials"):
-            await executor(StepInput(input="hello", previous_step_content="ctx"), {})
-
-    @pytest.mark.asyncio
-    async def test_make_mcp_executor_raises_when_agent_returns_credential_error_content(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ):
-        fake_agent_instance = SimpleNamespace(
-            arun=AsyncMock(return_value=SimpleNamespace(content="Unable to locate credentials", status="completed"))
-        )
-        fake_mcp_tools = SimpleNamespace(initialized=True, connect=AsyncMock())
-
-        monkeypatch.setattr(mcp_exec, "MCPTools", lambda *args, **kwargs: fake_mcp_tools)
-        monkeypatch.setattr(mcp_exec, "Agent", lambda **kwargs: fake_agent_instance)
-
-        executor = mcp_exec.make_mcp_executor(
-            _mcp_server("github"),
-            llm=SimpleNamespace(),
-            registry_url="https://registry.example.com",
-            registry_token="token",
-        )
-
-        with pytest.raises(RuntimeError, match="Unable to locate credentials"):
-            await executor(StepInput(input="hello", previous_step_content="ctx"), {})
+        assert resolved == "mcp-executor"
 
 
 @pytest.mark.unit
@@ -571,15 +523,12 @@ class TestHelpers:
 
 
 @pytest.mark.unit
-class TestLoadAccessibleAgentIds:
-    """Tests for _load_accessible_agent_ids ACL helper."""
+class TestLoadAccessibleIds:
+    """Tests for ACL loading helpers."""
 
     @pytest.mark.asyncio
-    async def test_returns_agent_ids_with_view_permission(self, monkeypatch: pytest.MonkeyPatch):
+    async def test_load_accessible_agent_ids_filters_by_view_permission(self, monkeypatch: pytest.MonkeyPatch):
         from beanie import PydanticObjectId
-
-        from registry_pkgs.models.enums import PermissionBits
-        from registry_pkgs.models.extended_acl_entry import RegistryAclEntry
 
         rid1 = PydanticObjectId()
         rid2 = PydanticObjectId()
@@ -597,48 +546,92 @@ class TestLoadAccessibleAgentIds:
             return FakeQuery()
 
         monkeypatch.setattr(RegistryAclEntry, "find", fake_find)
+        monkeypatch.setattr(executor_resolver, "resolve_group_ids_for_user", AsyncMock(return_value=[]))
 
         result = await executor_resolver._load_accessible_agent_ids(str(PydanticObjectId()))
         assert result == {str(rid1), str(rid3)}
 
     @pytest.mark.asyncio
-    async def test_returns_empty_set_when_no_entries(self, monkeypatch: pytest.MonkeyPatch):
-        from registry_pkgs.models.extended_acl_entry import RegistryAclEntry
+    async def test_load_accessible_mcp_server_ids_filters_by_view_permission(self, monkeypatch: pytest.MonkeyPatch):
+        public_entry = RegistryAclEntry.model_construct(
+            resourceType="mcpServer",
+            principalType="public",
+            principalId=None,
+            resourceId=PydanticObjectId(),
+            permBits=PermissionBits.VIEW,
+        )
+        no_view_entry = RegistryAclEntry.model_construct(
+            resourceType="mcpServer",
+            principalType="user",
+            principalId=PydanticObjectId("666666666666666666666666"),
+            resourceId=PydanticObjectId(),
+            permBits=0,
+        )
 
-        def fake_find(query):
-            class FakeQuery:
-                async def to_list(self):
-                    return []
+        find_query = SimpleNamespace(to_list=AsyncMock(return_value=[public_entry, no_view_entry]))
+        monkeypatch.setattr(executor_resolver.RegistryAclEntry, "find", lambda *args, **kwargs: find_query)
+        monkeypatch.setattr(executor_resolver, "resolve_group_ids_for_user", AsyncMock(return_value=[]))
 
-            return FakeQuery()
-
-        monkeypatch.setattr(RegistryAclEntry, "find", fake_find)
-
-        result = await executor_resolver._load_accessible_agent_ids(str(PydanticObjectId()))
-        assert result == set()
+        result = await executor_resolver._load_accessible_mcp_server_ids("666666666666666666666666")
+        assert result == {str(public_entry.resourceId)}
 
     @pytest.mark.asyncio
-    async def test_build_executor_registry_passes_acl_set_to_resolver(self, monkeypatch: pytest.MonkeyPatch):
+    async def test_load_accessible_ids_includes_current_group_principals(self, monkeypatch: pytest.MonkeyPatch):
+        group_id = PydanticObjectId()
+        resource_id = PydanticObjectId()
+        entry = SimpleNamespace(permBits=PermissionBits.VIEW, resourceId=resource_id)
+        captured_query: dict = {}
+
+        monkeypatch.setattr(executor_resolver, "resolve_group_ids_for_user", AsyncMock(return_value=[group_id]))
+
+        def fake_acl_find(query):
+            captured_query.update(query)
+            return SimpleNamespace(to_list=AsyncMock(return_value=[entry]))
+
+        monkeypatch.setattr(executor_resolver.RegistryAclEntry, "find", fake_acl_find)
+
+        result = await executor_resolver._load_accessible_mcp_server_ids("666666666666666666666666")
+
+        assert result == {str(resource_id)}
+        assert {
+            "principalType": "group",
+            "principalId": {"$in": [group_id]},
+        } in captured_query["$or"]
+
+    @pytest.mark.asyncio
+    async def test_build_executor_registry_passes_both_acl_sets_to_resolver(self, monkeypatch: pytest.MonkeyPatch):
+        loaded: dict = {}
+
         async def fake_resolve(key: str, **kwargs):
-            return kwargs.get("accessible_agent_ids")
+            loaded["accessible_agent_ids"] = kwargs.get("accessible_agent_ids")
+            loaded["accessible_mcp_server_ids"] = kwargs.get("accessible_mcp_server_ids")
+            return f"executor:{key}"
 
         monkeypatch.setattr(executor_resolver, "_resolve_executor", fake_resolve)
 
-        async def fake_load_acl(user_id: str) -> set[str]:
+        async def fake_load_agent_ids(user_id: str) -> set[str]:
+            loaded["agent_user_id"] = user_id
             return {"agent-1"}
 
-        monkeypatch.setattr(executor_resolver, "_load_accessible_agent_ids", fake_load_acl)
+        async def fake_load_mcp_ids(user_id: str) -> set[str]:
+            loaded["mcp_user_id"] = user_id
+            return {"server-1"}
 
-        registry = await executor_resolver.build_executor_registry(
+        monkeypatch.setattr(executor_resolver, "_load_accessible_agent_ids", fake_load_agent_ids)
+        monkeypatch.setattr(executor_resolver, "_load_accessible_mcp_server_ids", fake_load_mcp_ids)
+
+        await executor_resolver.build_executor_registry(
             ["alpha"],
             llm=SimpleNamespace(),
-            registry_url="https://registry.example.com",
-            registry_token="token",
+            auth_context=None,
             jwt_config=_jwt_config(),
-            user_id="user-123",
+            user_id="666666666666666666666666",
         )
 
-        assert registry == {"alpha": {"agent-1"}}
+        assert loaded["agent_user_id"] == "666666666666666666666666"
+        assert loaded["mcp_user_id"] == "666666666666666666666666"
+        assert loaded["accessible_agent_ids"] == {"agent-1"}
+        assert loaded["accessible_mcp_server_ids"] == {"server-1"}
 
 
 @pytest.mark.unit

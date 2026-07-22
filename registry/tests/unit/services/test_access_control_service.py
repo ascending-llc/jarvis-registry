@@ -150,8 +150,8 @@ class TestACLService:
         assert service.resolve_perm_bits_for_role(ResourceType.AGENT.value, role_id) is None
 
     @pytest.mark.asyncio
-    @patch("registry.services.access_control_service.Group")
-    @patch("registry.services.access_control_service.User")
+    @patch("registry_pkgs.access_control.Group")
+    @patch("registry_pkgs.access_control.User")
     async def test_resolve_group_ids_user_with_entra_id(self, mock_user, mock_group):
         user_id = PydanticObjectId()
         group_a_id = PydanticObjectId()
@@ -172,8 +172,8 @@ class TestACLService:
         mock_group.find.assert_called_once_with({"memberIds": "entra-uuid-123"}, session=None)
 
     @pytest.mark.asyncio
-    @patch("registry.services.access_control_service.Group")
-    @patch("registry.services.access_control_service.User")
+    @patch("registry_pkgs.access_control.Group")
+    @patch("registry_pkgs.access_control.User")
     async def test_resolve_group_ids_local_user_returns_empty(self, mock_user, mock_group):
         service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
         mock_user.get = AsyncMock(return_value=MagicMock(idOnTheSource=None))
@@ -184,8 +184,8 @@ class TestACLService:
         mock_group.find.assert_not_called()
 
     @pytest.mark.asyncio
-    @patch("registry.services.access_control_service.Group")
-    @patch("registry.services.access_control_service.User")
+    @patch("registry_pkgs.access_control.Group")
+    @patch("registry_pkgs.access_control.User")
     async def test_resolve_group_ids_user_not_found_returns_empty(self, mock_user, mock_group):
         service = ACLService(user_service=Mock(), group_service=Mock(), role_cache={})
         mock_user.get = AsyncMock(return_value=None)

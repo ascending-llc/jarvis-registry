@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock
 
 import pytest
 from agno.run.base import RunStatus
@@ -11,6 +11,7 @@ from registry_pkgs.models.enums import WorkflowRunStatus
 from registry_pkgs.models.workflow import WorkflowDefinition, WorkflowNode, WorkflowRun
 from registry_pkgs.workflows import runner
 from registry_pkgs.workflows.control.wrapper import WorkflowCancelledError
+from registry_pkgs.workflows.types import McpConsentRequiredError
 
 
 class _FieldExpr:
@@ -44,7 +45,6 @@ def _make_runner(**kwargs) -> runner.WorkflowRunner:
 
     defaults = {
         "llm": object(),
-        "registry_url": "http://localhost:7860",
         "db_client": object(),
         "db_name": "jarvis",
         "jwt_config": JwtSigningConfig(
@@ -52,6 +52,7 @@ def _make_runner(**kwargs) -> runner.WorkflowRunner:
             jwt_issuer="https://jarvis.example.com",
             jwt_self_signed_kid="kid-v1",
             jwt_audience="jarvis-services",
+            registry_app_name="jarvis-registry-client",
         ),
     }
     defaults.update(kwargs)
@@ -84,7 +85,7 @@ class TestWorkflowRunnerRun:
         r = _make_runner()
 
         with pytest.raises(ValueError, match="not found"):
-            await r.run(str(PydanticObjectId()), "hello", registry_token="tok", user_id=None, existing_run_id="any-id")
+            await r.run(str(PydanticObjectId()), "hello", auth_context=None, user_id=None, existing_run_id="any-id")
 
     @pytest.mark.asyncio
     async def test_orchestrates_build_registry_execute_and_returns_node_runs(self, monkeypatch: pytest.MonkeyPatch):
@@ -98,6 +99,7 @@ class TestWorkflowRunnerRun:
         )
         node_runs = [SimpleNamespace(node_name="fetch")]
         fake_registry = {"tool": object()}
+        auth_context = {"user_id": "user-1"}
 
         monkeypatch.setattr(runner.WorkflowDefinition, "get", AsyncMock(return_value=definition))
         monkeypatch.setattr(runner.WorkflowRun, "get", AsyncMock(return_value=run_doc))
@@ -114,14 +116,14 @@ class TestWorkflowRunnerRun:
         actual_run, actual_nodes = await r.run(
             str(definition.id),
             "hello",
-            registry_token="user-tok",
+            auth_context=auth_context,
             user_id=user_id,
             existing_run_id=run_id,
         )
 
         assert actual_run is run_doc
         assert actual_nodes == node_runs
-        runner.WorkflowRunner._build_registry.assert_awaited_once_with(definition, "user-tok", user_id)
+        runner.WorkflowRunner._build_registry.assert_awaited_once_with(definition, auth_context, user_id)
         runner.WorkflowRunner._execute.assert_awaited_once_with(run_doc, definition, "hello", fake_registry, None, None)
 
     @pytest.mark.asyncio
@@ -153,7 +155,7 @@ class TestWorkflowRunnerRun:
         await r.run(
             str(snapshot_definition.id),
             "hello",
-            registry_token="user-tok",
+            auth_context=None,
             user_id="user-1",
             existing_run_id=str(run_doc.id),
         )
@@ -178,6 +180,7 @@ class TestWorkflowRunnerRun:
         )
         node_runs = [SimpleNamespace(node_name="fetch")]
         fake_registry = {"tool": object()}
+        auth_context = {"user_id": "user-1"}
 
         monkeypatch.setattr(runner.WorkflowDefinition, "get", AsyncMock(return_value=definition))
         monkeypatch.setattr(runner.WorkflowRun, "get", AsyncMock(return_value=existing_run))
@@ -192,7 +195,7 @@ class TestWorkflowRunnerRun:
         actual_run, actual_nodes = await r.run(
             str(definition.id),
             "hello",
-            registry_token="user-tok",
+            auth_context=auth_context,
             user_id="user-1",
             existing_run_id=str(existing_run.id),
         )
@@ -204,12 +207,54 @@ class TestWorkflowRunnerRun:
         existing_run.save.assert_awaited_once()
         runner.WorkflowRunner._build_registry.assert_awaited_once_with(
             definition,
-            "user-tok",
+            auth_context,
             "user-1",
         )
         runner.WorkflowRunner._execute.assert_awaited_once_with(
             existing_run, definition, "hello", fake_registry, None, None
         )
+
+    @pytest.mark.asyncio
+    async def test_consent_preflight_pauses_before_workflow_execution(self, monkeypatch: pytest.MonkeyPatch):
+        definition = _definition()
+        run_doc = SimpleNamespace(
+            id=PydanticObjectId(),
+            status=WorkflowRunStatus.PENDING,
+            definition_snapshot=None,
+            pending_requirements=[],
+            error_summary="old error",
+            finished_at=datetime.now(UTC),
+            save=AsyncMock(),
+        )
+        consent_error = McpConsentRequiredError(
+            auth_url="https://registry.example.com/consent/server?nonce=abc",
+            server_name="github",
+            elicitation_id="elicitation-1",
+        )
+        monkeypatch.setattr(runner.WorkflowDefinition, "get", AsyncMock(return_value=definition))
+        monkeypatch.setattr(runner.WorkflowRun, "get", AsyncMock(return_value=run_doc))
+        monkeypatch.setattr(runner.WorkflowRunner, "_build_registry", AsyncMock(side_effect=consent_error))
+        execute = AsyncMock()
+        monkeypatch.setattr(runner.WorkflowRunner, "_execute", execute)
+        monkeypatch.setattr(runner.NodeRun, "workflow_run_id", _FieldExpr("workflow_run_id"), raising=False)
+        monkeypatch.setattr(
+            runner.NodeRun,
+            "find",
+            lambda *args, **kwargs: SimpleNamespace(to_list=AsyncMock(return_value=[])),
+        )
+
+        actual_run, _ = await _make_runner().run(
+            str(definition.id),
+            "hello",
+            auth_context={"user_id": "user-1"},
+            user_id="user-1",
+            existing_run_id=str(run_doc.id),
+        )
+
+        assert actual_run.status == WorkflowRunStatus.AWAITING_APPROVAL
+        assert actual_run.pending_requirements[0]["requirement_kind"] == "mcp_consent"
+        assert actual_run.pending_requirements[0]["consent_url"].endswith("nonce=abc")
+        execute.assert_not_awaited()
 
 
 @pytest.mark.unit
@@ -229,35 +274,50 @@ class TestBuildRegistry:
         )
 
         captured = {}
+        auth_context = {"user_id": "user-1"}
 
         async def fake_build(
             executor_keys,
             *,
             llm,
-            registry_url,
-            registry_token,
+            auth_context,
             jwt_config,
             user_id,
             pool_nodes,
             selector_llm,
             a2a_httpx_client=None,
             headers_provider=None,
+            redis_client=None,
+            redis_key_prefix=None,
+            mcp_access_authorizer=None,
+            mcp_headers_provider=None,
         ):
             captured["executor_keys"] = executor_keys
             captured["pool_nodes"] = [n.name for n in pool_nodes]
-            captured["registry_token"] = registry_token
+            captured["auth_context"] = auth_context
             captured["user_id"] = user_id
+            captured["redis_key_prefix"] = redis_key_prefix
+            captured["mcp_access_authorizer"] = mcp_access_authorizer
+            captured["mcp_headers_provider"] = mcp_headers_provider
             return {}
 
         monkeypatch.setattr(runner, "build_executor_registry", fake_build)
 
-        r = _make_runner(registry_url="http://reg")
-        await r._build_registry(definition, "my-token", "user-1")
+        access_authorizer = AsyncMock()
+        r = _make_runner(
+            redis_key_prefix="test-registry",
+            mcp_access_authorizer=access_authorizer,
+            mcp_headers_provider=lambda *args, **kwargs: {},
+        )
+        await r._build_registry(definition, auth_context, "user-1")
 
         assert captured["executor_keys"] == ["mcp-tool"]
         assert captured["pool_nodes"] == ["pool-step"]
-        assert captured["registry_token"] == "my-token"
+        assert captured["auth_context"] is auth_context
         assert captured["user_id"] == "user-1"
+        assert captured["redis_key_prefix"] == "test-registry"
+        assert captured["mcp_access_authorizer"] is access_authorizer
+        assert captured["mcp_headers_provider"] is r._mcp_headers_provider
 
 
 @pytest.mark.unit
@@ -282,7 +342,7 @@ class TestRunSetsRunningStatus:
         monkeypatch.setattr(runner.NodeRun, "find", lambda *args, **kwargs: find_query)
 
         r = _make_runner()
-        await r.run(str(definition.id), "hello", registry_token="tok", user_id=None, existing_run_id=str(run_doc.id))
+        await r.run(str(definition.id), "hello", auth_context=None, user_id=None, existing_run_id=str(run_doc.id))
 
         assert run_doc.status == WorkflowRunStatus.RUNNING
         assert run_doc.definition_snapshot["name"] == definition.name
@@ -374,6 +434,8 @@ class TestContinueRunHydrationFailure:
     async def test_hydration_failure_preserves_pending_and_marks_failed(self, monkeypatch: pytest.MonkeyPatch):
         """If hydrate_requirement fails, pending_requirements must survive and the run
         must be finalized FAILED — never wiped and stranded as RUNNING."""
+        from unittest.mock import Mock
+
         run_oid = PydanticObjectId()
         original_pending = [{"step_id": "s1", "schema_version": 1}]
         run_doc = SimpleNamespace(
@@ -402,7 +464,7 @@ class TestContinueRunHydrationFailure:
         r = _make_runner(db_client=_FakeClient())
 
         with pytest.raises(RuntimeError, match="schema drift"):
-            await r.continue_run(existing_run_id=str(run_oid), registry_token="tok", user_id="u1")
+            await r.continue_run(existing_run_id=str(run_oid), auth_context=None, user_id="u1")
 
         # The persisted pending requirements were NOT cleared (still recoverable).
         assert run_doc.pending_requirements == original_pending

@@ -50,6 +50,7 @@ from .services.security_scanner import SecurityScannerService
 from .services.server_service import ServerServiceV1
 from .services.user_service import UserService
 from .services.workflow_control_service import WorkflowControlService
+from .services.workflow_mcp_headers_provider import McpHeadersProvider, make_mcp_headers_provider
 from .services.workflow_service import WorkflowService
 from .services.workflow_shutdown import cancel_in_flight_runs
 
@@ -277,6 +278,17 @@ class RegistryContainer:
         return make_a2a_headers_provider(jwt_config=self.settings.jwt_signing_config)
 
     @cached_property
+    def mcp_headers_provider(self) -> McpHeadersProvider:
+        """App-scoped MCP headers provider for manually-registered workflow MCP servers."""
+        return make_mcp_headers_provider(
+            oauth_service=self.oauth_service,
+            consent_store=self.consent_store,
+            pending_consent_store=self.pending_consent_store,
+            registry_client_url=self.settings.registry_client_url,
+            redis_client=self.redis_client,
+        )
+
+    @cached_property
     def workflow_runner(self) -> WorkflowRunner:
         """Build the app-scoped WorkflowRunner used by API-triggered runs."""
         try:
@@ -290,13 +302,16 @@ class RegistryContainer:
 
             return WorkflowRunner(
                 llm=llm,
-                registry_url=self.settings.registry_internal_url,
                 db_client=MongoDB.get_client(),
                 db_name=MongoDB.database_name,
                 jwt_config=self.settings.jwt_signing_config,
                 directive_queue=self.directive_queue,
                 a2a_httpx_client=self.a2a_httpx_client,
                 headers_provider=self.a2a_headers_provider,
+                redis_client=self.redis_client,
+                redis_key_prefix=self.settings.redis_key_prefix,
+                mcp_access_authorizer=self.mcp_headers_provider.authorize,
+                mcp_headers_provider=self.mcp_headers_provider,
             )
 
         except Exception:

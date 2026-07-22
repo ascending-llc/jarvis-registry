@@ -9,11 +9,10 @@ import math
 from typing import Annotated, Literal
 
 from beanie import PydanticObjectId
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from fastapi import status as http_status
 
-from registry.api.v1.workflow.token_helpers import build_registry_token
-from registry.auth.dependencies import CurrentUser, UserContextDict
+from registry.auth.dependencies import CurrentUser, UserContextDict, effective_scopes_from_context
 from registry.core.telemetry_decorators import track_registry_operation
 from registry.deps import get_acl_service, get_workflow_control_service, get_workflow_runner, get_workflow_service
 from registry.schemas.acl_schema import ResourcePermissions
@@ -509,7 +508,6 @@ async def trigger_workflow_run(
     data: WorkflowRunTriggerRequest,
     background_tasks: BackgroundTasks,
     user_context: CurrentUser,
-    request: Request,
     workflow_service: WorkflowService = Depends(get_workflow_service),
     workflow_runner: WorkflowRunner = Depends(get_workflow_runner),
     acl_service: ACLService = Depends(get_acl_service),
@@ -534,10 +532,10 @@ async def trigger_workflow_run(
             version=data.version,
             triggering_user_id=user_context.get("user_id"),
             triggering_username=user_context.get("username"),
-            triggering_scopes=user_context.get("scopes", []),
+            triggering_scopes=effective_scopes_from_context(user_context),
+            triggering_client_id=user_context.get("client_id"),
         )
 
-        registry_token = build_registry_token(request, user_context)
         user_id = user_context.get("user_id")
 
         # Schedule background execution
@@ -546,7 +544,7 @@ async def trigger_workflow_run(
             execute_workflow_run_background,
             run_id=run.id,
             workflow_runner=workflow_runner,
-            registry_token=registry_token,
+            auth_context=user_context,
             user_id=user_id,
         )
 
@@ -831,7 +829,11 @@ async def get_workflow_run_status(
     )
 
     try:
-        run, node_runs = await workflow_control_service.get_run_status(workflow_id, run_id)
+        run, node_runs = await workflow_control_service.get_run_status(
+            workflow_id,
+            run_id,
+            auth_context=user_context,
+        )
     except HTTPException:
         raise
     except ValueError as exc:

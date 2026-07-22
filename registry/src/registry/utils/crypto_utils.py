@@ -24,8 +24,6 @@ from registry_pkgs.core.jwt_tokens import mint_crud_session_token, verify_crud_s
 from registry_pkgs.core.jwt_utils import (
     ExpiredSignatureError,
     InvalidTokenError,
-    build_jwt_payload,
-    encode_jwt,
 )
 
 from ..core.config import settings
@@ -66,52 +64,6 @@ def is_encrypted(value: str) -> bool:
     if not value or not isinstance(value, str):
         return False
     return bool(ENCRYPTED_VALUE_PATTERN.match(value))
-
-
-def generate_service_jwt(
-    user_id: str | None = None,
-    username: str | None = None,
-    scopes: list[str] | None = None,
-    expires_in_seconds: int = 300,
-) -> str:
-    """
-    Generate service JWT for MCP server authentication.
-
-    Generates an internal service JWT for Registry -> MCP server requests with user context.
-
-    Args:
-        user_id: User ID to include in JWT (required for internal mode)
-        username: Optional username/email
-        scopes: Optional list of scopes
-        expires_in_seconds: Token expiration in seconds (default: 300 = 5 minutes)
-
-    Returns:
-        JWT token string (without Bearer prefix)
-    """
-    now = int(datetime.now(UTC).timestamp())
-
-    if not user_id:
-        raise ValueError("user_id is required for internal service JWT")
-
-    extra_claims = {
-        "user_id": user_id,
-        "jti": f"registry-{now}",
-        "client_id": settings.registry_app_name,
-        "token_type": "service",
-    }
-
-    if scopes:
-        extra_claims["scope"] = " ".join(scopes)
-
-    payload = build_jwt_payload(
-        subject=username or user_id,
-        issuer=settings.jwt_issuer,
-        audience=settings.jwt_audience,
-        expires_in_seconds=expires_in_seconds,
-        iat=now,
-        extra_claims=extra_claims,
-    )
-    return encode_jwt(payload, settings.jwt_private_key, kid=settings.jwt_self_signed_kid)
 
 
 def encrypt_value(plaintext: str) -> str:

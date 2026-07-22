@@ -6,7 +6,7 @@ Role in the pipeline
 must pre-create a ``WorkflowRun`` document and pass its ID to ``run()``;
 all internal coordination is hidden here:
 
-    WorkflowRunner.run(definition_id, user_text, existing_run_id=..., registry_token=...)
+    WorkflowRunner.run(definition_id, user_text, existing_run_id=..., auth_context=...)
         ├─ load WorkflowDefinition from MongoDB
         ├─ load WorkflowRun by existing_run_id → set status=RUNNING + definition_snapshot
         ├─ build_executor_registry()      → resolves MCP/A2A/pool executors
@@ -15,11 +15,11 @@ all internal coordination is hidden here:
         ├─ run.sync()                     → reload final status written by WorkflowRunSyncer
         └─ return (WorkflowRun, list[NodeRun])
 
-Why registry_token is on run() not __init__
--------------------------------------------
-``registry_token`` is scoped to a single user request; it must NOT be shared
+Why auth_context is on run() not __init__
+-----------------------------------------
+``auth_context`` is scoped to a single user request; it must NOT be shared
 across concurrent runs from different users.  All other parameters (LLMs,
-registry URL, DB credentials) are service-level constants safe to share.
+DB credentials, JWT signing config) are service-level constants safe to share.
 
 Error handling
 --------------
@@ -30,15 +30,14 @@ Usage::
 
     runner = WorkflowRunner(
         llm=AwsBedrock(...),
-        registry_url="https://jarvis.ascendingdc.com",
         db_client=MongoDB.get_client(),
         db_name="jarvis",
     )
-    # Each request passes its own token — no cross-user state leakage.
+    # Each request passes its own auth context — no cross-user state leakage.
     run, node_runs = await runner.run(
         definition_id,
         user_text,
-        registry_token=current_user.token,
+        auth_context=current_user,
     )
 """
 
@@ -69,7 +68,8 @@ from registry_pkgs.workflows.compiler import StepExecutor, compile_workflow, fla
 from registry_pkgs.workflows.control import DirectiveQueue, WorkflowCancelledError
 from registry_pkgs.workflows.executor_resolver import build_executor_registry
 from registry_pkgs.workflows.hitl import hydrate_requirement, serialize_requirement
-from registry_pkgs.workflows.types import WorkflowConfigError
+from registry_pkgs.workflows.mcp_executor import McpAccessAuthorizer, McpHeadersProvider
+from registry_pkgs.workflows.types import McpConsentRequiredError, WorkflowConfigError
 
 logger = logging.getLogger(__name__)
 
@@ -104,24 +104,27 @@ class WorkflowRunner:
 
     This class is designed to be a **long-lived service object** — create one
     per application and reuse it across requests.  The only per-request
-    parameter is ``registry_token`` passed to ``run()``.
+    parameter is ``auth_context`` passed to ``run()``.
 
     Args:
-        llm:           Model used by MCP-server executors (e.g. AwsBedrock).
-        registry_url:  Base URL of the Jarvis Registry gateway.
-        db_client:     pymongo AsyncMongoClient for session + Beanie persistence.
-        db_name:       MongoDB database name.
-        jwt_config:    JWT signing config used by A2A executors to mint
-                       short-lived service-to-agent tokens.
-        selector_llm:  Optional cheaper/faster model for A2A pool selection.
-                       Falls back to ``llm`` when not provided.
+        llm:                  Model used by MCP-server executors (e.g. AwsBedrock).
+        db_client:            pymongo AsyncMongoClient for session + Beanie persistence.
+        db_name:              MongoDB database name.
+        jwt_config:           JWT signing config used by A2A executors and AgentCore MCP servers.
+        selector_llm:         Optional cheaper/faster model for A2A pool selection.
+                              Falls back to ``llm`` when not provided.
+        directive_queue:      Optional in-process signal bus for pause/cancel/retry.
+        a2a_httpx_client:     Optional shared httpx client for A2A invocations.
+        headers_provider:     Optional shared headers provider for A2A executors.
+        redis_client:         Optional shared Redis client for AgentCore JWT caching.
+        redis_key_prefix:     Prefix for Redis cache keys.
+        mcp_headers_provider: Optional headers provider for manually-registered MCP servers.
     """
 
     def __init__(
         self,
         *,
         llm: Model,
-        registry_url: str,
         db_client: Any,
         db_name: str,
         jwt_config: JwtSigningConfig,
@@ -129,6 +132,10 @@ class WorkflowRunner:
         directive_queue: DirectiveQueue | None = None,
         a2a_httpx_client: httpx.AsyncClient | None = None,
         headers_provider: HeadersProvider | None = None,
+        redis_client: Any | None = None,
+        redis_key_prefix: str | None = None,
+        mcp_access_authorizer: McpAccessAuthorizer | None = None,
+        mcp_headers_provider: McpHeadersProvider | None = None,
     ) -> None:
         if db_client is None:
             raise ValueError("WorkflowRunner requires db_client")
@@ -137,7 +144,6 @@ class WorkflowRunner:
 
         self._llm = llm
         self._selector_llm = selector_llm  # None → falls back to _llm inside build_executor_registry
-        self._registry_url = registry_url
         self._db_client = db_client
         self._db_name = db_name
         self._jwt_config = jwt_config
@@ -146,13 +152,17 @@ class WorkflowRunner:
         self._directive_queue = directive_queue
         self._a2a_httpx_client = a2a_httpx_client
         self._headers_provider = headers_provider
+        self._redis_client = redis_client
+        self._redis_key_prefix = redis_key_prefix
+        self._mcp_access_authorizer = mcp_access_authorizer
+        self._mcp_headers_provider = mcp_headers_provider
 
     async def run(
         self,
         definition_id: str,
         user_text: str,
         *,
-        registry_token: str,
+        auth_context: dict[str, Any] | None,
         user_id: str | None,
         existing_run_id: str,
         injected_outputs: dict[str, dict[str, Any]] | None = None,
@@ -169,7 +179,7 @@ class WorkflowRunner:
         Args:
             definition_id:    MongoDB ObjectId string of the WorkflowDefinition.
             user_text:        Top-level input passed as ``workflow.arun(input=...)``.
-            registry_token:   User-scoped Bearer token.  Must NOT be shared across users.
+            auth_context:     Triggering user's auth context. Must NOT be shared across users.
             user_id:          User ID for ACL lookup.  ``None`` = unrestricted (scripts only).
             existing_run_id:  ID of the pre-created ``WorkflowRun`` document to drive.
             injected_outputs: Mapping of ``node_id → {"content": ..., "session_state": ...}``
@@ -184,7 +194,7 @@ class WorkflowRunner:
 
         Raises:
             ValueError:      If the WorkflowDefinition or WorkflowRun is not found.
-            PermissionError: If the workflow references an A2A agent the caller cannot access.
+            PermissionError: If the workflow references an MCP server or A2A agent the caller cannot access.
             Exception:       Re-raises any execution error after marking the run FAILED.
         """
         run = await WorkflowRun.get(existing_run_id)
@@ -219,7 +229,32 @@ class WorkflowRunner:
 
         try:
             try:
-                executor_registry = await self._build_registry(definition, registry_token, user_id)
+                executor_registry = await self._build_registry(definition, auth_context, user_id)
+            except McpConsentRequiredError as exc:
+                run.status = WorkflowRunStatus.AWAITING_APPROVAL
+                run.pending_requirements = [
+                    {
+                        "schema_version": 1,
+                        "step_id": f"mcp-consent:{exc.elicitation_id}",
+                        "step_name": exc.server_name,
+                        "step_type": "mcp_consent",
+                        "requirement_kind": "mcp_consent",
+                        "requires_confirmation": True,
+                        "confirmation_message": (
+                            f"Grant consent for this workflow to call MCP server {exc.server_name!r}, "
+                            "then confirm to continue."
+                        ),
+                        "confirmed": None,
+                        "consent_url": exc.auth_url,
+                        "server_name": exc.server_name,
+                        "elicitation_id": exc.elicitation_id,
+                    }
+                ]
+                run.error_summary = None
+                run.finished_at = None
+                await run.save()
+                logger.info("[run=%s] awaiting MCP server consent for %s", run.id, exc.server_name)
+                executor_registry = None
             except WorkflowConfigError as exc:
                 run.status = WorkflowRunStatus.FAILED
                 run.error_summary = str(exc)
@@ -238,7 +273,8 @@ class WorkflowRunner:
                 await run.save()
                 logger.error("[run=%s] ✗ failed to build executor registry: %s", run.id, exc, exc_info=True)
                 raise
-            await self._execute(run, definition, user_text, executor_registry, injected_outputs, stop_after_node_id)
+            if executor_registry is not None:
+                await self._execute(run, definition, user_text, executor_registry, injected_outputs, stop_after_node_id)
         finally:
             # Always unregister — even on failure — so the queue slot is freed.
             if self._directive_queue is not None:
@@ -250,7 +286,7 @@ class WorkflowRunner:
     async def _build_registry(
         self,
         definition: WorkflowDefinition,
-        registry_token: str,
+        auth_context: dict[str, Any] | None,
         user_id: str | None,
     ) -> dict[str, StepExecutor]:
         """Extract executor keys + pool nodes from the definition and resolve them.
@@ -277,21 +313,24 @@ class WorkflowRunner:
         return await build_executor_registry(
             executor_keys,
             llm=self._llm,
-            registry_url=self._registry_url,
-            registry_token=registry_token,
+            auth_context=auth_context,
             jwt_config=self._jwt_config,
             user_id=user_id,
             pool_nodes=pool_nodes,
             selector_llm=self._selector_llm,
             a2a_httpx_client=self._a2a_httpx_client,
             headers_provider=self._headers_provider,
+            redis_client=self._redis_client,
+            redis_key_prefix=self._redis_key_prefix,
+            mcp_access_authorizer=self._mcp_access_authorizer,
+            mcp_headers_provider=self._mcp_headers_provider,
         )
 
     async def continue_run(
         self,
         *,
         existing_run_id: str,
-        registry_token: str,
+        auth_context: dict[str, Any] | None,
         user_id: str | None,
     ) -> tuple[WorkflowRun, list[NodeRun]]:
         """Resume a run that is holding at one or more pending requirements.
@@ -354,7 +393,7 @@ class WorkflowRunner:
 
         try:
             requirements = [hydrate_requirement(item) for item in pending]
-            executor_registry = await self._build_registry(snapshot_def, registry_token, user_id)
+            executor_registry = await self._build_registry(snapshot_def, auth_context, user_id)
             workflow = compile_workflow(
                 snapshot_def,
                 run,

@@ -17,9 +17,11 @@ class WorkflowConfigError(ValueError):
     """
 
 
-class MissingRegistryTokenError(WorkflowConfigError):
-    """Raised when an MCP executor is requested but no registry_token was supplied.
+class McpConsentRequiredError(Exception):
+    """Signal that a workflow must pause before contacting an MCP server."""
 
-    Typical cause: the run was triggered via a cookie-only session (no
-    ``Authorization: Bearer`` header) without the service-JWT fallback in place.
-    """
+    def __init__(self, *, auth_url: str, server_name: str, elicitation_id: str) -> None:
+        super().__init__(f"Consent required to call MCP server {server_name!r}")
+        self.auth_url = auth_url
+        self.server_name = server_name
+        self.elicitation_id = elicitation_id

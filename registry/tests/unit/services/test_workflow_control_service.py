@@ -9,9 +9,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from beanie import PydanticObjectId
 
+from registry.auth.dependencies import UserContextDict
 from registry.services import workflow_control_service as wcs
 from registry.services.workflow_control_service import WorkflowControlService
-from registry_pkgs.models.enums import WorkflowRunStatus
+from registry_pkgs.models.enums import RequirementResolution, WorkflowRunStatus
 from registry_pkgs.workflows.control import DirectiveQueue
 
 
@@ -75,7 +76,7 @@ async def test_send_retry_child_inherits_workflow_version(monkeypatch: pytest.Mo
         str(parent_run.workflow_definition_id),
         str(parent_run.id),
         "n1",
-        registry_token="tok",
+        auth_context={"user_id": "user-1"},
         user_id="user-1",
     )
     # Let the fire-and-forget runner task settle to avoid pending-task warnings.
@@ -115,7 +116,7 @@ async def test_trigger_run_persists_user_id(monkeypatch: pytest.MonkeyPatch):
     await service.trigger_run(
         workflow_definition_id=str(PydanticObjectId()),
         user_text="hello",
-        registry_token="raw-jwt",
+        auth_context={"user_id": "user-42"},
         user_id="user-42",
     )
     await asyncio.sleep(0)  # let the fire-and-forget runner task settle
@@ -125,37 +126,289 @@ async def test_trigger_run_persists_user_id(monkeypatch: pytest.MonkeyPatch):
     assert "triggering_registry_token_encrypted" not in captured
 
 
-def test_prepare_resume_credentials_remints_service_jwt(monkeypatch: pytest.MonkeyPatch):
-    """Resume re-mints a service JWT from the persisted non-sensitive identity."""
-    minted = "fresh-service-jwt"
-    jwt_mock = MagicMock(return_value=minted)
-    monkeypatch.setattr(wcs, "generate_service_jwt", jwt_mock)
-
+@pytest.mark.asyncio
+async def test_refresh_triggering_auth_context_uses_current_groups_not_persisted_scopes(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Resume derives authorization from current group state, not its stored audit snapshot."""
+    user_id = "666666666666666666666666"
     run = SimpleNamespace(
-        triggering_user_id="user-42",
+        triggering_user_id=user_id,
         triggering_username="alice",
         triggering_scopes=["workflows-read", "workflows-control"],
+        triggering_client_id="client-1",
     )
 
-    token = wcs._prepare_resume_credentials(run)
+    monkeypatch.setattr(
+        wcs.User,
+        "get",
+        AsyncMock(return_value=SimpleNamespace(username="alice-current", idOnTheSource="source-user-1")),
+    )
+    monkeypatch.setattr(
+        wcs.Group,
+        "find",
+        lambda query: SimpleNamespace(to_list=AsyncMock(return_value=[SimpleNamespace(name="workflow-users")])),
+    )
+    monkeypatch.setattr(wcs, "map_cognito_groups_to_scopes", MagicMock(return_value=["workflows-read"]))
 
-    assert token == minted
-    jwt_mock.assert_called_once_with(
-        user_id="user-42",
+    ctx = await wcs._refresh_triggering_auth_context(run)
+
+    assert ctx == UserContextDict(
+        user_id=user_id,
+        client_id="client-1",
+        username="alice-current",
+        groups=["workflow-users"],
+        scopes=["workflows-read"],
+        auth_method="service",
+        provider="workflow",
+        auth_source="workflow_resume",
+    )
+
+
+@pytest.mark.asyncio
+async def test_refresh_triggering_auth_context_without_user_id_returns_none():
+    """Script-driven runs with no triggering_user_id resume with no auth context."""
+    run = SimpleNamespace(
+        triggering_user_id=None,
+        triggering_username=None,
+        triggering_scopes=None,
+        triggering_client_id=None,
+    )
+
+    assert await wcs._refresh_triggering_auth_context(run) is None
+
+
+@pytest.mark.asyncio
+async def test_refresh_triggering_auth_context_deleted_user_returns_none(monkeypatch: pytest.MonkeyPatch):
+    run = SimpleNamespace(
+        triggering_user_id="666666666666666666666666",
+        triggering_username="alice",
+        triggering_scopes=["stale-scope"],
+        triggering_client_id="client-1",
+    )
+    monkeypatch.setattr(wcs.User, "get", AsyncMock(return_value=None))
+
+    assert await wcs._refresh_triggering_auth_context(run) is None
+
+
+@pytest.mark.asyncio
+async def test_refresh_triggering_auth_context_preserves_current_explicit_scopes(monkeypatch: pytest.MonkeyPatch):
+    """A same-user approval uses the request's current effective authorization context."""
+    run = SimpleNamespace(triggering_user_id="user-1")
+    current = UserContextDict(
+        user_id="user-1",
+        client_id="client-1",
         username="alice",
-        scopes=["workflows-read", "workflows-control"],
+        groups=["workflow-users"],
+        scopes=["explicit-scope"],
+        auth_method="jwt",
+        provider="keycloak",
+        auth_source="request",
+    )
+    monkeypatch.setattr(wcs, "effective_scopes_from_context", MagicMock(return_value=["effective-scope"]))
+
+    ctx = await wcs._refresh_triggering_auth_context(run, current)
+
+    assert ctx is not current
+    assert ctx["scopes"] == ["effective-scope"]
+    assert ctx["client_id"] == "client-1"
+
+
+@pytest.mark.asyncio
+async def test_refresh_triggering_auth_context_does_not_reuse_different_approver_identity(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """An approver cannot lend their client identity or scopes to another user's run."""
+    triggering_user_id = "666666666666666666666666"
+    run = SimpleNamespace(
+        triggering_user_id=triggering_user_id,
+        triggering_client_id="trigger-client",
+        triggering_username="trigger-user",
+    )
+    approver_context = UserContextDict(
+        user_id="approver-user",
+        client_id="approver-client",
+        username="admin",
+        groups=["admins"],
+        scopes=["admin-scope"],
+    )
+    monkeypatch.setattr(
+        wcs.User,
+        "get",
+        AsyncMock(return_value=SimpleNamespace(username="current-trigger-user", idOnTheSource=None)),
+    )
+    effective_scopes = MagicMock(return_value=["must-not-be-used"])
+    monkeypatch.setattr(wcs, "effective_scopes_from_context", effective_scopes)
+
+    ctx = await wcs._refresh_triggering_auth_context(run, approver_context)
+
+    assert ctx["user_id"] == triggering_user_id
+    assert ctx["client_id"] == "trigger-client"
+    assert ctx["scopes"] == []
+    effective_scopes.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resolution", [RequirementResolution.CONFIRM, RequirementResolution.REJECT])
+async def test_resolve_consent_requirement_dispatches_restart(
+    monkeypatch: pytest.MonkeyPatch,
+    resolution: RequirementResolution,
+):
+    run = SimpleNamespace(
+        id=PydanticObjectId(),
+        status=WorkflowRunStatus.AWAITING_APPROVAL,
+        pending_requirements=[
+            {
+                "step_id": "mcp-consent:1",
+                "requirement_kind": "mcp_consent",
+                "confirmed": None,
+            }
+        ],
+    )
+    refreshed_run = SimpleNamespace(id=run.id, status=WorkflowRunStatus.AWAITING_APPROVAL)
+    auth_context = UserContextDict(user_id="user-1", client_id="client-1", scopes=[])
+    service = WorkflowControlService(directive_queue=DirectiveQueue())
+    service._load_run = AsyncMock(side_effect=[run, refreshed_run])
+    service._restart_after_consent = MagicMock(return_value=MagicMock(close=MagicMock()))
+    service._trigger_resume = MagicMock()
+    atomic_write = AsyncMock()
+    monkeypatch.setattr(wcs, "_atomic_write_decision", atomic_write)
+    monkeypatch.setattr(wcs, "_fire_background", lambda coroutine: coroutine.close())
+
+    result = await service.resolve_requirement(
+        "workflow-1",
+        str(run.id),
+        step_id="mcp-consent:1",
+        resolution=resolution,
+        auth_context=auth_context,
+    )
+
+    assert result is refreshed_run
+    atomic_write.assert_awaited_once_with(
+        run, "mcp-consent:1", {"confirmed": resolution == RequirementResolution.CONFIRM}
+    )
+    service._restart_after_consent.assert_called_once_with(run, resolution, auth_context)
+    service._trigger_resume.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_resolve_standard_requirement_dispatches_continue(monkeypatch: pytest.MonkeyPatch):
+    run = SimpleNamespace(
+        id=PydanticObjectId(),
+        status=WorkflowRunStatus.AWAITING_APPROVAL,
+        pending_requirements=[{"step_id": "review-1", "confirmed": None}],
+    )
+    refreshed_run = SimpleNamespace(id=run.id, status=WorkflowRunStatus.AWAITING_APPROVAL)
+    auth_context = UserContextDict(user_id="user-1", client_id="client-1", scopes=[])
+    service = WorkflowControlService(directive_queue=DirectiveQueue())
+    service._load_run = AsyncMock(side_effect=[run, refreshed_run])
+    service._restart_after_consent = MagicMock()
+    service._trigger_resume = MagicMock()
+    atomic_write = AsyncMock()
+    monkeypatch.setattr(wcs, "_atomic_write_decision", atomic_write)
+
+    result = await service.resolve_requirement(
+        "workflow-1",
+        str(run.id),
+        step_id="review-1",
+        resolution=RequirementResolution.CONFIRM,
+        auth_context=auth_context,
+    )
+
+    assert result is refreshed_run
+    atomic_write.assert_awaited_once_with(run, "review-1", {"confirmed": True})
+    service._trigger_resume.assert_called_once_with(run, auth_context)
+    service._restart_after_consent.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_restart_after_consent_confirm_reuses_run_with_current_auth():
+    run = SimpleNamespace(
+        id=PydanticObjectId(),
+        workflow_definition_id=PydanticObjectId(),
+        triggering_user_id="user-1",
+        initial_input={"user_text": "continue"},
+        definition_snapshot={"name": "wf"},
+        pending_requirements=[{"step_id": "mcp-consent:1"}],
+        status=WorkflowRunStatus.AWAITING_APPROVAL,
+        save=AsyncMock(),
+    )
+    auth_context = UserContextDict(user_id="user-1", client_id="client-1", scopes=["mcp-call"])
+    runner = SimpleNamespace(run=AsyncMock())
+    refresher = AsyncMock(return_value=auth_context)
+    service = WorkflowControlService(
+        directive_queue=DirectiveQueue(),
+        runner_factory=lambda: runner,
+        auth_context_refresher=refresher,
+    )
+
+    await service._restart_after_consent(run, RequirementResolution.CONFIRM, auth_context)
+
+    assert run.status == WorkflowRunStatus.PENDING
+    assert run.pending_requirements == []
+    run.save.assert_awaited_once()
+    refresher.assert_awaited_once_with(run, auth_context)
+    runner.run.assert_awaited_once_with(
+        str(run.workflow_definition_id),
+        "continue",
+        auth_context=auth_context,
+        user_id="user-1",
+        existing_run_id=str(run.id),
+        definition_snapshot=run.definition_snapshot,
     )
 
 
-def test_prepare_resume_credentials_without_user_id_returns_empty(monkeypatch: pytest.MonkeyPatch):
-    """Script-driven runs with no triggering_user_id resume unauthenticated ("")."""
-    jwt_mock = MagicMock()
-    monkeypatch.setattr(wcs, "generate_service_jwt", jwt_mock)
+@pytest.mark.asyncio
+async def test_restart_after_consent_reject_cancels_without_running():
+    run = SimpleNamespace(
+        id=PydanticObjectId(),
+        pending_requirements=[{"step_id": "mcp-consent:1"}],
+        status=WorkflowRunStatus.AWAITING_APPROVAL,
+        error_summary=None,
+        finished_at=None,
+        save=AsyncMock(),
+    )
+    runner = SimpleNamespace(run=AsyncMock())
+    service = WorkflowControlService(
+        directive_queue=DirectiveQueue(),
+        runner_factory=lambda: runner,
+    )
 
-    run = SimpleNamespace(triggering_user_id=None, triggering_username=None, triggering_scopes=None)
+    await service._restart_after_consent(run, RequirementResolution.REJECT, None)
 
-    assert wcs._prepare_resume_credentials(run) == ""
-    jwt_mock.assert_not_called()
+    assert run.status == WorkflowRunStatus.CANCELLED
+    assert run.pending_requirements == []
+    assert run.error_summary == "MCP server consent was rejected"
+    assert run.finished_at is not None
+    run.save.assert_awaited_once()
+    runner.run.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_continue_old_run_without_client_id_fails_safely():
+    run = SimpleNamespace(
+        id=PydanticObjectId(),
+        triggering_user_id="user-1",
+        status=WorkflowRunStatus.AWAITING_APPROVAL,
+        pending_requirements=[{"step_id": "s1"}],
+        error_summary=None,
+        finished_at=None,
+        save=AsyncMock(),
+    )
+    runner = SimpleNamespace(continue_run=AsyncMock())
+    service = WorkflowControlService(
+        directive_queue=DirectiveQueue(),
+        auth_context_refresher=AsyncMock(return_value=UserContextDict(user_id="user-1", scopes=[])),
+    )
+
+    await service._continue_run_with_current_auth(run, runner)
+
+    assert run.status == WorkflowRunStatus.FAILED
+    assert run.pending_requirements == []
+    assert "Reauthentication required" in run.error_summary
+    assert run.finished_at is not None
+    run.save.assert_awaited_once()
+    runner.continue_run.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -185,7 +438,7 @@ async def test_trigger_run_handles_empty_token(monkeypatch: pytest.MonkeyPatch):
     await service.trigger_run(
         workflow_definition_id=str(PydanticObjectId()),
         user_text="hello",
-        registry_token="",  # empty
+        auth_context=None,
         user_id=None,
     )
     await asyncio.sleep(0)
@@ -239,17 +492,28 @@ async def test_get_run_status_nudges_continue_run_when_requirement_timed_out(mon
         triggering_user_id="user-1",
         triggering_username="u",
         triggering_scopes=[],
+        triggering_client_id="client-1",
     )
 
     fake_node_run = MagicMock()
     fake_node_run.find.return_value.to_list = AsyncMock(return_value=[])
     monkeypatch.setattr(wcs, "NodeRun", fake_node_run)
-    monkeypatch.setattr(wcs, "generate_service_jwt", MagicMock(return_value="svc"))
 
     continue_mock = AsyncMock()
+    refreshed_context = UserContextDict(
+        user_id="user-1",
+        client_id="client-1",
+        username="u",
+        groups=[],
+        scopes=[],
+        auth_method="service",
+        provider="workflow",
+        auth_source="workflow_resume",
+    )
     service = WorkflowControlService(
         directive_queue=DirectiveQueue(),
         runner_factory=lambda: SimpleNamespace(continue_run=continue_mock),
+        auth_context_refresher=AsyncMock(return_value=refreshed_context),
     )
     service._load_run = AsyncMock(return_value=run)
 
@@ -258,6 +522,8 @@ async def test_get_run_status_nudges_continue_run_when_requirement_timed_out(mon
 
     continue_mock.assert_awaited_once()
     assert continue_mock.await_args.kwargs["existing_run_id"] == str(run.id)
+    assert continue_mock.await_args.kwargs["auth_context"] == refreshed_context
+    assert continue_mock.await_args.kwargs["user_id"] == "user-1"
 
 
 @pytest.mark.asyncio
@@ -320,7 +586,7 @@ async def test_rerun_single_node_rejects_non_terminal_run(non_terminal_status: W
             str(run.workflow_definition_id),
             str(run.id),
             node_id="node-1",
-            registry_token="tok",
+            auth_context={"user_id": "user-1"},
             user_id="user-1",
         )
 
@@ -393,7 +659,7 @@ async def test_rerun_single_node_rejects_missing_upstream_snapshot(monkeypatch: 
             str(wf_id),
             str(run_id),
             node_id="node-2",
-            registry_token="tok",
+            auth_context={"user_id": "user-1"},
             user_id="user-1",
         )
 
@@ -493,7 +759,7 @@ async def test_rerun_single_node_uses_highest_attempt_output_on_retry(monkeypatc
         str(wf_id),
         str(run_id),
         node_id="node-2",
-        registry_token="tok",
+        auth_context={"user_id": "user-1"},
         user_id="user-1",
     )
     await asyncio.sleep(0)
@@ -599,7 +865,7 @@ async def test_rerun_single_node_injects_nested_step_outputs_for_container_nodes
         str(wf_id),
         str(run_id),
         node_id=target_id,
-        registry_token="tok",
+        auth_context={"user_id": "user-1"},
         user_id="user-1",
     )
     await asyncio.sleep(0)
@@ -649,7 +915,7 @@ async def test_replay_run_sets_parent_run_id(monkeypatch: pytest.MonkeyPatch):
     new_run = await service.replay_run(
         str(source_run.workflow_definition_id),
         str(source_run.id),
-        registry_token="tok",
+        auth_context={"user_id": "user-1"},
         user_id="user-1",
     )
 
@@ -699,7 +965,7 @@ async def test_replay_run_forwards_json_fallback_for_non_user_text_input(monkeyp
     await service.replay_run(
         str(source_run.workflow_definition_id),
         str(source_run.id),
-        registry_token="tok",
+        auth_context={"user_id": "user-1"},
         user_id="user-1",
     )
 

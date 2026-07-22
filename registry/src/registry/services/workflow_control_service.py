@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
@@ -26,8 +26,9 @@ from agno.run.cancel import acancel_run as agno_acancel_run
 from beanie import PydanticObjectId
 from fastapi import HTTPException
 
-from registry.utils.crypto_utils import generate_service_jwt
+from registry.auth.dependencies import UserContextDict, effective_scopes_from_context, map_cognito_groups_to_scopes
 from registry_pkgs.database.mongodb import MongoDB
+from registry_pkgs.models import Group, User
 from registry_pkgs.models.enums import (
     NodeRunStatus,
     RequirementResolution,
@@ -45,6 +46,8 @@ from registry_pkgs.workflows.media_snapshot import MEDIA_SNAPSHOT_KEYS
 from registry_pkgs.workflows.types import WorkflowConfigError
 
 logger = logging.getLogger(__name__)
+
+type AuthContextRefresher = Callable[[WorkflowRun, UserContextDict | None], Awaitable[UserContextDict | None]]
 
 
 def _injected_output_from_node_run(node_run: NodeRun) -> dict[str, Any]:
@@ -95,7 +98,7 @@ class _HasRun(Protocol):
         definition_id: str,
         user_text: str,
         *,
-        registry_token: str,
+        auth_context: UserContextDict | None,
         user_id: str | None,
         existing_run_id: str,
         injected_outputs: dict[str, dict[str, Any]] | None = None,
@@ -108,7 +111,7 @@ class _HasRun(Protocol):
         self,
         *,
         existing_run_id: str,
-        registry_token: str,
+        auth_context: UserContextDict | None,
         user_id: str | None,
     ) -> tuple[WorkflowRun, list[NodeRun]]:
         """Resume a run that hit an HITL pause after the user decided."""
@@ -130,16 +133,18 @@ class WorkflowControlService:
         self,
         directive_queue: DirectiveQueue,
         runner_factory: Callable[[], _HasRun] | None = None,
+        auth_context_refresher: AuthContextRefresher | None = None,
     ) -> None:
         self._queue = directive_queue
         self._runner_factory = runner_factory
+        self._auth_context_refresher = auth_context_refresher or _refresh_triggering_auth_context
 
     async def trigger_run(
         self,
         workflow_definition_id: str,
         user_text: str,
         *,
-        registry_token: str,
+        auth_context: UserContextDict | None,
         user_id: str | None,
     ) -> WorkflowRun:
         """Start a new WorkflowRun for the given WorkflowDefinition.
@@ -151,7 +156,7 @@ class WorkflowControlService:
         Args:
             workflow_definition_id: The WorkflowDefinition ObjectId string.
             user_text:              Prompt forwarded to the workflow's first step.
-            registry_token:         User-scoped Bearer token for the runner.
+            auth_context:           Triggering user's auth context for the runner.
             user_id:                User ID for ACL lookup inside the runner.
 
         Raises:
@@ -188,7 +193,7 @@ class WorkflowControlService:
             runner.run(
                 workflow_definition_id,
                 user_text,
-                registry_token=registry_token,
+                auth_context=auth_context,
                 user_id=user_id,
                 existing_run_id=str(run.id),
             )
@@ -243,6 +248,7 @@ class WorkflowControlService:
         edited_output: Any | None = None,
         user_input: dict[str, Any] | None = None,
         selected_choices: list[str] | None = None,
+        auth_context: UserContextDict | None = None,
     ) -> WorkflowRun:
         """Resolve one pending requirement on an AWAITING_APPROVAL run.
 
@@ -280,11 +286,14 @@ class WorkflowControlService:
 
         logger.info("WorkflowRun %s requirement %s resolved as %s", run_id, step_id, resolution.value)
 
-        self._trigger_resume(run)
+        if target.get("requirement_kind") == "mcp_consent":
+            _fire_background(self._restart_after_consent(run, resolution, auth_context))
+        else:
+            self._trigger_resume(run, auth_context)
 
         return await self._load_run(workflow_definition_id, run_id)
 
-    def _trigger_resume(self, run: WorkflowRun) -> None:
+    def _trigger_resume(self, run: WorkflowRun, auth_context: UserContextDict | None = None) -> None:
         """Fire ``continue_run`` in the background to resume an AWAITING_APPROVAL run.
 
         Shared by ``resolve_requirement`` (user decided) and ``get_run_status``
@@ -300,15 +309,72 @@ class WorkflowControlService:
                 run.id,
             )
             return
-        token = _prepare_resume_credentials(run)
         runner = self._runner_factory()
-        _fire_background(
-            runner.continue_run(
-                existing_run_id=str(run.id),
-                registry_token=token,
-                user_id=run.triggering_user_id,
-            )
+        _fire_background(self._continue_run_with_current_auth(run, runner, auth_context))
+
+    async def _continue_run_with_current_auth(
+        self,
+        run: WorkflowRun,
+        runner: _HasRun,
+        current_auth_context: UserContextDict | None = None,
+    ) -> None:
+        """Refresh authorization state immediately before resuming a paused run."""
+        auth_context = await self._auth_context_refresher(run, current_auth_context)
+        if auth_context is not None and not auth_context.get("client_id"):
+            await self._fail_run_requiring_reauthentication(run)
+            return
+        await runner.continue_run(
+            existing_run_id=str(run.id),
+            auth_context=auth_context,
+            user_id=run.triggering_user_id,
         )
+
+    async def _restart_after_consent(
+        self,
+        run: WorkflowRun,
+        resolution: RequirementResolution,
+        current_auth_context: UserContextDict | None,
+    ) -> None:
+        """Start a preflight-paused run after consent has been granted."""
+        if resolution != RequirementResolution.CONFIRM:
+            run.status = WorkflowRunStatus.CANCELLED
+            run.pending_requirements = []
+            run.error_summary = "MCP server consent was rejected"
+            run.finished_at = datetime.now(UTC)
+            await run.save()
+            return
+
+        auth_context = await self._auth_context_refresher(run, current_auth_context)
+        if auth_context is None or not auth_context.get("client_id"):
+            await self._fail_run_requiring_reauthentication(run)
+            return
+        if self._runner_factory is None:
+            logger.error("Cannot restart consent-paused run %s: runner_factory is not configured", run.id)
+            return
+
+        run.pending_requirements = []
+        run.status = WorkflowRunStatus.PENDING
+        await run.save()
+        runner = self._runner_factory()
+        await runner.run(
+            str(run.workflow_definition_id),
+            extract_user_text(run.initial_input),
+            auth_context=auth_context,
+            user_id=run.triggering_user_id,
+            existing_run_id=str(run.id),
+            definition_snapshot=run.definition_snapshot,
+        )
+
+    @staticmethod
+    async def _fail_run_requiring_reauthentication(run: WorkflowRun) -> None:
+        """Fail an old paused run safely when its original client identity is unavailable."""
+        run.status = WorkflowRunStatus.FAILED
+        run.error_summary = (
+            "Reauthentication required: this workflow run predates persisted client identity; retrigger the run"
+        )
+        run.pending_requirements = []
+        run.finished_at = datetime.now(UTC)
+        await run.save()
 
     async def send_cancel(self, workflow_definition_id: str, run_id: str) -> WorkflowRun:
         """Cancel a RUNNING / PAUSED / AWAITING_APPROVAL workflow run.
@@ -355,7 +421,7 @@ class WorkflowControlService:
         run_id: str,
         from_node_id: str,
         *,
-        registry_token: str,
+        auth_context: UserContextDict | None,
         user_id: str | None,
     ) -> WorkflowRun:
         """Retry a finished run from *from_node_id* onwards.
@@ -370,7 +436,7 @@ class WorkflowControlService:
             run_id:                 The finished parent run.
             from_node_id:           Node ID within the definition from which
                                     re-execution should start.
-            registry_token:         User-scoped Bearer token forwarded to the runner.
+            auth_context:           Triggering user's auth context forwarded to the runner.
             user_id:                User ID for ACL lookup forwarded to the runner.
         """
         if self._runner_factory is None:
@@ -448,7 +514,7 @@ class WorkflowControlService:
             runner.run(
                 str(parent_run.workflow_definition_id),
                 user_text,
-                registry_token=registry_token,
+                auth_context=auth_context,
                 user_id=user_id,
                 existing_run_id=str(child_run.id),
                 injected_outputs=injected_outputs,
@@ -463,7 +529,7 @@ class WorkflowControlService:
         run_id: str,
         node_id: str,
         *,
-        registry_token: str,
+        auth_context: UserContextDict | None,
         user_id: str | None,
     ) -> WorkflowRun:
         """Rerun a single node in isolation, using the parent node's last output as input.
@@ -477,7 +543,7 @@ class WorkflowControlService:
             workflow_definition_id: Must match run.workflow_definition_id.
             run_id:                 The finished or failed parent run.
             node_id:                Top-level WorkflowNode.id to rerun.
-            registry_token:         User-scoped Bearer token.
+            auth_context:           Triggering user's auth context.
             user_id:                User ID for ACL lookup.
 
         Raises:
@@ -600,7 +666,7 @@ class WorkflowControlService:
             runner.run(
                 str(parent_run.workflow_definition_id),
                 user_text,
-                registry_token=registry_token,
+                auth_context=auth_context,
                 user_id=user_id,
                 existing_run_id=str(child_run.id),
                 injected_outputs=injected_outputs,
@@ -615,7 +681,7 @@ class WorkflowControlService:
         workflow_definition_id: str,
         run_id: str,
         *,
-        registry_token: str,
+        auth_context: UserContextDict | None,
         user_id: str | None,
     ) -> WorkflowRun:
         """Replay a workflow run from scratch using the same initial_input.
@@ -627,7 +693,7 @@ class WorkflowControlService:
         Args:
             workflow_definition_id: Must match run.workflow_definition_id.
             run_id:                 The source run to replay.
-            registry_token:         User-scoped Bearer token.
+            auth_context:           Triggering user's auth context.
             user_id:                User ID for ACL lookup.
 
         Raises:
@@ -665,7 +731,7 @@ class WorkflowControlService:
             runner.run(
                 workflow_definition_id,
                 user_text,
-                registry_token=registry_token,
+                auth_context=auth_context,
                 user_id=user_id,
                 existing_run_id=str(replay_run.id),
             )
@@ -676,6 +742,7 @@ class WorkflowControlService:
         self,
         workflow_definition_id: str,
         run_id: str,
+        auth_context: UserContextDict | None = None,
     ) -> tuple[WorkflowRun, list[NodeRun]]:
         """Return the WorkflowRun and its per-node NodeRuns.
 
@@ -696,7 +763,7 @@ class WorkflowControlService:
         run = await self._load_run(workflow_definition_id, run_id)
         if run.status == WorkflowRunStatus.AWAITING_APPROVAL and _has_timed_out_requirement(run):
             logger.info("WorkflowRun %s has a timed-out requirement — nudging continue_run", run_id)
-            self._trigger_resume(run)
+            self._trigger_resume(run, auth_context)
         node_runs = await NodeRun.find(NodeRun.workflow_run_id == run.id).to_list()
         return run, node_runs
 
@@ -833,21 +900,41 @@ async def _atomic_write_decision(
         )
 
 
-def _prepare_resume_credentials(run: WorkflowRun) -> str:
-    """Re-mint a short-lived service JWT representing the triggering user so
-    downstream MCP/A2A calls inside the resumed step authenticate as them.
+async def _refresh_triggering_auth_context(
+    run: WorkflowRun,
+    current_auth_context: UserContextDict | None = None,
+) -> UserContextDict | None:
+    """Rebuild auth context from current user/group state before HITL resume.
 
-    We persist only non-sensitive identity (user_id / username / scopes) on the
-    run — never the raw bearer token — and re-sign a fresh token at resume time.
-    Returns ``""`` when no ``triggering_user_id`` was captured (e.g. script-driven
-    runs); auth-required steps will then 401, which is non-fatal to the resume.
+    Returns ``None`` when no ``triggering_user_id`` was captured (e.g. script-driven
+    runs) or when the triggering user no longer exists. Persisted scopes are audit
+    data only and are deliberately not reused as active authorization.
     """
     if not run.triggering_user_id:
-        return ""
-    return generate_service_jwt(
+        return None
+    if current_auth_context is not None and current_auth_context.get("user_id") == run.triggering_user_id:
+        refreshed = dict(current_auth_context)
+        refreshed["scopes"] = effective_scopes_from_context(current_auth_context)
+        return UserContextDict(**refreshed)
+    user = await User.get(PydanticObjectId(run.triggering_user_id))
+    if user is None:
+        logger.warning("Triggering user %s no longer exists; resuming without auth context", run.triggering_user_id)
+        return None
+
+    groups: list[str] = []
+    if user.idOnTheSource:
+        current_groups = await Group.find({"memberIds": user.idOnTheSource}).to_list()
+        groups = [group.name for group in current_groups]
+
+    return UserContextDict(
         user_id=run.triggering_user_id,
-        username=run.triggering_username,
-        scopes=run.triggering_scopes or [],
+        client_id=run.triggering_client_id or "",
+        username=user.username or run.triggering_username,
+        groups=groups,
+        scopes=map_cognito_groups_to_scopes(groups),
+        auth_method="service",
+        provider="workflow",
+        auth_source="workflow_resume",
     )
 
 

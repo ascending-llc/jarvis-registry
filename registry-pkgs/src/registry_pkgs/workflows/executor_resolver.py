@@ -3,7 +3,7 @@
 This module is **orchestration only**.  It queries MongoDB to decide which
 backend handles a given key, then delegates to the appropriate factory:
 
-- ``mcp_executor.make_mcp_executor``      — gateway-proxied MCP server calls
+- ``mcp_executor.make_mcp_executor``      — direct MCP server calls
 - ``a2a_executor.make_a2a_executor``      — direct A2A agent calls (JWT auth)
 - ``a2a_executor.make_a2a_pool_executor`` — A2A pool with LLM-based selection
 """
@@ -11,6 +11,7 @@ backend handles a given key, then delegates to the appropriate factory:
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 import httpx
 from agno.models.base import Model
@@ -18,8 +19,8 @@ from agno.workflow import StepInput, StepOutput
 from agno.workflow.step import StepExecutor
 from beanie import PydanticObjectId
 
+from registry_pkgs.access_control import build_acl_principal_or_clause, resolve_group_ids_for_user
 from registry_pkgs.core.config import JwtSigningConfig
-from registry_pkgs.models._generated.acl_entry import PrincipalType
 from registry_pkgs.models.a2a_agent import A2AAgent
 from registry_pkgs.models.enums import PermissionBits
 from registry_pkgs.models.extended_access_role import RegistryResourceType
@@ -28,8 +29,8 @@ from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 from registry_pkgs.models.workflow import WorkflowNode
 from registry_pkgs.workflows.a2a_client import HeadersProvider
 from registry_pkgs.workflows.a2a_executor import make_a2a_executor, make_a2a_pool_executor
-from registry_pkgs.workflows.mcp_executor import make_mcp_executor
-from registry_pkgs.workflows.types import POOL_KEY_PREFIX
+from registry_pkgs.workflows.mcp_executor import McpAccessAuthorizer, McpHeadersProvider, make_mcp_executor
+from registry_pkgs.workflows.types import POOL_KEY_PREFIX, WorkflowConfigError
 
 logger = logging.getLogger(__name__)
 
@@ -63,15 +64,16 @@ def _builtin_executor(key: str) -> StepExecutor | None:
     return None
 
 
-async def _load_accessible_agent_ids(user_id: str) -> set[str]:
-    """Query ACL to find all REMOTE_AGENT resource IDs a user can VIEW."""
+async def _load_accessible_resource_ids(user_id: str, resource_type: RegistryResourceType) -> set[str]:
+    """Return resources viewable through USER, GROUP, or PUBLIC ACL entries."""
+    user_object_id = PydanticObjectId(user_id)
+    group_ids = await resolve_group_ids_for_user(user_object_id)
+    principal_clauses = build_acl_principal_or_clause(user_object_id, group_ids)
+
     entries = await RegistryAclEntry.find(
         {
-            "resourceType": RegistryResourceType.REMOTE_AGENT.value,
-            "$or": [
-                {"principalType": PrincipalType.USER.value, "principalId": PydanticObjectId(user_id)},
-                {"principalType": PrincipalType.PUBLIC.value, "principalId": None},
-            ],
+            "resourceType": resource_type.value,
+            "$or": principal_clauses,
         }
     ).to_list()
 
@@ -82,18 +84,31 @@ async def _load_accessible_agent_ids(user_id: str) -> set[str]:
     return result
 
 
+async def _load_accessible_agent_ids(user_id: str) -> set[str]:
+    """Query ACL to find all REMOTE_AGENT resource IDs a user can VIEW."""
+    return await _load_accessible_resource_ids(user_id, RegistryResourceType.REMOTE_AGENT)
+
+
+async def _load_accessible_mcp_server_ids(user_id: str) -> set[str]:
+    """Query ACL to find all MCP_SERVER resource IDs a user can VIEW."""
+    return await _load_accessible_resource_ids(user_id, RegistryResourceType.MCP_SERVER)
+
+
 async def build_executor_registry(
     executor_keys: list[str],
     *,
     llm: Model,
-    registry_url: str,
-    registry_token: str,
+    auth_context: dict[str, Any] | None,
     jwt_config: JwtSigningConfig,
     user_id: str | None,
     pool_nodes: list[WorkflowNode] | None = None,
     selector_llm: Model | None = None,
     a2a_httpx_client: httpx.AsyncClient | None = None,
     headers_provider: HeadersProvider | None = None,
+    redis_client: Any | None = None,
+    redis_key_prefix: str | None = None,
+    mcp_access_authorizer: McpAccessAuthorizer | None = None,
+    mcp_headers_provider: McpHeadersProvider | None = None,
 ) -> dict[str, StepExecutor]:
     """Resolve each executor key to an MCP server or A2A agent executor.
 
@@ -101,32 +116,30 @@ async def build_executor_registry(
         executor_keys:    All ``executor_key`` values referenced by a WorkflowDefinition.
                           Duplicates are resolved only once.
         llm:              agno-compatible Model used by MCP-server executors.
-        registry_url:     Base URL of the Jarvis Registry (MCP proxy calls only).
-        registry_token:   User-scoped Bearer token for the MCP gateway proxy.
-                          **Not used for A2A executors** — those self-sign a JWT.
-        jwt_config:       JWT signing config used by A2A executors to mint
-                          short-lived service-to-agent tokens.
+        auth_context:     Triggering user's auth context for manually-registered MCP servers.
+        jwt_config:       JWT signing config used by A2A executors and AgentCore MCP servers.
         user_id:          User ID for ACL lookup. ``None`` = unrestricted
                           (only safe for trusted service / script contexts).
         pool_nodes:       STEP nodes that use ``a2a_pool`` instead of ``executor_key``.
         selector_llm:     Model used only for A2A pool selection; falls back to ``llm``.
-        a2a_httpx_client: Optional shared httpx client passed to A2A
-                          executors. When None, each A2A call builds its
-                          own pool (slower but isolated). Production code
-                          should always pass a long-lived client owned by
-                          the app container.
-        headers_provider: Optional shared headers provider passed to A2A
+        a2a_httpx_client: Optional shared httpx client passed to A2A executors.
+        headers_provider: Optional shared headers provider passed to A2A executors.
+        redis_client:     Optional shared Redis client for AgentCore JWT caching.
+        redis_key_prefix: Prefix for Redis cache keys.
+        mcp_headers_provider: Optional headers provider for manually-registered MCP servers.
 
     Returns:
         dict mapping each ``executor_key`` / pool synthetic-key → ``StepExecutor``.
 
     Raises:
         KeyError:        If an executor_key cannot be resolved to any active server or agent.
-        PermissionError: If a resolved A2A agent is not accessible to the user.
+        PermissionError: If a resolved MCP server or A2A agent is not accessible to the user.
     """
     accessible_agent_ids: set[str] | None = None
+    accessible_mcp_server_ids: set[str] | None = None
     if user_id is not None:
         accessible_agent_ids = await _load_accessible_agent_ids(user_id)
+        accessible_mcp_server_ids = await _load_accessible_mcp_server_ids(user_id)
 
     registry: dict[str, StepExecutor] = {}
 
@@ -134,12 +147,16 @@ async def build_executor_registry(
         registry[key] = await _resolve_executor(
             key,
             llm=llm,
-            registry_url=registry_url,
-            registry_token=registry_token,
+            auth_context=auth_context,
             jwt_config=jwt_config,
             accessible_agent_ids=accessible_agent_ids,
+            accessible_mcp_server_ids=accessible_mcp_server_ids,
             a2a_httpx_client=a2a_httpx_client,
             headers_provider=headers_provider,
+            redis_client=redis_client,
+            redis_key_prefix=redis_key_prefix,
+            mcp_access_authorizer=mcp_access_authorizer,
+            mcp_headers_provider=mcp_headers_provider,
         )
 
     _selector = selector_llm or llm
@@ -163,18 +180,22 @@ async def _resolve_executor(
     key: str,
     *,
     llm: Model,
-    registry_url: str,
-    registry_token: str,
+    auth_context: dict[str, Any] | None,
     jwt_config: JwtSigningConfig,
     accessible_agent_ids: set[str] | None,
+    accessible_mcp_server_ids: set[str] | None,
     a2a_httpx_client: httpx.AsyncClient | None = None,
     headers_provider: HeadersProvider | None = None,
+    redis_client: Any | None = None,
+    redis_key_prefix: str | None = None,
+    mcp_access_authorizer: McpAccessAuthorizer | None = None,
+    mcp_headers_provider: McpHeadersProvider | None = None,
 ) -> StepExecutor:
     """Resolve a single executor key to its MCP or A2A executor.
 
     Raises:
         KeyError:        When neither an active MCP server nor A2A agent matches ``key``.
-        PermissionError: When a matching A2A agent is not in ``accessible_agent_ids``.
+        PermissionError: When a matching MCP server or A2A agent is not accessible.
     """
     builtin = _builtin_executor(key)
     if builtin is not None:
@@ -186,8 +207,25 @@ async def _resolve_executor(
         {"config.enabled": True},
     )
     if mcp_server is not None:
+        if accessible_mcp_server_ids is not None and str(mcp_server.id) not in accessible_mcp_server_ids:
+            raise PermissionError(
+                f"executor_key {key!r} → MCP server {mcp_server.serverName!r}: user lacks access (server_id={mcp_server.id})"
+            )
         logger.debug("executor_key %r → MCP server %r", key, mcp_server.serverName)
-        return make_mcp_executor(mcp_server, llm=llm, registry_url=registry_url, registry_token=registry_token)
+        if auth_context is not None:
+            if mcp_access_authorizer is None:
+                raise WorkflowConfigError(f"No access authorizer configured for MCP server {mcp_server.serverName!r}")
+            await mcp_access_authorizer(mcp_server, auth_context)
+        return make_mcp_executor(
+            mcp_server,
+            llm=llm,
+            auth_context=auth_context,
+            jwt_config=jwt_config,
+            redis_client=redis_client,
+            redis_key_prefix=redis_key_prefix or "jarvis-registry",
+            mcp_access_authorizer=mcp_access_authorizer,
+            mcp_headers_provider=mcp_headers_provider,
+        )
 
     path = key.lstrip("/")
     a2a_agent = await A2AAgent.find_one(
