@@ -32,7 +32,6 @@ from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
-from registry import settings
 from registry_pkgs.core.config import MongoConfig
 from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.models.a2a_agent import A2AAgent
@@ -132,7 +131,6 @@ async def main(path: str, message: str, *, list_agents: bool = False, transport:
             result = await call_a2a(
                 agent,
                 message,
-                jwt_config=settings.jwt_signing_config,
                 httpx_client=a2a_httpx,
             )
 

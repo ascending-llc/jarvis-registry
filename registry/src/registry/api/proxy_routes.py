@@ -13,23 +13,21 @@ from beanie import PydanticObjectId
 from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
+from httpx._decoders import SUPPORTED_DECODERS
 from redis import Redis
 
 from registry_pkgs.core.consent_store import ConsentStore, PendingConsentStore
 from registry_pkgs.models import ResourceType
-from registry_pkgs.models.a2a_agent import AgentConfig
-from registry_pkgs.models.enums import AgentCoreRuntimeAccessMode, FederationProviderType
+from registry_pkgs.models.enums import AgentCoreRuntimeAccessMode
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
-from registry_pkgs.models.federation import AgentCoreRuntimeJwtConfig
 
 from ..auth.dependencies import CurrentUser, UserContextDict
 from ..auth.oauth.types import ClientBranding
-from ..core.a2a_proxy import A2AProxyClientRegistry
 from ..core.config import settings
 from ..core.exceptions import InternalServerException, UrlElicitationRequiredException
 from ..deps import (
     get_a2a_agent_service,
-    get_a2a_proxy_client_registry,
+    get_a2a_client_registry,
     get_acl_service,
     get_consent_store,
     get_mcp_proxy_client,
@@ -41,6 +39,7 @@ from ..deps import (
 from ..mcpgw.tools.utils import build_authenticated_headers, get_target_url, parse_elicitation_id
 from ..services.a2a_agent_service import A2AAgentService
 from ..services.access_control_service import ACLService
+from ..services.federation.a2a_client_registry import A2AClientRegistry
 from ..services.oauth.oauth_service import MCPOAuthService
 from ..services.server_service import ServerServiceV1
 
@@ -122,6 +121,48 @@ _HOP_BY_HOP_HEADERS = frozenset(
 
 def _sanitize_hop_by_hop_headers(headers: httpx.Headers) -> dict[str, str]:
     return {k: v for k, v in headers.items() if k.lower() not in _HOP_BY_HOP_HEADERS}
+
+
+# Content-codings that httpx's automatic response decoding (`Response.aread`/`aiter_bytes`) is
+# actually able to reverse *in this process*. Derived directly from httpx's own decoder registry
+# rather than a hand-maintained list, because the real answer is environment-dependent: `br`
+# (Brotli) and `zstd` only decode if the optional `brotli`/`brotlicffi` or `zstandard` packages
+# happen to be installed -- `httpx/_decoders.py` builds `SUPPORTED_DECODERS` by probing those
+# imports at module load time and popping the entry when the import fails. A hardcoded list would
+# silently drift from that reality the moment an optional codec dependency is added or removed
+# (e.g. this repo currently has `zstandard` but not `brotli`) -- exactly the class of bug this
+# check exists to prevent. `SUPPORTED_DECODERS` is a private ("_"-prefixed) httpx module, so this
+# is a deliberate, narrow coupling to non-public API: if a future httpx version restructures or
+# removes it, this import fails loudly at process start-up rather than silently going stale. See
+# `test_httpx_decoders_supported_decoders_is_accessible` in the test suite for a canary that fails
+# the moment CI's httpx version breaks this assumption, before it could surface as a prod bug.
+_HTTPX_DECODABLE_CONTENT_ENCODINGS = frozenset(SUPPORTED_DECODERS.keys())
+
+
+def _pop_content_encoding_if_fully_decoded(response_headers: dict[str, str], backend_headers: httpx.Headers) -> None:
+    """
+    Strip `Content-Encoding` from the outgoing response headers, but only when every coding it
+    lists is one that httpx's `aread()`/`aiter_bytes()` actually reversed already.
+
+    We read the backend response body via `aread()`/`aiter_bytes()` above, which auto-decompresses
+    it according to `Content-Encoding` -- but only for codings httpx recognizes (see
+    `_HTTPX_DECODABLE_CONTENT_ENCODINGS`). Any other content-coding token -- a legitimate one httpx
+    just doesn't support (e.g. the RFC 8188 `aes128gcm` encryption coding), or plain Brotli/Zstandard
+    in a deployment missing the optional codec package -- is silently left alone by httpx: it drops
+    the unrecognized token and decodes nothing for it, with no error raised. The bytes we're holding
+    are then still in their original encoded form even though nothing looks wrong.
+
+    If we always stripped `Content-Encoding` regardless, we would forward those still-encoded bytes
+    to our client while the header tells it no further decoding is needed -- a correctness bug, not
+    a cosmetic one (the client would try to parse ciphertext/compressed bytes as plain JSON). So we
+    only strip the header when every listed coding is one we can confirm was actually reversed;
+    otherwise we leave both the header and the (untouched) body exactly as received from upstream,
+    which keeps the two consistent with each other.
+    """
+    encodings = backend_headers.get_list("content-encoding", split_commas=True)
+
+    if encodings and all(value.strip().lower() in _HTTPX_DECODABLE_CONTENT_ENCODINGS for value in encodings):
+        response_headers.pop("content-encoding", None)
 
 
 # MCP handshake methods that fire before a tool-call context exists. When the downstream MCP
@@ -327,6 +368,11 @@ async def proxy_to_mcp_server(
                 # Starlette recalculates Content-Length from the buffered body; the upstream's
                 # value may be stale or wrong (e.g. when upstream mis-reports under chunked encoding).
                 response_headers.pop("content-length", None)
+                # `content_bytes` above came from `aread()`, which already reversed the backend's
+                # Content-Encoding whenever httpx knows how to (see
+                # `_pop_content_encoding_if_fully_decoded`). Forwarding the original header
+                # unchanged in that case would tell our client to decode an already-decoded body.
+                _pop_content_encoding_if_fully_decoded(response_headers, backend_response.headers)
                 return Response(
                     content=content_bytes,
                     status_code=backend_response.status_code,
@@ -339,6 +385,9 @@ async def proxy_to_mcp_server(
             response_headers = _sanitize_hop_by_hop_headers(backend_response.headers)
             # Content-Length cannot be set for a stream of indeterminate length.
             response_headers.pop("content-length", None)
+            # `stream_sse()` below yields from `aiter_bytes()`, which decodes each chunk the same
+            # way `aread()` does above -- so the same Content-Encoding caveat applies here too.
+            _pop_content_encoding_if_fully_decoded(response_headers, backend_response.headers)
             response_headers.update(
                 {
                     "Cache-Control": "no-cache",
@@ -459,6 +508,11 @@ async def _forward_a2a(
                 # value may be stale or wrong (e.g. AgentCore adds Transfer-Encoding: chunked
                 # to complete JSON responses, causing the reported Content-Length to be unreliable).
                 response_headers.pop("content-length", None)
+                # `content_bytes` above came from `aread()`, which already reversed the backend's
+                # Content-Encoding whenever httpx knows how to (see
+                # `_pop_content_encoding_if_fully_decoded`). Forwarding the original header
+                # unchanged in that case would tell our client to decode an already-decoded body.
+                _pop_content_encoding_if_fully_decoded(response_headers, backend_response.headers)
                 return Response(
                     content=content_bytes,
                     status_code=backend_response.status_code,
@@ -471,6 +525,9 @@ async def _forward_a2a(
             response_headers = _sanitize_hop_by_hop_headers(backend_response.headers)
             # Content-Length cannot be set for a stream of indeterminate length.
             response_headers.pop("content-length", None)
+            # `stream_sse()` below yields from `aiter_bytes()`, which decodes each chunk the same
+            # way `aread()` does above -- so the same Content-Encoding caveat applies here too.
+            _pop_content_encoding_if_fully_decoded(response_headers, backend_response.headers)
             response_headers.update(
                 {
                     "Cache-Control": "no-cache",
@@ -513,24 +570,6 @@ async def _forward_a2a(
         return JSONResponse(status_code=502, content={"error": "Failed to communicate with agent"})
 
 
-def _is_agentcore_jwt(
-    agent_config: AgentConfig | None,
-    federation_metadata: dict[str, Any] | None,
-) -> bool:
-    fed = federation_metadata or {}
-    return (
-        agent_config is not None
-        and agent_config.runtimeAccess is not None
-        and fed.get("providerType") == FederationProviderType.AWS_AGENTCORE
-    )
-
-
-def _get_agentcore_runtime_jwt_config(agent_config: AgentConfig | None) -> AgentCoreRuntimeJwtConfig | None:
-    if agent_config is None or agent_config.runtimeAccess is None:
-        return None
-    return agent_config.runtimeAccess.jwt
-
-
 # Route 1: JSON-RPC binding — bare base path, POST only
 @router.post("/a2a/{agent_path}")
 async def jsonrpc_proxy(
@@ -539,7 +578,7 @@ async def jsonrpc_proxy(
     user_context: CurrentUser,
     a2a_agent_service: A2AAgentService = Depends(get_a2a_agent_service),
     acl_service: ACLService = Depends(get_acl_service),
-    proxy_client_registry: A2AProxyClientRegistry = Depends(get_a2a_proxy_client_registry),
+    a2a_client_registry: A2AClientRegistry = Depends(get_a2a_client_registry),
 ):
     try:
         user_id = user_context.get("user_id")
@@ -582,14 +621,10 @@ async def jsonrpc_proxy(
         else:
             return _jsonrpc_a2a_error_response(-32603, f"No invocation URL available for agent '{agent_path}'")
 
-        agentcore_jwt = _is_agentcore_jwt(agent.config, agent.federationMetadata)
-        proxy_client = proxy_client_registry.get(
-            agent_path,
-            agentcore_jwt=agentcore_jwt,
-            runtime_jwt_config=_get_agentcore_runtime_jwt_config(agent.config) if agentcore_jwt else None,
-        )
+        proxy_client = await a2a_client_registry.get_client(agent)
 
-        logger.info(f"A2A JSON-RPC proxy: agent={agent_path} agentcore={agentcore_jwt} {base_url}")
+        provider = (agent.federationMetadata or {}).get("providerType", "plain")
+        logger.info(f"A2A JSON-RPC proxy: agent={agent_path} provider={provider} {base_url}")
 
         return await _forward_a2a(request, base_url, proxy_client, agent_path, is_jsonrpc=True)
     except Exception:
@@ -606,7 +641,7 @@ async def http_json_proxy(
     user_context: CurrentUser,
     a2a_agent_service: A2AAgentService = Depends(get_a2a_agent_service),
     acl_service: ACLService = Depends(get_acl_service),
-    proxy_client_registry: A2AProxyClientRegistry = Depends(get_a2a_proxy_client_registry),
+    a2a_client_registry: A2AClientRegistry = Depends(get_a2a_client_registry),
 ):
     try:
         user_id = user_context.get("user_id")
@@ -652,18 +687,12 @@ async def http_json_proxy(
                 content={"error": f"No invocation URL available for agent '{agent_path}'"},
             )
 
-        agentcore_jwt = _is_agentcore_jwt(agent.config, agent.federationMetadata)
-        proxy_client = proxy_client_registry.get(
-            agent_path,
-            agentcore_jwt=agentcore_jwt,
-            runtime_jwt_config=_get_agentcore_runtime_jwt_config(agent.config) if agentcore_jwt else None,
-        )
+        proxy_client = await a2a_client_registry.get_client(agent)
 
         target_url = base_url.rstrip("/") + "/" + http_json_path.lstrip("/")
 
-        logger.info(
-            f"A2A HTTP+JSON proxy: agent={agent_path} path=/{http_json_path} agentcore={agentcore_jwt} {target_url}"
-        )
+        provider = (agent.federationMetadata or {}).get("providerType", "plain")
+        logger.info(f"A2A HTTP+JSON proxy: agent={agent_path} provider={provider} path=/{http_json_path} {target_url}")
 
         return await _forward_a2a(request, target_url, proxy_client, agent_path)
     except Exception:

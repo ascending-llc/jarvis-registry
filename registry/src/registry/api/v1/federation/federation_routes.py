@@ -8,13 +8,14 @@ from fastapi import status as http_status
 
 from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.models import PrincipalType
-from registry_pkgs.models.enums import FederationStateMachine, FederationStatus, RoleBits
+from registry_pkgs.models.enums import FederationProviderType, FederationStateMachine, FederationStatus, RoleBits
 from registry_pkgs.models.extended_access_role import RegistryResourceType
 from registry_pkgs.models.federation_sync_job import FederationSyncJob
 
 from ....auth.dependencies import CurrentUser
 from ....core.telemetry_decorators import track_registry_operation
 from ....deps import (
+    get_a2a_client_registry,
     get_acl_service,
     get_federation_crud_service,
     get_federation_job_service,
@@ -39,6 +40,7 @@ from ....schemas.federation_api_schemas import (
 )
 from ....schemas.server_api_schemas import PaginationMetadata
 from ....services.access_control_service import ACLService
+from ....services.federation.a2a_client_registry import A2AClientRegistry
 from ....services.federation_sync_service import run_federation_sync_background
 
 logger = logging.getLogger(__name__)
@@ -478,6 +480,7 @@ async def update_federation(
     federation_crud_service=Depends(get_federation_crud_service),
     federation_sync_service=Depends(get_federation_sync_service),
     acl_service: ACLService = Depends(get_acl_service),
+    a2a_client_registry: A2AClientRegistry = Depends(get_a2a_client_registry),
 ):
     """
     Update a federation.
@@ -506,6 +509,8 @@ async def update_federation(
         )
         if job is not None:
             logger.info(f"Updated federation {federation_id}: {federation},job: {job}")
+        if federation.providerType == FederationProviderType.AZURE_AI_FOUNDRY:
+            await a2a_client_registry.invalidate_azure_federation(federation.id)
     except ValueError as exc:
         logger.error(f"Failed to update federation {federation_id}: {exc}")
         _raise_federation_value_error(exc)

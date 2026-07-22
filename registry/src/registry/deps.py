@@ -8,11 +8,11 @@ from registry_pkgs.workflows.runner import WorkflowRunner
 
 from .auth.oauth.reconnection import OAuthReconnectionManager
 from .container import RegistryContainer
-from .core.a2a_proxy import A2AProxyClientRegistry
 from .core.session_store import SessionStore
 from .health.service import HealthMonitoringService
 from .services.a2a_agent_service import A2AAgentService
 from .services.access_control_service import ACLService
+from .services.federation.a2a_client_registry import A2AClientRegistry
 from .services.federation_crud_service import FederationCrudService
 from .services.federation_job_service import FederationJobService
 from .services.federation_service import FederationService
@@ -110,8 +110,8 @@ def get_federation_sync_service(container: RegistryContainer = Depends(get_conta
     return container.federation_sync_service
 
 
-def get_a2a_proxy_client_registry(container: RegistryContainer = Depends(get_container)) -> A2AProxyClientRegistry:
-    return container.a2a_proxy_client_registry
+def get_a2a_client_registry(container: RegistryContainer = Depends(get_container)) -> A2AClientRegistry:
+    return container.a2a_client_registry
 
 
 def get_redis_client(container: RegistryContainer = Depends(get_container)) -> Redis:
