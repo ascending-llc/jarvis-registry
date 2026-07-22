@@ -3,19 +3,21 @@ import math
 from typing import NoReturn
 
 from beanie import PydanticObjectId
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response
 from fastapi import status as http_status
 
 from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.models import PrincipalType
 from registry_pkgs.models.enums import FederationStateMachine, FederationStatus, RoleBits
 from registry_pkgs.models.extended_access_role import RegistryResourceType
+from registry_pkgs.models.federation_sync_job import FederationSyncJob
 
 from ....auth.dependencies import CurrentUser
 from ....core.telemetry_decorators import track_registry_operation
 from ....deps import (
     get_acl_service,
     get_federation_crud_service,
+    get_federation_job_service,
     get_federation_sync_service,
 )
 from ....schemas.acl_schema import ResourcePermissions
@@ -37,6 +39,7 @@ from ....schemas.federation_api_schemas import (
 )
 from ....schemas.server_api_schemas import PaginationMetadata
 from ....services.access_control_service import ACLService
+from ....services.federation_sync_service import run_federation_sync_background
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +98,7 @@ def _raise_federation_value_error(exc: ValueError) -> NoReturn:
     ) from exc
 
 
-def _to_job_response(job) -> FederationSyncJobResponse:
+def _to_job_response(job: FederationSyncJob) -> FederationSyncJobResponse:
     return FederationSyncJobResponse(
         id=str(job.id),
         federationId=str(job.federationId),
@@ -104,6 +107,7 @@ def _to_job_response(job) -> FederationSyncJobResponse:
         phase=job.phase.value if hasattr(job.phase, "value") else str(job.phase),
         startedAt=job.startedAt,
         finishedAt=job.finishedAt,
+        error=job.error,
     )
 
 
@@ -417,6 +421,54 @@ async def get_federation(
         ) from exc
 
 
+@router.get("/{federation_id}/jobs/{job_id}", response_model=FederationSyncJobResponse)
+@track_registry_operation("read", resource_type="federation_job")
+async def get_federation_sync_job(
+    federation_id: str,
+    job_id: str,
+    user_context: CurrentUser,
+    federation_crud_service=Depends(get_federation_crud_service),
+    federation_job_service=Depends(get_federation_job_service),
+    acl_service: ACLService = Depends(get_acl_service),
+):
+    """Return one federation sync job for status polling."""
+    try:
+        federation = await _get_required_federation(federation_id, federation_crud_service)
+        await acl_service.check_user_permission(
+            user_id=PydanticObjectId(user_context.get("user_id")),
+            resource_type=RegistryResourceType.FEDERATION,
+            resource_id=federation.id,
+            required_permission="VIEW",
+        )
+        job = await federation_job_service.get_job(
+            job_id,
+            federation_id=federation.id,
+        )
+        if job is None:
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail=create_error_detail(ErrorCode.NOT_FOUND, "Sync job not found"),
+            )
+        return _to_job_response(job)
+    except HTTPException:
+        logger.exception(
+            "Failed to get federation sync job %s for federation %s due to HTTP exception",
+            job_id,
+            federation_id,
+        )
+        raise
+    except Exception as exc:
+        logger.exception(
+            "Unexpected error while getting federation sync job %s for federation %s",
+            job_id,
+            federation_id,
+        )
+        raise HTTPException(
+            status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=create_error_detail(ErrorCode.INTERNAL_ERROR, "Internal server error"),
+        ) from exc
+
+
 @router.put("/{federation_id}", response_model=FederationDetailResponse)
 @track_registry_operation("update", resource_type="federation")
 async def update_federation(
@@ -478,12 +530,18 @@ def _validate_sync_provider_config(federation_crud_service, provider_type, provi
         _raise_federation_value_error(exc)
 
 
-@router.post("/{federation_id}/sync", response_model=FederationSyncJobResponse | FederationSyncDryRunResponse)
+@router.post(
+    "/{federation_id}/sync",
+    response_model=FederationSyncJobResponse | FederationSyncDryRunResponse,
+    status_code=http_status.HTTP_202_ACCEPTED,
+)
 @track_registry_operation("sync", resource_type="federation")
 async def sync_federation(
     federation_id: str,
     data: FederationSyncRequest,
     user_context: CurrentUser,
+    response: Response,
+    background_tasks: BackgroundTasks,
     federation_crud_service=Depends(get_federation_crud_service),
     federation_sync_service=Depends(get_federation_sync_service),
     acl_service: ACLService = Depends(get_acl_service),
@@ -555,11 +613,19 @@ async def sync_federation(
                 reason=data.reason,
                 triggered_by=triggered_by,
             )
+            response.status_code = http_status.HTTP_200_OK
             return _to_dry_run_response(result)
-        job = await federation_sync_service.start_manual_sync(
+        job, author_id = await federation_sync_service.create_manual_sync_job(
             federation=federation,
             reason=data.reason,
             triggered_by=triggered_by,
+        )
+        background_tasks.add_task(
+            run_federation_sync_background,
+            federation_sync_service=federation_sync_service,
+            federation=federation,
+            job=job,
+            author_id=author_id,
         )
         return _to_job_response(job)
     except ValueError as exc:
