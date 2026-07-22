@@ -1,6 +1,7 @@
 from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 from a2a.client import ClientConfig
 from a2a.types import (
@@ -732,12 +733,13 @@ async def test_call_a2a_reuses_agentcore_session_header_across_polling_requests(
         [(submitted, None)],
         get_task_responses=[completed],
     )
+    httpx_client = httpx.AsyncClient()
 
     with (
         patch("registry_pkgs.workflows.a2a_client.ClientFactory", return_value=mock_factory),
         patch("registry_pkgs.workflows.a2a_client.asyncio.sleep", new_callable=AsyncMock),
     ):
-        result = await call_a2a(agent, "test")
+        result = await call_a2a(agent, "test", httpx_client=httpx_client)
 
     assert result.success is True
     send_context = mock_client.send_message.call_args.kwargs["context"]
@@ -851,6 +853,7 @@ def test_ensure_a2a_result_fields_leaves_message_result_untouched():
 async def test_call_a2a_tolerates_azure_foundry_missing_artifact_id():
     """Azure Foundry returns Task artifacts without artifact_id; the call must succeed."""
     agent = _azure_foundry_agent()
+    httpx_client = httpx.AsyncClient()
 
     raw_response = {
         "jsonrpc": "2.0",
@@ -871,7 +874,7 @@ async def test_call_a2a_tolerates_azure_foundry_missing_artifact_id():
             return_value=raw_response,
         ) as send_request_spy,
     ):
-        result = await call_a2a(agent, "test")
+        result = await call_a2a(agent, "test", httpx_client=httpx_client)
 
     send_request_spy.assert_awaited_once()
     assert result.success is True

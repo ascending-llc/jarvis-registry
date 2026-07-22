@@ -402,6 +402,14 @@ async def call_a2a(
             error=f"Unsupported transport type '{transport_type}' for agent {agent_name!r}. Supported: {sorted(_PROTOCOL_MAP)}",
         )
 
+    if httpx_client is None and (is_agentcore_runtime(agent) or is_azure_foundry_runtime(agent)):
+        provider = (agent.federationMetadata or {}).get("providerType", "unknown")
+        raise ValueError(
+            f"call_a2a: httpx_client is required for federated agent {agent.path!r} "
+            f"(providerType={provider!r}). Callers must obtain a pre-authenticated client "
+            "from A2AClientRegistry before invoking a federated agent."
+        )
+
     logger.debug(
         "→ calling A2A agent %r  transport=%s  url=%s  prompt=%r",
         agent_name,

@@ -564,7 +564,8 @@ async def jsonrpc_proxy(
 
         proxy_client = await a2a_client_registry.get_client(agent)
 
-        logger.info(f"A2A JSON-RPC proxy: agent={agent_path} {base_url}")
+        provider = (agent.federationMetadata or {}).get("providerType", "plain")
+        logger.info(f"A2A JSON-RPC proxy: agent={agent_path} provider={provider} {base_url}")
 
         return await _forward_a2a(request, base_url, proxy_client, agent_path, is_jsonrpc=True)
     except Exception:
@@ -631,7 +632,8 @@ async def http_json_proxy(
 
         target_url = base_url.rstrip("/") + "/" + http_json_path.lstrip("/")
 
-        logger.info(f"A2A HTTP+JSON proxy: agent={agent_path} path=/{http_json_path} {target_url}")
+        provider = (agent.federationMetadata or {}).get("providerType", "plain")
+        logger.info(f"A2A HTTP+JSON proxy: agent={agent_path} provider={provider} path=/{http_json_path} {target_url}")
 
         return await _forward_a2a(request, target_url, proxy_client, agent_path)
     except Exception:

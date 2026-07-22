@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -59,7 +60,7 @@ async def test_get_client_cache_hit_reuses_client_without_db_or_auth_rebuild():
     federation.id = federation_id
     cache = AzureFoundryClientCache()
     federation_get = AsyncMock(return_value=federation)
-    auth_factory = MagicMock(return_value=MagicMock(close=AsyncMock()))
+    auth_factory = MagicMock()
 
     with (
         patch("registry.services.federation.azure_foundry_proxy_auth.Federation.get", new=federation_get),
@@ -157,3 +158,74 @@ async def test_wrong_provider_type_federation_raises():
     ):
         with pytest.raises(ValueError, match="is not azure_ai_foundry"):
             await cache.get_client(_agent(federation_id=federation_id))
+
+
+@pytest.mark.asyncio
+async def test_concurrent_get_client_creates_only_one_client():
+    """Two concurrent calls for the same federation must produce the same client.
+
+    Without the asyncio.Lock fix, both coroutines would pass the cached=None
+    check concurrently and each create their own httpx.AsyncClient, leaking the
+    first one. With the lock, only one client is ever created.
+    """
+    federation_id = PydanticObjectId()
+    federation = _federation(FederationProviderType.AZURE_AI_FOUNDRY.value)
+    federation.id = federation_id
+    build_count = 0
+
+    async def slow_federation_get(federation_id):
+        nonlocal build_count
+        build_count += 1
+        # yield control so the second coroutine also enters get_client before
+        # the first one finishes building the client
+        await asyncio.sleep(0)
+        return federation
+
+    cache = AzureFoundryClientCache()
+    auth_factory = MagicMock()
+    auth_factory.return_value.close = AsyncMock()
+    with (
+        patch(
+            "registry.services.federation.azure_foundry_proxy_auth.Federation.get",
+            side_effect=slow_federation_get,
+        ),
+        patch("registry.services.federation.azure_foundry_proxy_auth.AzureFoundryAuthService", new=auth_factory),
+    ):
+        client_a, client_b = await asyncio.gather(
+            cache.get_client(_agent(federation_id=federation_id)),
+            cache.get_client(_agent(federation_id=federation_id)),
+        )
+
+    try:
+        assert client_a is client_b, "concurrent calls must return the same cached client"
+        assert build_count == 1, f"Federation.get must be called exactly once, got {build_count}"
+    finally:
+        await cache.close()
+
+
+@pytest.mark.asyncio
+async def test_invalidate_clears_lock_allowing_fresh_build():
+    federation_id = PydanticObjectId()
+    federation = _federation(FederationProviderType.AZURE_AI_FOUNDRY.value)
+    federation.id = federation_id
+    cache = AzureFoundryClientCache()
+    auth_factory = MagicMock()
+    auth_factory.return_value.close = AsyncMock()
+
+    with (
+        patch(
+            "registry.services.federation.azure_foundry_proxy_auth.Federation.get",
+            new=AsyncMock(return_value=federation),
+        ),
+        patch("registry.services.federation.azure_foundry_proxy_auth.AzureFoundryAuthService", new=auth_factory),
+    ):
+        first_client = await cache.get_client(_agent(federation_id=federation_id))
+        cache.invalidate(federation_id)
+        second_client = await cache.get_client(_agent(federation_id=federation_id))
+
+    try:
+        assert second_client is not first_client
+        assert federation_id not in cache._locks or not cache._locks[federation_id].locked()
+    finally:
+        await first_client.aclose()
+        await cache.close()

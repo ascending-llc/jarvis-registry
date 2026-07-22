@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 
@@ -36,6 +37,7 @@ class AzureFoundryClientCache:
 
     def __init__(self):
         self._dict: dict[PydanticObjectId, httpx.AsyncClient] = {}
+        self._locks: dict[PydanticObjectId, asyncio.Lock] = {}
 
     async def get_client(self, agent: A2AAgent) -> httpx.AsyncClient:
         federation_id = agent.federationRefId
@@ -46,32 +48,41 @@ class AzureFoundryClientCache:
         if cached is not None:
             return cached
 
-        federation = await Federation.get(federation_id)
-        if federation is None:
-            raise ValueError(f"Federation {federation_id} not found")
+        if federation_id not in self._locks:
+            self._locks[federation_id] = asyncio.Lock()
+        async with self._locks[federation_id]:
+            cached = self._dict.get(federation_id)
+            if cached is not None:
+                return cached
 
-        if federation.providerType != FederationProviderType.AZURE_AI_FOUNDRY:
-            raise ValueError(
-                f"Federation {federation_id} providerType={federation.providerType!r} is not azure_ai_foundry"
+            federation = await Federation.get(federation_id)
+            if federation is None:
+                raise ValueError(f"Federation {federation_id} not found")
+
+            if federation.providerType != FederationProviderType.AZURE_AI_FOUNDRY:
+                raise ValueError(
+                    f"Federation {federation_id} providerType={federation.providerType!r} is not azure_ai_foundry"
+                )
+
+            cfg = AzureAiFoundryProviderConfig(**(federation.providerConfig or {}))
+            auth_service = AzureFoundryAuthService(cfg)
+            client = httpx.AsyncClient(
+                auth=AzureEntraAuth(auth_service),
+                timeout=httpx.Timeout(connect=30.0, read=None, write=60.0, pool=30.0),
+                limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
             )
-
-        cfg = AzureAiFoundryProviderConfig(**(federation.providerConfig or {}))
-        auth_service = AzureFoundryAuthService(cfg)
-        client = httpx.AsyncClient(
-            auth=AzureEntraAuth(auth_service),
-            timeout=httpx.Timeout(connect=30.0, read=None, write=60.0, pool=30.0),
-            limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
-        )
-        self._dict[federation_id] = client
-        return client
+            self._dict[federation_id] = client
+            return client
 
     def invalidate(self, federation_id: PydanticObjectId) -> None:
         """Drop a federation's cached client so the next call rebuilds from fresh config."""
         self._dict.pop(federation_id, None)
+        self._locks.pop(federation_id, None)
 
     async def close(self) -> None:
         clients = list(self._dict.values())
         self._dict.clear()
+        self._locks.clear()
 
         for client in clients:
             auth = client.auth
