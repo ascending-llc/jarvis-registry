@@ -60,6 +60,7 @@ const FederationCard: React.FC<FederationCardProps> = ({ federation }) => {
 
   const syncView = getFederationSyncViewState({
     serverStatus: federation.syncStatus,
+    syncMessage: federation.syncMessage,
     hasServerJobId: Boolean(federation.lastSync?.jobId),
     isStarting: isStartingSync,
     isPolling,
@@ -160,6 +161,7 @@ const FederationCard: React.FC<FederationCardProps> = ({ federation }) => {
         <div className='flex items-center gap-2'>
           {/* Status Badge */}
           <div
+            title={syncView.detail ?? undefined}
             className={`flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-md ${
               syncView.tone === 'info'
                 ? 'bg-[var(--jarvis-info-soft)] text-[var(--jarvis-info-text)]'

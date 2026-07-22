@@ -153,6 +153,7 @@ const FederationRegistryOrEdit: React.FC = () => {
 
   const syncView = getFederationSyncViewState({
     serverStatus: federation?.syncStatus,
+    syncMessage: federation?.syncMessage,
     hasServerJobId: Boolean(federation?.lastSync?.jobId),
     isStarting: isStartingSync,
     isPolling,
@@ -502,7 +503,11 @@ const FederationRegistryOrEdit: React.FC = () => {
               {isReadOnly && (
                 <>
                   {syncView.kind !== 'idle' && (
-                    <span className='self-center text-sm text-[var(--jarvis-muted)]' aria-live='polite'>
+                    <span
+                      className='self-center text-sm text-[var(--jarvis-muted)]'
+                      aria-live='polite'
+                      title={syncView.detail ?? undefined}
+                    >
                       {syncView.label}
                     </span>
                   )}

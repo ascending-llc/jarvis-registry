@@ -9,7 +9,7 @@ const MAX_POLL_DURATION_MS = 30 * 60 * 1000;
 
 const PHASE_LABELS: Record<JobPhase, string> = {
   queued: 'Starting sync...',
-  discovering: 'Starting sync...',
+  discovering: 'Syncing...',
   applying: 'Applying changes...',
   syncing_vectors: 'Updating search index...',
   completed: 'Sync completed',
@@ -24,6 +24,7 @@ export type FederationSyncAction = 'start' | 'retry' | 'refresh' | 'none';
 export interface FederationSyncViewState {
   kind: FederationSyncViewKind;
   label: string;
+  detail: string | null;
   tone: 'info' | 'success' | 'error';
   isBusy: boolean;
   action: FederationSyncAction;
@@ -32,6 +33,7 @@ export interface FederationSyncViewState {
 
 interface FederationSyncViewStateInput {
   serverStatus?: SyncStatus;
+  syncMessage?: string | null;
   hasServerJobId: boolean;
   isStarting: boolean;
   isPolling: boolean;
@@ -67,6 +69,7 @@ export const getFederationSyncPollingErrorLabel = (error: FederationSyncPollingE
 
 export const getFederationSyncViewState = ({
   serverStatus,
+  syncMessage,
   hasServerJobId,
   isStarting,
   isPolling,
@@ -77,6 +80,7 @@ export const getFederationSyncViewState = ({
     return {
       kind: 'unavailable',
       label: getFederationSyncPollingErrorLabel(pollingError),
+      detail: null,
       tone: 'error',
       isBusy: false,
       action: 'retry',
@@ -88,6 +92,7 @@ export const getFederationSyncViewState = ({
     return {
       kind: 'starting',
       label: 'Starting sync...',
+      detail: null,
       tone: 'info',
       isBusy: true,
       action: 'none',
@@ -99,6 +104,7 @@ export const getFederationSyncViewState = ({
     return {
       kind: 'running',
       label: getFederationSyncPhaseLabel(jobStatus?.phase),
+      detail: null,
       tone: 'info',
       isBusy: true,
       action: 'none',
@@ -110,6 +116,7 @@ export const getFederationSyncViewState = ({
     return {
       kind: 'success',
       label: 'Sync completed',
+      detail: null,
       tone: 'success',
       isBusy: false,
       action: 'start',
@@ -121,6 +128,7 @@ export const getFederationSyncViewState = ({
     return {
       kind: 'failed',
       label: 'Sync failed',
+      detail: jobStatus.error || syncMessage || null,
       tone: 'error',
       isBusy: false,
       action: 'start',
@@ -133,6 +141,7 @@ export const getFederationSyncViewState = ({
     return {
       kind: 'unavailable',
       label: 'Sync task information unavailable',
+      detail: null,
       tone: 'error',
       isBusy: false,
       action: 'refresh',
@@ -144,6 +153,7 @@ export const getFederationSyncViewState = ({
     return {
       kind: 'running',
       label: 'Syncing...',
+      detail: null,
       tone: 'info',
       isBusy: true,
       action: 'none',
@@ -155,6 +165,7 @@ export const getFederationSyncViewState = ({
     return {
       kind: 'failed',
       label: 'Error',
+      detail: syncMessage || null,
       tone: 'error',
       isBusy: false,
       action: 'start',
@@ -165,6 +176,7 @@ export const getFederationSyncViewState = ({
   return {
     kind: 'idle',
     label: 'Connected',
+    detail: null,
     tone: 'success',
     isBusy: false,
     action: 'start',
