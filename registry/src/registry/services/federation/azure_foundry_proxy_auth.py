@@ -78,14 +78,21 @@ class AzureFoundryClientCache:
 
         This prevents connection/credential leaks when a federation is updated
         and its pre-authenticated client must be rebuilt from fresh config.
+
+        Coordinates through the same per-federation lock `get_client` uses, so
+        this always waits for an in-flight build to finish (evicting the client
+        it just stored, not a stale one) before it clears the cache, and can
+        never race the next `get_client` call into building on a second,
+        independent lock.
         """
-        self._locks.pop(federation_id, None)
-        client = self._dict.pop(federation_id, None)
-        if client is not None:
-            auth = client.auth
-            await client.aclose()
-            if isinstance(auth, AzureEntraAuth):
-                await auth.close()
+        lock = self._locks.setdefault(federation_id, asyncio.Lock())
+        async with lock:
+            client = self._dict.pop(federation_id, None)
+            if client is not None:
+                auth = client.auth
+                await client.aclose()
+                if isinstance(auth, AzureEntraAuth):
+                    await auth.close()
 
     async def close(self) -> None:
         clients = list(self._dict.values())

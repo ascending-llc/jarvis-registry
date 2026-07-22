@@ -7,7 +7,7 @@ from beanie import PydanticObjectId
 
 from registry.core.a2a_proxy import A2AProxyClientRegistry
 from registry_pkgs.models.a2a_agent import A2AAgent, AgentConfig
-from registry_pkgs.models.enums import FederationProviderType
+from registry_pkgs.models.enums import AgentCoreRuntimeAccessMode, FederationProviderType
 from registry_pkgs.models.federation import AgentCoreRuntimeJwtConfig
 from registry_pkgs.workflows.a2a_client import is_azure_foundry_runtime
 
@@ -22,6 +22,7 @@ def _is_agentcore_jwt(
     return (
         agent_config is not None
         and agent_config.runtimeAccess is not None
+        and agent_config.runtimeAccess.mode == AgentCoreRuntimeAccessMode.JWT
         and fed.get("providerType") == FederationProviderType.AWS_AGENTCORE
     )
 

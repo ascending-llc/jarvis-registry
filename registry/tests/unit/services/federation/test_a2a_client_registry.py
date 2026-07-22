@@ -7,7 +7,7 @@ import pytest
 from beanie import PydanticObjectId
 
 from registry.services.federation.a2a_client_registry import A2AClientRegistry
-from registry_pkgs.models.enums import FederationProviderType
+from registry_pkgs.models.enums import AgentCoreRuntimeAccessMode, FederationProviderType
 from registry_pkgs.models.federation import AgentCoreRuntimeJwtConfig
 
 
@@ -50,7 +50,7 @@ async def test_get_client_dispatches_agentcore_jwt_to_existing_registry():
     agentcore_registry.get.return_value = "agentcore-client"
     registry = A2AClientRegistry(agentcore_registry=agentcore_registry, azure_client_cache=azure_cache)
     jwt_config = AgentCoreRuntimeJwtConfig(audiences=["jarvis-services"])
-    runtime_access = SimpleNamespace(jwt=jwt_config)
+    runtime_access = SimpleNamespace(jwt=jwt_config, mode=AgentCoreRuntimeAccessMode.JWT)
     agent = _agent(provider=FederationProviderType.AWS_AGENTCORE.value, runtime_access=runtime_access)
 
     client = await registry.get_client(agent)
