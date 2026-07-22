@@ -8,6 +8,8 @@ export type JobType = 'full_sync' | 'config_resync' | 'force_sync' | 'delete_syn
 
 export type JobStatus = 'pending' | 'syncing' | 'success' | 'failed';
 
+export type JobPhase = 'queued' | 'discovering' | 'applying' | 'syncing_vectors' | 'completed' | 'failed';
+
 export interface ProviderConfig {
   region?: string;
   assumeRoleArn?: string;
@@ -46,6 +48,21 @@ export interface FederationJob {
   startedAt: string;
   finishedAt: string;
   summary: SyncSummary;
+}
+
+export interface FederationSyncJobStatus {
+  id: string;
+  federationId: string;
+  jobType: JobType;
+  status: JobStatus;
+  phase: JobPhase;
+  startedAt: string | null;
+  finishedAt: string | null;
+  error: string | null;
+}
+
+export interface FederationSyncDryRunResult {
+  summary: Pick<SyncSummary, 'discoveredMcpServers' | 'discoveredAgents'>;
 }
 
 export type FederationPermissionType = {

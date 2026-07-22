@@ -1,6 +1,6 @@
 import { ArrowPathIcon, PencilSquareIcon } from '@heroicons/react/24/outline';
 import type React from 'react';
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { CgBrowser } from 'react-icons/cg';
 import { FaAws, FaMicrosoft } from 'react-icons/fa';
 import { FiClock, FiTag } from 'react-icons/fi';
@@ -9,6 +9,11 @@ import { useNavigate } from 'react-router-dom';
 import IconButton from '@/components/IconButton';
 import { useGlobal } from '@/contexts/GlobalContext';
 import { useServer } from '@/contexts/ServerContext';
+import {
+  getFederationSyncErrorMessage,
+  getFederationSyncViewState,
+  useFederationSyncPolling,
+} from '@/hooks/useFederationSyncPolling';
 import SERVICES from '@/services';
 import type { Federation } from '@/services/federation/type';
 import UTILS from '@/utils';
@@ -21,31 +26,84 @@ const FederationCard: React.FC<FederationCardProps> = ({ federation }) => {
   const navigate = useNavigate();
   const { showToast } = useGlobal();
   const { refreshFederationData } = useServer();
+  const [isStartingSync, setIsStartingSync] = useState(false);
+  const syncRequestPendingRef = useRef(false);
+  const syncRequestGenerationRef = useRef(0);
 
-  const [isSyncing, setIsSyncing] = useState(
-    federation.syncStatus === 'syncing' || federation.syncStatus === 'pending',
+  const { jobStatus, isPolling, pollingError, startPolling, retryPolling, stopPolling } = useFederationSyncPolling(
+    job => {
+      if (job.status === 'success') {
+        showToast?.('Sync completed successfully', 'success');
+      } else {
+        showToast?.(job.error || 'Sync failed', 'error');
+      }
+      refreshFederationData();
+    },
   );
+
+  useEffect(() => {
+    const jobId = federation.lastSync?.jobId;
+    if (jobId && (federation.syncStatus === 'pending' || federation.syncStatus === 'syncing')) {
+      startPolling(federation.id, jobId);
+      return;
+    }
+    stopPolling();
+  }, [federation.id, federation.lastSync?.jobId, federation.syncStatus, startPolling, stopPolling]);
+
+  useEffect(
+    () => () => {
+      syncRequestGenerationRef.current += 1;
+      syncRequestPendingRef.current = false;
+    },
+    [],
+  );
+
+  const syncView = getFederationSyncViewState({
+    serverStatus: federation.syncStatus,
+    hasServerJobId: Boolean(federation.lastSync?.jobId),
+    isStarting: isStartingSync,
+    isPolling,
+    pollingError,
+    jobStatus,
+  });
 
   const handleSyncClick = useCallback(
     async (e: React.MouseEvent) => {
       e.stopPropagation();
-      if (isSyncing) return;
+      if (syncRequestPendingRef.current || isPolling) return;
 
-      setIsSyncing(true);
+      if (syncView.action === 'retry') {
+        retryPolling();
+        return;
+      }
+      if (syncView.action === 'refresh') {
+        void refreshFederationData();
+        return;
+      }
+      if (syncView.action === 'none') return;
+
+      syncRequestPendingRef.current = true;
+      const syncRequestGeneration = ++syncRequestGenerationRef.current;
+      setIsStartingSync(true);
       showToast?.('Sync started in background', 'info');
 
       try {
-        await SERVICES.FEDERATION.syncFederation(federation.id, undefined, { timeout: 120000 });
-        showToast?.('Sync completed successfully', 'success');
-        refreshFederationData();
-      } catch (err: any) {
-        console.error('Failed to sync federation:', err);
-        showToast?.(err?.detail?.message || 'Failed to sync', 'error');
+        const job = await SERVICES.FEDERATION.syncFederation(federation.id);
+        if (syncRequestGeneration !== syncRequestGenerationRef.current) return;
+        if (!('id' in job)) throw new Error('Failed to start sync');
+        startPolling(federation.id, job.id);
+      } catch (error: unknown) {
+        if (syncRequestGeneration !== syncRequestGenerationRef.current) return;
+        console.error('Failed to sync federation:', error);
+        showToast?.(getFederationSyncErrorMessage(error, 'Failed to start sync'), 'error');
       } finally {
-        setIsSyncing(false);
+        if (syncRequestGeneration === syncRequestGenerationRef.current) {
+          syncRequestPendingRef.current = false;
+          setIsStartingSync(false);
+        }
       }
     },
-    [federation.id, isSyncing, refreshFederationData, showToast],
+    [federation.id, isPolling, refreshFederationData, retryPolling, showToast, startPolling, syncView.action],
   );
 
   const handleEditClick = useCallback(
@@ -103,27 +161,23 @@ const FederationCard: React.FC<FederationCardProps> = ({ federation }) => {
           {/* Status Badge */}
           <div
             className={`flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-md ${
-              isSyncing || federation.syncStatus === 'syncing' || federation.syncStatus === 'pending'
+              syncView.tone === 'info'
                 ? 'bg-[var(--jarvis-info-soft)] text-[var(--jarvis-info-text)]'
-                : federation.syncStatus === 'success' || federation.syncStatus === 'idle'
-                  ? 'bg-[var(--jarvis-success-soft)] text-[var(--jarvis-success-text)]'
-                  : 'bg-[var(--jarvis-danger-soft)] text-[var(--jarvis-danger-text)]'
+                : syncView.tone === 'error'
+                  ? 'bg-[var(--jarvis-danger-soft)] text-[var(--jarvis-danger-text)]'
+                  : 'bg-[var(--jarvis-success-soft)] text-[var(--jarvis-success-text)]'
             }`}
           >
             <span
               className={`w-1.5 h-1.5 rounded-full ${
-                isSyncing || federation.syncStatus === 'syncing' || federation.syncStatus === 'pending'
+                syncView.tone === 'info'
                   ? 'bg-[var(--jarvis-info-text)] animate-pulse'
-                  : federation.syncStatus === 'success' || federation.syncStatus === 'idle'
-                    ? 'bg-[var(--jarvis-success)]'
-                    : 'bg-[var(--jarvis-danger)]'
+                  : syncView.tone === 'error'
+                    ? 'bg-[var(--jarvis-danger)]'
+                    : 'bg-[var(--jarvis-success)]'
               }`}
             ></span>
-            {isSyncing || federation.syncStatus === 'syncing' || federation.syncStatus === 'pending'
-              ? 'Syncing...'
-              : federation.syncStatus === 'success' || federation.syncStatus === 'idle'
-                ? 'Connected'
-                : 'Error'}
+            {syncView.label}
           </div>
 
           <IconButton
@@ -137,13 +191,13 @@ const FederationCard: React.FC<FederationCardProps> = ({ federation }) => {
           </IconButton>
           <IconButton
             ariaLabel='Sync federation'
-            tooltip='Sync Now'
+            tooltip={syncView.actionLabel}
             onClick={handleSyncClick}
-            disabled={isSyncing}
+            disabled={syncView.action === 'none'}
             size='card'
             className='text-[var(--jarvis-icon)] hover:bg-[var(--jarvis-primary-soft)] hover:text-[var(--jarvis-icon-hover)]'
           >
-            <ArrowPathIcon className='w-3.5 h-3.5' />
+            <ArrowPathIcon className={`w-3.5 h-3.5 ${syncView.isBusy ? 'animate-spin' : ''}`} />
           </IconButton>
         </div>
       </div>
@@ -158,8 +212,8 @@ const FederationCard: React.FC<FederationCardProps> = ({ federation }) => {
         )}
         <span className='flex items-center gap-1.5'>
           <FiClock className='w-3.5 h-3.5' />
-          {federation.syncStatus === 'syncing' || isSyncing
-            ? 'Sync in progress...'
+          {syncView.kind !== 'idle'
+            ? syncView.label
             : `Last synced: ${UTILS.formatTimeSince(federation.lastSync?.finishedAt) ?? 'Never'}`}
         </span>
       </div>
