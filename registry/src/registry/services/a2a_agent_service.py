@@ -24,10 +24,13 @@ from registry.core.exceptions import (
     A2AAgentCardTransportException,
     A2AAgentCardUpstreamException,
 )
+from registry.services.federation.azure_foundry_auth import AzureFoundryAuthService
 from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.models.a2a_agent import A2AAgent, AgentConfig, normalize_a2a_agent_path
+from registry_pkgs.models.enums import FederationProviderType
+from registry_pkgs.models.federation import AzureAiFoundryProviderConfig, Federation
 from registry_pkgs.vector.repositories.a2a_agent_repository import A2AAgentRepository
-from registry_pkgs.workflows.a2a_client import build_headers
+from registry_pkgs.workflows.a2a_client import build_headers, is_azure_foundry_runtime
 
 from ..schemas.a2a_agent_api_schemas import AgentCreateRequest, AgentUpdateRequest
 
@@ -123,15 +126,20 @@ class A2AAgentService:
         base_url: str,
         timeout_seconds: float,
         auth_headers: dict[str, str] | None = None,
+        agent_card_path_override: str | None = None,
     ) -> AgentCard:
-        """Fetch agent card from known well-known paths with deterministic error semantics."""
+        """Fetch an agent card from an explicit or known path with deterministic errors."""
         timeout = httpx.Timeout(timeout_seconds)
         last_404_error: Exception | None = None
         first_non_404_http_error: Exception | None = None
         first_transport_error: Exception | None = None
         first_parse_error: Exception | None = None
 
-        well_known_paths = [".well-known/agent-card.json", ".well-known/agent.json", ""]
+        well_known_paths = (
+            [agent_card_path_override]
+            if agent_card_path_override is not None
+            else [".well-known/agent-card.json", ".well-known/agent.json", ""]
+        )
 
         async with httpx.AsyncClient(timeout=timeout, headers=auth_headers or {}) as client:
             for path in well_known_paths:
@@ -183,6 +191,7 @@ class A2AAgentService:
         self,
         url: str,
         auth_headers: dict[str, str] | None = None,
+        agent_card_path_override: str | None = None,
     ) -> AgentCard:
         """
         Fetch and validate agent card from URL using SDK.
@@ -190,6 +199,7 @@ class A2AAgentService:
         Args:
             url: Agent endpoint URL
             auth_headers: Optional HTTP headers for authenticated card discovery
+            agent_card_path_override: Optional provider-specific agent-card path
 
         Returns:
             Validated AgentCard from remote endpoint
@@ -206,6 +216,7 @@ class A2AAgentService:
                 base_url=url,
                 timeout_seconds=15.0,
                 auth_headers=auth_headers,
+                agent_card_path_override=agent_card_path_override,
             )
         except (
             A2AAgentCardNotFoundException,
@@ -232,15 +243,60 @@ class A2AAgentService:
             return _normalize_config_url(str(agent.card.url))
         return None
 
-    def _build_best_effort_auth_headers(self, agent: A2AAgent, agent_id: str) -> dict[str, str] | None:
+    @staticmethod
+    def _resolve_agent_card_path_override(agent: A2AAgent) -> str | None:
+        """Return a provider-specific card path when one is available."""
+        if not is_azure_foundry_runtime(agent):
+            return None
+
+        path = (agent.federationMetadata or {}).get("agentCardPath")
+        return path if isinstance(path, str) and path else None
+
+    async def _build_azure_foundry_auth_headers(
+        self,
+        agent: A2AAgent,
+        agent_id: str,
+    ) -> dict[str, str] | None:
+        """Build Entra headers from the agent's Azure Foundry federation."""
+        if agent.federationRefId is None:
+            logger.warning(f"Azure Foundry agent {agent_id} has no federationRefId; cannot build Entra auth headers")
+            return None
+
+        try:
+            federation = await Federation.get(agent.federationRefId)
+            if federation is None:
+                logger.warning(f"Federation {agent.federationRefId} not found for agent {agent_id}")
+                return None
+            if federation.providerType != FederationProviderType.AZURE_AI_FOUNDRY:
+                logger.warning(
+                    f"Federation {agent.federationRefId} for Azure Foundry agent {agent_id} "
+                    f"has unexpected providerType={federation.providerType!r}"
+                )
+                return None
+
+            provider_config = AzureAiFoundryProviderConfig(**(federation.providerConfig or {}))
+            async with AzureFoundryAuthService(provider_config) as auth:
+                return await auth.build_headers()
+        except Exception as e:
+            logger.warning(
+                f"Could not build Azure Entra auth headers for agent {agent_id} "
+                f"({type(e).__name__}: {e}); retrying discovery without auth.",
+                exc_info=True,
+            )
+            return None
+
+    async def _build_best_effort_auth_headers(
+        self,
+        agent: A2AAgent,
+        agent_id: str,
+    ) -> dict[str, str] | None:
         """Build per-call auth headers for agent card discovery, tolerating build failures.
 
-        Best-effort: JWT header construction can fail (misconfigured jwt_config or
-        runtimeAccess settings). On failure, discovery proceeds without auth — if the
-        remote endpoint requires authentication this surfaces as a 401 upstream error,
-        NOT as a JWT signing error. Check jwt_config and the agent's runtimeAccess
-        configuration if discovery fails with an upstream error.
+        Header construction failures do not mask the existing upstream error semantics.
         """
+        if is_azure_foundry_runtime(agent):
+            return await self._build_azure_foundry_auth_headers(agent, agent_id)
+
         if not (self._jwt_config and agent.card):
             return None
         try:
@@ -539,10 +595,15 @@ class A2AAgentService:
                 if new_url_normalized != current_url_normalized:
                     logger.info(f"URL changed from {current_url} to {new_url}, fetching new agent card")
 
-                    auth_headers = self._build_best_effort_auth_headers(agent, agent_id)
+                    auth_headers = await self._build_best_effort_auth_headers(agent, agent_id)
+                    agent_card_path_override = self._resolve_agent_card_path_override(agent)
 
                     # Fetch new agent card from URL - KEEP ORIGINAL DATA
-                    agent_card = await self._fetch_agent_card_from_url(new_url, auth_headers=auth_headers)
+                    agent_card = await self._fetch_agent_card_from_url(
+                        new_url,
+                        auth_headers=auth_headers,
+                        agent_card_path_override=agent_card_path_override,
+                    )
 
                     # DO NOT modify the agent_card - store it as-is
                     agent.card = agent_card
@@ -798,11 +859,15 @@ class A2AAgentService:
 
             base_url = agent_url
 
-            auth_headers = self._build_best_effort_auth_headers(agent, agent_id)
+            auth_headers = await self._build_best_effort_auth_headers(agent, agent_id)
+            agent_card_path_override = self._resolve_agent_card_path_override(agent)
 
             logger.info(f"Fetching agent card from {base_url} using SDK")
             updated_card = await self._resolve_agent_card_with_fallback(
-                base_url=base_url, timeout_seconds=10.0, auth_headers=auth_headers
+                base_url=base_url,
+                timeout_seconds=10.0,
+                auth_headers=auth_headers,
+                agent_card_path_override=agent_card_path_override,
             )
 
             # Track changes
