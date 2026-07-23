@@ -608,7 +608,7 @@ class WorkflowRun(Document):
 
     # Non-sensitive identity of the triggering user, captured so an HITL resume
     # can reconstruct their auth context. We deliberately do NOT persist the raw
-    # bearer token — see ``WorkflowControlService._reconstruct_triggering_auth_context``.
+    # bearer token — see ``WorkflowControlService._refresh_triggering_auth_context``.
     triggering_user_id: str | None = None
     triggering_username: str | None = None
     triggering_scopes: list[str] | None = None

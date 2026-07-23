@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 import secrets
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -13,9 +12,7 @@ from ..auth.dependencies import UserContextDict
 from ..mcpgw.tools.utils import build_authenticated_headers
 
 if TYPE_CHECKING:
-    from ...services.oauth.oauth_service import MCPOAuthService
-
-logger = logging.getLogger(__name__)
+    from ..services.oauth.oauth_service import MCPOAuthService
 
 
 class McpHeadersProvider:

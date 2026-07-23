@@ -76,7 +76,7 @@ def make_mcp_executor(
     llm: Model,
     auth_context: dict[str, Any] | None,
     jwt_config: JwtSigningConfig,
-    redis_client: Any,
+    redis_client: Any | None,
     redis_key_prefix: str,
     mcp_access_authorizer: McpAccessAuthorizer | None = None,
     mcp_headers_provider: McpHeadersProvider | None,
@@ -90,7 +90,7 @@ def make_mcp_executor(
                               manually-registered (OAuth/apiKey) servers.
         jwt_config:           JWT signing config used for AgentCore-federated
                               servers to self-sign a runtime JWT.
-        redis_client:         Redis client for caching AgentCore JWTs.
+        redis_client:         Optional Redis client for caching AgentCore JWTs.
         redis_key_prefix:     Prefix for Redis cache keys.
         mcp_access_authorizer: Async consent preflight for user-triggered calls.
         mcp_headers_provider: Async callable that builds authenticated headers
