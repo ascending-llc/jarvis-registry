@@ -37,6 +37,9 @@ load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 from beanie import PydanticObjectId
 
 from registry import settings
+from registry.core.a2a_proxy import A2AProxyClientRegistry
+from registry.services.federation.a2a_client_registry import A2AClientRegistry
+from registry.services.federation.azure_foundry_proxy_auth import AzureFoundryClientCache
 from registry_pkgs.core.config import MongoConfig
 from registry_pkgs.core.jwt_utils import build_jwt_payload, encode_jwt
 from registry_pkgs.database.mongodb import MongoDB
@@ -166,6 +169,8 @@ async def main(definition_id: str, user_text: str, *, list_agents: bool = False)
         ),
     )
 
+    a2a_client_registry: A2AClientRegistry | None = None
+
     try:
         if list_agents:
             await _list_all_agents()
@@ -184,12 +189,20 @@ async def main(definition_id: str, user_text: str, *, list_agents: bool = False)
             aws_secret_access_key=settings.aws_secret_access_key,
         )
 
+        a2a_client_registry = A2AClientRegistry(
+            agentcore_registry=A2AProxyClientRegistry(
+                jwt_signing_config=settings.jwt_signing_config,
+                jwt_subject=settings.registry_app_name,
+            ),
+            azure_client_cache=AzureFoundryClientCache(),
+        )
+
         runner = WorkflowRunner(
             llm=llm,
             registry_url=os.getenv("REGISTRY_URL", "http://localhost:8000"),
             db_client=MongoDB.get_client(),
             db_name=MongoDB.database_name,
-            jwt_config=settings.jwt_signing_config,
+            client_provider=a2a_client_registry.get_client,
         )
 
         print(f"Running definition {definition_id!r} with prompt: {user_text!r}\n")
@@ -212,6 +225,8 @@ async def main(definition_id: str, user_text: str, *, list_agents: bool = False)
         return 0 if str(run.status) == "completed" else 1
 
     finally:
+        if a2a_client_registry is not None:
+            await a2a_client_registry.close()
         try:
             await MongoDB.close_db()
         except Exception as exc:

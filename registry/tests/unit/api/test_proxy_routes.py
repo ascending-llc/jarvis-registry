@@ -15,7 +15,7 @@ from beanie import PydanticObjectId
 from fastapi import HTTPException
 from starlette.requests import Request
 
-from registry.api.proxy_routes import dynamic_mcp_get_proxy, dynamic_mcp_post_proxy
+from registry.api.proxy_routes import dynamic_mcp_get_proxy, dynamic_mcp_post_proxy, http_json_proxy, jsonrpc_proxy
 
 VALID_OBJECT_ID = "507f1f77bcf86cd799439011"
 INVALID_USER_IDS = ["mcpgw", "not-an-objectid", "123", ""]
@@ -88,6 +88,30 @@ def _get_request(user_id: str, server_path: str = "github") -> Request:
         "path_params": {"user_id": user_id, "server_path": server_path},
     }
     return Request(scope)
+
+
+def _a2a_request(method: str = "POST") -> Request:
+    scope = {
+        "type": "http",
+        "method": method,
+        "scheme": "http",
+        "server": ("testserver", 80),
+        "path": "/gateway/proxy/a2a/test-agent",
+        "query_string": b"",
+        "headers": [(b"authorization", b"Bearer caller-token")],
+        "path_params": {"agent_path": "test-agent"},
+    }
+    return Request(scope)
+
+
+def _a2a_agent():
+    return SimpleNamespace(
+        id=PydanticObjectId(),
+        path="test-agent",
+        config=SimpleNamespace(enabled=True, runtimeAccess=None, url=None),
+        card=SimpleNamespace(url="https://agent.example.com/a2a"),
+        federationMetadata={"providerType": "azure_ai_foundry"},
+    )
 
 
 @pytest.mark.parametrize("user_id", INVALID_USER_IDS)
@@ -302,3 +326,71 @@ async def test_get_proxy_acl_allowed_continues():
     body = json.loads(resp.body)
     assert resp.status_code == 404
     assert "disabled" in body["detail"].lower()
+
+
+async def test_jsonrpc_proxy_gets_client_from_a2a_client_registry(monkeypatch):
+    agent = _a2a_agent()
+    proxy_client = Mock()
+    registry = SimpleNamespace(get_client=AsyncMock(return_value=proxy_client))
+    a2a_agent_service = SimpleNamespace(get_agent_by_path=AsyncMock(return_value=agent))
+    acl_service = SimpleNamespace(check_user_permission=AsyncMock(return_value=None))
+    forward = AsyncMock(return_value=Mock(status_code=200))
+    request = _a2a_request()
+    monkeypatch.setattr("registry.api.proxy_routes._forward_a2a", forward)
+
+    response = await jsonrpc_proxy(
+        request=request,
+        agent_path="test-agent",
+        user_context=_AUTH_CONTEXT,
+        a2a_agent_service=a2a_agent_service,
+        acl_service=acl_service,
+        a2a_client_registry=registry,
+    )
+
+    assert response.status_code == 200
+    registry.get_client.assert_awaited_once_with(agent)
+    forward.assert_awaited_once_with(
+        request, "https://agent.example.com/a2a", proxy_client, "test-agent", is_jsonrpc=True
+    )
+
+
+async def test_http_json_proxy_gets_client_from_a2a_client_registry(monkeypatch):
+    agent = _a2a_agent()
+    proxy_client = Mock()
+    registry = SimpleNamespace(get_client=AsyncMock(return_value=proxy_client))
+    a2a_agent_service = SimpleNamespace(get_agent_by_path=AsyncMock(return_value=agent))
+    acl_service = SimpleNamespace(check_user_permission=AsyncMock(return_value=None))
+    forward = AsyncMock(return_value=Mock(status_code=200))
+    request = _a2a_request(method="GET")
+    monkeypatch.setattr("registry.api.proxy_routes._forward_a2a", forward)
+
+    response = await http_json_proxy(
+        request=request,
+        agent_path="test-agent",
+        http_json_path="tasks/1",
+        user_context=_AUTH_CONTEXT,
+        a2a_agent_service=a2a_agent_service,
+        acl_service=acl_service,
+        a2a_client_registry=registry,
+    )
+
+    assert response.status_code == 200
+    registry.get_client.assert_awaited_once_with(agent)
+    forward.assert_awaited_once_with(request, "https://agent.example.com/a2a/tasks/1", proxy_client, "test-agent")
+
+
+def test_httpx_decoders_supported_decoders_is_accessible():
+    """
+    Canary for the private-API coupling in `_HTTPX_DECODABLE_CONTENT_ENCODINGS`
+    (registry/src/registry/api/proxy_routes.py).
+
+    That constant is derived from `httpx._decoders.SUPPORTED_DECODERS`, an underscore-prefixed
+    module that is not part of httpx's public API and could be renamed, restructured, or removed
+    in a future httpx version without a deprecation warning. If that ever happens, we want it
+    caught here as a fast, obvious CI failure -- not later as a mystifying prod bug where the
+    proxy silently mis-forwards still-compressed bytes because the derived set quietly went empty
+    or the import broke in some less direct way.
+    """
+    import httpx
+
+    assert frozenset(httpx._decoders.SUPPORTED_DECODERS.keys())

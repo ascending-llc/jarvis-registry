@@ -117,7 +117,6 @@ def _make_runner(queue: DirectiveQueue) -> MockWorkflowRunner:
         registry_url=os.getenv("REGISTRY_URL", "http://localhost:7860"),
         db_client=MongoDB.get_client(),
         db_name=MongoDB.database_name,
-        jwt_config=settings.jwt_signing_config,
         directive_queue=queue,
     )
 

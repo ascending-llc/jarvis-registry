@@ -39,6 +39,9 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 from registry import settings
+from registry.core.a2a_proxy import A2AProxyClientRegistry
+from registry.services.federation.a2a_client_registry import A2AClientRegistry
+from registry.services.federation.azure_foundry_proxy_auth import AzureFoundryClientCache
 from registry_pkgs.core.config import MongoConfig
 from registry_pkgs.core.jwt_utils import build_jwt_payload, encode_jwt
 from registry_pkgs.database.mongodb import MongoDB
@@ -184,6 +187,8 @@ async def main() -> int:
         ),
     )
 
+    a2a_client_registry: A2AClientRegistry | None = None
+
     try:
         registry_token = os.getenv("REGISTRY_TOKEN") or await _make_registry_token(args.a2a_pool, args.registry_url)
         llm = AwsBedrock(
@@ -214,13 +219,21 @@ async def main() -> int:
             print(f"  MCP step  : {args.mcp_key}")
         print(f"  Pool step : {args.a2a_pool}")
 
+        a2a_client_registry = A2AClientRegistry(
+            agentcore_registry=A2AProxyClientRegistry(
+                jwt_signing_config=settings.jwt_signing_config,
+                jwt_subject=settings.registry_app_name,
+            ),
+            azure_client_cache=AzureFoundryClientCache(),
+        )
+
         runner = WorkflowRunner(
             llm=llm,
             selector_llm=selector_llm,
             registry_url=args.registry_url,
             db_client=MongoDB.get_client(),
             db_name=MongoDB.database_name,
-            jwt_config=settings.jwt_signing_config,
+            client_provider=a2a_client_registry.get_client,
         )
 
         print(f"\nRunning workflow with prompt: {args.prompt!r}\n")
@@ -248,6 +261,8 @@ async def main() -> int:
         return 0
 
     finally:
+        if a2a_client_registry is not None:
+            await a2a_client_registry.close()
         try:
             await MongoDB.close_db()
         except Exception as exc:

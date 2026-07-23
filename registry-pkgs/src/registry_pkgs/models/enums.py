@@ -141,6 +141,7 @@ class FederationJobPhase(StrEnum):
     QUEUED = "queued"
     DISCOVERING = "discovering"
     APPLYING = "applying"
+    SYNCING_VECTORS = "syncing_vectors"
     COMPLETED = "completed"
     FAILED = "failed"
 

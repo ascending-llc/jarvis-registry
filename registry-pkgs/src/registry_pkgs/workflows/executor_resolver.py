@@ -4,7 +4,7 @@ This module is **orchestration only**.  It queries MongoDB to decide which
 backend handles a given key, then delegates to the appropriate factory:
 
 - ``mcp_executor.make_mcp_executor``      — gateway-proxied MCP server calls
-- ``a2a_executor.make_a2a_executor``      — direct A2A agent calls (JWT auth)
+- ``a2a_executor.make_a2a_executor``      — direct A2A agent calls
 - ``a2a_executor.make_a2a_pool_executor`` — A2A pool with LLM-based selection
 """
 
@@ -12,13 +12,11 @@ from __future__ import annotations
 
 import logging
 
-import httpx
 from agno.models.base import Model
 from agno.workflow import StepInput, StepOutput
 from agno.workflow.step import StepExecutor
 from beanie import PydanticObjectId
 
-from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.models._generated.acl_entry import PrincipalType
 from registry_pkgs.models.a2a_agent import A2AAgent
 from registry_pkgs.models.enums import PermissionBits
@@ -26,7 +24,7 @@ from registry_pkgs.models.extended_access_role import RegistryResourceType
 from registry_pkgs.models.extended_acl_entry import RegistryAclEntry
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 from registry_pkgs.models.workflow import WorkflowNode
-from registry_pkgs.workflows.a2a_client import HeadersProvider
+from registry_pkgs.workflows.a2a_client import ClientProvider
 from registry_pkgs.workflows.a2a_executor import make_a2a_executor, make_a2a_pool_executor
 from registry_pkgs.workflows.mcp_executor import make_mcp_executor
 from registry_pkgs.workflows.types import POOL_KEY_PREFIX
@@ -88,12 +86,10 @@ async def build_executor_registry(
     llm: Model,
     registry_url: str,
     registry_token: str,
-    jwt_config: JwtSigningConfig,
     user_id: str | None,
     pool_nodes: list[WorkflowNode] | None = None,
     selector_llm: Model | None = None,
-    a2a_httpx_client: httpx.AsyncClient | None = None,
-    headers_provider: HeadersProvider | None = None,
+    client_provider: ClientProvider | None = None,
 ) -> dict[str, StepExecutor]:
     """Resolve each executor key to an MCP server or A2A agent executor.
 
@@ -103,19 +99,12 @@ async def build_executor_registry(
         llm:              agno-compatible Model used by MCP-server executors.
         registry_url:     Base URL of the Jarvis Registry (MCP proxy calls only).
         registry_token:   User-scoped Bearer token for the MCP gateway proxy.
-                          **Not used for A2A executors** — those self-sign a JWT.
-        jwt_config:       JWT signing config used by A2A executors to mint
-                          short-lived service-to-agent tokens.
+                          **Not used for A2A executors**.
         user_id:          User ID for ACL lookup. ``None`` = unrestricted
                           (only safe for trusted service / script contexts).
         pool_nodes:       STEP nodes that use ``a2a_pool`` instead of ``executor_key``.
         selector_llm:     Model used only for A2A pool selection; falls back to ``llm``.
-        a2a_httpx_client: Optional shared httpx client passed to A2A
-                          executors. When None, each A2A call builds its
-                          own pool (slower but isolated). Production code
-                          should always pass a long-lived client owned by
-                          the app container.
-        headers_provider: Optional shared headers provider passed to A2A
+        client_provider:  Optional provider for agent-specific authenticated A2A clients.
 
     Returns:
         dict mapping each ``executor_key`` / pool synthetic-key → ``StepExecutor``.
@@ -136,10 +125,8 @@ async def build_executor_registry(
             llm=llm,
             registry_url=registry_url,
             registry_token=registry_token,
-            jwt_config=jwt_config,
             accessible_agent_ids=accessible_agent_ids,
-            a2a_httpx_client=a2a_httpx_client,
-            headers_provider=headers_provider,
+            client_provider=client_provider,
         )
 
     _selector = selector_llm or llm
@@ -149,10 +136,8 @@ async def build_executor_registry(
             node_name=node.name,
             pool_keys=node.a2a_pool,
             selector_llm=_selector,
-            jwt_config=jwt_config,
             accessible_agent_ids=accessible_agent_ids,
-            httpx_client=a2a_httpx_client,
-            headers_provider=headers_provider,
+            client_provider=client_provider,
         )
         logger.debug("pool executor registered: %r → %s", node.name, synthetic_key)
 
@@ -165,10 +150,8 @@ async def _resolve_executor(
     llm: Model,
     registry_url: str,
     registry_token: str,
-    jwt_config: JwtSigningConfig,
     accessible_agent_ids: set[str] | None,
-    a2a_httpx_client: httpx.AsyncClient | None = None,
-    headers_provider: HeadersProvider | None = None,
+    client_provider: ClientProvider | None = None,
 ) -> StepExecutor:
     """Resolve a single executor key to its MCP or A2A executor.
 
@@ -202,9 +185,7 @@ async def _resolve_executor(
         logger.debug("executor_key %r → A2A agent %r (direct)", key, a2a_agent.path)
         return make_a2a_executor(
             a2a_agent,
-            jwt_config=jwt_config,
-            httpx_client=a2a_httpx_client,
-            headers_provider=headers_provider,
+            client_provider=client_provider,
         )
 
     raise KeyError(
