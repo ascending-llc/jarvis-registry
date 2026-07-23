@@ -4,6 +4,8 @@ import logging
 from typing import Any
 from urllib.parse import urlparse
 
+from redis import Redis
+
 from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.core.jwt_utils import build_jwt_payload, encode_jwt
 from registry_pkgs.models.federation import AgentCoreRuntimeAccessConfig, AgentCoreRuntimeJwtConfig
@@ -92,7 +94,7 @@ def sign_agentcore_jwt(
     *,
     signing: JwtSigningConfig,
     cache_key: str,
-    redis_client: Any | None = None,
+    redis_client: Redis | None = None,
 ) -> str:
     """Mint (or return a cached) AgentCore Runtime JWT.
 
