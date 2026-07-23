@@ -130,19 +130,6 @@ def make_mcp_executor(
             )
             return {"Authorization": f"Bearer {token}"}
 
-        mcp_tools = MCPTools(
-            transport="streamable-http",
-            server_params=StreamableHTTPClientParams(url=_get_target_url(mcp_server)),
-            header_provider=_header_provider,
-            refresh_connection=False,
-        )
-        agent = Agent(
-            model=llm,
-            tools=[mcp_tools],
-            name=f"{mcp_server.serverName}-agent",
-            description=description,
-        )
-
         async def executor(step_input: StepInput, session_state: dict[str, Any] | None = None) -> StepOutput:
             if auth_context is not None:
                 if mcp_access_authorizer is None:
@@ -152,6 +139,18 @@ def make_mcp_executor(
                 await mcp_access_authorizer(mcp_server, auth_context)
             prompt = build_prompt(step_input)
             target_url = _get_target_url(mcp_server)
+            mcp_tools = MCPTools(
+                transport="streamable-http",
+                server_params=StreamableHTTPClientParams(url=target_url),
+                header_provider=_header_provider,
+                refresh_connection=False,
+            )
+            agent = Agent(
+                model=llm,
+                tools=[mcp_tools],
+                name=f"{mcp_server.serverName}-agent",
+                description=description,
+            )
             return await _execute_mcp_agent(
                 server=mcp_server,
                 mcp_tools=mcp_tools,

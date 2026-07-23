@@ -253,7 +253,12 @@ class WorkflowRunner:
                 run.error_summary = None
                 run.finished_at = None
                 await run.save()
-                logger.info("[run=%s] awaiting MCP server consent for %s", run.id, exc.server_name)
+                logger.info(
+                    "[run=%s] awaiting MCP server consent for %s — consent URL: %s",
+                    run.id,
+                    exc.server_name,
+                    exc.auth_url,
+                )
                 executor_registry = None
             except WorkflowConfigError as exc:
                 run.status = WorkflowRunStatus.FAILED

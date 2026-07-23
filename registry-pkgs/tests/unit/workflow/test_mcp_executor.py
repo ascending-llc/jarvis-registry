@@ -84,7 +84,8 @@ class TestAgentCoreMcpExecutor:
         headers = header_provider()
         assert headers == {"Authorization": "Bearer cached-agentcore-token"}
 
-    def test_header_provider_mints_and_caches_on_miss(self, monkeypatch: pytest.MonkeyPatch):
+    @pytest.mark.asyncio
+    async def test_header_provider_mints_and_caches_on_miss(self, monkeypatch: pytest.MonkeyPatch):
         from cryptography.hazmat.primitives import serialization
         from cryptography.hazmat.primitives.asymmetric import rsa
 
@@ -97,7 +98,7 @@ class TestAgentCoreMcpExecutor:
 
         jwt_config = _jwt_config(jwt_private_key=private_key)
 
-        fake_agent_instance = SimpleNamespace(arun=AsyncMock())
+        fake_agent_instance = SimpleNamespace(arun=AsyncMock(return_value=SimpleNamespace(content="done")))
         fake_mcp_tools = SimpleNamespace(initialized=True, connect=AsyncMock())
         captured_tools_kwargs: dict = {}
 
@@ -111,7 +112,7 @@ class TestAgentCoreMcpExecutor:
         redis_client = MagicMock()
         redis_client.get.return_value = None
 
-        make_mcp_executor(
+        executor = make_mcp_executor(
             _mcp_server("agentcore-server", runtime_access={"mode": "jwt", "jwt": {}}),
             llm=SimpleNamespace(),
             auth_context=None,
@@ -121,7 +122,8 @@ class TestAgentCoreMcpExecutor:
             mcp_headers_provider=None,
         )
 
-        # Trigger header_provider to mint.
+        await executor(StepInput(input="hello", previous_step_content="ctx"), {})
+
         header_provider = captured_tools_kwargs["header_provider"]
         headers = header_provider()
 
