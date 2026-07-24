@@ -1,4 +1,6 @@
+import asyncio
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -669,67 +671,223 @@ class FederationSyncService:
         await self.run_delete(federation=federation, job=job)
         return job
 
-    async def _build_sync_plan(
+    @staticmethod
+    def _collect_stale_resources(
+        existing_resources: list[Any],
+        discovered_ids: set[str],
+        extract_runtime_arn: Callable[[dict[str, Any] | None], str | None],
+    ) -> list[tuple[Any, str | None]]:
+        """Return existing resources whose runtime ARN is not in the discovered set."""
+        stale: list[tuple[Any, str | None]] = []
+        for item in existing_resources:
+            metadata = getattr(item, "federationMetadata", None)
+            runtime_arn = extract_runtime_arn(metadata)
+            if runtime_arn and runtime_arn not in discovered_ids:
+                stale.append((item, runtime_arn))
+        return stale
+
+    async def _load_existing_resources_by_remote(
         self,
-        *,
         federation: Federation,
-        discovered_mcp: list[Any],
-        discovered_a2a: list[Any],
-        session: AsyncClientSession | None = None,
-    ) -> FederationSyncPlan:
-        """Compare discovered resources against Mongo state without mutating it."""
-        # Step 1: initialize the plan and summary.
-        apply_summary = FederationApplySummary()
-        sync_plan = FederationSyncPlan(
-            summary=apply_summary,
-            federation_id=federation.id,
-            provider_type=federation.providerType,
-            discovered_mcp_count=len(discovered_mcp),
-            discovered_a2a_count=len(discovered_a2a),
+        session: AsyncClientSession | None,
+    ) -> tuple[
+        list[ExtendedMCPServer], dict[str | None, ExtendedMCPServer], list[A2AAgent], dict[str | None, A2AAgent]
+    ]:
+        """Load existing MCP and A2A resources for this federation, indexed by runtime ARN."""
+        existing_mcp, existing_a2a = await asyncio.gather(
+            ExtendedMCPServer.find({"federationRefId": federation.id}, session=session).to_list(),
+            A2AAgent.find({"federationRefId": federation.id}, session=session).to_list(),
         )
-        # Step 2: load current MCP and A2A state for this federation.
-        existing_mcp = await ExtendedMCPServer.find({"federationRefId": federation.id}, session=session).to_list()
         existing_mcp_by_remote = {
             self._extract_runtime_arn(item.federationMetadata): item
             for item in existing_mcp
             if self._extract_runtime_arn(item.federationMetadata)
         }
-        existing_a2a = await A2AAgent.find({"federationRefId": federation.id}, session=session).to_list()
         existing_a2a_by_remote = {
             self._extract_runtime_arn(item.federationMetadata): item
             for item in existing_a2a
             if self._extract_runtime_arn(item.federationMetadata)
         }
 
-        # Step 3: pre-compute global uniqueness conflicts for both resource types.
-        # serverName (MCP) and path (A2A) are globally unique across all federations.
-        # Detecting conflicts here — before the classification loops — means both
-        # dry-run and real sync surface them without reaching _apply_sync_plan.
-        create_candidate_names = [
-            item.serverName
-            for item in discovered_mcp
-            if item.serverName and self._extract_runtime_arn(item.federationMetadata) not in existing_mcp_by_remote
-        ]
-        existing_mcp_by_server_name: dict[str, Any] = {}
-        if create_candidate_names:
-            existing_mcp_by_server_name = {
-                doc.serverName: doc
-                for doc in await ExtendedMCPServer.find(
-                    {"serverName": {"$in": create_candidate_names}},
-                    session=session,
-                ).to_list()
-            }
+        return existing_mcp, existing_mcp_by_remote, existing_a2a, existing_a2a_by_remote
 
+    @staticmethod
+    async def _prefetch_global_conflicts(
+        discovered_mcp: list[Any],
+        discovered_a2a: list[Any],
+        session: AsyncClientSession | None,
+    ) -> tuple[dict[str, Any], dict[str, A2AAgent]]:
+        """Pre-fetch globally unique serverName/path conflicts for discovered items.
+
+        serverName (MCP) and path (A2A) are globally unique across all federations.
+        Detecting conflicts here — before the classification loops — means both
+        dry-run and real sync surface them without reaching _apply_sync_plan.
+        """
+        discovered_mcp_server_names = sorted({item.serverName for item in discovered_mcp if item.serverName})
         discovered_a2a_paths = sorted({item.path for item in discovered_a2a if getattr(item, "path", None)})
-        existing_a2a_by_path: dict[str, A2AAgent] = {}
-        if discovered_a2a_paths:
-            existing_a2a_by_path = {
-                item.path: item
-                for item in await A2AAgent.find({"path": {"$in": discovered_a2a_paths}}, session=session).to_list()
-            }
 
-        # Step 4: classify discovered MCP items.
+        async def _fetch_mcp_conflicts() -> list[Any]:
+            if not discovered_mcp_server_names:
+                return []
+            return await ExtendedMCPServer.find(
+                {"serverName": {"$in": discovered_mcp_server_names}},
+                session=session,
+            ).to_list()
+
+        async def _fetch_a2a_conflicts() -> list[A2AAgent]:
+            if not discovered_a2a_paths:
+                return []
+            return await A2AAgent.find(
+                {"path": {"$in": discovered_a2a_paths}},
+                session=session,
+            ).to_list()
+
+        mcp_conflict_results, a2a_conflict_results = await asyncio.gather(
+            _fetch_mcp_conflicts(),
+            _fetch_a2a_conflicts(),
+        )
+
+        existing_mcp_by_server_name: dict[str, Any] = {
+            doc.serverName: doc for doc in mcp_conflict_results if doc.serverName
+        }
+        existing_a2a_by_path: dict[str, A2AAgent] = {
+            item.path: item for item in a2a_conflict_results if getattr(item, "path", None)
+        }
+
+        return existing_mcp_by_server_name, existing_a2a_by_path
+
+    def _resolve_mcp_name_conflict(
+        self,
+        item: Any,
+        existing: Any | None,
+        name_conflict: Any | None,
+        federation: Federation,
+        apply_summary: FederationApplySummary,
+        planned_mcp_server_names: dict[str, Any],
+    ) -> bool:
+        """Check for persisted or same-batch serverName conflicts.
+
+        Returns True if the item should be skipped. Mutates apply_summary on skip.
+        """
+        if name_conflict is not None:
+            existing_id = getattr(existing, "id", None)
+            conflict_id = getattr(name_conflict, "id", None)
+            if existing_id is None or conflict_id is None or conflict_id != existing_id:
+                if name_conflict.federationRefId is None:
+                    # Orphaned serverName — no federation owns it.
+                    self._record_apply_error(
+                        apply_summary,
+                        f"MCP server {item.serverName}: serverName already exists and is not owned by any federation",
+                    )
+                    apply_summary.skippedMcpServers += 1
+                    logger.warning(
+                        "Skipping MCP server because serverName exists but is not owned by any federation: "
+                        "serverName=%s federation_id=%s",
+                        item.serverName,
+                        federation.id,
+                    )
+                    return True
+                if name_conflict.federationRefId != federation.id:
+                    # Cross-federation conflict: another federation already owns this serverName.
+                    apply_summary.skippedMcpServers += 1
+                    logger.warning(
+                        "Skipping MCP server due to global serverName conflict: "
+                        "serverName=%s already claimed by federation=%s",
+                        item.serverName,
+                        name_conflict.federationRefId,
+                    )
+                    return True
+                # Same-federation name match with a different runtimeArn: the old doc will be
+                # deleted first in _apply_sync_plan (deletes run before creates), so INSERT is safe.
+
+        if item.serverName in planned_mcp_server_names:
+            # Same-batch collision: another item discovered in this sync already claimed
+            # this serverName (as a create or an earlier rename).
+            self._record_apply_error(
+                apply_summary,
+                f"MCP server {item.serverName}: serverName collides with another resource discovered in this same sync",
+            )
+            apply_summary.skippedMcpServers += 1
+            return True
+
+        return False
+
+    def _resolve_a2a_path_conflict(
+        self,
+        item: Any,
+        existing: A2AAgent | None,
+        path_conflict: A2AAgent | None,
+        federation: Federation,
+        apply_summary: FederationApplySummary,
+    ) -> bool:
+        """Check for persisted path conflicts.
+
+        Returns True if the item should be skipped. Mutates apply_summary on skip.
+        Same-batch collisions are handled by the caller because A2A create checks
+        them before persisted conflicts, while A2A update checks them after.
+        """
+        if path_conflict is None:
+            return False
+
+        existing_id = getattr(existing, "id", None)
+        conflict_id = getattr(path_conflict, "id", None)
+        if not (existing_id is None or conflict_id is None or conflict_id != existing_id):
+            # The conflict is the same document we are already updating; not a real conflict.
+            return False
+
+        agent_name = getattr(getattr(item, "card", None), "name", None) or self._extract_runtime_arn(
+            item.federationMetadata
+        )
+        if path_conflict.federationRefId is None:
+            # Orphaned path — no federation owns it.
+            self._record_apply_error(
+                apply_summary,
+                f"A2A agent {agent_name}: path '{item.path}' already exists and is not owned by any federation",
+            )
+            apply_summary.skippedAgents += 1
+            logger.warning(
+                "Skipping federated A2A sync because path exists but is not owned by any federation: "
+                "federation_id=%s runtime_arn=%s path=%s existing_agent_id=%s",
+                federation.id,
+                self._extract_runtime_arn(item.federationMetadata),
+                item.path,
+                getattr(path_conflict, "id", None),
+            )
+            return True
+
+        if path_conflict.federationRefId != federation.id:
+            # Cross-federation conflict: another federation already owns this path.
+            apply_summary.skippedAgents += 1
+            logger.warning(
+                "Skipping federated A2A sync because path is already owned by another agent: "
+                "federation_id=%s runtime_arn=%s path=%s existing_agent_id=%s existing_federation_ref_id=%s",
+                federation.id,
+                self._extract_runtime_arn(item.federationMetadata),
+                item.path,
+                getattr(path_conflict, "id", None),
+                path_conflict.federationRefId,
+            )
+            return True
+
+        # Same-federation path match with a different runtimeArn: the old doc will be
+        # deleted first in _apply_sync_plan (deletes run before creates), so INSERT is safe.
+        return False
+
+    def _classify_discovered_mcp(
+        self,
+        discovered_mcp: list[Any],
+        existing_mcp_by_remote: dict[str, Any],
+        existing_mcp_by_server_name: dict[str, Any],
+        federation: Federation,
+        apply_summary: FederationApplySummary,
+        sync_plan: FederationSyncPlan,
+    ) -> set[str]:
+        """Classify discovered MCP items into creates, updates, or unchanged.
+
+        Mutates `sync_plan` and `apply_summary`. Returns the set of discovered runtime ARNs.
+        """
         discovered_mcp_ids: set[str] = set()
+        planned_mcp_server_names: dict[str, Any] = {}
 
         for item in discovered_mcp:
             remote_id = self._extract_runtime_arn(item.federationMetadata)
@@ -740,29 +898,43 @@ class FederationSyncService:
             existing = existing_mcp_by_remote.get(remote_id)
 
             if existing is None:
-                name_conflict = existing_mcp_by_server_name.get(item.serverName)
-                if name_conflict is not None and name_conflict.federationRefId != federation.id:
-                    # Cross-federation conflict: another federation already owns this serverName — skip.
-                    logger.warning(
-                        "Skipping MCP server due to global serverName conflict: "
-                        "serverName=%s already claimed by federation=%s",
-                        item.serverName,
-                        name_conflict.federationRefId,
-                    )
+                if not item.serverName:
+                    # serverName is required for federation sync; items without one cannot be classified.
                     apply_summary.skippedMcpServers += 1
-                    #  The `name_conflict` field is not considered an error record and is skipped; it is only logged.
-                    logger.warning(
-                        f"MCP server '{item.serverName}' skipped: serverName already exists "
-                        f"(owned by federation {name_conflict.federationRefId or 'unknown'})"
-                    )
                     continue
-                # Same-federation name match with a different runtimeArn: the old doc will be
-                # deleted first in _apply_sync_plan (deletes run before creates), so INSERT is safe.
 
-            if existing is None:
+                name_conflict = existing_mcp_by_server_name.get(item.serverName)
+                if self._resolve_mcp_name_conflict(
+                    item,
+                    None,
+                    name_conflict,
+                    federation,
+                    apply_summary,
+                    planned_mcp_server_names,
+                ):
+                    continue
+
                 apply_summary.createdMcpServers += 1
                 sync_plan.mcp_creates.append((item, remote_id))
+                planned_mcp_server_names[item.serverName] = item
             else:
+                if existing.serverName != item.serverName:
+                    if not item.serverName:
+                        apply_summary.skippedMcpServers += 1
+                        continue
+
+                    name_conflict = existing_mcp_by_server_name.get(item.serverName)
+                    if self._resolve_mcp_name_conflict(
+                        item,
+                        existing,
+                        name_conflict,
+                        federation,
+                        apply_summary,
+                        planned_mcp_server_names,
+                    ):
+                        continue
+                    planned_mcp_server_names[item.serverName] = existing
+
                 runtime_access_changed = _runtime_access_changed(
                     getattr(existing, "config", None),
                     getattr(item, "config", None),
@@ -784,20 +956,24 @@ class FederationSyncService:
                     f"MCP server {getattr(item, 'serverName', remote_id)}: {error_message}",
                 )
 
-        # Step 5: mark stale MCP items.
-        stale_mcp = [
-            item
-            for item in existing_mcp
-            if self._extract_runtime_arn(item.federationMetadata)
-            and self._extract_runtime_arn(item.federationMetadata) not in discovered_mcp_ids
-        ]
-        for stale in stale_mcp:
-            apply_summary.deletedMcpServers += 1
-            sync_plan.mcp_deletes.append((stale, self._extract_runtime_arn(stale.federationMetadata)))
+        return discovered_mcp_ids
 
-        # Step 6: classify discovered A2A items and check path conflicts.
+    def _classify_discovered_a2a(
+        self,
+        discovered_a2a: list[Any],
+        existing_a2a_by_remote: dict[str, A2AAgent],
+        existing_a2a_by_path: dict[str, A2AAgent],
+        federation: Federation,
+        apply_summary: FederationApplySummary,
+        sync_plan: FederationSyncPlan,
+    ) -> set[str]:
+        """Classify discovered A2A items into creates, updates, or unchanged.
+
+        Mutates `sync_plan` and `apply_summary`. Returns the set of discovered runtime ARNs.
+        """
         discovered_a2a_ids: set[str] = set()
         planned_a2a_by_remote: dict[str, A2AAgent] = {}
+        planned_a2a_paths: dict[str, A2AAgent] = {}
 
         for item in discovered_a2a:
             remote_id = self._extract_runtime_arn(item.federationMetadata)
@@ -808,59 +984,51 @@ class FederationSyncService:
             existing = existing_a2a_by_remote.get(remote_id) or planned_a2a_by_remote.get(remote_id)
             path_conflict = existing_a2a_by_path.get(item.path) if getattr(item, "path", None) else None
 
-            if existing is None and path_conflict is not None:
-                if path_conflict.federationRefId != federation.id:
-                    # Cross-federation conflict: another federation already owns this path — skip.
+            if existing is None:
+                if not getattr(item, "path", None):
+                    # path is required for federation sync; items without one cannot be classified.
+                    apply_summary.skippedAgents += 1
+                    continue
+
+                if item.path in planned_a2a_paths:
+                    # Same-batch collision: another item discovered in this sync already claimed
+                    # this path (as a create or an earlier rename).
                     agent_name = getattr(getattr(item, "card", None), "name", None) or remote_id
-                    logger.warning(
-                        "Skipping federated A2A sync because path is already owned by another agent: "
-                        "federation_id=%s runtime_arn=%s path=%s existing_agent_id=%s existing_federation_ref_id=%s",
-                        federation.id,
-                        remote_id,
-                        item.path,
-                        getattr(path_conflict, "id", None),
-                        path_conflict.federationRefId,
+                    self._record_apply_error(
+                        apply_summary,
+                        f"A2A agent {agent_name}: path '{item.path}' collides with another resource discovered in this same sync",
                     )
                     apply_summary.skippedAgents += 1
-                    logger.warning(
-                        f"A2A agent '{agent_name}' skipped: path '{item.path}' already exists "
-                        f"(owned by federation {path_conflict.federationRefId or 'unknown'})"
-                    )
                     continue
-                # Same-federation path match with a different runtimeArn: the old doc will be
-                # deleted first in _apply_sync_plan (deletes run before creates), so INSERT is safe.
 
-            if existing is None:
+                if self._resolve_a2a_path_conflict(item, None, path_conflict, federation, apply_summary):
+                    continue
+
                 apply_summary.createdAgents += 1
                 sync_plan.a2a_creates.append((item, remote_id))
                 planned_a2a_by_remote[remote_id] = item
+                planned_a2a_paths[item.path] = item
             else:
-                existing_id = getattr(existing, "id", None)
-                path_conflict_id = getattr(path_conflict, "id", None)
-                if (
-                    existing.path != item.path
-                    and path_conflict is not None
-                    and (existing_id is None or path_conflict_id is None or path_conflict_id != existing_id)
-                ):
-                    agent_name = getattr(getattr(item, "card", None), "name", None) or remote_id
-                    logger.warning(
-                        "Skipping federated A2A update because target path is already owned by another agent: "
-                        "federation_id=%s runtime_arn=%s existing_agent_id=%s existing_path=%s target_path=%s "
-                        "conflict_agent_id=%s conflict_federation_ref_id=%s",
-                        federation.id,
-                        remote_id,
-                        getattr(existing, "id", None),
-                        existing.path,
-                        item.path,
-                        getattr(path_conflict, "id", None),
-                        path_conflict.federationRefId,
-                    )
-                    apply_summary.skippedAgents += 1
-                    logger.warning(
-                        f"A2A agent '{agent_name}' skipped: path '{item.path}' already exists "
-                        f"(owned by federation {path_conflict.federationRefId or 'unknown'})"
-                    )
-                    continue
+                if existing.path != item.path:
+                    if not getattr(item, "path", None):
+                        apply_summary.skippedAgents += 1
+                        continue
+
+                    if self._resolve_a2a_path_conflict(item, existing, path_conflict, federation, apply_summary):
+                        continue
+
+                    if item.path in planned_a2a_paths:
+                        # Same-batch collision: another item discovered in this sync already claimed
+                        # this path (as a create or an earlier rename).
+                        agent_name = getattr(getattr(item, "card", None), "name", None) or remote_id
+                        self._record_apply_error(
+                            apply_summary,
+                            f"A2A agent {agent_name}: path '{item.path}' collides with another resource discovered in this same sync",
+                        )
+                        apply_summary.skippedAgents += 1
+                        continue
+                    planned_a2a_paths[item.path] = existing
+
                 runtime_access_changed = _runtime_access_changed(
                     getattr(existing, "config", None),
                     getattr(item, "config", None),
@@ -875,7 +1043,7 @@ class FederationSyncService:
                     apply_summary.updatedAgents += 1
                     sync_plan.a2a_updates.append((existing, item, remote_id))
                     if getattr(item, "path", None):
-                        existing_a2a_by_path[item.path] = existing
+                        planned_a2a_paths[item.path] = existing
 
             error_message = self._extract_resource_error(item)
             if error_message:
@@ -885,16 +1053,69 @@ class FederationSyncService:
                     f"A2A agent {agent_name}: {error_message}",
                 )
 
-        # Step 7: mark stale A2A items.
-        stale_a2a = [
-            item
-            for item in existing_a2a
-            if self._extract_runtime_arn(item.federationMetadata)
-            and self._extract_runtime_arn(item.federationMetadata) not in discovered_a2a_ids
-        ]
-        for stale in stale_a2a:
+        return discovered_a2a_ids
+
+    async def _build_sync_plan(
+        self,
+        *,
+        federation: Federation,
+        discovered_mcp: list[Any],
+        discovered_a2a: list[Any],
+        session: AsyncClientSession | None = None,
+    ) -> FederationSyncPlan:
+        """Build a diff plan comparing discovered resources against persisted Mongo state."""
+        apply_summary = FederationApplySummary()
+        sync_plan = FederationSyncPlan(
+            summary=apply_summary,
+            federation_id=federation.id,
+            provider_type=federation.providerType,
+            discovered_mcp_count=len(discovered_mcp),
+            discovered_a2a_count=len(discovered_a2a),
+        )
+
+        (
+            existing_mcp,
+            existing_mcp_by_remote,
+            existing_a2a,
+            existing_a2a_by_remote,
+        ) = await self._load_existing_resources_by_remote(federation, session)
+        existing_mcp_by_server_name, existing_a2a_by_path = await self._prefetch_global_conflicts(
+            discovered_mcp,
+            discovered_a2a,
+            session,
+        )
+
+        discovered_mcp_ids = self._classify_discovered_mcp(
+            discovered_mcp,
+            existing_mcp_by_remote,
+            existing_mcp_by_server_name,
+            federation,
+            apply_summary,
+            sync_plan,
+        )
+        for stale, stale_runtime_arn in self._collect_stale_resources(
+            existing_mcp,
+            discovered_mcp_ids,
+            self._extract_runtime_arn,
+        ):
+            apply_summary.deletedMcpServers += 1
+            sync_plan.mcp_deletes.append((stale, stale_runtime_arn))
+
+        discovered_a2a_ids = self._classify_discovered_a2a(
+            discovered_a2a,
+            existing_a2a_by_remote,
+            existing_a2a_by_path,
+            federation,
+            apply_summary,
+            sync_plan,
+        )
+        for stale, stale_runtime_arn in self._collect_stale_resources(
+            existing_a2a,
+            discovered_a2a_ids,
+            self._extract_runtime_arn,
+        ):
             apply_summary.deletedAgents += 1
-            sync_plan.a2a_deletes.append((stale, self._extract_runtime_arn(stale.federationMetadata)))
+            sync_plan.a2a_deletes.append((stale, stale_runtime_arn))
 
         return sync_plan
 

@@ -553,6 +553,8 @@ async def test_build_sync_plan_updates_mcp_when_only_runtime_access_mode_changes
     def _fake_mcp_find(query, session=None):
         if query == {"federationRefId": federation.id}:
             return _FakeQuery([existing_mcp])
+        if "serverName" in query:
+            return _FakeQuery([existing_mcp])
         raise AssertionError(f"Unexpected MCP query: {query}")
 
     def _fake_a2a_find(query, session=None):
@@ -696,6 +698,8 @@ async def test_build_sync_plan_updates_mcp_when_only_jwt_audiences_change(
     def _fake_mcp_find(query, session=None):
         if query == {"federationRefId": federation.id}:
             return _FakeQuery([existing_mcp])
+        if "serverName" in query:
+            return _FakeQuery([existing_mcp])
         raise AssertionError(f"Unexpected MCP query: {query}")
 
     def _fake_a2a_find(query, session=None):
@@ -801,6 +805,8 @@ async def test_build_sync_plan_treats_unparseable_existing_runtime_access_as_cha
 
     def _fake_mcp_find(query, session=None):
         if query == {"federationRefId": federation.id}:
+            return _FakeQuery([existing_mcp])
+        if "serverName" in query:
             return _FakeQuery([existing_mcp])
         raise AssertionError(f"Unexpected MCP query: {query}")
 
@@ -1310,10 +1316,856 @@ async def test_build_sync_plan_does_not_treat_planned_a2a_create_as_persisted_pa
     )
 
     assert result.summary.createdAgents == 1
-    assert result.summary.updatedAgents == 1
-    assert result.summary.skippedAgents == 0
+    assert result.summary.updatedAgents == 0
+    assert result.summary.skippedAgents == 1
+    assert result.summary.errors == 1
+    assert "collides with another resource discovered in this same sync" in result.summary.errorMessages[0]
     assert result.a2a_creates == [(discovered_new_agent, "arn:new")]
-    assert result.a2a_updates == [(existing_agent, discovered_existing_agent, "arn:existing")]
+    assert result.a2a_updates == []
+
+
+@pytest.mark.asyncio
+async def test_build_sync_plan_records_error_when_a2a_create_path_is_orphaned(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    conflicting_agent = SimpleNamespace(
+        id=PydanticObjectId(),
+        path="/agentcore/a2a/hosted-agent-257ko",
+        federationRefId=None,
+        federationMetadata={"runtimeArn": "arn:existing"},
+    )
+    discovered_agent = SimpleNamespace(
+        id=PydanticObjectId(),
+        path="/agentcore/a2a/hosted-agent-257ko",
+        card=SimpleNamespace(name="hosted_agent_257ko"),
+        config=SimpleNamespace(enabled=True),
+        tags=[],
+        wellKnown=None,
+        federationRefId=None,
+        federationMetadata={"runtimeArn": "arn:new", "runtimeVersion": "1"},
+        insert=AsyncMock(),
+    )
+
+    def _fake_mcp_find(*_args, **_kwargs):
+        return _FakeQuery([])
+
+    def _fake_a2a_find(query, session=None):
+        if "federationRefId" in query:
+            return _FakeQuery([])
+        if "path" in query:
+            return _FakeQuery([conflicting_agent])
+        raise AssertionError(f"unexpected query: {query}")
+
+    monkeypatch.setattr("registry.services.federation_sync_service.ExtendedMCPServer.find", _fake_mcp_find)
+    monkeypatch.setattr("registry.services.federation_sync_service.A2AAgent.find", _fake_a2a_find)
+
+    result = await federation_sync_service._build_sync_plan(
+        federation=federation,
+        discovered_mcp=[],
+        discovered_a2a=[discovered_agent],
+    )
+
+    assert result.summary.skippedAgents == 1
+    assert result.summary.createdAgents == 0
+    assert result.summary.errors == 1
+    assert "not owned by any federation" in result.summary.errorMessages[0]
+    assert "hosted_agent_257ko" in result.summary.errorMessages[0]
+    discovered_agent.insert.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_build_sync_plan_records_error_when_a2a_update_path_is_orphaned(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    existing_agent = SimpleNamespace(
+        id=PydanticObjectId(),
+        path="/agentcore/a2a/existing-path",
+        card=SimpleNamespace(name="existing"),
+        config=SimpleNamespace(enabled=True),
+        tags=[],
+        wellKnown=None,
+        federationRefId=federation.id,
+        federationMetadata={"runtimeArn": "arn:existing", "runtimeVersion": "1"},
+    )
+    orphan_agent = SimpleNamespace(
+        id=PydanticObjectId(),
+        path="/agentcore/a2a/target-path",
+        card=SimpleNamespace(name="orphan"),
+        config=SimpleNamespace(enabled=True),
+        tags=[],
+        wellKnown=None,
+        federationRefId=None,
+        federationMetadata={"runtimeArn": "arn:orphan", "runtimeVersion": "1"},
+    )
+    discovered_existing_agent = SimpleNamespace(
+        id=PydanticObjectId(),
+        path="/agentcore/a2a/target-path",
+        card=SimpleNamespace(name="existing"),
+        config=SimpleNamespace(enabled=True),
+        tags=[],
+        wellKnown=None,
+        federationRefId=federation.id,
+        federationMetadata={"runtimeArn": "arn:existing", "runtimeVersion": "2"},
+        insert=AsyncMock(),
+    )
+
+    def _fake_mcp_find(*_args, **_kwargs):
+        return _FakeQuery([])
+
+    def _fake_a2a_find(query, session=None):
+        if "federationRefId" in query:
+            return _FakeQuery([existing_agent])
+        if "path" in query:
+            return _FakeQuery([orphan_agent])
+        raise AssertionError(f"unexpected query: {query}")
+
+    monkeypatch.setattr("registry.services.federation_sync_service.ExtendedMCPServer.find", _fake_mcp_find)
+    monkeypatch.setattr("registry.services.federation_sync_service.A2AAgent.find", _fake_a2a_find)
+
+    result = await federation_sync_service._build_sync_plan(
+        federation=federation,
+        discovered_mcp=[],
+        discovered_a2a=[discovered_existing_agent],
+    )
+
+    assert result.summary.updatedAgents == 0
+    assert result.summary.skippedAgents == 1
+    assert result.summary.errors == 1
+    assert "not owned by any federation" in result.summary.errorMessages[0]
+    assert "existing" in result.summary.errorMessages[0]
+
+
+@pytest.mark.asyncio
+async def test_build_sync_plan_records_error_when_mcp_create_server_name_is_orphaned(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    conflicting_server = SimpleNamespace(
+        id=PydanticObjectId(),
+        serverName="shared-server",
+        federationRefId=None,
+        federationMetadata={"runtimeArn": "arn:existing"},
+    )
+    discovered_server = SimpleNamespace(
+        id=PydanticObjectId(),
+        serverName="shared-server",
+        tags=[],
+        federationRefId=None,
+        federationMetadata={"runtimeArn": "arn:new", "runtimeVersion": "1"},
+        insert=AsyncMock(),
+    )
+
+    def _fake_mcp_find(query, session=None):
+        if "federationRefId" in query:
+            return _FakeQuery([])
+        if "serverName" in query:
+            return _FakeQuery([conflicting_server])
+        raise AssertionError(f"unexpected query: {query}")
+
+    def _fake_a2a_find(*_args, **_kwargs):
+        return _FakeQuery([])
+
+    monkeypatch.setattr("registry.services.federation_sync_service.ExtendedMCPServer.find", _fake_mcp_find)
+    monkeypatch.setattr("registry.services.federation_sync_service.A2AAgent.find", _fake_a2a_find)
+
+    result = await federation_sync_service._build_sync_plan(
+        federation=federation,
+        discovered_mcp=[discovered_server],
+        discovered_a2a=[],
+    )
+
+    assert result.summary.skippedMcpServers == 1
+    assert result.summary.createdMcpServers == 0
+    assert result.summary.errors == 1
+    assert "not owned by any federation" in result.summary.errorMessages[0]
+    assert "shared-server" in result.summary.errorMessages[0]
+    discovered_server.insert.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_build_sync_plan_skips_mcp_update_when_server_name_owned_by_another_federation(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    existing_server = SimpleNamespace(
+        id=PydanticObjectId(),
+        serverName="existing-server",
+        federationRefId=federation.id,
+        federationMetadata={"runtimeArn": "arn:existing", "runtimeVersion": "1"},
+    )
+    conflicting_server = SimpleNamespace(
+        id=PydanticObjectId(),
+        serverName="target-server",
+        federationRefId=PydanticObjectId(),
+        federationMetadata={"runtimeArn": "arn:conflict", "runtimeVersion": "1"},
+    )
+    discovered_server = SimpleNamespace(
+        id=PydanticObjectId(),
+        serverName="target-server",
+        tags=[],
+        federationRefId=federation.id,
+        federationMetadata={"runtimeArn": "arn:existing", "runtimeVersion": "2"},
+        insert=AsyncMock(),
+    )
+
+    def _fake_mcp_find(query, session=None):
+        if "federationRefId" in query:
+            return _FakeQuery([existing_server])
+        if "serverName" in query:
+            return _FakeQuery([conflicting_server])
+        raise AssertionError(f"unexpected query: {query}")
+
+    def _fake_a2a_find(*_args, **_kwargs):
+        return _FakeQuery([])
+
+    monkeypatch.setattr("registry.services.federation_sync_service.ExtendedMCPServer.find", _fake_mcp_find)
+    monkeypatch.setattr("registry.services.federation_sync_service.A2AAgent.find", _fake_a2a_find)
+
+    result = await federation_sync_service._build_sync_plan(
+        federation=federation,
+        discovered_mcp=[discovered_server],
+        discovered_a2a=[],
+    )
+
+    assert result.summary.updatedMcpServers == 0
+    assert result.summary.skippedMcpServers == 1
+    assert result.summary.errors == 0
+    assert result.summary.errorMessages == []
+
+
+@pytest.mark.asyncio
+async def test_build_sync_plan_records_error_when_mcp_update_server_name_is_orphaned(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    existing_server = SimpleNamespace(
+        id=PydanticObjectId(),
+        serverName="existing-server",
+        federationRefId=federation.id,
+        federationMetadata={"runtimeArn": "arn:existing", "runtimeVersion": "1"},
+    )
+    orphan_server = SimpleNamespace(
+        id=PydanticObjectId(),
+        serverName="target-server",
+        federationRefId=None,
+        federationMetadata={"runtimeArn": "arn:orphan", "runtimeVersion": "1"},
+    )
+    discovered_server = SimpleNamespace(
+        id=PydanticObjectId(),
+        serverName="target-server",
+        tags=[],
+        federationRefId=federation.id,
+        federationMetadata={"runtimeArn": "arn:existing", "runtimeVersion": "2"},
+        insert=AsyncMock(),
+    )
+
+    def _fake_mcp_find(query, session=None):
+        if "federationRefId" in query:
+            return _FakeQuery([existing_server])
+        if "serverName" in query:
+            return _FakeQuery([orphan_server])
+        raise AssertionError(f"unexpected query: {query}")
+
+    def _fake_a2a_find(*_args, **_kwargs):
+        return _FakeQuery([])
+
+    monkeypatch.setattr("registry.services.federation_sync_service.ExtendedMCPServer.find", _fake_mcp_find)
+    monkeypatch.setattr("registry.services.federation_sync_service.A2AAgent.find", _fake_a2a_find)
+
+    result = await federation_sync_service._build_sync_plan(
+        federation=federation,
+        discovered_mcp=[discovered_server],
+        discovered_a2a=[],
+    )
+
+    assert result.summary.updatedMcpServers == 0
+    assert result.summary.skippedMcpServers == 1
+    assert result.summary.errors == 1
+    assert "not owned by any federation" in result.summary.errorMessages[0]
+    assert "target-server" in result.summary.errorMessages[0]
+
+
+@pytest.mark.asyncio
+async def test_build_sync_plan_records_error_when_mcp_create_collides_in_same_batch(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    first_discovered_server = SimpleNamespace(
+        id=None,
+        serverName="shared-server",
+        tags=[],
+        federationRefId=None,
+        federationMetadata={"runtimeArn": "arn:first", "runtimeVersion": "1"},
+        insert=AsyncMock(),
+    )
+    second_discovered_server = SimpleNamespace(
+        id=None,
+        serverName="shared-server",
+        tags=[],
+        federationRefId=None,
+        federationMetadata={"runtimeArn": "arn:second", "runtimeVersion": "1"},
+        insert=AsyncMock(),
+    )
+
+    def _fake_mcp_find(*_args, **_kwargs):
+        return _FakeQuery([])
+
+    def _fake_a2a_find(*_args, **_kwargs):
+        return _FakeQuery([])
+
+    monkeypatch.setattr("registry.services.federation_sync_service.ExtendedMCPServer.find", _fake_mcp_find)
+    monkeypatch.setattr("registry.services.federation_sync_service.A2AAgent.find", _fake_a2a_find)
+
+    result = await federation_sync_service._build_sync_plan(
+        federation=federation,
+        discovered_mcp=[first_discovered_server, second_discovered_server],
+        discovered_a2a=[],
+    )
+
+    assert result.summary.createdMcpServers == 1
+    assert result.summary.skippedMcpServers == 1
+    assert result.summary.errors == 1
+    assert "collides with another resource discovered in this same sync" in result.summary.errorMessages[0]
+    assert "shared-server" in result.summary.errorMessages[0]
+    assert result.mcp_creates == [(first_discovered_server, "arn:first")]
+
+
+@pytest.mark.asyncio
+async def test_build_sync_plan_records_error_when_a2a_create_collides_in_same_batch(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    first_discovered_agent = SimpleNamespace(
+        id=None,
+        path="/agentcore/a2a/target-path",
+        card=SimpleNamespace(name="first-agent"),
+        config=SimpleNamespace(enabled=True),
+        tags=[],
+        wellKnown=None,
+        federationRefId=None,
+        federationMetadata={"runtimeArn": "arn:first", "runtimeVersion": "1"},
+        insert=AsyncMock(),
+    )
+    second_discovered_agent = SimpleNamespace(
+        id=None,
+        path="/agentcore/a2a/target-path",
+        card=SimpleNamespace(name="second-agent"),
+        config=SimpleNamespace(enabled=True),
+        tags=[],
+        wellKnown=None,
+        federationRefId=None,
+        federationMetadata={"runtimeArn": "arn:second", "runtimeVersion": "1"},
+        insert=AsyncMock(),
+    )
+
+    def _fake_mcp_find(*_args, **_kwargs):
+        return _FakeQuery([])
+
+    def _fake_a2a_find(*_args, **_kwargs):
+        return _FakeQuery([])
+
+    monkeypatch.setattr("registry.services.federation_sync_service.ExtendedMCPServer.find", _fake_mcp_find)
+    monkeypatch.setattr("registry.services.federation_sync_service.A2AAgent.find", _fake_a2a_find)
+
+    result = await federation_sync_service._build_sync_plan(
+        federation=federation,
+        discovered_mcp=[],
+        discovered_a2a=[first_discovered_agent, second_discovered_agent],
+    )
+
+    assert result.summary.createdAgents == 1
+    assert result.summary.skippedAgents == 1
+    assert result.summary.errors == 1
+    assert "collides with another resource discovered in this same sync" in result.summary.errorMessages[0]
+    assert "target-path" in result.summary.errorMessages[0]
+    assert result.a2a_creates == [(first_discovered_agent, "arn:first")]
+
+
+# ---------------------------------------------------------------------------
+# Helper method tests
+# ---------------------------------------------------------------------------
+
+
+def test_collect_stale_resources_returns_items_not_in_discovered_ids():
+    existing = [
+        SimpleNamespace(federationMetadata={"runtimeArn": "arn:keep"}),
+        SimpleNamespace(federationMetadata={"runtimeArn": "arn:stale"}),
+    ]
+    discovered = {"arn:keep"}
+
+    result = FederationSyncService._collect_stale_resources(
+        existing,
+        discovered,
+        FederationSyncService._extract_runtime_arn,
+    )
+
+    assert len(result) == 1
+    assert result[0] == (existing[1], "arn:stale")
+
+
+def test_collect_stale_resources_handles_missing_federation_metadata():
+    existing = [
+        SimpleNamespace(federationMetadata=None),
+        SimpleNamespace(federationMetadata={"runtimeArn": "arn:stale"}),
+    ]
+
+    result = FederationSyncService._collect_stale_resources(
+        existing,
+        set(),
+        FederationSyncService._extract_runtime_arn,
+    )
+
+    assert len(result) == 1
+    assert result[0] == (existing[1], "arn:stale")
+
+
+@pytest.mark.asyncio
+async def test_load_existing_resources_by_remote_indexes_by_runtime_arn(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    mcp_doc = SimpleNamespace(
+        id=PydanticObjectId(),
+        federationMetadata={"runtimeArn": "arn:mcp"},
+    )
+    a2a_doc = SimpleNamespace(
+        id=PydanticObjectId(),
+        federationMetadata={"runtimeArn": "arn:a2a"},
+    )
+
+    def _fake_mcp_find(query, session=None):
+        assert query == {"federationRefId": federation.id}
+        return _FakeQuery([mcp_doc])
+
+    def _fake_a2a_find(query, session=None):
+        assert query == {"federationRefId": federation.id}
+        return _FakeQuery([a2a_doc])
+
+    monkeypatch.setattr("registry.services.federation_sync_service.ExtendedMCPServer.find", _fake_mcp_find)
+    monkeypatch.setattr("registry.services.federation_sync_service.A2AAgent.find", _fake_a2a_find)
+
+    (
+        existing_mcp,
+        mcp_by_remote,
+        existing_a2a,
+        a2a_by_remote,
+    ) = await federation_sync_service._load_existing_resources_by_remote(federation, session=None)
+
+    assert existing_mcp == [mcp_doc]
+    assert mcp_by_remote == {"arn:mcp": mcp_doc}
+    assert existing_a2a == [a2a_doc]
+    assert a2a_by_remote == {"arn:a2a": a2a_doc}
+
+
+@pytest.mark.asyncio
+async def test_prefetch_global_conflicts_queries_server_name_and_path(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
+    mcp_doc = SimpleNamespace(id=PydanticObjectId(), serverName="shared-mcp")
+    a2a_doc = SimpleNamespace(id=PydanticObjectId(), path="/agentcore/a2a/shared")
+
+    def _fake_mcp_find(query, session=None):
+        assert query == {"serverName": {"$in": ["shared-mcp"]}}
+        return _FakeQuery([mcp_doc])
+
+    def _fake_a2a_find(query, session=None):
+        assert query == {"path": {"$in": ["/agentcore/a2a/shared"]}}
+        return _FakeQuery([a2a_doc])
+
+    monkeypatch.setattr("registry.services.federation_sync_service.ExtendedMCPServer.find", _fake_mcp_find)
+    monkeypatch.setattr("registry.services.federation_sync_service.A2AAgent.find", _fake_a2a_find)
+
+    discovered_mcp = [SimpleNamespace(serverName="shared-mcp")]
+    discovered_a2a = [SimpleNamespace(path="/agentcore/a2a/shared")]
+
+    mcp_by_server_name, a2a_by_path = await federation_sync_service._prefetch_global_conflicts(
+        discovered_mcp,
+        discovered_a2a,
+        session=None,
+    )
+
+    assert mcp_by_server_name == {"shared-mcp": mcp_doc}
+    assert a2a_by_path == {"/agentcore/a2a/shared": a2a_doc}
+
+
+@pytest.mark.asyncio
+async def test_prefetch_global_conflicts_returns_empty_dicts_when_no_candidates(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "registry.services.federation_sync_service.ExtendedMCPServer.find",
+        lambda *_args, **_kwargs: _FakeQuery([]),
+    )
+    monkeypatch.setattr(
+        "registry.services.federation_sync_service.A2AAgent.find",
+        lambda *_args, **_kwargs: _FakeQuery([]),
+    )
+
+    mcp_by_server_name, a2a_by_path = await federation_sync_service._prefetch_global_conflicts(
+        [],
+        [],
+        session=None,
+    )
+
+    assert mcp_by_server_name == {}
+    assert a2a_by_path == {}
+
+
+def test_resolve_mcp_name_conflict_flags_orphan_and_cross_federation(
+    federation_sync_service: FederationSyncService,
+):
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    apply_summary = FederationApplySummary()
+    item = SimpleNamespace(serverName="conflict-name")
+
+    orphan_conflict = SimpleNamespace(id=PydanticObjectId(), federationRefId=None)
+    assert federation_sync_service._resolve_mcp_name_conflict(
+        item, None, orphan_conflict, federation, apply_summary, {}
+    )
+    assert apply_summary.errors == 1
+    assert "not owned by any federation" in apply_summary.errorMessages[0]
+
+    apply_summary = FederationApplySummary()
+    cross_federation_conflict = SimpleNamespace(id=PydanticObjectId(), federationRefId=PydanticObjectId())
+    assert federation_sync_service._resolve_mcp_name_conflict(
+        item, None, cross_federation_conflict, federation, apply_summary, {}
+    )
+    assert apply_summary.errors == 0
+    assert apply_summary.skippedMcpServers == 1
+
+
+def test_resolve_mcp_name_conflict_allows_same_federation_rename_and_catches_same_batch(
+    federation_sync_service: FederationSyncService,
+):
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    federation_id = federation.id
+    apply_summary = FederationApplySummary()
+    item = SimpleNamespace(serverName="shared-name")
+    existing = SimpleNamespace(id=PydanticObjectId(), serverName="old-name")
+    same_federation_conflict = SimpleNamespace(id=PydanticObjectId(), federationRefId=federation_id)
+
+    # Same-federation conflict on a different runtimeArn is not a skip (old doc will be deleted).
+    assert not federation_sync_service._resolve_mcp_name_conflict(
+        item, None, same_federation_conflict, federation, apply_summary, {}
+    )
+    assert apply_summary.errors == 0
+    assert apply_summary.skippedMcpServers == 0
+
+    # But a same-batch collision against an already-claimed name is a skip.
+    planned = {"shared-name": SimpleNamespace()}
+    assert federation_sync_service._resolve_mcp_name_conflict(item, None, None, federation, apply_summary, planned)
+    assert apply_summary.errors == 1
+    assert "collides with another resource discovered in this same sync" in apply_summary.errorMessages[0]
+
+    # Conflict with the existing doc itself is not a conflict.
+    apply_summary = FederationApplySummary()
+    assert not federation_sync_service._resolve_mcp_name_conflict(
+        item, existing, existing, federation, apply_summary, {}
+    )
+    assert apply_summary.errors == 0
+
+
+def test_resolve_a2a_path_conflict_flags_orphan_and_cross_federation(
+    federation_sync_service: FederationSyncService,
+):
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    apply_summary = FederationApplySummary()
+    item = SimpleNamespace(path="/agentcore/a2a/shared", card=SimpleNamespace(name="agent"), federationMetadata={})
+
+    orphan_conflict = SimpleNamespace(id=PydanticObjectId(), federationRefId=None)
+    assert federation_sync_service._resolve_a2a_path_conflict(item, None, orphan_conflict, federation, apply_summary)
+    assert apply_summary.errors == 1
+    assert "not owned by any federation" in apply_summary.errorMessages[0]
+
+    apply_summary = FederationApplySummary()
+    cross_federation_conflict = SimpleNamespace(id=PydanticObjectId(), federationRefId=PydanticObjectId())
+    assert federation_sync_service._resolve_a2a_path_conflict(
+        item, None, cross_federation_conflict, federation, apply_summary
+    )
+    assert apply_summary.errors == 0
+    assert apply_summary.skippedAgents == 1
+
+
+def test_resolve_a2a_path_conflict_allows_same_federation_and_self_conflict(
+    federation_sync_service: FederationSyncService,
+):
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    federation_id = federation.id
+    apply_summary = FederationApplySummary()
+    item = SimpleNamespace(path="/agentcore/a2a/shared", card=SimpleNamespace(name="agent"), federationMetadata={})
+    existing = SimpleNamespace(id=PydanticObjectId(), path="/agentcore/a2a/old")
+    same_federation_conflict = SimpleNamespace(id=PydanticObjectId(), federationRefId=federation_id)
+
+    assert not federation_sync_service._resolve_a2a_path_conflict(
+        item, None, same_federation_conflict, federation, apply_summary
+    )
+    assert apply_summary.errors == 0
+    assert apply_summary.skippedAgents == 0
+
+    apply_summary = FederationApplySummary()
+    assert not federation_sync_service._resolve_a2a_path_conflict(item, existing, existing, federation, apply_summary)
+    assert apply_summary.errors == 0
+
+
+# ---------------------------------------------------------------------------
+# Same-batch collision expansion tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_build_sync_plan_records_error_when_mcp_create_and_rename_collide_in_same_batch(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    existing_server = SimpleNamespace(
+        id=PydanticObjectId(),
+        serverName="old-name",
+        federationRefId=federation.id,
+        federationMetadata={"runtimeArn": "arn:existing", "runtimeVersion": "1"},
+    )
+    new_server = SimpleNamespace(
+        id=None,
+        serverName="shared-name",
+        tags=[],
+        federationRefId=None,
+        federationMetadata={"runtimeArn": "arn:new", "runtimeVersion": "1"},
+        insert=AsyncMock(),
+    )
+    renamed_server = SimpleNamespace(
+        id=PydanticObjectId(),
+        serverName="shared-name",
+        tags=[],
+        federationRefId=federation.id,
+        federationMetadata={"runtimeArn": "arn:existing", "runtimeVersion": "2"},
+        insert=AsyncMock(),
+    )
+
+    def _fake_mcp_find(query, session=None):
+        if "federationRefId" in query:
+            return _FakeQuery([existing_server])
+        if "serverName" in query:
+            return _FakeQuery([])
+        raise AssertionError(f"unexpected query: {query}")
+
+    def _fake_a2a_find(*_args, **_kwargs):
+        return _FakeQuery([])
+
+    monkeypatch.setattr("registry.services.federation_sync_service.ExtendedMCPServer.find", _fake_mcp_find)
+    monkeypatch.setattr("registry.services.federation_sync_service.A2AAgent.find", _fake_a2a_find)
+
+    result = await federation_sync_service._build_sync_plan(
+        federation=federation,
+        discovered_mcp=[new_server, renamed_server],
+        discovered_a2a=[],
+    )
+
+    assert result.summary.createdMcpServers == 1
+    assert result.summary.updatedMcpServers == 0
+    assert result.summary.skippedMcpServers == 1
+    assert result.summary.errors == 1
+    assert result.mcp_creates == [(new_server, "arn:new")]
+    assert result.mcp_updates == []
+
+
+@pytest.mark.asyncio
+async def test_build_sync_plan_records_error_when_a2a_create_collides_in_same_batch_both_creates(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    first_agent = SimpleNamespace(
+        id=None,
+        path="/agentcore/a2a/target-path",
+        card=SimpleNamespace(name="first-agent"),
+        config=SimpleNamespace(enabled=True),
+        tags=[],
+        wellKnown=None,
+        federationRefId=None,
+        federationMetadata={"runtimeArn": "arn:first", "runtimeVersion": "1"},
+        insert=AsyncMock(),
+    )
+    second_agent = SimpleNamespace(
+        id=None,
+        path="/agentcore/a2a/target-path",
+        card=SimpleNamespace(name="second-agent"),
+        config=SimpleNamespace(enabled=True),
+        tags=[],
+        wellKnown=None,
+        federationRefId=None,
+        federationMetadata={"runtimeArn": "arn:second", "runtimeVersion": "1"},
+        insert=AsyncMock(),
+    )
+
+    def _fake_mcp_find(*_args, **_kwargs):
+        return _FakeQuery([])
+
+    def _fake_a2a_find(*_args, **_kwargs):
+        return _FakeQuery([])
+
+    monkeypatch.setattr("registry.services.federation_sync_service.ExtendedMCPServer.find", _fake_mcp_find)
+    monkeypatch.setattr("registry.services.federation_sync_service.A2AAgent.find", _fake_a2a_find)
+
+    result = await federation_sync_service._build_sync_plan(
+        federation=federation,
+        discovered_mcp=[],
+        discovered_a2a=[first_agent, second_agent],
+    )
+
+    assert result.summary.createdAgents == 1
+    assert result.summary.skippedAgents == 1
+    assert result.summary.errors == 1
+    assert result.a2a_creates == [(first_agent, "arn:first")]
+
+
+@pytest.mark.asyncio
+async def test_build_sync_plan_records_error_when_two_a2a_renames_collide_in_same_batch(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    existing_first = SimpleNamespace(
+        id=PydanticObjectId(),
+        path="/agentcore/a2a/first-path",
+        card=SimpleNamespace(name="first"),
+        config=SimpleNamespace(enabled=True),
+        tags=[],
+        wellKnown=None,
+        federationRefId=federation.id,
+        federationMetadata={"runtimeArn": "arn:first", "runtimeVersion": "1"},
+    )
+    existing_second = SimpleNamespace(
+        id=PydanticObjectId(),
+        path="/agentcore/a2a/second-path",
+        card=SimpleNamespace(name="second"),
+        config=SimpleNamespace(enabled=True),
+        tags=[],
+        wellKnown=None,
+        federationRefId=federation.id,
+        federationMetadata={"runtimeArn": "arn:second", "runtimeVersion": "1"},
+    )
+    discovered_first = SimpleNamespace(
+        id=PydanticObjectId(),
+        path="/agentcore/a2a/target-path",
+        card=SimpleNamespace(name="first"),
+        config=SimpleNamespace(enabled=True),
+        tags=[],
+        wellKnown=None,
+        federationRefId=federation.id,
+        federationMetadata={"runtimeArn": "arn:first", "runtimeVersion": "2"},
+        insert=AsyncMock(),
+    )
+    discovered_second = SimpleNamespace(
+        id=PydanticObjectId(),
+        path="/agentcore/a2a/target-path",
+        card=SimpleNamespace(name="second"),
+        config=SimpleNamespace(enabled=True),
+        tags=[],
+        wellKnown=None,
+        federationRefId=federation.id,
+        federationMetadata={"runtimeArn": "arn:second", "runtimeVersion": "2"},
+        insert=AsyncMock(),
+    )
+
+    def _fake_mcp_find(*_args, **_kwargs):
+        return _FakeQuery([])
+
+    def _fake_a2a_find(query, session=None):
+        if "federationRefId" in query:
+            return _FakeQuery([existing_first, existing_second])
+        if "path" in query:
+            return _FakeQuery([])
+        raise AssertionError(f"unexpected query: {query}")
+
+    monkeypatch.setattr("registry.services.federation_sync_service.ExtendedMCPServer.find", _fake_mcp_find)
+    monkeypatch.setattr("registry.services.federation_sync_service.A2AAgent.find", _fake_a2a_find)
+
+    result = await federation_sync_service._build_sync_plan(
+        federation=federation,
+        discovered_mcp=[],
+        discovered_a2a=[discovered_first, discovered_second],
+    )
+
+    assert result.summary.updatedAgents == 1
+    assert result.summary.skippedAgents == 1
+    assert result.summary.errors == 1
+
+
+@pytest.mark.asyncio
+async def test_build_sync_plan_records_error_when_a2a_rename_then_create_collide_in_same_batch(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    existing_agent = SimpleNamespace(
+        id=PydanticObjectId(),
+        path="/agentcore/a2a/existing-path",
+        card=SimpleNamespace(name="existing"),
+        config=SimpleNamespace(enabled=True),
+        tags=[],
+        wellKnown=None,
+        federationRefId=federation.id,
+        federationMetadata={"runtimeArn": "arn:existing", "runtimeVersion": "1"},
+    )
+    discovered_rename = SimpleNamespace(
+        id=PydanticObjectId(),
+        path="/agentcore/a2a/target-path",
+        card=SimpleNamespace(name="existing"),
+        config=SimpleNamespace(enabled=True),
+        tags=[],
+        wellKnown=None,
+        federationRefId=federation.id,
+        federationMetadata={"runtimeArn": "arn:existing", "runtimeVersion": "2"},
+        insert=AsyncMock(),
+    )
+    discovered_create = SimpleNamespace(
+        id=None,
+        path="/agentcore/a2a/target-path",
+        card=SimpleNamespace(name="new-agent"),
+        config=SimpleNamespace(enabled=True),
+        tags=[],
+        wellKnown=None,
+        federationRefId=None,
+        federationMetadata={"runtimeArn": "arn:new", "runtimeVersion": "1"},
+        insert=AsyncMock(),
+    )
+
+    def _fake_mcp_find(*_args, **_kwargs):
+        return _FakeQuery([])
+
+    def _fake_a2a_find(query, session=None):
+        if "federationRefId" in query:
+            return _FakeQuery([existing_agent])
+        if "path" in query:
+            return _FakeQuery([])
+        raise AssertionError(f"unexpected query: {query}")
+
+    monkeypatch.setattr("registry.services.federation_sync_service.ExtendedMCPServer.find", _fake_mcp_find)
+    monkeypatch.setattr("registry.services.federation_sync_service.A2AAgent.find", _fake_a2a_find)
+
+    result = await federation_sync_service._build_sync_plan(
+        federation=federation,
+        discovered_mcp=[],
+        discovered_a2a=[discovered_rename, discovered_create],
+    )
+
+    assert result.summary.updatedAgents == 1
+    assert result.summary.createdAgents == 0
+    assert result.summary.skippedAgents == 1
+    assert result.summary.errors == 1
+    assert result.a2a_updates == [(existing_agent, discovered_rename, "arn:existing")]
 
 
 @pytest.mark.asyncio
@@ -1574,6 +2426,8 @@ async def test_build_sync_plan_tracks_unchanged_resources_for_acl_inheritance(
 
     def _fake_mcp_find(query, session=None):
         if query == {"federationRefId": federation.id}:
+            return _FakeQuery([existing_mcp])
+        if "serverName" in query:
             return _FakeQuery([existing_mcp])
         raise AssertionError(f"unexpected MCP query: {query}")
 
