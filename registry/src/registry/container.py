@@ -28,7 +28,11 @@ from .services.a2a_agent_service import A2AAgentService
 from .services.access_control_service import ACLService, load_role_cache
 from .services.agent_scanner import AgentScannerService
 from .services.federation.a2a_client_registry import A2AClientRegistry
-from .services.federation.azure_foundry_proxy_auth import AzureFoundryClientCache
+from .services.federation.azure_foundry_proxy_auth import (
+    A2aHeadersProvider,
+    AzureFoundryClientCache,
+    make_a2a_headers_provider,
+)
 from .services.federation_crud_service import FederationCrudService
 from .services.federation_job_service import FederationJobService
 from .services.federation_service import FederationService
@@ -51,6 +55,7 @@ from .services.security_scanner import SecurityScannerService
 from .services.server_service import ServerServiceV1
 from .services.user_service import UserService
 from .services.workflow_control_service import WorkflowControlService
+from .services.workflow_mcp_headers_provider import McpHeadersProvider, make_mcp_headers_provider
 from .services.workflow_service import WorkflowService
 from .services.workflow_shutdown import cancel_in_flight_runs
 
@@ -280,6 +285,19 @@ class RegistryContainer:
         )
 
     @cached_property
+    def a2a_headers_provider(self) -> A2aHeadersProvider:
+        """App-scoped A2A headers provider; resolves Azure Entra credentials fresh per call (no caching)."""
+        return make_a2a_headers_provider(jwt_config=self.settings.jwt_signing_config)
+
+    @cached_property
+    def mcp_headers_provider(self) -> McpHeadersProvider:
+        """App-scoped MCP headers provider for manually-registered workflow MCP servers."""
+        return make_mcp_headers_provider(
+            oauth_service=self.oauth_service,
+            redis_client=self.redis_client,
+        )
+
+    @cached_property
     def workflow_runner(self) -> WorkflowRunner:
         """Build the app-scoped WorkflowRunner used by API-triggered runs."""
         try:
@@ -293,11 +311,15 @@ class RegistryContainer:
 
             return WorkflowRunner(
                 llm=llm,
-                registry_url=self.settings.registry_internal_url,
                 db_client=MongoDB.get_client(),
                 db_name=MongoDB.database_name,
+                jwt_config=self.settings.jwt_signing_config,
                 directive_queue=self.directive_queue,
-                client_provider=self.a2a_client_registry.get_client,
+                a2a_httpx_client=self.a2a_httpx_client,
+                headers_provider=self.a2a_headers_provider,
+                redis_client=self.redis_client,
+                redis_key_prefix=self.settings.redis_key_prefix,
+                mcp_headers_provider=self.mcp_headers_provider,
             )
 
         except Exception:
@@ -317,6 +339,15 @@ class RegistryContainer:
         return httpx.AsyncClient(
             timeout=httpx.Timeout(30.0, read=60.0),
             follow_redirects=True,
+            limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
+        )
+
+    @cached_property
+    def a2a_httpx_client(self) -> httpx.AsyncClient:
+        """Shared httpx client for A2A agent invocations (workflow executors + mcpgw)."""
+        return httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=30.0, read=None, write=60.0, pool=30.0),
+            follow_redirects=False,
             limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
         )
 
@@ -386,6 +417,7 @@ class RegistryContainer:
         await cancel_in_flight_runs()
         await self.health_service.shutdown()
         await self.mcp_proxy_client.aclose()
+        await self.a2a_httpx_client.aclose()
         await self.a2a_client_registry.close()
 
     def _initialize_federation(self) -> None:

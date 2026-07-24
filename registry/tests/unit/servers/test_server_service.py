@@ -530,6 +530,8 @@ class TestBuildCompleteHeaders:
         jwt_signing_config,
     ):
         """AgentCore MCP proxy JWT derives iss/aud from the specific server config."""
+        from unittest.mock import patch
+
         from registry.services.server_service import build_complete_headers_for_server
         from registry_pkgs.core.agentcore_jwt import mint_agentcore_runtime_jwt
         from registry_pkgs.core.jwt_utils import decode_jwt_unverified

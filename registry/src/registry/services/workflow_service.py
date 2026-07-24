@@ -533,6 +533,7 @@ class WorkflowService:
         triggering_user_id: str | None = None,
         triggering_username: str | None = None,
         triggering_scopes: list[str] | None = None,
+        triggering_client_id: str | None = None,
     ) -> WorkflowRun:
         """
         Trigger a workflow run (async execution).
@@ -605,6 +606,7 @@ class WorkflowService:
                 triggering_user_id=triggering_user_id,
                 triggering_username=triggering_username,
                 triggering_scopes=triggering_scopes,
+                triggering_client_id=triggering_client_id,
             )
 
             # Save to database

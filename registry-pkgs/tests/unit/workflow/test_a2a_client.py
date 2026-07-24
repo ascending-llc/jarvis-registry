@@ -697,7 +697,7 @@ async def test_call_a2a_raises_when_httpx_client_missing_for_agentcore():
 
     with pytest.raises(
         ValueError,
-        match=r"httpx_client is required for federated agent .*providerType='aws_agentcore'",
+        match=r"httpx_client or headers_provider is required for federated agent .*providerType='aws_agentcore'",
     ):
         await call_a2a(agent, "test")
 
@@ -710,7 +710,7 @@ async def test_call_a2a_raises_when_httpx_client_missing_for_azure_foundry():
 
     with pytest.raises(
         ValueError,
-        match=r"httpx_client is required for federated agent .*providerType='azure_ai_foundry'",
+        match=r"httpx_client or headers_provider is required for federated agent .*providerType='azure_ai_foundry'",
     ):
         await call_a2a(agent, "test")
 
