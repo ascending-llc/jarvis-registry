@@ -141,7 +141,6 @@ async def retry_run(
     Returns 400 if *from_node_id* does not exist in the workflow definition.
     """
     registry_token = build_registry_token(request, current_user)
-    user_id = current_user.get("user_id")
 
     try:
         await _require_workflow_view(acl_service, current_user, workflow_id)
@@ -150,7 +149,6 @@ async def retry_run(
             run_id,
             body.from_node_id,
             registry_token=registry_token,
-            user_id=user_id,
         )
         return DirectiveResponse(
             run_id=str(child_run.id),
@@ -238,7 +236,6 @@ async def rerun_node(
     - A new child WorkflowRun (trigger_source="node_rerun") is returned immediately.
     """
     registry_token = build_registry_token(request, current_user)
-    user_id = current_user.get("user_id")
 
     try:
         await _require_workflow_view(acl_service, current_user, workflow_id)
@@ -247,7 +244,6 @@ async def rerun_node(
             run_id,
             node_id,
             registry_token=registry_token,
-            user_id=user_id,
         )
         return DirectiveResponse(
             run_id=str(child_run.id),
@@ -284,7 +280,6 @@ async def replay_run(
     definition (not the snapshot), so definition updates are picked up.
     """
     registry_token = build_registry_token(request, current_user)
-    user_id = current_user.get("user_id")
 
     try:
         await _require_workflow_view(acl_service, current_user, workflow_id)
@@ -292,7 +287,6 @@ async def replay_run(
             workflow_id,
             run_id,
             registry_token=registry_token,
-            user_id=user_id,
         )
         return DirectiveResponse(
             run_id=str(new_run.id),

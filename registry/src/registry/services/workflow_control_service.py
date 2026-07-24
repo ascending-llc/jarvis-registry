@@ -96,7 +96,6 @@ class _HasRun(Protocol):
         user_text: str,
         *,
         registry_token: str,
-        user_id: str | None,
         existing_run_id: str,
         injected_outputs: dict[str, dict[str, Any]] | None = None,
         stop_after_node_id: str | None = None,
@@ -109,7 +108,6 @@ class _HasRun(Protocol):
         *,
         existing_run_id: str,
         registry_token: str,
-        user_id: str | None,
     ) -> tuple[WorkflowRun, list[NodeRun]]:
         """Resume a run that hit an HITL pause after the user decided."""
         pass
@@ -152,7 +150,9 @@ class WorkflowControlService:
             workflow_definition_id: The WorkflowDefinition ObjectId string.
             user_text:              Prompt forwarded to the workflow's first step.
             registry_token:         User-scoped Bearer token for the runner.
-            user_id:                User ID for ACL lookup inside the runner.
+            user_id:                Triggering user's ID — persisted as
+                                    ``triggering_user_id`` so an HITL resume can
+                                    re-mint credentials on their behalf.
 
         Raises:
             HTTPException(400): ``workflow_definition_id`` is not a valid ObjectId.
@@ -189,7 +189,6 @@ class WorkflowControlService:
                 workflow_definition_id,
                 user_text,
                 registry_token=registry_token,
-                user_id=user_id,
                 existing_run_id=str(run.id),
             )
         )
@@ -306,7 +305,6 @@ class WorkflowControlService:
             runner.continue_run(
                 existing_run_id=str(run.id),
                 registry_token=token,
-                user_id=run.triggering_user_id,
             )
         )
 
@@ -356,7 +354,6 @@ class WorkflowControlService:
         from_node_id: str,
         *,
         registry_token: str,
-        user_id: str | None,
     ) -> WorkflowRun:
         """Retry a finished run from *from_node_id* onwards.
 
@@ -371,7 +368,6 @@ class WorkflowControlService:
             from_node_id:           Node ID within the definition from which
                                     re-execution should start.
             registry_token:         User-scoped Bearer token forwarded to the runner.
-            user_id:                User ID for ACL lookup forwarded to the runner.
         """
         if self._runner_factory is None:
             raise HTTPException(status_code=501, detail="Retry is not configured on this instance")
@@ -449,7 +445,6 @@ class WorkflowControlService:
                 str(parent_run.workflow_definition_id),
                 user_text,
                 registry_token=registry_token,
-                user_id=user_id,
                 existing_run_id=str(child_run.id),
                 injected_outputs=injected_outputs,
                 definition_snapshot=parent_run.definition_snapshot,
@@ -464,7 +459,6 @@ class WorkflowControlService:
         node_id: str,
         *,
         registry_token: str,
-        user_id: str | None,
     ) -> WorkflowRun:
         """Rerun a single node in isolation, using the parent node's last output as input.
 
@@ -478,7 +472,6 @@ class WorkflowControlService:
             run_id:                 The finished or failed parent run.
             node_id:                Top-level WorkflowNode.id to rerun.
             registry_token:         User-scoped Bearer token.
-            user_id:                User ID for ACL lookup.
 
         Raises:
             HTTPException(400): node_id not found or is not a top-level STEP node.
@@ -601,7 +594,6 @@ class WorkflowControlService:
                 str(parent_run.workflow_definition_id),
                 user_text,
                 registry_token=registry_token,
-                user_id=user_id,
                 existing_run_id=str(child_run.id),
                 injected_outputs=injected_outputs,
                 stop_after_node_id=node_id,
@@ -616,7 +608,6 @@ class WorkflowControlService:
         run_id: str,
         *,
         registry_token: str,
-        user_id: str | None,
     ) -> WorkflowRun:
         """Replay a workflow run from scratch using the same initial_input.
 
@@ -628,7 +619,6 @@ class WorkflowControlService:
             workflow_definition_id: Must match run.workflow_definition_id.
             run_id:                 The source run to replay.
             registry_token:         User-scoped Bearer token.
-            user_id:                User ID for ACL lookup.
 
         Raises:
             HTTPException(404): run_id not found.
@@ -666,7 +656,6 @@ class WorkflowControlService:
                 workflow_definition_id,
                 user_text,
                 registry_token=registry_token,
-                user_id=user_id,
                 existing_run_id=str(replay_run.id),
             )
         )

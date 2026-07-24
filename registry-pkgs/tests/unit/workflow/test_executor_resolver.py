@@ -102,7 +102,6 @@ class TestExecutorResolver:
             llm=SimpleNamespace(),
             registry_url="https://registry.example.com",
             registry_token="token",
-            user_id=None,
         )
 
         assert seen == ["alpha", "beta"]
@@ -123,7 +122,6 @@ class TestExecutorResolver:
             llm=SimpleNamespace(),
             registry_url="https://registry.example.com",
             registry_token="token",
-            accessible_agent_ids=None,
         )
 
         assert resolved == "mcp-executor"
@@ -140,7 +138,6 @@ class TestExecutorResolver:
             llm=SimpleNamespace(),
             registry_url="https://registry.example.com",
             registry_token="token",
-            accessible_agent_ids=None,
         )
 
         output = await resolved(StepInput(input="hello", previous_step_content="ctx"), {"echo_count": 0})
@@ -170,7 +167,6 @@ class TestExecutorResolver:
             llm=SimpleNamespace(),
             registry_url="https://registry.example.com",
             registry_token="token",
-            accessible_agent_ids=None,
         )
 
         assert resolved == "a2a-executor"
@@ -190,45 +186,7 @@ class TestExecutorResolver:
                 llm=SimpleNamespace(),
                 registry_url="https://registry.example.com",
                 registry_token="token",
-                accessible_agent_ids=None,
             )
-
-    @pytest.mark.asyncio
-    async def test_resolve_executor_raises_permission_error_when_agent_not_accessible(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
-        self._patch_beanie_filters(monkeypatch)
-        agent = _a2a_agent("deep-intel")
-        monkeypatch.setattr(executor_resolver.ExtendedMCPServer, "find_one", AsyncMock(return_value=None))
-        monkeypatch.setattr(executor_resolver.A2AAgent, "find_one", AsyncMock(return_value=agent))
-        monkeypatch.setattr(executor_resolver, "make_a2a_executor", lambda *args, **kwargs: "a2a-executor")
-
-        with pytest.raises(PermissionError, match="user lacks access"):
-            await executor_resolver._resolve_executor(
-                "deep-intel",
-                llm=SimpleNamespace(),
-                registry_url="https://registry.example.com",
-                registry_token="token",
-                accessible_agent_ids=set(),  # explicitly empty: no access
-            )
-
-    @pytest.mark.asyncio
-    async def test_resolve_executor_allows_accessible_a2a_agent(self, monkeypatch: pytest.MonkeyPatch):
-        self._patch_beanie_filters(monkeypatch)
-        agent = _a2a_agent("deep-intel")
-        monkeypatch.setattr(executor_resolver.ExtendedMCPServer, "find_one", AsyncMock(return_value=None))
-        monkeypatch.setattr(executor_resolver.A2AAgent, "find_one", AsyncMock(return_value=agent))
-        monkeypatch.setattr(executor_resolver, "make_a2a_executor", lambda *args, **kwargs: "a2a-executor")
-
-        resolved = await executor_resolver._resolve_executor(
-            "deep-intel",
-            llm=SimpleNamespace(),
-            registry_url="https://registry.example.com",
-            registry_token="token",
-            accessible_agent_ids={str(agent.id)},
-        )
-
-        assert resolved == "a2a-executor"
 
 
 @pytest.mark.unit
@@ -566,76 +524,6 @@ class TestHelpers:
 
 
 @pytest.mark.unit
-class TestLoadAccessibleAgentIds:
-    """Tests for _load_accessible_agent_ids ACL helper."""
-
-    @pytest.mark.asyncio
-    async def test_returns_agent_ids_with_view_permission(self, monkeypatch: pytest.MonkeyPatch):
-        from beanie import PydanticObjectId
-
-        from registry_pkgs.models.enums import PermissionBits
-        from registry_pkgs.models.extended_acl_entry import RegistryAclEntry
-
-        rid1 = PydanticObjectId()
-        rid2 = PydanticObjectId()
-        rid3 = PydanticObjectId()
-
-        entry1 = SimpleNamespace(permBits=PermissionBits.VIEW, resourceId=rid1)
-        entry2 = SimpleNamespace(permBits=PermissionBits.EDIT, resourceId=rid2)  # no VIEW
-        entry3 = SimpleNamespace(permBits=PermissionBits.VIEW, resourceId=rid3)
-
-        def fake_find(query):
-            class FakeQuery:
-                async def to_list(self):
-                    return [entry1, entry2, entry3]
-
-            return FakeQuery()
-
-        monkeypatch.setattr(RegistryAclEntry, "find", fake_find)
-
-        result = await executor_resolver._load_accessible_agent_ids(str(PydanticObjectId()))
-        assert result == {str(rid1), str(rid3)}
-
-    @pytest.mark.asyncio
-    async def test_returns_empty_set_when_no_entries(self, monkeypatch: pytest.MonkeyPatch):
-        from registry_pkgs.models.extended_acl_entry import RegistryAclEntry
-
-        def fake_find(query):
-            class FakeQuery:
-                async def to_list(self):
-                    return []
-
-            return FakeQuery()
-
-        monkeypatch.setattr(RegistryAclEntry, "find", fake_find)
-
-        result = await executor_resolver._load_accessible_agent_ids(str(PydanticObjectId()))
-        assert result == set()
-
-    @pytest.mark.asyncio
-    async def test_build_executor_registry_passes_acl_set_to_resolver(self, monkeypatch: pytest.MonkeyPatch):
-        async def fake_resolve(key: str, **kwargs):
-            return kwargs.get("accessible_agent_ids")
-
-        monkeypatch.setattr(executor_resolver, "_resolve_executor", fake_resolve)
-
-        async def fake_load_acl(user_id: str) -> set[str]:
-            return {"agent-1"}
-
-        monkeypatch.setattr(executor_resolver, "_load_accessible_agent_ids", fake_load_acl)
-
-        registry = await executor_resolver.build_executor_registry(
-            ["alpha"],
-            llm=SimpleNamespace(),
-            registry_url="https://registry.example.com",
-            registry_token="token",
-            user_id="user-123",
-        )
-
-        assert registry == {"alpha": {"agent-1"}}
-
-
-@pytest.mark.unit
 class TestA2APoolExecutorQueries:
     """Ensure make_a2a_pool_executor queries use config.enabled."""
 
@@ -662,7 +550,6 @@ class TestA2APoolExecutorQueries:
             node_name="test-pool",
             pool_keys=["agent-a", "agent-b"],
             selector_llm=SimpleNamespace(),
-            accessible_agent_ids=None,
         )
 
         result = await executor(StepInput(input="hello"), {})
@@ -691,7 +578,6 @@ class TestA2APoolExecutorQueries:
             node_name="retry-pool",
             pool_keys=["agent-a"],
             selector_llm=SimpleNamespace(),
-            accessible_agent_ids=None,
         )
 
         # Pre-fill cache to simulate retry path

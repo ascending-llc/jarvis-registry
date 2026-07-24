@@ -226,7 +226,10 @@ async def create_workflow(
         user_id = user_context.get("user_id")
 
         # Create workflow
-        workflow = await workflow_service.create_workflow(data=data)
+        workflow = await workflow_service.create_workflow(
+            data=data,
+            user_id=PydanticObjectId(user_id),
+        )
 
         if not workflow:
             logger.error("Workflow creation failed without exception")
@@ -292,6 +295,7 @@ async def update_workflow(
                 workflow = await workflow_service.update_workflow(
                     workflow_id=workflow_id,
                     data=data,
+                    user_id=PydanticObjectId(user_context.get("user_id")),
                     session=mongo_session,
                 )
 
@@ -538,7 +542,6 @@ async def trigger_workflow_run(
         )
 
         registry_token = build_registry_token(request, user_context)
-        user_id = user_context.get("user_id")
 
         # Schedule background execution
         # This updates the run status as it progresses through the workflow state machine.
@@ -547,7 +550,6 @@ async def trigger_workflow_run(
             run_id=run.id,
             workflow_runner=workflow_runner,
             registry_token=registry_token,
-            user_id=user_id,
         )
 
         logger.info(f"Workflow run {run.id} queued for execution (workflow: {workflow_id})")

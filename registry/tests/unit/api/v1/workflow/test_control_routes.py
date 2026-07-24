@@ -272,7 +272,6 @@ async def test_retry_run_success(wf_id, sample_user_context, mock_service, mock_
         "run-1",
         "node-2",
         registry_token="test-token-123",
-        user_id=sample_user_context["user_id"],
     )
     assert result.run_id == str(child_run.id)
     assert result.status == WorkflowRunStatus.PENDING
@@ -329,7 +328,6 @@ async def test_retry_run_empty_auth_header(monkeypatch, wf_id, sample_user_conte
 
     call_kwargs = mock_service.send_retry.call_args.kwargs
     assert call_kwargs["registry_token"] == "svc-jwt"
-    assert call_kwargs["user_id"] == sample_user_context["user_id"]
 
 
 @pytest.mark.asyncio
@@ -567,7 +565,6 @@ async def test_rerun_node_success(wf_id, sample_user_context, mock_service, mock
         "run-1",
         "node-3",
         registry_token="rerun-token",
-        user_id=sample_user_context["user_id"],
     )
     assert result.run_id == str(child_run.id)
     assert result.status == WorkflowRunStatus.PENDING
@@ -685,7 +682,6 @@ async def test_replay_run_success(wf_id, sample_user_context, mock_service, mock
         wf_id,
         "run-1",
         registry_token="replay-token",
-        user_id=sample_user_context["user_id"],
     )
     assert result.run_id == str(new_run.id)
     assert result.status == WorkflowRunStatus.PENDING

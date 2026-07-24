@@ -103,7 +103,7 @@ USER_B = PydanticObjectId()
 class MockRunner(WorkflowRunner):
     """Replace MCP/A2A executors with instant in-process mocks."""
 
-    async def _build_registry(self, definition, registry_token, user_id):
+    async def _build_registry(self, definition, registry_token):
         all_nodes = flatten_workflow_nodes(definition.nodes)
         keys = list(dict.fromkeys(n.executor_key for n in all_nodes if n.executor_key))
 
@@ -161,7 +161,7 @@ class FailingMockRunner(WorkflowRunner):
         self._fail_counts = fail_counts or {}
         self.attempts: dict[str, int] = {}
 
-    async def _build_registry(self, definition, registry_token, user_id):
+    async def _build_registry(self, definition, registry_token):
         all_nodes = flatten_workflow_nodes(definition.nodes)
         keys = list(dict.fromkeys(n.executor_key for n in all_nodes if n.executor_key))
 
@@ -261,7 +261,7 @@ async def _make_workflow(
     creator: PydanticObjectId = USER_A,
 ) -> WorkflowDefinition:
     req = WorkflowCreateRequest(name=PREFIX + name, description="e2e", nodes=nodes)
-    workflow = await workflow_service.create_workflow(data=req)
+    workflow = await workflow_service.create_workflow(data=req, user_id=creator)
     await acl_service.grant_permission(
         principal_type=PrincipalType.USER,
         principal_id=creator,
@@ -312,9 +312,7 @@ async def _trigger_run_inproc(
         triggering_user_id=str(USER_A),
     )
     await run.insert()
-    task = asyncio.create_task(
-        runner.run(workflow_id, "e2e", registry_token="test", user_id=str(USER_A), existing_run_id=str(run.id))
-    )
+    task = asyncio.create_task(runner.run(workflow_id, "e2e", registry_token="test", existing_run_id=str(run.id)))
     return str(run.id), task
 
 
@@ -356,7 +354,8 @@ async def module_a(workflow_service, control_service, acl_service) -> Report:
 
     # A1: creator gets OWNER (permBits=15)
     workflow = await workflow_service.create_workflow(
-        data=WorkflowCreateRequest(name=PREFIX + "acl-creator", description="", nodes=nodes)
+        data=WorkflowCreateRequest(name=PREFIX + "acl-creator", description="", nodes=nodes),
+        user_id=USER_A,
     )
     await acl_service.grant_permission(
         principal_type=PrincipalType.USER,
@@ -431,6 +430,7 @@ async def module_b(workflow_service, control_service, acl_service) -> Report:
     updated = await workflow_service.update_workflow(
         str(wf.id),
         WorkflowUpdateRequest(name=wf.name, description=wf.description, nodes=nodes_v2),
+        user_id=USER_A,
     )
     r.check("B2 PUT bumps to version=2", updated.version == 2, f"version={updated.version}")
 
@@ -470,6 +470,7 @@ async def module_b(workflow_service, control_service, acl_service) -> Report:
     await workflow_service.update_workflow(
         str(wf.id),
         WorkflowUpdateRequest(name=wf.name, description=wf.description, nodes=nodes_v3),
+        user_id=USER_A,
     )
     run1_reloaded = await WorkflowRun.get(PydanticObjectId(str(run1.id)))
     r.check(
@@ -930,6 +931,7 @@ async def module_e(workflow_service, control_service, acl_service, queue, runner
             description="updated",
             nodes=[convert_node_to_input(n) for n in hitl_wf.nodes],
         ),
+        user_id=USER_A,
     )
 
     await workflow_service.delete_workflow(str(hitl_wf.id))
@@ -1018,7 +1020,6 @@ async def module_g(workflow_service, control_service, acl_service, queue, runner
         run_id,
         first_node_id,
         registry_token="test",
-        user_id=str(USER_A),
     )
     r.check(
         "G1 retry from first node → child WorkflowRun created",
@@ -1031,9 +1032,7 @@ async def module_g(workflow_service, control_service, acl_service, queue, runner
     # G2: retry from a MIDDLE node → upstream reused, target+downstream re-run.
     # Reuses the G1 completed run (which has COMPLETED NodeRuns for a + b).
     second_node_id = wf.nodes[1].id
-    child2 = await control_service.send_retry(
-        str(wf.id), run_id, second_node_id, registry_token="test", user_id=str(USER_A)
-    )
+    child2 = await control_service.send_retry(str(wf.id), run_id, second_node_id, registry_token="test")
     deps = {d.node_id: str(d.resolution).lower() for d in child2.resolved_dependencies}
     r.check(
         "G2 retry from middle node → upstream REUSE, target RERUN",
@@ -1050,7 +1049,7 @@ async def module_g(workflow_service, control_service, acl_service, queue, runner
     parent_failed.status = WorkflowRunStatus.FAILED
     await parent_failed.save()
     child3 = await control_service.send_retry(
-        str(wf_f.id), str(parent_failed.id), wf_f.nodes[0].id, registry_token="test", user_id=str(USER_A)
+        str(wf_f.id), str(parent_failed.id), wf_f.nodes[0].id, registry_token="test"
     )
     r.check(
         "G3 retry a FAILED run → child created",
@@ -1062,9 +1061,7 @@ async def module_g(workflow_service, control_service, acl_service, queue, runner
     pending_run = await workflow_service.trigger_workflow_run(workflow_id=str(wf_f.id))  # status PENDING
     raised_400 = False
     try:
-        await control_service.send_retry(
-            str(wf_f.id), str(pending_run.id), wf_f.nodes[0].id, registry_token="test", user_id=str(USER_A)
-        )
+        await control_service.send_retry(str(wf_f.id), str(pending_run.id), wf_f.nodes[0].id, registry_token="test")
     except HTTPException as exc:
         raised_400 = exc.status_code == 400
     r.check("G4 retry a non-terminal (PENDING) run → 400", raised_400)
@@ -1075,9 +1072,7 @@ async def module_g(workflow_service, control_service, acl_service, queue, runner
     await cancelled_run.save()
     raised_cancel = False
     try:
-        await control_service.send_retry(
-            str(wf_f.id), str(cancelled_run.id), wf_f.nodes[0].id, registry_token="test", user_id=str(USER_A)
-        )
+        await control_service.send_retry(str(wf_f.id), str(cancelled_run.id), wf_f.nodes[0].id, registry_token="test")
     except HTTPException as exc:
         raised_cancel = exc.status_code == 400
     r.check("G5 retry a CANCELLED run → 400", raised_cancel)
@@ -1085,9 +1080,7 @@ async def module_g(workflow_service, control_service, acl_service, queue, runner
     # G6: retry with an unknown from_node_id → 400.
     raised_node = False
     try:
-        await control_service.send_retry(
-            str(wf.id), run_id, "no-such-node-id", registry_token="test", user_id=str(USER_A)
-        )
+        await control_service.send_retry(str(wf.id), run_id, "no-such-node-id", registry_token="test")
     except HTTPException as exc:
         raised_node = exc.status_code == 400
     r.check("G6 retry with unknown from_node_id → 400", raised_node)
@@ -1173,7 +1166,8 @@ async def module_i(workflow_service, control_service, acl_service, queue, runner
     try:
         bad = WorkflowNodeInput(name="bad", nodeType="condition", trueSteps=[_step_input("x", "tool")])
         await workflow_service.create_workflow(
-            data=WorkflowCreateRequest(name=PREFIX + "i4-bad", description="", nodes=[bad])
+            data=WorkflowCreateRequest(name=PREFIX + "i4-bad", description="", nodes=[bad]),
+            user_id=USER_A,
         )
         r.check("I4 400 on invalid node shape", False, "no exception raised")
     except (ValueError, HTTPException) as exc:
@@ -1436,14 +1430,14 @@ async def amain(selected: list[str], keep_data: bool) -> int:
         ),
     )
 
-    workflow_service = WorkflowService()
-    queue = DirectiveQueue()
-    runner = _build_runner(queue)
     acl_service = ACLService(
         user_service=UserService(),
         group_service=GroupService(group_directory_client=KeycloakGroupDirectoryClient()),
         role_cache=await load_role_cache(),
     )
+    workflow_service = WorkflowService(acl_service=acl_service)
+    queue = DirectiveQueue()
+    runner = _build_runner(queue)
     control_service = WorkflowControlService(directive_queue=queue, runner_factory=lambda: runner)
 
     reports: list[Report] = []

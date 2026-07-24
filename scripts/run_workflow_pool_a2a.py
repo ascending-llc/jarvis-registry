@@ -248,7 +248,6 @@ async def main() -> int:
             str(definition.id),
             args.prompt,
             registry_token=registry_token,
-            user_id=None,  # script context: bypass ACL filtering
             existing_run_id=str(pending_run.id),
         )
         _print_results(run, node_runs)

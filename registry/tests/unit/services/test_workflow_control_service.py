@@ -76,7 +76,6 @@ async def test_send_retry_child_inherits_workflow_version(monkeypatch: pytest.Mo
         str(parent_run.id),
         "n1",
         registry_token="tok",
-        user_id="user-1",
     )
     # Let the fire-and-forget runner task settle to avoid pending-task warnings.
     await asyncio.sleep(0)
@@ -321,7 +320,6 @@ async def test_rerun_single_node_rejects_non_terminal_run(non_terminal_status: W
             str(run.id),
             node_id="node-1",
             registry_token="tok",
-            user_id="user-1",
         )
 
     assert exc_info.value.status_code == 400
@@ -394,7 +392,6 @@ async def test_rerun_single_node_rejects_missing_upstream_snapshot(monkeypatch: 
             str(run_id),
             node_id="node-2",
             registry_token="tok",
-            user_id="user-1",
         )
 
     assert exc_info.value.status_code == 409
@@ -494,7 +491,6 @@ async def test_rerun_single_node_uses_highest_attempt_output_on_retry(monkeypatc
         str(run_id),
         node_id="node-2",
         registry_token="tok",
-        user_id="user-1",
     )
     await asyncio.sleep(0)
 
@@ -600,7 +596,6 @@ async def test_rerun_single_node_injects_nested_step_outputs_for_container_nodes
         str(run_id),
         node_id=target_id,
         registry_token="tok",
-        user_id="user-1",
     )
     await asyncio.sleep(0)
 
@@ -650,7 +645,6 @@ async def test_replay_run_sets_parent_run_id(monkeypatch: pytest.MonkeyPatch):
         str(source_run.workflow_definition_id),
         str(source_run.id),
         registry_token="tok",
-        user_id="user-1",
     )
 
     assert new_run is not None
@@ -700,7 +694,6 @@ async def test_replay_run_forwards_json_fallback_for_non_user_text_input(monkeyp
         str(source_run.workflow_definition_id),
         str(source_run.id),
         registry_token="tok",
-        user_id="user-1",
     )
 
     run_mock.assert_called_once()

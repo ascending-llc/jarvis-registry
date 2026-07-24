@@ -148,9 +148,10 @@ async def _grant_owner(user_id: str, workflow_id: PydanticObjectId) -> None:
 async def _grant_agent_access(user_id: str, agent_keys: list[str]) -> None:
     """Grant the ephemeral user VIEW on each A2A agent used by the flow.
 
-    The HTTP-triggered run resolves executors with the JWT's user_id, which
-    enforces REMOTE_AGENT ACL (unlike the user_id=None bypass that one-off
-    scripts use). Without this grant the run fails at A2A resolution.
+    Run-time executor resolution no longer enforces REMOTE_AGENT ACL (AS-1746);
+    the authoring-time API does, but this script inserts the definition
+    directly into MongoDB, bypassing that check.  The grant is kept so the
+    scenario still reflects a realistic ACL setup.
     """
     acl = ACLService(
         user_service=UserService(),

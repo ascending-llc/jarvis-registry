@@ -217,7 +217,6 @@ async def main(definition_id: str, user_text: str, *, list_agents: bool = False)
             definition_id,
             user_text,
             registry_token=registry_token,
-            user_id=None,  # script context: bypass ACL filtering
             existing_run_id=str(pending_run.id),
         )
         _print_status(run, node_runs)

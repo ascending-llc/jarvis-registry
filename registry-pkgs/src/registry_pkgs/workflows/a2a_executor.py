@@ -318,7 +318,6 @@ def make_a2a_pool_executor(
     pool_keys: list[str],
     *,
     selector_llm: Model,
-    accessible_agent_ids: set[str] | None,
     client_provider: ClientProvider | None = None,
 ) -> StepExecutor:
     """Build a StepExecutor that picks the best A2A agent from a pool at runtime.
@@ -328,14 +327,14 @@ def make_a2a_pool_executor(
     LLM.  Each call resolves an agent-specific authenticated client after the
     target agent is known.
 
+    ACL authorization for pool members is enforced at workflow authoring time
+    (see ``WorkflowService._authorize_new_executor_refs``); selection here is
+    intentionally ACL-free.
+
     Args:
         node_name:            Workflow node name — used for logging and cache keys.
         pool_keys:            Agent path segments (without leading ``/``) that form the pool.
         selector_llm:         Model used for LLM-based agent selection.
-        accessible_agent_ids: ACL filter — set of A2AAgent ID strings the caller
-                              is authorized to invoke. ``None`` = unrestricted.
-                              Pool members outside this set are excluded BEFORE
-                              LLM selection runs.
         client_provider:      Optional provider for an agent-specific authenticated client.
 
     Returns:
@@ -366,14 +365,11 @@ def make_a2a_pool_executor(
                 {"path": {"$in": paths}, "config.enabled": True},
             ).to_list()
 
-            if accessible_agent_ids is not None:
-                agents = [a for a in agents if str(a.id) in accessible_agent_ids]
-
             if not agents:
                 return StepOutput(
-                    content=f"No accessible enabled A2A agents for pool {pool_keys!r}",
+                    content=f"No enabled A2A agents for pool {pool_keys!r}",
                     success=False,
-                    error="pool resolution failed: no accessible enabled agents",
+                    error="pool resolution failed: no enabled agents",
                 )
 
             selected_agent = await _select_agent_with_llm(agents, task, selector_agent)
@@ -390,12 +386,6 @@ def make_a2a_pool_executor(
                     content=f"Selected agent {selected_path!r} is no longer enabled",
                     success=False,
                     error=f"pool retry failed: agent {selected_path!r} not found or disabled",
-                )
-            if accessible_agent_ids is not None and str(selected_agent.id) not in accessible_agent_ids:
-                return StepOutput(
-                    content=f"Selected agent {selected_path!r} no longer accessible",
-                    success=False,
-                    error=f"pool retry failed: agent {selected_path!r} not in accessible set",
                 )
 
         raise_if_iam_unsupported(selected_agent)

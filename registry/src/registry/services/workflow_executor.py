@@ -20,7 +20,6 @@ async def execute_workflow_run_background(
     run_id: str | PydanticObjectId,
     workflow_runner: WorkflowRunner,
     registry_token: str | None = None,
-    user_id: str | None = None,
 ) -> None:
     """
     Execute a workflow run in the background.
@@ -32,7 +31,6 @@ async def execute_workflow_run_background(
         run_id: WorkflowRun ID to execute
         workflow_runner: WorkflowRunner instance
         registry_token: User's JWT token for authenticated calls
-        user_id: User ID for ACL filtering (optional)
     """
     run_id_str = str(run_id)
 
@@ -56,7 +54,6 @@ async def execute_workflow_run_background(
             definition_id=str(run.workflow_definition_id),
             user_text=user_text,
             registry_token=registry_token or "",
-            user_id=user_id,
             existing_run_id=run_id_str,
         )
 
