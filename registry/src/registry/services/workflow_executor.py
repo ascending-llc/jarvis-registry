@@ -5,6 +5,7 @@ This module provides functions to execute workflows asynchronously using Backgro
 """
 
 import logging
+from typing import Any
 
 from beanie import PydanticObjectId
 
@@ -19,8 +20,7 @@ logger = logging.getLogger(__name__)
 async def execute_workflow_run_background(
     run_id: str | PydanticObjectId,
     workflow_runner: WorkflowRunner,
-    registry_token: str | None = None,
-    user_id: str | None = None,
+    auth_context: dict[str, Any] | None = None,
 ) -> None:
     """
     Execute a workflow run in the background.
@@ -31,8 +31,7 @@ async def execute_workflow_run_background(
     Args:
         run_id: WorkflowRun ID to execute
         workflow_runner: WorkflowRunner instance
-        registry_token: User's JWT token for authenticated calls
-        user_id: User ID for ACL filtering (optional)
+        auth_context: Triggering user's auth context for authenticated calls
     """
     run_id_str = str(run_id)
 
@@ -55,8 +54,7 @@ async def execute_workflow_run_background(
         updated_run, node_runs = await workflow_runner.run(
             definition_id=str(run.workflow_definition_id),
             user_text=user_text,
-            registry_token=registry_token or "",
-            user_id=user_id,
+            auth_context=auth_context,
             existing_run_id=run_id_str,
         )
 

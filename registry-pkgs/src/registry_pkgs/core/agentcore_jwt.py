@@ -4,8 +4,6 @@ import logging
 from typing import Any
 from urllib.parse import urlparse
 
-from redis import Redis
-
 from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.core.jwt_utils import build_jwt_payload, encode_jwt
 from registry_pkgs.models.federation import AgentCoreRuntimeAccessConfig, AgentCoreRuntimeJwtConfig
@@ -92,9 +90,10 @@ def parse_agentcore_runtime_access(
 def sign_agentcore_jwt(
     runtime_jwt_config: AgentCoreRuntimeJwtConfig | None,
     *,
+    subject: str,
     signing: JwtSigningConfig,
     cache_key: str,
-    redis_client: Redis | None = None,
+    redis_client: Any | None = None,
 ) -> str:
     """Mint (or return a cached) AgentCore Runtime JWT.
 
@@ -111,7 +110,7 @@ def sign_agentcore_jwt(
 
     token = mint_agentcore_runtime_jwt(
         runtime_jwt_config,
-        subject=signing.registry_app_name,
+        subject=subject,
         signing=signing,
         expires_in_seconds=_AGENTCORE_JWT_TTL_SECONDS,
     )

@@ -607,11 +607,12 @@ class WorkflowRun(Document):
     pending_requirements: list[dict[str, Any]] = Field(default_factory=list)
 
     # Non-sensitive identity of the triggering user, captured so an HITL resume
-    # can re-mint a short-lived service JWT on their behalf. We deliberately do
-    # NOT persist the raw bearer token — see _prepare_resume_credentials.
+    # can reconstruct their auth context. We deliberately do NOT persist the raw
+    # bearer token — see ``WorkflowControlService._refresh_triggering_auth_context``.
     triggering_user_id: str | None = None
     triggering_username: str | None = None
     triggering_scopes: list[str] | None = None
+    triggering_client_id: str | None = None
 
     class Settings:
         name = "workflow_runs"
