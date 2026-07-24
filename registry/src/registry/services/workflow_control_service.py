@@ -182,6 +182,9 @@ class WorkflowControlService:
             trigger_source="api",
             initial_input={"user_text": user_text},
             triggering_user_id=user_id,
+            triggering_username=auth_context.get("username") if auth_context else None,
+            triggering_scopes=effective_scopes_from_context(auth_context) if auth_context else None,
+            triggering_client_id=auth_context.get("client_id") if auth_context else None,
         )
         await run.insert()
         logger.info("WorkflowRun %s created for definition %s", run.id, workflow_definition_id)
@@ -869,7 +872,7 @@ async def _refresh_triggering_auth_context(
     if current_auth_context is not None and current_auth_context.get("user_id") == run.triggering_user_id:
         refreshed = dict(current_auth_context)
         refreshed["scopes"] = effective_scopes_from_context(current_auth_context)
-        return UserContextDict(**refreshed)
+        return refreshed
     user = await User.get(PydanticObjectId(run.triggering_user_id))
     if user is None:
         logger.warning("Triggering user %s no longer exists; resuming without auth context", run.triggering_user_id)
@@ -880,16 +883,16 @@ async def _refresh_triggering_auth_context(
         current_groups = await Group.find({"memberIds": user.idOnTheSource}).to_list()
         groups = [group.name for group in current_groups]
 
-    return UserContextDict(
-        user_id=run.triggering_user_id,
-        client_id=run.triggering_client_id or "",
-        username=user.username or run.triggering_username,
-        groups=groups,
-        scopes=map_cognito_groups_to_scopes(groups),
-        auth_method="service",
-        provider="workflow",
-        auth_source="workflow_resume",
-    )
+    return {
+        "user_id": run.triggering_user_id,
+        "client_id": run.triggering_client_id or "",
+        "username": user.username or run.triggering_username,
+        "groups": groups,
+        "scopes": map_cognito_groups_to_scopes(groups),
+        "auth_method": "service",
+        "provider": "workflow",
+        "auth_source": "workflow_resume",
+    }
 
 
 def _validate_resolution_compatibility(

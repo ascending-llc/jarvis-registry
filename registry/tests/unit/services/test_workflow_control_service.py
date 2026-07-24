@@ -9,7 +9,6 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from beanie import PydanticObjectId
 
-from registry.auth.dependencies import UserContextDict
 from registry.services import workflow_control_service as wcs
 from registry.services.workflow_control_service import WorkflowControlService
 from registry_pkgs.models.enums import RequirementResolution, WorkflowRunStatus
@@ -153,16 +152,16 @@ async def test_refresh_triggering_auth_context_uses_current_groups_not_persisted
 
     ctx = await wcs._refresh_triggering_auth_context(run)
 
-    assert ctx == UserContextDict(
-        user_id=user_id,
-        client_id="client-1",
-        username="alice-current",
-        groups=["workflow-users"],
-        scopes=["workflows-read"],
-        auth_method="service",
-        provider="workflow",
-        auth_source="workflow_resume",
-    )
+    assert ctx == {
+        "user_id": user_id,
+        "client_id": "client-1",
+        "username": "alice-current",
+        "groups": ["workflow-users"],
+        "scopes": ["workflows-read"],
+        "auth_method": "service",
+        "provider": "workflow",
+        "auth_source": "workflow_resume",
+    }
 
 
 @pytest.mark.asyncio
@@ -195,16 +194,16 @@ async def test_refresh_triggering_auth_context_deleted_user_returns_none(monkeyp
 async def test_refresh_triggering_auth_context_preserves_current_explicit_scopes(monkeypatch: pytest.MonkeyPatch):
     """A same-user approval uses the request's current effective authorization context."""
     run = SimpleNamespace(triggering_user_id="user-1")
-    current = UserContextDict(
-        user_id="user-1",
-        client_id="client-1",
-        username="alice",
-        groups=["workflow-users"],
-        scopes=["explicit-scope"],
-        auth_method="jwt",
-        provider="keycloak",
-        auth_source="request",
-    )
+    current = {
+        "user_id": "user-1",
+        "client_id": "client-1",
+        "username": "alice",
+        "groups": ["workflow-users"],
+        "scopes": ["explicit-scope"],
+        "auth_method": "jwt",
+        "provider": "keycloak",
+        "auth_source": "request",
+    }
     monkeypatch.setattr(wcs, "effective_scopes_from_context", MagicMock(return_value=["effective-scope"]))
 
     ctx = await wcs._refresh_triggering_auth_context(run, current)
@@ -225,13 +224,13 @@ async def test_refresh_triggering_auth_context_does_not_reuse_different_approver
         triggering_client_id="trigger-client",
         triggering_username="trigger-user",
     )
-    approver_context = UserContextDict(
-        user_id="approver-user",
-        client_id="approver-client",
-        username="admin",
-        groups=["admins"],
-        scopes=["admin-scope"],
-    )
+    approver_context = {
+        "user_id": "approver-user",
+        "client_id": "approver-client",
+        "username": "admin",
+        "groups": ["admins"],
+        "scopes": ["admin-scope"],
+    }
     monkeypatch.setattr(
         wcs.User,
         "get",
@@ -256,7 +255,7 @@ async def test_resolve_standard_requirement_dispatches_continue(monkeypatch: pyt
         pending_requirements=[{"step_id": "review-1", "confirmed": None}],
     )
     refreshed_run = SimpleNamespace(id=run.id, status=WorkflowRunStatus.AWAITING_APPROVAL)
-    auth_context = UserContextDict(user_id="user-1", client_id="client-1", scopes=[])
+    auth_context = {"user_id": "user-1", "client_id": "client-1", "scopes": []}
     service = WorkflowControlService(directive_queue=DirectiveQueue())
     service._load_run = AsyncMock(side_effect=[run, refreshed_run])
     service._trigger_resume = MagicMock()
@@ -290,7 +289,7 @@ async def test_continue_old_run_without_client_id_fails_safely():
     runner = SimpleNamespace(continue_run=AsyncMock())
     service = WorkflowControlService(
         directive_queue=DirectiveQueue(),
-        auth_context_refresher=AsyncMock(return_value=UserContextDict(user_id="user-1", scopes=[])),
+        auth_context_refresher=AsyncMock(return_value={"user_id": "user-1", "scopes": []}),
     )
 
     await service._continue_run_with_current_auth(run, runner)
@@ -392,16 +391,16 @@ async def test_get_run_status_nudges_continue_run_when_requirement_timed_out(mon
     monkeypatch.setattr(wcs, "NodeRun", fake_node_run)
 
     continue_mock = AsyncMock()
-    refreshed_context = UserContextDict(
-        user_id="user-1",
-        client_id="client-1",
-        username="u",
-        groups=[],
-        scopes=[],
-        auth_method="service",
-        provider="workflow",
-        auth_source="workflow_resume",
-    )
+    refreshed_context = {
+        "user_id": "user-1",
+        "client_id": "client-1",
+        "username": "u",
+        "groups": [],
+        "scopes": [],
+        "auth_method": "service",
+        "provider": "workflow",
+        "auth_source": "workflow_resume",
+    }
     service = WorkflowControlService(
         directive_queue=DirectiveQueue(),
         runner_factory=lambda: SimpleNamespace(continue_run=continue_mock),

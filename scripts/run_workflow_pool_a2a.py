@@ -14,7 +14,7 @@ Usage:
 
 Environment variables:
     REGISTRY_TOKEN     User-scoped Bearer token. Auto-generated from JWT_PRIVATE_KEY when absent.
-    REGISTRY_CLIENT_ID Client identity used for per-client MCP consent.
+    REGISTRY_CLIENT_ID Client identity used for downstream MCP server OAuth headers.
     REGISTRY_URL       Registry base URL (default: http://localhost:7860)
     MONGO_URI          MongoDB connection string (default: mongodb://127.0.0.1:27017/jarvis)
     WORKFLOW_TIMEOUT   Maximum number of seconds to poll before failing (default: 300).
@@ -189,6 +189,14 @@ async def _create_and_run(
     create.raise_for_status()
     workflow_id = create.json()["id"]
     print(f"WorkflowDefinition created through API: id={workflow_id}")
+
+    enable = await client.put(
+        _api(args.registry_url, f"/workflows/{workflow_id}"),
+        headers=headers,
+        json={"enabled": True},
+    )
+    enable.raise_for_status()
+    print(f"WorkflowDefinition enabled: id={workflow_id}")
 
     trigger = await client.post(
         _api(args.registry_url, f"/workflows/{workflow_id}/runs"),

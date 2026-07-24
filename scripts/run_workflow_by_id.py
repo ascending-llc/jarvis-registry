@@ -12,7 +12,8 @@ Environment variables:
     REGISTRY_USER_ID Existing user ObjectId used by the generated token. The user must
                      have VIEW access to the workflow and its MCP/A2A resources.
     REGISTRY_CLIENT_ID
-                     Client identity used for per-client MCP consent (default: workflow-script).
+                     Client identity used for downstream MCP server OAuth headers
+                     (default: workflow-script).
     REGISTRY_URL     Registry base URL (default: http://localhost:8000)
     MONGO_URI        MongoDB connection string (default: mongodb://127.0.0.1:27017/jarvis)
     WORKFLOW_TIMEOUT Maximum number of seconds to poll before failing (default: 300).
