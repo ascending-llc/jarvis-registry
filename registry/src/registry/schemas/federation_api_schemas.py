@@ -111,6 +111,7 @@ class FederationSyncJobResponse(BaseModel):
     phase: str
     startedAt: datetime | None = None
     finishedAt: datetime | None = None
+    error: str | None = None
 
     model_config = ConfigDict(populate_by_name=True, use_enum_values=True, from_attributes=True)
 

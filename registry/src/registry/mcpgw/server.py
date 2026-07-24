@@ -257,7 +257,7 @@ def create_mcp_app(*, container_provider: Callable[[], RegistryContainer | None]
         ) as proxy_client:
             yield McpAppContext(
                 proxy_client=proxy_client,
-                a2a_httpx_client=container.a2a_httpx_client,
+                a2a_client_registry=container.a2a_client_registry,
                 server_service=container.server_service,
                 mcp_server_repo=container.mcp_server_repo,
                 a2a_agent_repo=container.a2a_agent_repo,
@@ -268,7 +268,6 @@ def create_mcp_app(*, container_provider: Callable[[], RegistryContainer | None]
                 redis_client=container.redis_client,
                 jwt_signing_config=settings.jwt_signing_config,
                 acl_service=container.acl_service,
-                a2a_headers_provider=container.a2a_headers_provider,
                 consent_store=container.consent_store,
                 pending_consent_store=container.pending_consent_store,
             )

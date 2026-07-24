@@ -150,7 +150,6 @@ async def build_complete_headers_for_server(
                 cache_key = f"{settings.redis_key_prefix}:agentcore_jwt:{server.id}"
                 token = sign_agentcore_jwt(
                     access_config.jwt,
-                    subject=settings.registry_app_name,
                     signing=settings.jwt_signing_config,
                     cache_key=cache_key,
                     redis_client=redis_client,

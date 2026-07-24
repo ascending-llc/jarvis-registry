@@ -142,7 +142,6 @@ def _build_runner(queue: DirectiveQueue) -> MockRunner:
         llm=llm,
         db_client=MongoDB.get_client(),
         db_name=MongoDB.database_name,
-        jwt_config=settings.jwt_signing_config,
         directive_queue=queue,
     )
 
@@ -193,7 +192,6 @@ def _build_failing_runner(queue: DirectiveQueue, fail_counts: dict[str, int]) ->
         llm=llm,
         db_client=MongoDB.get_client(),
         db_name=MongoDB.database_name,
-        jwt_config=settings.jwt_signing_config,
         directive_queue=queue,
         fail_counts=fail_counts,
     )

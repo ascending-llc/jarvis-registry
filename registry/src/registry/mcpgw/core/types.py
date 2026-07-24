@@ -11,7 +11,7 @@ from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRep
 from ...core.mcp_client import MCPClientService
 from ...core.session_store import SessionStore
 from ...services.access_control_service import ACLService
-from ...services.federation.azure_foundry_proxy_auth import A2aHeadersProvider
+from ...services.federation.a2a_client_registry import A2AClientRegistry
 from ...services.oauth.oauth_service import MCPOAuthService
 from ...services.search.service import SearchService
 from ...services.server_service import ServerServiceV1
@@ -22,7 +22,7 @@ class McpAppContext:
     """MCP application context with typed dependencies."""
 
     proxy_client: AsyncClient
-    a2a_httpx_client: AsyncClient
+    a2a_client_registry: A2AClientRegistry
     server_service: ServerServiceV1
     mcp_server_repo: MCPServerRepository
     a2a_agent_repo: A2AAgentRepository
@@ -35,4 +35,3 @@ class McpAppContext:
     acl_service: ACLService
     consent_store: ConsentStore
     pending_consent_store: PendingConsentStore
-    a2a_headers_provider: A2aHeadersProvider
