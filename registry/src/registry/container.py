@@ -27,7 +27,12 @@ from .health.service import HealthMonitoringService
 from .services.a2a_agent_service import A2AAgentService
 from .services.access_control_service import ACLService, load_role_cache
 from .services.agent_scanner import AgentScannerService
-from .services.federation.azure_foundry_proxy_auth import A2aHeadersProvider, make_a2a_headers_provider
+from .services.federation.a2a_client_registry import A2AClientRegistry
+from .services.federation.azure_foundry_proxy_auth import (
+    A2aHeadersProvider,
+    AzureFoundryClientCache,
+    make_a2a_headers_provider,
+)
 from .services.federation_crud_service import FederationCrudService
 from .services.federation_job_service import FederationJobService
 from .services.federation_service import FederationService
@@ -273,6 +278,13 @@ class RegistryContainer:
         return WorkflowService()
 
     @cached_property
+    def a2a_client_registry(self) -> A2AClientRegistry:
+        return A2AClientRegistry(
+            agentcore_registry=self.a2a_proxy_client_registry,
+            azure_client_cache=AzureFoundryClientCache(),
+        )
+
+    @cached_property
     def a2a_headers_provider(self) -> A2aHeadersProvider:
         """App-scoped A2A headers provider; resolves Azure Entra credentials fresh per call (no caching)."""
         return make_a2a_headers_provider(jwt_config=self.settings.jwt_signing_config)
@@ -301,7 +313,6 @@ class RegistryContainer:
                 llm=llm,
                 db_client=MongoDB.get_client(),
                 db_name=MongoDB.database_name,
-                jwt_config=self.settings.jwt_signing_config,
                 directive_queue=self.directive_queue,
                 a2a_httpx_client=self.a2a_httpx_client,
                 headers_provider=self.a2a_headers_provider,
@@ -332,16 +343,7 @@ class RegistryContainer:
 
     @cached_property
     def a2a_httpx_client(self) -> httpx.AsyncClient:
-        """Shared httpx client for A2A agent invocations.
-
-        Reused by:
-          - mcpgw `execute_agent` tool (via McpAppContext)
-          - workflow A2A executors (via WorkflowRunner)
-
-        Settings mirror `mcp_proxy_client` but A2A streaming responses can
-        be long-running, so we keep an open read timeout. Closed on
-        container shutdown.
-        """
+        """Shared httpx client for A2A agent invocations (workflow executors + mcpgw)."""
         return httpx.AsyncClient(
             timeout=httpx.Timeout(connect=30.0, read=None, write=60.0, pool=30.0),
             follow_redirects=False,
@@ -415,7 +417,7 @@ class RegistryContainer:
         await self.health_service.shutdown()
         await self.mcp_proxy_client.aclose()
         await self.a2a_httpx_client.aclose()
-        await self.a2a_proxy_client_registry.close()
+        await self.a2a_client_registry.close()
 
     def _initialize_federation(self) -> None:
         """Run optional federation sync on startup without failing the whole application."""

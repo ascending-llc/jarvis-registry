@@ -259,12 +259,11 @@ async def execute_agent_impl(
     )
 
     logger.info("execute_agent: invoking agent_id=%s path=%s", agent_id, agent.path)
+    client = await lifespan.a2a_client_registry.get_client(agent)
     result = await call_a2a(
         agent,
         a2a_message,
-        jwt_config=lifespan.jwt_signing_config,
-        httpx_client=lifespan.a2a_httpx_client,
-        headers_provider=lifespan.a2a_headers_provider,
+        httpx_client=client,
     )
     if not result.success:
         logger.warning("execute_agent: agent_id=%s failed: %s", agent_id, result.error)

@@ -30,7 +30,6 @@ def _make_container(settings: MagicMock) -> RegistryContainer:
         db_client=MagicMock(),
         redis_client=MagicMock(),
     )
-    # Inject pre-built mock so the cached_property skips real httpx client creation.
     container.__dict__["a2a_httpx_client"] = MagicMock()
     return container
 

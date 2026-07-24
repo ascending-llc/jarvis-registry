@@ -64,6 +64,7 @@ const API = {
   updateFederation: (id: string) => `${FEDERATION_BASE_URL}/${id}`,
   deleteFederation: (id: string) => `${FEDERATION_BASE_URL}/${id}`,
   syncFederation: (id: string) => `${FEDERATION_BASE_URL}/${id}/sync`,
+  getFederationSyncJob: (federationId: string, jobId: string) => `${FEDERATION_BASE_URL}/${federationId}/jobs/${jobId}`,
 
   // workflow
   getWorkflowsList: `${WORKFLOW_BASE_URL}`,

@@ -39,6 +39,7 @@ _A2A_HTTP_TIMEOUT = 300
 _A2A_POLL_TIMEOUT = _A2A_HTTP_TIMEOUT * 0.6
 
 HeadersProvider = Callable[[A2AAgent], Awaitable[dict[str, str]]]
+ClientProvider = Callable[[A2AAgent], Awaitable[httpx.AsyncClient]]
 _IN_PROGRESS_STATES: frozenset[TaskState] = frozenset({TaskState.submitted, TaskState.working})
 
 _AGENTCORE_IAM_UNSUPPORTED_MSG = (
@@ -172,6 +173,13 @@ def build_headers(agent: A2AAgent, *, jwt_config: JwtSigningConfig) -> dict[str,
             "Authorization": f"Bearer {_make_agentcore_jwt(agent, jwt_config=jwt_config)}",
             "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": str(uuid.uuid4()),
         }
+    return {}
+
+
+def _extra_call_headers(agent: A2AAgent) -> dict[str, str]:
+    """Build per-invocation headers that must stay stable throughout one call_a2a call."""
+    if is_agentcore_runtime(agent):
+        return {"X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": str(uuid.uuid4())}
     return {}
 
 
@@ -367,25 +375,31 @@ async def call_a2a(
     agent: A2AAgent,
     text: str | Message,
     *,
-    jwt_config: JwtSigningConfig,
+    jwt_config: JwtSigningConfig | None = None,
     httpx_client: httpx.AsyncClient | None = None,
     headers_provider: HeadersProvider | None = None,
 ) -> A2ACallResult:
     """Invoke an A2A agent via the a2a-sdk ClientFactory.
 
     Transport (jsonrpc / http_json) is selected from agent.config.type.
-    Auth headers and timeout are injected per-call via ClientCallContext.
+    Auth headers come from one of two paths:
+
+    * **Workflow path** — caller supplies ``headers_provider`` (and optionally
+      ``jwt_config``); headers are built per-call by the provider callback.
+    * **Proxy / MCP gateway path** — caller supplies a pre-authenticated
+      ``httpx_client`` obtained from ``A2AClientRegistry``; only non-credential
+      per-invocation headers are added here.
 
     Args:
-        agent:        A2AAgent document from MongoDB.
-        text:         User message string or pre-parsed A2A Message to send.
-        jwt_config:   JWT signing config for service-to-agent auth.
-        httpx_client: Optional shared httpx client.
-        headers_provider: Optional shared headers provider.
+        agent:            A2AAgent document from MongoDB.
+        text:             User message string or pre-parsed A2A Message to send.
+        jwt_config:       JWT signing config for service-to-agent auth (workflow path).
+        httpx_client:     Optional shared httpx client.
+        headers_provider: Optional callback that returns auth headers per-call.
 
     Returns:
-        A2ACallResult. `success=True` requires content present AND (for the
-        Task path) `task.status.state == completed`.
+        A2ACallResult. ``success=True`` requires content present AND (for the
+        Task path) ``task.status.state == completed``.
     """
     agent_name = agent.config.title if agent.config else agent.card.name
     transport_type = (agent.config.type if agent.config else TRANSPORT_JSONRPC).lower()
@@ -394,6 +408,18 @@ async def call_a2a(
         return A2ACallResult(
             success=False,
             error=f"Unsupported transport type '{transport_type}' for agent {agent_name!r}. Supported: {sorted(_PROTOCOL_MAP)}",
+        )
+
+    if (
+        httpx_client is None
+        and headers_provider is None
+        and (is_agentcore_runtime(agent) or is_azure_foundry_runtime(agent))
+    ):
+        provider = (agent.federationMetadata or {}).get("providerType", "unknown")
+        provider_value = provider.value if hasattr(provider, "value") else provider
+        raise ValueError(
+            f"call_a2a: httpx_client or headers_provider is required for federated agent {agent.path!r} "
+            f"(providerType={provider_value!r})."
         )
 
     logger.debug(
@@ -414,9 +440,10 @@ async def call_a2a(
 
     if headers_provider is not None:
         headers = await headers_provider(agent)
-    else:
+    elif jwt_config is not None:
         headers = build_headers(agent, jwt_config=jwt_config)
-
+    else:
+        headers = _extra_call_headers(agent)
     context = ClientCallContext(
         state={
             "http_kwargs": {

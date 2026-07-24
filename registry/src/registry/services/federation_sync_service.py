@@ -139,6 +139,28 @@ class FederationSyncPreviewResult:
     message: str | None = None
 
 
+async def run_federation_sync_background(
+    *,
+    federation_sync_service: "FederationSyncService",
+    federation: Federation,
+    job: FederationSyncJob,
+    author_id: PydanticObjectId,
+) -> None:
+    """Run a federation sync after the triggering response has been sent."""
+    try:
+        await federation_sync_service.run_sync(
+            federation=federation,
+            job=job,
+            author_id=author_id,
+        )
+    except Exception:
+        logger.exception(
+            "Federation sync background task failed: federation_id=%s job_id=%s",
+            federation.id,
+            job.id,
+        )
+
+
 class FederationSyncService:
     def __init__(
         self,
@@ -237,6 +259,44 @@ class FederationSyncService:
             ),
         )
 
+    @classmethod
+    def _build_final_sync_error(
+        cls,
+        apply_errors: list[str],
+        vector_sync_error: str | None,
+    ) -> str | None:
+        if vector_sync_error and apply_errors:
+            return (
+                f"{len(apply_errors) + 1} resource sync failures. "
+                f"First apply error: {apply_errors[0]}. "
+                f"Vector sync error: {vector_sync_error}"
+            )
+        if vector_sync_error:
+            return f"Vector sync error: {vector_sync_error}"
+        if apply_errors:
+            return cls._summarize_sync_errors(apply_errors)
+        return None
+
+    @staticmethod
+    def _complete_last_sync(
+        last_sync: FederationLastSync,
+        *,
+        failed: bool,
+        vector_sync_error: str | None,
+    ) -> None:
+        """Finalize the denormalized sync snapshot after vector work finishes."""
+        last_sync.status = FederationSyncStatus.FAILED if failed else FederationSyncStatus.SUCCESS
+        last_sync.finishedAt = datetime.now(UTC)
+        if not vector_sync_error:
+            return
+
+        summary = getattr(last_sync, "summary", None)
+        if summary is None:
+            summary = FederationLastSyncSummary()
+            last_sync.summary = summary
+        summary.errors += 1
+        summary.errorMessages.append(f"Vector sync error: {vector_sync_error}")
+
     async def run_sync(
         self,
         federation: Federation,
@@ -266,7 +326,8 @@ class FederationSyncService:
                         discovered=discovered,
                         session=mongo_session,
                     )
-            vector_sync_error = None
+            await self.federation_job_service.mark_syncing(job, FederationJobPhase.SYNCING_VECTORS)
+            vector_sync_error: str | None = None
             try:
                 await self._sync_vector_index_after_commit(
                     federation=federation,
@@ -280,9 +341,6 @@ class FederationSyncService:
                     job.id,
                 )
                 vector_sync_error = str(exc)
-
-            if mutation_result.last_sync is None or mutation_result.stats is None:
-                raise RuntimeError("Federation sync completed without final stats or lastSync payload")
 
             await self._finalize_sync_status(federation, job, mutation_result, vector_sync_error)
             return job
@@ -308,29 +366,29 @@ class FederationSyncService:
         Determine the final federation/job status after both the Mongo commit
         and vector sync have completed (or attempted).
 
-        Three outcomes:
-        - apply errors + vector error → re-mark failed with combined message
-        - apply errors only            → preserve transaction-time failed status (no-op here)
-        - no errors                    → mark success
+        This is the only place that writes a terminal status for a committed
+        apply, so the job remains active throughout the vector-sync tail.
         """
-        if mutation_result.summary.errorMessages or vector_sync_error:
-            if vector_sync_error:
-                apply_errors = mutation_result.summary.errorMessages
-                if apply_errors:
-                    combined_message = (
-                        f"{len(apply_errors) + 1} resource sync failures. "
-                        f"First apply error: {apply_errors[0]}. "
-                        f"Vector sync error: {vector_sync_error}"
-                    )
-                else:
-                    combined_message = f"Vector sync error: {vector_sync_error}"
-                await self.federation_crud_service.mark_sync_failed(
-                    federation,
-                    combined_message,
-                    last_sync=mutation_result.last_sync,
-                    stats=mutation_result.stats,
-                )
-                await self.federation_job_service.mark_failed(job, FederationJobPhase.FAILED, combined_message)
+        if mutation_result.last_sync is None or mutation_result.stats is None:
+            raise RuntimeError("Federation sync completed without final stats or lastSync payload")
+
+        failure_message = self._build_final_sync_error(
+            mutation_result.summary.errorMessages,
+            vector_sync_error,
+        )
+        self._complete_last_sync(
+            mutation_result.last_sync,
+            failed=failure_message is not None,
+            vector_sync_error=vector_sync_error,
+        )
+        if failure_message:
+            await self.federation_crud_service.mark_sync_failed(
+                federation,
+                failure_message,
+                last_sync=mutation_result.last_sync,
+                stats=mutation_result.stats,
+            )
+            await self.federation_job_service.mark_failed(job, FederationJobPhase.FAILED, failure_message)
             return
 
         await self.federation_crud_service.mark_sync_success(
@@ -467,18 +525,6 @@ class FederationSyncService:
         last_sync = self._build_last_sync(job, mutation_result.summary)
         mutation_result.stats = stats
         mutation_result.last_sync = last_sync
-        if mutation_result.summary.errorMessages:
-            failure_message = self._summarize_sync_errors(mutation_result.summary.errorMessages)
-            await self.federation_crud_service.mark_sync_failed(
-                federation,
-                failure_message,
-                last_sync=last_sync,
-                stats=stats,
-                session=session,
-            )
-            await self.federation_job_service.mark_failed(
-                job, FederationJobPhase.FAILED, failure_message, session=session
-            )
         return mutation_result
 
     async def update_federation_and_create_resync_job(
@@ -546,14 +592,14 @@ class FederationSyncService:
         )
         return job
 
-    async def start_manual_sync(
+    async def create_manual_sync_job(
         self,
         *,
         federation: Federation,
         reason: str | None,
         triggered_by: str | None,
-    ) -> FederationSyncJob:
-        """Start a user-triggered sync using the shared pending-job then run-sync flow."""
+    ) -> tuple[FederationSyncJob, PydanticObjectId]:
+        """Create a pending manual-sync job without running the sync inline."""
         author_id = await self._resolve_author_id(triggered_by)
         active_job = await self.federation_job_service.get_active_job(federation.id)
         if active_job:
@@ -573,6 +619,21 @@ class FederationSyncService:
                     },
                     session=mongo_session,
                 )
+        return job, author_id
+
+    async def start_manual_sync(
+        self,
+        *,
+        federation: Federation,
+        reason: str | None,
+        triggered_by: str | None,
+    ) -> FederationSyncJob:
+        """Run a manual sync inline for compatibility with non-HTTP callers."""
+        job, author_id = await self.create_manual_sync_job(
+            federation=federation,
+            reason=reason,
+            triggered_by=triggered_by,
+        )
         await self.run_sync(
             federation=federation,
             job=job,

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -12,10 +13,12 @@ from registry.services.federation_sync_service import (
     FederationSyncMutationResult,
     FederationSyncPlan,
     FederationSyncService,
+    run_federation_sync_background,
 )
 from registry_pkgs.models import A2AAgent, ExtendedMCPServer, PrincipalType, ResourceType
 from registry_pkgs.models.enums import (
     FederationJobPhase,
+    FederationJobStatus,
     FederationProviderType,
     FederationStatus,
     FederationSyncStatus,
@@ -23,7 +26,12 @@ from registry_pkgs.models.enums import (
 )
 from registry_pkgs.models.extended_access_role import RegistryResourceType
 from registry_pkgs.models.extended_acl_entry import RegistryAclEntry
-from registry_pkgs.models.federation import AgentCoreRuntimeAccessConfig, AgentCoreRuntimeJwtConfig
+from registry_pkgs.models.federation import (
+    AgentCoreRuntimeAccessConfig,
+    AgentCoreRuntimeJwtConfig,
+    FederationLastSync,
+    FederationLastSyncSummary,
+)
 from registry_pkgs.models.federation_sync_job import FederationApplySummary
 
 _DEFAULT_USER_OBJECT_ID = PydanticObjectId()
@@ -108,6 +116,27 @@ def _patch_mongo_session(monkeypatch) -> _FakeTxnSession:
         lambda: _FakeTxnClient(session),
     )
     return session
+
+
+@pytest.mark.asyncio
+async def test_run_federation_sync_background_swallows_execution_error():
+    federation = SimpleNamespace(id=PydanticObjectId())
+    job = SimpleNamespace(id=PydanticObjectId())
+    service = MagicMock()
+    service.run_sync = AsyncMock(side_effect=RuntimeError("discovery failed"))
+
+    await run_federation_sync_background(
+        federation_sync_service=service,
+        federation=federation,
+        job=job,
+        author_id=_DEFAULT_USER_OBJECT_ID,
+    )
+
+    service.run_sync.assert_awaited_once_with(
+        federation=federation,
+        job=job,
+        author_id=_DEFAULT_USER_OBJECT_ID,
+    )
 
 
 @pytest.mark.asyncio
@@ -336,6 +365,7 @@ async def test_run_sync_calls_vector_sync_after_commit(
     federation_sync_service._discover_entities = AsyncMock(return_value={"mcp_servers": [], "a2a_agents": []})
     federation_sync_service._commit_sync_transaction = AsyncMock(return_value=mutation_result)
     federation_sync_service._sync_vector_index_after_commit = AsyncMock()
+    federation_sync_service.federation_job_service.mark_syncing = AsyncMock()
     federation_sync_service.federation_crud_service.mark_sync_failed = AsyncMock()
     federation_sync_service.federation_crud_service.mark_sync_success = AsyncMock()
     federation_sync_service.federation_job_service.mark_failed = AsyncMock()
@@ -364,6 +394,8 @@ async def test_run_sync_calls_vector_sync_after_commit(
     federation_sync_service.federation_job_service.mark_success.assert_awaited_once_with(job)
     federation_sync_service.federation_crud_service.mark_sync_failed.assert_not_awaited()
     federation_sync_service.federation_job_service.mark_failed.assert_not_awaited()
+    assert mutation_result.last_sync.status == FederationSyncStatus.SUCCESS
+    assert isinstance(mutation_result.last_sync.finishedAt, datetime)
 
 
 @pytest.mark.asyncio
@@ -387,6 +419,7 @@ async def test_run_sync_marks_failed_when_vector_sync_fails(
     federation_sync_service._discover_entities = AsyncMock(return_value={"mcp_servers": [], "a2a_agents": []})
     federation_sync_service._commit_sync_transaction = AsyncMock(return_value=mutation_result)
     federation_sync_service._sync_vector_index_after_commit = AsyncMock(side_effect=RuntimeError("vector down"))
+    federation_sync_service.federation_job_service.mark_syncing = AsyncMock()
     federation_sync_service.federation_crud_service.mark_sync_failed = AsyncMock()
     federation_sync_service.federation_crud_service.mark_sync_success = AsyncMock()
     federation_sync_service.federation_job_service.mark_failed = AsyncMock()
@@ -408,6 +441,10 @@ async def test_run_sync_marks_failed_when_vector_sync_fails(
     assert "vector down" in federation_sync_service.federation_job_service.mark_failed.await_args.args[2]
     federation_sync_service.federation_crud_service.mark_sync_success.assert_not_awaited()
     federation_sync_service.federation_job_service.mark_success.assert_not_awaited()
+    assert mutation_result.last_sync.status == FederationSyncStatus.FAILED
+    assert isinstance(mutation_result.last_sync.finishedAt, datetime)
+    assert mutation_result.last_sync.summary.errors == 1
+    assert mutation_result.last_sync.summary.errorMessages == ["Vector sync error: vector down"]
 
 
 @pytest.mark.asyncio
@@ -786,19 +823,6 @@ async def test_build_sync_plan_treats_unparseable_existing_runtime_access_as_cha
     assert sync_plan.mcp_updates == [(existing_mcp, discovered_mcp, runtime_arn)]
 
 
-def _commit_with_apply_error(federation_sync_service, mutation_result, apply_error):
-    async def _side_effect(*, federation, job, discovered, session):
-        await federation_sync_service.federation_crud_service.mark_sync_failed(
-            federation, apply_error, last_sync=mutation_result.last_sync, stats=mutation_result.stats, session=session
-        )
-        await federation_sync_service.federation_job_service.mark_failed(
-            job, FederationJobPhase.FAILED, apply_error, session=session
-        )
-        return mutation_result
-
-    return _side_effect
-
-
 @pytest.mark.asyncio
 async def test_run_sync_preserves_apply_error_when_vector_sync_succeeds(
     federation_sync_service: FederationSyncService,
@@ -815,14 +839,15 @@ async def test_run_sync_preserves_apply_error_when_vector_sync_succeeds(
     mutation_result = FederationSyncMutationResult(
         summary=FederationApplySummary(errors=1, errorMessages=[apply_error]),
         stats=SimpleNamespace(),
-        last_sync=SimpleNamespace(),
+        last_sync=FederationLastSync(
+            summary=FederationLastSyncSummary(errors=1, errorMessages=[apply_error]),
+        ),
     )
 
     federation_sync_service._discover_entities = AsyncMock(return_value={"mcp_servers": [], "a2a_agents": []})
-    federation_sync_service._commit_sync_transaction = AsyncMock(
-        side_effect=_commit_with_apply_error(federation_sync_service, mutation_result, apply_error)
-    )
+    federation_sync_service._commit_sync_transaction = AsyncMock(return_value=mutation_result)
     federation_sync_service._sync_vector_index_after_commit = AsyncMock()
+    federation_sync_service.federation_job_service.mark_syncing = AsyncMock()
     federation_sync_service.federation_crud_service.mark_sync_failed = AsyncMock()
     federation_sync_service.federation_crud_service.mark_sync_success = AsyncMock()
     federation_sync_service.federation_job_service.mark_failed = AsyncMock()
@@ -839,13 +864,17 @@ async def test_run_sync_preserves_apply_error_when_vector_sync_succeeds(
     )
     federation_sync_service.federation_crud_service.mark_sync_success.assert_not_awaited()
     federation_sync_service.federation_job_service.mark_success.assert_not_awaited()
-    # _commit_sync_transaction already marked failed inside the transaction; run_sync should not
-    # call mark_sync_success and should not re-mark unless vector sync also failed.
     federation_sync_service.federation_crud_service.mark_sync_failed.assert_awaited_once()
     crud_message = federation_sync_service.federation_crud_service.mark_sync_failed.await_args.args[1]
     assert crud_message == apply_error
     federation_sync_service.federation_job_service.mark_failed.assert_awaited_once()
     assert federation_sync_service.federation_job_service.mark_failed.await_args.args[2] == apply_error
+    federation_sync_service.federation_job_service.mark_syncing.assert_awaited_once_with(
+        job,
+        FederationJobPhase.SYNCING_VECTORS,
+    )
+    assert mutation_result.last_sync.status == FederationSyncStatus.FAILED
+    assert isinstance(mutation_result.last_sync.finishedAt, datetime)
 
 
 @pytest.mark.asyncio
@@ -864,14 +893,15 @@ async def test_run_sync_combines_apply_and_vector_errors_when_vector_sync_fails(
     mutation_result = FederationSyncMutationResult(
         summary=FederationApplySummary(errors=1, errorMessages=[apply_error]),
         stats=SimpleNamespace(),
-        last_sync=SimpleNamespace(),
+        last_sync=FederationLastSync(
+            summary=FederationLastSyncSummary(errors=1, errorMessages=[apply_error]),
+        ),
     )
 
     federation_sync_service._discover_entities = AsyncMock(return_value={"mcp_servers": [], "a2a_agents": []})
-    federation_sync_service._commit_sync_transaction = AsyncMock(
-        side_effect=_commit_with_apply_error(federation_sync_service, mutation_result, apply_error)
-    )
+    federation_sync_service._commit_sync_transaction = AsyncMock(return_value=mutation_result)
     federation_sync_service._sync_vector_index_after_commit = AsyncMock(side_effect=RuntimeError("weaviate timeout"))
+    federation_sync_service.federation_job_service.mark_syncing = AsyncMock()
     federation_sync_service.federation_crud_service.mark_sync_failed = AsyncMock()
     federation_sync_service.federation_crud_service.mark_sync_success = AsyncMock()
     federation_sync_service.federation_job_service.mark_failed = AsyncMock()
@@ -888,18 +918,93 @@ async def test_run_sync_combines_apply_and_vector_errors_when_vector_sync_fails(
     )
     federation_sync_service.federation_crud_service.mark_sync_success.assert_not_awaited()
     federation_sync_service.federation_job_service.mark_success.assert_not_awaited()
-    # The second mark_sync_failed call from run_sync overwrites the transaction-time message
-    # with the combined message that includes both the apply error and the vector-sync error.
-    assert federation_sync_service.federation_crud_service.mark_sync_failed.await_count == 2
+    federation_sync_service.federation_crud_service.mark_sync_failed.assert_awaited_once()
     combined_message = federation_sync_service.federation_crud_service.mark_sync_failed.await_args.args[1]
     assert "2 resource sync failures" in combined_message
     assert apply_error in combined_message
     assert "weaviate timeout" in combined_message
-    assert federation_sync_service.federation_job_service.mark_failed.await_count == 2
+    federation_sync_service.federation_job_service.mark_failed.assert_awaited_once()
     job_error_message = federation_sync_service.federation_job_service.mark_failed.await_args.args[2]
     assert "2 resource sync failures" in job_error_message
     assert apply_error in job_error_message
     assert "weaviate timeout" in job_error_message
+    assert mutation_result.last_sync.status == FederationSyncStatus.FAILED
+    assert mutation_result.last_sync.summary.errors == 2
+    assert mutation_result.last_sync.summary.errorMessages == [
+        apply_error,
+        "Vector sync error: weaviate timeout",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_sync_remains_active_and_rejects_second_sync_during_vector_tail(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    federation.syncStatus = FederationSyncStatus.SYNCING
+    job = SimpleNamespace(
+        id=PydanticObjectId(),
+        jobType="full_sync",
+        status=FederationJobStatus.SYNCING,
+        phase=FederationJobPhase.APPLYING,
+        startedAt=datetime.now(UTC),
+    )
+    apply_error = "A2A agent wip-agent: enrichment failed"
+    mutation_result = FederationSyncMutationResult(
+        summary=FederationApplySummary(errors=1, errorMessages=[apply_error]),
+        stats=SimpleNamespace(),
+        last_sync=FederationLastSync(
+            summary=FederationLastSyncSummary(errors=1, errorMessages=[apply_error]),
+        ),
+    )
+    vector_started = asyncio.Event()
+    release_vector = asyncio.Event()
+
+    async def _mark_syncing(current_job, phase):
+        current_job.status = FederationJobStatus.SYNCING
+        current_job.phase = phase
+        return current_job
+
+    async def _block_vector_sync(**_kwargs):
+        vector_started.set()
+        await release_vector.wait()
+
+    federation_sync_service._discover_entities = AsyncMock(return_value={"mcp_servers": [], "a2a_agents": []})
+    federation_sync_service._commit_sync_transaction = AsyncMock(return_value=mutation_result)
+    federation_sync_service._sync_vector_index_after_commit = AsyncMock(side_effect=_block_vector_sync)
+    federation_sync_service.federation_job_service.mark_syncing = AsyncMock(side_effect=_mark_syncing)
+    federation_sync_service.federation_job_service.get_active_job = AsyncMock()
+    federation_sync_service.federation_job_service.mark_failed = AsyncMock()
+    federation_sync_service.federation_job_service.mark_success = AsyncMock()
+    federation_sync_service.federation_crud_service.mark_sync_failed = AsyncMock()
+    federation_sync_service.federation_crud_service.mark_sync_success = AsyncMock()
+    _patch_mongo_session(monkeypatch)
+
+    sync_task = asyncio.create_task(
+        federation_sync_service.run_sync(
+            federation=federation,
+            job=job,
+            author_id=_DEFAULT_USER_OBJECT_ID,
+        )
+    )
+    await asyncio.wait_for(vector_started.wait(), timeout=1)
+
+    try:
+        assert job.status == FederationJobStatus.SYNCING
+        assert job.phase == FederationJobPhase.SYNCING_VECTORS
+        assert federation.syncStatus == FederationSyncStatus.SYNCING
+        federation_sync_service.federation_job_service.mark_failed.assert_not_awaited()
+        federation_sync_service.federation_job_service.get_active_job.return_value = job
+        with pytest.raises(ValueError, match="already has an active sync job"):
+            await federation_sync_service.create_manual_sync_job(
+                federation=federation,
+                reason="second sync",
+                triggered_by="user-1",
+            )
+    finally:
+        release_vector.set()
+        await sync_task
 
 
 @pytest.mark.asyncio
@@ -1212,7 +1317,7 @@ async def test_build_sync_plan_does_not_treat_planned_a2a_create_as_persisted_pa
 
 
 @pytest.mark.asyncio
-async def test_commit_sync_transaction_marks_federation_failed_when_resource_enrichment_fails(
+async def test_commit_sync_transaction_defers_terminal_status_when_resource_enrichment_fails(
     federation_sync_service: FederationSyncService,
 ):
     federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
@@ -1252,12 +1357,11 @@ async def test_commit_sync_transaction_marks_federation_failed_when_resource_enr
     )
 
     assert result == mutation_result
-    federation_sync_service.federation_crud_service.mark_sync_failed.assert_awaited_once()
+    assert result.summary.errorMessages == ["A2A agent pharmacy_fraud_a2a: boom"]
+    federation_sync_service.federation_crud_service.mark_sync_failed.assert_not_awaited()
     federation_sync_service.federation_crud_service.mark_sync_success.assert_not_awaited()
-    federation_sync_service.federation_job_service.mark_failed.assert_awaited_once()
+    federation_sync_service.federation_job_service.mark_failed.assert_not_awaited()
     federation_sync_service.federation_job_service.mark_success.assert_not_awaited()
-    assert federation_sync_service.federation_crud_service.mark_sync_failed.await_args.kwargs["session"] is session
-    assert federation_sync_service.federation_job_service.mark_failed.await_args.kwargs["session"] is session
     assert federation_sync_service.federation_crud_service.mark_syncing.await_args.kwargs["last_sync"].status == (
         FederationSyncStatus.SYNCING
     )
@@ -2423,6 +2527,31 @@ async def test_batch_inherit_acl_raises_after_failure(federation_sync_service: F
 
 
 @pytest.mark.asyncio
+async def test_create_manual_sync_job_returns_pending_job_without_running_sync(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    job = SimpleNamespace(id=PydanticObjectId())
+    federation_sync_service.federation_job_service.get_active_job = AsyncMock(return_value=None)
+    federation_sync_service.create_sync_job_and_mark_pending = AsyncMock(return_value=job)
+    federation_sync_service.run_sync = AsyncMock()
+    session = _patch_mongo_session(monkeypatch)
+
+    result, author_id = await federation_sync_service.create_manual_sync_job(
+        federation=federation,
+        reason="manual",
+        triggered_by="user-1",
+    )
+
+    assert result is job
+    assert author_id == _DEFAULT_USER_OBJECT_ID
+    federation_sync_service.create_sync_job_and_mark_pending.assert_awaited_once()
+    assert federation_sync_service.create_sync_job_and_mark_pending.await_args.kwargs["session"] is session
+    federation_sync_service.run_sync.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_start_manual_sync_raises_when_user_id_is_missing(federation_sync_service: FederationSyncService):
     # Author resolution happens before any job is created, so a missing user_id
     # must fail fast without touching job/federation state.
@@ -2567,6 +2696,7 @@ async def test_run_sync_forwards_author_id_to_discover_entities(
     federation_sync_service._discover_entities = discover_mock
     federation_sync_service._commit_sync_transaction = AsyncMock(return_value=mutation_result)
     federation_sync_service._sync_vector_index_after_commit = AsyncMock()
+    federation_sync_service.federation_job_service.mark_syncing = AsyncMock()
     federation_sync_service.federation_crud_service.mark_sync_success = AsyncMock()
     federation_sync_service.federation_job_service.mark_success = AsyncMock()
     _patch_mongo_session(monkeypatch)

@@ -40,7 +40,6 @@ async def main() -> None:
     redis_client = create_redis_client(settings.redis_config)
     db_client = create_database_client(settings.vector_backend_config)
     container = RegistryContainer(settings=settings, db_client=db_client, redis_client=redis_client)
-    headers_provider = container.a2a_headers_provider
 
     try:
         if target_path:
@@ -65,19 +64,20 @@ async def main() -> None:
         print(f"providerType    = {(agent.federationMetadata or {}).get('providerType')}")
 
         print("=" * 70)
-        print(f"EXECUTE via A2aHeadersProvider + call_a2a  prompt={prompt!r}")
+        print(f"EXECUTE via A2AClientRegistry + call_a2a  prompt={prompt!r}")
         print("=" * 70)
+        client = await container.a2a_client_registry.get_client(agent)
         result = await call_a2a(
             agent,
             prompt,
-            jwt_config=settings.jwt_signing_config,
-            headers_provider=headers_provider,
+            httpx_client=client,
         )
         print(f"success    = {result.success}")
         print(f"error      = {result.error}")
         print(f"task_state = {getattr(result.task_state, 'value', result.task_state)}")
         print("response text:\n" + (result.render_text() or "<empty>"))
     finally:
+        await container.a2a_client_registry.close()
         await close_mongodb()
 
 
