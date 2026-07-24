@@ -29,8 +29,8 @@ from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 from registry_pkgs.models.workflow import WorkflowNode
 from registry_pkgs.workflows.a2a_client import HeadersProvider
 from registry_pkgs.workflows.a2a_executor import make_a2a_executor, make_a2a_pool_executor
-from registry_pkgs.workflows.mcp_executor import McpAccessAuthorizer, McpHeadersProvider, make_mcp_executor
-from registry_pkgs.workflows.types import POOL_KEY_PREFIX, WorkflowConfigError
+from registry_pkgs.workflows.mcp_executor import McpHeadersProvider, make_mcp_executor
+from registry_pkgs.workflows.types import POOL_KEY_PREFIX
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +107,6 @@ async def build_executor_registry(
     headers_provider: HeadersProvider | None = None,
     redis_client: Any | None = None,
     redis_key_prefix: str | None = None,
-    mcp_access_authorizer: McpAccessAuthorizer | None = None,
     mcp_headers_provider: McpHeadersProvider | None = None,
 ) -> dict[str, StepExecutor]:
     """Resolve each executor key to an MCP server or A2A agent executor.
@@ -155,7 +154,6 @@ async def build_executor_registry(
             headers_provider=headers_provider,
             redis_client=redis_client,
             redis_key_prefix=redis_key_prefix,
-            mcp_access_authorizer=mcp_access_authorizer,
             mcp_headers_provider=mcp_headers_provider,
         )
 
@@ -188,7 +186,6 @@ async def _resolve_executor(
     headers_provider: HeadersProvider | None = None,
     redis_client: Any | None = None,
     redis_key_prefix: str | None = None,
-    mcp_access_authorizer: McpAccessAuthorizer | None = None,
     mcp_headers_provider: McpHeadersProvider | None = None,
 ) -> StepExecutor:
     """Resolve a single executor key to its MCP or A2A executor.
@@ -212,10 +209,6 @@ async def _resolve_executor(
                 f"executor_key {key!r} → MCP server {mcp_server.serverName!r}: user lacks access (server_id={mcp_server.id})"
             )
         logger.debug("executor_key %r → MCP server %r", key, mcp_server.serverName)
-        if auth_context is not None:
-            if mcp_access_authorizer is None:
-                raise WorkflowConfigError(f"No access authorizer configured for MCP server {mcp_server.serverName!r}")
-            await mcp_access_authorizer(mcp_server, auth_context)
         return make_mcp_executor(
             mcp_server,
             llm=llm,
@@ -223,7 +216,6 @@ async def _resolve_executor(
             jwt_config=jwt_config,
             redis_client=redis_client,
             redis_key_prefix=redis_key_prefix or "jarvis-registry",
-            mcp_access_authorizer=mcp_access_authorizer,
             mcp_headers_provider=mcp_headers_provider,
         )
 

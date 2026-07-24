@@ -21,7 +21,6 @@ from registry_pkgs.workflows.types import WorkflowConfigError
 logger = logging.getLogger(__name__)
 
 McpHeadersProvider = Callable[[ExtendedMCPServer, dict[str, Any] | None], Awaitable[dict[str, str]]]
-McpAccessAuthorizer = Callable[[ExtendedMCPServer, dict[str, Any]], Awaitable[None]]
 
 
 def _get_target_url(server: ExtendedMCPServer) -> str:
@@ -78,7 +77,6 @@ def make_mcp_executor(
     jwt_config: JwtSigningConfig,
     redis_client: Any | None,
     redis_key_prefix: str,
-    mcp_access_authorizer: McpAccessAuthorizer | None = None,
     mcp_headers_provider: McpHeadersProvider | None,
 ) -> StepExecutor:
     """Wrap an MCP server as a workflow executor via a direct downstream call.
@@ -92,7 +90,6 @@ def make_mcp_executor(
                               servers to self-sign a runtime JWT.
         redis_client:         Optional Redis client for caching AgentCore JWTs.
         redis_key_prefix:     Prefix for Redis cache keys.
-        mcp_access_authorizer: Async consent preflight for user-triggered calls.
         mcp_headers_provider: Async callable that builds authenticated headers
                               for manually-registered servers.
 
@@ -131,12 +128,6 @@ def make_mcp_executor(
             return {"Authorization": f"Bearer {token}"}
 
         async def executor(step_input: StepInput, session_state: dict[str, Any] | None = None) -> StepOutput:
-            if auth_context is not None:
-                if mcp_access_authorizer is None:
-                    raise WorkflowConfigError(
-                        f"No access authorizer configured for MCP server {mcp_server.serverName!r}"
-                    )
-                await mcp_access_authorizer(mcp_server, auth_context)
             prompt = build_prompt(step_input)
             target_url = _get_target_url(mcp_server)
             mcp_tools = MCPTools(

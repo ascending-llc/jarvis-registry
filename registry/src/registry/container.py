@@ -282,9 +282,6 @@ class RegistryContainer:
         """App-scoped MCP headers provider for manually-registered workflow MCP servers."""
         return make_mcp_headers_provider(
             oauth_service=self.oauth_service,
-            consent_store=self.consent_store,
-            pending_consent_store=self.pending_consent_store,
-            registry_client_url=self.settings.registry_client_url,
             redis_client=self.redis_client,
         )
 
@@ -310,7 +307,6 @@ class RegistryContainer:
                 headers_provider=self.a2a_headers_provider,
                 redis_client=self.redis_client,
                 redis_key_prefix=self.settings.redis_key_prefix,
-                mcp_access_authorizer=self.mcp_headers_provider.authorize,
                 mcp_headers_provider=self.mcp_headers_provider,
             )
 

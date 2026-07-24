@@ -68,8 +68,8 @@ from registry_pkgs.workflows.compiler import StepExecutor, compile_workflow, fla
 from registry_pkgs.workflows.control import DirectiveQueue, WorkflowCancelledError
 from registry_pkgs.workflows.executor_resolver import build_executor_registry
 from registry_pkgs.workflows.hitl import hydrate_requirement, serialize_requirement
-from registry_pkgs.workflows.mcp_executor import McpAccessAuthorizer, McpHeadersProvider
-from registry_pkgs.workflows.types import McpConsentRequiredError, WorkflowConfigError
+from registry_pkgs.workflows.mcp_executor import McpHeadersProvider
+from registry_pkgs.workflows.types import WorkflowConfigError
 
 logger = logging.getLogger(__name__)
 
@@ -134,7 +134,6 @@ class WorkflowRunner:
         headers_provider: HeadersProvider | None = None,
         redis_client: Any | None = None,
         redis_key_prefix: str | None = None,
-        mcp_access_authorizer: McpAccessAuthorizer | None = None,
         mcp_headers_provider: McpHeadersProvider | None = None,
     ) -> None:
         if db_client is None:
@@ -154,7 +153,6 @@ class WorkflowRunner:
         self._headers_provider = headers_provider
         self._redis_client = redis_client
         self._redis_key_prefix = redis_key_prefix
-        self._mcp_access_authorizer = mcp_access_authorizer
         self._mcp_headers_provider = mcp_headers_provider
 
     async def run(
@@ -230,36 +228,6 @@ class WorkflowRunner:
         try:
             try:
                 executor_registry = await self._build_registry(definition, auth_context, user_id)
-            except McpConsentRequiredError as exc:
-                run.status = WorkflowRunStatus.AWAITING_APPROVAL
-                run.pending_requirements = [
-                    {
-                        "schema_version": 1,
-                        "step_id": f"mcp-consent:{exc.elicitation_id}",
-                        "step_name": exc.server_name,
-                        "step_type": "mcp_consent",
-                        "requirement_kind": "mcp_consent",
-                        "requires_confirmation": True,
-                        "confirmation_message": (
-                            f"Grant consent for this workflow to call MCP server {exc.server_name!r}, "
-                            "then confirm to continue."
-                        ),
-                        "confirmed": None,
-                        "consent_url": exc.auth_url,
-                        "server_name": exc.server_name,
-                        "elicitation_id": exc.elicitation_id,
-                    }
-                ]
-                run.error_summary = None
-                run.finished_at = None
-                await run.save()
-                logger.info(
-                    "[run=%s] awaiting MCP server consent for %s — consent URL: %s",
-                    run.id,
-                    exc.server_name,
-                    exc.auth_url,
-                )
-                executor_registry = None
             except WorkflowConfigError as exc:
                 run.status = WorkflowRunStatus.FAILED
                 run.error_summary = str(exc)
@@ -278,8 +246,7 @@ class WorkflowRunner:
                 await run.save()
                 logger.error("[run=%s] ✗ failed to build executor registry: %s", run.id, exc, exc_info=True)
                 raise
-            if executor_registry is not None:
-                await self._execute(run, definition, user_text, executor_registry, injected_outputs, stop_after_node_id)
+            await self._execute(run, definition, user_text, executor_registry, injected_outputs, stop_after_node_id)
         finally:
             # Always unregister — even on failure — so the queue slot is freed.
             if self._directive_queue is not None:
@@ -327,7 +294,6 @@ class WorkflowRunner:
             headers_provider=self._headers_provider,
             redis_client=self._redis_client,
             redis_key_prefix=self._redis_key_prefix,
-            mcp_access_authorizer=self._mcp_access_authorizer,
             mcp_headers_provider=self._mcp_headers_provider,
         )
 

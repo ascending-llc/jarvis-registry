@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import ANY, AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from agno.workflow import StepInput
@@ -56,7 +56,6 @@ class TestAgentCoreMcpExecutor:
 
         redis_client = MagicMock()
         redis_client.get.return_value = b"cached-agentcore-token"
-        access_authorizer = AsyncMock()
         auth_context = {"user_id": "user-1", "client_id": "client-1"}
 
         executor = make_mcp_executor(
@@ -66,7 +65,6 @@ class TestAgentCoreMcpExecutor:
             jwt_config=_jwt_config(),
             redis_client=redis_client,
             redis_key_prefix="test-registry",
-            mcp_access_authorizer=access_authorizer,
             mcp_headers_provider=None,
         )
 
@@ -77,7 +75,6 @@ class TestAgentCoreMcpExecutor:
         assert captured_tools_kwargs.get("header_provider") is not None
         assert captured_tools_kwargs.get("refresh_connection") is False
         assert captured_tools_kwargs["server_params"].url == "https://agentcore-server.example.com/mcp"
-        access_authorizer.assert_awaited_once_with(ANY, auth_context)
 
         # Calling header_provider directly should return the cached token.
         header_provider = captured_tools_kwargs["header_provider"]

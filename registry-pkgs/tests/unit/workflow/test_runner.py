@@ -11,7 +11,6 @@ from registry_pkgs.models.enums import WorkflowRunStatus
 from registry_pkgs.models.workflow import WorkflowDefinition, WorkflowNode, WorkflowRun
 from registry_pkgs.workflows import runner
 from registry_pkgs.workflows.control.wrapper import WorkflowCancelledError
-from registry_pkgs.workflows.types import McpConsentRequiredError
 
 
 class _FieldExpr:
@@ -214,48 +213,6 @@ class TestWorkflowRunnerRun:
             existing_run, definition, "hello", fake_registry, None, None
         )
 
-    @pytest.mark.asyncio
-    async def test_consent_preflight_pauses_before_workflow_execution(self, monkeypatch: pytest.MonkeyPatch):
-        definition = _definition()
-        run_doc = SimpleNamespace(
-            id=PydanticObjectId(),
-            status=WorkflowRunStatus.PENDING,
-            definition_snapshot=None,
-            pending_requirements=[],
-            error_summary="old error",
-            finished_at=datetime.now(UTC),
-            save=AsyncMock(),
-        )
-        consent_error = McpConsentRequiredError(
-            auth_url="https://registry.example.com/consent/server?nonce=abc",
-            server_name="github",
-            elicitation_id="elicitation-1",
-        )
-        monkeypatch.setattr(runner.WorkflowDefinition, "get", AsyncMock(return_value=definition))
-        monkeypatch.setattr(runner.WorkflowRun, "get", AsyncMock(return_value=run_doc))
-        monkeypatch.setattr(runner.WorkflowRunner, "_build_registry", AsyncMock(side_effect=consent_error))
-        execute = AsyncMock()
-        monkeypatch.setattr(runner.WorkflowRunner, "_execute", execute)
-        monkeypatch.setattr(runner.NodeRun, "workflow_run_id", _FieldExpr("workflow_run_id"), raising=False)
-        monkeypatch.setattr(
-            runner.NodeRun,
-            "find",
-            lambda *args, **kwargs: SimpleNamespace(to_list=AsyncMock(return_value=[])),
-        )
-
-        actual_run, _ = await _make_runner().run(
-            str(definition.id),
-            "hello",
-            auth_context={"user_id": "user-1"},
-            user_id="user-1",
-            existing_run_id=str(run_doc.id),
-        )
-
-        assert actual_run.status == WorkflowRunStatus.AWAITING_APPROVAL
-        assert actual_run.pending_requirements[0]["requirement_kind"] == "mcp_consent"
-        assert actual_run.pending_requirements[0]["consent_url"].endswith("nonce=abc")
-        execute.assert_not_awaited()
-
 
 @pytest.mark.unit
 class TestBuildRegistry:
@@ -289,7 +246,6 @@ class TestBuildRegistry:
             headers_provider=None,
             redis_client=None,
             redis_key_prefix=None,
-            mcp_access_authorizer=None,
             mcp_headers_provider=None,
         ):
             captured["executor_keys"] = executor_keys
@@ -297,16 +253,13 @@ class TestBuildRegistry:
             captured["auth_context"] = auth_context
             captured["user_id"] = user_id
             captured["redis_key_prefix"] = redis_key_prefix
-            captured["mcp_access_authorizer"] = mcp_access_authorizer
             captured["mcp_headers_provider"] = mcp_headers_provider
             return {}
 
         monkeypatch.setattr(runner, "build_executor_registry", fake_build)
 
-        access_authorizer = AsyncMock()
         r = _make_runner(
             redis_key_prefix="test-registry",
-            mcp_access_authorizer=access_authorizer,
             mcp_headers_provider=lambda *args, **kwargs: {},
         )
         await r._build_registry(definition, auth_context, "user-1")
@@ -316,7 +269,6 @@ class TestBuildRegistry:
         assert captured["auth_context"] is auth_context
         assert captured["user_id"] == "user-1"
         assert captured["redis_key_prefix"] == "test-registry"
-        assert captured["mcp_access_authorizer"] is access_authorizer
         assert captured["mcp_headers_provider"] is r._mcp_headers_provider
 
 

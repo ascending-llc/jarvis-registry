@@ -249,49 +249,6 @@ async def test_refresh_triggering_auth_context_does_not_reuse_different_approver
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("resolution", [RequirementResolution.CONFIRM, RequirementResolution.REJECT])
-async def test_resolve_consent_requirement_dispatches_restart(
-    monkeypatch: pytest.MonkeyPatch,
-    resolution: RequirementResolution,
-):
-    run = SimpleNamespace(
-        id=PydanticObjectId(),
-        status=WorkflowRunStatus.AWAITING_APPROVAL,
-        pending_requirements=[
-            {
-                "step_id": "mcp-consent:1",
-                "requirement_kind": "mcp_consent",
-                "confirmed": None,
-            }
-        ],
-    )
-    refreshed_run = SimpleNamespace(id=run.id, status=WorkflowRunStatus.AWAITING_APPROVAL)
-    auth_context = UserContextDict(user_id="user-1", client_id="client-1", scopes=[])
-    service = WorkflowControlService(directive_queue=DirectiveQueue())
-    service._load_run = AsyncMock(side_effect=[run, refreshed_run])
-    service._restart_after_consent = MagicMock(return_value=MagicMock(close=MagicMock()))
-    service._trigger_resume = MagicMock()
-    atomic_write = AsyncMock()
-    monkeypatch.setattr(wcs, "_atomic_write_decision", atomic_write)
-    monkeypatch.setattr(wcs, "_fire_background", lambda coroutine: coroutine.close())
-
-    result = await service.resolve_requirement(
-        "workflow-1",
-        str(run.id),
-        step_id="mcp-consent:1",
-        resolution=resolution,
-        auth_context=auth_context,
-    )
-
-    assert result is refreshed_run
-    atomic_write.assert_awaited_once_with(
-        run, "mcp-consent:1", {"confirmed": resolution == RequirementResolution.CONFIRM}
-    )
-    service._restart_after_consent.assert_called_once_with(run, resolution, auth_context)
-    service._trigger_resume.assert_not_called()
-
-
-@pytest.mark.asyncio
 async def test_resolve_standard_requirement_dispatches_continue(monkeypatch: pytest.MonkeyPatch):
     run = SimpleNamespace(
         id=PydanticObjectId(),
@@ -302,7 +259,6 @@ async def test_resolve_standard_requirement_dispatches_continue(monkeypatch: pyt
     auth_context = UserContextDict(user_id="user-1", client_id="client-1", scopes=[])
     service = WorkflowControlService(directive_queue=DirectiveQueue())
     service._load_run = AsyncMock(side_effect=[run, refreshed_run])
-    service._restart_after_consent = MagicMock()
     service._trigger_resume = MagicMock()
     atomic_write = AsyncMock()
     monkeypatch.setattr(wcs, "_atomic_write_decision", atomic_write)
@@ -318,70 +274,6 @@ async def test_resolve_standard_requirement_dispatches_continue(monkeypatch: pyt
     assert result is refreshed_run
     atomic_write.assert_awaited_once_with(run, "review-1", {"confirmed": True})
     service._trigger_resume.assert_called_once_with(run, auth_context)
-    service._restart_after_consent.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_restart_after_consent_confirm_reuses_run_with_current_auth():
-    run = SimpleNamespace(
-        id=PydanticObjectId(),
-        workflow_definition_id=PydanticObjectId(),
-        triggering_user_id="user-1",
-        initial_input={"user_text": "continue"},
-        definition_snapshot={"name": "wf"},
-        pending_requirements=[{"step_id": "mcp-consent:1"}],
-        status=WorkflowRunStatus.AWAITING_APPROVAL,
-        save=AsyncMock(),
-    )
-    auth_context = UserContextDict(user_id="user-1", client_id="client-1", scopes=["mcp-call"])
-    runner = SimpleNamespace(run=AsyncMock())
-    refresher = AsyncMock(return_value=auth_context)
-    service = WorkflowControlService(
-        directive_queue=DirectiveQueue(),
-        runner_factory=lambda: runner,
-        auth_context_refresher=refresher,
-    )
-
-    await service._restart_after_consent(run, RequirementResolution.CONFIRM, auth_context)
-
-    assert run.status == WorkflowRunStatus.PENDING
-    assert run.pending_requirements == []
-    run.save.assert_awaited_once()
-    refresher.assert_awaited_once_with(run, auth_context)
-    runner.run.assert_awaited_once_with(
-        str(run.workflow_definition_id),
-        "continue",
-        auth_context=auth_context,
-        user_id="user-1",
-        existing_run_id=str(run.id),
-        definition_snapshot=run.definition_snapshot,
-    )
-
-
-@pytest.mark.asyncio
-async def test_restart_after_consent_reject_cancels_without_running():
-    run = SimpleNamespace(
-        id=PydanticObjectId(),
-        pending_requirements=[{"step_id": "mcp-consent:1"}],
-        status=WorkflowRunStatus.AWAITING_APPROVAL,
-        error_summary=None,
-        finished_at=None,
-        save=AsyncMock(),
-    )
-    runner = SimpleNamespace(run=AsyncMock())
-    service = WorkflowControlService(
-        directive_queue=DirectiveQueue(),
-        runner_factory=lambda: runner,
-    )
-
-    await service._restart_after_consent(run, RequirementResolution.REJECT, None)
-
-    assert run.status == WorkflowRunStatus.CANCELLED
-    assert run.pending_requirements == []
-    assert run.error_summary == "MCP server consent was rejected"
-    assert run.finished_at is not None
-    run.save.assert_awaited_once()
-    runner.run.assert_not_awaited()
 
 
 @pytest.mark.asyncio

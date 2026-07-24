@@ -444,8 +444,6 @@ class StepRequirementSummary(APIBaseModel):
     maxRetries: int | None = None
     timeoutAt: datetime | None = None
     requirementKind: str | None = None
-    consentUrl: str | None = None
-    serverName: str | None = None
     onTimeout: OnTimeoutPolicy = OnTimeoutPolicy.CANCEL
     onReject: OnRejectPolicy = OnRejectPolicy.SKIP
 

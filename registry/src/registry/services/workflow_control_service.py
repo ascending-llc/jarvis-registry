@@ -286,10 +286,7 @@ class WorkflowControlService:
 
         logger.info("WorkflowRun %s requirement %s resolved as %s", run_id, step_id, resolution.value)
 
-        if target.get("requirement_kind") == "mcp_consent":
-            _fire_background(self._restart_after_consent(run, resolution, auth_context))
-        else:
-            self._trigger_resume(run, auth_context)
+        self._trigger_resume(run, auth_context)
 
         return await self._load_run(workflow_definition_id, run_id)
 
@@ -327,42 +324,6 @@ class WorkflowControlService:
             existing_run_id=str(run.id),
             auth_context=auth_context,
             user_id=run.triggering_user_id,
-        )
-
-    async def _restart_after_consent(
-        self,
-        run: WorkflowRun,
-        resolution: RequirementResolution,
-        current_auth_context: UserContextDict | None,
-    ) -> None:
-        """Start a preflight-paused run after consent has been granted."""
-        if resolution != RequirementResolution.CONFIRM:
-            run.status = WorkflowRunStatus.CANCELLED
-            run.pending_requirements = []
-            run.error_summary = "MCP server consent was rejected"
-            run.finished_at = datetime.now(UTC)
-            await run.save()
-            return
-
-        auth_context = await self._auth_context_refresher(run, current_auth_context)
-        if auth_context is None or not auth_context.get("client_id"):
-            await self._fail_run_requiring_reauthentication(run)
-            return
-        if self._runner_factory is None:
-            logger.error("Cannot restart consent-paused run %s: runner_factory is not configured", run.id)
-            return
-
-        run.pending_requirements = []
-        run.status = WorkflowRunStatus.PENDING
-        await run.save()
-        runner = self._runner_factory()
-        await runner.run(
-            str(run.workflow_definition_id),
-            extract_user_text(run.initial_input),
-            auth_context=auth_context,
-            user_id=run.triggering_user_id,
-            existing_run_id=str(run.id),
-            definition_snapshot=run.definition_snapshot,
         )
 
     @staticmethod
