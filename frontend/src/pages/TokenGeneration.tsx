@@ -3,6 +3,7 @@ import type React from 'react';
 import { useState } from 'react';
 import IconButton from '@/components/IconButton';
 import SERVICES from '@/services';
+import { TokenPurpose } from '@/services/auth/type';
 import { useAuth } from '../contexts/AuthContext';
 
 const TokenGeneration: React.FC = () => {
@@ -12,6 +13,7 @@ const TokenGeneration: React.FC = () => {
     expiresInHours: 8,
     scopeMethod: 'current' as 'current' | 'custom',
     customScopes: '',
+    tokenPurpose: TokenPurpose.Interactive,
   });
   const [generatedToken, setGeneratedToken] = useState<string>('');
   const [tokenDetails, setTokenDetails] = useState<any>(null);
@@ -34,6 +36,7 @@ const TokenGeneration: React.FC = () => {
       const requestData: any = {
         description: formData.description,
         expiresInHours: formData.expiresInHours,
+        tokenPurpose: formData.tokenPurpose,
       };
 
       // Handle scopes based on the selected method
@@ -205,47 +208,71 @@ const TokenGeneration: React.FC = () => {
                 </div>
 
                 {/* Right Column */}
-                <div className='space-y-3'>
+                <div className='space-y-6'>
                   {/* Scope Configuration */}
                   <div>
                     <h4 className='mb-2 text-sm font-semibold text-[var(--jarvis-text-strong)]'>Scope Configuration</h4>
 
-                    <div className='space-y-2'>
-                      <label className='flex items-center space-x-2'>
-                        <input
-                          type='radio'
-                          name='scopeMethod'
-                          value='current'
-                          checked={formData.scopeMethod === 'current'}
-                          onChange={e =>
-                            setFormData(prev => ({ ...prev, scopeMethod: e.target.value as 'current' | 'custom' }))
-                          }
-                          className='rounded border-[color:var(--jarvis-input-border)] text-[var(--jarvis-primary)] focus:ring-[var(--jarvis-primary)]'
-                        />
-                        <div>
-                          <div className='text-sm font-medium text-[var(--jarvis-text)]'>Use my current scopes</div>
-                          <div className='text-xs text-[var(--jarvis-muted)]'>
+                    <div className='space-y-3'>
+                      <label
+                        className={`flex items-start space-x-3 p-3 rounded-xl border cursor-pointer transition-all duration-200 ${
+                          formData.scopeMethod === 'current'
+                            ? 'border-[var(--jarvis-primary)] bg-[var(--jarvis-primary)]/5 ring-1 ring-[var(--jarvis-primary)]/20'
+                            : 'border-[var(--jarvis-input-border)] hover:border-[var(--jarvis-primary)]/50 hover:bg-[var(--jarvis-card-muted)]'
+                        }`}
+                      >
+                        <div className='mt-0.5 flex-shrink-0'>
+                          <input
+                            type='radio'
+                            name='scopeMethod'
+                            value='current'
+                            checked={formData.scopeMethod === 'current'}
+                            onChange={e =>
+                              setFormData(prev => ({ ...prev, scopeMethod: e.target.value as 'current' | 'custom' }))
+                            }
+                            className='rounded-full border-[color:var(--jarvis-input-border)] text-[var(--jarvis-primary)] focus:ring-[var(--jarvis-primary)] bg-transparent'
+                          />
+                        </div>
+                        <div className='flex-1'>
+                          <div
+                            className={`text-sm font-medium ${formData.scopeMethod === 'current' ? 'text-[var(--jarvis-primary)]' : 'text-[var(--jarvis-text-strong)]'}`}
+                          >
+                            Use my current scopes
+                          </div>
+                          <div className='text-xs text-[var(--jarvis-muted)] mt-1'>
                             Generate token with all your current permissions
                           </div>
                         </div>
                       </label>
 
-                      <label className='flex items-center space-x-2'>
-                        <input
-                          type='radio'
-                          name='scopeMethod'
-                          value='custom'
-                          checked={formData.scopeMethod === 'custom'}
-                          onChange={e =>
-                            setFormData(prev => ({ ...prev, scopeMethod: e.target.value as 'current' | 'custom' }))
-                          }
-                          className='rounded border-[color:var(--jarvis-input-border)] text-[var(--jarvis-primary)] focus:ring-[var(--jarvis-primary)]'
-                        />
-                        <div>
-                          <div className='text-sm font-medium text-[var(--jarvis-text)]'>
+                      <label
+                        className={`flex items-start space-x-3 p-3 rounded-xl border cursor-pointer transition-all duration-200 ${
+                          formData.scopeMethod === 'custom'
+                            ? 'border-[var(--jarvis-primary)] bg-[var(--jarvis-primary)]/5 ring-1 ring-[var(--jarvis-primary)]/20'
+                            : 'border-[var(--jarvis-input-border)] hover:border-[var(--jarvis-primary)]/50 hover:bg-[var(--jarvis-card-muted)]'
+                        }`}
+                      >
+                        <div className='mt-0.5 flex-shrink-0'>
+                          <input
+                            type='radio'
+                            name='scopeMethod'
+                            value='custom'
+                            checked={formData.scopeMethod === 'custom'}
+                            onChange={e =>
+                              setFormData(prev => ({ ...prev, scopeMethod: e.target.value as 'current' | 'custom' }))
+                            }
+                            className='rounded-full border-[color:var(--jarvis-input-border)] text-[var(--jarvis-primary)] focus:ring-[var(--jarvis-primary)] bg-transparent'
+                          />
+                        </div>
+                        <div className='flex-1'>
+                          <div
+                            className={`text-sm font-medium ${formData.scopeMethod === 'custom' ? 'text-[var(--jarvis-primary)]' : 'text-[var(--jarvis-text-strong)]'}`}
+                          >
                             Upload custom scopes (JSON)
                           </div>
-                          <div className='text-xs text-[var(--jarvis-muted)]'>Specify custom scopes in JSON format</div>
+                          <div className='text-xs text-[var(--jarvis-muted)] mt-1'>
+                            Specify custom scopes in JSON format
+                          </div>
                         </div>
                       </label>
                     </div>
@@ -276,6 +303,83 @@ const TokenGeneration: React.FC = () => {
                         {scopeValidationError && (
                           <p className='mt-1 text-xs text-[var(--jarvis-danger-text)]'>{scopeValidationError}</p>
                         )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Token Purpose */}
+                  <div>
+                    <h4 className='mb-2 text-sm font-semibold text-[var(--jarvis-text-strong)]'>Token Purpose</h4>
+                    <div className='space-y-3'>
+                      <label
+                        className={`flex items-start space-x-3 p-3 rounded-xl border cursor-pointer transition-all duration-200 ${
+                          formData.tokenPurpose === TokenPurpose.Interactive
+                            ? 'border-[var(--jarvis-primary)] bg-[var(--jarvis-primary)]/5 ring-1 ring-[var(--jarvis-primary)]/20'
+                            : 'border-[var(--jarvis-input-border)] hover:border-[var(--jarvis-primary)]/50 hover:bg-[var(--jarvis-card-muted)]'
+                        }`}
+                      >
+                        <div className='mt-0.5 flex-shrink-0'>
+                          <input
+                            type='radio'
+                            name='tokenPurpose'
+                            value={TokenPurpose.Interactive}
+                            checked={formData.tokenPurpose === TokenPurpose.Interactive}
+                            onChange={() => setFormData(prev => ({ ...prev, tokenPurpose: TokenPurpose.Interactive }))}
+                            className='rounded-full border-[color:var(--jarvis-input-border)] text-[var(--jarvis-primary)] focus:ring-[var(--jarvis-primary)] bg-transparent'
+                          />
+                        </div>
+                        <div className='flex-1'>
+                          <div
+                            className={`text-sm font-medium ${formData.tokenPurpose === TokenPurpose.Interactive ? 'text-[var(--jarvis-primary)]' : 'text-[var(--jarvis-text-strong)]'}`}
+                          >
+                            Interactive (default)
+                          </div>
+                          <div className='text-xs text-[var(--jarvis-muted)] mt-1'>
+                            For use with an AI coding agent or other tool where you're present to approve access the
+                            first time it calls a given MCP server.
+                          </div>
+                        </div>
+                      </label>
+
+                      <label
+                        className={`flex items-start space-x-3 p-3 rounded-xl border cursor-pointer transition-all duration-200 ${
+                          formData.tokenPurpose === TokenPurpose.Agent
+                            ? 'border-[var(--jarvis-primary)] bg-[var(--jarvis-primary)]/5 ring-1 ring-[var(--jarvis-primary)]/20'
+                            : 'border-[var(--jarvis-input-border)] hover:border-[var(--jarvis-primary)]/50 hover:bg-[var(--jarvis-card-muted)]'
+                        }`}
+                      >
+                        <div className='mt-0.5 flex-shrink-0'>
+                          <input
+                            type='radio'
+                            name='tokenPurpose'
+                            value={TokenPurpose.Agent}
+                            checked={formData.tokenPurpose === TokenPurpose.Agent}
+                            onChange={() => setFormData(prev => ({ ...prev, tokenPurpose: TokenPurpose.Agent }))}
+                            className='rounded-full border-[color:var(--jarvis-input-border)] text-[var(--jarvis-primary)] focus:ring-[var(--jarvis-primary)] bg-transparent'
+                          />
+                        </div>
+                        <div className='flex-1'>
+                          <div
+                            className={`text-sm font-medium ${formData.tokenPurpose === TokenPurpose.Agent ? 'text-[var(--jarvis-primary)]' : 'text-[var(--jarvis-text-strong)]'}`}
+                          >
+                            Non-interactive agent
+                          </div>
+                          <div className='text-xs text-[var(--jarvis-muted)] mt-1'>
+                            For a headless agent (e.g. deployed to AWS AgentCore Runtime) with no one present to approve
+                            access. Skips the per-server consent prompt.
+                          </div>
+                        </div>
+                      </label>
+                    </div>
+
+                    {/* Security Warning for Agent Token */}
+                    {formData.tokenPurpose === TokenPurpose.Agent && (
+                      <div className='mt-3 flex items-start space-x-2 rounded-lg border border-[var(--jarvis-warning)]/30 bg-[var(--jarvis-warning-soft)] p-3 shadow-sm'>
+                        <ExclamationTriangleIcon className='h-4 w-4 text-[var(--jarvis-warning-text)] flex-shrink-0 mt-0.5' />
+                        <p className='text-xs text-[var(--jarvis-warning-text)] leading-relaxed'>
+                          This token will call MCP servers without a one-time consent prompt. Only use it for agents you
+                          control.
+                        </p>
                       </div>
                     )}
                   </div>
