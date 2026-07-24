@@ -5,11 +5,11 @@ prompt that an MCP- or A2A-backed LLM actually receives.
 
 Architecture note
 -----------------
-Intention data (step_objective, workflow_description, dependency objectives and
-their runtime outputs) travels from the compiler into each executor call via
-``StepInput.additional_data``.  The compiler's ``_with_intention_data`` wrapper
-injects this data per-node; ``build_prompt`` in helpers.py reads it back and
-delegates to ``render_step_prompt`` here.
+Intention data (step_objective, workflow_description, the run's initial_input,
+dependency objectives and their runtime outputs) travels from the compiler into
+each executor call via ``StepInput.additional_data``.  The compiler's
+``_with_intention_data`` wrapper injects this data per-node; ``build_prompt`` in
+helpers.py reads it back and delegates to ``render_step_prompt`` here.
 
 ``render_step_prompt`` is the **only** place Markdown gets built.
 """
@@ -39,6 +39,7 @@ class DependencySpec:
 
 
 _GOAL_PREFIX = "**IMPORTANT: The goal of this step is to"
+_PARAMS_HEADER = "Workflow Trigger Parameters (fixed for this run; available to every step):"
 _WORKFLOW_CTX_PREFIX = "This step is part of a larger workflow:"
 _DEPS_HEADER = "Dependencies:"
 _INPUTS_HEADER = "Current Step Inputs:"
@@ -57,12 +58,17 @@ def render_step_prompt(
     workflow_description: str | None,
     dependencies: list[DependencySpec],
     initial_input: str | None,
+    trigger_parameters: str | None = None,
 ) -> str:
     """Assemble the Markdown prompt handed to an MCP/A2A executor's underlying LLM.
 
     Prompt structure (all sections separated by blank lines):
 
         **IMPORTANT: The goal of this step is to {step_objective}.**
+
+        Workflow Trigger Parameters (fixed for this run; available to every step):
+
+          <indented JSON>
 
         This step is part of a larger workflow: {workflow_description}
 
@@ -77,6 +83,9 @@ def render_step_prompt(
         [... one block per dependency that has produced output ...]
 
     Rules:
+    - ``trigger_parameters`` section omitted when falsy; otherwise rendered on
+      *every* node regardless of dependencies or graph position — unlike
+      ``initial_input`` below, it is not gated to entry nodes.
     - ``workflow_description`` section omitted when None.
     - ``Dependencies`` section always lists every declared dependency with its
       objective, even when content is not yet available (parallel branches).
@@ -85,8 +94,9 @@ def render_step_prompt(
       is not None), ``Current Step Inputs`` shows the original workflow trigger
       instead of dependency outputs.
     - A mid-graph STEP node with no ``referenced_node_names`` and no available
-      ``initial_input`` receives only the goal line — this is intentional
-      (explicit-over-clever: every cross-step dependency must be declared).
+      ``initial_input`` receives only the goal line (plus ``trigger_parameters``
+      when present) — this is intentional (explicit-over-clever: every
+      cross-step dependency must be declared).
 
     Args:
         step_objective:      Plain-language description of what this step must do.
@@ -97,22 +107,30 @@ def render_step_prompt(
                              is None when the node hasn't executed yet.
         initial_input:       The original workflow trigger text, passed only for
                              entry nodes (``previous_step_outputs`` empty).
+        trigger_parameters:  JSON-rendered ``WorkflowRun.initial_input``, shown to
+                             every node so any step can reference user-supplied
+                             trigger fields (e.g. a Slack member ID) without that
+                             data having to be relayed through upstream node output.
     """
     sections: list[str] = []
 
     # 1. Goal — always first and most prominent
     sections.append(f"{_GOAL_PREFIX} {step_objective}.**")
 
-    # 2. Workflow context — orientation without being prescriptive
+    # 2. Trigger parameters — global, run-scoped values available to every step
+    if trigger_parameters:
+        sections.append(f"{_PARAMS_HEADER}\n\n{_indented_block(trigger_parameters)}")
+
+    # 3. Workflow context — orientation without being prescriptive
     if workflow_description:
         sections.append(f"{_WORKFLOW_CTX_PREFIX} {workflow_description}")
 
     if dependencies:
-        # 3a. List every declared dependency and its objective (even if no output yet)
+        # 4a. List every declared dependency and its objective (even if no output yet)
         dep_lines = "\n".join(f'- "{d.name}": {d.objective}.' for d in dependencies)
         sections.append(f"{_DEPS_HEADER}\n{dep_lines}")
 
-        # 3b. Current Step Inputs — only dependencies that have produced output
+        # 4b. Current Step Inputs — only dependencies that have produced output
         with_content = [d for d in dependencies if d.content is not None]
         if with_content:
             input_blocks = "\n\n".join(
@@ -121,7 +139,7 @@ def render_step_prompt(
             sections.append(f"{_INPUTS_HEADER}\n{input_blocks}")
 
     elif initial_input:
-        # 3c. Entry node with no dependencies — show original trigger
+        # 4c. Entry node with no dependencies — show original trigger
         sections.append(f"{_INPUTS_HEADER}\n- {_TRIGGER_LABEL}:\n\n{_indented_block(initial_input)}")
 
     return "\n\n".join(sections)
@@ -138,3 +156,4 @@ ADDITIONAL_DATA_STEP_OBJECTIVE = "jarvis_step_objective"
 ADDITIONAL_DATA_WORKFLOW_DESCRIPTION = "jarvis_workflow_description"
 ADDITIONAL_DATA_DEPENDENCY_NODE_NAMES = "jarvis_dependency_node_names"
 ADDITIONAL_DATA_DEPENDENCY_OBJECTIVES = "jarvis_dependency_objectives"
+ADDITIONAL_DATA_INITIAL_INPUT = "jarvis_initial_input"

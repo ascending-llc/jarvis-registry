@@ -36,6 +36,7 @@ from registry_pkgs.workflows.persistence import WorkflowRunSyncer
 from registry_pkgs.workflows.prompt import (
     ADDITIONAL_DATA_DEPENDENCY_NODE_NAMES,
     ADDITIONAL_DATA_DEPENDENCY_OBJECTIVES,
+    ADDITIONAL_DATA_INITIAL_INPUT,
     ADDITIONAL_DATA_STEP_OBJECTIVE,
     ADDITIONAL_DATA_WORKFLOW_DESCRIPTION,
 )
@@ -164,6 +165,7 @@ def _with_intention_data(
     node_by_name: dict[str, WorkflowNode],
     workflow_description: str | None,
     dependency_node_names: list[str],
+    initial_input: dict[str, Any] | None,
 ) -> StepExecutor:
     """Inject per-node intention into ``StepInput.additional_data`` before calling the executor.
 
@@ -180,6 +182,11 @@ def _with_intention_data(
     Keys written to ``additional_data`` are the constants defined in ``prompt.py``
     (``ADDITIONAL_DATA_*``).  ``build_prompt`` in ``helpers.py`` reads them back
     and calls ``render_step_prompt`` to assemble the final Markdown prompt.
+
+    ``initial_input`` is ``WorkflowRun.initial_input`` — the run's trigger payload —
+    forwarded to *every* node regardless of dependencies, so a downstream node can
+    reference a trigger field (e.g. a Slack member ID) directly instead of relying
+    on an upstream node to relay it through its own output.
     """
     dependency_objectives: dict[str, str] = {
         name: node_by_name[name].step_objective or "" for name in dependency_node_names if name in node_by_name
@@ -193,6 +200,7 @@ def _with_intention_data(
             ADDITIONAL_DATA_WORKFLOW_DESCRIPTION: workflow_description,
             ADDITIONAL_DATA_DEPENDENCY_NODE_NAMES: dependency_node_names,
             ADDITIONAL_DATA_DEPENDENCY_OBJECTIVES: dependency_objectives,
+            ADDITIONAL_DATA_INITIAL_INPUT: initial_input,
         }
         return await executor(enriched, session_state)
 
@@ -347,6 +355,7 @@ def compile_workflow(
                     node_by_name,
                     definition.description,
                     dependency_node_names,
+                    run.initial_input,
                 )
 
             # _with_input_capture snapshots the pre-injection StepInput, so it
