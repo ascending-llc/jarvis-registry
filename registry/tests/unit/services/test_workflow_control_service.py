@@ -415,7 +415,6 @@ async def test_get_run_status_nudges_continue_run_when_requirement_timed_out(mon
     continue_mock.assert_awaited_once()
     assert continue_mock.await_args.kwargs["existing_run_id"] == str(run.id)
     assert continue_mock.await_args.kwargs["auth_context"] == refreshed_context
-    assert continue_mock.await_args.kwargs["user_id"] == "user-1"
 
 
 @pytest.mark.asyncio
@@ -636,13 +635,12 @@ async def test_rerun_single_node_uses_highest_attempt_output_on_retry(monkeypatc
     fake_node_run_model.find.return_value.sort.return_value.to_list = AsyncMock(return_value=[failed_nr, success_nr])
     monkeypatch.setattr(wcs, "NodeRun", fake_node_run_model)
 
-    def capture_runner(*args, **kwargs):
+    async def capture_runner(*args, **kwargs):
         captured_injected.update(kwargs.get("injected_outputs", {}))
-        return AsyncMock()()
 
     service = WorkflowControlService(
         directive_queue=DirectiveQueue(),
-        runner_factory=lambda: SimpleNamespace(run=AsyncMock(side_effect=capture_runner)),
+        runner_factory=lambda: SimpleNamespace(run=capture_runner),
     )
     service._load_run = AsyncMock(return_value=parent_run)
 
@@ -743,13 +741,12 @@ async def test_rerun_single_node_injects_nested_step_outputs_for_container_nodes
     fake_node_run_model.find.return_value.sort.return_value.to_list = AsyncMock(return_value=[step_a_nr])
     monkeypatch.setattr(wcs, "NodeRun", fake_node_run_model)
 
-    def capture_runner(*args, **kwargs):
+    async def capture_runner(*args, **kwargs):
         captured_injected.update(kwargs.get("injected_outputs", {}))
-        return AsyncMock()()
 
     service = WorkflowControlService(
         directive_queue=DirectiveQueue(),
-        runner_factory=lambda: SimpleNamespace(run=AsyncMock(side_effect=capture_runner)),
+        runner_factory=lambda: SimpleNamespace(run=capture_runner),
     )
     service._load_run = AsyncMock(return_value=parent_run)
 

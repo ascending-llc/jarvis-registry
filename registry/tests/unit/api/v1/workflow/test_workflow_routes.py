@@ -399,7 +399,6 @@ async def test_trigger_run_forwards_requested_version(monkeypatch):
     background_tasks.add_task.assert_called_once()
     _, kwargs = background_tasks.add_task.call_args
     assert kwargs["auth_context"] is user_context
-    assert kwargs["user_id"] == user_context["user_id"]
 
 
 @pytest.mark.asyncio
@@ -628,7 +627,6 @@ async def test_get_workflow_run_status_nudges_continue_run_on_expired_requiremen
     continue_mock.assert_awaited_once()
     assert continue_mock.await_args.kwargs["existing_run_id"] == run_id
     assert continue_mock.await_args.kwargs["auth_context"] == refreshed_context
-    assert continue_mock.await_args.kwargs["user_id"] == "user-1"
 
 
 def test_workflow_create_request_parses_human_review_with_retry():

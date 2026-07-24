@@ -80,7 +80,6 @@ class MockWorkflowRunner(WorkflowRunner):
         self,
         definition: WorkflowDefinition,
         auth_context: dict[str, Any] | None,
-        user_id: str | None,
     ) -> dict[str, StepExecutor]:
         """Return a slow mock executor for every executor_key in the definition."""
         all_nodes = flatten_workflow_nodes(definition.nodes)
@@ -185,7 +184,7 @@ async def test_pause_resume_completes(queue: DirectiveQueue) -> bool:
     await run_doc.insert()
     run_id = str(run_doc.id)
     run_task = asyncio.create_task(
-        runner.run(def_id, "e2e pause-resume test", auth_context=None, user_id=None, existing_run_id=run_id)
+        runner.run(def_id, "e2e pause-resume test", auth_context=None, existing_run_id=run_id)
     )
     print(f"  Run {run_id} started")
 
@@ -234,7 +233,7 @@ async def test_pause_cancel(queue: DirectiveQueue) -> bool:
     await run_doc.insert()
     run_id = str(run_doc.id)
     run_task = asyncio.create_task(
-        runner.run(def_id, "e2e pause-cancel test", auth_context=None, user_id=None, existing_run_id=run_id)
+        runner.run(def_id, "e2e pause-cancel test", auth_context=None, existing_run_id=run_id)
     )
     print(f"  Run {run_id} started")
 
@@ -275,9 +274,7 @@ async def test_cancel_mid_run(queue: DirectiveQueue) -> bool:
     )
     await run_doc.insert()
     run_id = str(run_doc.id)
-    run_task = asyncio.create_task(
-        runner.run(def_id, "e2e cancel-mid test", auth_context=None, user_id=None, existing_run_id=run_id)
-    )
+    run_task = asyncio.create_task(runner.run(def_id, "e2e cancel-mid test", auth_context=None, existing_run_id=run_id))
     print(f"  Run {run_id} started")
 
     svc = WorkflowControlService(directive_queue=queue)
@@ -314,9 +311,7 @@ async def test_retry_completed(queue: DirectiveQueue) -> bool:
         initial_input={"user_text": "e2e retry seed"},
     )
     await seed_run.insert()
-    run, _ = await runner.run(
-        def_id, "e2e retry seed", auth_context=None, user_id=None, existing_run_id=str(seed_run.id)
-    )
+    run, _ = await runner.run(def_id, "e2e retry seed", auth_context=None, existing_run_id=str(seed_run.id))
     run_id = str(run.id)
     _check(f"Seed run completed (status={run.status})", str(run.status) == "completed")
 

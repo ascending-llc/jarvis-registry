@@ -161,7 +161,6 @@ class WorkflowRunner:
         user_text: str,
         *,
         auth_context: dict[str, Any] | None,
-        user_id: str | None,
         existing_run_id: str,
         injected_outputs: dict[str, dict[str, Any]] | None = None,
         stop_after_node_id: str | None = None,
@@ -178,7 +177,6 @@ class WorkflowRunner:
             definition_id:    MongoDB ObjectId string of the WorkflowDefinition.
             user_text:        Top-level input passed as ``workflow.arun(input=...)``.
             auth_context:     Triggering user's auth context. Must NOT be shared across users.
-            user_id:          User ID for ACL lookup.  ``None`` = unrestricted (scripts only).
             existing_run_id:  ID of the pre-created ``WorkflowRun`` document to drive.
             injected_outputs: Mapping of ``node_id → {"content": ..., "session_state": ...}``
                               for nodes reused from a previous run (retry-from-node).
@@ -192,7 +190,6 @@ class WorkflowRunner:
 
         Raises:
             ValueError:      If the WorkflowDefinition or WorkflowRun is not found.
-            PermissionError: If the workflow references an MCP server or A2A agent the caller cannot access.
             Exception:       Re-raises any execution error after marking the run FAILED.
         """
         run = await WorkflowRun.get(existing_run_id)
@@ -227,7 +224,7 @@ class WorkflowRunner:
 
         try:
             try:
-                executor_registry = await self._build_registry(definition, auth_context, user_id)
+                executor_registry = await self._build_registry(definition, auth_context)
             except WorkflowConfigError as exc:
                 run.status = WorkflowRunStatus.FAILED
                 run.error_summary = str(exc)
@@ -259,7 +256,6 @@ class WorkflowRunner:
         self,
         definition: WorkflowDefinition,
         auth_context: dict[str, Any] | None,
-        user_id: str | None,
     ) -> dict[str, StepExecutor]:
         """Extract executor keys + pool nodes from the definition and resolve them.
 
@@ -287,7 +283,6 @@ class WorkflowRunner:
             llm=self._llm,
             auth_context=auth_context,
             jwt_config=self._jwt_config,
-            user_id=user_id,
             pool_nodes=pool_nodes,
             selector_llm=self._selector_llm,
             a2a_httpx_client=self._a2a_httpx_client,
@@ -302,7 +297,6 @@ class WorkflowRunner:
         *,
         existing_run_id: str,
         auth_context: dict[str, Any] | None,
-        user_id: str | None,
     ) -> tuple[WorkflowRun, list[NodeRun]]:
         """Resume a run that is holding at one or more pending requirements.
 
@@ -364,7 +358,7 @@ class WorkflowRunner:
 
         try:
             requirements = [hydrate_requirement(item) for item in pending]
-            executor_registry = await self._build_registry(snapshot_def, auth_context, user_id)
+            executor_registry = await self._build_registry(snapshot_def, auth_context)
             workflow = compile_workflow(
                 snapshot_def,
                 run,

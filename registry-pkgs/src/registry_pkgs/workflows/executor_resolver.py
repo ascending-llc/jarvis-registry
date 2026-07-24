@@ -17,14 +17,9 @@ import httpx
 from agno.models.base import Model
 from agno.workflow import StepInput, StepOutput
 from agno.workflow.step import StepExecutor
-from beanie import PydanticObjectId
 
-from registry_pkgs.access_control import build_acl_principal_or_clause, resolve_group_ids_for_user
 from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.models.a2a_agent import A2AAgent
-from registry_pkgs.models.enums import PermissionBits
-from registry_pkgs.models.extended_access_role import RegistryResourceType
-from registry_pkgs.models.extended_acl_entry import RegistryAclEntry
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 from registry_pkgs.models.workflow import WorkflowNode
 from registry_pkgs.workflows.a2a_client import HeadersProvider
@@ -64,43 +59,12 @@ def _builtin_executor(key: str) -> StepExecutor | None:
     return None
 
 
-async def _load_accessible_resource_ids(user_id: str, resource_type: RegistryResourceType) -> set[str]:
-    """Return resources viewable through USER, GROUP, or PUBLIC ACL entries."""
-    user_object_id = PydanticObjectId(user_id)
-    group_ids = await resolve_group_ids_for_user(user_object_id)
-    principal_clauses = build_acl_principal_or_clause(user_object_id, group_ids)
-
-    entries = await RegistryAclEntry.find(
-        {
-            "resourceType": resource_type.value,
-            "$or": principal_clauses,
-        }
-    ).to_list()
-
-    result: set[str] = set()
-    for entry in entries:
-        if int(entry.permBits) & PermissionBits.VIEW:
-            result.add(str(entry.resourceId))
-    return result
-
-
-async def _load_accessible_agent_ids(user_id: str) -> set[str]:
-    """Query ACL to find all REMOTE_AGENT resource IDs a user can VIEW."""
-    return await _load_accessible_resource_ids(user_id, RegistryResourceType.REMOTE_AGENT)
-
-
-async def _load_accessible_mcp_server_ids(user_id: str) -> set[str]:
-    """Query ACL to find all MCP_SERVER resource IDs a user can VIEW."""
-    return await _load_accessible_resource_ids(user_id, RegistryResourceType.MCP_SERVER)
-
-
 async def build_executor_registry(
     executor_keys: list[str],
     *,
     llm: Model,
     auth_context: dict[str, Any] | None,
     jwt_config: JwtSigningConfig,
-    user_id: str | None,
     pool_nodes: list[WorkflowNode] | None = None,
     selector_llm: Model | None = None,
     a2a_httpx_client: httpx.AsyncClient | None = None,
@@ -117,8 +81,6 @@ async def build_executor_registry(
         llm:              agno-compatible Model used by MCP-server executors.
         auth_context:     Triggering user's auth context for manually-registered MCP servers.
         jwt_config:       JWT signing config used by A2A executors and AgentCore MCP servers.
-        user_id:          User ID for ACL lookup. ``None`` = unrestricted
-                          (only safe for trusted service / script contexts).
         pool_nodes:       STEP nodes that use ``a2a_pool`` instead of ``executor_key``.
         selector_llm:     Model used only for A2A pool selection; falls back to ``llm``.
         a2a_httpx_client: Optional shared httpx client passed to A2A executors.
@@ -132,14 +94,7 @@ async def build_executor_registry(
 
     Raises:
         KeyError:        If an executor_key cannot be resolved to any active server or agent.
-        PermissionError: If a resolved MCP server or A2A agent is not accessible to the user.
     """
-    accessible_agent_ids: set[str] | None = None
-    accessible_mcp_server_ids: set[str] | None = None
-    if user_id is not None:
-        accessible_agent_ids = await _load_accessible_agent_ids(user_id)
-        accessible_mcp_server_ids = await _load_accessible_mcp_server_ids(user_id)
-
     registry: dict[str, StepExecutor] = {}
 
     for key in dict.fromkeys(executor_keys):  # deduplicate while preserving order
@@ -148,8 +103,6 @@ async def build_executor_registry(
             llm=llm,
             auth_context=auth_context,
             jwt_config=jwt_config,
-            accessible_agent_ids=accessible_agent_ids,
-            accessible_mcp_server_ids=accessible_mcp_server_ids,
             a2a_httpx_client=a2a_httpx_client,
             headers_provider=headers_provider,
             redis_client=redis_client,
@@ -165,7 +118,6 @@ async def build_executor_registry(
             pool_keys=node.a2a_pool,
             selector_llm=_selector,
             jwt_config=jwt_config,
-            accessible_agent_ids=accessible_agent_ids,
             httpx_client=a2a_httpx_client,
             headers_provider=headers_provider,
         )
@@ -180,8 +132,6 @@ async def _resolve_executor(
     llm: Model,
     auth_context: dict[str, Any] | None,
     jwt_config: JwtSigningConfig,
-    accessible_agent_ids: set[str] | None,
-    accessible_mcp_server_ids: set[str] | None,
     a2a_httpx_client: httpx.AsyncClient | None = None,
     headers_provider: HeadersProvider | None = None,
     redis_client: Any | None = None,
@@ -191,8 +141,7 @@ async def _resolve_executor(
     """Resolve a single executor key to its MCP or A2A executor.
 
     Raises:
-        KeyError:        When neither an active MCP server nor A2A agent matches ``key``.
-        PermissionError: When a matching MCP server or A2A agent is not accessible.
+        KeyError: When neither an active MCP server nor A2A agent matches ``key``.
     """
     builtin = _builtin_executor(key)
     if builtin is not None:
@@ -204,10 +153,6 @@ async def _resolve_executor(
         {"config.enabled": True},
     )
     if mcp_server is not None:
-        if accessible_mcp_server_ids is not None and str(mcp_server.id) not in accessible_mcp_server_ids:
-            raise PermissionError(
-                f"executor_key {key!r} → MCP server {mcp_server.serverName!r}: user lacks access (server_id={mcp_server.id})"
-            )
         logger.debug("executor_key %r → MCP server %r", key, mcp_server.serverName)
         return make_mcp_executor(
             mcp_server,
@@ -225,10 +170,6 @@ async def _resolve_executor(
         {"config.enabled": True},
     )
     if a2a_agent is not None:
-        if accessible_agent_ids is not None and str(a2a_agent.id) not in accessible_agent_ids:
-            raise PermissionError(
-                f"executor_key {key!r} → A2A agent {path!r}: user lacks access (agent_id={a2a_agent.id})"
-            )
         logger.debug("executor_key %r → A2A agent %r (direct)", key, a2a_agent.path)
         return make_a2a_executor(
             a2a_agent,

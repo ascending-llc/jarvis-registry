@@ -536,8 +536,6 @@ async def trigger_workflow_run(
             triggering_client_id=user_context.get("client_id"),
         )
 
-        user_id = user_context.get("user_id")
-
         # Schedule background execution
         # This updates the run status as it progresses through the workflow state machine.
         background_tasks.add_task(
@@ -545,7 +543,6 @@ async def trigger_workflow_run(
             run_id=run.id,
             workflow_runner=workflow_runner,
             auth_context=user_context,
-            user_id=user_id,
         )
 
         logger.info(f"Workflow run {run.id} queued for execution (workflow: {workflow_id})")

@@ -103,7 +103,7 @@ USER_B = PydanticObjectId()
 class MockRunner(WorkflowRunner):
     """Replace MCP/A2A executors with instant in-process mocks."""
 
-    async def _build_registry(self, definition, auth_context, user_id):
+    async def _build_registry(self, definition, auth_context):
         all_nodes = flatten_workflow_nodes(definition.nodes)
         keys = list(dict.fromkeys(n.executor_key for n in all_nodes if n.executor_key))
 
@@ -161,7 +161,7 @@ class FailingMockRunner(WorkflowRunner):
         self._fail_counts = fail_counts or {}
         self.attempts: dict[str, int] = {}
 
-    async def _build_registry(self, definition, auth_context, user_id):
+    async def _build_registry(self, definition, auth_context):
         all_nodes = flatten_workflow_nodes(definition.nodes)
         keys = list(dict.fromkeys(n.executor_key for n in all_nodes if n.executor_key))
 
@@ -312,9 +312,7 @@ async def _trigger_run_inproc(
         triggering_user_id=str(USER_A),
     )
     await run.insert()
-    task = asyncio.create_task(
-        runner.run(workflow_id, "e2e", auth_context=None, user_id=str(USER_A), existing_run_id=str(run.id))
-    )
+    task = asyncio.create_task(runner.run(workflow_id, "e2e", auth_context=None, existing_run_id=str(run.id)))
     return str(run.id), task
 
 

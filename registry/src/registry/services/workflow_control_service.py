@@ -99,7 +99,6 @@ class _HasRun(Protocol):
         user_text: str,
         *,
         auth_context: UserContextDict | None,
-        user_id: str | None,
         existing_run_id: str,
         injected_outputs: dict[str, dict[str, Any]] | None = None,
         stop_after_node_id: str | None = None,
@@ -112,7 +111,6 @@ class _HasRun(Protocol):
         *,
         existing_run_id: str,
         auth_context: UserContextDict | None,
-        user_id: str | None,
     ) -> tuple[WorkflowRun, list[NodeRun]]:
         """Resume a run that hit an HITL pause after the user decided."""
         pass
@@ -194,7 +192,6 @@ class WorkflowControlService:
                 workflow_definition_id,
                 user_text,
                 auth_context=auth_context,
-                user_id=user_id,
                 existing_run_id=str(run.id),
             )
         )
@@ -323,7 +320,6 @@ class WorkflowControlService:
         await runner.continue_run(
             existing_run_id=str(run.id),
             auth_context=auth_context,
-            user_id=run.triggering_user_id,
         )
 
     @staticmethod
@@ -476,7 +472,6 @@ class WorkflowControlService:
                 str(parent_run.workflow_definition_id),
                 user_text,
                 auth_context=auth_context,
-                user_id=user_id,
                 existing_run_id=str(child_run.id),
                 injected_outputs=injected_outputs,
                 definition_snapshot=parent_run.definition_snapshot,
@@ -628,7 +623,6 @@ class WorkflowControlService:
                 str(parent_run.workflow_definition_id),
                 user_text,
                 auth_context=auth_context,
-                user_id=user_id,
                 existing_run_id=str(child_run.id),
                 injected_outputs=injected_outputs,
                 stop_after_node_id=node_id,
@@ -693,7 +687,6 @@ class WorkflowControlService:
                 workflow_definition_id,
                 user_text,
                 auth_context=auth_context,
-                user_id=user_id,
                 existing_run_id=str(replay_run.id),
             )
         )

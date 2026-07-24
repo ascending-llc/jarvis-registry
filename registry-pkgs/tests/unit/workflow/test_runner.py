@@ -84,7 +84,7 @@ class TestWorkflowRunnerRun:
         r = _make_runner()
 
         with pytest.raises(ValueError, match="not found"):
-            await r.run(str(PydanticObjectId()), "hello", auth_context=None, user_id=None, existing_run_id="any-id")
+            await r.run(str(PydanticObjectId()), "hello", auth_context=None, existing_run_id="any-id")
 
     @pytest.mark.asyncio
     async def test_orchestrates_build_registry_execute_and_returns_node_runs(self, monkeypatch: pytest.MonkeyPatch):
@@ -110,19 +110,17 @@ class TestWorkflowRunnerRun:
         monkeypatch.setattr(runner.NodeRun, "find", lambda *args, **kwargs: find_query)
 
         r = _make_runner()
-        user_id = "user-1"
         run_id = str(run_doc.id)
         actual_run, actual_nodes = await r.run(
             str(definition.id),
             "hello",
             auth_context=auth_context,
-            user_id=user_id,
             existing_run_id=run_id,
         )
 
         assert actual_run is run_doc
         assert actual_nodes == node_runs
-        runner.WorkflowRunner._build_registry.assert_awaited_once_with(definition, auth_context, user_id)
+        runner.WorkflowRunner._build_registry.assert_awaited_once_with(definition, auth_context)
         runner.WorkflowRunner._execute.assert_awaited_once_with(run_doc, definition, "hello", fake_registry, None, None)
 
     @pytest.mark.asyncio
@@ -155,7 +153,6 @@ class TestWorkflowRunnerRun:
             str(snapshot_definition.id),
             "hello",
             auth_context=None,
-            user_id="user-1",
             existing_run_id=str(run_doc.id),
         )
 
@@ -195,7 +192,6 @@ class TestWorkflowRunnerRun:
             str(definition.id),
             "hello",
             auth_context=auth_context,
-            user_id="user-1",
             existing_run_id=str(existing_run.id),
         )
 
@@ -207,7 +203,6 @@ class TestWorkflowRunnerRun:
         runner.WorkflowRunner._build_registry.assert_awaited_once_with(
             definition,
             auth_context,
-            "user-1",
         )
         runner.WorkflowRunner._execute.assert_awaited_once_with(
             existing_run, definition, "hello", fake_registry, None, None
@@ -239,7 +234,6 @@ class TestBuildRegistry:
             llm,
             auth_context,
             jwt_config,
-            user_id,
             pool_nodes,
             selector_llm,
             a2a_httpx_client=None,
@@ -251,7 +245,6 @@ class TestBuildRegistry:
             captured["executor_keys"] = executor_keys
             captured["pool_nodes"] = [n.name for n in pool_nodes]
             captured["auth_context"] = auth_context
-            captured["user_id"] = user_id
             captured["redis_key_prefix"] = redis_key_prefix
             captured["mcp_headers_provider"] = mcp_headers_provider
             return {}
@@ -262,12 +255,11 @@ class TestBuildRegistry:
             redis_key_prefix="test-registry",
             mcp_headers_provider=lambda *args, **kwargs: {},
         )
-        await r._build_registry(definition, auth_context, "user-1")
+        await r._build_registry(definition, auth_context)
 
         assert captured["executor_keys"] == ["mcp-tool"]
         assert captured["pool_nodes"] == ["pool-step"]
         assert captured["auth_context"] is auth_context
-        assert captured["user_id"] == "user-1"
         assert captured["redis_key_prefix"] == "test-registry"
         assert captured["mcp_headers_provider"] is r._mcp_headers_provider
 
@@ -294,7 +286,7 @@ class TestRunSetsRunningStatus:
         monkeypatch.setattr(runner.NodeRun, "find", lambda *args, **kwargs: find_query)
 
         r = _make_runner()
-        await r.run(str(definition.id), "hello", auth_context=None, user_id=None, existing_run_id=str(run_doc.id))
+        await r.run(str(definition.id), "hello", auth_context=None, existing_run_id=str(run_doc.id))
 
         assert run_doc.status == WorkflowRunStatus.RUNNING
         assert run_doc.definition_snapshot["name"] == definition.name
@@ -416,7 +408,7 @@ class TestContinueRunHydrationFailure:
         r = _make_runner(db_client=_FakeClient())
 
         with pytest.raises(RuntimeError, match="schema drift"):
-            await r.continue_run(existing_run_id=str(run_oid), auth_context=None, user_id="u1")
+            await r.continue_run(existing_run_id=str(run_oid), auth_context=None)
 
         # The persisted pending requirements were NOT cleared (still recoverable).
         assert run_doc.pending_requirements == original_pending

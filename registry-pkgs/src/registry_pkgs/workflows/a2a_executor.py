@@ -327,7 +327,6 @@ def make_a2a_pool_executor(
     *,
     selector_llm: Model,
     jwt_config: JwtSigningConfig,
-    accessible_agent_ids: set[str] | None,
     httpx_client: httpx.AsyncClient | None = None,
     headers_provider: HeadersProvider | None = None,
 ) -> StepExecutor:
@@ -343,10 +342,6 @@ def make_a2a_pool_executor(
         pool_keys:            Agent path segments (without leading ``/``) that form the pool.
         selector_llm:         Model used for LLM-based agent selection.
         jwt_config:           JWT signing config (private key, issuer, kid, audience).
-        accessible_agent_ids: ACL filter — set of A2AAgent ID strings the caller
-                              is authorized to invoke. ``None`` = unrestricted.
-                              Pool members outside this set are excluded BEFORE
-                              LLM selection runs.
         httpx_client:         Optional shared httpx pool forwarded to ``call_a2a``.
                               When ``None``, ``call_a2a`` builds a fresh pool per
                               invocation (slower but isolated; fine for tests).
@@ -380,14 +375,11 @@ def make_a2a_pool_executor(
                 {"path": {"$in": paths}, "config.enabled": True},
             ).to_list()
 
-            if accessible_agent_ids is not None:
-                agents = [a for a in agents if str(a.id) in accessible_agent_ids]
-
             if not agents:
                 return StepOutput(
-                    content=f"No accessible enabled A2A agents for pool {pool_keys!r}",
+                    content=f"No enabled A2A agents for pool {pool_keys!r}",
                     success=False,
-                    error="pool resolution failed: no accessible enabled agents",
+                    error="pool resolution failed: no enabled agents",
                 )
 
             selected_agent = await _select_agent_with_llm(agents, task, selector_agent)
@@ -404,12 +396,6 @@ def make_a2a_pool_executor(
                     content=f"Selected agent {selected_path!r} is no longer enabled",
                     success=False,
                     error=f"pool retry failed: agent {selected_path!r} not found or disabled",
-                )
-            if accessible_agent_ids is not None and str(selected_agent.id) not in accessible_agent_ids:
-                return StepOutput(
-                    content=f"Selected agent {selected_path!r} no longer accessible",
-                    success=False,
-                    error=f"pool retry failed: agent {selected_path!r} not in accessible set",
                 )
 
         raise_if_iam_unsupported(selected_agent)
