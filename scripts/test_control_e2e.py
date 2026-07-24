@@ -115,6 +115,7 @@ def _make_runner(queue: DirectiveQueue) -> MockWorkflowRunner:
         llm=llm,
         db_client=MongoDB.get_client(),
         db_name=MongoDB.database_name,
+        jwt_config=settings.jwt_signing_config,
         directive_queue=queue,
     )
 

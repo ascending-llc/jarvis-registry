@@ -76,7 +76,7 @@ class ScenarioResult:
     elapsed: float = 0.0
 
 
-def _single_mcp_nodes(mcp_key: str) -> list[dict]:
+def _single_mcp_nodes(mcp_key: str, _a2a_key: str | None = None) -> list[dict]:
     return [
         {
             "name": "single-mcp",
@@ -112,7 +112,7 @@ def _serial_chain_nodes(mcp_key: str, a2a_key: str) -> list[dict]:
     ]
 
 
-def _parallel_mcp_nodes(mcp_key: str) -> list[dict]:
+def _parallel_mcp_nodes(mcp_key: str, _a2a_key: str | None = None) -> list[dict]:
     return [
         {
             "name": "parallel-mcp-group",
@@ -166,10 +166,10 @@ def _mixed_topology_nodes(mcp_key: str, a2a_key: str) -> list[dict]:
 
 
 SCENARIOS: dict[int, tuple[str, callable]] = {
-    1: ("Single AgentCore MCP node", lambda m, a: _single_mcp_nodes(m)),
-    2: ("Serial chain: MCP → A2A → MCP", lambda m, a: _serial_chain_nodes(m, a)),
-    3: ("Parallel MCP nodes", lambda m, a: _parallel_mcp_nodes(m)),
-    4: ("Mixed: parallel MCP → serial A2A", lambda m, a: _mixed_topology_nodes(m, a)),
+    1: ("Single AgentCore MCP node", _single_mcp_nodes),
+    2: ("Serial chain: MCP → A2A → MCP", _serial_chain_nodes),
+    3: ("Parallel MCP nodes", _parallel_mcp_nodes),
+    4: ("Mixed: parallel MCP → serial A2A", _mixed_topology_nodes),
 }
 
 

@@ -313,6 +313,7 @@ class RegistryContainer:
                 llm=llm,
                 db_client=MongoDB.get_client(),
                 db_name=MongoDB.database_name,
+                jwt_config=self.settings.jwt_signing_config,
                 directive_queue=self.directive_queue,
                 a2a_httpx_client=self.a2a_httpx_client,
                 headers_provider=self.a2a_headers_provider,
