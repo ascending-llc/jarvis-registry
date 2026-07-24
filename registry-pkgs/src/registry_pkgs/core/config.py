@@ -69,6 +69,10 @@ class JwtSigningConfig(BaseModel):
     jwt_issuer: str = Field(description="Issuer (`iss`) claim — the registry's public URL")
     jwt_self_signed_kid: str = Field(description="`kid` header for self-signed JWKS lookup")
     jwt_audience: str = Field(description="Default audience (`aud`) claim")
+    registry_app_name: str = Field(
+        default="jarvis-registry-client",
+        description="Application name used as JWT subject for service-to-service calls",
+    )
 
 
 class JwtTokenConfig(BaseModel):
@@ -282,6 +286,7 @@ class JarvisBaseSettings(BaseSettings):
             jwt_issuer=self.jwt_issuer,
             jwt_self_signed_kid=self.jwt_self_signed_kid,
             jwt_audience=self.jwt_audience,
+            registry_app_name=self.registry_app_name,
         )
 
     @cached_property

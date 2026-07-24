@@ -122,7 +122,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
-    expose_headers=["WWW-Authenticate", "X-User-Id", "X-Username", "X-Client-Id", "X-Scopes", "X-Jarvis-Auth"],
+    expose_headers=["WWW-Authenticate", "X-User-Id", "X-Username", "X-Client-Id", "X-Scopes"],
 )
 
 # Include .well-known routes at root level (for mcp-remote RFC 8414 compliance)

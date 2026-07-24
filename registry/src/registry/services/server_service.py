@@ -22,13 +22,12 @@ from beanie import PydanticObjectId
 from pymongo.asynchronous.client_session import AsyncClientSession
 from redis import Redis
 
-from registry_pkgs.core.agentcore_jwt import mint_agentcore_runtime_jwt
+from registry_pkgs.core.agentcore_jwt import parse_agentcore_runtime_access, sign_agentcore_jwt
 from registry_pkgs.models import (
     ExtendedMCPServer,
     Token,
 )
 from registry_pkgs.models.enums import AgentCoreRuntimeAccessMode
-from registry_pkgs.models.federation import AgentCoreRuntimeAccessConfig
 from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRepository
 
 from ..auth.oauth.types import StateMetadata
@@ -45,7 +44,7 @@ from ..schemas.server_api_schemas import (
     ServerCreateRequest,
     ServerUpdateRequest,
 )
-from ..utils.crypto_utils import decrypt_auth_fields, encrypt_auth_fields, generate_service_jwt
+from ..utils.crypto_utils import decrypt_auth_fields, encrypt_auth_fields
 from ..utils.schema_converter import convert_dict_keys_to_snake
 from ..utils.utils import generate_server_name_from_title, normalize_headers
 from .oauth.oauth_service import MCPOAuthService
@@ -129,12 +128,6 @@ async def build_complete_headers_for_server(
         "User-Agent": settings.registry_app_name,
     }
 
-    # Always add internal service JWT if user_id is provided
-    if user_id:
-        service_jwt = generate_service_jwt(user_id)
-        headers[settings.internal_auth_header] = f"Bearer {service_jwt}"
-        logger.debug(f"Added internal service JWT to {settings.internal_auth_header} header for user {user_id}")
-
     # 1. Add custom headers FIRST (lowest priority)
     custom_headers = normalize_headers(decrypted_config.get("headers"))
     logger.info(f"custom headers: {custom_headers}")
@@ -148,53 +141,19 @@ async def build_complete_headers_for_server(
         # AgentCore Runtime server with runtimeAccess configuration
         try:
             # Parse runtime access config
-            if isinstance(runtime_access_config, dict):
-                access_config = AgentCoreRuntimeAccessConfig(**runtime_access_config)
-            else:
-                access_config = runtime_access_config
+            access_config = parse_agentcore_runtime_access(runtime_access_config)
 
             # Only handle JWT mode for now (IAM support can be added later if needed)
             if access_config.mode == AgentCoreRuntimeAccessMode.JWT:
                 logger.info(f"Building JWT token for AgentCore Runtime server {server.serverName}")
 
-                # Generate cache key for JWT token
                 cache_key = f"{settings.redis_key_prefix}:agentcore_jwt:{server.id}"
-
-                # Try to get cached JWT token
-                cached_token = None
-                if redis_client:
-                    try:
-                        cached_value = redis_client.get(cache_key)
-                        if cached_value:
-                            cached_token = (
-                                cached_value.decode("utf-8") if isinstance(cached_value, bytes) else cached_value
-                            )
-                            logger.debug(f"Using cached JWT token for {server.serverName}")
-                    except Exception:
-                        logger.exception(f"Failed to get cached JWT for {server.serverName}")
-
-                # Use cached token if available
-                if cached_token:
-                    headers["Authorization"] = f"Bearer {cached_token}"
-                    logger.info(f"Added cached AgentCore Runtime JWT for {server.serverName}")
-                    return headers
-
-                token = mint_agentcore_runtime_jwt(
+                token = sign_agentcore_jwt(
                     access_config.jwt,
-                    subject=settings.registry_app_name,
                     signing=settings.jwt_signing_config,
-                    expires_in_seconds=300,
+                    cache_key=cache_key,
+                    redis_client=redis_client,
                 )
-
-                # Cache the JWT token (270 seconds = 300s token TTL - 30s buffer)
-                if redis_client:
-                    try:
-                        redis_client.setex(cache_key, 270, token)
-                        logger.debug(f"Cached JWT token for {server.serverName} (TTL: 270s)")
-                    except Exception:
-                        logger.exception(f"Failed to cache JWT for {server.serverName}")
-
-                # Set Authorization header
                 headers["Authorization"] = f"Bearer {token}"
                 logger.info(f"Added AgentCore Runtime JWT for {server.serverName}")
                 return headers

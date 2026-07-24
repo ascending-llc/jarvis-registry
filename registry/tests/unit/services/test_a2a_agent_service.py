@@ -8,6 +8,7 @@ from beanie import PydanticObjectId
 
 from registry.schemas.a2a_agent_api_schemas import AgentCreateRequest, AgentUpdateRequest
 from registry.services.a2a_agent_service import A2AAgentService, _normalize_config_url
+from registry_pkgs.models.enums import FederationProviderType
 
 _SENTINEL_SESSION = object()
 
@@ -181,7 +182,11 @@ async def test_update_agent_refetches_changed_card_url_with_auth_headers():
 
         await service.update_agent(agent_id=str(PydanticObjectId()), data=AgentUpdateRequest(url=updated_card.url))
 
-    fetch.assert_awaited_once_with("https://new-agentcore.example.com", auth_headers=headers)
+    fetch.assert_awaited_once_with(
+        "https://new-agentcore.example.com",
+        auth_headers=headers,
+        agent_card_path_override=None,
+    )
     assert fake_agent.card is updated_card
     assert fake_agent.config.url == "https://new-agentcore.example.com"
     fake_agent.save.assert_awaited_once()
@@ -224,7 +229,11 @@ async def test_update_agent_refetches_without_auth_headers_when_header_build_fai
 
         await service.update_agent(agent_id=str(PydanticObjectId()), data=AgentUpdateRequest(url=updated_card.url))
 
-    fetch.assert_awaited_once_with("https://new-agentcore.example.com", auth_headers=None)
+    fetch.assert_awaited_once_with(
+        "https://new-agentcore.example.com",
+        auth_headers=None,
+        agent_card_path_override=None,
+    )
     assert fake_agent.card is updated_card
     assert fake_agent.config.url == "https://new-agentcore.example.com"
     fake_agent.save.assert_awaited_once()
@@ -433,3 +442,253 @@ async def test_sync_wellknown_builds_and_passes_auth_headers():
         await service.sync_wellknown(agent_id=str(PydanticObjectId()))
 
     assert resolve.await_args.kwargs["auth_headers"] == headers
+
+
+@pytest.mark.asyncio
+async def test_build_best_effort_auth_headers_builds_azure_entra_headers_for_foundry_agent():
+    service = A2AAgentService(a2a_agent_repo=None, jwt_config=SimpleNamespace())
+    federation_id = PydanticObjectId()
+    agent = SimpleNamespace(
+        federationMetadata={"providerType": FederationProviderType.AZURE_AI_FOUNDRY},
+        federationRefId=federation_id,
+        card=SimpleNamespace(),
+    )
+    federation = SimpleNamespace(
+        providerType=FederationProviderType.AZURE_AI_FOUNDRY,
+        providerConfig={"projectEndpoint": "https://foundry.example.com"},
+    )
+    headers = {"Authorization": "Bearer entra-token"}
+    auth = SimpleNamespace(build_headers=AsyncMock(return_value=headers))
+
+    with (
+        patch("registry.services.a2a_agent_service.Federation.get", AsyncMock(return_value=federation)) as get,
+        patch(
+            "registry.services.a2a_agent_service.AzureFoundryAuthService",
+            return_value=_AsyncCM(auth),
+        ) as auth_service,
+        patch("registry.services.a2a_agent_service.build_headers") as agentcore_headers,
+    ):
+        result = await service._build_best_effort_auth_headers(agent, "agent-id")
+
+    assert result == headers
+    get.assert_awaited_once_with(federation_id)
+    auth_service.assert_called_once()
+    auth.build_headers.assert_awaited_once_with()
+    agentcore_headers.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_build_best_effort_auth_headers_returns_none_when_federation_missing():
+    service = _service()
+    federation_id = PydanticObjectId()
+    agent = SimpleNamespace(
+        federationMetadata={"providerType": FederationProviderType.AZURE_AI_FOUNDRY},
+        federationRefId=federation_id,
+        card=SimpleNamespace(),
+    )
+
+    with patch(
+        "registry.services.a2a_agent_service.Federation.get",
+        AsyncMock(return_value=None),
+    ) as get:
+        result = await service._build_best_effort_auth_headers(agent, "agent-id")
+
+    assert result is None
+    get.assert_awaited_once_with(federation_id)
+
+
+@pytest.mark.asyncio
+async def test_build_best_effort_auth_headers_returns_none_without_federation_ref_id():
+    service = _service()
+    agent = SimpleNamespace(
+        federationMetadata={"providerType": FederationProviderType.AZURE_AI_FOUNDRY},
+        federationRefId=None,
+        card=SimpleNamespace(),
+    )
+
+    with patch("registry.services.a2a_agent_service.Federation.get", AsyncMock()) as get:
+        result = await service._build_best_effort_auth_headers(agent, "agent-id")
+
+    assert result is None
+    get.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_build_best_effort_auth_headers_rejects_non_azure_federation():
+    service = _service()
+    federation_id = PydanticObjectId()
+    agent = SimpleNamespace(
+        federationMetadata={"providerType": FederationProviderType.AZURE_AI_FOUNDRY},
+        federationRefId=federation_id,
+        card=SimpleNamespace(),
+    )
+    federation = SimpleNamespace(
+        providerType=FederationProviderType.AWS_AGENTCORE,
+        providerConfig={},
+    )
+
+    with (
+        patch(
+            "registry.services.a2a_agent_service.Federation.get",
+            AsyncMock(return_value=federation),
+        ),
+        patch("registry.services.a2a_agent_service.AzureFoundryAuthService") as auth_service,
+    ):
+        result = await service._build_best_effort_auth_headers(agent, "agent-id")
+
+    assert result is None
+    auth_service.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_build_best_effort_auth_headers_keeps_agentcore_path():
+    service = A2AAgentService(a2a_agent_repo=None, jwt_config=SimpleNamespace())
+    agent = SimpleNamespace(
+        federationMetadata={"providerType": FederationProviderType.AWS_AGENTCORE},
+        federationRefId=PydanticObjectId(),
+        card=SimpleNamespace(),
+    )
+    headers = {"Authorization": "Bearer agentcore-token"}
+
+    with (
+        patch("registry.services.a2a_agent_service.build_headers", return_value=headers) as build,
+        patch("registry.services.a2a_agent_service.Federation.get", AsyncMock()) as get,
+    ):
+        result = await service._build_best_effort_auth_headers(agent, "agent-id")
+
+    assert result == headers
+    build.assert_called_once_with(agent, jwt_config=service._jwt_config)
+    get.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_build_best_effort_auth_headers_does_not_load_federation_for_manual_agent():
+    service = A2AAgentService(a2a_agent_repo=None, jwt_config=SimpleNamespace())
+    agent = SimpleNamespace(
+        federationMetadata=None,
+        federationRefId=None,
+        card=SimpleNamespace(),
+    )
+
+    with (
+        patch("registry.services.a2a_agent_service.build_headers", return_value={}),
+        patch("registry.services.a2a_agent_service.Federation.get", AsyncMock()) as get,
+    ):
+        result = await service._build_best_effort_auth_headers(agent, "agent-id")
+
+    assert result == {}
+    get.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sync_wellknown_passes_foundry_agent_card_path_override():
+    service = _service()
+    old_card = SimpleNamespace(version="1.0.0", description="old", skills=[], capabilities={}, name="Test Agent")
+    updated_card = SimpleNamespace(version="2.0.0", description="new", skills=[], capabilities={}, name="Test Agent")
+    fake_agent = SimpleNamespace(
+        save=AsyncMock(),
+        card=old_card,
+        config=SimpleNamespace(url="https://foundry.example.com/agents/test"),
+        wellKnown=SimpleNamespace(
+            enabled=True,
+            lastSyncAt=None,
+            lastSyncStatus="pending",
+            lastSyncVersion="1.0.0",
+            syncError=None,
+        ),
+        federationMetadata={
+            "providerType": FederationProviderType.AZURE_AI_FOUNDRY,
+            "agentCardPath": "agentCard/v0.3",
+        },
+        federationRefId=PydanticObjectId(),
+        updatedAt=None,
+    )
+    resolve = AsyncMock(return_value=updated_card)
+
+    with (
+        patch("registry.services.a2a_agent_service.A2AAgent") as MockAgent,
+        patch.object(service, "_build_best_effort_auth_headers", AsyncMock(return_value={})),
+        patch.object(service, "_resolve_agent_card_with_fallback", resolve),
+    ):
+        MockAgent.get = AsyncMock(return_value=fake_agent)
+        await service.sync_wellknown(agent_id=str(PydanticObjectId()))
+
+    assert resolve.await_args.kwargs["agent_card_path_override"] == "agentCard/v0.3"
+
+
+@pytest.mark.asyncio
+async def test_update_agent_passes_foundry_agent_card_path_override():
+    service = _service()
+    old_card = SimpleNamespace(name="Test Agent", description="old", url="https://foundry.example.com/old")
+    updated_card = SimpleNamespace(
+        name="Test Agent",
+        description="new",
+        url="https://foundry.example.com/new",
+        version="2.0.0",
+    )
+    fake_agent = SimpleNamespace(
+        save=AsyncMock(),
+        card=old_card,
+        config=SimpleNamespace(title="Test Agent", description="old", url=old_card.url, type="jsonrpc"),
+        wellKnown=SimpleNamespace(
+            enabled=True,
+            lastSyncAt=None,
+            lastSyncStatus="success",
+            lastSyncVersion="1.0.0",
+        ),
+        federationMetadata={
+            "providerType": FederationProviderType.AZURE_AI_FOUNDRY,
+            "agentCardPath": "agentCard/v0.3",
+        },
+        federationRefId=PydanticObjectId(),
+        vectorContentHash="hash",
+        updatedAt=None,
+    )
+    fetch = AsyncMock(return_value=updated_card)
+
+    with (
+        patch("registry.services.a2a_agent_service.A2AAgent") as MockAgent,
+        patch.object(service, "_build_best_effort_auth_headers", AsyncMock(return_value={})),
+        patch.object(service, "_fetch_agent_card_from_url", fetch),
+    ):
+        MockAgent.get = AsyncMock(return_value=fake_agent)
+        await service.update_agent(
+            agent_id=str(PydanticObjectId()),
+            data=AgentUpdateRequest(url=updated_card.url),
+        )
+
+    fetch.assert_awaited_once_with(
+        "https://foundry.example.com/new",
+        auth_headers={},
+        agent_card_path_override="agentCard/v0.3",
+    )
+
+
+@pytest.mark.asyncio
+async def test_resolve_card_with_path_override_skips_generic_well_known_paths():
+    service = _service()
+    card = SimpleNamespace(name="Test Agent", version="1.0.0")
+    resolver = MagicMock()
+    resolver.get_agent_card = AsyncMock(return_value=card)
+
+    with (
+        patch("registry.services.a2a_agent_service.httpx.AsyncClient", return_value=_AsyncCM(object())),
+        patch("registry.services.a2a_agent_service.A2ACardResolver", return_value=resolver) as MockResolver,
+    ):
+        result = await service._resolve_agent_card_with_fallback(
+            base_url="https://foundry.example.com/agents/test",
+            timeout_seconds=5.0,
+            agent_card_path_override="agentCard/v0.3",
+        )
+
+    assert result is card
+    MockResolver.assert_called_once()
+    assert MockResolver.call_args.kwargs["agent_card_path"] == "agentCard/v0.3"
+
+
+def test_resolve_agent_card_path_override_falls_back_when_metadata_path_is_missing():
+    agent = SimpleNamespace(
+        federationMetadata={"providerType": FederationProviderType.AZURE_AI_FOUNDRY},
+    )
+
+    assert A2AAgentService._resolve_agent_card_path_override(agent) is None
