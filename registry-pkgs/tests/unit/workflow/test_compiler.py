@@ -19,6 +19,7 @@ from registry_pkgs.models.workflow import (
 from registry_pkgs.workflows import compiler
 from registry_pkgs.workflows.compiler import step_kwargs
 from registry_pkgs.workflows.helpers import build_prompt, step_output_to_prompt_text
+from registry_pkgs.workflows.serialization import content_to_str
 
 
 async def _executor(*args, **kwargs):
@@ -1492,6 +1493,36 @@ class TestIntentionData:
         await workflow.steps[0].executor(StepInput(input="task"), {})
 
         assert "Workflow Trigger Parameters" not in prompts[0]
+
+    @pytest.mark.asyncio
+    async def test_oversized_initial_input_is_truncated_in_trigger_parameters(self):
+        """trigger_parameters gets the same 8000-char cap as dependency content (helpers._truncate)."""
+        node = _step_node("echo", "tool", "do the thing")
+        definition = _workflow_definition([node])
+        oversized_input = {"blob": "x" * 10_000}
+        run = WorkflowRun.model_construct(
+            id=PydanticObjectId(),
+            workflow_definition_id=PydanticObjectId(),
+            status=WorkflowRunStatus.RUNNING,
+            initial_input=oversized_input,
+        )
+        prompts: list[str] = []
+
+        async def capturing_executor(step_input, session_state=None):
+            prompts.append(build_prompt(step_input))
+            return SimpleNamespace(content="ok")
+
+        workflow = compiler.compile_workflow(definition, run, executor_registry={"tool": capturing_executor})
+        await workflow.steps[0].executor(StepInput(input="task"), {})
+
+        prompt = prompts[0]
+        full_json = content_to_str(oversized_input)
+        omitted = len(full_json) - 8000
+        # `_indented_block` reflows the truncated text's line-leading whitespace, so assert on
+        # the un-reflowable pieces: the full oversized run must not survive intact, and the
+        # truncation note must carry the exact omitted-char count.
+        assert "x" * 10_000 not in prompt
+        assert f"[truncated: {omitted} chars omitted]" in prompt
 
     def test_build_prompt_falls_back_without_additional_data(self):
         assert build_prompt(StepInput(input="hello")) == "hello"

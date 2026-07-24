@@ -135,7 +135,7 @@ def build_prompt(step_input: StepInput) -> str:
     dependency_node_names: list[str] = additional.get(ADDITIONAL_DATA_DEPENDENCY_NODE_NAMES) or []
     dependency_objectives: dict[str, str] = additional.get(ADDITIONAL_DATA_DEPENDENCY_OBJECTIVES) or {}
     trigger_input: dict[str, Any] | None = additional.get(ADDITIONAL_DATA_INITIAL_INPUT)
-    trigger_parameters = content_to_str(trigger_input) if trigger_input else None
+    trigger_parameters = _truncate(content_to_str(trigger_input)) if trigger_input else None
 
     previous = step_input.previous_step_outputs or {}
 
