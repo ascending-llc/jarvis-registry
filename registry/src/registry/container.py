@@ -275,7 +275,7 @@ class RegistryContainer:
 
     @cached_property
     def workflow_service(self) -> WorkflowService:
-        return WorkflowService()
+        return WorkflowService(acl_service=self.acl_service)
 
     @cached_property
     def a2a_client_registry(self) -> A2AClientRegistry:

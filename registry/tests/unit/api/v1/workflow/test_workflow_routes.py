@@ -213,6 +213,7 @@ async def test_update_workflow_passes_session_to_service(monkeypatch: pytest.Mon
     workflow_service.update_workflow.assert_awaited_once_with(
         workflow_id=workflow_id,
         data=data,
+        user_id=PydanticObjectId(user_context["user_id"]),
         session=mock_session,
     )
 

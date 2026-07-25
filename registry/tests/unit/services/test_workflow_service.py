@@ -7,13 +7,14 @@ from beanie import PydanticObjectId
 from fastapi import HTTPException
 from pymongo.errors import DuplicateKeyError
 
+from registry.schemas.acl_schema import ResourcePermissions
 from registry.schemas.workflow_api_schemas import (
     RouterChoiceInput,
     WorkflowCreateRequest,
     WorkflowNodeInput,
 )
 from registry.services import workflow_service
-from registry.services.workflow_service import WorkflowService
+from registry.services.workflow_service import ExecutorRefResolution, WorkflowService
 from registry_pkgs.database.mongodb import MongoDB
 
 
@@ -59,12 +60,14 @@ def _patch_executor_ref_queries(
     def fake_mcp_find(query: dict, **_kwargs):
         captured_queries.append(("mcp", query))
         requested = set(query["serverName"]["$in"])
-        return _ListQuery([SimpleNamespace(serverName=name) for name in sorted(mcp_names & requested)])
+        return _ListQuery(
+            [SimpleNamespace(serverName=name, id=PydanticObjectId()) for name in sorted(mcp_names & requested)]
+        )
 
     def fake_a2a_find(query: dict, **_kwargs):
         captured_queries.append(("a2a", query))
         requested = set(query["path"]["$in"])
-        return _ListQuery([SimpleNamespace(path=path) for path in sorted(a2a_paths & requested)])
+        return _ListQuery([SimpleNamespace(path=path, id=PydanticObjectId()) for path in sorted(a2a_paths & requested)])
 
     monkeypatch.setattr(workflow_service.ExtendedMCPServer, "find", fake_mcp_find)
     monkeypatch.setattr(workflow_service.A2AAgent, "find", fake_a2a_find)
@@ -97,7 +100,10 @@ async def test_create_workflow_does_not_convert_unexpected_errors_to_value_error
             raise RuntimeError("database unavailable")
 
     monkeypatch.setattr(workflow_service, "WorkflowDefinition", FailingWorkflowDefinition)
-    monkeypatch.setattr(WorkflowService, "_validate_executor_refs", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        WorkflowService, "_validate_executor_refs", AsyncMock(return_value=ExecutorRefResolution({}, {}))
+    )
+    monkeypatch.setattr(WorkflowService, "_authorize_new_executor_refs", AsyncMock(return_value=None))
 
     request = WorkflowCreateRequest(
         name="Demo workflow",
@@ -106,7 +112,7 @@ async def test_create_workflow_does_not_convert_unexpected_errors_to_value_error
     )
 
     with pytest.raises(RuntimeError, match="database unavailable"):
-        await WorkflowService().create_workflow(request)
+        await WorkflowService().create_workflow(request, user_id=PydanticObjectId())
 
 
 @pytest.mark.asyncio
@@ -132,7 +138,7 @@ async def test_create_workflow_unknown_referenced_node_name_raises_before_execut
     )
 
     with pytest.raises(ValueError, match="references unknown node names"):
-        await WorkflowService().create_workflow(request)
+        await WorkflowService().create_workflow(request, user_id=PydanticObjectId())
 
 
 @pytest.mark.asyncio
@@ -431,7 +437,7 @@ async def test_create_workflow_rejects_duplicate_node_names_before_executor_chec
     )
 
     with pytest.raises(ValueError, match="duplicates found: \\['dup'\\]"):
-        await WorkflowService().create_workflow(request)
+        await WorkflowService().create_workflow(request, user_id=PydanticObjectId())
 
 
 # ---------------------------------------------------------------------------
@@ -545,6 +551,7 @@ async def test_update_workflow_bumps_version_and_snapshots_history(monkeypatch: 
     result = await WorkflowService().update_workflow(
         workflow_id=str(fake_wf.id),
         data=WorkflowUpdateRequest(name="new-name"),
+        user_id=PydanticObjectId(),
     )
 
     # Returned the re-fetched, version-bumped document.
@@ -579,7 +586,7 @@ async def test_update_workflow_returns_409_on_concurrent_modification(monkeypatc
 
     with pytest.raises(HTTPException) as exc_info:
         await WorkflowService().update_workflow(
-            workflow_id=str(fake_wf.id), data=WorkflowUpdateRequest(name="new-name")
+            workflow_id=str(fake_wf.id), data=WorkflowUpdateRequest(name="new-name"), user_id=PydanticObjectId()
         )
 
     assert exc_info.value.status_code == 409
@@ -606,7 +613,7 @@ async def test_update_workflow_returns_409_on_duplicate_version(monkeypatch: pyt
 
     with pytest.raises(HTTPException) as exc_info:
         await WorkflowService().update_workflow(
-            workflow_id=str(fake_wf.id), data=WorkflowUpdateRequest(name="new-name")
+            workflow_id=str(fake_wf.id), data=WorkflowUpdateRequest(name="new-name"), user_id=PydanticObjectId()
         )
 
     assert exc_info.value.status_code == 409
@@ -630,7 +637,9 @@ async def test_update_workflow_invalid_nodes_writes_nothing(monkeypatch: pytest.
     bad_update = WorkflowUpdateRequest(nodes=[WorkflowNodeInput(name="p", nodeType="parallel")])
 
     with pytest.raises(ValueError, match="parallel node requires at least 2 children"):
-        await WorkflowService().update_workflow(workflow_id=str(fake_wf.id), data=bad_update)
+        await WorkflowService().update_workflow(
+            workflow_id=str(fake_wf.id), data=bad_update, user_id=PydanticObjectId()
+        )
 
     # Validation raised before the conditional update or any history write.
     collection.find_one_and_update.assert_not_awaited()
@@ -664,7 +673,9 @@ async def test_update_workflow_unknown_referenced_node_name_writes_nothing(monke
     )
 
     with pytest.raises(ValueError, match="references unknown node names"):
-        await WorkflowService().update_workflow(workflow_id=str(fake_wf.id), data=bad_update)
+        await WorkflowService().update_workflow(
+            workflow_id=str(fake_wf.id), data=bad_update, user_id=PydanticObjectId()
+        )
 
     collection.find_one_and_update.assert_not_awaited()
     assert inserted == []
@@ -1009,3 +1020,224 @@ async def test_get_workflow_run_doc_raises_when_run_belongs_to_other_workflow(
             workflow_id=str(workflow_oid),
             run_id=str(run_oid),
         )
+
+
+# ---------------------------------------------------------------------------
+# ACL authorization for executor references
+# ---------------------------------------------------------------------------
+
+
+def _make_acl_service(*, grant_all: bool = True) -> AsyncMock:
+    from registry.services.access_control_service import ACLService
+
+    acl = AsyncMock(spec=ACLService)
+
+    async def _perms(user_id, resource_type, resource_ids, session=None):
+        if grant_all:
+            return {rid: ResourcePermissions(VIEW=True) for rid in resource_ids}
+        return {rid: ResourcePermissions() for rid in resource_ids}
+
+    acl.get_user_permissions_for_resources.side_effect = _perms
+    return acl
+
+
+@pytest.mark.asyncio
+async def test_create_workflow_403_when_user_lacks_view_on_mcp_server(monkeypatch: pytest.MonkeyPatch):
+    acl = _make_acl_service(grant_all=False)
+    service = WorkflowService(acl_service=acl)
+    _patch_executor_ref_queries(monkeypatch, mcp_names={"github"})
+
+    nodes = [
+        service._convert_api_node_to_model(
+            WorkflowNodeInput(name="s", nodeType="step", executorKey="github", stepObjective="run")
+        ),
+    ]
+
+    resolution = await service._validate_executor_refs(nodes)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await service._authorize_new_executor_refs(PydanticObjectId(), resolution)
+
+    assert exc_info.value.status_code == 403
+    assert "github" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_create_workflow_403_when_user_lacks_view_on_a2a_agent(monkeypatch: pytest.MonkeyPatch):
+    acl = _make_acl_service(grant_all=False)
+    service = WorkflowService(acl_service=acl)
+    _patch_executor_ref_queries(monkeypatch, mcp_names=set(), a2a_paths={"deep-intel"})
+
+    nodes = [
+        service._convert_api_node_to_model(
+            WorkflowNodeInput(name="s", nodeType="step", executorKey="deep-intel", stepObjective="run")
+        ),
+    ]
+
+    resolution = await service._validate_executor_refs(nodes)
+    with pytest.raises(HTTPException) as exc_info:
+        await service._authorize_new_executor_refs(PydanticObjectId(), resolution)
+
+    assert exc_info.value.status_code == 403
+    assert "deep-intel" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_create_workflow_403_when_user_lacks_view_on_a2a_pool(monkeypatch: pytest.MonkeyPatch):
+    acl = _make_acl_service(grant_all=False)
+    service = WorkflowService(acl_service=acl)
+    _patch_executor_ref_queries(monkeypatch, a2a_paths={"researcher"})
+
+    nodes = [
+        service._convert_api_node_to_model(
+            WorkflowNodeInput(name="s", nodeType="step", a2aPool=["researcher"], stepObjective="run")
+        ),
+    ]
+
+    resolution = await service._validate_executor_refs(nodes)
+    with pytest.raises(HTTPException) as exc_info:
+        await service._authorize_new_executor_refs(PydanticObjectId(), resolution)
+
+    assert exc_info.value.status_code == 403
+    assert "researcher" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_create_workflow_succeeds_when_user_has_view(monkeypatch: pytest.MonkeyPatch):
+    acl = _make_acl_service(grant_all=True)
+    service = WorkflowService(acl_service=acl)
+    _patch_executor_ref_queries(monkeypatch, mcp_names={"github"}, a2a_paths={"researcher"})
+
+    nodes = [
+        service._convert_api_node_to_model(
+            WorkflowNodeInput(name="m", nodeType="step", executorKey="github", stepObjective="run mcp")
+        ),
+        service._convert_api_node_to_model(
+            WorkflowNodeInput(name="p", nodeType="step", a2aPool=["researcher"], stepObjective="run pool")
+        ),
+    ]
+
+    resolution = await service._validate_executor_refs(nodes)
+    await service._authorize_new_executor_refs(PydanticObjectId(), resolution)
+    # No exception — success
+
+
+@pytest.mark.asyncio
+async def test_update_workflow_only_checks_delta_keys(monkeypatch: pytest.MonkeyPatch):
+    acl = _make_acl_service(grant_all=True)
+    service = WorkflowService(acl_service=acl)
+    _patch_executor_ref_queries(monkeypatch, mcp_names={"github", "new-tool"})
+
+    nodes = [
+        service._convert_api_node_to_model(
+            WorkflowNodeInput(name="old", nodeType="step", executorKey="github", stepObjective="run old")
+        ),
+        service._convert_api_node_to_model(
+            WorkflowNodeInput(name="new", nodeType="step", executorKey="new-tool", stepObjective="run new")
+        ),
+    ]
+
+    resolution = await service._validate_executor_refs(nodes)
+    await service._authorize_new_executor_refs(
+        PydanticObjectId(),
+        resolution,
+        previous_keys={"github"},
+    )
+
+    call_args = acl.get_user_permissions_for_resources.call_args
+    resource_ids = call_args.kwargs.get("resource_ids", call_args[1].get("resource_ids"))
+    assert len(resource_ids) == 1
+    assert resource_ids[0] == resolution.mcp_server_ids["new-tool"]
+
+
+@pytest.mark.asyncio
+async def test_update_workflow_403_when_delta_key_lacks_view(monkeypatch: pytest.MonkeyPatch):
+    acl = _make_acl_service(grant_all=False)
+    service = WorkflowService(acl_service=acl)
+    _patch_executor_ref_queries(monkeypatch, mcp_names={"github", "secret-tool"})
+
+    nodes = [
+        service._convert_api_node_to_model(
+            WorkflowNodeInput(name="old", nodeType="step", executorKey="github", stepObjective="run old")
+        ),
+        service._convert_api_node_to_model(
+            WorkflowNodeInput(name="new", nodeType="step", executorKey="secret-tool", stepObjective="run new")
+        ),
+    ]
+
+    resolution = await service._validate_executor_refs(nodes)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await service._authorize_new_executor_refs(
+            PydanticObjectId(),
+            resolution,
+            previous_keys={"github"},
+        )
+
+    assert exc_info.value.status_code == 403
+    assert "secret-tool" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_update_workflow_skips_acl_when_nodes_unchanged():
+    acl = _make_acl_service(grant_all=True)
+    service = WorkflowService(acl_service=acl)
+
+    resolution = ExecutorRefResolution(mcp_server_ids={"github": PydanticObjectId()}, agent_ids={})
+    await service._authorize_new_executor_refs(
+        PydanticObjectId(),
+        resolution,
+        previous_keys={"github"},
+    )
+
+    acl.get_user_permissions_for_resources.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_update_workflow_allows_kept_refs_without_view():
+    acl = _make_acl_service(grant_all=False)
+    service = WorkflowService(acl_service=acl)
+
+    resolution = ExecutorRefResolution(
+        mcp_server_ids={"github": PydanticObjectId()},
+        agent_ids={"researcher": PydanticObjectId()},
+    )
+    await service._authorize_new_executor_refs(
+        PydanticObjectId(),
+        resolution,
+        previous_keys={"github", "researcher"},
+    )
+
+    acl.get_user_permissions_for_resources.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_authorize_403_reports_first_denied_key_alphabetically():
+    acl = _make_acl_service(grant_all=False)
+    service = WorkflowService(acl_service=acl)
+
+    resolution = ExecutorRefResolution(
+        mcp_server_ids={"beta-tool": PydanticObjectId(), "alpha-tool": PydanticObjectId()},
+        agent_ids={},
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await service._authorize_new_executor_refs(PydanticObjectId(), resolution)
+
+    assert exc_info.value.status_code == 403
+    assert "alpha-tool" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_authorize_batched_queries():
+    acl = _make_acl_service(grant_all=True)
+    service = WorkflowService(acl_service=acl)
+
+    resolution = ExecutorRefResolution(
+        mcp_server_ids={"mcp-a": PydanticObjectId(), "mcp-b": PydanticObjectId()},
+        agent_ids={"agent-x": PydanticObjectId(), "agent-y": PydanticObjectId()},
+    )
+
+    await service._authorize_new_executor_refs(PydanticObjectId(), resolution)
+
+    assert acl.get_user_permissions_for_resources.call_count == 2

@@ -225,7 +225,7 @@ async def create_workflow(
         user_id = user_context.get("user_id")
 
         # Create workflow
-        workflow = await workflow_service.create_workflow(data=data)
+        workflow = await workflow_service.create_workflow(data=data, user_id=PydanticObjectId(user_id))
 
         if not workflow:
             logger.error("Workflow creation failed without exception")
@@ -291,6 +291,7 @@ async def update_workflow(
                 workflow = await workflow_service.update_workflow(
                     workflow_id=workflow_id,
                     data=data,
+                    user_id=PydanticObjectId(user_context.get("user_id")),
                     session=mongo_session,
                 )
 
