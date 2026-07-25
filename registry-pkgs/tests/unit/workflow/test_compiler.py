@@ -19,6 +19,7 @@ from registry_pkgs.models.workflow import (
 from registry_pkgs.workflows import compiler
 from registry_pkgs.workflows.compiler import step_kwargs
 from registry_pkgs.workflows.helpers import build_prompt, step_output_to_prompt_text
+from registry_pkgs.workflows.serialization import content_to_str
 
 
 async def _executor(*args, **kwargs):
@@ -1375,6 +1376,7 @@ class TestIntentionData:
                 "jarvis_workflow_description": None,
                 "jarvis_dependency_node_names": [],
                 "jarvis_dependency_objectives": {},
+                "jarvis_initial_input": None,
             }
         ]
 
@@ -1417,6 +1419,110 @@ class TestIntentionData:
         await workflow.steps[0].executor(StepInput(input="task"), {})
 
         assert "This step is part of a larger workflow: coordinate a research workflow" in prompts[0]
+
+    @pytest.mark.asyncio
+    async def test_run_initial_input_rendered_as_trigger_parameters_for_entry_node(self):
+        node = _step_node("github", "tool", "find the last merged PR")
+        definition = _workflow_definition([node])
+        run = WorkflowRun.model_construct(
+            id=PydanticObjectId(),
+            workflow_definition_id=PydanticObjectId(),
+            status=WorkflowRunStatus.RUNNING,
+            initial_input={"memberId": "U123", "displayName": "Kent"},
+        )
+        prompts: list[str] = []
+
+        async def capturing_executor(step_input, session_state=None):
+            prompts.append(build_prompt(step_input))
+            return SimpleNamespace(content="ok")
+
+        workflow = compiler.compile_workflow(definition, run, executor_registry={"tool": capturing_executor})
+        await workflow.steps[0].executor(StepInput(input="task"), {})
+
+        assert "Workflow Trigger Parameters" in prompts[0]
+        assert '"memberId": "U123"' in prompts[0]
+        assert '"displayName": "Kent"' in prompts[0]
+
+    @pytest.mark.asyncio
+    async def test_run_initial_input_rendered_for_downstream_node_with_dependencies(self):
+        """A node with an (implicit or explicit) dependency still sees run.initial_input.
+
+        This is the github -> slack scenario: `slack` implicitly depends on `github`
+        as the previous step in the same sequence, so the old entry-node-only
+        `initial_input` never reached it — but trigger_parameters is unconditional.
+        """
+        github = _step_node("github", "tool", "find the last merged PR")
+        slack = _step_node("slack", "tool", "message the user from initial input")
+        definition = _workflow_definition([github, slack])
+        run = WorkflowRun.model_construct(
+            id=PydanticObjectId(),
+            workflow_definition_id=PydanticObjectId(),
+            status=WorkflowRunStatus.RUNNING,
+            initial_input={"memberId": "U123", "displayName": "Kent"},
+        )
+        prompts: list[str] = []
+
+        async def capturing_executor(step_input, session_state=None):
+            prompts.append(build_prompt(step_input))
+            return SimpleNamespace(content="ok")
+
+        workflow = compiler.compile_workflow(definition, run, executor_registry={"tool": capturing_executor})
+        previous = self._make_previous_outputs(**{"github": "PR #42: Fix the bug"})
+        await workflow.steps[1].executor(StepInput(input="task", previous_step_outputs=previous), {})
+
+        prompt = prompts[0]
+        assert "Workflow Trigger Parameters" in prompt
+        assert '"memberId": "U123"' in prompt
+        assert '"displayName": "Kent"' in prompt
+        # Still a genuine dependency, not the old entry-node-only trigger-input path.
+        assert 'Dependencies:\n- "github": find the last merged PR.' in prompt
+
+    @pytest.mark.asyncio
+    async def test_run_without_initial_input_omits_trigger_parameters(self):
+        node = _step_node("echo", "tool", "do the thing")
+        definition = _workflow_definition([node])
+        prompts: list[str] = []
+
+        async def capturing_executor(step_input, session_state=None):
+            prompts.append(build_prompt(step_input))
+            return SimpleNamespace(content="ok")
+
+        workflow = compiler.compile_workflow(
+            definition, _workflow_run(), executor_registry={"tool": capturing_executor}
+        )
+        await workflow.steps[0].executor(StepInput(input="task"), {})
+
+        assert "Workflow Trigger Parameters" not in prompts[0]
+
+    @pytest.mark.asyncio
+    async def test_oversized_initial_input_is_truncated_in_trigger_parameters(self):
+        """trigger_parameters gets the same 8000-char cap as dependency content (helpers._truncate)."""
+        node = _step_node("echo", "tool", "do the thing")
+        definition = _workflow_definition([node])
+        oversized_input = {"blob": "x" * 10_000}
+        run = WorkflowRun.model_construct(
+            id=PydanticObjectId(),
+            workflow_definition_id=PydanticObjectId(),
+            status=WorkflowRunStatus.RUNNING,
+            initial_input=oversized_input,
+        )
+        prompts: list[str] = []
+
+        async def capturing_executor(step_input, session_state=None):
+            prompts.append(build_prompt(step_input))
+            return SimpleNamespace(content="ok")
+
+        workflow = compiler.compile_workflow(definition, run, executor_registry={"tool": capturing_executor})
+        await workflow.steps[0].executor(StepInput(input="task"), {})
+
+        prompt = prompts[0]
+        full_json = content_to_str(oversized_input)
+        omitted = len(full_json) - 8000
+        # `_indented_block` reflows the truncated text's line-leading whitespace, so assert on
+        # the un-reflowable pieces: the full oversized run must not survive intact, and the
+        # truncation note must carry the exact omitted-char count.
+        assert "x" * 10_000 not in prompt
+        assert f"[truncated: {omitted} chars omitted]" in prompt
 
     def test_build_prompt_falls_back_without_additional_data(self):
         assert build_prompt(StepInput(input="hello")) == "hello"

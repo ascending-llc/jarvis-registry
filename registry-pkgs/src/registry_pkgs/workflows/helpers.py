@@ -8,6 +8,7 @@ from agno.workflow import StepInput, StepOutput
 from registry_pkgs.workflows.prompt import (
     ADDITIONAL_DATA_DEPENDENCY_NODE_NAMES,
     ADDITIONAL_DATA_DEPENDENCY_OBJECTIVES,
+    ADDITIONAL_DATA_INITIAL_INPUT,
     ADDITIONAL_DATA_STEP_OBJECTIVE,
     ADDITIONAL_DATA_WORKFLOW_DESCRIPTION,
     DependencySpec,
@@ -133,6 +134,8 @@ def build_prompt(step_input: StepInput) -> str:
     workflow_description: str | None = additional.get(ADDITIONAL_DATA_WORKFLOW_DESCRIPTION)
     dependency_node_names: list[str] = additional.get(ADDITIONAL_DATA_DEPENDENCY_NODE_NAMES) or []
     dependency_objectives: dict[str, str] = additional.get(ADDITIONAL_DATA_DEPENDENCY_OBJECTIVES) or {}
+    trigger_input: dict[str, Any] | None = additional.get(ADDITIONAL_DATA_INITIAL_INPUT)
+    trigger_parameters = _truncate(content_to_str(trigger_input)) if trigger_input else None
 
     previous = step_input.previous_step_outputs or {}
 
@@ -164,4 +167,5 @@ def build_prompt(step_input: StepInput) -> str:
         workflow_description=workflow_description,
         dependencies=dependencies,
         initial_input=initial_input,
+        trigger_parameters=trigger_parameters,
     )

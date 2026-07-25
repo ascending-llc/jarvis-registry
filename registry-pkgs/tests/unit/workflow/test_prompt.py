@@ -146,3 +146,42 @@ class TestRenderStepPrompt:
         dep = DependencySpec(name="A", objective="do A")
         with pytest.raises((AttributeError, TypeError)):
             dep.name = "B"  # type: ignore[misc]
+
+    def test_trigger_parameters_rendered_right_after_goal(self):
+        result = render_step_prompt(
+            step_objective="do it",
+            workflow_description="a multi-step research workflow",
+            dependencies=[],
+            initial_input=None,
+            trigger_parameters='{\n  "memberId": "U123"\n}',
+        )
+        assert "Workflow Trigger Parameters" in result
+        assert '"memberId": "U123"' in result
+        goal_idx = result.index("The goal of this step")
+        params_idx = result.index("Workflow Trigger Parameters")
+        description_idx = result.index("larger workflow")
+        assert goal_idx < params_idx < description_idx
+
+    def test_trigger_parameters_omitted_when_none(self):
+        result = render_step_prompt(
+            step_objective="do it",
+            workflow_description=None,
+            dependencies=[],
+            initial_input=None,
+            trigger_parameters=None,
+        )
+        assert "Workflow Trigger Parameters" not in result
+
+    def test_trigger_parameters_rendered_even_with_dependencies(self):
+        """Unlike `initial_input`, `trigger_parameters` is not gated on entry-node/no-deps."""
+        deps = [DependencySpec(name="Step A", objective="fetch data", content="some content")]
+        result = render_step_prompt(
+            step_objective="do it",
+            workflow_description=None,
+            dependencies=deps,
+            initial_input="should not appear",
+            trigger_parameters='{\n  "memberId": "U123"\n}',
+        )
+        assert "Workflow Trigger Parameters" in result
+        assert '"memberId": "U123"' in result
+        assert "should not appear" not in result

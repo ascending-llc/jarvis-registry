@@ -3,9 +3,8 @@ from __future__ import annotations
 import logging
 
 from beanie import PydanticObjectId
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException
 
-from registry.api.v1.workflow.token_helpers import build_registry_token
 from registry.auth.dependencies import CurrentUser, UserContextDict
 from registry.deps import get_acl_service, get_workflow_control_service
 from registry.schemas.workflow_schemas import (
@@ -126,7 +125,6 @@ async def retry_run(
     workflow_id: str,
     run_id: str,
     body: RetryRequest,
-    request: Request,
     current_user: CurrentUser,
     service: WorkflowControlService = Depends(get_workflow_control_service),
     acl_service: ACLService = Depends(get_acl_service),
@@ -140,7 +138,6 @@ async def retry_run(
     Returns 400 if the run has not yet finished (still RUNNING or PAUSED).
     Returns 400 if *from_node_id* does not exist in the workflow definition.
     """
-    registry_token = build_registry_token(request, current_user)
     user_id = current_user.get("user_id")
 
     try:
@@ -149,7 +146,7 @@ async def retry_run(
             workflow_id,
             run_id,
             body.from_node_id,
-            registry_token=registry_token,
+            auth_context=current_user,
             user_id=user_id,
         )
         return DirectiveResponse(
@@ -197,6 +194,7 @@ async def approve_run(
             edited_output=body.editedOutput,
             user_input=body.userInput,
             selected_choices=body.selectedChoices,
+            auth_context=current_user,
         )
         return ResolveRequirementResponse(
             runId=str(run.id),
@@ -225,7 +223,6 @@ async def rerun_node(
     workflow_id: str,
     run_id: str,
     node_id: str,
-    request: Request,
     current_user: CurrentUser,
     body: NodeRerunRequest | None = None,
     service: WorkflowControlService = Depends(get_workflow_control_service),
@@ -237,7 +234,6 @@ async def rerun_node(
     - Input to the target node comes from the previous node's last output_snapshot.
     - A new child WorkflowRun (trigger_source="node_rerun") is returned immediately.
     """
-    registry_token = build_registry_token(request, current_user)
     user_id = current_user.get("user_id")
 
     try:
@@ -246,7 +242,7 @@ async def rerun_node(
             workflow_id,
             run_id,
             node_id,
-            registry_token=registry_token,
+            auth_context=current_user,
             user_id=user_id,
         )
         return DirectiveResponse(
@@ -273,7 +269,6 @@ async def rerun_node(
 async def replay_run(
     workflow_id: str,
     run_id: str,
-    request: Request,
     current_user: CurrentUser,
     service: WorkflowControlService = Depends(get_workflow_control_service),
     acl_service: ACLService = Depends(get_acl_service),
@@ -283,7 +278,6 @@ async def replay_run(
     Uses the same initial_input as the source run. Runs the current live workflow
     definition (not the snapshot), so definition updates are picked up.
     """
-    registry_token = build_registry_token(request, current_user)
     user_id = current_user.get("user_id")
 
     try:
@@ -291,7 +285,7 @@ async def replay_run(
         new_run = await service.replay_run(
             workflow_id,
             run_id,
-            registry_token=registry_token,
+            auth_context=current_user,
             user_id=user_id,
         )
         return DirectiveResponse(

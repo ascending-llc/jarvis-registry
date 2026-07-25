@@ -10,7 +10,6 @@ from registry.utils.crypto_utils import (
     encrypt_auth_fields,
     generate_access_token,
     generate_refresh_token,
-    generate_service_jwt,
     is_encrypted,
     verify_access_token,
     verify_refresh_token,
@@ -180,36 +179,6 @@ class TestEncryptionPattern:
         """Test regex pattern rejects IV shorter than 32 chars"""
         invalid = "0123456789abcdef:data"
         assert ENCRYPTED_VALUE_PATTERN.match(invalid) is None
-
-
-class TestGenerateServiceJwt:
-    """Tests for generate_service_jwt() function"""
-
-    @patch("registry.utils.crypto_utils.encode_jwt", return_value="encoded-token")
-    @patch("registry.utils.crypto_utils.build_jwt_payload", return_value={"sub": "testuser"})
-    @patch("registry.utils.crypto_utils.settings")
-    def test_internal_service_jwt_uses_scope_claim(self, mock_settings, mock_build_payload, mock_encode_jwt):
-        mock_settings.registry_app_name = "registry"
-        mock_settings.jwt_issuer = "https://registry.example.com"
-        mock_settings.jwt_audience = "registry-api"
-        mock_settings.jwt_private_key = "private-key"
-        mock_settings.jwt_self_signed_kid = "kid-v1"
-
-        token = generate_service_jwt(
-            user_id="user-1",
-            username="testuser",
-            scopes=["workflow:run", "servers:read"],
-        )
-
-        assert token == "encoded-token"
-        extra_claims = mock_build_payload.call_args.kwargs["extra_claims"]
-        assert extra_claims["scope"] == "workflow:run servers:read"
-        assert "scopes" not in extra_claims
-        mock_encode_jwt.assert_called_once_with(
-            {"sub": "testuser"},
-            "private-key",
-            kid="kid-v1",
-        )
 
 
 class TestEncryptAuthFields:

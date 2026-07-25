@@ -14,12 +14,11 @@ Usage:
 
 Environment variables:
     REGISTRY_TOKEN     User-scoped Bearer token. Auto-generated from JWT_PRIVATE_KEY when absent.
+    REGISTRY_CLIENT_ID Client identity used for downstream MCP server OAuth headers.
     REGISTRY_URL       Registry base URL (default: http://localhost:7860)
     MONGO_URI          MongoDB connection string (default: mongodb://127.0.0.1:27017/jarvis)
-    AWS_BEDROCK_SONNET_AIP_ARN
-                       AIP ARN used before BEDROCK_MODEL / SELECTOR_MODEL when set.
-    BEDROCK_MODEL      Bedrock model ID for MCP steps (default: us.amazon.nova-lite-v1:0)
-    SELECTOR_MODEL     Bedrock model ID for A2A pool selection (default: us.amazon.nova-micro-v1:0)
+    WORKFLOW_TIMEOUT   Maximum number of seconds to poll before failing (default: 300).
+    KEEP_WORKFLOW      Keep a completed/failed temporary workflow when set.
 """
 
 from __future__ import annotations
@@ -29,28 +28,22 @@ import asyncio
 import json
 import os
 import sys
+import time
 import urllib.request
 from pathlib import Path
 
-from agno.models.aws import AwsBedrock
-from bedrock_model import resolve_bedrock_model_id
+import httpx
 from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 from registry import settings
-from registry.core.a2a_proxy import A2AProxyClientRegistry
-from registry.services.federation.a2a_client_registry import A2AClientRegistry
-from registry.services.federation.azure_foundry_proxy_auth import AzureFoundryClientCache
 from registry_pkgs.core.config import MongoConfig
 from registry_pkgs.core.jwt_utils import build_jwt_payload, encode_jwt
 from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.models.a2a_agent import A2AAgent
-from registry_pkgs.models.enums import WorkflowRunStatus
 from registry_pkgs.models.extended_access_role import RegistryResourceType
 from registry_pkgs.models.extended_acl_entry import RegistryAclEntry
-from registry_pkgs.models.workflow import NodeRun, WorkflowDefinition, WorkflowNode, WorkflowRun
-from registry_pkgs.workflows.runner import WorkflowRunner
 
 
 def _parse_args() -> argparse.Namespace:
@@ -81,32 +74,37 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _build_definition(mcp_key: str, a2a_pool: list[str], pool_only: bool = False) -> WorkflowDefinition:
-    nodes = []
+def _build_definition_payload(mcp_key: str, a2a_pool: list[str], pool_only: bool = False) -> dict:
+    nodes: list[dict] = []
     if not pool_only:
-        nodes.append(WorkflowNode(name="mcp-step", executor_key=mcp_key))
-    nodes.append(WorkflowNode(name="pool-a2a-step", a2a_pool=a2a_pool))
-    return WorkflowDefinition(
-        name=f"pool-smoke-{mcp_key or 'pool-only'}",
-        description="Smoke test: pool A2A step" + ("" if pool_only else " with fixed MCP step"),
-        nodes=nodes,
-    )
+        nodes.append({"name": "mcp-step", "nodeType": "step", "executorKey": mcp_key})
+    nodes.append({"name": "pool-a2a-step", "nodeType": "step", "a2aPool": a2a_pool})
+    return {
+        "name": f"pool-smoke-{mcp_key or 'pool-only'}",
+        "description": "Smoke test: pool A2A step" + ("" if pool_only else " with fixed MCP step"),
+        "canvas": {"viewport": {"x": 0, "y": 0, "zoom": 1}},
+        "nodes": nodes,
+    }
 
 
-def _print_results(run: WorkflowRun, node_runs: list[NodeRun]) -> None:
-    print(f"\nWorkflowRun  id={run.id}  status={run.status}")
-    if run.error_summary:
-        print(f"  error: {run.error_summary}")
+def _print_results(run: dict) -> None:
+    print(f"\nWorkflowRun  id={run.get('id')}  status={run.get('status')}")
+    if run.get("errorSummary"):
+        print(f"  error: {run['errorSummary']}")
     print()
-    for nr in node_runs:
-        print(f"  NodeRun  name={nr.node_name}  status={nr.status}")
-        if nr.selected_a2a_key:
-            print(f"    selected_a2a_key = {nr.selected_a2a_key}")
-        if nr.error:
-            print(f"    error = {nr.error}")
-        if nr.output_snapshot:
-            snippet = str(nr.output_snapshot.get("content", ""))[:300]
+    for node in run.get("nodeRuns", []):
+        print(f"  NodeRun  name={node.get('nodeName')}  status={node.get('status')}")
+        if node.get("selectedA2aKey"):
+            print(f"    selected_a2a_key = {node['selectedA2aKey']}")
+        if node.get("error"):
+            print(f"    error = {node['error']}")
+        if node.get("outputSnapshot"):
+            snippet = str(node["outputSnapshot"].get("content", ""))[:300]
             print(f"    output = {snippet}")
+    for requirement in run.get("pendingRequirements", []):
+        print(f"  Requirement type={requirement.get('requirementKind') or requirement.get('stepType')}")
+        if requirement.get("consentUrl"):
+            print(f"    consent_url = {requirement['consentUrl']}")
     print()
 
 
@@ -153,10 +151,14 @@ async def _make_registry_token(a2a_pool: list[str], registry_url: str) -> str:
         raise SystemExit("Set REGISTRY_TOKEN or JWT_PRIVATE_KEY in .env to authenticate against the registry.")
     issuer = _detect_jwt_issuer(registry_url, settings.jwt_issuer)
     user_id = await _resolve_pool_user_id(a2a_pool)
-    scopes = "servers-read agents-read agents-write server-write mcp-proxy-ops federations-read"
-    extra: dict = {"scope": scopes}
-    if user_id:
-        extra["user_id"] = user_id
+    if not user_id:
+        raise SystemExit("Could not find a user with VIEW access to the requested A2A agents; set REGISTRY_TOKEN.")
+    scopes = "workflows-read workflows-write workflows-control servers-read agents-read federations-read"
+    extra: dict = {
+        "scope": scopes,
+        "user_id": user_id,
+        "client_id": os.getenv("REGISTRY_CLIENT_ID", "workflow-pool-script"),
+    }
     payload = build_jwt_payload(
         subject="smoke-test-user",
         issuer=issuer,
@@ -167,6 +169,56 @@ async def _make_registry_token(a2a_pool: list[str], registry_url: str) -> str:
     token = encode_jwt(payload, settings.jwt_private_key, kid=settings.jwt_self_signed_kid)
     print(f"Generated registry token (sub=smoke-test-user, user_id={user_id}, iss={issuer})")
     return token
+
+
+def _api(registry_url: str, path: str) -> str:
+    return f"{registry_url.rstrip('/')}/api/{settings.api_version}{path}"
+
+
+async def _create_and_run(
+    client: httpx.AsyncClient,
+    args: argparse.Namespace,
+    token: str,
+) -> tuple[str, dict]:
+    headers = {"Authorization": f"Bearer {token}"}
+    create = await client.post(
+        _api(args.registry_url, "/workflows"),
+        headers=headers,
+        json=_build_definition_payload(args.mcp_key, args.a2a_pool, pool_only=args.pool_only),
+    )
+    create.raise_for_status()
+    workflow_id = create.json()["id"]
+    print(f"WorkflowDefinition created through API: id={workflow_id}")
+
+    enable = await client.put(
+        _api(args.registry_url, f"/workflows/{workflow_id}"),
+        headers=headers,
+        json={"enabled": True},
+    )
+    enable.raise_for_status()
+    print(f"WorkflowDefinition enabled: id={workflow_id}")
+
+    trigger = await client.post(
+        _api(args.registry_url, f"/workflows/{workflow_id}/runs"),
+        headers=headers,
+        json={"initialInput": {"user_text": args.prompt}, "triggerSource": "pool-smoke"},
+    )
+    trigger.raise_for_status()
+    run_id = trigger.json()["runId"]
+
+    timeout = float(os.getenv("WORKFLOW_TIMEOUT", "300"))
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        detail = await client.get(
+            _api(args.registry_url, f"/workflows/{workflow_id}/runs/{run_id}"),
+            headers=headers,
+        )
+        detail.raise_for_status()
+        run = detail.json()
+        if run.get("status") in {"completed", "failed", "cancelled", "awaiting_approval"}:
+            return workflow_id, run
+        await asyncio.sleep(0.5)
+    raise TimeoutError(f"Workflow run {run_id} did not finish within {timeout:g}s")
 
 
 async def main() -> int:
@@ -187,73 +239,29 @@ async def main() -> int:
         ),
     )
 
-    a2a_client_registry: A2AClientRegistry | None = None
-
     try:
         registry_token = os.getenv("REGISTRY_TOKEN") or await _make_registry_token(args.a2a_pool, args.registry_url)
-        llm = AwsBedrock(
-            id=resolve_bedrock_model_id(
-                model_env_var="BEDROCK_MODEL",
-                fallback_model_id="us.amazon.nova-lite-v1:0",
-            ),
-            aws_region=settings.aws_region,
-            aws_session_token=settings.aws_session_token,
-            aws_access_key_id=settings.aws_access_key_id,
-            aws_secret_access_key=settings.aws_secret_access_key,
-        )
-        selector_llm = AwsBedrock(
-            id=resolve_bedrock_model_id(
-                model_env_var="SELECTOR_MODEL",
-                fallback_model_id="us.amazon.nova-micro-v1:0",
-            ),
-            aws_region=settings.aws_region,
-            aws_session_token=settings.aws_session_token,
-            aws_access_key_id=settings.aws_access_key_id,
-            aws_secret_access_key=settings.aws_secret_access_key,
-        )
-
-        definition = _build_definition(args.mcp_key, args.a2a_pool, pool_only=args.pool_only)
-        await definition.insert()
-        print(f"WorkflowDefinition created: id={definition.id}")
         if not args.pool_only:
             print(f"  MCP step  : {args.mcp_key}")
         print(f"  Pool step : {args.a2a_pool}")
-
-        a2a_client_registry = A2AClientRegistry(
-            agentcore_registry=A2AProxyClientRegistry(
-                jwt_signing_config=settings.jwt_signing_config,
-                jwt_subject=settings.registry_app_name,
-            ),
-            azure_client_cache=AzureFoundryClientCache(),
-        )
-
-        runner = WorkflowRunner(
-            llm=llm,
-            selector_llm=selector_llm,
-            registry_url=args.registry_url,
-            db_client=MongoDB.get_client(),
-            db_name=MongoDB.database_name,
-            client_provider=a2a_client_registry.get_client,
-        )
-
         print(f"\nRunning workflow with prompt: {args.prompt!r}\n")
-        pending_run = WorkflowRun(
-            workflow_definition_id=definition.id,
-            status=WorkflowRunStatus.PENDING,
-            trigger_source="pool-smoke",
-            initial_input={"user_text": str(args.prompt)},
-        )
-        await pending_run.insert()
-        run, node_runs = await runner.run(
-            str(definition.id),
-            args.prompt,
-            registry_token=registry_token,
-            user_id=None,  # script context: bypass ACL filtering
-            existing_run_id=str(pending_run.id),
-        )
-        _print_results(run, node_runs)
+        headers = {"Authorization": f"Bearer {registry_token}"}
+        async with httpx.AsyncClient(timeout=30) as client:
+            workflow_id, run = await _create_and_run(client, args, registry_token)
+            _print_results(run)
+            if run.get("status") == "awaiting_approval":
+                print(f"WorkflowDefinition kept for approval: id={workflow_id}")
+            elif not os.getenv("KEEP_WORKFLOW"):
+                delete = await client.delete(_api(args.registry_url, f"/workflows/{workflow_id}"), headers=headers)
+                delete.raise_for_status()
+                print(f"WorkflowDefinition deleted: id={workflow_id}")
 
-        failed = str(run.status) != "completed" or any(str(nr.status) != "completed" for nr in node_runs)
+        if run.get("status") == "awaiting_approval":
+            print("Smoke test PAUSED: complete the displayed consent/HITL action and rerun or poll via the API.")
+            return 2
+        failed = run.get("status") != "completed" or any(
+            node.get("status") != "completed" for node in run.get("nodeRuns", [])
+        )
         if failed:
             print("Smoke test FAILED.")
             return 1
@@ -261,8 +269,6 @@ async def main() -> int:
         return 0
 
     finally:
-        if a2a_client_registry is not None:
-            await a2a_client_registry.close()
         try:
             await MongoDB.close_db()
         except Exception as exc:

@@ -38,6 +38,7 @@ _A2A_HTTP_TIMEOUT = 300
 # a2a poll timeout needs to be strictly less than _A2A_JWT_TTL_SECONDS and _A2A_HTTP_TIMEOUT
 _A2A_POLL_TIMEOUT = _A2A_HTTP_TIMEOUT * 0.6
 
+HeadersProvider = Callable[[A2AAgent], Awaitable[dict[str, str]]]
 ClientProvider = Callable[[A2AAgent], Awaitable[httpx.AsyncClient]]
 _IN_PROGRESS_STATES: frozenset[TaskState] = frozenset({TaskState.submitted, TaskState.working})
 
@@ -374,24 +375,31 @@ async def call_a2a(
     agent: A2AAgent,
     text: str | Message,
     *,
+    jwt_config: JwtSigningConfig | None = None,
     httpx_client: httpx.AsyncClient | None = None,
+    headers_provider: HeadersProvider | None = None,
 ) -> A2ACallResult:
     """Invoke an A2A agent via the a2a-sdk ClientFactory.
 
     Transport (jsonrpc / http_json) is selected from agent.config.type.
-    Federated agents must receive a pre-authenticated httpx client from the
-    caller. This function only adds per-invocation, non-credential headers.
+    Auth headers come from one of two paths:
+
+    * **Workflow path** — caller supplies ``headers_provider`` (and optionally
+      ``jwt_config``); headers are built per-call by the provider callback.
+    * **Proxy / MCP gateway path** — caller supplies a pre-authenticated
+      ``httpx_client`` obtained from ``A2AClientRegistry``; only non-credential
+      per-invocation headers are added here.
 
     Args:
-        agent:        A2AAgent document from MongoDB.
-        text:         User message string or pre-parsed A2A Message to send.
-        httpx_client: Optional shared httpx client. Required for federated
-                      AgentCore/Azure agents; None is valid only for plain
-                      non-federated agents or isolated tests.
+        agent:            A2AAgent document from MongoDB.
+        text:             User message string or pre-parsed A2A Message to send.
+        jwt_config:       JWT signing config for service-to-agent auth (workflow path).
+        httpx_client:     Optional shared httpx client.
+        headers_provider: Optional callback that returns auth headers per-call.
 
     Returns:
-        A2ACallResult. `success=True` requires content present AND (for the
-        Task path) `task.status.state == completed`.
+        A2ACallResult. ``success=True`` requires content present AND (for the
+        Task path) ``task.status.state == completed``.
     """
     agent_name = agent.config.title if agent.config else agent.card.name
     transport_type = (agent.config.type if agent.config else TRANSPORT_JSONRPC).lower()
@@ -402,13 +410,16 @@ async def call_a2a(
             error=f"Unsupported transport type '{transport_type}' for agent {agent_name!r}. Supported: {sorted(_PROTOCOL_MAP)}",
         )
 
-    if httpx_client is None and (is_agentcore_runtime(agent) or is_azure_foundry_runtime(agent)):
+    if (
+        httpx_client is None
+        and headers_provider is None
+        and (is_agentcore_runtime(agent) or is_azure_foundry_runtime(agent))
+    ):
         provider = (agent.federationMetadata or {}).get("providerType", "unknown")
         provider_value = provider.value if hasattr(provider, "value") else provider
         raise ValueError(
-            f"call_a2a: httpx_client is required for federated agent {agent.path!r} "
-            f"(providerType={provider_value!r}). Callers must obtain a pre-authenticated client "
-            "from A2AClientRegistry before invoking a federated agent."
+            f"call_a2a: httpx_client or headers_provider is required for federated agent {agent.path!r} "
+            f"(providerType={provider_value!r})."
         )
 
     logger.debug(
@@ -427,7 +438,12 @@ async def call_a2a(
         t for t in (TransportProtocol.jsonrpc, TransportProtocol.http_json) if t != configured
     ]
 
-    headers = _extra_call_headers(agent)
+    if headers_provider is not None:
+        headers = await headers_provider(agent)
+    elif jwt_config is not None:
+        headers = build_headers(agent, jwt_config=jwt_config)
+    else:
+        headers = _extra_call_headers(agent)
     context = ClientCallContext(
         state={
             "http_kwargs": {

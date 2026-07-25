@@ -30,7 +30,7 @@ def _make_container(settings: MagicMock) -> RegistryContainer:
         db_client=MagicMock(),
         redis_client=MagicMock(),
     )
-    container.__dict__["a2a_client_registry"] = MagicMock()
+    container.__dict__["a2a_httpx_client"] = MagicMock()
     return container
 
 
@@ -46,7 +46,6 @@ class TestWorkflowRunnerModelSelection:
 
         mock_bedrock.assert_called_once()
         assert mock_bedrock.call_args.kwargs["id"] == _AIP_ARN
-        assert mock_runner.call_args.kwargs["client_provider"] is container.a2a_client_registry.get_client
 
     @patch("registry.container.WorkflowRunner")
     @patch("registry.container.MongoDB")

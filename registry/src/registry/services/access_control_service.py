@@ -7,6 +7,7 @@ from fastapi import HTTPException
 from fastapi import status as http_status
 from pymongo.asynchronous.client_session import AsyncClientSession
 
+from registry_pkgs.access_control import build_acl_principal_or_clause, resolve_group_ids_for_user
 from registry_pkgs.models import (
     Group,
     PrincipalType,
@@ -142,13 +143,7 @@ class ACLService:
         group_ids: list[PydanticObjectId],
     ) -> list[dict[str, Any]]:
         """Build the principal match clause used by ACL read paths."""
-        or_clause: list[dict[str, Any]] = [
-            {"principalType": PrincipalType.USER.value, "principalId": user_id},
-            {"principalType": PrincipalType.PUBLIC.value, "principalId": None},
-        ]
-        if group_ids:
-            or_clause.append({"principalType": PrincipalType.GROUP.value, "principalId": {"$in": group_ids}})
-        return or_clause
+        return build_acl_principal_or_clause(user_id, group_ids)
 
     async def _resolve_group_ids_for_user(
         self,
@@ -162,11 +157,7 @@ class ACLService:
         idOnTheSource.
         """
         try:
-            user = await User.get(user_id, session=session)
-            if not user or not user.idOnTheSource:
-                return []
-            groups = await Group.find({"memberIds": user.idOnTheSource}, session=session).to_list()
-            return [group.id for group in groups]
+            return await resolve_group_ids_for_user(user_id, session=session)
         except Exception as e:
             logger.warning("Failed to resolve group IDs for user %s: %s", user_id, e)
             raise
