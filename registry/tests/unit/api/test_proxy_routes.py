@@ -16,6 +16,8 @@ from fastapi import HTTPException
 from starlette.requests import Request
 
 from registry.api.proxy_routes import dynamic_mcp_get_proxy, dynamic_mcp_post_proxy, http_json_proxy, jsonrpc_proxy
+from registry.core.config import settings
+from registry.services.generated_token_policy import INTERACTIVE_CLIENT_ID
 
 VALID_OBJECT_ID = "507f1f77bcf86cd799439011"
 INVALID_USER_IDS = ["mcpgw", "not-an-objectid", "123", ""]
@@ -236,12 +238,13 @@ async def test_post_proxy_without_server_consent_returns_url_elicitation(monkeyp
     )
     pending_store = _PendingConsentStore()
     consent_store = _consent_store(has_server_consent=False)
+    auth_context = {**_AUTH_CONTEXT, "client_id": INTERACTIVE_CLIENT_ID}
 
     resp = await dynamic_mcp_post_proxy(
         request=_post_request(VALID_OBJECT_ID),
         user_id=VALID_OBJECT_ID,
         server_path="github",
-        auth_context=_AUTH_CONTEXT,
+        auth_context=auth_context,
         server_service=_server_service(_make_server()),
         oauth_service=Mock(),
         proxy_client=Mock(),
@@ -259,8 +262,16 @@ async def test_post_proxy_without_server_consent_returns_url_elicitation(monkeyp
     UUID(body["error"]["data"]["elicitations"][0]["elicitationId"])
     assert len(pending_store.pending) == 1
     pending = next(iter(pending_store.pending.values()))
-    assert pending == {"user_id": VALID_OBJECT_ID, "client_id": "claude", "server_path": "/github"}
-    consent_store.has_server_consent.assert_called_once_with(VALID_OBJECT_ID, "claude", "/github")
+    assert pending == {
+        "user_id": VALID_OBJECT_ID,
+        "client_id": INTERACTIVE_CLIENT_ID,
+        "server_path": "/github",
+    }
+    consent_store.has_server_consent.assert_called_once_with(
+        VALID_OBJECT_ID,
+        INTERACTIVE_CLIENT_ID,
+        "/github",
+    )
 
 
 @pytest.mark.parametrize("method", ["initialize", "tools/list"])
@@ -289,6 +300,63 @@ async def test_post_proxy_without_server_consent_allows_handshake_methods(monkey
     assert resp.status_code == 200
     assert "error" not in body
     assert "disabled" in body["result"]["content"][0]["text"].lower()
+    consent_store.has_server_consent.assert_not_called()
+
+
+async def test_post_proxy_headless_agent_bypasses_server_consent(monkeypatch):
+    monkeypatch.setattr(
+        "registry.api.proxy_routes._parse_json_rpc_body",
+        AsyncMock(return_value={"jsonrpc": "2.0", "method": "tools/call", "id": 1}),
+    )
+    consent_store = _consent_store(has_server_consent=False)
+    pending_store = _PendingConsentStore()
+    auth_context = {**_AUTH_CONTEXT, "client_id": settings.headless_agent_client_id}
+
+    resp = await dynamic_mcp_post_proxy(
+        request=_post_request(VALID_OBJECT_ID),
+        user_id=VALID_OBJECT_ID,
+        server_path="github",
+        auth_context=auth_context,
+        server_service=_server_service(_make_server(enabled=False)),
+        oauth_service=Mock(),
+        proxy_client=Mock(),
+        redis_client=Mock(),
+        acl_service=_acl_service(),
+        consent_store=consent_store,
+        pending_store=pending_store,
+    )
+
+    body = json.loads(resp.body)
+    assert "disabled" in body["result"]["content"][0]["text"].lower()
+    consent_store.has_server_consent.assert_not_called()
+    assert pending_store.pending == {}
+
+
+async def test_post_proxy_headless_agent_still_enforces_acl(monkeypatch):
+    monkeypatch.setattr(
+        "registry.api.proxy_routes._parse_json_rpc_body",
+        AsyncMock(return_value={"jsonrpc": "2.0", "method": "tools/call", "id": 1}),
+    )
+    consent_store = _consent_store(has_server_consent=False)
+    auth_context = {**_AUTH_CONTEXT, "client_id": settings.headless_agent_client_id}
+
+    resp = await dynamic_mcp_post_proxy(
+        request=_post_request(VALID_OBJECT_ID),
+        user_id=VALID_OBJECT_ID,
+        server_path="github",
+        auth_context=auth_context,
+        server_service=_server_service(_make_server()),
+        oauth_service=Mock(),
+        proxy_client=Mock(),
+        redis_client=Mock(),
+        acl_service=_acl_service(denied=True),
+        consent_store=consent_store,
+        pending_store=_PendingConsentStore(),
+    )
+
+    body = json.loads(resp.body)
+    assert body["result"]["isError"] is True
+    assert "Access denied" in body["result"]["content"][0]["text"]
     consent_store.has_server_consent.assert_not_called()
 
 

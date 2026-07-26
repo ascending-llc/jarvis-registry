@@ -11,6 +11,7 @@ following the same pattern as Server Management and A2A Agent APIs.
 from pydantic import Field, field_validator
 
 from .case_conversion import APIBaseModel
+from .enums import TokenPurpose
 
 # ==================== Auth Schemas ====================
 
@@ -35,6 +36,13 @@ class TokenGenerateRequest(APIBaseModel):
     expiresInHours: int = Field(..., description="Token expiration time in hours (must be 1, 8, or 24)")
     description: str = Field(default="", description="Optional token description")
     requestedScopes: list[str] | None = Field(default=None, description="Optional list of requested scopes")
+    tokenPurpose: TokenPurpose = Field(
+        default=TokenPurpose.INTERACTIVE,
+        description=(
+            "Purpose of the generated token. Interactive tokens require per-server consent; "
+            "agent tokens are intended for non-interactive callers and skip that consent prompt."
+        ),
+    )
 
     @field_validator("expiresInHours")
     @classmethod
