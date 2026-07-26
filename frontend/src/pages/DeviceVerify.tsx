@@ -77,9 +77,7 @@ const DeviceVerify: React.FC = () => {
     <AuthPageLayout>
       <form onSubmit={handleSubmit} className='card p-10 max-w-md w-full text-center animate-slide-up'>
         <h1 className='text-xl font-semibold text-[var(--jarvis-text-strong)] mb-4'>Enter your device code</h1>
-        <p className='text-base text-[var(--jarvis-text)] mb-6'>
-          Enter the code shown on your device to continue.
-        </p>
+        <p className='text-base text-[var(--jarvis-text)] mb-6'>Enter the code shown on your device to continue.</p>
         <input
           type='text'
           value={inputCode}

@@ -10,10 +10,16 @@ export type GetAuthMeResponse = {
   isAdmin: boolean;
 };
 
+export enum TokenPurpose {
+  Interactive = 'interactive',
+  Agent = 'agent',
+}
+
 export type GetTokenRequest = {
   expiresInHours: number;
   description?: string;
   requestedScopes?: string[];
+  tokenPurpose?: TokenPurpose;
 };
 
 type TokenData = {
