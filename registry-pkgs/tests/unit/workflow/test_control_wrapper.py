@@ -7,6 +7,7 @@ import pytest
 from beanie import PydanticObjectId
 
 from registry_pkgs.models.enums import WorkflowDirective, WorkflowRunStatus
+from registry_pkgs.models.workflow import StepConfig
 from registry_pkgs.workflows.control import DirectiveQueue
 from registry_pkgs.workflows.control.wrapper import WorkflowCancelledError, with_control
 
@@ -91,6 +92,110 @@ class TestControlWrapper:
         )
 
         with pytest.raises(WorkflowCancelledError, match="Workflow cancelled by user"):
+            await wrapped(SimpleNamespace(input="hello"), {})
+
+        executor.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_executor_exception_converted_to_failed_step_output(self, monkeypatch: pytest.MonkeyPatch):
+        """An executor that raises should yield StepOutput(success=False) instead of propagating."""
+        run_id = str(PydanticObjectId())
+        queue = DirectiveQueue()
+        queue.register(run_id)
+
+        executor = AsyncMock(side_effect=RuntimeError("downstream server exploded"))
+        wrapped = with_control(
+            executor,
+            run_id=run_id,
+            node_id="node-1",
+            node_name="github",
+            step_config=None,
+            directive_queue=queue,
+        )
+
+        monkeypatch.setattr(
+            "registry_pkgs.workflows.control.wrapper._read_mongodb_directive",
+            AsyncMock(return_value=None),
+        )
+        monkeypatch.setattr(
+            "registry_pkgs.workflows.control.wrapper._record_attempt_start",
+            AsyncMock(),
+        )
+
+        result = await wrapped(SimpleNamespace(input="hello"), {})
+
+        assert result.success is False
+        assert result.error == "downstream server exploded"
+        assert result.content == ""
+        executor.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_executor_exception_triggers_retry(self, monkeypatch: pytest.MonkeyPatch):
+        """When on_error=retry, a raising executor should be retried like a failed StepOutput."""
+        run_id = str(PydanticObjectId())
+        queue = DirectiveQueue()
+        queue.register(run_id)
+
+        success_output = SimpleNamespace(success=True, content="done", error=None)
+        executor = AsyncMock(side_effect=[RuntimeError("transient"), success_output])
+
+        step_config = StepConfig(on_error="retry", max_retries=2, backoff_base_seconds=0.01, backoff_max_seconds=0.01)
+        wrapped = with_control(
+            executor,
+            run_id=run_id,
+            node_id="node-1",
+            node_name="github",
+            step_config=step_config,
+            directive_queue=queue,
+        )
+
+        monkeypatch.setattr(
+            "registry_pkgs.workflows.control.wrapper._read_mongodb_directive",
+            AsyncMock(return_value=None),
+        )
+        monkeypatch.setattr(
+            "registry_pkgs.workflows.control.wrapper._record_attempt_start",
+            AsyncMock(),
+        )
+
+        result = await wrapped(SimpleNamespace(input="hello"), {})
+
+        assert result.success is True
+        assert result.content == "done"
+        assert executor.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_cancelled_error_not_swallowed_by_exception_handler(self, monkeypatch: pytest.MonkeyPatch):
+        """WorkflowCancelledError from directives must still propagate — the try/except must not catch it."""
+        run_id = str(PydanticObjectId())
+        queue = DirectiveQueue()
+        queue.register(run_id)
+        queue.put(run_id, WorkflowDirective.CANCEL)
+
+        executor = AsyncMock(return_value=SimpleNamespace(success=True, content="ok", error=None))
+        wrapped = with_control(
+            executor,
+            run_id=run_id,
+            node_id="node-1",
+            node_name="github",
+            step_config=None,
+            directive_queue=queue,
+        )
+
+        monkeypatch.setattr(
+            "registry_pkgs.workflows.control.wrapper._read_mongodb_directive",
+            AsyncMock(return_value=None),
+        )
+        monkeypatch.setattr(
+            "registry_pkgs.workflows.control.wrapper._record_attempt_start",
+            AsyncMock(),
+        )
+        monkeypatch.setattr(
+            "registry_pkgs.workflows.control.wrapper._update_run_control_state",
+            AsyncMock(),
+        )
+
+        with pytest.raises(WorkflowCancelledError):
             await wrapped(SimpleNamespace(input="hello"), {})
 
         executor.assert_not_awaited()

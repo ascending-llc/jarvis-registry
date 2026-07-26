@@ -112,7 +112,11 @@ def with_control(
                 attempt + 1,
                 max_attempts,
             )
-            result: StepOutput = await executor(step_input, session_state)
+            try:
+                result: StepOutput = await executor(step_input, session_state)
+            except Exception as exc:
+                logger.exception("[run=%s] step %r executor raised", run_id, node_name)
+                result = StepOutput(content="", success=False, error=str(exc))
 
             if result.success:
                 preview = (result.content or "")[:300]
