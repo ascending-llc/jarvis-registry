@@ -442,6 +442,42 @@ class TestExecute:
         assert isinstance(dangling_awaiting.finished_at, datetime)
         dangling_awaiting.save.assert_awaited_once()
 
+    @pytest.mark.asyncio
+    async def test_finalize_cancel_transitions_dangling_node_runs_to_cancelled(self, monkeypatch: pytest.MonkeyPatch):
+        """When _execute is cancelled, dangling NodeRuns must transition to CANCELLED, not FAILED."""
+        workflow = SimpleNamespace(arun=AsyncMock(side_effect=WorkflowCancelledError("user cancelled")))
+        run_oid = PydanticObjectId()
+        run_doc = SimpleNamespace(
+            status=WorkflowRunStatus.RUNNING,
+            error_summary=None,
+            finished_at=None,
+            save=AsyncMock(),
+            sync=AsyncMock(),
+            id=run_oid,
+        )
+
+        dangling_node = SimpleNamespace(
+            status=NodeRunStatus.RUNNING,
+            error=None,
+            finished_at=None,
+            node_id="step-1",
+            save=AsyncMock(),
+        )
+
+        monkeypatch.setattr(runner, "compile_workflow", lambda *args, **kwargs: workflow)
+        monkeypatch.setattr(runner, "agno_acancel_run", AsyncMock())
+        monkeypatch.setattr(runner.NodeRun, "workflow_run_id", _FieldExpr("workflow_run_id"), raising=False)
+        monkeypatch.setattr(runner.NodeRun, "status", _FieldExpr("status"), raising=False)
+        monkeypatch.setattr(runner.NodeRun, "find", lambda *args, **kwargs: _AsyncIter([dangling_node]))
+
+        r = _make_runner()
+        await r._execute(run_doc, _definition(), "hello", {})
+
+        assert dangling_node.status == NodeRunStatus.CANCELLED
+        assert dangling_node.error == "user cancelled"
+        assert isinstance(dangling_node.finished_at, datetime)
+        dangling_node.save.assert_awaited_once()
+
 
 @pytest.mark.unit
 class TestContinueRunHydrationFailure:
