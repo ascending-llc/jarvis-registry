@@ -274,6 +274,9 @@ jobs:
 - **No Refresh**: Tokens cannot be refreshed, must be regenerated
 - **Unique Identifiers**: Each token has a unique `jti` claim for tracking
 - **Self-Contained**: All authorization data embedded in token
+- **Token Purpose**: `interactive` tokens require per-server consent, while `agent` tokens use the
+  configured headless-agent client ID and skip that browser-based consent step. Scope checks, user binding,
+  server ACLs, and any downstream MCP OAuth requirements still apply.
 
 ### Cryptographic Implementation
 
@@ -289,7 +292,9 @@ payload = {
     "iat": current_time,
     "jti": str(uuid.uuid4()),
     "token_use": "access",
-    "client_id": "user-generated",
+    # "user-generated" for the default interactive purpose, or the configured
+    # headless-agent client ID when tokenPurpose="agent".
+    "client_id": generated_client_id,
     "token_type": "user_generated"
 }
 
