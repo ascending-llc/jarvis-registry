@@ -1,3 +1,4 @@
+import logging
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -477,6 +478,87 @@ class TestExecute:
         assert dangling_node.error == "user cancelled"
         assert isinstance(dangling_node.finished_at, datetime)
         dangling_node.save.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_finalize_failure_reraises_original_exception_when_cleanup_fails(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ):
+        """If _finalize_dangling_node_runs itself raises, the failure must be swallowed/logged —
+        the original workflow exception still propagates and the WorkflowRun's own FAILED state
+        is still persisted."""
+        workflow = SimpleNamespace(arun=AsyncMock(side_effect=RuntimeError("llm broke")))
+        run_oid = PydanticObjectId()
+        run_doc = SimpleNamespace(
+            status=WorkflowRunStatus.RUNNING,
+            error_summary=None,
+            finished_at=None,
+            save=AsyncMock(),
+            id=run_oid,
+        )
+
+        dangling_node = SimpleNamespace(
+            status=NodeRunStatus.RUNNING,
+            error=None,
+            finished_at=None,
+            node_id="step-1",
+            save=AsyncMock(side_effect=RuntimeError("mongo down")),
+        )
+
+        monkeypatch.setattr(runner, "compile_workflow", lambda *args, **kwargs: workflow)
+        monkeypatch.setattr(runner.NodeRun, "workflow_run_id", _FieldExpr("workflow_run_id"), raising=False)
+        monkeypatch.setattr(runner.NodeRun, "status", _FieldExpr("status"), raising=False)
+        monkeypatch.setattr(runner.NodeRun, "find", lambda *args, **kwargs: _AsyncIter([dangling_node]))
+
+        r = _make_runner()
+        with caplog.at_level(logging.WARNING, logger="registry_pkgs.workflows.runner"):
+            with pytest.raises(RuntimeError, match="llm broke"):
+                await r._execute(run_doc, _definition(), "hello", {})
+
+        assert run_doc.status == WorkflowRunStatus.FAILED
+        assert run_doc.error_summary == "llm broke"
+        run_doc.save.assert_awaited_once()
+        assert any("failed to clean up dangling NodeRuns" in record.message for record in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_finalize_cancel_does_not_raise_when_cleanup_fails(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ):
+        """If _finalize_dangling_node_runs raises during cancellation, the failure must be
+        swallowed/logged — _execute must not raise and the WorkflowRun's own CANCELLED state
+        must still be persisted."""
+        workflow = SimpleNamespace(arun=AsyncMock(side_effect=WorkflowCancelledError("user cancelled")))
+        run_oid = PydanticObjectId()
+        run_doc = SimpleNamespace(
+            status=WorkflowRunStatus.RUNNING,
+            error_summary=None,
+            finished_at=None,
+            save=AsyncMock(),
+            sync=AsyncMock(),
+            id=run_oid,
+        )
+
+        dangling_node = SimpleNamespace(
+            status=NodeRunStatus.RUNNING,
+            error=None,
+            finished_at=None,
+            node_id="step-1",
+            save=AsyncMock(side_effect=RuntimeError("mongo down")),
+        )
+
+        monkeypatch.setattr(runner, "compile_workflow", lambda *args, **kwargs: workflow)
+        monkeypatch.setattr(runner, "agno_acancel_run", AsyncMock())
+        monkeypatch.setattr(runner.NodeRun, "workflow_run_id", _FieldExpr("workflow_run_id"), raising=False)
+        monkeypatch.setattr(runner.NodeRun, "status", _FieldExpr("status"), raising=False)
+        monkeypatch.setattr(runner.NodeRun, "find", lambda *args, **kwargs: _AsyncIter([dangling_node]))
+
+        r = _make_runner()
+        with caplog.at_level(logging.WARNING, logger="registry_pkgs.workflows.runner"):
+            await r._execute(run_doc, _definition(), "hello", {})
+
+        assert run_doc.status == WorkflowRunStatus.CANCELLED
+        assert run_doc.error_summary == "user cancelled"
+        run_doc.save.assert_awaited_once()
+        assert any("failed to clean up dangling NodeRuns" in record.message for record in caplog.records)
 
 
 @pytest.mark.unit

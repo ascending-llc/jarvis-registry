@@ -524,9 +524,10 @@ class WorkflowRunner:
     ) -> None:
         """Transition any NodeRun left RUNNING/AWAITING_APPROVAL to a terminal status.
 
-        Covers the case where a step executor raised instead of returning a failed
-        StepOutput, so agno never produced a WorkflowRunOutput for
-        WorkflowRunSyncer to finalize the NodeRun from.
+        Covers the case where a step executor raised (``_finalize_failure``,
+        ``target_status=FAILED``) or the run was cancelled mid-step
+        (``_finalize_cancel``, ``target_status=CANCELLED``), so agno never produced
+        a WorkflowRunOutput for WorkflowRunSyncer to finalize the NodeRun from.
         """
         dangling = NodeRun.find(
             NodeRun.workflow_run_id == run_id,
