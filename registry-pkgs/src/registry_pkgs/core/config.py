@@ -11,6 +11,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .scopes import ScopesConfig, load_scopes_config
 
+INTERACTIVE_TOKEN_CLIENT_ID = "user-generated"
+
 
 class ChunkingConfig(BaseModel):
     max_chunk_size: int = Field(default=2048, description="Maximum size of text chunks for vectorization")
@@ -157,6 +159,9 @@ class JarvisBaseSettings(BaseSettings):
     registry_app_name: str = "jarvis-registry-client"
     registry_client_secret: str = ""
 
+    # ==================== Sentinel client ID for non-interactive agent-vended tokens ====================
+    headless_agent_client_id: str = "jarvis-headless-agent"
+
     # ==================== Logging ====================
     log_level: str = "INFO"
     log_format: str = "%(asctime)s,p%(process)s,{%(name)s:%(lineno)d},%(levelname)s,%(message)s"
@@ -195,6 +200,25 @@ class JarvisBaseSettings(BaseSettings):
     # ==================== Model Validation ====================
     # Skip model validation if set to "disabled". Disabling should only happen for import checks in CI.
     x_jarvis_registry_import_checks: str = "enabled"
+
+    @field_validator("headless_agent_client_id")
+    @classmethod
+    def _validate_headless_agent_client_id(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("headless_agent_client_id must not be empty")
+        if normalized == INTERACTIVE_TOKEN_CLIENT_ID:
+            raise ValueError(
+                f"headless_agent_client_id must not use the reserved interactive client ID "
+                f"'{INTERACTIVE_TOKEN_CLIENT_ID}'"
+            )
+        return normalized
+
+    @model_validator(mode="after")
+    def _validate_headless_agent_client_id_is_not_registry_client(self) -> Self:
+        if self.headless_agent_client_id == self.registry_app_name:
+            raise ValueError("headless_agent_client_id must not match registry_app_name")
+        return self
 
     @model_validator(mode="after")
     def _validate_jwt_key_pair(self) -> Self:

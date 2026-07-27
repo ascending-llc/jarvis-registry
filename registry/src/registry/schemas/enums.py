@@ -42,3 +42,10 @@ class HealthStatus(StrEnum):
     def is_healthy(cls, status: str) -> bool:
         """Check if a status should be considered healthy."""
         return status in cls.get_healthy_statuses()
+
+
+class TokenPurpose(StrEnum):
+    """Purpose of a user-vended managed-agent token."""
+
+    INTERACTIVE = "interactive"
+    AGENT = "agent"

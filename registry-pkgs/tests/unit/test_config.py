@@ -3,6 +3,7 @@ import os
 from unittest.mock import patch
 
 import pytest
+from pydantic import ValidationError
 
 from registry_pkgs.core.config import JarvisBaseSettings
 
@@ -15,3 +16,35 @@ def test_validation_disablement(caplog) -> None:
     JarvisBaseSettings()
 
     assert "JWT_PRIVATE_KEY and JWT_PUBLIC_KEY validation is disabled." in caplog.text
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("client_id", ["", "   ", "user-generated"])
+def test_headless_agent_client_id_rejects_empty_and_interactive_values(client_id: str) -> None:
+    with pytest.raises(ValidationError, match="headless_agent_client_id"):
+        JarvisBaseSettings(
+            headless_agent_client_id=client_id,
+            x_jarvis_registry_import_checks="disabled",
+        )
+
+
+@pytest.mark.unit
+def test_headless_agent_client_id_rejects_registry_client_id() -> None:
+    client_id = "custom-registry-client"
+
+    with pytest.raises(ValidationError, match="must not match registry_app_name"):
+        JarvisBaseSettings(
+            registry_app_name=client_id,
+            headless_agent_client_id=client_id,
+            x_jarvis_registry_import_checks="disabled",
+        )
+
+
+@pytest.mark.unit
+def test_headless_agent_client_id_allows_custom_value_and_strips_whitespace() -> None:
+    settings = JarvisBaseSettings(
+        headless_agent_client_id=" custom-headless-agent ",
+        x_jarvis_registry_import_checks="disabled",
+    )
+
+    assert settings.headless_agent_client_id == "custom-headless-agent"
