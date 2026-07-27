@@ -114,6 +114,8 @@ def with_control(
             )
             try:
                 result: StepOutput = await executor(step_input, session_state)
+            except WorkflowCancelledError:
+                raise
             except Exception as exc:
                 logger.exception("[run=%s] step %r executor raised", run_id, node_name)
                 result = StepOutput(content="", success=False, error=str(exc))
