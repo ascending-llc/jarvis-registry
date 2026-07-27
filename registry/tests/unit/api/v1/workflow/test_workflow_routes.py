@@ -146,12 +146,18 @@ async def test_create_workflow_route_forwards_condition_request_to_service():
         "scopes": ["workflow:create"],
     }
 
-    response = await workflow_routes.create_workflow(
-        data=request,
-        user_context=user_context,
-        workflow_service=mock_service,
-        acl_service=mock_acl,
-    )
+    mock_session = AsyncMock()
+    mock_client = MagicMock()
+    mock_client.start_session.return_value.__aenter__.return_value = mock_session
+    mock_session.start_transaction.return_value.__aenter__.return_value = None
+
+    with patch("registry.api.v1.workflow.workflow_routes.MongoDB.get_client", return_value=mock_client):
+        response = await workflow_routes.create_workflow(
+            data=request,
+            user_context=user_context,
+            workflow_service=mock_service,
+            acl_service=mock_acl,
+        )
 
     mock_service.create_workflow.assert_awaited_once()
     mock_acl.grant_permission.assert_awaited_once()

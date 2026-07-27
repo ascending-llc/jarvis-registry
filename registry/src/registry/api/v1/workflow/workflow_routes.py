@@ -223,22 +223,36 @@ async def create_workflow(
     """Create a new workflow. The creator is granted OWNER permission."""
     try:
         user_id = user_context.get("user_id")
+        if not user_id:
+            raise HTTPException(
+                status_code=http_status.HTTP_401_UNAUTHORIZED,
+                detail=create_error_detail(
+                    ErrorCode.AUTHENTICATION_REQUIRED, "User identity required for workflow operations"
+                ),
+            )
 
-        # Create workflow
-        workflow = await workflow_service.create_workflow(data=data, user_id=PydanticObjectId(user_id))
+        # Create workflow + grant OWNER inside a single transaction
+        async with MongoDB.get_client().start_session() as mongo_session:
+            async with await mongo_session.start_transaction():
+                workflow = await workflow_service.create_workflow(
+                    data=data,
+                    user_id=PydanticObjectId(user_id),
+                    session=mongo_session,
+                )
 
-        if not workflow:
-            logger.error("Workflow creation failed without exception")
-            raise ValueError("Failed to create workflow")
+                if not workflow:
+                    logger.error("Workflow creation failed without exception")
+                    raise ValueError("Failed to create workflow")
 
-        # Grant OWNER permission to creator
-        await acl_service.grant_permission(
-            principal_type=PrincipalType.USER,
-            principal_id=PydanticObjectId(user_id),
-            resource_type=RegistryResourceType.WORKFLOW,
-            resource_id=workflow.id,
-            perm_bits=RoleBits.OWNER,
-        )
+                # Grant OWNER permission to creator
+                await acl_service.grant_permission(
+                    principal_type=PrincipalType.USER,
+                    principal_id=PydanticObjectId(user_id),
+                    resource_type=RegistryResourceType.WORKFLOW,
+                    resource_id=workflow.id,
+                    perm_bits=RoleBits.OWNER,
+                    session=mongo_session,
+                )
         logger.info(f"Created workflow {workflow.id}: {workflow.name}; granted OWNER to user {user_id}")
 
         return convert_to_detail(
@@ -283,6 +297,15 @@ async def update_workflow(
 ):
     """Update a workflow with partial data (requires EDIT)"""
     try:
+        user_id = user_context.get("user_id")
+        if not user_id:
+            raise HTTPException(
+                status_code=http_status.HTTP_401_UNAUTHORIZED,
+                detail=create_error_detail(
+                    ErrorCode.AUTHENTICATION_REQUIRED, "User identity required for workflow operations"
+                ),
+            )
+
         _, permissions = await _authorize_workflow(acl_service, workflow_service, user_context, workflow_id, "EDIT")
 
         # Update workflow (bumps version, snapshots prior version as history)
@@ -291,7 +314,7 @@ async def update_workflow(
                 workflow = await workflow_service.update_workflow(
                     workflow_id=workflow_id,
                     data=data,
-                    user_id=PydanticObjectId(user_context.get("user_id")),
+                    user_id=PydanticObjectId(user_id),
                     session=mongo_session,
                 )
 

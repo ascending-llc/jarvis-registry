@@ -7,7 +7,6 @@ This service handles all workflow-related operations using MongoDB and Beanie OD
 import hashlib
 import logging
 import re
-from collections.abc import Iterator
 from datetime import UTC, datetime
 from typing import Any, NamedTuple
 from uuid import uuid4
@@ -37,6 +36,7 @@ from registry_pkgs.models.workflow import (
     WorkflowRun,
     WorkflowVersion,
 )
+from registry_pkgs.workflows.compiler import flatten_workflow_nodes
 
 from ..schemas.workflow_api_schemas import WorkflowCreateRequest, WorkflowUpdateRequest
 from ..services.access_control_service import ACLService
@@ -92,7 +92,7 @@ def _convert_human_review(api_human_review: Any) -> HumanReviewSpec | None:
 class WorkflowService:
     """Service for Workflow operations"""
 
-    def __init__(self, acl_service: ACLService | None = None) -> None:
+    def __init__(self, acl_service: ACLService) -> None:
         self._acl_service = acl_service
 
     @staticmethod
@@ -101,22 +101,11 @@ class WorkflowService:
         return hashlib.sha256(definition_json.encode("utf-8")).hexdigest()
 
     @staticmethod
-    def _iter_nodes(nodes: list[WorkflowNode]) -> Iterator[WorkflowNode]:
-        """Yield every node in a workflow tree, including nested branches."""
-        for node in nodes:
-            yield node
-            yield from WorkflowService._iter_nodes(node.children)
-            yield from WorkflowService._iter_nodes(node.true_steps)
-            yield from WorkflowService._iter_nodes(node.false_steps)
-            for choice in node.choices:
-                yield from WorkflowService._iter_nodes(choice.steps)
-
-    @staticmethod
     def _collect_executor_refs(nodes: list[WorkflowNode]) -> tuple[set[str], set[str]]:
         """Return (executor_keys, pool_paths) referenced in the node tree, builtins excluded."""
         executor_keys: set[str] = set()
         pool_paths: set[str] = set()
-        for node in WorkflowService._iter_nodes(nodes):
+        for node in flatten_workflow_nodes(nodes):
             if node.node_type != WorkflowNodeType.STEP:
                 continue
             if node.executor_key:
@@ -173,52 +162,55 @@ class WorkflowService:
 
         return ExecutorRefResolution(mcp_server_ids=mcp_server_ids, agent_ids=agent_ids)
 
-    async def _authorize_new_executor_refs(
+    async def _check_view_permissions(
+        self,
+        keys: set[str],
+        id_map: dict[str, PydanticObjectId],
+        resource_type: str,
+        user_id: PydanticObjectId,
+        session: AsyncClientSession | None,
+    ) -> list[str]:
+        """Return denied keys for a batch VIEW check. Raises 503 on DB failure."""
+        if not keys:
+            return []
+        try:
+            perms = await self._acl_service.get_user_permissions_for_resources(
+                user_id=user_id,
+                resource_type=resource_type,
+                resource_ids=[id_map[k] for k in keys],
+                session=session,
+            )
+        except RuntimeError as e:
+            raise HTTPException(
+                status_code=503,
+                detail="Permission check temporarily unavailable. Please try again later.",
+            ) from e
+        return [k for k in keys if not perms[id_map[k]].VIEW]
+
+    async def _authorize_executor_refs(
         self,
         user_id: PydanticObjectId,
         resolution: ExecutorRefResolution,
-        previous_keys: set[str] | None = None,
         session: AsyncClientSession | None = None,
     ) -> None:
-        """Raise 403 if user lacks VIEW on any newly-referenced executor."""
-        if previous_keys is not None:
-            new_mcp_keys = set(resolution.mcp_server_ids) - previous_keys
-            new_agent_keys = set(resolution.agent_ids) - previous_keys
-        else:
-            new_mcp_keys = set(resolution.mcp_server_ids)
-            new_agent_keys = set(resolution.agent_ids)
-
-        if not new_mcp_keys and not new_agent_keys:
+        """Raise 403 if user lacks VIEW on any referenced executor."""
+        if not resolution.mcp_server_ids and not resolution.agent_ids:
             return
 
-        if self._acl_service is None:
-            raise RuntimeError("ACLService is required for executor ACL validation")
-
-        denied: list[str] = []
-
-        if new_mcp_keys:
-            mcp_ids = [resolution.mcp_server_ids[k] for k in new_mcp_keys]
-            perms = await self._acl_service.get_user_permissions_for_resources(
-                user_id=user_id,
-                resource_type=RegistryResourceType.MCP_SERVER.value,
-                resource_ids=mcp_ids,
-                session=session,
-            )
-            for key in new_mcp_keys:
-                if not perms[resolution.mcp_server_ids[key]].VIEW:
-                    denied.append(key)
-
-        if new_agent_keys:
-            agent_doc_ids = [resolution.agent_ids[k] for k in new_agent_keys]
-            perms = await self._acl_service.get_user_permissions_for_resources(
-                user_id=user_id,
-                resource_type=RegistryResourceType.REMOTE_AGENT.value,
-                resource_ids=agent_doc_ids,
-                session=session,
-            )
-            for key in new_agent_keys:
-                if not perms[resolution.agent_ids[key]].VIEW:
-                    denied.append(key)
+        denied = await self._check_view_permissions(
+            set(resolution.mcp_server_ids),
+            resolution.mcp_server_ids,
+            RegistryResourceType.MCP_SERVER.value,
+            user_id,
+            session,
+        )
+        denied += await self._check_view_permissions(
+            set(resolution.agent_ids),
+            resolution.agent_ids,
+            RegistryResourceType.REMOTE_AGENT.value,
+            user_id,
+            session,
+        )
 
         if denied:
             key = sorted(denied)[0]
@@ -317,6 +309,7 @@ class WorkflowService:
         self,
         data: WorkflowCreateRequest,
         user_id: PydanticObjectId,
+        session: AsyncClientSession | None = None,
     ) -> WorkflowDefinition:
         """
         Create a new workflow.
@@ -348,11 +341,11 @@ class WorkflowService:
                 updated_at=datetime.now(UTC),
             )
 
-            resolution = await self._validate_executor_refs(nodes)
-            await self._authorize_new_executor_refs(user_id, resolution)
+            resolution = await self._validate_executor_refs(nodes, session=session)
+            await self._authorize_executor_refs(user_id, resolution, session=session)
 
             # Save to database (this will trigger Pydantic validation)
-            await workflow.insert()
+            await workflow.insert(session=session)
 
             logger.info(f"Created workflow {workflow.id}: {workflow.name} (enabled: False)")
             return workflow
@@ -400,9 +393,10 @@ class WorkflowService:
             # Build and validate the update FIRST. Node conversion runs the model-level
             # shape validators, so an invalid update raises here — before anything is
             # written — and can never leave an orphan/duplicate version-history row.
+            now = datetime.now(UTC)
             update_fields: dict[str, Any] = {
                 "version": previous_version + 1,
-                "updated_at": datetime.now(UTC),
+                "updated_at": now,
             }
 
             if data.name is not None:
@@ -420,22 +414,12 @@ class WorkflowService:
                 # match existing node names) before the executor-key DB lookup.
                 WorkflowDefinition(name=workflow.name, nodes=nodes)
                 resolution = await self._validate_executor_refs(nodes, session=session)
-
-                old_keys, old_pools = self._collect_executor_refs(workflow.nodes)
-                await self._authorize_new_executor_refs(
-                    user_id,
-                    resolution,
-                    previous_keys=old_keys | old_pools,
-                    session=session,
-                )
+                await self._authorize_executor_refs(user_id, resolution, session=session)
 
                 update_fields["nodes"] = [node.model_dump(mode="json") for node in nodes]
 
             if data.enabled is not None:
                 update_fields["enabled"] = data.enabled
-
-            # Always update the timestamp
-            update_fields["updated_at"] = datetime.now(UTC)
 
             collection = MongoDB.get_database().get_collection(WorkflowDefinition.get_settings().name)
 

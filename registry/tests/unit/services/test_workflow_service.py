@@ -84,7 +84,7 @@ async def test_list_workflows_escapes_regex_query(monkeypatch: pytest.MonkeyPatc
 
     monkeypatch.setattr(workflow_service.WorkflowDefinition, "find", fake_find)
 
-    await WorkflowService().list_workflows(query="a.b[")
+    await WorkflowService(acl_service=AsyncMock()).list_workflows(query="a.b[")
 
     search_pattern = captured_filters[0]["$or"][0]["name"]
     assert search_pattern == {"$regex": re.escape("a.b["), "$options": "i"}
@@ -96,14 +96,14 @@ async def test_create_workflow_does_not_convert_unexpected_errors_to_value_error
         def __init__(self, **_kwargs):
             pass
 
-        async def insert(self):
+        async def insert(self, **_kwargs):
             raise RuntimeError("database unavailable")
 
     monkeypatch.setattr(workflow_service, "WorkflowDefinition", FailingWorkflowDefinition)
     monkeypatch.setattr(
         WorkflowService, "_validate_executor_refs", AsyncMock(return_value=ExecutorRefResolution({}, {}))
     )
-    monkeypatch.setattr(WorkflowService, "_authorize_new_executor_refs", AsyncMock(return_value=None))
+    monkeypatch.setattr(WorkflowService, "_authorize_executor_refs", AsyncMock(return_value=None))
 
     request = WorkflowCreateRequest(
         name="Demo workflow",
@@ -112,7 +112,7 @@ async def test_create_workflow_does_not_convert_unexpected_errors_to_value_error
     )
 
     with pytest.raises(RuntimeError, match="database unavailable"):
-        await WorkflowService().create_workflow(request, user_id=PydanticObjectId())
+        await WorkflowService(acl_service=AsyncMock()).create_workflow(request, user_id=PydanticObjectId())
 
 
 @pytest.mark.asyncio
@@ -138,12 +138,12 @@ async def test_create_workflow_unknown_referenced_node_name_raises_before_execut
     )
 
     with pytest.raises(ValueError, match="references unknown node names"):
-        await WorkflowService().create_workflow(request, user_id=PydanticObjectId())
+        await WorkflowService(acl_service=AsyncMock()).create_workflow(request, user_id=PydanticObjectId())
 
 
 @pytest.mark.asyncio
 async def test_validate_executor_refs_passes_for_valid_mcp_server_and_a2a_agent(monkeypatch: pytest.MonkeyPatch):
-    service = WorkflowService()
+    service = WorkflowService(acl_service=AsyncMock())
     captured_queries = _patch_executor_ref_queries(
         monkeypatch,
         mcp_names={"github"},
@@ -173,7 +173,7 @@ async def test_validate_executor_refs_passes_for_valid_mcp_server_and_a2a_agent(
 
 @pytest.mark.asyncio
 async def test_validate_executor_refs_returns_400_for_unknown_executor_key(monkeypatch: pytest.MonkeyPatch):
-    service = WorkflowService()
+    service = WorkflowService(acl_service=AsyncMock())
     _patch_executor_ref_queries(monkeypatch, mcp_names=set(), a2a_paths=set())
     nodes = [
         service._convert_api_node_to_model(
@@ -190,7 +190,7 @@ async def test_validate_executor_refs_returns_400_for_unknown_executor_key(monke
 
 @pytest.mark.asyncio
 async def test_validate_executor_refs_returns_400_for_unknown_a2a_pool_path(monkeypatch: pytest.MonkeyPatch):
-    service = WorkflowService()
+    service = WorkflowService(acl_service=AsyncMock())
     _patch_executor_ref_queries(monkeypatch, a2a_paths=set())
     nodes = [
         service._convert_api_node_to_model(
@@ -207,7 +207,7 @@ async def test_validate_executor_refs_returns_400_for_unknown_a2a_pool_path(monk
 
 @pytest.mark.asyncio
 async def test_validate_executor_refs_finds_bad_key_in_nested_step(monkeypatch: pytest.MonkeyPatch):
-    service = WorkflowService()
+    service = WorkflowService(acl_service=AsyncMock())
     _patch_executor_ref_queries(monkeypatch, mcp_names=set(), a2a_paths=set())
     parallel = service._convert_api_node_to_model(
         WorkflowNodeInput(
@@ -234,7 +234,7 @@ def test_convert_step_node_preserves_executor_key():
         executorKey="tool-fetch",
         stepObjective="fetch data",
     )
-    model = WorkflowService()._convert_api_node_to_model(api_node)
+    model = WorkflowService(acl_service=AsyncMock())._convert_api_node_to_model(api_node)
     assert model.name == "fetch"
     assert model.node_type == "step"
     assert model.executor_key == "tool-fetch"
@@ -263,7 +263,7 @@ def test_convert_condition_node_maps_true_and_false_steps_recursively():
         ],
     )
 
-    model = WorkflowService()._convert_api_node_to_model(api_node)
+    model = WorkflowService(acl_service=AsyncMock())._convert_api_node_to_model(api_node)
 
     assert model.node_type == "condition"
     assert model.condition_cel == "input.routeToTrue == true"
@@ -294,7 +294,7 @@ def test_convert_router_node_maps_choices_with_multi_step_pipelines():
         ],
     )
 
-    model = WorkflowService()._convert_api_node_to_model(api_node)
+    model = WorkflowService(acl_service=AsyncMock())._convert_api_node_to_model(api_node)
 
     assert model.node_type == "router"
     assert model.condition_cel == "input.strategy"
@@ -341,7 +341,7 @@ def test_convert_condition_node_with_nested_router_recursively_converts():
         ],
     )
 
-    model = WorkflowService()._convert_api_node_to_model(api_node)
+    model = WorkflowService(acl_service=AsyncMock())._convert_api_node_to_model(api_node)
 
     assert model.node_type == "condition"
     assert len(model.true_steps) == 1
@@ -354,7 +354,7 @@ def test_convert_condition_node_with_nested_router_recursively_converts():
 
 def test_convert_api_node_generates_id_when_missing():
     api_node = WorkflowNodeInput(name="x", nodeType="step", executorKey="tool", stepObjective="run x")
-    model = WorkflowService()._convert_api_node_to_model(api_node)
+    model = WorkflowService(acl_service=AsyncMock())._convert_api_node_to_model(api_node)
     assert isinstance(model.id, str) and len(model.id) > 0
 
 
@@ -366,7 +366,7 @@ def test_convert_api_node_preserves_explicit_id():
         executorKey="tool",
         stepObjective="run x",
     )
-    model = WorkflowService()._convert_api_node_to_model(api_node)
+    model = WorkflowService(acl_service=AsyncMock())._convert_api_node_to_model(api_node)
     assert model.id == "custom-id"
 
 
@@ -378,21 +378,21 @@ def test_convert_api_node_preserves_referenced_node_names():
         stepObjective="echo weather",
         referencedNodeNames=["Weather Agent"],
     )
-    model = WorkflowService()._convert_api_node_to_model(api_node)
+    model = WorkflowService(acl_service=AsyncMock())._convert_api_node_to_model(api_node)
     assert model.referenced_node_names == ["Weather Agent"]
     assert model.step_objective == "echo weather"
 
 
 def test_convert_api_node_defaults_referenced_node_names_to_empty_list():
     api_node = WorkflowNodeInput(name="echo", nodeType="step", executorKey="tool", stepObjective="echo input")
-    model = WorkflowService()._convert_api_node_to_model(api_node)
+    model = WorkflowService(acl_service=AsyncMock())._convert_api_node_to_model(api_node)
     assert model.referenced_node_names == []
 
 
 def test_convert_api_node_rejects_step_without_step_objective():
     api_node = WorkflowNodeInput(name="echo", nodeType="step", executorKey="tool")
     with pytest.raises(ValueError, match="step node requires step_objective"):
-        WorkflowService()._convert_api_node_to_model(api_node)
+        WorkflowService(acl_service=AsyncMock())._convert_api_node_to_model(api_node)
 
 
 def test_convert_api_node_rejects_step_objective_on_non_step_node():
@@ -406,7 +406,7 @@ def test_convert_api_node_rejects_step_objective_on_non_step_node():
         ],
     )
     with pytest.raises(ValueError, match="step_objective is only valid on step nodes"):
-        WorkflowService()._convert_api_node_to_model(api_node)
+        WorkflowService(acl_service=AsyncMock())._convert_api_node_to_model(api_node)
 
 
 def test_convert_api_node_rejects_referenced_node_names_on_non_step_node():
@@ -420,7 +420,7 @@ def test_convert_api_node_rejects_referenced_node_names_on_non_step_node():
         ],
     )
     with pytest.raises(ValueError, match="referenced_node_names is only supported on step nodes"):
-        WorkflowService()._convert_api_node_to_model(api_node)
+        WorkflowService(acl_service=AsyncMock())._convert_api_node_to_model(api_node)
 
 
 @pytest.mark.asyncio
@@ -437,7 +437,7 @@ async def test_create_workflow_rejects_duplicate_node_names_before_executor_chec
     )
 
     with pytest.raises(ValueError, match="duplicates found: \\['dup'\\]"):
-        await WorkflowService().create_workflow(request, user_id=PydanticObjectId())
+        await WorkflowService(acl_service=AsyncMock()).create_workflow(request, user_id=PydanticObjectId())
 
 
 # ---------------------------------------------------------------------------
@@ -548,7 +548,7 @@ async def test_update_workflow_bumps_version_and_snapshots_history(monkeypatch: 
         monkeypatch, found_doc={"_id": fake_wf.id, "version": 5}, refreshed=refreshed
     )
 
-    result = await WorkflowService().update_workflow(
+    result = await WorkflowService(acl_service=AsyncMock()).update_workflow(
         workflow_id=str(fake_wf.id),
         data=WorkflowUpdateRequest(name="new-name"),
         user_id=PydanticObjectId(),
@@ -585,7 +585,7 @@ async def test_update_workflow_returns_409_on_concurrent_modification(monkeypatc
     _collection, inserted = _patch_update_transaction(monkeypatch, found_doc=None)
 
     with pytest.raises(HTTPException) as exc_info:
-        await WorkflowService().update_workflow(
+        await WorkflowService(acl_service=AsyncMock()).update_workflow(
             workflow_id=str(fake_wf.id), data=WorkflowUpdateRequest(name="new-name"), user_id=PydanticObjectId()
         )
 
@@ -612,7 +612,7 @@ async def test_update_workflow_returns_409_on_duplicate_version(monkeypatch: pyt
     )
 
     with pytest.raises(HTTPException) as exc_info:
-        await WorkflowService().update_workflow(
+        await WorkflowService(acl_service=AsyncMock()).update_workflow(
             workflow_id=str(fake_wf.id), data=WorkflowUpdateRequest(name="new-name"), user_id=PydanticObjectId()
         )
 
@@ -637,7 +637,7 @@ async def test_update_workflow_invalid_nodes_writes_nothing(monkeypatch: pytest.
     bad_update = WorkflowUpdateRequest(nodes=[WorkflowNodeInput(name="p", nodeType="parallel")])
 
     with pytest.raises(ValueError, match="parallel node requires at least 2 children"):
-        await WorkflowService().update_workflow(
+        await WorkflowService(acl_service=AsyncMock()).update_workflow(
             workflow_id=str(fake_wf.id), data=bad_update, user_id=PydanticObjectId()
         )
 
@@ -673,7 +673,7 @@ async def test_update_workflow_unknown_referenced_node_name_writes_nothing(monke
     )
 
     with pytest.raises(ValueError, match="references unknown node names"):
-        await WorkflowService().update_workflow(
+        await WorkflowService(acl_service=AsyncMock()).update_workflow(
             workflow_id=str(fake_wf.id), data=bad_update, user_id=PydanticObjectId()
         )
 
@@ -707,7 +707,7 @@ async def test_list_versions_includes_history_and_current(monkeypatch: pytest.Mo
 
     monkeypatch.setattr(workflow_service.WorkflowVersion, "find", lambda *_a, **_k: _Query())
 
-    versions = await WorkflowService().list_versions(str(fake_wf.id))
+    versions = await WorkflowService(acl_service=AsyncMock()).list_versions(str(fake_wf.id))
 
     assert [v["version"] for v in versions] == [1, 2, 3]  # history + current
     assert versions[-1]["version"] == 3  # current appended last
@@ -748,7 +748,7 @@ async def test_trigger_run_resolves_requested_historical_version(monkeypatch: py
 
     monkeypatch.setattr(workflow_service, "WorkflowRun", _FakeRun)
 
-    await WorkflowService().trigger_workflow_run(workflow_id=str(fake_wf.id), version=2)
+    await WorkflowService(acl_service=AsyncMock()).trigger_workflow_run(workflow_id=str(fake_wf.id), version=2)
 
     assert captured["workflow_version"] == 2
     assert captured["definition_snapshot"] == {"snapshot": "v2"}
@@ -817,7 +817,7 @@ async def test_delete_workflow_cascades_agno_sessions(monkeypatch: pytest.Monkey
 
     monkeypatch.setattr(workflow_service.MongoDB, "get_database", staticmethod(lambda: _Db()))
 
-    result = await WorkflowService().delete_workflow(str(workflow_oid))
+    result = await WorkflowService(acl_service=AsyncMock()).delete_workflow(str(workflow_oid))
 
     assert result is True
     assert workflow_deleted == [True]
@@ -855,7 +855,7 @@ async def test_trigger_workflow_run_persists_triggering_identity(monkeypatch: py
 
     monkeypatch.setattr(workflow_service, "WorkflowRun", _FakeRun)
 
-    await WorkflowService().trigger_workflow_run(
+    await WorkflowService(acl_service=AsyncMock()).trigger_workflow_run(
         workflow_id=str(fake_wf.id),
         version=2,
         triggering_user_id="user-42",
@@ -924,7 +924,7 @@ async def test_list_child_runs_filters_by_parent_run_id(monkeypatch: pytest.Monk
     monkeypatch.setattr(workflow_service, "WorkflowRun", _FakeWorkflowRun)
     monkeypatch.setattr(workflow_service, "NodeRun", _FakeNodeRun)
 
-    runs_with_nodes, total = await WorkflowService().list_child_runs(
+    runs_with_nodes, total = await WorkflowService(acl_service=AsyncMock()).list_child_runs(
         workflow_id=str(workflow_oid),
         parent_run_id=str(parent_oid),
     )
@@ -956,7 +956,7 @@ async def test_list_child_runs_raises_when_parent_missing(monkeypatch: pytest.Mo
     monkeypatch.setattr(workflow_service, "WorkflowRun", _FakeWorkflowRun)
 
     with pytest.raises(ValueError, match="not found"):
-        await WorkflowService().list_child_runs(
+        await WorkflowService(acl_service=AsyncMock()).list_child_runs(
             workflow_id=str(workflow_oid),
             parent_run_id=str(parent_oid),
         )
@@ -974,7 +974,7 @@ async def test_get_workflow_run_doc_returns_run_without_node_runs(monkeypatch: p
     monkeypatch.setattr(WorkflowService, "get_workflow_by_id", AsyncMock(return_value=workflow))
     monkeypatch.setattr(workflow_service.WorkflowRun, "get", AsyncMock(return_value=run))
 
-    result = await WorkflowService().get_workflow_run_doc(
+    result = await WorkflowService(acl_service=AsyncMock()).get_workflow_run_doc(
         workflow_id=str(workflow_oid),
         run_id=str(run_oid),
     )
@@ -994,7 +994,7 @@ async def test_get_workflow_run_doc_raises_when_run_not_found(monkeypatch: pytes
     monkeypatch.setattr(workflow_service.WorkflowRun, "get", AsyncMock(return_value=None))
 
     with pytest.raises(ValueError, match="Workflow run .* not found"):
-        await WorkflowService().get_workflow_run_doc(
+        await WorkflowService(acl_service=AsyncMock()).get_workflow_run_doc(
             workflow_id=str(workflow_oid),
             run_id=str(run_oid),
         )
@@ -1016,7 +1016,7 @@ async def test_get_workflow_run_doc_raises_when_run_belongs_to_other_workflow(
     monkeypatch.setattr(workflow_service.WorkflowRun, "get", AsyncMock(return_value=run))
 
     with pytest.raises(ValueError, match="does not belong to workflow"):
-        await WorkflowService().get_workflow_run_doc(
+        await WorkflowService(acl_service=AsyncMock()).get_workflow_run_doc(
             workflow_id=str(workflow_oid),
             run_id=str(run_oid),
         )
@@ -1056,7 +1056,7 @@ async def test_create_workflow_403_when_user_lacks_view_on_mcp_server(monkeypatc
     resolution = await service._validate_executor_refs(nodes)
 
     with pytest.raises(HTTPException) as exc_info:
-        await service._authorize_new_executor_refs(PydanticObjectId(), resolution)
+        await service._authorize_executor_refs(PydanticObjectId(), resolution)
 
     assert exc_info.value.status_code == 403
     assert "github" in exc_info.value.detail
@@ -1076,7 +1076,7 @@ async def test_create_workflow_403_when_user_lacks_view_on_a2a_agent(monkeypatch
 
     resolution = await service._validate_executor_refs(nodes)
     with pytest.raises(HTTPException) as exc_info:
-        await service._authorize_new_executor_refs(PydanticObjectId(), resolution)
+        await service._authorize_executor_refs(PydanticObjectId(), resolution)
 
     assert exc_info.value.status_code == 403
     assert "deep-intel" in exc_info.value.detail
@@ -1096,7 +1096,7 @@ async def test_create_workflow_403_when_user_lacks_view_on_a2a_pool(monkeypatch:
 
     resolution = await service._validate_executor_refs(nodes)
     with pytest.raises(HTTPException) as exc_info:
-        await service._authorize_new_executor_refs(PydanticObjectId(), resolution)
+        await service._authorize_executor_refs(PydanticObjectId(), resolution)
 
     assert exc_info.value.status_code == 403
     assert "researcher" in exc_info.value.detail
@@ -1118,12 +1118,12 @@ async def test_create_workflow_succeeds_when_user_has_view(monkeypatch: pytest.M
     ]
 
     resolution = await service._validate_executor_refs(nodes)
-    await service._authorize_new_executor_refs(PydanticObjectId(), resolution)
+    await service._authorize_executor_refs(PydanticObjectId(), resolution)
     # No exception — success
 
 
 @pytest.mark.asyncio
-async def test_update_workflow_only_checks_delta_keys(monkeypatch: pytest.MonkeyPatch):
+async def test_authorize_checks_all_keys(monkeypatch: pytest.MonkeyPatch):
     acl = _make_acl_service(grant_all=True)
     service = WorkflowService(acl_service=acl)
     _patch_executor_ref_queries(monkeypatch, mcp_names={"github", "new-tool"})
@@ -1138,20 +1138,15 @@ async def test_update_workflow_only_checks_delta_keys(monkeypatch: pytest.Monkey
     ]
 
     resolution = await service._validate_executor_refs(nodes)
-    await service._authorize_new_executor_refs(
-        PydanticObjectId(),
-        resolution,
-        previous_keys={"github"},
-    )
+    await service._authorize_executor_refs(PydanticObjectId(), resolution)
 
     call_args = acl.get_user_permissions_for_resources.call_args
     resource_ids = call_args.kwargs.get("resource_ids", call_args[1].get("resource_ids"))
-    assert len(resource_ids) == 1
-    assert resource_ids[0] == resolution.mcp_server_ids["new-tool"]
+    assert len(resource_ids) == 2
 
 
 @pytest.mark.asyncio
-async def test_update_workflow_403_when_delta_key_lacks_view(monkeypatch: pytest.MonkeyPatch):
+async def test_authorize_403_when_any_key_lacks_view(monkeypatch: pytest.MonkeyPatch):
     acl = _make_acl_service(grant_all=False)
     service = WorkflowService(acl_service=acl)
     _patch_executor_ref_queries(monkeypatch, mcp_names={"github", "secret-tool"})
@@ -1168,45 +1163,18 @@ async def test_update_workflow_403_when_delta_key_lacks_view(monkeypatch: pytest
     resolution = await service._validate_executor_refs(nodes)
 
     with pytest.raises(HTTPException) as exc_info:
-        await service._authorize_new_executor_refs(
-            PydanticObjectId(),
-            resolution,
-            previous_keys={"github"},
-        )
+        await service._authorize_executor_refs(PydanticObjectId(), resolution)
 
     assert exc_info.value.status_code == 403
-    assert "secret-tool" in exc_info.value.detail
 
 
 @pytest.mark.asyncio
-async def test_update_workflow_skips_acl_when_nodes_unchanged():
+async def test_authorize_skips_when_no_executors():
     acl = _make_acl_service(grant_all=True)
     service = WorkflowService(acl_service=acl)
 
-    resolution = ExecutorRefResolution(mcp_server_ids={"github": PydanticObjectId()}, agent_ids={})
-    await service._authorize_new_executor_refs(
-        PydanticObjectId(),
-        resolution,
-        previous_keys={"github"},
-    )
-
-    acl.get_user_permissions_for_resources.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_update_workflow_allows_kept_refs_without_view():
-    acl = _make_acl_service(grant_all=False)
-    service = WorkflowService(acl_service=acl)
-
-    resolution = ExecutorRefResolution(
-        mcp_server_ids={"github": PydanticObjectId()},
-        agent_ids={"researcher": PydanticObjectId()},
-    )
-    await service._authorize_new_executor_refs(
-        PydanticObjectId(),
-        resolution,
-        previous_keys={"github", "researcher"},
-    )
+    resolution = ExecutorRefResolution(mcp_server_ids={}, agent_ids={})
+    await service._authorize_executor_refs(PydanticObjectId(), resolution)
 
     acl.get_user_permissions_for_resources.assert_not_called()
 
@@ -1222,7 +1190,7 @@ async def test_authorize_403_reports_first_denied_key_alphabetically():
     )
 
     with pytest.raises(HTTPException) as exc_info:
-        await service._authorize_new_executor_refs(PydanticObjectId(), resolution)
+        await service._authorize_executor_refs(PydanticObjectId(), resolution)
 
     assert exc_info.value.status_code == 403
     assert "alpha-tool" in exc_info.value.detail
@@ -1238,6 +1206,23 @@ async def test_authorize_batched_queries():
         agent_ids={"agent-x": PydanticObjectId(), "agent-y": PydanticObjectId()},
     )
 
-    await service._authorize_new_executor_refs(PydanticObjectId(), resolution)
+    await service._authorize_executor_refs(PydanticObjectId(), resolution)
 
     assert acl.get_user_permissions_for_resources.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_authorize_raises_503_on_acl_db_failure():
+    acl = _make_acl_service(grant_all=True)
+    acl.get_user_permissions_for_resources.side_effect = RuntimeError("DB down")
+    service = WorkflowService(acl_service=acl)
+
+    resolution = ExecutorRefResolution(
+        mcp_server_ids={"tool": PydanticObjectId()},
+        agent_ids={},
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await service._authorize_executor_refs(PydanticObjectId(), resolution)
+
+    assert exc_info.value.status_code == 503
