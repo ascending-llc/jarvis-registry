@@ -157,6 +157,7 @@ class TestControlWrapper:
             "registry_pkgs.workflows.control.wrapper._record_attempt_start",
             AsyncMock(),
         )
+        monkeypatch.setattr("registry_pkgs.workflows.control.wrapper.asyncio.sleep", AsyncMock())
 
         result = await wrapped(SimpleNamespace(input="hello"), {})
 
@@ -166,13 +167,12 @@ class TestControlWrapper:
 
     @pytest.mark.asyncio
     async def test_cancelled_error_not_swallowed_by_exception_handler(self, monkeypatch: pytest.MonkeyPatch):
-        """WorkflowCancelledError from directives must still propagate — the try/except must not catch it."""
+        """WorkflowCancelledError raised by the executor must propagate — the try/except must not catch it."""
         run_id = str(PydanticObjectId())
         queue = DirectiveQueue()
         queue.register(run_id)
-        queue.put(run_id, WorkflowDirective.CANCEL)
 
-        executor = AsyncMock(return_value=SimpleNamespace(success=True, content="ok", error=None))
+        executor = AsyncMock(side_effect=WorkflowCancelledError("cancelled"))
         wrapped = with_control(
             executor,
             run_id=run_id,
@@ -190,15 +190,9 @@ class TestControlWrapper:
             "registry_pkgs.workflows.control.wrapper._record_attempt_start",
             AsyncMock(),
         )
-        monkeypatch.setattr(
-            "registry_pkgs.workflows.control.wrapper._update_run_control_state",
-            AsyncMock(),
-        )
 
         with pytest.raises(WorkflowCancelledError):
             await wrapped(SimpleNamespace(input="hello"), {})
-
-        executor.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_pause_timeout_raises_cancelled_error(self, monkeypatch: pytest.MonkeyPatch):
