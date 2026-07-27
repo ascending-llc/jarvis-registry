@@ -179,6 +179,45 @@ async def test_create_workflow_route_forwards_condition_request_to_service():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("user_context", [{}, {"username": "x"}, {"user_id": ""}, {"user_id": None}])
+async def test_create_workflow_returns_401_when_user_id_missing(user_context):
+    """create_workflow must return 401 when user_context lacks a truthy user_id."""
+    request = WorkflowCreateRequest.model_validate(
+        {
+            "name": "Demo",
+            "canvas": _canvas(),
+            "nodes": [{"name": "A", "nodeType": "step", "executorKey": "tool-a"}],
+        }
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await workflow_routes.create_workflow(
+            data=request,
+            user_context=user_context,
+            workflow_service=MagicMock(),
+            acl_service=MagicMock(),
+        )
+
+    assert exc_info.value.status_code == 401
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("user_context", [{}, {"username": "x"}, {"user_id": ""}, {"user_id": None}])
+async def test_update_workflow_returns_401_when_user_id_missing(user_context):
+    """update_workflow must return 401 when user_context lacks a truthy user_id."""
+    with pytest.raises(HTTPException) as exc_info:
+        await workflow_routes.update_workflow(
+            workflow_id=str(PydanticObjectId()),
+            data=WorkflowUpdateRequest(name="Updated"),
+            user_context=user_context,
+            workflow_service=MagicMock(),
+            acl_service=MagicMock(),
+        )
+
+    assert exc_info.value.status_code == 401
+
+
+@pytest.mark.asyncio
 async def test_update_workflow_passes_session_to_service(monkeypatch: pytest.MonkeyPatch):
     """update_workflow must open an explicit transaction and pass session=mongo_session
     to workflow_service.update_workflow."""
