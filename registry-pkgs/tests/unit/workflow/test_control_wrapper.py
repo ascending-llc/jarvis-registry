@@ -125,7 +125,7 @@ class TestControlWrapper:
         result = await wrapped(SimpleNamespace(input="hello"), {})
 
         assert result.success is False
-        assert result.error == "downstream server exploded"
+        assert result.error == "RuntimeError: downstream server exploded"
         assert result.content == ""
         executor.assert_awaited_once()
 
