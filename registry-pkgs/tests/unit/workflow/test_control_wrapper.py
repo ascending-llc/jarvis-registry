@@ -103,7 +103,7 @@ class TestControlWrapper:
         queue = DirectiveQueue()
         queue.register(run_id)
 
-        executor = AsyncMock(side_effect=RuntimeError("downstream server exploded"))
+        executor = AsyncMock(side_effect=RuntimeError("RuntimeError: downstream server exploded"))
         wrapped = with_control(
             executor,
             run_id=run_id,
