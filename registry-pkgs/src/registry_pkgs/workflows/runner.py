@@ -53,9 +53,10 @@ from agno.models.base import Model
 from agno.run.cancel import acancel_run as agno_acancel_run
 from beanie import PydanticObjectId
 from beanie.exceptions import DocumentNotFound
+from beanie.operators import In
 
 from registry_pkgs.core.config import JwtSigningConfig
-from registry_pkgs.models.enums import WorkflowRunStatus
+from registry_pkgs.models.enums import NodeRunStatus, WorkflowRunStatus
 from registry_pkgs.models.workflow import (
     NodeRun,
     WorkflowCanvas,
@@ -490,6 +491,10 @@ class WorkflowRunner:
         run.error_summary = str(exc)
         run.finished_at = datetime.now(UTC)
         await run.save()
+        try:
+            await self._fail_dangling_node_runs(run.id, str(exc))
+        except Exception as inner:
+            logger.warning("[run=%s] failed to clean up dangling NodeRuns: %s", run.id, inner)
         # Bridge back to agno so its in-memory cancellation state flips too —
         # protects against agno later emitting a WorkflowCompletedEvent that
         # would otherwise overwrite our CANCELLED with COMPLETED via WorkflowRunSyncer.
@@ -505,4 +510,26 @@ class WorkflowRunner:
         run.error_summary = str(exc)
         run.finished_at = datetime.now(UTC)
         await run.save()
+        try:
+            await self._fail_dangling_node_runs(run.id, str(exc))
+        except Exception as inner:
+            logger.warning("[run=%s] failed to clean up dangling NodeRuns: %s", run.id, inner)
         logger.error("[run=%s] ✗ workflow failed: %s", run.id, exc, exc_info=True)
+
+    async def _fail_dangling_node_runs(self, run_id: PydanticObjectId, error: str) -> None:
+        """Transition any NodeRun left RUNNING/AWAITING_APPROVAL to FAILED.
+
+        Covers the case where a step executor raised instead of returning a failed
+        StepOutput, so agno never produced a WorkflowRunOutput for
+        WorkflowRunSyncer to finalize the NodeRun from.
+        """
+        dangling = NodeRun.find(
+            NodeRun.workflow_run_id == run_id,
+            In(NodeRun.status, [NodeRunStatus.RUNNING, NodeRunStatus.AWAITING_APPROVAL]),
+        )
+        async for node_run in dangling:
+            node_run.status = NodeRunStatus.FAILED
+            node_run.error = error
+            node_run.finished_at = datetime.now(UTC)
+            await node_run.save()
+            logger.info("[run=%s] finalized dangling NodeRun %s → FAILED", run_id, node_run.node_id)
