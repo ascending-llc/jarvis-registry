@@ -40,6 +40,7 @@ from ..mcpgw.tools.utils import build_authenticated_headers, get_target_url, par
 from ..services.a2a_agent_service import A2AAgentService
 from ..services.access_control_service import ACLService
 from ..services.federation.a2a_client_registry import A2AClientRegistry
+from ..services.generated_token_policy import is_server_consent_exempt
 from ..services.oauth.oauth_service import MCPOAuthService
 from ..services.server_service import ServerServiceV1
 
@@ -793,7 +794,11 @@ async def dynamic_mcp_post_proxy(
     user_id = auth_context["user_id"]
     client_id = auth_context["client_id"]
     mcp_method = msg_body.get("method")
-    if mcp_method not in _INIT_METHODS and not consent_store.has_server_consent(user_id, client_id, server.path):
+    requires_server_consent = mcp_method not in _INIT_METHODS and not is_server_consent_exempt(
+        client_id,
+        settings.headless_agent_client_id,
+    )
+    if requires_server_consent and not consent_store.has_server_consent(user_id, client_id, server.path):
         nonce = secrets.token_urlsafe(32)
         pending_store.save(nonce, {"user_id": user_id, "client_id": client_id, "server_path": server.path})
         auth_url = f"{settings.registry_client_url}/consent/server?nonce={nonce}"

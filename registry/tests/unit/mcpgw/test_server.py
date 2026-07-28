@@ -11,9 +11,11 @@ from mcp.types import (
     UrlElicitationCapability,
 )
 
+from registry.core.config import settings
 from registry.core.exceptions import InternalServerException
 from registry.mcpgw.tools import server
 from registry.mcpgw.tools.server import execute_tool_impl
+from registry.services.generated_token_policy import INTERACTIVE_CLIENT_ID
 
 
 class _PermissiveAccessibleSet:
@@ -278,6 +280,7 @@ async def test_execute_tool_impl_acl_denied_returns_error(monkeypatch):
     other_id = str(PydanticObjectId())
     ctx = _make_ctx(accessible_server_ids=[other_id])
     ctx.request_context.lifespan_context.server_service.get_server_by_id.return_value = _make_server(server_id)
+    ctx.request_context.request.state.user["client_id"] = settings.headless_agent_client_id
     downstream_call = AsyncMock()
     monkeypatch.setattr(server, "_downstream_tool_call", downstream_call)
 
@@ -285,6 +288,7 @@ async def test_execute_tool_impl_acl_denied_returns_error(monkeypatch):
 
     assert result.isError is True
     assert "Access denied" in result.content[0].text
+    ctx.request_context.lifespan_context.consent_store.has_server_consent.assert_not_called()
     downstream_call.assert_not_awaited()
 
 
@@ -346,6 +350,7 @@ async def test_execute_tool_impl_without_server_consent_returns_elicitation_fall
     server_id = str(PydanticObjectId())
     ctx = _make_ctx(accessible_server_ids=[server_id])
     ctx.request_context.lifespan_context.server_service.get_server_by_id.return_value = _make_server(server_id)
+    ctx.request_context.request.state.user["client_id"] = INTERACTIVE_CLIENT_ID
     ctx.request_context.lifespan_context.consent_store.has_server_consent.return_value = False
     downstream_call = AsyncMock()
     monkeypatch.setattr(server, "_downstream_tool_call", downstream_call)
@@ -358,7 +363,7 @@ async def test_execute_tool_impl_without_server_consent_returns_elicitation_fall
     ctx.request_context.lifespan_context.pending_consent_store.save.assert_called_once()
     _, pending = ctx.request_context.lifespan_context.pending_consent_store.save.call_args.args
     assert pending["user_id"] == "507f1f77bcf86cd799439011"
-    assert pending["client_id"] == "claude"
+    assert pending["client_id"] == INTERACTIVE_CLIENT_ID
     assert pending["server_path"] == "/github"
     assert pending["elicitation_id"]
     # ctx.session.client_params is None here, so the client is treated as not supporting URL mode
@@ -366,7 +371,7 @@ async def test_execute_tool_impl_without_server_consent_returns_elicitation_fall
     assert pending["notify_elicitation_complete"] is False
     ctx.request_context.lifespan_context.consent_store.has_server_consent.assert_called_once_with(
         "507f1f77bcf86cd799439011",
-        "claude",
+        INTERACTIVE_CLIENT_ID,
         "/github",
     )
     downstream_call.assert_not_awaited()
@@ -377,6 +382,7 @@ async def test_execute_tool_impl_without_server_consent_raises_url_elicitation(m
     server_id = str(PydanticObjectId())
     ctx = _make_ctx(accessible_server_ids=[server_id])
     ctx.request_context.lifespan_context.server_service.get_server_by_id.return_value = _make_server(server_id)
+    ctx.request_context.request.state.user["client_id"] = INTERACTIVE_CLIENT_ID
     ctx.request_context.lifespan_context.consent_store.has_server_consent.return_value = False
     downstream_call = AsyncMock()
     monkeypatch.setattr(server, "_downstream_tool_call", downstream_call)
@@ -388,7 +394,7 @@ async def test_execute_tool_impl_without_server_consent_raises_url_elicitation(m
     ctx.request_context.lifespan_context.pending_consent_store.save.assert_called_once()
     ctx.request_context.lifespan_context.consent_store.has_server_consent.assert_called_once_with(
         "507f1f77bcf86cd799439011",
-        "claude",
+        INTERACTIVE_CLIENT_ID,
         "/github",
     )
     ctx.request_context.lifespan_context.session_store.append.assert_called_once()
@@ -421,6 +427,25 @@ async def test_execute_tool_impl_acl_allowed_proceeds(monkeypatch):
 
     result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
 
+    assert not result.isError
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_impl_headless_agent_bypasses_server_consent(monkeypatch):
+    server_id = str(PydanticObjectId())
+    ctx = _make_ctx(accessible_server_ids=[server_id])
+    ctx.request_context.lifespan_context.server_service.get_server_by_id.return_value = _make_server(server_id)
+    ctx.request_context.request.state.user["client_id"] = settings.headless_agent_client_id
+    ctx.request_context.lifespan_context.consent_store.has_server_consent.return_value = False
+    monkeypatch.setattr(server, "record_server_request", MagicMock())
+    monkeypatch.setattr(server, "build_authenticated_headers", AsyncMock(return_value={}))
+    downstream_call = AsyncMock(return_value={"result": {"content": [{"type": "text", "text": "ok"}]}})
+    monkeypatch.setattr(server, "_downstream_tool_call", downstream_call)
+
+    result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
+
+    ctx.request_context.lifespan_context.consent_store.has_server_consent.assert_not_called()
+    downstream_call.assert_awaited_once()
     assert not result.isError
 
 

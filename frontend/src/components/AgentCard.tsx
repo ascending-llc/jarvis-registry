@@ -1,6 +1,7 @@
 import {
   ArrowPathIcon,
   ClockIcon,
+  CommandLineIcon,
   PencilSquareIcon,
   WrenchScrewdriverIcon,
   XMarkIcon,
@@ -10,6 +11,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import agentcoreIcon from '@/assets/agentcore.svg';
 import azureAiIcon from '@/assets/azureai-color.svg';
+import AgentConnectionModal from '@/components/AgentConnectionModal';
 import IconButton from '@/components/IconButton';
 import { FEDERATED_TAG } from '@/constants/tags';
 import { useGlobal } from '@/contexts/GlobalContext';
@@ -71,7 +73,9 @@ const AgentCard: React.FC<AgentCardProps> = ({ agent }) => {
   const [loading, setLoading] = useState(false);
   const [loadingRefresh, setLoadingRefresh] = useState(false);
   const [showSkills, setShowSkills] = useState(false);
+  const [showConnectionInstructions, setShowConnectionInstructions] = useState(false);
   const canEdit = !!agent.permissions?.EDIT;
+  const agentTitle = agent.card?.name || agent.config?.title || agent.name;
 
   const numSkills = 'numSkills' in agent ? agent.numSkills : agent.skills?.length || 0;
   const hasSkillsDetails = 'skills' in agent && Array.isArray(agent.skills) && agent.skills.length > 0;
@@ -152,11 +156,11 @@ const AgentCard: React.FC<AgentCardProps> = ({ agent }) => {
                     className='max-w-[160px] cursor-pointer truncate text-base font-medium text-[var(--jarvis-text)] transition-colors hover:text-[var(--jarvis-text-strong)]'
                     onClick={() => navigate(`/agent-edit?id=${agent.id}&isReadOnly=true`)}
                   >
-                    {agent.card?.name || agent.config?.title || agent.name}
+                    {agentTitle}
                   </h3>
                 ) : (
                   <h3 className='max-w-[160px] truncate text-base font-medium text-[var(--jarvis-text)]'>
-                    {agent.card?.name || agent.config?.title || agent.name}
+                    {agentTitle}
                   </h3>
                 )}
               </div>
@@ -174,6 +178,15 @@ const AgentCard: React.FC<AgentCardProps> = ({ agent }) => {
                   <PencilSquareIcon className='h-3.5 w-3.5' />
                 </IconButton>
               )}
+              <IconButton
+                ariaLabel='View agent connection instructions'
+                tooltip='Connection instructions'
+                onClick={() => setShowConnectionInstructions(true)}
+                size='card'
+                className='text-[var(--jarvis-icon)] hover:bg-[var(--jarvis-primary-soft)] hover:text-[var(--jarvis-icon-hover)]'
+              >
+                <CommandLineIcon className='h-3.5 w-3.5' />
+              </IconButton>
             </div>
           </div>
 
@@ -347,6 +360,14 @@ const AgentCard: React.FC<AgentCardProps> = ({ agent }) => {
           </div>
         )}
       </div>
+
+      <AgentConnectionModal
+        agentTitle={agentTitle}
+        agentPath={agent.path}
+        enabled={agent.enabled}
+        isOpen={showConnectionInstructions}
+        onClose={() => setShowConnectionInstructions(false)}
+      />
 
       {/* Skills Modal */}
       {showSkills && (

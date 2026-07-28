@@ -50,6 +50,7 @@ from ...core.telemetry_decorators import (
     ToolExecutionMetricsContext,
 )
 from ...services.access_control_service import ACLService
+from ...services.generated_token_policy import is_server_consent_exempt
 from ...utils.otel_metrics import record_server_request
 from ..core.types import McpAppContext
 from .types import get_meta_field
@@ -416,7 +417,15 @@ async def execute_tool_impl(
                 )
 
             client_id = user_context["client_id"]
-            if not lifespan.consent_store.has_server_consent(user_id, client_id, server.path):
+            requires_server_consent = not is_server_consent_exempt(
+                client_id,
+                settings.headless_agent_client_id,
+            )
+            if requires_server_consent and not lifespan.consent_store.has_server_consent(
+                user_id,
+                client_id,
+                server.path,
+            ):
                 nonce = secrets.token_urlsafe(32)
                 elicitation_id = str(uuid4())
                 state_metadata = _get_state_metadata(ctx.session.client_params)

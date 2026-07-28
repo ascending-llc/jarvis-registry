@@ -10,6 +10,7 @@ from registry_pkgs.core.jwt_tokens import mint_managed_agent_token
 from ...auth.dependencies import CurrentUser
 from ...core.config import settings
 from ...schemas.common_api_schemas import TokenData, TokenGenerateRequest, TokenGenerateResponse
+from ...services.generated_token_policy import resolve_generated_token_client_id
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +29,8 @@ async def generate_user_token(
     {
         "expiresInHours": 8,                       // Required, must be one of: 1, 8, or 24
         "description": "Token for automation",     // Optional description
-        "requestedScopes": ["scope1", "scope2"]    // Optional, defaults to user's current scopes
+        "requestedScopes": ["scope1", "scope2"],   // Optional, defaults to user's current scopes
+        "tokenPurpose": "interactive"              // Optional: "interactive" or "agent"
     }
 
     Returns:
@@ -83,18 +85,29 @@ async def generate_user_token(
         if description:
             extra_claims["description"] = description
 
-        # User-vended tokens are managed-agent (proxy / Bearer) class. client_id is the
-        # sentinel "user-generated" (never the registry backend's id).
+        # User-vended tokens are managed-agent (proxy / Bearer) class. The client ID records
+        # whether this token may require an interactive per-server consent step.
+        token_purpose = request_data.tokenPurpose
+        client_id = resolve_generated_token_client_id(
+            token_purpose,
+            settings.headless_agent_client_id,
+        )
         access_token = mint_managed_agent_token(
             settings.jwt_token_config,
             subject=username,
-            client_id="user-generated",
+            client_id=client_id,
             expires_in_seconds=expires_in_seconds,
             iat=current_time,
             extra_claims=extra_claims,
         )
 
-        logger.info(f"Successfully generated token for user '{username}' with expiry {expires_in_hours}h")
+        logger.info(
+            "Successfully generated token for user '%s' with expiry %sh (purpose=%s, client_id=%s)",
+            username,
+            expires_in_hours,
+            token_purpose.value,
+            client_id,
+        )
 
         # Format response using Pydantic schema
         return TokenGenerateResponse(
