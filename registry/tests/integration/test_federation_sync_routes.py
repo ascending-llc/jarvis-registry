@@ -112,6 +112,7 @@ def test_federation_sync_dry_run_stays_200(federation_route_context):
                 updatedMcpServers=0,
                 deletedMcpServers=0,
                 unchangedMcpServers=0,
+                skippedMcpServers=0,
                 createdAgents=0,
                 updatedAgents=0,
                 deletedAgents=0,
