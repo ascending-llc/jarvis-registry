@@ -9,7 +9,7 @@ CSRF short-circuiting and Auth-to-RBAC request.state handoff.
 import asyncio
 
 import pytest
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.responses import JSONResponse, Response
 from starlette.testclient import TestClient
 from starlette.types import Message, Scope
@@ -148,47 +148,31 @@ def test_get_without_cookie_is_rejected_by_auth_despite_safe_method(client: Test
 
 
 async def test_client_disconnect_does_not_raise_cancel_scope_runtime_error() -> None:
+    """A real client disconnect cancels the running request task. With no anyio ``TaskGroup``
+    left in the custom middleware stack (CSRF/Auth/RBAC), that cancellation must propagate as a
+    plain ``CancelledError`` — never the ``RuntimeError`` this migration fixes.
+    """
     app = _build_app()
-    waiting_for_disconnect = asyncio.Event()
-    disconnect = asyncio.Event()
-    sent_messages: list[Message] = []
-    receive_count = 0
+    task_running = asyncio.Event()
 
     @app.get(f"/api/{settings.api_version}/widgets/disconnect")
-    async def wait_for_disconnect(request: Request) -> Response:
-        while (await request.receive())["type"] != "http.disconnect":
-            pass
-        return Response(status_code=204)
+    async def wait_for_disconnect() -> Response:
+        task_running.set()
+        await asyncio.sleep(10)  # suspended mid-request; cancellation interrupts this
+        return Response(status_code=204)  # pragma: no cover - never reached
 
     session_cookie = _session_cookie(["widgets-read"])
     scope = _disconnect_scope(session_cookie)
 
     async def receive() -> Message:
-        nonlocal receive_count
-        receive_count += 1
-        if receive_count == 1:
-            return {"type": "http.request", "body": b"", "more_body": False}
-
-        waiting_for_disconnect.set()
-        await disconnect.wait()
-        return {"type": "http.disconnect"}
+        return {"type": "http.request", "body": b"", "more_body": False}
 
     async def send(message: Message) -> None:
-        sent_messages.append(message)
+        pass
 
     request_task = asyncio.create_task(app(scope, receive, send))
-    try:
-        await asyncio.wait_for(waiting_for_disconnect.wait(), timeout=1)
-        disconnect.set()
-        await asyncio.wait_for(request_task, timeout=1)
-    finally:
-        if not request_task.done():
-            request_task.cancel()
-            try:
-                await request_task
-            except asyncio.CancelledError:
-                # Expected when awaiting a task cancelled during test cleanup.
-                pass
+    await asyncio.wait_for(task_running.wait(), timeout=1)
 
-    response_start = next(message for message in sent_messages if message["type"] == "http.response.start")
-    assert response_start["status"] == 204
+    request_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await request_task
