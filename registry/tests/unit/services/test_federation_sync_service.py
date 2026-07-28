@@ -425,6 +425,54 @@ async def test_run_sync_passes_vector_outcome_to_finalize(
 
 
 @pytest.mark.asyncio
+async def test_run_sync_finalizes_committed_apply_when_vector_sync_setup_fails(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    job = SimpleNamespace(
+        id=PydanticObjectId(),
+        jobType="full_sync",
+        createdAt=datetime.now(UTC),
+        startedAt=datetime.now(UTC),
+        discoverySummary=SimpleNamespace(discoveredMcpServers=1, discoveredAgents=1),
+    )
+    mutation_result = FederationSyncMutationResult(
+        summary=FederationApplySummary(createdMcpServers=1, createdAgents=1),
+        changed_mcp_runtime_arns={"arn:mcp:1"},
+        changed_a2a_runtime_arns={"arn:a2a:1"},
+    )
+
+    federation_sync_service._discover_entities = AsyncMock(return_value={"mcp_servers": [], "a2a_agents": []})
+    federation_sync_service._commit_sync_transaction = AsyncMock(return_value=mutation_result)
+    federation_sync_service._sync_vector_index_after_commit = AsyncMock(
+        side_effect=RuntimeError("Mongo runtime ARN read failed")
+    )
+    federation_sync_service._finalize_sync_status = AsyncMock()
+    federation_sync_service.federation_job_service.mark_syncing = AsyncMock()
+    federation_sync_service.federation_job_service.mark_failed = AsyncMock()
+    federation_sync_service.federation_crud_service.mark_sync_failed = AsyncMock()
+    _patch_mongo_session(monkeypatch)
+
+    result = await federation_sync_service.run_sync(
+        federation=federation,
+        job=job,
+        author_id=_DEFAULT_USER_OBJECT_ID,
+    )
+
+    assert result == job
+    federation_sync_service.federation_crud_service.mark_sync_failed.assert_not_awaited()
+    federation_sync_service.federation_job_service.mark_failed.assert_not_awaited()
+    federation_sync_service._finalize_sync_status.assert_awaited_once()
+    vector_outcome = federation_sync_service._finalize_sync_status.await_args.args[3]
+    assert vector_outcome.failed_changed_mcp_runtime_arns == {"arn:mcp:1"}
+    assert vector_outcome.failed_changed_a2a_runtime_arns == {"arn:a2a:1"}
+    assert vector_outcome.error_messages == [
+        f"vector sync failed after Mongo commit:{federation.id}:Mongo runtime ARN read failed"
+    ]
+
+
+@pytest.mark.asyncio
 async def test_preview_manual_sync_does_not_mutate_or_create_jobs(federation_sync_service: FederationSyncService):
     federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
     summary = FederationApplySummary(createdMcpServers=1)
@@ -983,6 +1031,7 @@ async def test_run_sync_updates_last_sync_when_discovery_fails(federation_sync_s
 @pytest.mark.asyncio
 async def test_sync_vector_index_after_commit_returns_outcome_with_failures(
     federation_sync_service: FederationSyncService,
+    caplog,
 ):
     federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
     job = SimpleNamespace(id=PydanticObjectId())
@@ -993,9 +1042,10 @@ async def test_sync_vector_index_after_commit_returns_outcome_with_failures(
     )
 
     federation_sync_service._sync_mcp_vectors_for_runtime = AsyncMock(side_effect=RuntimeError("vector down"))
-    federation_sync_service._sync_a2a_vectors_for_runtime = AsyncMock()
+    federation_sync_service._sync_a2a_vectors_for_runtime = AsyncMock(side_effect=RuntimeError("vector unavailable"))
     federation_sync_service._current_mcp_runtime_arns = AsyncMock(return_value=[])
     federation_sync_service._current_a2a_runtime_arns = AsyncMock(return_value=[])
+    caplog.set_level(logging.ERROR, logger="registry.services.federation_sync_service")
 
     outcome = await federation_sync_service._sync_vector_index_after_commit(
         federation=federation,
@@ -1005,10 +1055,23 @@ async def test_sync_vector_index_after_commit_returns_outcome_with_failures(
 
     assert isinstance(outcome, VectorSyncOutcome)
     assert "arn:mcp:1" in outcome.failed_changed_mcp_runtime_arns
-    assert len(outcome.error_messages) == 1
+    assert "arn:a2a:1" in outcome.failed_changed_a2a_runtime_arns
+    assert len(outcome.error_messages) == 2
     assert "vector down" in outcome.error_messages[0]
+    assert "vector unavailable" in outcome.error_messages[1]
     federation_sync_service._sync_mcp_vectors_for_runtime.assert_awaited_once_with(federation.id, "arn:mcp:1")
     federation_sync_service._sync_a2a_vectors_for_runtime.assert_awaited_once_with(federation.id, "arn:a2a:1")
+    error_records = [
+        record
+        for record in caplog.records
+        if record.message.startswith(("MCP runtime vector rebuild failed", "A2A runtime vector rebuild failed"))
+    ]
+    assert len(error_records) == 2
+    assert all(record.exc_info is not None for record in error_records)
+    assert all(f"federation_id={federation.id}" in record.message for record in error_records)
+    assert all(f"job_id={job.id}" in record.message for record in error_records)
+    assert any("runtime_arn=arn:mcp:1" in record.message for record in error_records)
+    assert any("runtime_arn=arn:a2a:1" in record.message for record in error_records)
 
 
 @pytest.mark.asyncio
