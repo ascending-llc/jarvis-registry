@@ -1332,6 +1332,198 @@ async def test_build_sync_plan_does_not_treat_planned_a2a_create_as_persisted_pa
 
 
 @pytest.mark.asyncio
+async def test_build_sync_plan_skips_mcp_create_with_enrichment_error(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
+    """An MCP server whose enrichment failed must not be queued for creation, but the
+    failure must still be recorded as an error (AS-1762 Change #1)."""
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    discovered_server = SimpleNamespace(
+        serverName="broken-server",
+        federationMetadata={
+            "runtimeArn": "arn:broken",
+            "runtimeVersion": "1",
+            "enrichmentError": "424 fetching tools",
+        },
+    )
+
+    def _fake_mcp_find(*_args, **_kwargs):
+        return _FakeQuery([])
+
+    def _fake_a2a_find(*_args, **_kwargs):
+        return _FakeQuery([])
+
+    monkeypatch.setattr("registry.services.federation_sync_service.ExtendedMCPServer.find", _fake_mcp_find)
+    monkeypatch.setattr("registry.services.federation_sync_service.A2AAgent.find", _fake_a2a_find)
+
+    result = await federation_sync_service._build_sync_plan(
+        federation=federation,
+        discovered_mcp=[discovered_server],
+        discovered_a2a=[],
+    )
+
+    assert result.mcp_creates == []
+    assert result.summary.createdMcpServers == 0
+    assert result.summary.errors == 1
+    assert result.summary.errorMessages == ["MCP server broken-server: 424 fetching tools"]
+
+
+@pytest.mark.asyncio
+async def test_build_sync_plan_preserves_existing_mcp_on_transient_enrichment_failure(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
+    """A previously-synced MCP server that transiently fails enrichment on resync must be
+    left completely untouched (not updated with broken/empty data) and must not be deleted
+    as stale — the riskiest ordering invariant called out in the AS-1762 spec's Risk section:
+    discovered_mcp_ids must still gain this remote_id before the enrichment-error `continue`."""
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    runtime_arn = "arn:aws:bedrock-agentcore:us-east-1:123:runtime/flaky-mcp"
+    existing_mcp = SimpleNamespace(
+        id=PydanticObjectId(),
+        federationRefId=federation.id,
+        federationMetadata={"runtimeArn": runtime_arn, "runtimeVersion": "1"},
+        serverName="flaky-mcp",
+        config={"runtimeAccess": {"mode": "iam"}},
+        numTools=5,
+    )
+    discovered_server = SimpleNamespace(
+        federationMetadata={
+            "runtimeArn": runtime_arn,
+            "runtimeVersion": "1",
+            "enrichmentError": "connection timed out",
+        },
+        serverName="flaky-mcp",
+        config={},
+        numTools=0,
+    )
+
+    def _fake_mcp_find(query, session=None):
+        if query == {"federationRefId": federation.id}:
+            return _FakeQuery([existing_mcp])
+        raise AssertionError(f"Unexpected MCP query: {query}")
+
+    def _fake_a2a_find(query, session=None):
+        if query == {"federationRefId": federation.id}:
+            return _FakeQuery([])
+        raise AssertionError(f"Unexpected A2A query: {query}")
+
+    monkeypatch.setattr("registry.services.federation_sync_service.ExtendedMCPServer.find", _fake_mcp_find)
+    monkeypatch.setattr("registry.services.federation_sync_service.A2AAgent.find", _fake_a2a_find)
+
+    sync_plan = await federation_sync_service._build_sync_plan(
+        federation=federation,
+        discovered_mcp=[discovered_server],
+        discovered_a2a=[],
+    )
+
+    assert sync_plan.mcp_updates == []
+    assert sync_plan.mcp_deletes == []  # must NOT be classified as stale despite the failure
+    assert sync_plan.summary.updatedMcpServers == 0
+    assert sync_plan.summary.unchangedMcpServers == 0
+    assert sync_plan.summary.deletedMcpServers == 0
+    assert sync_plan.summary.errors == 1
+    assert sync_plan.summary.errorMessages == ["MCP server flaky-mcp: connection timed out"]
+
+
+@pytest.mark.asyncio
+async def test_build_sync_plan_preserves_existing_a2a_on_transient_enrichment_failure(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
+    """Same guarantee as the MCP case above, exercised via the A2A `wellKnown.lastSyncStatus`
+    enrichment-failure signal instead of `federationMetadata["enrichmentError"]`."""
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    runtime_arn = "arn:aws:bedrock-agentcore:us-east-1:123:runtime/flaky-agent"
+    agent_path = "/agentcore/a2a/flaky-agent"
+    existing_a2a = SimpleNamespace(
+        id=PydanticObjectId(),
+        federationRefId=federation.id,
+        federationMetadata={"runtimeArn": runtime_arn, "runtimeVersion": "1"},
+        path=agent_path,
+        card=SimpleNamespace(name="flaky-agent"),
+        config=SimpleNamespace(type="jsonrpc", runtimeAccess=AgentCoreRuntimeAccessConfig(mode="iam")),
+    )
+    discovered_agent = SimpleNamespace(
+        federationMetadata={"runtimeArn": runtime_arn, "runtimeVersion": "1"},
+        path=agent_path,
+        card=SimpleNamespace(name="flaky-agent"),
+        config=SimpleNamespace(type="jsonrpc", runtimeAccess=AgentCoreRuntimeAccessConfig(mode="iam")),
+        wellKnown=SimpleNamespace(lastSyncStatus="failed", syncError="agent card endpoint returned 424"),
+    )
+
+    def _fake_mcp_find(query, session=None):
+        if query == {"federationRefId": federation.id}:
+            return _FakeQuery([])
+        raise AssertionError(f"Unexpected MCP query: {query}")
+
+    def _fake_a2a_find(query, session=None):
+        if query == {"federationRefId": federation.id}:
+            return _FakeQuery([existing_a2a])
+        if query == {"path": {"$in": [agent_path]}}:
+            return _FakeQuery([existing_a2a])
+        raise AssertionError(f"Unexpected A2A query: {query}")
+
+    monkeypatch.setattr("registry.services.federation_sync_service.ExtendedMCPServer.find", _fake_mcp_find)
+    monkeypatch.setattr("registry.services.federation_sync_service.A2AAgent.find", _fake_a2a_find)
+
+    sync_plan = await federation_sync_service._build_sync_plan(
+        federation=federation,
+        discovered_mcp=[],
+        discovered_a2a=[discovered_agent],
+    )
+
+    assert sync_plan.a2a_updates == []
+    assert sync_plan.a2a_deletes == []  # must NOT be classified as stale despite the failure
+    assert sync_plan.summary.updatedAgents == 0
+    assert sync_plan.summary.unchangedAgents == 0
+    assert sync_plan.summary.deletedAgents == 0
+    assert sync_plan.summary.errors == 1
+    assert sync_plan.summary.errorMessages == ["A2A agent flaky-agent: agent card endpoint returned 424"]
+
+
+@pytest.mark.asyncio
+async def test_build_sync_plan_records_error_for_missing_remote_id(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
+    """A discovered resource with no extractable remote id must not vanish silently — it
+    is recorded as an apply error for both MCP servers and A2A agents (AS-1762's
+    'Also new' callout), instead of being dropped from every count with no trace."""
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    discovered_server = SimpleNamespace(serverName="no-arn-server", federationMetadata={})
+    discovered_agent = SimpleNamespace(
+        path="/agentcore/a2a/no-arn-agent",
+        card=SimpleNamespace(name="no-arn-agent"),
+        federationMetadata={},
+    )
+
+    def _fake_mcp_find(*_args, **_kwargs):
+        return _FakeQuery([])
+
+    def _fake_a2a_find(*_args, **_kwargs):
+        return _FakeQuery([])
+
+    monkeypatch.setattr("registry.services.federation_sync_service.ExtendedMCPServer.find", _fake_mcp_find)
+    monkeypatch.setattr("registry.services.federation_sync_service.A2AAgent.find", _fake_a2a_find)
+
+    sync_plan = await federation_sync_service._build_sync_plan(
+        federation=federation,
+        discovered_mcp=[discovered_server],
+        discovered_a2a=[discovered_agent],
+    )
+
+    assert sync_plan.mcp_creates == []
+    assert sync_plan.a2a_creates == []
+    assert sync_plan.summary.errors == 2
+    assert sync_plan.summary.errorMessages == [
+        "MCP server no-arn-server: missing a stable remote identifier and cannot be synced",
+        "A2A agent no-arn-agent: missing a stable remote identifier and cannot be synced",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_commit_sync_transaction_defers_terminal_status_when_resource_enrichment_fails(
     federation_sync_service: FederationSyncService,
 ):
