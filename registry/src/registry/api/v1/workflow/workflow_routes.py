@@ -54,10 +54,22 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _require_user_id(user_context: UserContextDict) -> str:
+    user_id = user_context.get("user_id")
+    if not user_id:
+        raise HTTPException(
+            status_code=http_status.HTTP_401_UNAUTHORIZED,
+            detail=create_error_detail(
+                ErrorCode.AUTHENTICATION_REQUIRED, "User identity required for workflow operations"
+            ),
+        )
+    return user_id
+
+
 async def _authorize_workflow(
     acl_service: ACLService,
     workflow_service: WorkflowService,
-    user_context: UserContextDict,
+    user_id: str,
     workflow_id: str,
     required_permission: str,
 ):
@@ -68,7 +80,7 @@ async def _authorize_workflow(
     """
     workflow = await workflow_service.get_workflow_by_id(workflow_id)
     permissions = await acl_service.check_user_permission(
-        user_id=PydanticObjectId(user_context.get("user_id")),
+        user_id=PydanticObjectId(user_id),
         resource_type=RegistryResourceType.WORKFLOW,
         resource_id=workflow.id,
         required_permission=required_permission,
@@ -106,7 +118,7 @@ async def list_workflows(
     - per_page: Items per page (default: 20, min: 1, max: 100)
     """
     try:
-        user_id = user_context.get("user_id")
+        user_id = _require_user_id(user_context)
         accessible_ids = await acl_service.get_accessible_resource_ids(
             user_id=PydanticObjectId(user_id),
             resource_type=RegistryResourceType.WORKFLOW.value,
@@ -176,9 +188,8 @@ async def get_workflow(
 ):
     """Get detailed information about a workflow by ID (requires VIEW)"""
     try:
-        workflow, permissions = await _authorize_workflow(
-            acl_service, workflow_service, user_context, workflow_id, "VIEW"
-        )
+        user_id = _require_user_id(user_context)
+        workflow, permissions = await _authorize_workflow(acl_service, workflow_service, user_id, workflow_id, "VIEW")
 
         # Convert to response model
         return convert_to_detail(workflow, acl_permission=permissions)
@@ -222,14 +233,7 @@ async def create_workflow(
 ):
     """Create a new workflow. The creator is granted OWNER permission."""
     try:
-        user_id = user_context.get("user_id")
-        if not user_id:
-            raise HTTPException(
-                status_code=http_status.HTTP_401_UNAUTHORIZED,
-                detail=create_error_detail(
-                    ErrorCode.AUTHENTICATION_REQUIRED, "User identity required for workflow operations"
-                ),
-            )
+        user_id = _require_user_id(user_context)
 
         # Create workflow + grant OWNER inside a single transaction
         async with MongoDB.get_client().start_session() as mongo_session:
@@ -297,16 +301,9 @@ async def update_workflow(
 ):
     """Update a workflow with partial data (requires EDIT)"""
     try:
-        user_id = user_context.get("user_id")
-        if not user_id:
-            raise HTTPException(
-                status_code=http_status.HTTP_401_UNAUTHORIZED,
-                detail=create_error_detail(
-                    ErrorCode.AUTHENTICATION_REQUIRED, "User identity required for workflow operations"
-                ),
-            )
+        user_id = _require_user_id(user_context)
 
-        _, permissions = await _authorize_workflow(acl_service, workflow_service, user_context, workflow_id, "EDIT")
+        _, permissions = await _authorize_workflow(acl_service, workflow_service, user_id, workflow_id, "EDIT")
 
         # Update workflow (bumps version, snapshots prior version as history)
         async with MongoDB.get_client().start_session() as mongo_session:
@@ -362,7 +359,8 @@ async def delete_workflow(
 ):
     """Delete a workflow (requires DELETE)"""
     try:
-        workflow, _ = await _authorize_workflow(acl_service, workflow_service, user_context, workflow_id, "DELETE")
+        user_id = _require_user_id(user_context)
+        workflow, _ = await _authorize_workflow(acl_service, workflow_service, user_id, workflow_id, "DELETE")
 
         # Delete workflow
         successful_delete = await workflow_service.delete_workflow(workflow_id=workflow_id)
@@ -419,9 +417,10 @@ async def toggle_workflow(
     acl_service: ACLService = Depends(get_acl_service),
 ):
     """Toggle workflow enabled/disabled status"""
+    user_id = _require_user_id(user_context)
 
     await acl_service.check_user_permission(
-        user_id=PydanticObjectId(user_context.get("user_id")),
+        user_id=PydanticObjectId(user_id),
         resource_type=RegistryResourceType.WORKFLOW,
         resource_id=PydanticObjectId(workflow_id),
         required_permission="EDIT",
@@ -479,7 +478,8 @@ async def list_workflow_versions(
 ):
     """List the version history of a workflow (requires VIEW)."""
     try:
-        await _authorize_workflow(acl_service, workflow_service, user_context, workflow_id, "VIEW")
+        user_id = _require_user_id(user_context)
+        await _authorize_workflow(acl_service, workflow_service, user_id, workflow_id, "VIEW")
 
         versions = await workflow_service.list_versions(workflow_id)
         return WorkflowVersionListResponse(
@@ -543,8 +543,9 @@ async def trigger_workflow_run(
     Returns 202 Accepted immediately. The workflow will be executed asynchronously in the background.
     """
     try:
+        user_id = _require_user_id(user_context)
         # Running a workflow requires VIEWER or more on the workflow itself
-        await _authorize_workflow(acl_service, workflow_service, user_context, workflow_id, "VIEW")
+        await _authorize_workflow(acl_service, workflow_service, user_id, workflow_id, "VIEW")
 
         # Create workflow run record (status=PENDING)
         run = await workflow_service.trigger_workflow_run(
@@ -554,7 +555,7 @@ async def trigger_workflow_run(
             parent_run_id=data.parentRunId,
             resolved_dependencies=[dep.model_dump(by_alias=True) for dep in data.resolvedDependencies],
             version=data.version,
-            triggering_user_id=user_context.get("user_id"),
+            triggering_user_id=user_id,
             triggering_username=user_context.get("username"),
             triggering_scopes=effective_scopes_from_context(user_context),
             triggering_client_id=user_context.get("client_id"),
@@ -636,7 +637,8 @@ async def list_workflow_runs(
     - per_page: Items per page (default: 20, min: 1, max: 100)
     """
     try:
-        await _authorize_workflow(acl_service, workflow_service, user_context, workflow_id, "VIEW")
+        user_id = _require_user_id(user_context)
+        await _authorize_workflow(acl_service, workflow_service, user_id, workflow_id, "VIEW")
 
         # List workflow runs
         runs_with_nodes, total = await workflow_service.list_workflow_runs(
@@ -716,7 +718,8 @@ async def list_child_runs(
     - per_page: Items per page (default: 20, min: 1, max: 100)
     """
     try:
-        await _authorize_workflow(acl_service, workflow_service, user_context, workflow_id, "VIEW")
+        user_id = _require_user_id(user_context)
+        await _authorize_workflow(acl_service, workflow_service, user_id, workflow_id, "VIEW")
 
         runs_with_nodes, total = await workflow_service.list_child_runs(
             workflow_id=workflow_id,
@@ -778,7 +781,8 @@ async def get_workflow_run(
 ):
     """Get detailed information about a workflow run by ID (requires VIEW on the workflow)"""
     try:
-        await _authorize_workflow(acl_service, workflow_service, user_context, workflow_id, "VIEW")
+        user_id = _require_user_id(user_context)
+        await _authorize_workflow(acl_service, workflow_service, user_id, workflow_id, "VIEW")
 
         # Get workflow run with node runs
         run, node_runs = await workflow_service.get_workflow_run(workflow_id=workflow_id, run_id=run_id)
@@ -834,6 +838,8 @@ async def get_workflow_run_status(
     apply the gate's ``on_timeout`` policy. The returned status still shows
     ``awaiting_approval`` — the actual state transition surfaces on the next poll.
     """
+    user_id = _require_user_id(user_context)
+
     try:
         workflow_oid = PydanticObjectId(workflow_id)
     except Exception as exc:
@@ -843,7 +849,7 @@ async def get_workflow_run_status(
         ) from exc
 
     await acl_service.check_user_permission(
-        user_id=PydanticObjectId(user_context.get("user_id")),
+        user_id=PydanticObjectId(user_id),
         resource_type=RegistryResourceType.WORKFLOW,
         resource_id=workflow_oid,
         required_permission="VIEW",
@@ -913,7 +919,8 @@ async def list_node_runs(
 ):
     """Return all NodeRuns for a WorkflowRun, including input/output snapshots (requires VIEW)."""
     try:
-        await _authorize_workflow(acl_service, workflow_service, user_context, workflow_id, "VIEW")
+        user_id = _require_user_id(user_context)
+        await _authorize_workflow(acl_service, workflow_service, user_id, workflow_id, "VIEW")
         _, node_runs = await workflow_service.get_workflow_run(workflow_id=workflow_id, run_id=run_id)
         return NodeRunListResponse(
             runId=run_id,
@@ -958,7 +965,8 @@ async def get_node_run(
 ):
     """Return a single NodeRun by ID (requires VIEW on the workflow)."""
     try:
-        await _authorize_workflow(acl_service, workflow_service, user_context, workflow_id, "VIEW")
+        user_id = _require_user_id(user_context)
+        await _authorize_workflow(acl_service, workflow_service, user_id, workflow_id, "VIEW")
         run = await workflow_service.get_workflow_run_doc(workflow_id=workflow_id, run_id=run_id)
         nr = await workflow_service.get_node_run(str(run.id), node_run_id)
         return convert_node_run_to_output(nr)

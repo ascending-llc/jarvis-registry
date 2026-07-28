@@ -191,21 +191,35 @@ class WorkflowService:
         self,
         user_id: PydanticObjectId,
         resolution: ExecutorRefResolution,
+        previous_keys: set[str] | None = None,
         session: AsyncClientSession | None = None,
     ) -> None:
-        """Raise 403 if user lacks VIEW on any referenced executor."""
-        if not resolution.mcp_server_ids and not resolution.agent_ids:
+        """Raise 403 if user lacks VIEW on any newly-referenced executor.
+
+        When *previous_keys* is supplied (update path), only the delta —
+        keys present in *resolution* but absent from *previous_keys* — is
+        checked.  This avoids re-authorising executors that already existed
+        in the workflow before the edit.
+        """
+        mcp_keys = set(resolution.mcp_server_ids)
+        agent_keys = set(resolution.agent_ids)
+
+        if previous_keys is not None:
+            mcp_keys -= previous_keys
+            agent_keys -= previous_keys
+
+        if not mcp_keys and not agent_keys:
             return
 
         denied = await self._check_view_permissions(
-            set(resolution.mcp_server_ids),
+            mcp_keys,
             resolution.mcp_server_ids,
             RegistryResourceType.MCP_SERVER.value,
             user_id,
             session,
         )
         denied += await self._check_view_permissions(
-            set(resolution.agent_ids),
+            agent_keys,
             resolution.agent_ids,
             RegistryResourceType.REMOTE_AGENT.value,
             user_id,
@@ -414,7 +428,11 @@ class WorkflowService:
                 # match existing node names) before the executor-key DB lookup.
                 WorkflowDefinition(name=workflow.name, nodes=nodes)
                 resolution = await self._validate_executor_refs(nodes, session=session)
-                await self._authorize_executor_refs(user_id, resolution, session=session)
+
+                old_keys, old_pools = self._collect_executor_refs(workflow.nodes)
+                await self._authorize_executor_refs(
+                    user_id, resolution, previous_keys=old_keys | old_pools, session=session
+                )
 
                 update_fields["nodes"] = [node.model_dump(mode="json") for node in nodes]
 

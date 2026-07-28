@@ -12,10 +12,13 @@ from registry.schemas.workflow_api_schemas import (
     RouterChoiceInput,
     WorkflowCreateRequest,
     WorkflowNodeInput,
+    WorkflowUpdateRequest,
 )
 from registry.services import workflow_service
 from registry.services.workflow_service import ExecutorRefResolution, WorkflowService
 from registry_pkgs.database.mongodb import MongoDB
+from registry_pkgs.models.extended_access_role import RegistryResourceType
+from registry_pkgs.models.workflow import WorkflowNode
 
 
 class _WorkflowFindQuery:
@@ -514,7 +517,11 @@ def _patch_update_transaction(monkeypatch, *, found_doc, refreshed=None, insert_
     collection = SimpleNamespace(find_one_and_update=AsyncMock(return_value=found_doc))
     fake_db = SimpleNamespace(get_collection=lambda _name: collection)
     monkeypatch.setattr(MongoDB, "get_database", lambda: fake_db)
-    monkeypatch.setattr(WorkflowDefinition, "get_settings", lambda: SimpleNamespace(name="workflow_definitions"))
+    monkeypatch.setattr(
+        WorkflowDefinition,
+        "get_settings",
+        lambda: SimpleNamespace(name="workflow_definitions", pymongo_collection=AsyncMock()),
+    )
     monkeypatch.setattr(WorkflowDefinition, "get", AsyncMock(return_value=refreshed))
 
     inserted: list[dict] = []
@@ -1226,3 +1233,133 @@ async def test_authorize_raises_503_on_acl_db_failure():
         await service._authorize_executor_refs(PydanticObjectId(), resolution)
 
     assert exc_info.value.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_authorize_skips_previous_keys():
+    """Update path: executors already in the workflow should NOT be re-checked."""
+    acl = _make_acl_service(grant_all=True)
+    service = WorkflowService(acl_service=acl)
+
+    resolution = ExecutorRefResolution(
+        mcp_server_ids={"old-mcp": PydanticObjectId(), "new-mcp": PydanticObjectId()},
+        agent_ids={"old-agent": PydanticObjectId()},
+    )
+
+    await service._authorize_executor_refs(PydanticObjectId(), resolution, previous_keys={"old-mcp", "old-agent"})
+
+    assert acl.get_user_permissions_for_resources.call_count == 1
+    call_args = acl.get_user_permissions_for_resources.call_args
+    assert call_args.kwargs["resource_type"] == RegistryResourceType.MCP_SERVER.value
+    resource_ids = call_args.kwargs.get("resource_ids", call_args[1].get("resource_ids"))
+    assert len(resource_ids) == 1
+
+
+@pytest.mark.asyncio
+async def test_authorize_previous_keys_all_old_skips_acl():
+    """When every executor in the resolution is already in previous_keys, no ACL call at all."""
+    acl = _make_acl_service(grant_all=True)
+    service = WorkflowService(acl_service=acl)
+
+    resolution = ExecutorRefResolution(
+        mcp_server_ids={"kept-mcp": PydanticObjectId()},
+        agent_ids={"kept-agent": PydanticObjectId()},
+    )
+
+    await service._authorize_executor_refs(PydanticObjectId(), resolution, previous_keys={"kept-mcp", "kept-agent"})
+
+    acl.get_user_permissions_for_resources.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_authorize_403_only_on_new_key_not_old():
+    """A denied OLD key should pass; a denied NEW key should 403."""
+    acl = _make_acl_service(grant_all=False)
+    service = WorkflowService(acl_service=acl)
+
+    old_id = PydanticObjectId()
+    new_id = PydanticObjectId()
+    resolution = ExecutorRefResolution(
+        mcp_server_ids={"old-tool": old_id, "new-tool": new_id},
+        agent_ids={},
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await service._authorize_executor_refs(PydanticObjectId(), resolution, previous_keys={"old-tool"})
+
+    assert exc_info.value.status_code == 403
+    assert "new-tool" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_create_workflow_403_prevents_db_write(monkeypatch: pytest.MonkeyPatch):
+    """ACL denial during create_workflow must raise 403 and never call insert."""
+    acl = _make_acl_service(grant_all=False)
+    _patch_executor_ref_queries(monkeypatch, mcp_names={"github"})
+
+    insert_mock = AsyncMock()
+
+    class _TrackingWorkflowDefinition:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def insert(self, **kwargs):
+            await insert_mock(**kwargs)
+
+    monkeypatch.setattr(workflow_service, "WorkflowDefinition", _TrackingWorkflowDefinition)
+
+    request = WorkflowCreateRequest(
+        name="wf",
+        canvas={"viewport": {"x": 0, "y": 0, "zoom": 1}},
+        nodes=[WorkflowNodeInput(name="s", nodeType="step", executorKey="github", stepObjective="fetch")],
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await WorkflowService(acl_service=acl).create_workflow(request, user_id=PydanticObjectId())
+
+    assert exc_info.value.status_code == 403
+    insert_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_update_workflow_403_on_new_executor_prevents_db_write(monkeypatch: pytest.MonkeyPatch):
+    """Adding a new executor the user lacks VIEW on must 403 without writing.
+
+    The fake workflow already references 'old-tool' in its nodes.  The update
+    adds 'new-tool' which the ACL denies.  Because of the delta-only check
+    ([C1]), 'old-tool' is NOT re-checked — only 'new-tool' triggers the 403.
+
+    Asserts both find_one_and_update and WorkflowVersion.insert are never called.
+    """
+
+    old_node = WorkflowNode(name="old", executor_key="old-tool", step_objective="run")
+    fake_wf = _FakeWorkflow(version=3)
+    fake_wf.nodes = [old_node]
+
+    async def fake_get(self, workflow_id, session=None):
+        return fake_wf
+
+    monkeypatch.setattr(WorkflowService, "get_workflow_by_id", fake_get)
+
+    _patch_executor_ref_queries(monkeypatch, mcp_names={"old-tool", "new-tool"})
+
+    acl = _make_acl_service(grant_all=False)
+
+    collection, inserted = _patch_update_transaction(monkeypatch, found_doc={"_id": fake_wf.id, "version": 4})
+
+    update = WorkflowUpdateRequest(
+        nodes=[
+            WorkflowNodeInput(name="old", nodeType="step", executorKey="old-tool", stepObjective="run"),
+            WorkflowNodeInput(name="new", nodeType="step", executorKey="new-tool", stepObjective="run"),
+        ],
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await WorkflowService(acl_service=acl).update_workflow(
+            workflow_id=str(fake_wf.id), data=update, user_id=PydanticObjectId()
+        )
+
+    assert exc_info.value.status_code == 403
+    assert "new-tool" in exc_info.value.detail
+    collection.find_one_and_update.assert_not_awaited()
+    assert inserted == []
