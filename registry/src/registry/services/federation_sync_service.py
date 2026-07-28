@@ -296,14 +296,17 @@ class FederationSyncService:
         Sync execution follows a fixed flow:
             1. discover remote resources
             2. apply federation/job/resource mutations in one transaction
-            3. persist stats and lastSync in the same transaction
-            4. rebuild vector indexes outside the Mongo transaction
+            3. rebuild vector indexes outside the Mongo transaction
+            4. finalize federation/job stats, lastSync, and status from the
+               combined apply + vector-sync outcome
 
         Mongo remains the source of truth, so the vector rebuild still happens after
-        the transaction commits. Vector sync runs in a best-effort sub-step: if it
-        fails, the exception is caught, logged, and reflected in the final
-        federation/job state by ``_finalize_sync_status``. The job is only reported
-        as successful when both the Mongo commit and the vector rebuild succeed.
+        the transaction commits. Vector sync runs in a best-effort sub-step: per-resource
+        failures are captured in a ``VectorSyncOutcome`` instead of raised. Stats and
+        lastSync are only built by ``_finalize_sync_status`` once this outcome is known,
+        so they can never disagree about a vector-sync failure. The job is reported as
+        successful as long as at least one resource fully completes the pipeline (or
+        nothing was discovered at all).
         """
         try:
             discovered = await self._discover_entities(federation, author_id=author_id)

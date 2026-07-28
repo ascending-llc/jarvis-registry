@@ -221,7 +221,7 @@ const FederationCard: React.FC<FederationCardProps> = ({ federation }) => {
       </div>
 
       {/* Stats */}
-      <div className='mt-3 grid grid-cols-3 gap-3 border-t border-[color:var(--jarvis-border)] pt-3'>
+      <div className='mt-3 grid grid-cols-4 gap-3 border-t border-[color:var(--jarvis-border)] pt-3'>
         <div className='rounded-lg bg-[var(--jarvis-card-muted)] p-3 text-center'>
           <div className='text-xl font-bold text-[var(--jarvis-primary-text)]'>
             {federation.status === 'active' && federation.stats ? federation.stats.mcpServerCount : '—'}
@@ -239,6 +239,12 @@ const FederationCard: React.FC<FederationCardProps> = ({ federation }) => {
             {federation.status === 'active' && federation.stats ? federation.stats.importedTotal : '—'}
           </div>
           <div className='mt-0.5 text-[11px] text-[var(--jarvis-subtle)]'>Total Imported</div>
+        </div>
+        <div className='rounded-lg bg-[var(--jarvis-card-muted)] p-3 text-center'>
+          <div className='text-xl font-bold text-[var(--jarvis-danger-text)]'>
+            {federation.status === 'active' && federation.stats ? federation.stats.unimportedTotal : '—'}
+          </div>
+          <div className='mt-0.5 text-[11px] text-[var(--jarvis-subtle)]'>Total Unimported</div>
         </div>
       </div>
     </div>

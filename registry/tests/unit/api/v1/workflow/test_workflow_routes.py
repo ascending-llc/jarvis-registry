@@ -146,12 +146,18 @@ async def test_create_workflow_route_forwards_condition_request_to_service():
         "scopes": ["workflow:create"],
     }
 
-    response = await workflow_routes.create_workflow(
-        data=request,
-        user_context=user_context,
-        workflow_service=mock_service,
-        acl_service=mock_acl,
-    )
+    mock_session = AsyncMock()
+    mock_client = MagicMock()
+    mock_client.start_session.return_value.__aenter__.return_value = mock_session
+    mock_session.start_transaction.return_value.__aenter__.return_value = None
+
+    with patch("registry.api.v1.workflow.workflow_routes.MongoDB.get_client", return_value=mock_client):
+        response = await workflow_routes.create_workflow(
+            data=request,
+            user_context=user_context,
+            workflow_service=mock_service,
+            acl_service=mock_acl,
+        )
 
     mock_service.create_workflow.assert_awaited_once()
     mock_acl.grant_permission.assert_awaited_once()
@@ -170,6 +176,49 @@ async def test_create_workflow_route_forwards_condition_request_to_service():
     assert detail_cond.nodeType == "condition"
     assert [n.name for n in detail_cond.trueSteps] == ["C"]
     assert [n.name for n in detail_cond.falseSteps] == ["D"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("user_context", [{}, {"username": "x"}, {"user_id": ""}, {"user_id": None}])
+async def test_create_workflow_returns_403_when_user_id_missing(user_context):
+    """create_workflow must return 403 (not 401) when user_context lacks a truthy user_id.
+
+    403 avoids tripping the frontend's blanket 401-triggers-token-refresh interceptor
+    for a condition that isn't actually about token expiry.
+    """
+    request = WorkflowCreateRequest.model_validate(
+        {
+            "name": "Demo",
+            "canvas": _canvas(),
+            "nodes": [{"name": "A", "nodeType": "step", "executorKey": "tool-a"}],
+        }
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await workflow_routes.create_workflow(
+            data=request,
+            user_context=user_context,
+            workflow_service=MagicMock(),
+            acl_service=MagicMock(),
+        )
+
+    assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("user_context", [{}, {"username": "x"}, {"user_id": ""}, {"user_id": None}])
+async def test_update_workflow_returns_403_when_user_id_missing(user_context):
+    """update_workflow must return 403 (not 401) when user_context lacks a truthy user_id."""
+    with pytest.raises(HTTPException) as exc_info:
+        await workflow_routes.update_workflow(
+            workflow_id=str(PydanticObjectId()),
+            data=WorkflowUpdateRequest(name="Updated"),
+            user_context=user_context,
+            workflow_service=MagicMock(),
+            acl_service=MagicMock(),
+        )
+
+    assert exc_info.value.status_code == 403
 
 
 @pytest.mark.asyncio
@@ -213,6 +262,7 @@ async def test_update_workflow_passes_session_to_service(monkeypatch: pytest.Mon
     workflow_service.update_workflow.assert_awaited_once_with(
         workflow_id=workflow_id,
         data=data,
+        user_id=PydanticObjectId(user_context["user_id"]),
         session=mock_session,
     )
 

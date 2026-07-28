@@ -444,7 +444,7 @@ const FederationRegistryOrEdit: React.FC = () => {
             {isReadOnly && federation && (
               <div className='mt-8 border-t border-[color:var(--jarvis-border)] pt-6'>
                 <h3 className='text-lg font-medium text-[var(--jarvis-text-strong)] mb-4'>Discovered Resources</h3>
-                <div className='grid grid-cols-3 gap-4'>
+                <div className='grid grid-cols-4 gap-4'>
                   <div className='bg-[var(--jarvis-bg)] bg-[var(--jarvis-card)] rounded-lg p-5 border border-[color:var(--jarvis-border)] text-center'>
                     <div className='text-3xl font-bold text-[var(--jarvis-primary)]'>
                       {federation.stats?.mcpServerCount || 0}
@@ -462,6 +462,12 @@ const FederationRegistryOrEdit: React.FC = () => {
                       {federation.stats?.importedTotal || 0}
                     </div>
                     <div className='text-sm text-[var(--jarvis-muted)] mt-1'>Total Imported</div>
+                  </div>
+                  <div className='bg-[var(--jarvis-bg)] bg-[var(--jarvis-card)] rounded-lg p-5 border border-[color:var(--jarvis-border)] text-center'>
+                    <div className='text-3xl font-bold text-[var(--jarvis-danger-text)]'>
+                      {federation.stats?.unimportedTotal || 0}
+                    </div>
+                    <div className='text-sm text-[var(--jarvis-muted)] mt-1'>Total Unimported</div>
                   </div>
                 </div>
               </div>
