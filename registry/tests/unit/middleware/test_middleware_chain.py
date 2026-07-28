@@ -187,6 +187,7 @@ async def test_client_disconnect_does_not_raise_cancel_scope_runtime_error() -> 
             try:
                 await request_task
             except asyncio.CancelledError:
+                # Expected when awaiting a task cancelled during test cleanup.
                 pass
 
     response_start = next(message for message in sent_messages if message["type"] == "http.response.start")
