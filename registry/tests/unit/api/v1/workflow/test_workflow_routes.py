@@ -180,8 +180,12 @@ async def test_create_workflow_route_forwards_condition_request_to_service():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("user_context", [{}, {"username": "x"}, {"user_id": ""}, {"user_id": None}])
-async def test_create_workflow_returns_401_when_user_id_missing(user_context):
-    """create_workflow must return 401 when user_context lacks a truthy user_id."""
+async def test_create_workflow_returns_403_when_user_id_missing(user_context):
+    """create_workflow must return 403 (not 401) when user_context lacks a truthy user_id.
+
+    403 avoids tripping the frontend's blanket 401-triggers-token-refresh interceptor
+    for a condition that isn't actually about token expiry.
+    """
     request = WorkflowCreateRequest.model_validate(
         {
             "name": "Demo",
@@ -198,13 +202,13 @@ async def test_create_workflow_returns_401_when_user_id_missing(user_context):
             acl_service=MagicMock(),
         )
 
-    assert exc_info.value.status_code == 401
+    assert exc_info.value.status_code == 403
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("user_context", [{}, {"username": "x"}, {"user_id": ""}, {"user_id": None}])
-async def test_update_workflow_returns_401_when_user_id_missing(user_context):
-    """update_workflow must return 401 when user_context lacks a truthy user_id."""
+async def test_update_workflow_returns_403_when_user_id_missing(user_context):
+    """update_workflow must return 403 (not 401) when user_context lacks a truthy user_id."""
     with pytest.raises(HTTPException) as exc_info:
         await workflow_routes.update_workflow(
             workflow_id=str(PydanticObjectId()),
@@ -214,7 +218,7 @@ async def test_update_workflow_returns_401_when_user_id_missing(user_context):
             acl_service=MagicMock(),
         )
 
-    assert exc_info.value.status_code == 401
+    assert exc_info.value.status_code == 403
 
 
 @pytest.mark.asyncio

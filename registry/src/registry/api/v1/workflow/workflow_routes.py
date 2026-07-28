@@ -55,12 +55,19 @@ router = APIRouter()
 
 
 def _require_user_id(user_context: UserContextDict) -> str:
+    """Raise 403 (not 401) — the caller is authenticated but lacks a user_id claim.
+
+    Using 401 here would trip the frontend's blanket token-refresh-and-retry
+    interceptor (frontend/src/services/request.ts), silently masking this failure
+    as a session expiry and potentially force-logging out the user instead of
+    surfacing the real error.
+    """
     user_id = user_context.get("user_id")
     if not user_id:
         raise HTTPException(
-            status_code=http_status.HTTP_401_UNAUTHORIZED,
+            status_code=http_status.HTTP_403_FORBIDDEN,
             detail=create_error_detail(
-                ErrorCode.AUTHENTICATION_REQUIRED, "User identity required for workflow operations"
+                ErrorCode.INSUFFICIENT_PERMISSIONS, "User identity required for workflow operations"
             ),
         )
     return user_id
