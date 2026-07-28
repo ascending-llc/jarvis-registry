@@ -1,7 +1,10 @@
+from unittest.mock import AsyncMock
+
 import pytest
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from starlette.testclient import TestClient
+from starlette.types import Receive, Scope, Send
 
 from registry.core.config import settings
 from registry.middleware.auth import UnifiedAuthMiddleware
@@ -222,3 +225,23 @@ def test_all_proxy_router_paths_classify_as_proxy():
 def test_crud_paths_classify_as_non_proxy(path):
     mw = UnifiedAuthMiddleware(FastAPI())
     assert mw._is_proxy_route(path) is False
+
+
+def test_lifespan_scope_passes_through_without_error():
+    with TestClient(_build_app()):
+        pass
+
+
+async def test_non_http_scope_forwarded_to_app_unchanged():
+    calls: list[Scope] = []
+
+    async def stub_app(scope: Scope, receive: Receive, send: Send) -> None:
+        del receive, send
+        calls.append(scope)
+
+    middleware = UnifiedAuthMiddleware(stub_app)
+    scope: Scope = {"type": "websocket", "path": "/ws"}
+
+    await middleware(scope, AsyncMock(), AsyncMock())
+
+    assert calls == [scope]
