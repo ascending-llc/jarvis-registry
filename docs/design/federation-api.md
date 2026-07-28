@@ -597,7 +597,32 @@ Runtime auth (`runtimeAccess`) is not read from `providerConfig`. It is inferred
 
 ### Success Response
 
-Status: `200 OK`
+Status: `202 Accepted`
+
+For `dryRun=false`, the endpoint creates a pending job and schedules the sync as a background task.
+The response is the initial job snapshot; it does not wait for discovery, Mongo apply, vector sync, or
+terminal status.
+
+```json
+{
+  "id": "job_demo_id",
+  "federationId": "federation_demo_id",
+  "jobType": "full_sync",
+  "status": "pending",
+  "phase": "queued",
+  "startedAt": null,
+  "finishedAt": null,
+  "error": null
+}
+```
+
+Poll the job until it reaches `success` or `failed`:
+
+```http
+GET /federations/{federation_id}/jobs/{job_id}
+```
+
+Example terminal response:
 
 ```json
 {
@@ -612,12 +637,17 @@ Status: `200 OK`
 }
 ```
 
-### Partial Success Response
+The federation detail/list response is the authoritative source for the final `stats`,
+`syncMessage`, and `lastSync` snapshot.
+
+### Partial Success Result
 
 When some runtimes fail but at least one runtime is fully imported, both the job and federation are
 marked `success`. Failure information is deliberately retained:
 
-- the sync response has `status="success"`, `phase="completed"`, and a non-null `error`
+- the initial POST still returns `202` with a pending job
+- the terminal job returned by the polling endpoint has `status="success"`, `phase="completed"`, and
+  a non-null `error`
 - the federation has `syncStatus="success"` and a non-null `syncMessage`
 - `lastSync.status` is `success`
 - `lastSync.summary` contains failure counters and messages
@@ -949,7 +979,11 @@ Status: `200 OK`
 - `toolCount` is returned in federation stats and can be displayed directly.
 - `unimportedTotal` is returned by the backend. The current backend-only branch does not yet add the
   corresponding frontend type or fourth statistics tile; that UI work is a follow-up.
-- `POST /federations/{federation_id}/sync` returns a job summary, not the full federation detail.
+- `POST /federations/{federation_id}/sync` with `dryRun=false` returns `202 Accepted` with the initial
+  pending job. Poll `GET /federations/{federation_id}/jobs/{job_id}` for terminal status, then fetch
+  the federation detail for final stats and lastSync.
+- `POST /federations/{federation_id}/sync` with `dryRun=true` executes inline and returns `200 OK`
+  with the preview; it creates no job.
 - `unchangedMcpServers` and `unchangedAgents` in the summary mean the runtime was discovered but its version matched what is already stored — MongoDB was not written. Weaviate consistency is still checked and repaired if stale.
 - Per-resource enrichment errors (e.g. IAM 403, JWT 401) do not abort sibling resources. Failed
   resources are not persisted or vector-synced. If at least one resource is fully imported, the
