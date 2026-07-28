@@ -26,7 +26,11 @@ from registry_pkgs.models.federation import (
     FederationLastSyncSummary,
     FederationStats,
 )
-from registry_pkgs.models.federation_sync_job import FederationApplySummary, FederationSyncJob
+from registry_pkgs.models.federation_sync_job import (
+    FederationApplySummary,
+    FederationDiscoverySummary,
+    FederationSyncJob,
+)
 
 from .federation.agentcore_metadata import detect_runtime_version_change, extract_runtime_arn
 from .federation.federation_handlers import (
@@ -96,12 +100,20 @@ def _runtime_access_changed(
 
 
 @dataclass
+class VectorSyncOutcome:
+    """Per-ARN vector sync results, split by whether the ARN was part of this sync's changes."""
+
+    failed_changed_mcp_runtime_arns: set[str] = field(default_factory=set)
+    failed_changed_a2a_runtime_arns: set[str] = field(default_factory=set)
+    failed_repair_only_runtime_arns: set[str] = field(default_factory=set)
+    error_messages: list[str] = field(default_factory=list)
+
+
+@dataclass
 class FederationSyncMutationResult:
     """Capture Mongo apply results that drive post-commit vector repair."""
 
     summary: FederationApplySummary
-    stats: FederationStats | None = None
-    last_sync: FederationLastSync | None = None
     changed_mcp_runtime_arns: set[str] = field(default_factory=set)
     changed_a2a_runtime_arns: set[str] = field(default_factory=set)
 
@@ -259,43 +271,11 @@ class FederationSyncService:
             ),
         )
 
-    @classmethod
-    def _build_final_sync_error(
-        cls,
-        apply_errors: list[str],
-        vector_sync_error: str | None,
-    ) -> str | None:
-        if vector_sync_error and apply_errors:
-            return (
-                f"{len(apply_errors) + 1} resource sync failures. "
-                f"First apply error: {apply_errors[0]}. "
-                f"Vector sync error: {vector_sync_error}"
-            )
-        if vector_sync_error:
-            return f"Vector sync error: {vector_sync_error}"
-        if apply_errors:
-            return cls._summarize_sync_errors(apply_errors)
-        return None
-
     @staticmethod
-    def _complete_last_sync(
-        last_sync: FederationLastSync,
-        *,
-        failed: bool,
-        vector_sync_error: str | None,
-    ) -> None:
+    def _complete_last_sync(last_sync: FederationLastSync, *, failed: bool) -> None:
         """Finalize the denormalized sync snapshot after vector work finishes."""
         last_sync.status = FederationSyncStatus.FAILED if failed else FederationSyncStatus.SUCCESS
         last_sync.finishedAt = datetime.now(UTC)
-        if not vector_sync_error:
-            return
-
-        summary = getattr(last_sync, "summary", None)
-        if summary is None:
-            summary = FederationLastSyncSummary()
-            last_sync.summary = summary
-        summary.errors += 1
-        summary.errorMessages.append(f"Vector sync error: {vector_sync_error}")
 
     async def run_sync(
         self,
@@ -327,22 +307,12 @@ class FederationSyncService:
                         session=mongo_session,
                     )
             await self.federation_job_service.mark_syncing(job, FederationJobPhase.SYNCING_VECTORS)
-            vector_sync_error: str | None = None
-            try:
-                await self._sync_vector_index_after_commit(
-                    federation=federation,
-                    job=job,
-                    mutation_result=mutation_result,
-                )
-            except Exception as exc:
-                logger.exception(
-                    "Federation vector sync failed after commit: federation_id=%s job_id=%s",
-                    federation.id,
-                    job.id,
-                )
-                vector_sync_error = str(exc)
-
-            await self._finalize_sync_status(federation, job, mutation_result, vector_sync_error)
+            vector_sync_outcome = await self._sync_vector_index_after_commit(
+                federation=federation,
+                job=job,
+                mutation_result=mutation_result,
+            )
+            await self._finalize_sync_status(federation, job, mutation_result, vector_sync_outcome)
             return job
 
         except Exception as exc:
@@ -360,7 +330,7 @@ class FederationSyncService:
         federation: Federation,
         job: FederationSyncJob,
         mutation_result: FederationSyncMutationResult,
-        vector_sync_error: str | None,
+        vector_sync_outcome: VectorSyncOutcome,
     ) -> None:
         """
         Determine the final federation/job status after both the Mongo commit
@@ -369,34 +339,41 @@ class FederationSyncService:
         This is the only place that writes a terminal status for a committed
         apply, so the job remains active throughout the vector-sync tail.
         """
-        if mutation_result.last_sync is None or mutation_result.stats is None:
-            raise RuntimeError("Federation sync completed without final stats or lastSync payload")
+        apply_summary = mutation_result.summary
+        apply_summary.vectorSyncFailedMcpServers = len(vector_sync_outcome.failed_changed_mcp_runtime_arns)
+        apply_summary.vectorSyncFailedAgents = len(vector_sync_outcome.failed_changed_a2a_runtime_arns)
+        apply_summary.errorMessages.extend(vector_sync_outcome.error_messages)
+        apply_summary.errors += len(vector_sync_outcome.error_messages)
 
-        failure_message = self._build_final_sync_error(
-            mutation_result.summary.errorMessages,
-            vector_sync_error,
+        stats = await self._build_federation_stats(
+            federation.id,
+            job.discoverySummary,
+            apply_summary,
+            session=None,
         )
-        self._complete_last_sync(
-            mutation_result.last_sync,
-            failed=failure_message is not None,
-            vector_sync_error=vector_sync_error,
-        )
-        if failure_message:
+        message = self._summarize_sync_errors(apply_summary.errorMessages) if apply_summary.errorMessages else None
+        total_discovered = job.discoverySummary.discoveredMcpServers + job.discoverySummary.discoveredAgents
+        sync_failed = total_discovered > 0 and stats.importedTotal == 0
+
+        last_sync = self._build_last_sync(job, apply_summary)
+        self._complete_last_sync(last_sync, failed=sync_failed)
+
+        if sync_failed:
             await self.federation_crud_service.mark_sync_failed(
                 federation,
-                failure_message,
-                last_sync=mutation_result.last_sync,
-                stats=mutation_result.stats,
+                message or "Federation sync failed",
+                last_sync=last_sync,
+                stats=stats,
             )
-            await self.federation_job_service.mark_failed(job, FederationJobPhase.FAILED, failure_message)
+            await self.federation_job_service.mark_failed(
+                job,
+                FederationJobPhase.FAILED,
+                message or "Federation sync failed",
+            )
             return
 
-        await self.federation_crud_service.mark_sync_success(
-            federation,
-            mutation_result.last_sync,
-            mutation_result.stats,
-        )
-        await self.federation_job_service.mark_success(job)
+        await self.federation_crud_service.mark_sync_success(federation, last_sync, stats, message=message)
+        await self.federation_job_service.mark_success(job, message=message)
 
     async def preview_manual_sync(
         self,
@@ -521,10 +498,6 @@ class FederationSyncService:
         )
         mutation_result = await self._apply_sync_plan(sync_plan, session=session)
         await self.federation_job_service.update_apply_summary(job, mutation_result.summary, session=session)
-        stats = await self._build_federation_stats(federation.id, session=session)
-        last_sync = self._build_last_sync(job, mutation_result.summary)
-        mutation_result.stats = stats
-        mutation_result.last_sync = last_sync
         return mutation_result
 
     async def update_federation_and_create_resync_job(
@@ -734,6 +707,11 @@ class FederationSyncService:
         for item in discovered_mcp:
             remote_id = self._extract_runtime_arn(item.federationMetadata)
             if not remote_id:
+                self._record_apply_error(
+                    apply_summary,
+                    f"MCP server {getattr(item, 'serverName', '<unknown>')}: "
+                    "missing a stable remote identifier and cannot be synced",
+                )
                 continue
 
             discovered_mcp_ids.add(remote_id)
@@ -742,7 +720,6 @@ class FederationSyncService:
             if existing is None:
                 name_conflict = existing_mcp_by_server_name.get(item.serverName)
                 if name_conflict is not None and name_conflict.federationRefId != federation.id:
-                    # Cross-federation conflict: another federation already owns this serverName — skip.
                     logger.warning(
                         "Skipping MCP server due to global serverName conflict: "
                         "serverName=%s already claimed by federation=%s",
@@ -750,14 +727,19 @@ class FederationSyncService:
                         name_conflict.federationRefId,
                     )
                     apply_summary.skippedMcpServers += 1
-                    #  The `name_conflict` field is not considered an error record and is skipped; it is only logged.
                     logger.warning(
                         f"MCP server '{item.serverName}' skipped: serverName already exists "
                         f"(owned by federation {name_conflict.federationRefId or 'unknown'})"
                     )
                     continue
-                # Same-federation name match with a different runtimeArn: the old doc will be
-                # deleted first in _apply_sync_plan (deletes run before creates), so INSERT is safe.
+
+            error_message = self._extract_resource_error(item)
+            if error_message:
+                self._record_apply_error(
+                    apply_summary,
+                    f"MCP server {getattr(item, 'serverName', remote_id)}: {error_message}",
+                )
+                continue
 
             if existing is None:
                 apply_summary.createdMcpServers += 1
@@ -777,13 +759,6 @@ class FederationSyncService:
                     apply_summary.updatedMcpServers += 1
                     sync_plan.mcp_updates.append((existing, item, remote_id))
 
-            error_message = self._extract_resource_error(item)
-            if error_message:
-                self._record_apply_error(
-                    apply_summary,
-                    f"MCP server {getattr(item, 'serverName', remote_id)}: {error_message}",
-                )
-
         # Step 5: mark stale MCP items.
         stale_mcp = [
             item
@@ -802,6 +777,11 @@ class FederationSyncService:
         for item in discovered_a2a:
             remote_id = self._extract_runtime_arn(item.federationMetadata)
             if not remote_id:
+                agent_name = getattr(getattr(item, "card", None), "name", None) or "<unknown>"
+                self._record_apply_error(
+                    apply_summary,
+                    f"A2A agent {agent_name}: missing a stable remote identifier and cannot be synced",
+                )
                 continue
 
             discovered_a2a_ids.add(remote_id)
@@ -810,7 +790,6 @@ class FederationSyncService:
 
             if existing is None and path_conflict is not None:
                 if path_conflict.federationRefId != federation.id:
-                    # Cross-federation conflict: another federation already owns this path — skip.
                     agent_name = getattr(getattr(item, "card", None), "name", None) or remote_id
                     logger.warning(
                         "Skipping federated A2A sync because path is already owned by another agent: "
@@ -827,8 +806,15 @@ class FederationSyncService:
                         f"(owned by federation {path_conflict.federationRefId or 'unknown'})"
                     )
                     continue
-                # Same-federation path match with a different runtimeArn: the old doc will be
-                # deleted first in _apply_sync_plan (deletes run before creates), so INSERT is safe.
+
+            error_message = self._extract_resource_error(item)
+            if error_message:
+                agent_name = getattr(getattr(item, "card", None), "name", None) or remote_id
+                self._record_apply_error(
+                    apply_summary,
+                    f"A2A agent {agent_name}: {error_message}",
+                )
+                continue
 
             if existing is None:
                 apply_summary.createdAgents += 1
@@ -876,14 +862,6 @@ class FederationSyncService:
                     sync_plan.a2a_updates.append((existing, item, remote_id))
                     if getattr(item, "path", None):
                         existing_a2a_by_path[item.path] = existing
-
-            error_message = self._extract_resource_error(item)
-            if error_message:
-                agent_name = getattr(getattr(item, "card", None), "name", None) or remote_id
-                self._record_apply_error(
-                    apply_summary,
-                    f"A2A agent {agent_name}: {error_message}",
-                )
 
         # Step 7: mark stale A2A items.
         stale_a2a = [
@@ -1217,7 +1195,7 @@ class FederationSyncService:
         federation: Federation,
         job: FederationSyncJob,
         mutation_result: FederationSyncMutationResult,
-    ) -> None:
+    ) -> VectorSyncOutcome:
         """Refresh only the changed runtime docs in Weaviate after Mongo commit.
 
         This runs outside the transaction on purpose: vector storage is a
@@ -1225,7 +1203,7 @@ class FederationSyncService:
         because vector docs are deleted and rebuilt from persisted Mongo state
         after commit.
         """
-        errors: list[str] = []
+        outcome = VectorSyncOutcome()
         current_mcp_runtime_arns = {
             runtime_arn for runtime_arn in await self._current_mcp_runtime_arns(federation.id) if runtime_arn
         }
@@ -1267,15 +1245,25 @@ class FederationSyncService:
             try:
                 await self._sync_mcp_vectors_for_runtime(federation.id, runtime_arn)
             except Exception as exc:
-                errors.append(f"mcp runtime rebuild failed:{federation.id}:{runtime_arn}:{exc}")
+                error_msg = f"mcp runtime rebuild failed:{federation.id}:{runtime_arn}:{exc}"
+                outcome.error_messages.append(error_msg)
+                if runtime_arn in mutation_result.changed_mcp_runtime_arns:
+                    outcome.failed_changed_mcp_runtime_arns.add(runtime_arn)
+                else:
+                    outcome.failed_repair_only_runtime_arns.add(runtime_arn)
 
         for runtime_arn in sorted(a2a_runtime_arns_to_rebuild):
             try:
                 await self._sync_a2a_vectors_for_runtime(federation.id, runtime_arn)
             except Exception as exc:
-                errors.append(f"a2a runtime rebuild failed:{federation.id}:{runtime_arn}:{exc}")
+                error_msg = f"a2a runtime rebuild failed:{federation.id}:{runtime_arn}:{exc}"
+                outcome.error_messages.append(error_msg)
+                if runtime_arn in mutation_result.changed_a2a_runtime_arns:
+                    outcome.failed_changed_a2a_runtime_arns.add(runtime_arn)
+                else:
+                    outcome.failed_repair_only_runtime_arns.add(runtime_arn)
 
-        if not errors:
+        if not outcome.error_messages:
             logger.info(
                 "Federation vector sync completed: federation_id=%s job_id=%s "
                 "mcp_rebuilt=%d collection=%s a2a_rebuilt=%d collection=%s",
@@ -1286,16 +1274,16 @@ class FederationSyncService:
                 len(a2a_runtime_arns_to_rebuild),
                 getattr(self.a2a_agent_repo, "collection", "A2a_agents"),
             )
-
-        if errors:
+        else:
             logger.warning(
                 "Federation vector sync completed with errors: federation_id=%s job_id=%s error_count=%d first_error=%s",
                 federation.id,
                 job.id,
-                len(errors),
-                errors[0],
+                len(outcome.error_messages),
+                outcome.error_messages[0],
             )
-            raise RuntimeError("; ".join(errors))
+
+        return outcome
 
     async def run_delete(
         self,
@@ -1333,26 +1321,37 @@ class FederationSyncService:
     async def _build_federation_stats(
         self,
         federation_id,
+        discovery_summary: FederationDiscoverySummary,
+        apply_summary: FederationApplySummary,
         session: AsyncClientSession | None = None,
     ) -> FederationStats:
-        mcp_count = await ExtendedMCPServer.find(
-            {"federationRefId": federation_id},
-            session=session,
-        ).count()
-        agent_count = await A2AAgent.find(
-            {"federationRefId": federation_id},
-            session=session,
-        ).count()
         mcp_servers = await ExtendedMCPServer.find(
             {"federationRefId": federation_id},
             session=session,
         ).to_list()
         tool_count = sum(int(server.numTools or 0) for server in mcp_servers)
+
+        mcp_server_count = discovery_summary.discoveredMcpServers
+        agent_count = discovery_summary.discoveredAgents
+
+        imported_total = (
+            apply_summary.createdMcpServers
+            + apply_summary.updatedMcpServers
+            + apply_summary.unchangedMcpServers
+            - apply_summary.vectorSyncFailedMcpServers
+            + apply_summary.createdAgents
+            + apply_summary.updatedAgents
+            + apply_summary.unchangedAgents
+            - apply_summary.vectorSyncFailedAgents
+        )
+        unimported_total = (mcp_server_count + agent_count) - imported_total
+
         return FederationStats(
-            mcpServerCount=mcp_count,
+            mcpServerCount=mcp_server_count,
             agentCount=agent_count,
             toolCount=tool_count,
-            importedTotal=mcp_count + agent_count,
+            importedTotal=imported_total,
+            unimportedTotal=unimported_total,
         )
 
     async def _sync_mcp_vectors_for_runtime(self, federation_id, runtime_arn: str) -> None:
@@ -1447,13 +1446,11 @@ class FederationSyncService:
 
     @staticmethod
     def _build_last_sync(job: FederationSyncJob, apply_summary: FederationApplySummary) -> FederationLastSync:
-        sync_status = FederationSyncStatus.FAILED if apply_summary.errors else FederationSyncStatus.SUCCESS
         return FederationLastSync(
             jobId=job.id,
             jobType=job.jobType,
-            status=sync_status,
+            status=FederationSyncStatus.SUCCESS,
             startedAt=job.startedAt,
-            finishedAt=datetime.now(UTC),
             summary=FederationLastSyncSummary(
                 discoveredMcpServers=job.discoverySummary.discoveredMcpServers,
                 discoveredAgents=job.discoverySummary.discoveredAgents,
@@ -1467,6 +1464,8 @@ class FederationSyncService:
                 deletedAgents=apply_summary.deletedAgents,
                 unchangedAgents=apply_summary.unchangedAgents,
                 skippedAgents=apply_summary.skippedAgents,
+                vectorSyncFailedMcpServers=apply_summary.vectorSyncFailedMcpServers,
+                vectorSyncFailedAgents=apply_summary.vectorSyncFailedAgents,
                 errors=apply_summary.errors,
                 errorMessages=list(apply_summary.errorMessages or []),
             ),
