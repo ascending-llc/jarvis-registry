@@ -316,11 +316,23 @@ class FederationSyncService:
                         session=mongo_session,
                     )
             await self.federation_job_service.mark_syncing(job, FederationJobPhase.SYNCING_VECTORS)
-            vector_sync_outcome = await self._sync_vector_index_after_commit(
-                federation=federation,
-                job=job,
-                mutation_result=mutation_result,
-            )
+            try:
+                vector_sync_outcome = await self._sync_vector_index_after_commit(
+                    federation=federation,
+                    job=job,
+                    mutation_result=mutation_result,
+                )
+            except Exception as exc:
+                logger.exception(
+                    "Federation vector sync failed after Mongo commit: federation_id=%s job_id=%s",
+                    federation.id,
+                    job.id,
+                )
+                vector_sync_outcome = VectorSyncOutcome(
+                    failed_changed_mcp_runtime_arns=set(mutation_result.changed_mcp_runtime_arns),
+                    failed_changed_a2a_runtime_arns=set(mutation_result.changed_a2a_runtime_arns),
+                    error_messages=[f"vector sync failed after Mongo commit:{federation.id}:{exc}"],
+                )
             await self._finalize_sync_status(federation, job, mutation_result, vector_sync_outcome)
             return job
 
@@ -1392,6 +1404,12 @@ class FederationSyncService:
             try:
                 await self._sync_mcp_vectors_for_runtime(federation.id, runtime_arn)
             except Exception as exc:
+                logger.exception(
+                    "MCP runtime vector rebuild failed: federation_id=%s job_id=%s runtime_arn=%s",
+                    federation.id,
+                    job.id,
+                    runtime_arn,
+                )
                 error_msg = f"mcp runtime rebuild failed:{federation.id}:{runtime_arn}:{exc}"
                 outcome.error_messages.append(error_msg)
                 if runtime_arn in mutation_result.changed_mcp_runtime_arns:
@@ -1403,6 +1421,12 @@ class FederationSyncService:
             try:
                 await self._sync_a2a_vectors_for_runtime(federation.id, runtime_arn)
             except Exception as exc:
+                logger.exception(
+                    "A2A runtime vector rebuild failed: federation_id=%s job_id=%s runtime_arn=%s",
+                    federation.id,
+                    job.id,
+                    runtime_arn,
+                )
                 error_msg = f"a2a runtime rebuild failed:{federation.id}:{runtime_arn}:{exc}"
                 outcome.error_messages.append(error_msg)
                 if runtime_arn in mutation_result.changed_a2a_runtime_arns:
