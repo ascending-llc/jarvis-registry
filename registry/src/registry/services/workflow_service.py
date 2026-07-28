@@ -7,9 +7,8 @@ This service handles all workflow-related operations using MongoDB and Beanie OD
 import hashlib
 import logging
 import re
-from collections.abc import Iterator
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, NamedTuple
 from uuid import uuid4
 
 from beanie import PydanticObjectId
@@ -21,6 +20,7 @@ from pymongo.errors import DuplicateKeyError
 from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.models.a2a_agent import A2AAgent
 from registry_pkgs.models.enums import WorkflowNodeType, WorkflowRunStatus
+from registry_pkgs.models.extended_access_role import RegistryResourceType
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 from registry_pkgs.models.workflow import (
     HumanReviewSpec,
@@ -36,12 +36,19 @@ from registry_pkgs.models.workflow import (
     WorkflowRun,
     WorkflowVersion,
 )
+from registry_pkgs.workflows.compiler import flatten_workflow_nodes
 
 from ..schemas.workflow_api_schemas import WorkflowCreateRequest, WorkflowUpdateRequest
+from ..services.access_control_service import ACLService
 
 logger = logging.getLogger(__name__)
 
 _BUILTIN_EXECUTOR_KEYS = {"echo", "set_value"}
+
+
+class ExecutorRefResolution(NamedTuple):
+    mcp_server_ids: dict[str, PydanticObjectId]
+    agent_ids: dict[str, PydanticObjectId]
 
 
 def _convert_human_review(api_human_review: Any) -> HumanReviewSpec | None:
@@ -85,78 +92,146 @@ def _convert_human_review(api_human_review: Any) -> HumanReviewSpec | None:
 class WorkflowService:
     """Service for Workflow operations"""
 
+    def __init__(self, acl_service: ACLService) -> None:
+        self._acl_service = acl_service
+
     @staticmethod
     def _checksum(definition_json: str) -> str:
         """Return the sha256 hex digest of a definition's JSON serialization."""
         return hashlib.sha256(definition_json.encode("utf-8")).hexdigest()
 
     @staticmethod
-    def _iter_nodes(nodes: list[WorkflowNode]) -> Iterator[WorkflowNode]:
-        """Yield every node in a workflow tree, including nested branches."""
-        for node in nodes:
-            yield node
-            yield from WorkflowService._iter_nodes(node.children)
-            yield from WorkflowService._iter_nodes(node.true_steps)
-            yield from WorkflowService._iter_nodes(node.false_steps)
-            for choice in node.choices:
-                yield from WorkflowService._iter_nodes(choice.steps)
-
-    async def _validate_executor_refs(
-        self,
-        nodes: list[WorkflowNode],
-        session: AsyncClientSession | None = None,
-    ) -> None:
-        """Ensure workflow executor references resolve before saving the definition."""
+    def _collect_executor_refs(nodes: list[WorkflowNode]) -> tuple[set[str], set[str]]:
+        """Return (executor_keys, pool_paths) referenced in the node tree, builtins excluded."""
         executor_keys: set[str] = set()
         pool_paths: set[str] = set()
-
-        for node in self._iter_nodes(nodes):
+        for node in flatten_workflow_nodes(nodes):
             if node.node_type != WorkflowNodeType.STEP:
                 continue
             if node.executor_key:
                 executor_keys.add(node.executor_key.lstrip("/"))
             if node.a2a_pool:
                 pool_paths.update(path.lstrip("/") for path in node.a2a_pool)
+        executor_keys -= _BUILTIN_EXECUTOR_KEYS
+        return executor_keys, pool_paths
 
-        executor_keys_to_check = executor_keys - _BUILTIN_EXECUTOR_KEYS
-        matched_mcp_keys: set[str] = set()
-        if executor_keys_to_check:
+    async def _validate_executor_refs(
+        self,
+        nodes: list[WorkflowNode],
+        session: AsyncClientSession | None = None,
+    ) -> ExecutorRefResolution:
+        """Ensure executor references resolve and return their document IDs."""
+        executor_keys, pool_paths = self._collect_executor_refs(nodes)
+
+        mcp_server_ids: dict[str, PydanticObjectId] = {}
+        if executor_keys:
             mcp_servers = await ExtendedMCPServer.find(
-                {"serverName": {"$in": sorted(executor_keys_to_check)}, "config.enabled": True},
+                {"serverName": {"$in": sorted(executor_keys)}, "config.enabled": True},
                 session=session,
             ).to_list()
-            matched_mcp_keys = {server.serverName for server in mcp_servers}
+            mcp_server_ids = {server.serverName: server.id for server in mcp_servers}
 
-        unmatched_executor_keys = executor_keys_to_check - matched_mcp_keys
-        matched_a2a_executor_keys: set[str] = set()
+        unmatched_executor_keys = executor_keys - mcp_server_ids.keys()
+        agent_ids: dict[str, PydanticObjectId] = {}
         if unmatched_executor_keys:
             a2a_agents = await A2AAgent.find(
                 {"path": {"$in": sorted(unmatched_executor_keys)}, "config.enabled": True},
                 session=session,
             ).to_list()
-            matched_a2a_executor_keys = {agent.path for agent in a2a_agents}
+            agent_ids = {agent.path: agent.id for agent in a2a_agents}
 
-        unknown_executor_keys = unmatched_executor_keys - matched_a2a_executor_keys
+        unknown_executor_keys = unmatched_executor_keys - agent_ids.keys()
         if unknown_executor_keys:
             key = sorted(unknown_executor_keys)[0]
             msg = f"Unknown executor key: {key!r}"
             logger.warning(msg)
             raise HTTPException(status_code=400, detail=msg)
 
-        if not pool_paths:
+        if pool_paths:
+            pool_agents = await A2AAgent.find(
+                {"path": {"$in": sorted(pool_paths)}, "config.enabled": True},
+                session=session,
+            ).to_list()
+            agent_ids.update({agent.path: agent.id for agent in pool_agents})
+            unknown_pool_paths = pool_paths - agent_ids.keys()
+            if unknown_pool_paths:
+                path = sorted(unknown_pool_paths)[0]
+                msg = f"Unknown a2aPool agent path: {path!r}"
+                logger.warning(msg)
+                raise HTTPException(status_code=400, detail=msg)
+
+        return ExecutorRefResolution(mcp_server_ids=mcp_server_ids, agent_ids=agent_ids)
+
+    async def _check_view_permissions(
+        self,
+        keys: set[str],
+        id_map: dict[str, PydanticObjectId],
+        resource_type: str,
+        user_id: PydanticObjectId,
+        session: AsyncClientSession | None,
+    ) -> list[str]:
+        """Return denied keys for a batch VIEW check. Raises 503 on DB failure."""
+        if not keys:
+            return []
+        try:
+            perms = await self._acl_service.get_user_permissions_for_resources(
+                user_id=user_id,
+                resource_type=resource_type,
+                resource_ids=[id_map[k] for k in keys],
+                session=session,
+            )
+        except RuntimeError as e:
+            raise HTTPException(
+                status_code=503,
+                detail="Permission check temporarily unavailable. Please try again later.",
+            ) from e
+        return [k for k in keys if not perms[id_map[k]].VIEW]
+
+    async def _authorize_executor_refs(
+        self,
+        user_id: PydanticObjectId,
+        resolution: ExecutorRefResolution,
+        previous_keys: set[str] | None = None,
+        session: AsyncClientSession | None = None,
+    ) -> None:
+        """Raise 403 if user lacks VIEW on any newly-referenced executor.
+
+        When *previous_keys* is supplied (update path), only the delta —
+        keys present in *resolution* but absent from *previous_keys* — is
+        checked.  This avoids re-authorising executors that already existed
+        in the workflow before the edit.
+        """
+        mcp_keys = set(resolution.mcp_server_ids)
+        agent_keys = set(resolution.agent_ids)
+
+        if previous_keys is not None:
+            mcp_keys -= previous_keys
+            agent_keys -= previous_keys
+
+        if not mcp_keys and not agent_keys:
             return
 
-        pool_agents = await A2AAgent.find(
-            {"path": {"$in": sorted(pool_paths)}, "config.enabled": True},
-            session=session,
-        ).to_list()
-        matched_pool_paths = {agent.path for agent in pool_agents}
-        unknown_pool_paths = pool_paths - matched_pool_paths
-        if unknown_pool_paths:
-            path = sorted(unknown_pool_paths)[0]
-            msg = f"Unknown a2aPool agent path: {path!r}"
-            logger.warning(msg)
-            raise HTTPException(status_code=400, detail=msg)
+        denied = await self._check_view_permissions(
+            mcp_keys,
+            resolution.mcp_server_ids,
+            RegistryResourceType.MCP_SERVER.value,
+            user_id,
+            session,
+        )
+        denied += await self._check_view_permissions(
+            agent_keys,
+            resolution.agent_ids,
+            RegistryResourceType.REMOTE_AGENT.value,
+            user_id,
+            session,
+        )
+
+        if denied:
+            key = sorted(denied)[0]
+            raise HTTPException(
+                status_code=403,
+                detail=f"You do not have VIEW permission on executor: {key!r}",
+            )
 
     async def list_workflows(
         self,
@@ -247,6 +322,8 @@ class WorkflowService:
     async def create_workflow(
         self,
         data: WorkflowCreateRequest,
+        user_id: PydanticObjectId,
+        session: AsyncClientSession | None = None,
     ) -> WorkflowDefinition:
         """
         Create a new workflow.
@@ -278,10 +355,11 @@ class WorkflowService:
                 updated_at=datetime.now(UTC),
             )
 
-            await self._validate_executor_refs(nodes)
+            resolution = await self._validate_executor_refs(nodes, session=session)
+            await self._authorize_executor_refs(user_id, resolution, session=session)
 
             # Save to database (this will trigger Pydantic validation)
-            await workflow.insert()
+            await workflow.insert(session=session)
 
             logger.info(f"Created workflow {workflow.id}: {workflow.name} (enabled: False)")
             return workflow
@@ -299,6 +377,7 @@ class WorkflowService:
         self,
         workflow_id: str,
         data: WorkflowUpdateRequest,
+        user_id: PydanticObjectId,
         session: AsyncClientSession | None = None,
     ) -> WorkflowDefinition:
         """
@@ -328,9 +407,10 @@ class WorkflowService:
             # Build and validate the update FIRST. Node conversion runs the model-level
             # shape validators, so an invalid update raises here — before anything is
             # written — and can never leave an orphan/duplicate version-history row.
+            now = datetime.now(UTC)
             update_fields: dict[str, Any] = {
                 "version": previous_version + 1,
-                "updated_at": datetime.now(UTC),
+                "updated_at": now,
             }
 
             if data.name is not None:
@@ -347,14 +427,17 @@ class WorkflowService:
                 # Trigger cross-node reference validation (e.g. referenced_node_names must
                 # match existing node names) before the executor-key DB lookup.
                 WorkflowDefinition(name=workflow.name, nodes=nodes)
-                await self._validate_executor_refs(nodes, session=session)
+                resolution = await self._validate_executor_refs(nodes, session=session)
+
+                old_keys, old_pools = self._collect_executor_refs(workflow.nodes)
+                await self._authorize_executor_refs(
+                    user_id, resolution, previous_keys=old_keys | old_pools, session=session
+                )
+
                 update_fields["nodes"] = [node.model_dump(mode="json") for node in nodes]
 
             if data.enabled is not None:
                 update_fields["enabled"] = data.enabled
-
-            # Always update the timestamp
-            update_fields["updated_at"] = datetime.now(UTC)
 
             collection = MongoDB.get_database().get_collection(WorkflowDefinition.get_settings().name)
 
