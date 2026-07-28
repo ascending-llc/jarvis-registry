@@ -5,8 +5,8 @@ from typing import Any
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
-from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.routing import compile_path, get_route_path
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from ..auth.dependencies import effective_scopes_from_context
 from ..core.config import settings
@@ -63,7 +63,7 @@ def _parse_methods(method_value: str) -> set[str] | None:
     return set(parts)
 
 
-class ScopePermissionMiddleware(BaseHTTPMiddleware):
+class ScopePermissionMiddleware:
     """
     Enforce endpoint/method permissions based on scopes.yml.
 
@@ -78,8 +78,8 @@ class ScopePermissionMiddleware(BaseHTTPMiddleware):
         reaching this middleware should be checked for permissions.
     """
 
-    def __init__(self, app):
-        super().__init__(app)
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
         self._rules: list[dict[str, Any]] = []
         # Load rules at initialization instead of lazily
         self._load_rules()
@@ -185,16 +185,23 @@ class ScopePermissionMiddleware(BaseHTTPMiddleware):
         logger.warning("No rules match path=%s, method=%s - denying", path, method)
         return False
 
-    async def dispatch(self, request: Request, call_next):
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """
         Enforce scope permissions for authenticated requests.
 
         Since auth middleware already filters public paths, any authenticated
         request reaching this middleware should be checked for permissions.
         """
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        request = Request(scope, receive=receive)
+
         # If auth middleware didn't set user, allow through (public routes).
         if not getattr(request.state, "is_authenticated", False):
-            return await call_next(request)
+            await self.app(scope, receive, send)
+            return
 
         method = request.method.upper()
         normalized_path = _normalize_path(get_route_path(request.scope))
@@ -204,9 +211,13 @@ class ScopePermissionMiddleware(BaseHTTPMiddleware):
         user_scopes = effective_scopes_from_context(user_context)
 
         if not user_scopes:
-            return JSONResponse(status_code=403, content={"detail": "Insufficient permissions"})
+            response = JSONResponse(status_code=403, content={"detail": "Insufficient permissions"})
+            await response(scope, receive, send)
+            return
 
         if self._has_permission(user_scopes, normalized_path, method):
-            return await call_next(request)
+            await self.app(scope, receive, send)
+            return
 
-        return JSONResponse(status_code=403, content={"detail": "Insufficient permissions"})
+        response = JSONResponse(status_code=403, content={"detail": "Insufficient permissions"})
+        await response(scope, receive, send)

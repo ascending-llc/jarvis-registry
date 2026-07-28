@@ -3,8 +3,8 @@ import re
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
-from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.routing import compile_path, get_route_path
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from registry_pkgs.core.jwt_tokens import verify_managed_agent_token
 from registry_pkgs.core.jwt_utils import ExpiredSignatureError, InvalidTokenError
@@ -35,7 +35,7 @@ def _parse_bearer_token(request: Request) -> str | None:
     return token.strip() or None
 
 
-class UnifiedAuthMiddleware(BaseHTTPMiddleware):
+class UnifiedAuthMiddleware:
     """
     A unified authentication middleware that encapsulates the functionality of `enhanced_auth` and `nginx_proxied_auth`.
 
@@ -60,8 +60,8 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
         * "/health" - Health check endpoint (public)
     """
 
-    def __init__(self, app):
-        super().__init__(app)
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
         self.public_paths_compiled = self._compile_patterns(
             [
                 "/",
@@ -107,7 +107,12 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
                 logger.error(f"Failed to compile pattern '{pattern}': {e}")
         return compiled
 
-    async def dispatch(self, request: Request, call_next):
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        request = Request(scope, receive=receive)
         # Use get_route_path to strip the root_path prefix (set by uvicorn --root-path).
         # request.url.path reads scope["path"] directly, which includes the prefix when
         # uvicorn is started with --root-path. get_route_path strips it, matching what
@@ -117,7 +122,8 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
         # Check authenticated paths first (these override public patterns)
         if self._match_path(path, self.public_paths_compiled):
             logger.debug(f"Public path: {path}")
-            return await call_next(request)
+            await self.app(scope, receive, send)
+            return
         else:
             logger.debug(f"Authenticated path: {path}")
             # Continue to authentication logic below
@@ -158,14 +164,18 @@ class UnifiedAuthMiddleware(BaseHTTPMiddleware):
                 # handles a bare 401 by redirecting to login — so we deliberately advertise no
                 # (misleading) Bearer challenge here.
 
-                return JSONResponse(status_code=401, content={"detail": str(e)}, headers=headers)
+                response = JSONResponse(status_code=401, content={"detail": str(e)}, headers=headers)
+                await response(scope, receive, send)
+                return
 
             except Exception as e:
                 auth_ctx.set_success(False)
                 logger.exception(f"Auth error for {path}: {e}")
-                return JSONResponse(status_code=500, content={"detail": "Authentication error"})
+                response = JSONResponse(status_code=500, content={"detail": "Authentication error"})
+                await response(scope, receive, send)
+                return
 
-        return await call_next(request)
+        await self.app(scope, receive, send)
 
     def _match_path(self, path: str, compiled_patterns: list[tuple]) -> bool:
         """
