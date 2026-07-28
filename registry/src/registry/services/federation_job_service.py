@@ -123,10 +123,12 @@ class FederationJobService:
     async def mark_success(
         self,
         job: FederationSyncJob,
+        message: str | None = None,
         session: AsyncClientSession | None = None,
     ) -> FederationSyncJob:
         job.status = FederationJobStateMachine.transition_to_success(job.status)
         job.phase = FederationJobPhase.COMPLETED
+        job.error = message
         job.finishedAt = datetime.now(UTC)
         await job.save(session=session)
         return job

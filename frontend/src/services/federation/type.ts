@@ -25,6 +25,7 @@ export interface FederationStats {
   agentCount: number;
   toolCount: number;
   importedTotal: number;
+  unimportedTotal: number;
 }
 
 export interface SyncSummary {

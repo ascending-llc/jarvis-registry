@@ -244,10 +244,11 @@ class FederationCrudService:
         federation: Federation,
         last_sync,
         stats: FederationStats,
+        message: str | None = None,
         session: AsyncClientSession | None = None,
     ) -> Federation:
         federation.syncStatus = FederationStateMachine.transition_to_sync_success(federation.syncStatus)
-        federation.syncMessage = None
+        federation.syncMessage = message
         federation.lastSync = last_sync
         federation.stats = stats
         await federation.save(session=session)

@@ -126,6 +126,7 @@ def _to_dry_run_response(result) -> FederationSyncDryRunResponse:
             updatedMcpServers=int(getattr(summary, "updatedMcpServers", 0) or 0),
             deletedMcpServers=int(getattr(summary, "deletedMcpServers", 0) or 0),
             unchangedMcpServers=int(getattr(summary, "unchangedMcpServers", 0) or 0),
+            skippedMcpServers=int(getattr(summary, "skippedMcpServers", 0) or 0),
             createdAgents=int(getattr(summary, "createdAgents", 0) or 0),
             updatedAgents=int(getattr(summary, "updatedAgents", 0) or 0),
             deletedAgents=int(getattr(summary, "deletedAgents", 0) or 0),
@@ -146,6 +147,7 @@ def _to_stats_response(stats) -> FederationStatsResponse:
         agentCount=int(getattr(stats, "agentCount", 0) or 0),
         toolCount=int(getattr(stats, "toolCount", 0) or 0),
         importedTotal=int(getattr(stats, "importedTotal", 0) or 0),
+        unimportedTotal=int(getattr(stats, "unimportedTotal", 0) or 0),
     )
 
 
@@ -163,10 +165,14 @@ def _to_last_sync_response(last_sync) -> FederationLastSyncResponse | None:
             updatedMcpServers=int(getattr(summary, "updatedMcpServers", 0) or 0),
             deletedMcpServers=int(getattr(summary, "deletedMcpServers", 0) or 0),
             unchangedMcpServers=int(getattr(summary, "unchangedMcpServers", 0) or 0),
+            skippedMcpServers=int(getattr(summary, "skippedMcpServers", 0) or 0),
             createdAgents=int(getattr(summary, "createdAgents", 0) or 0),
             updatedAgents=int(getattr(summary, "updatedAgents", 0) or 0),
             deletedAgents=int(getattr(summary, "deletedAgents", 0) or 0),
             unchangedAgents=int(getattr(summary, "unchangedAgents", 0) or 0),
+            skippedAgents=int(getattr(summary, "skippedAgents", 0) or 0),
+            vectorSyncFailedMcpServers=int(getattr(summary, "vectorSyncFailedMcpServers", 0) or 0),
+            vectorSyncFailedAgents=int(getattr(summary, "vectorSyncFailedAgents", 0) or 0),
             errors=int(getattr(summary, "errors", 0) or 0),
             errorMessages=list(getattr(summary, "errorMessages", []) or []),
         )

@@ -165,8 +165,36 @@ The `summary` object returned in `lastSync` and dry-run responses:
 | `deletedAgents` | Removed from MongoDB (no longer discovered) |
 | `unchangedAgents` | MongoDB skipped; version unchanged |
 | `skippedAgents` | A2A agents skipped due to path conflict with another federation |
-| `errors` | Count of per-resource enrichment errors |
-| `errorMessages` | List of per-resource error strings |
+| `vectorSyncFailedMcpServers` | Changed MCP resources persisted to MongoDB but not fully imported because their vector rebuild failed. Returned by `lastSync`; not present in dry-run responses. |
+| `vectorSyncFailedAgents` | Changed A2A resources persisted to MongoDB but not fully imported because their vector rebuild failed. Returned by `lastSync`; not present in dry-run responses. |
+| `errors` | Count of recorded per-resource enrichment and vector-sync failures |
+| `errorMessages` | List of recorded per-resource error strings |
+
+An enrichment-failed resource is not classified as created, updated, or unchanged. It is not written
+to MongoDB or Weaviate. If the same runtime already has a healthy MongoDB document, that
+last-known-good document is preserved and is not treated as stale merely because enrichment failed.
+
+### Federation stats fields
+
+The `stats` object returned by create, list, update, and detail responses currently contains:
+
+| Field | Description |
+|-------|-------------|
+| `mcpServerCount` | MCP runtimes discovered during the latest completed sync |
+| `agentCount` | A2A runtimes discovered during the latest completed sync |
+| `toolCount` | Live total of tools on MCP servers currently persisted for the federation |
+| `importedTotal` | Resources from the latest sync that completed enrichment, Mongo apply, and any required changed-resource vector sync |
+| `unimportedTotal` | Latest-sync residual: `(mcpServerCount + agentCount) - importedTotal` |
+
+The following invariant holds for every completed sync:
+
+```text
+mcpServerCount + agentCount == importedTotal + unimportedTotal
+```
+
+`toolCount` is intentionally a live inventory value; the other four values describe the latest
+completed sync run. A future contract revision may separate inventory and per-run statistics into
+different objects. Until that revision is implemented, clients must use the semantics above.
 
 ### Weaviate sync behavior
 
@@ -174,7 +202,11 @@ Weaviate is a secondary search index rebuilt from MongoDB state. It runs after t
 
 - **Changed or missing resources**: delete existing Weaviate docs for that runtime, then full rebuild.
 - **Unchanged resources** (version same in MongoDB): compare Weaviate version. If Weaviate is already up to date, skip. If stale or missing, rebuild without deleting first.
-- **Weaviate failures**: logged and do not roll back the MongoDB transaction. Weaviate state can be repaired by re-running sync.
+- **Changed-resource Weaviate failures**: recorded in `errorMessages` and
+  `vectorSyncFailedMcpServers` / `vectorSyncFailedAgents`. They reduce `importedTotal` for this run but
+  do not roll back MongoDB.
+- **Repair-only Weaviate failures**: recorded in `errorMessages`, but do not reduce `importedTotal`
+  because the unchanged resource was already imported by this run.
 
 ---
 
@@ -249,7 +281,8 @@ Create only stores the federation definition. It does not trigger a sync job.
     "mcpServerCount": 0,
     "agentCount": 0,
     "toolCount": 0,
-    "importedTotal": 0
+    "importedTotal": 0,
+    "unimportedTotal": 0
   },
   "lastSync": null,
   "recentJobs": [],
@@ -334,7 +367,8 @@ Status: `200 OK`
         "mcpServerCount": 2,
         "agentCount": 1,
         "toolCount": 14,
-        "importedTotal": 3
+        "importedTotal": 3,
+        "unimportedTotal": 0
       },
       "lastSync": {
         "jobId": "job_demo_id",
@@ -349,11 +383,14 @@ Status: `200 OK`
           "updatedMcpServers": 0,
           "deletedMcpServers": 0,
           "unchangedMcpServers": 0,
+          "skippedMcpServers": 0,
           "createdAgents": 1,
           "updatedAgents": 0,
           "deletedAgents": 0,
           "unchangedAgents": 0,
           "skippedAgents": 0,
+          "vectorSyncFailedMcpServers": 0,
+          "vectorSyncFailedAgents": 0,
           "errors": 0,
           "errorMessages": []
         }
@@ -545,15 +582,47 @@ Runtime auth (`runtimeAccess`) is not read from `providerConfig`. It is inferred
    - Version changed → UPDATE
    - Version unchanged → skip MongoDB write (log only)
    - Stale runtimes (no longer discovered) → DELETE
-4. Update federation stats and lastSync in the same transaction
-5. Rebuild Weaviate search index (outside transaction)
+   - Enrichment failed → record error and do not create/update the resource
+4. Rebuild Weaviate search index (outside transaction)
    - Changed/deleted/missing runtimes → delete + rebuild
    - Unchanged runtimes → check Weaviate version; rebuild only if stale
+   - Isolate and record failures per runtime
+5. Fold vector outcomes into the apply summary
+6. Build federation stats and lastSync from the final per-resource outcomes
+7. Mark the federation and job:
+   - `success` when no resources were discovered
+   - `success` when at least one discovered resource was fully imported
+   - `failed` when resources were discovered but none were fully imported
 ```
 
 ### Success Response
 
-Status: `200 OK`
+Status: `202 Accepted`
+
+For `dryRun=false`, the endpoint creates a pending job and schedules the sync as a background task.
+The response is the initial job snapshot; it does not wait for discovery, Mongo apply, vector sync, or
+terminal status.
+
+```json
+{
+  "id": "job_demo_id",
+  "federationId": "federation_demo_id",
+  "jobType": "full_sync",
+  "status": "pending",
+  "phase": "queued",
+  "startedAt": null,
+  "finishedAt": null,
+  "error": null
+}
+```
+
+Poll the job until it reaches `success` or `failed`:
+
+```http
+GET /federations/{federation_id}/jobs/{job_id}
+```
+
+Example terminal response:
 
 ```json
 {
@@ -563,34 +632,82 @@ Status: `200 OK`
   "status": "success",
   "phase": "completed",
   "startedAt": "2026-03-26T07:21:00Z",
-  "finishedAt": "2026-03-26T07:21:05Z"
+  "finishedAt": "2026-03-26T07:21:05Z",
+  "error": null
 }
 ```
 
-### Partial Success Response
+The federation detail/list response is the authoritative source for the final `stats`,
+`syncMessage`, and `lastSync` snapshot.
 
-When some runtimes fail enrichment but others succeed, the job and federation are marked `failed`. The `lastSync.summary` includes per-resource error details:
+### Partial Success Result
+
+When some runtimes fail but at least one runtime is fully imported, both the job and federation are
+marked `success`. Failure information is deliberately retained:
+
+- the initial POST still returns `202` with a pending job
+- the terminal job returned by the polling endpoint has `status="success"`, `phase="completed"`, and
+  a non-null `error`
+- the federation has `syncStatus="success"` and a non-null `syncMessage`
+- `lastSync.status` is `success`
+- `lastSync.summary` contains failure counters and messages
+- failed enrichment resources are not persisted or vector-synced
 
 ```json
 {
   "id": "job_demo_id",
   "federationId": "federation_demo_id",
   "jobType": "full_sync",
-  "status": "failed",
-  "phase": "failed",
+  "status": "success",
+  "phase": "completed",
   "startedAt": "2026-03-26T07:21:00Z",
-  "finishedAt": "2026-03-26T07:21:08Z"
+  "finishedAt": "2026-03-26T07:21:08Z",
+  "error": "A2A agent pharmacy_fraud_a2a: enrichment failed: 403 Forbidden"
 }
 ```
 
-The federation's `lastSync.summary` will contain:
+The federation detail will contain corresponding per-run stats and `lastSync` data:
 
 ```json
 {
-  "errors": 1,
-  "errorMessages": ["A2A agent pharmacy_fraud_a2a: enrichment failed: 403 Forbidden"]
+  "syncStatus": "success",
+  "syncMessage": "A2A agent pharmacy_fraud_a2a: enrichment failed: 403 Forbidden",
+  "stats": {
+    "mcpServerCount": 0,
+    "agentCount": 3,
+    "toolCount": 0,
+    "importedTotal": 2,
+    "unimportedTotal": 1
+  },
+  "lastSync": {
+    "status": "success",
+    "summary": {
+      "discoveredMcpServers": 0,
+      "discoveredAgents": 3,
+      "createdMcpServers": 0,
+      "updatedMcpServers": 0,
+      "deletedMcpServers": 0,
+      "unchangedMcpServers": 0,
+      "skippedMcpServers": 0,
+      "createdAgents": 2,
+      "updatedAgents": 0,
+      "deletedAgents": 0,
+      "unchangedAgents": 0,
+      "skippedAgents": 0,
+      "vectorSyncFailedMcpServers": 0,
+      "vectorSyncFailedAgents": 0,
+      "errors": 1,
+      "errorMessages": [
+        "A2A agent pharmacy_fraud_a2a: enrichment failed: 403 Forbidden"
+      ]
+    }
+  }
 }
 ```
+
+If discovery returns one or more resources but `importedTotal == 0`, the job, federation, and
+`lastSync` are marked `failed`. If discovery returns zero resources, the sync is a successful empty
+run rather than a failure.
 
 ### Dry-Run Success Response
 
@@ -611,6 +728,7 @@ Status: `200 OK`
     "updatedMcpServers": 1,
     "deletedMcpServers": 0,
     "unchangedMcpServers": 1,
+    "skippedMcpServers": 0,
     "createdAgents": 0,
     "updatedAgents": 0,
     "deletedAgents": 0,
@@ -859,7 +977,16 @@ Status: `200 OK`
 - For `aws_agentcore`, `providerConfig.resourceTagsFilter` is applied during sync as an AND filter. A runtime is imported only if all configured tag key:value pairs match its AWS resource tags.
 - The UI-friendly string form `env:production, team:platform` must be converted by the frontend into `{ "env": "production", "team": "platform" }`.
 - `toolCount` is returned in federation stats and can be displayed directly.
-- `POST /federations/{federation_id}/sync` returns a job summary, not the full federation detail.
+- `unimportedTotal` is returned by the backend. The current backend-only branch does not yet add the
+  corresponding frontend type or fourth statistics tile; that UI work is a follow-up.
+- `POST /federations/{federation_id}/sync` with `dryRun=false` returns `202 Accepted` with the initial
+  pending job. Poll `GET /federations/{federation_id}/jobs/{job_id}` for terminal status, then fetch
+  the federation detail for final stats and lastSync.
+- `POST /federations/{federation_id}/sync` with `dryRun=true` executes inline and returns `200 OK`
+  with the preview; it creates no job.
 - `unchangedMcpServers` and `unchangedAgents` in the summary mean the runtime was discovered but its version matched what is already stored — MongoDB was not written. Weaviate consistency is still checked and repaired if stale.
-- Per-resource enrichment errors (e.g. IAM 403, JWT 401) do not abort the sync. They are captured in `summary.errorMessages` and mark the job as `failed`, but successfully enriched resources are still applied.
+- Per-resource enrichment errors (e.g. IAM 403, JWT 401) do not abort sibling resources. Failed
+  resources are not persisted or vector-synced. If at least one resource is fully imported, the
+  overall job remains `success` while `job.error`, `syncMessage`, and `summary.errorMessages` retain
+  the failures.
 - `azure_ai_foundry` remains in the provider enum for compatibility but is not yet implemented.

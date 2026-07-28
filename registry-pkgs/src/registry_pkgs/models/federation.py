@@ -135,6 +135,7 @@ class FederationStats(BaseModel):
     agentCount: int = 0
     toolCount: int = 0
     importedTotal: int = 0
+    unimportedTotal: int = 0
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -156,6 +157,8 @@ class FederationLastSyncSummary(BaseModel):
     deletedAgents: int = 0
     unchangedAgents: int = 0
     skippedAgents: int = 0
+    vectorSyncFailedMcpServers: int = 0
+    vectorSyncFailedAgents: int = 0
 
     errors: int = 0
     errorMessages: list[str] = Field(default_factory=list)
