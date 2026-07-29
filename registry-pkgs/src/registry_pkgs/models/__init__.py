@@ -20,6 +20,14 @@ from .extended_access_role import RegistryAccessRole
 from .extended_acl_entry import RegistryAclEntry
 from .extended_mcp_server import ExtendedMCPServer
 from .federation import Federation
+from .federation_metadata import (
+    A2AFederationMetadata,
+    AgentCoreA2AFederationMetadata,
+    AgentCoreFederationMetadata,
+    AgentCoreMcpFederationMetadata,
+    AzureFoundryFederationMetadata,
+    FederationMetadata,
+)
 from .federation_sync_job import FederationSyncJob
 from .token_type import TokenType
 from .workflow import NodeRun, WorkflowDefinition, WorkflowRun, WorkflowVersion
@@ -29,6 +37,12 @@ __all__ = [
     "RegistryAclEntry",
     "ExtendedMCPServer",
     "Federation",
+    "A2AFederationMetadata",
+    "AgentCoreA2AFederationMetadata",
+    "AgentCoreFederationMetadata",
+    "AgentCoreMcpFederationMetadata",
+    "AzureFoundryFederationMetadata",
+    "FederationMetadata",
     "FederationSyncJob",
     "RegistryAccessRole",
     "NodeRun",
