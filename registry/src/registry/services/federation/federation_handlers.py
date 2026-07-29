@@ -92,7 +92,11 @@ class AwsAgentCoreSyncHandler(BaseFederationSyncHandler):
             await self.runtime_invoker.enrich_a2a_agent(
                 agent=agent,
                 federation=federation,
-                runtime_detail=dict(agent.federationMetadata or {}),
+                runtime_detail=(
+                    agent.federationMetadata.model_dump(mode="json", exclude_none=True)
+                    if agent.federationMetadata
+                    else {}
+                ),
                 region=region,
                 assume_role_arn=assume_role_arn,
             )

@@ -9,6 +9,10 @@ from botocore.stub import Stubber
 
 from registry.services.federation.agentcore_discovery import AgentCoreFederationClient
 from registry_pkgs.models import A2AAgent, ExtendedMCPServer
+from registry_pkgs.testing.federation_metadata import (
+    make_agentcore_a2a_metadata,
+    make_agentcore_mcp_metadata,
+)
 
 _TEST_AUTHOR_ID = PydanticObjectId()
 
@@ -166,14 +170,14 @@ class TestAgentCoreFederationClient:
             client,
             "_transform_runtime_to_mcp_server",
             lambda runtime_detail, _region, _author_id=None: SimpleNamespace(
-                federationMetadata={"runtimeVersion": runtime_detail["agentRuntimeVersion"]}
+                federationMetadata=make_agentcore_mcp_metadata(runtime_version=runtime_detail["agentRuntimeVersion"])
             ),
         )
         monkeypatch.setattr(
             client,
             "_transform_runtime_to_a2a_agent",
             lambda runtime_detail, _region, _author_id=None: SimpleNamespace(
-                federationMetadata={"runtimeVersion": runtime_detail["agentRuntimeVersion"]}
+                federationMetadata=make_agentcore_a2a_metadata(runtime_version=runtime_detail["agentRuntimeVersion"])
             ),
         )
 
@@ -183,8 +187,8 @@ class TestAgentCoreFederationClient:
         assert len(result["mcp_servers"]) == 1
         assert len(result["a2a_agents"]) == 1
         assert len(result["skipped_runtimes"]) == 1
-        assert result["mcp_servers"][0].federationMetadata["runtimeVersion"] == "1"
-        assert result["a2a_agents"][0].federationMetadata["runtimeVersion"] == "2"
+        assert result["mcp_servers"][0].federationMetadata.runtimeVersion == "1"
+        assert result["a2a_agents"][0].federationMetadata.runtimeVersion == "2"
 
     async def test_discover_runtime_entities_filters_by_runtime_arns_with_stubber(self, monkeypatch):
         client = AgentCoreFederationClient()
@@ -246,7 +250,7 @@ class TestAgentCoreFederationClient:
             client,
             "_transform_runtime_to_a2a_agent",
             lambda runtime_detail, _region, _author_id=None: SimpleNamespace(
-                federationMetadata={"runtimeArn": runtime_detail["runtimeArn"]}
+                federationMetadata=make_agentcore_a2a_metadata(runtime_arn=runtime_detail["runtimeArn"])
             ),
         )
 
@@ -258,7 +262,7 @@ class TestAgentCoreFederationClient:
             )
 
         assert len(result["a2a_agents"]) == 1
-        assert result["a2a_agents"][0].federationMetadata["runtimeArn"] == target_arn
+        assert result["a2a_agents"][0].federationMetadata.runtimeArn == target_arn
 
     async def test_discover_runtime_entities_applies_resource_tags_filter(self, monkeypatch):
         client = AgentCoreFederationClient()
@@ -349,20 +353,20 @@ class TestAgentCoreFederationClient:
             client,
             "_transform_runtime_to_mcp_server",
             lambda runtime_detail, _region, _author_id=None: SimpleNamespace(
-                federationMetadata={
-                    "runtimeArn": runtime_detail["runtimeArn"],
-                    "runtimeTags": runtime_detail["tags"],
-                }
+                federationMetadata=make_agentcore_mcp_metadata(
+                    runtime_arn=runtime_detail["runtimeArn"],
+                    runtime_tags=runtime_detail["tags"],
+                )
             ),
         )
         monkeypatch.setattr(
             client,
             "_transform_runtime_to_a2a_agent",
             lambda runtime_detail, _region, _author_id=None: SimpleNamespace(
-                federationMetadata={
-                    "runtimeArn": runtime_detail["runtimeArn"],
-                    "runtimeTags": runtime_detail["tags"],
-                }
+                federationMetadata=make_agentcore_a2a_metadata(
+                    runtime_arn=runtime_detail["runtimeArn"],
+                    runtime_tags=runtime_detail["tags"],
+                )
             ),
         )
 
@@ -374,8 +378,8 @@ class TestAgentCoreFederationClient:
             )
 
         assert len(result["mcp_servers"]) == 1
-        assert result["mcp_servers"][0].federationMetadata["runtimeArn"] == runtime_one_arn
-        assert result["mcp_servers"][0].federationMetadata["runtimeTags"] == {
+        assert result["mcp_servers"][0].federationMetadata.runtimeArn == runtime_one_arn
+        assert result["mcp_servers"][0].federationMetadata.runtimeTags == {
             "env": "production",
             "team": "platform",
         }

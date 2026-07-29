@@ -18,6 +18,7 @@ from registry_pkgs.models.a2a_agent import (
 )
 from registry_pkgs.models.enums import FederationProviderType
 from registry_pkgs.models.federation import AzureAiFoundryProviderConfig
+from registry_pkgs.models.federation_metadata import AzureFoundryFederationMetadata
 
 from .azure_foundry_auth import AzureFoundryAuthService
 
@@ -227,21 +228,21 @@ class AzureFoundryDiscoveryClient:
             tags=list(PROVIDER_TAGS),
             registeredBy="azure-foundry-federation",
             registeredAt=datetime.now(UTC),
-            federationMetadata={
-                "providerType": FederationProviderType.AZURE_AI_FOUNDRY.value,
-                "runtimeArn": name,
-                "agentName": name,
-                "agentVersion": version,
-                "agentGuid": agent_guid,
-                "versionId": version_id,
-                "status": status,
-                "createdAt": created_at,
-                "modifiedAt": modified_at,
-                "projectEndpoint": project_endpoint,
-                "a2aBaseUrl": a2a_base_url,
-                "agentCardPath": AGENT_CARD_PATH,
-                "authorizationSchemes": authorization_schemes,
-            },
+            federationMetadata=AzureFoundryFederationMetadata(
+                providerType=FederationProviderType.AZURE_AI_FOUNDRY,
+                runtimeArn=name,
+                agentName=name,
+                agentVersion=version,
+                agentGuid=agent_guid,
+                versionId=version_id,
+                status=status,
+                createdAt=created_at,
+                modifiedAt=modified_at,
+                projectEndpoint=project_endpoint,
+                a2aBaseUrl=a2a_base_url,
+                agentCardPath=AGENT_CARD_PATH,
+                authorizationSchemes=authorization_schemes,
+            ),
             wellKnown={
                 "enabled": True,
                 "url": f"{a2a_base_url}/{AGENT_CARD_PATH}",
@@ -257,8 +258,12 @@ class AzureFoundryDiscoveryClient:
         agent: A2AAgent,
         http_client: httpx.AsyncClient,
     ) -> None:
-        metadata = dict(agent.federationMetadata or {})
-        a2a_base_url = metadata.get("a2aBaseUrl")
+        metadata = agent.federationMetadata
+        if not isinstance(metadata, AzureFoundryFederationMetadata):
+            self._mark_enrichment_failure(agent, "invalid Azure Foundry federation metadata")
+            return
+
+        a2a_base_url = metadata.a2aBaseUrl
         if not a2a_base_url:
             self._mark_enrichment_failure(agent, "missing a2aBaseUrl")
             return
@@ -312,9 +317,7 @@ class AzureFoundryDiscoveryClient:
             agent.wellKnown.lastSyncAt = datetime.now(UTC)
             agent.wellKnown.lastSyncVersion = str(agent.card.version)
 
-        cleared = dict(agent.federationMetadata or {})
-        cleared.pop("enrichmentError", None)
-        agent.federationMetadata = cleared
+        metadata.enrichmentError = None
 
     @staticmethod
     def _mark_enrichment_failure(agent: A2AAgent, message: str) -> None:
@@ -322,9 +325,9 @@ class AzureFoundryDiscoveryClient:
             agent.wellKnown.lastSyncStatus = "failed"
             agent.wellKnown.syncError = message
             agent.wellKnown.lastSyncAt = datetime.now(UTC)
-        metadata = dict(agent.federationMetadata or {})
-        metadata["enrichmentError"] = f"a2a enrichment failed: {message}"
-        agent.federationMetadata = metadata
+        metadata = agent.federationMetadata
+        if isinstance(metadata, AzureFoundryFederationMetadata):
+            metadata.enrichmentError = f"a2a enrichment failed: {message}"
 
     @staticmethod
     def _embedded_card_payload(detail: Any) -> dict[str, Any]:

@@ -164,7 +164,7 @@ def _make_fake_agent_card(card_data: dict, registry_fields: dict) -> SimpleNames
         registeredAt=registry_fields.get("registeredAt"),
         wellKnown=well_known,
         federationRefId=registry_fields.get("federationRefId"),
-        federationMetadata=dict(registry_fields.get("federationMetadata") or {}),
+        federationMetadata=registry_fields.get("federationMetadata"),
     )
     return fake
 
@@ -293,7 +293,7 @@ async def test_discover_includes_agents_from_dict_backed_sdk_models(fake_a2a_age
             author_id=AUTHOR_ID,
         )
 
-    assert [a.federationMetadata["agentName"] for a in result] == ["echo-a2a"]
+    assert [a.federationMetadata.agentName for a in result] == ["echo-a2a"]
 
 
 @pytest.mark.asyncio
@@ -326,9 +326,9 @@ async def test_discover_filters_to_a2a_enabled_agents_only(fake_a2a_agent_factor
 
     assert len(result) == 1
     agent = result[0]
-    assert agent.federationMetadata["agentName"] == "with-a2a"
-    assert agent.federationMetadata["runtimeArn"] == "with-a2a"  # D2 mirror
-    assert agent.federationMetadata["agentVersion"] == "3"
+    assert agent.federationMetadata.agentName == "with-a2a"
+    assert agent.federationMetadata.runtimeArn == "with-a2a"  # D2 mirror
+    assert agent.federationMetadata.agentVersion == "3"
     assert agent.wellKnown.lastSyncStatus == "success"
     assert agent.path == "/with-a2a"
     assert "enrichmentError" not in agent.federationMetadata
@@ -361,7 +361,7 @@ async def test_discover_marks_enrichment_failure_when_card_fetch_fails(fake_a2a_
 
     assert len(result) == 1
     agent = result[0]
-    assert agent.federationMetadata["enrichmentError"].startswith("a2a enrichment failed")
+    assert agent.federationMetadata.enrichmentError.startswith("a2a enrichment failed")
     assert agent.wellKnown.lastSyncStatus == "failed"
 
 
@@ -408,7 +408,7 @@ async def test_agent_names_bypass_list_call(fake_a2a_agent_factory):
             author_id=AUTHOR_ID,
         )
 
-    assert [a.federationMetadata["agentName"] for a in result] == ["explicit"]
+    assert [a.federationMetadata.agentName for a in result] == ["explicit"]
 
 
 @pytest.mark.asyncio
@@ -439,7 +439,7 @@ async def test_discover_applies_metadata_filter(fake_a2a_agent_factory):
             author_id=AUTHOR_ID,
         )
 
-    assert [a.federationMetadata["agentName"] for a in result] == ["keep"]
+    assert [a.federationMetadata.agentName for a in result] == ["keep"]
 
 
 @pytest.mark.asyncio
