@@ -1,5 +1,6 @@
 """Tests for federation sync planning and conflict classification."""
 
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -1177,6 +1178,28 @@ class TestSkipOnConflict:
         assert result is False
         assert summary.errors == 0
 
+    def test_silent_skip_logs_conflicting_id_and_runtime_arn(self, federation_sync_service, caplog):
+        conflict_id = PydanticObjectId()
+        cross = SimpleNamespace(id=conflict_id, federationRefId=PydanticObjectId())
+        summary = FederationApplySummary()
+        caplog.set_level(logging.WARNING, logger="registry.services.federation_sync_service")
+
+        result = federation_sync_service._skip_on_conflict(
+            summary,
+            PydanticObjectId(),
+            "my-server",
+            "MCP server",
+            cross,
+            {},
+            discovered_remote_id="arn:aws:bedrock-agentcore:us-east-1:123:runtime/discovered",
+        )
+
+        assert result is True
+        assert len(caplog.records) == 1
+        message = caplog.records[0].message
+        assert f"conflicting_id={conflict_id}" in message
+        assert "runtime_arn=arn:aws:bedrock-agentcore:us-east-1:123:runtime/discovered" in message
+
 
 @pytest.mark.asyncio
 async def test_build_sync_plan_skips_mcp_create_on_enrichment_error(
@@ -1246,6 +1269,62 @@ async def test_build_sync_plan_skips_a2a_create_on_enrichment_error(
     assert result.summary.errors == 1
     assert "connection refused" in result.summary.errorMessages[0]
     assert result.a2a_creates == []
+
+
+@pytest.mark.asyncio
+async def test_build_sync_plan_preserves_existing_a2a_on_transient_enrichment_failure(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
+    """Same guarantee as the MCP case above, exercised via the A2A `wellKnown.lastSyncStatus`
+    enrichment-failure signal instead of `federationMetadata["enrichmentError"]`."""
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    runtime_arn = "arn:aws:bedrock-agentcore:us-east-1:123:runtime/flaky-agent"
+    agent_path = "/agentcore/a2a/flaky-agent"
+    existing_a2a = SimpleNamespace(
+        id=PydanticObjectId(),
+        federationRefId=federation.id,
+        federationMetadata={"runtimeArn": runtime_arn, "runtimeVersion": "1"},
+        path=agent_path,
+        card=SimpleNamespace(name="flaky-agent"),
+        config=SimpleNamespace(type="jsonrpc", runtimeAccess=AgentCoreRuntimeAccessConfig(mode="iam")),
+    )
+    discovered_agent = SimpleNamespace(
+        federationMetadata={"runtimeArn": runtime_arn, "runtimeVersion": "1"},
+        path=agent_path,
+        card=SimpleNamespace(name="flaky-agent"),
+        config=SimpleNamespace(type="jsonrpc", runtimeAccess=AgentCoreRuntimeAccessConfig(mode="iam")),
+        wellKnown=SimpleNamespace(lastSyncStatus="failed", syncError="agent card endpoint returned 424"),
+    )
+
+    def _fake_mcp_find(query, session=None):
+        if query == {"federationRefId": federation.id}:
+            return _FakeQuery([])
+        raise AssertionError(f"Unexpected MCP query: {query}")
+
+    def _fake_a2a_find(query, session=None):
+        if query == {"federationRefId": federation.id}:
+            return _FakeQuery([existing_a2a])
+        if query == {"path": {"$in": [agent_path]}}:
+            return _FakeQuery([existing_a2a])
+        raise AssertionError(f"Unexpected A2A query: {query}")
+
+    monkeypatch.setattr("registry.services.federation_sync_service.ExtendedMCPServer.find", _fake_mcp_find)
+    monkeypatch.setattr("registry.services.federation_sync_service.A2AAgent.find", _fake_a2a_find)
+
+    sync_plan = await federation_sync_service._build_sync_plan(
+        federation=federation,
+        discovered_mcp=[],
+        discovered_a2a=[discovered_agent],
+    )
+
+    assert sync_plan.a2a_updates == []
+    assert sync_plan.a2a_deletes == []  # must NOT be classified as stale despite the failure
+    assert sync_plan.summary.updatedAgents == 0
+    assert sync_plan.summary.unchangedAgents == 0
+    assert sync_plan.summary.deletedAgents == 0
+    assert sync_plan.summary.errors == 1
+    assert sync_plan.summary.errorMessages == ["A2A agent flaky-agent: agent card endpoint returned 424"]
 
 
 @pytest.mark.asyncio

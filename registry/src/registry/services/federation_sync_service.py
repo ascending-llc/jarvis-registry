@@ -828,6 +828,7 @@ class FederationSyncService:
                     "MCP server",
                     existing_by_server_name.get(item.serverName),
                     planned_server_names,
+                    discovered_remote_id=remote_id,
                 ):
                     summary.skippedMcpServers += 1
                     continue
@@ -853,6 +854,7 @@ class FederationSyncService:
                         existing_by_server_name.get(item.serverName),
                         planned_server_names,
                         existing_self_id=getattr(existing, "id", None),
+                        discovered_remote_id=remote_id,
                     ):
                         summary.skippedMcpServers += 1
                         continue
@@ -914,6 +916,7 @@ class FederationSyncService:
                     path_conflict,
                     planned_paths,
                     key_label="path",
+                    discovered_remote_id=remote_id,
                 ):
                     summary.skippedAgents += 1
                     continue
@@ -949,6 +952,7 @@ class FederationSyncService:
                         planned_paths,
                         existing_self_id=getattr(existing, "id", None),
                         key_label="path",
+                        discovered_remote_id=remote_id,
                     ):
                         summary.skippedAgents += 1
                         continue
@@ -975,6 +979,7 @@ class FederationSyncService:
         *,
         existing_self_id: Any | None = None,
         key_label: str = "serverName",
+        discovered_remote_id: str | None = None,
     ) -> bool:
         """Run the full persisted + batch conflict check chain for a unique key.
 
@@ -995,12 +1000,14 @@ class FederationSyncService:
             return True
         if outcome == _ConflictOutcome.SKIP_SILENT:
             logger.warning(
-                "Skipping %s due to %s conflict: %s=%s owner_federation=%s",
+                "Skipping %s due to %s conflict: %s=%s owner_federation=%s conflicting_id=%s runtime_arn=%s",
                 resource_label,
                 key_label,
                 key_label,
                 key_value,
                 getattr(persisted_conflict, "federationRefId", None),
+                getattr(persisted_conflict, "id", None),
+                discovered_remote_id,
             )
             return True
         if self._check_batch_conflict(key_value, planned_keys):
