@@ -20,6 +20,10 @@ from registry_pkgs.models.enums import (
 from registry_pkgs.models.extended_access_role import RegistryResourceType
 from registry_pkgs.models.extended_acl_entry import RegistryAclEntry
 from registry_pkgs.models.federation_sync_job import FederationApplySummary
+from registry_pkgs.testing.federation_metadata import (
+    make_agentcore_a2a_metadata,
+    make_agentcore_mcp_metadata,
+)
 from tests.unit.services.federation_sync_test_helpers import (
     _FakeQuery,
     _make_federation,
@@ -128,26 +132,26 @@ async def test_build_sync_plan_tracks_unchanged_resources_for_acl_inheritance(
         id=mcp_id,
         serverName="unchanged-mcp",
         federationRefId=federation.id,
-        federationMetadata={"runtimeArn": mcp_runtime_arn, "runtimeVersion": "1"},
+        federationMetadata=make_agentcore_mcp_metadata(runtime_arn=mcp_runtime_arn, runtime_version="1"),
     )
     discovered_mcp = SimpleNamespace(
         id=PydanticObjectId(),
         serverName="unchanged-mcp",
-        federationMetadata={"runtimeArn": mcp_runtime_arn, "runtimeVersion": "1"},
+        federationMetadata=make_agentcore_mcp_metadata(runtime_arn=mcp_runtime_arn, runtime_version="1"),
     )
     existing_a2a = SimpleNamespace(
         id=a2a_id,
         path="/agentcore/a2a/unchanged-a2a",
         config=SimpleNamespace(type="jsonrpc"),
         federationRefId=federation.id,
-        federationMetadata={"runtimeArn": a2a_runtime_arn, "runtimeVersion": "1"},
+        federationMetadata=make_agentcore_a2a_metadata(runtime_arn=a2a_runtime_arn, runtime_version="1"),
     )
     discovered_a2a = SimpleNamespace(
         id=PydanticObjectId(),
         path="/agentcore/a2a/unchanged-a2a",
         card=SimpleNamespace(name="unchanged-a2a"),
         config=SimpleNamespace(type="jsonrpc"),
-        federationMetadata={"runtimeArn": a2a_runtime_arn, "runtimeVersion": "1"},
+        federationMetadata=make_agentcore_a2a_metadata(runtime_arn=a2a_runtime_arn, runtime_version="1"),
     )
 
     def _fake_mcp_find(query, session=None):
@@ -228,7 +232,7 @@ async def test_apply_sync_plan_updates_a2a_runtime_access(
         tags=[],
         wellKnown=None,
         config=SimpleNamespace(type="http_json", runtimeAccess=SimpleNamespace(mode="iam"), enabled=True),
-        federationMetadata={"runtimeVersion": "1"},
+        federationMetadata=make_agentcore_a2a_metadata(runtime_version="1"),
         save=AsyncMock(),
     )
     updated_runtime_access = SimpleNamespace(mode="jwt")
@@ -238,7 +242,7 @@ async def test_apply_sync_plan_updates_a2a_runtime_access(
         tags=[],
         wellKnown=None,
         config=SimpleNamespace(type="jsonrpc", runtimeAccess=updated_runtime_access, enabled=True),
-        federationMetadata={"runtimeVersion": "1"},
+        federationMetadata=make_agentcore_a2a_metadata(runtime_version="1"),
     )
     sync_plan = FederationSyncPlan(
         summary=FederationApplySummary(updatedAgents=1),
@@ -289,7 +293,7 @@ async def test_apply_sync_plan_inherits_acl_to_created_updated_and_unchanged_res
         tags=[],
         config={},
         numTools=1,
-        federationMetadata={},
+        federationMetadata=None,
         save=AsyncMock(),
     )
     existing_a2a = SimpleNamespace(
@@ -299,7 +303,7 @@ async def test_apply_sync_plan_inherits_acl_to_created_updated_and_unchanged_res
         tags=[],
         wellKnown=None,
         config=SimpleNamespace(type="jsonrpc", enabled=True),
-        federationMetadata={},
+        federationMetadata=None,
         save=AsyncMock(),
     )
 
@@ -314,7 +318,7 @@ async def test_apply_sync_plan_inherits_acl_to_created_updated_and_unchanged_res
         tags=[],
         config={},
         numTools=1,
-        federationMetadata={},
+        federationMetadata=None,
     )
     new_a2a_item = SimpleNamespace(
         path="/new-path",
@@ -322,7 +326,7 @@ async def test_apply_sync_plan_inherits_acl_to_created_updated_and_unchanged_res
         tags=[],
         wellKnown=None,
         config=SimpleNamespace(type="jsonrpc", enabled=True),
-        federationMetadata={},
+        federationMetadata=None,
     )
 
     # Mock insert to set IDs on the items
@@ -341,7 +345,7 @@ async def test_apply_sync_plan_inherits_acl_to_created_updated_and_unchanged_res
         tags=[],
         config={},
         numTools=2,
-        federationMetadata={},
+        federationMetadata=None,
     )
     update_a2a_item = SimpleNamespace(
         path="/updated-path",
@@ -349,7 +353,7 @@ async def test_apply_sync_plan_inherits_acl_to_created_updated_and_unchanged_res
         tags=[],
         wellKnown=None,
         config=SimpleNamespace(type="jsonrpc", enabled=True),
-        federationMetadata={},
+        federationMetadata=None,
     )
 
     federation_acl_entries = [
