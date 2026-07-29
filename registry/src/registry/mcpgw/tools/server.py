@@ -13,17 +13,14 @@ from typing import Annotated, Any
 from uuid import uuid4
 
 from beanie import PydanticObjectId
-from bson import ObjectId
 from httpx_sse import EventSource
 from mcp.server.fastmcp import Context
 from mcp.server.session import ServerSession
-from mcp.shared.exceptions import McpError, UrlElicitationRequiredError
+from mcp.shared.exceptions import McpError
 from mcp.types import (
     CallToolResult,
-    ElicitRequestURLParams,
     EmbeddedResource,
     ErrorData,
-    InitializeRequestParams,
     TextContent,
     TextResourceContents,
 )
@@ -33,7 +30,6 @@ from pydantic.networks import AnyUrl
 from registry_pkgs.models import ResourceType
 
 from ...auth.dependencies import UserContextDict
-from ...auth.oauth.types import ClientBranding, StateMetadata
 from ...core.config import settings
 from ...core.exceptions import (
     ConsentRequiredException,
@@ -50,16 +46,18 @@ from ...core.telemetry_decorators import (
     ToolExecutionMetricsContext,
 )
 from ...services.access_control_service import ACLService
-from ...services.generated_token_policy import is_server_consent_exempt
+from ...services.generated_token_policy import is_consent_exempt
 from ...utils.otel_metrics import record_server_request
 from ..core.types import McpAppContext
 from .types import get_meta_field
 from .utils import (
+    _build_url_elicitation_result,
+    _extract_authenticated_user_context,
+    _get_state_metadata,
     build_authenticated_headers,
     forward_notification,
     get_target_url,
     parse_data_field,
-    parse_elicitation_id,
 )
 
 logger = logging.getLogger(__name__)
@@ -69,25 +67,8 @@ def _get_server_service(ctx: Context[ServerSession, McpAppContext]):
     return ctx.request_context.lifespan_context.server_service
 
 
-def _get_session_store(ctx: Context[ServerSession, McpAppContext]):
-    return ctx.request_context.lifespan_context.session_store
-
-
 def _get_mcp_client_service(ctx: Context[ServerSession, McpAppContext]):
     return ctx.request_context.lifespan_context.mcp_client_service
-
-
-def _extract_authenticated_user_context(ctx: Context[ServerSession, McpAppContext]) -> UserContextDict | None:
-    try:
-        user_context: UserContextDict = ctx.request_context.request.state.user  # type: ignore[union-attr]
-    except AttributeError:
-        return None
-
-    user_id = user_context.get("user_id") if user_context else None
-    if not user_id or not ObjectId.is_valid(user_id):
-        return None
-
-    return user_context
 
 
 async def _user_can_view_server(
@@ -228,107 +209,6 @@ async def _downstream_tool_call(
         raise InternalServerException(msg) from exc
 
 
-def _get_state_metadata(client_params: InitializeRequestParams | None) -> StateMetadata:
-    """
-    Check if client is one of the three brands: VS Code, Claude, and Cursor.
-    If yes, relay this info all the way to frontend for it to use the deep link technology with them.
-    """
-
-    # `notify_elicitation_complete` must match whatever `_build_url_elicitation_result` decides at
-    # elicitation time: it only registers the session in `SessionStore` (making a later notification
-    # possible) when the client supports URL mode elicitation.
-    notify_elicitation_complete = _support_url_elicitation(client_params)
-
-    if client_params is None:
-        return {
-            "client_branding": ClientBranding.UNRECOGNIZED,
-            "notify_elicitation_complete": notify_elicitation_complete,
-        }
-
-    # As of 2026-03-17, below are how mainstream AI agents support URL mode elicitation and how that relate to deep link.
-    # VSCode: Perfect support. Its client name is "Visual Studio Code". We recognize this and provide deep link
-    #   back to the VSCode app window from our re-auth success page.
-    # Claude Desktop: Doesn't support URL mode elicitation, but does recognize our fallback CallToolResult and
-    #   provides a link to its user, so UX is good. Its client name starts with "claude-ai", and we recognize this
-    #   to provide deep link back to it.
-    # Claude Code CLI: Perfect support in the latest version. However, Claude Code CLI runs in the terminal emulator's app window,
-    #   so there is no way we can deep link back to it. Its client name is "claude-code".
-    # Claude extension for VSCode/Cursor: The extension is basically a bridge between the editor UI and the Claude Code CLI.
-    #   Even though Claude Code CLI support URL mode elicitation, when it relays the elicitation back to the extension,
-    #   the extension just silently denies it without prompting the user at all. This is a bug and we have filed
-    #   an [issue](https://github.com/anthropics/claude-code/issues/35353) for it.
-    #   The client names are both "claude-code", so even after the bug is fixed, we cannot provide deep link support
-    #   because we cannot tell apart the CLI from the two extensions.
-    # Cursor: Doesn't support, but does recognize our fallback, similar to Claude Desktop. Its client name starts with
-    #   "probe (via mcp-remote" or "mcp-stdio-client (via mcp-remote", depending on how the MCP server is configured,
-    #   and we recognize them to provide deep link back to Cursor.
-    name = client_params.clientInfo.name.strip().lower()
-    if name == "visual studio code":
-        return {"client_branding": ClientBranding.VSCODE, "notify_elicitation_complete": notify_elicitation_complete}
-    elif name.startswith("claude-ai"):
-        return {"client_branding": ClientBranding.CLAUDE, "notify_elicitation_complete": notify_elicitation_complete}
-    elif name.startswith("probe (via mcp-remote") or name.startswith("mcp-stdio-client (via mcp-remote"):
-        return {"client_branding": ClientBranding.CURSOR, "notify_elicitation_complete": notify_elicitation_complete}
-    else:
-        return {
-            "client_branding": ClientBranding.UNRECOGNIZED,
-            "notify_elicitation_complete": notify_elicitation_complete,
-        }
-
-
-def _support_url_elicitation(client_params: InitializeRequestParams | None) -> bool:
-    """
-    Report if MCP client supports URL mode elicitation by checking its capabilities.
-    """
-
-    if client_params is None:
-        return False
-
-    elicitation = client_params.capabilities.elicitation
-    if elicitation is None:
-        return False
-
-    return elicitation.url is not None
-
-
-def _build_url_elicitation_result(
-    ctx: Context[ServerSession, McpAppContext],
-    auth_url: str,
-    llm_template: str,
-    human_message: str,
-    *,
-    elicitation_id: str | None = None,
-) -> CallToolResult:
-    """Build a URL elicitation response or a fallback tool result for clients without URL mode.
-
-    ``elicitation_id`` should be passed explicitly when the caller already minted one (e.g. the
-    consent flow, whose ``auth_url`` has no ``state`` param for ``parse_elicitation_id`` to recover
-    it from). When omitted, it's recovered from ``auth_url`` (the OAuth-expired flow's ``state``).
-    """
-    if elicitation_id is None:
-        elicitation_id = parse_elicitation_id(auth_url)
-    if elicitation_id is not None and _support_url_elicitation(ctx.session.client_params):
-        msg = llm_template.format("provided URL")
-        logger.info(f"sending back the URL mode elicitation error response with ID {elicitation_id}.")
-        _get_session_store(ctx).append(elicitation_id, ctx.session)
-        raise UrlElicitationRequiredError(
-            message=msg,
-            elicitations=[
-                ElicitRequestURLParams(
-                    elicitationId=elicitation_id,
-                    url=auth_url,
-                    message=human_message,
-                )
-            ],
-        )
-
-    logger.info("Client doesn't support URL mode elicitation. Sending back a tool call result with the URL.")
-    return CallToolResult(
-        content=[TextContent(type="text", text=llm_template.format(f"URL `{auth_url}`"))],
-        isError=True,
-    )
-
-
 async def execute_tool_impl(
     ctx: Context[ServerSession, McpAppContext],
     tool_name: str,
@@ -417,7 +297,7 @@ async def execute_tool_impl(
                 )
 
             client_id = user_context["client_id"]
-            requires_server_consent = not is_server_consent_exempt(
+            requires_server_consent = not is_consent_exempt(
                 client_id,
                 settings.headless_agent_client_id,
             )

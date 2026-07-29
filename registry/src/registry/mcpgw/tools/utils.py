@@ -10,18 +10,25 @@ from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import parse_qs, urlsplit
 from uuid import UUID
 
+from bson import ObjectId
 from httpx_sse import ServerSentEvent
+from mcp.server.fastmcp import Context
 from mcp.server.session import ServerSession
+from mcp.shared.exceptions import UrlElicitationRequiredError
 from mcp.shared.session import RequestId
 from mcp.types import (
+    CallToolResult,
     CancelledNotification,
     ElicitCompleteNotification,
+    ElicitRequestURLParams,
+    InitializeRequestParams,
     LoggingMessageNotification,
     ProgressNotification,
     PromptListChangedNotification,
     ResourceListChangedNotification,
     ResourceUpdatedNotification,
     TaskStatusNotification,
+    TextContent,
     ToolListChangedNotification,
 )
 from pydantic import ValidationError
@@ -31,15 +38,100 @@ from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 
 from ...auth.dependencies import UserContextDict, effective_scopes_from_context
 from ...auth.oauth.flow_state_manager import FlowStateManager
-from ...auth.oauth.types import StateMetadata
+from ...auth.oauth.types import ClientBranding, StateMetadata
 from ...core.exceptions import InternalServerException, UrlElicitationRequiredException
 from ...schemas.errors import AuthenticationError, OAuthReAuthRequiredError, OAuthTokenError
 from ...services.server_service import build_complete_headers_for_server
+from ..core.types import McpAppContext
 
 if TYPE_CHECKING:
     from ...services.oauth.oauth_service import MCPOAuthService
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_authenticated_user_context(ctx: Context[ServerSession, McpAppContext]) -> UserContextDict | None:
+    try:
+        user_context: UserContextDict = ctx.request_context.request.state.user  # type: ignore[union-attr]
+    except AttributeError:
+        return None
+
+    user_id = user_context.get("user_id") if user_context else None
+    if not user_id or not ObjectId.is_valid(user_id):
+        return None
+
+    return user_context
+
+
+def _support_url_elicitation(client_params: InitializeRequestParams | None) -> bool:
+    """Return whether an MCP client supports URL-mode elicitation."""
+    if client_params is None:
+        return False
+
+    elicitation = client_params.capabilities.elicitation
+    if elicitation is None:
+        return False
+
+    return elicitation.url is not None
+
+
+def _get_state_metadata(client_params: InitializeRequestParams | None) -> StateMetadata:
+    """Build consent state metadata, including client branding and notification support."""
+    notify_elicitation_complete = _support_url_elicitation(client_params)
+
+    if client_params is None:
+        return {
+            "client_branding": ClientBranding.UNRECOGNIZED,
+            "notify_elicitation_complete": notify_elicitation_complete,
+        }
+
+    name = client_params.clientInfo.name.strip().lower()
+    if name == "visual studio code":
+        branding = ClientBranding.VSCODE
+    elif name.startswith("claude-ai"):
+        branding = ClientBranding.CLAUDE
+    elif name.startswith("probe (via mcp-remote") or name.startswith("mcp-stdio-client (via mcp-remote"):
+        branding = ClientBranding.CURSOR
+    else:
+        branding = ClientBranding.UNRECOGNIZED
+
+    return {
+        "client_branding": branding,
+        "notify_elicitation_complete": notify_elicitation_complete,
+    }
+
+
+def _build_url_elicitation_result(
+    ctx: Context[ServerSession, McpAppContext],
+    auth_url: str,
+    llm_template: str,
+    human_message: str,
+    *,
+    elicitation_id: str | None = None,
+) -> CallToolResult:
+    """Build a URL elicitation response or fallback result for unsupported clients."""
+    if elicitation_id is None:
+        elicitation_id = parse_elicitation_id(auth_url)
+    if elicitation_id is not None and _support_url_elicitation(ctx.session.client_params):
+        message = llm_template.format("provided URL")
+        logger.info("sending back the URL mode elicitation error response with ID %s.", elicitation_id)
+        ctx.request_context.lifespan_context.session_store.append(elicitation_id, ctx.session)
+        raise UrlElicitationRequiredError(
+            message=message,
+            elicitations=[
+                ElicitRequestURLParams(
+                    elicitationId=elicitation_id,
+                    url=auth_url,
+                    message=human_message,
+                )
+            ],
+        )
+
+    logger.info("Client doesn't support URL mode elicitation. Sending back a tool call result with the URL.")
+    return CallToolResult(
+        content=[TextContent(type="text", text=llm_template.format(f"URL `{auth_url}`"))],
+        isError=True,
+    )
 
 
 class NotificationMethod(StrEnum):

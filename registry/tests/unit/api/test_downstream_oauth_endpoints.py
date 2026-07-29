@@ -18,6 +18,7 @@ from registry.auth.dependencies import get_current_user
 from registry.constants import DownstreamOAuthConstants
 from registry.core.config import settings
 from registry.deps import (
+    get_a2a_agent_service,
     get_consent_store,
     get_mcp_service,
     get_oauth_state_store,
@@ -133,6 +134,8 @@ def consent_store_mock() -> Mock:
     store.grant_client_consent = Mock()
     store.has_server_consent = Mock(return_value=True)
     store.grant_server_consent = Mock()
+    store.has_agent_consent = Mock(return_value=True)
+    store.grant_agent_consent = Mock()
     return store
 
 
@@ -169,10 +172,21 @@ def server_service_mock() -> Mock:
 
 
 @pytest.fixture
+def a2a_agent_service_mock() -> Mock:
+    svc = Mock()
+    agent = Mock()
+    agent.path = "/research"
+    agent.config.title = "Research Agent"
+    svc.get_agent_by_path = AsyncMock(return_value=agent)
+    return svc
+
+
+@pytest.fixture
 def client(
     redis_mock,
     mcp_service_mock,
     server_service_mock,
+    a2a_agent_service_mock,
     store_mock,
     consent_store_mock,
     pending_consent_store,
@@ -184,6 +198,7 @@ def client(
     app.dependency_overrides[get_redis_client] = lambda: redis_mock
     app.dependency_overrides[get_mcp_service] = lambda: mcp_service_mock
     app.dependency_overrides[get_server_service] = lambda: server_service_mock
+    app.dependency_overrides[get_a2a_agent_service] = lambda: a2a_agent_service_mock
     app.dependency_overrides[get_oauth_state_store] = lambda: store_mock
     app.dependency_overrides[get_consent_store] = lambda: consent_store_mock
     app.dependency_overrides[get_pending_consent_store] = lambda: pending_consent_store
@@ -767,6 +782,177 @@ def test_deny_server_consent_rejects_reused_nonce(client):
     resp = client.post("/mcp/consent/server/deny", json={"nonce": "missing"})
 
     assert resp.status_code == 404
+
+
+def test_get_agent_consent_context_returns_client_and_agent_metadata(
+    client,
+    pending_consent_store,
+    store_mock,
+):
+    pending_consent_store.save(
+        "nonce-1",
+        {"user_id": USER_A, "agent_path": "/research", "client_id": "claude"},
+    )
+    store_mock.get_client.return_value = {
+        "client_name": "Claude",
+        "client_uri": "https://claude.ai",
+        "ip_address": "203.0.113.7",
+        "registered_at": 1_700_000_000,
+    }
+
+    resp = client.get("/mcp/consent/agent", params={"nonce": "nonce-1"})
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "client_name": "Claude",
+        "client_uri": "https://claude.ai",
+        "ip_address": "203.0.113.7",
+        "registered_at": 1_700_000_000,
+        "agent_path": "/research",
+        "agent_name": "Research Agent",
+    }
+
+
+def test_get_agent_consent_context_falls_back_to_path_when_agent_is_missing(
+    client,
+    pending_consent_store,
+    a2a_agent_service_mock,
+):
+    pending_consent_store.save(
+        "nonce-1",
+        {"user_id": USER_A, "agent_path": "/missing", "client_id": "claude"},
+    )
+    a2a_agent_service_mock.get_agent_by_path.return_value = None
+
+    resp = client.get("/mcp/consent/agent", params={"nonce": "nonce-1"})
+
+    assert resp.status_code == 200
+    assert resp.json()["agent_name"] == "/missing"
+
+
+def test_get_agent_consent_context_rejects_other_user(client, pending_consent_store):
+    pending_consent_store.save(
+        "nonce-1",
+        {"user_id": USER_B, "agent_path": "/research", "client_id": "claude"},
+    )
+
+    resp = client.get("/mcp/consent/agent", params={"nonce": "nonce-1"})
+
+    assert resp.status_code == 404
+
+
+def test_approve_agent_consent_grants_and_consumes_nonce(
+    client,
+    pending_consent_store,
+    consent_store_mock,
+):
+    pending_consent_store.save(
+        "nonce-1",
+        {"user_id": USER_A, "agent_path": "/research", "client_id": "claude"},
+    )
+
+    resp = client.post("/mcp/consent/agent", json={"nonce": "nonce-1"})
+
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok", "client_branding": None}
+    consent_store_mock.grant_agent_consent.assert_called_once_with(USER_A, "claude", "/research")
+    assert pending_consent_store.peek("nonce-1") is None
+
+
+def test_approve_agent_consent_notifies_mode1_session_and_returns_branding(
+    client,
+    pending_consent_store,
+    consent_store_mock,
+    session_store_mock,
+):
+    fake_session = Mock()
+    fake_session.send_elicit_complete = AsyncMock()
+    session_store_mock.pop.return_value = fake_session
+    pending_consent_store.save(
+        "nonce-1",
+        {
+            "user_id": USER_A,
+            "agent_path": "/research",
+            "client_id": "claude",
+            "elicitation_id": "elicit-1",
+            "client_branding": "cursor",
+            "notify_elicitation_complete": True,
+        },
+    )
+
+    resp = client.post("/mcp/consent/agent", json={"nonce": "nonce-1"})
+
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok", "client_branding": "cursor"}
+    consent_store_mock.grant_agent_consent.assert_called_once_with(USER_A, "claude", "/research")
+    session_store_mock.pop.assert_called_once_with("elicit-1")
+    fake_session.send_elicit_complete.assert_awaited_once_with("elicit-1")
+
+
+def test_approve_agent_consent_rejects_other_user_without_consuming_nonce(
+    client,
+    pending_consent_store,
+    consent_store_mock,
+):
+    pending_consent_store.save(
+        "nonce-1",
+        {"user_id": USER_A, "agent_path": "/research", "client_id": "claude"},
+    )
+    client.app.dependency_overrides[get_current_user] = lambda: _session_user(USER_B)
+
+    resp = client.post("/mcp/consent/agent", json={"nonce": "nonce-1"})
+
+    assert resp.status_code == 404
+    assert pending_consent_store.peek("nonce-1") is not None
+    consent_store_mock.grant_agent_consent.assert_not_called()
+
+
+def test_deny_agent_consent_removes_pending_without_granting(
+    client,
+    pending_consent_store,
+    consent_store_mock,
+):
+    pending_consent_store.save(
+        "nonce-1",
+        {"user_id": USER_A, "agent_path": "/research", "client_id": "claude"},
+    )
+
+    resp = client.post("/mcp/consent/agent/deny", json={"nonce": "nonce-1"})
+
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "denied", "client_branding": None}
+    consent_store_mock.grant_agent_consent.assert_not_called()
+    assert pending_consent_store.peek("nonce-1") is None
+
+
+def test_deny_agent_consent_notifies_without_granting(
+    client,
+    pending_consent_store,
+    consent_store_mock,
+    session_store_mock,
+):
+    fake_session = Mock()
+    fake_session.send_elicit_complete = AsyncMock()
+    session_store_mock.pop.return_value = fake_session
+    pending_consent_store.save(
+        "nonce-1",
+        {
+            "user_id": USER_A,
+            "agent_path": "/research",
+            "client_id": "claude",
+            "elicitation_id": "elicit-1",
+            "client_branding": "vscode",
+            "notify_elicitation_complete": True,
+        },
+    )
+
+    resp = client.post("/mcp/consent/agent/deny", json={"nonce": "nonce-1"})
+
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "denied", "client_branding": "vscode"}
+    consent_store_mock.grant_agent_consent.assert_not_called()
+    session_store_mock.pop.assert_called_once_with("elicit-1")
+    fake_session.send_elicit_complete.assert_awaited_once_with("elicit-1")
 
 
 def _post_token(

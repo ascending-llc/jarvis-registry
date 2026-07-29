@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import secrets
 import uuid
 from collections.abc import Callable
 from typing import Annotated
@@ -27,8 +28,15 @@ from registry_pkgs.models import ResourceType
 from registry_pkgs.models.a2a_agent import A2AAgent
 from registry_pkgs.workflows.a2a_client import A2ACallResult, call_a2a, raise_if_iam_unsupported
 
+from ...core.config import settings
 from ...services.access_control_service import ACLService
+from ...services.generated_token_policy import is_consent_exempt
 from ..core.types import McpAppContext
+from .utils import (
+    _build_url_elicitation_result,
+    _extract_authenticated_user_context,
+    _get_state_metadata,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -131,21 +139,6 @@ def _error_result(text: str) -> CallToolResult:
     return CallToolResult(isError=True, content=[TextContent(type="text", text=text)])
 
 
-def _extract_authenticated_user_id(ctx: Context[ServerSession, McpAppContext]) -> str | None:
-    """Pull user_id from the gateway auth context attached to the request.
-
-    Returns None if the request lacks a user context (unauthenticated). The
-    caller is responsible for failing closed.
-    """
-    try:
-        user_context = ctx.request_context.request.state.user  # type: ignore[union-attr]
-    except AttributeError:
-        return None
-    if not user_context:
-        return None
-    return user_context.get("user_id")
-
-
 async def _user_can_view_agent(
     acl_service: ACLService,
     user_id: str,
@@ -220,10 +213,11 @@ async def execute_agent_impl(
         return error
 
     # 2. AuthN — fail closed when user context is absent
-    user_id = _extract_authenticated_user_id(ctx)
-    if not user_id:
+    user_context = _extract_authenticated_user_context(ctx)
+    if user_context is None:
         logger.warning("execute_agent: missing authenticated user_id; rejecting agent_id=%s", agent_id)
         return _error_result("Authentication required: missing user context.")
+    user_id = user_context["user_id"]
 
     # 3. AuthZ — same VIEW-permission rule as workflow A2A executors
     lifespan = ctx.request_context.lifespan_context
@@ -248,7 +242,48 @@ async def execute_agent_impl(
         logger.warning("execute_agent: IAM auth not supported agent_id=%s path=%s", agent_id, agent.path)
         return _error_result(str(exc))
 
-    # 5. Invoke
+    # 5. Per-agent user consent
+    client_id = user_context["client_id"]
+    if not is_consent_exempt(
+        client_id, settings.headless_agent_client_id
+    ) and not lifespan.consent_store.has_agent_consent(
+        user_id,
+        client_id,
+        agent.path,
+    ):
+        nonce = secrets.token_urlsafe(32)
+        elicitation_id = str(uuid.uuid4())
+        state_metadata = _get_state_metadata(ctx.session.client_params)
+        lifespan.pending_consent_store.save(
+            nonce,
+            {
+                "user_id": user_id,
+                "client_id": client_id,
+                "agent_path": agent.path,
+                **state_metadata,
+                "elicitation_id": elicitation_id,
+            },
+        )
+        auth_url = f"{settings.registry_client_url}/consent/agent?nonce={nonce}"
+        agent_name = agent.config.title if agent.config else agent.card.name
+        template = (
+            f"In order to call the '{agent_name}' A2A agent, the user must explicitly consent in a browser window. "
+            "Please direct the client to open the {} in a browser window, grant consent, and come back to retry "
+            "the same request again."
+        )
+        human_message = (
+            f"Jarvis Registry needs your explicit consent before this application can call the '{agent_name}' "
+            "A2A agent on your behalf. Please follow the URL to review and approve."
+        )
+        return _build_url_elicitation_result(
+            ctx,
+            auth_url,
+            template,
+            human_message,
+            elicitation_id=elicitation_id,
+        )
+
+    # 6. Invoke
     # AgentPart is TextPart | FilePart | DataPart — bare concrete types from a2a-sdk.
     # a2a.types.Part is RootModel[...] — the SDK wrapper call_a2a expects.
     a2a_message = Message(
@@ -269,7 +304,7 @@ async def execute_agent_impl(
         logger.warning("execute_agent: agent_id=%s failed: %s", agent_id, result.error)
         return _error_result(f"Agent invocation failed: {result.error}")
 
-    # 6. Render
+    # 7. Render
     artifact_count = len(result.task.artifacts) if result.task and result.task.artifacts else 0
     logger.info(
         "execute_agent: agent_id=%s responded (artifacts=%d, message=%s)",

@@ -21,9 +21,9 @@ def resolve_generated_token_client_id(
     raise ValueError(f"Unsupported token purpose: {token_purpose}")
 
 
-def is_server_consent_exempt(
+def is_consent_exempt(
     client_id: str,
     headless_agent_client_id: str,
 ) -> bool:
-    """Return whether a client ID is exempt from per-server consent."""
+    """Return whether a client ID is exempt from per-resource consent."""
     return client_id == headless_agent_client_id

@@ -11,6 +11,7 @@ from registry_pkgs.core.oauth_state_store import DownstreamOAuthStoreProtocol
 from ....auth.dependencies import CurrentUser
 from ....core.session_store import SessionStore
 from ....deps import (
+    get_a2a_agent_service,
     get_consent_store,
     get_mcp_service,
     get_oauth_state_store,
@@ -18,6 +19,7 @@ from ....deps import (
     get_server_service,
     get_session_store,
 )
+from ....services.a2a_agent_service import A2AAgentService
 from ....services.oauth.downstream_device_service import (
     DeviceCodeNotFoundError,
     initiate_device_layer_a,
@@ -226,6 +228,65 @@ async def approve_server_consent(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error") from e
 
 
+@router.get("/consent/agent")
+async def get_agent_consent_context(
+    nonce: str,
+    user_context: CurrentUser,
+    store: DownstreamOAuthStoreProtocol = Depends(get_oauth_state_store),
+    pending_store: PendingConsentStore = Depends(get_pending_consent_store),
+    agent_service: A2AAgentService = Depends(get_a2a_agent_service),
+) -> dict[str, str | int | None]:
+    try:
+        pending = pending_store.peek(nonce)
+        if pending is None or pending["user_id"] != user_context["user_id"]:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This consent link has expired.")
+
+        client_metadata = store.get_client(pending["client_id"]) or {}
+        agent = await agent_service.get_agent_by_path(pending["agent_path"])
+        agent_name = agent.config.title if agent and agent.config else agent.card.name if agent and agent.card else None
+        return {
+            "client_name": client_metadata.get("client_name", "Unknown application"),
+            "client_uri": client_metadata.get("client_uri"),
+            "ip_address": client_metadata.get("ip_address"),
+            "registered_at": client_metadata.get("registered_at"),
+            "agent_path": pending["agent_path"],
+            "agent_name": agent_name or pending["agent_path"],
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"[Agent Consent] failed to fetch consent context: user={user_context['user_id']}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error") from e
+
+
+@router.post("/consent/agent")
+async def approve_agent_consent(
+    body: ApproveConsentRequest,
+    user_context: CurrentUser,
+    consent_store: ConsentStore = Depends(get_consent_store),
+    pending_store: PendingConsentStore = Depends(get_pending_consent_store),
+    session_store: SessionStore = Depends(get_session_store),
+) -> dict[str, str | None]:
+    try:
+        pending = pending_store.peek(body.nonce)
+        if pending is None or pending["user_id"] != user_context["user_id"]:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This consent link has expired.")
+
+        consumed = pending_store.consume(body.nonce)
+        if consumed is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This consent link has expired.")
+        pending = consumed
+        consent_store.grant_agent_consent(pending["user_id"], pending["client_id"], pending["agent_path"])
+
+        client_branding = await _notify_elicitation_complete(pending, session_store)
+        return {"status": "ok", "client_branding": client_branding}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"[Agent Consent] failed to approve consent: user={user_context['user_id']}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error") from e
+
+
 async def _deny_consent(
     nonce: str,
     user_context: CurrentUser,
@@ -291,3 +352,13 @@ async def deny_server_consent(
     session_store: SessionStore = Depends(get_session_store),
 ) -> dict[str, str | None]:
     return await _deny_consent(body.nonce, user_context, pending_store, session_store, log_tag="Server Consent")
+
+
+@router.post("/consent/agent/deny")
+async def deny_agent_consent(
+    body: ApproveConsentRequest,
+    user_context: CurrentUser,
+    pending_store: PendingConsentStore = Depends(get_pending_consent_store),
+    session_store: SessionStore = Depends(get_session_store),
+) -> dict[str, str | None]:
+    return await _deny_consent(body.nonce, user_context, pending_store, session_store, log_tag="Agent Consent")
