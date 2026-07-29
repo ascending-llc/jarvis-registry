@@ -9,8 +9,12 @@ from langchain_core.documents import Document as LangChainDocument
 from pydantic import ValidationError
 
 from registry_pkgs.models.a2a_agent import A2AAgent
-from registry_pkgs.models.enums import FederationProviderType
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
+from registry_pkgs.testing.federation_metadata import (
+    make_agentcore_a2a_metadata,
+    make_agentcore_mcp_metadata,
+    make_azure_foundry_metadata,
+)
 
 
 class TestExtendedMCPServerStructure:
@@ -259,7 +263,7 @@ class TestExtendedMCPServerStructure:
             author=PydanticObjectId(),
             path="/agentcore/mcp/versioned-server",
             federationId="arn:aws:bedrock-agentcore:us-east-1:1:runtime/versioned",
-            federationMetadata={"providerType": FederationProviderType.AWS_AGENTCORE, "runtimeVersion": "7"},
+            federationMetadata=make_agentcore_mcp_metadata(runtime_version="7"),
         )
 
         docs = server.to_documents()
@@ -431,7 +435,7 @@ class TestExtendedMCPServerStructure:
             ),
             tags=["agentcore"],
             author=PydanticObjectId(),
-            federationMetadata={"providerType": FederationProviderType.AWS_AGENTCORE, "runtimeVersion": "11"},
+            federationMetadata=make_agentcore_a2a_metadata(runtime_version="11"),
         )
 
         docs = agent.to_documents()
@@ -524,17 +528,17 @@ class TestExtendedMCPServerStructure:
                 description="A federated Azure agent",
                 type="http_json",
             ),
-            federationMetadata={
-                "providerType": "azure_ai_foundry",
-                "agentName": "azure-agent",
-                "agentVersion": "3",
-                "agentVersionId": "asst_abc123",
-            },
+            federationMetadata=make_azure_foundry_metadata(
+                runtime_arn="azure-agent",
+                agent_name="azure-agent",
+                agent_version="3",
+                versionId="asst_abc123",
+            ),
         )
 
         assert agent.federationRefId is None
-        assert agent.federationMetadata["providerType"] == "azure_ai_foundry"
-        assert agent.federationMetadata["agentVersionId"] == "asst_abc123"
+        assert agent.federationMetadata.providerType == "azure_ai_foundry"
+        assert agent.federationMetadata.versionId == "asst_abc123"
 
     def test_a2a_agent_coerces_well_known_dict_to_model(self, monkeypatch):
         from registry_pkgs.models.a2a_agent import AgentConfig
