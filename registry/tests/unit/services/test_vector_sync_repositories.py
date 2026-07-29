@@ -4,6 +4,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from langchain_core.documents import Document
 
+from registry_pkgs.testing.federation_metadata import (
+    make_agentcore_a2a_metadata,
+    make_agentcore_mcp_metadata,
+)
 from registry_pkgs.vector.repositories.a2a_agent_repository import A2AAgentRepository
 from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRepository
 
@@ -60,7 +64,7 @@ def _make_agent(page_content: str = "x") -> SimpleNamespace:
         id="agent-demo-id",
         card=SimpleNamespace(name="demo-agent", version="1.0.0", skills=[]),
         config=SimpleNamespace(enabled=True),
-        federationMetadata={"runtimeVersion": "7"},
+        federationMetadata=make_agentcore_a2a_metadata(runtime_version="7"),
         to_documents=lambda: [Document(page_content=page_content, metadata={})],
     )
     agent.vectorContentHash = None
@@ -71,7 +75,7 @@ def _make_server(page_content: str = "x") -> SimpleNamespace:
     server = SimpleNamespace(
         id="server-demo-id",
         serverName="demo-server",
-        federationMetadata={"runtimeVersion": "11"},
+        federationMetadata=make_agentcore_mcp_metadata(runtime_version="11"),
         config={"enabled": True},
         to_documents=lambda: [Document(page_content=page_content, metadata={})],
     )
