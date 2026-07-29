@@ -9,6 +9,10 @@ from beanie import PydanticObjectId
 from registry.services.federation.a2a_client_registry import A2AClientRegistry
 from registry_pkgs.models.enums import AgentCoreRuntimeAccessMode, FederationProviderType
 from registry_pkgs.models.federation import AgentCoreRuntimeJwtConfig
+from registry_pkgs.testing.federation_metadata import (
+    make_agentcore_a2a_metadata,
+    make_azure_foundry_metadata,
+)
 
 
 def _agent(
@@ -18,7 +22,12 @@ def _agent(
     runtime_access: object | None = None,
     federation_id: PydanticObjectId | None = None,
 ) -> SimpleNamespace:
-    metadata = {} if provider is None else {"providerType": provider}
+    if provider == FederationProviderType.AZURE_AI_FOUNDRY.value:
+        metadata = make_azure_foundry_metadata()
+    elif provider == FederationProviderType.AWS_AGENTCORE.value:
+        metadata = make_agentcore_a2a_metadata()
+    else:
+        metadata = None
     config = SimpleNamespace(runtimeAccess=runtime_access)
     return SimpleNamespace(
         path=path,

@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-from typing import Any
-
 import httpx
 from beanie import PydanticObjectId
 
 from registry.core.a2a_proxy import A2AProxyClientRegistry
 from registry_pkgs.models.a2a_agent import A2AAgent, AgentConfig
-from registry_pkgs.models.enums import AgentCoreRuntimeAccessMode, FederationProviderType
+from registry_pkgs.models.enums import AgentCoreRuntimeAccessMode
 from registry_pkgs.models.federation import AgentCoreRuntimeJwtConfig
+from registry_pkgs.models.federation_metadata import A2AFederationMetadata, AgentCoreA2AFederationMetadata
 from registry_pkgs.workflows.a2a_client import is_azure_foundry_runtime
 
 from .azure_foundry_proxy_auth import AzureFoundryClientCache
@@ -16,14 +15,13 @@ from .azure_foundry_proxy_auth import AzureFoundryClientCache
 
 def _is_agentcore_jwt(
     agent_config: AgentConfig | None,
-    federation_metadata: dict[str, Any] | None,
+    federation_metadata: A2AFederationMetadata | None,
 ) -> bool:
-    fed = federation_metadata or {}
     return (
         agent_config is not None
         and agent_config.runtimeAccess is not None
         and agent_config.runtimeAccess.mode == AgentCoreRuntimeAccessMode.JWT
-        and fed.get("providerType") == FederationProviderType.AWS_AGENTCORE
+        and isinstance(federation_metadata, AgentCoreA2AFederationMetadata)
     )
 
 
