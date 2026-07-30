@@ -800,7 +800,7 @@ class FederationSyncService:
         resource_label: str,
     ) -> bool:
         """Record and skip metadata whose discriminator disagrees with its federation."""
-        actual_provider = getattr(metadata, "providerType", None)
+        actual_provider = metadata.providerType if metadata is not None else None
         if actual_provider == expected_provider:
             return False
 

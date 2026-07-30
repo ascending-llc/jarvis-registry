@@ -18,7 +18,7 @@ from registry_pkgs.models.a2a_agent import (
 )
 from registry_pkgs.models.enums import FederationProviderType
 from registry_pkgs.models.federation import AzureAiFoundryProviderConfig
-from registry_pkgs.models.federation_metadata import AzureFoundryFederationMetadata, FederationMetadataBase
+from registry_pkgs.models.federation_metadata import AzureFoundryFederationMetadata
 
 from .azure_foundry_auth import AzureFoundryAuthService
 
@@ -326,7 +326,7 @@ class AzureFoundryDiscoveryClient:
             agent.wellKnown.syncError = message
             agent.wellKnown.lastSyncAt = datetime.now(UTC)
         metadata = agent.federationMetadata
-        if isinstance(metadata, FederationMetadataBase):
+        if metadata is not None:
             metadata.enrichmentError = f"a2a enrichment failed: {message}"
 
     @staticmethod
