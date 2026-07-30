@@ -12,6 +12,7 @@ from registry.services.federation.azure_foundry_discovery import AzureFoundryDis
 from registry_pkgs.models import A2AAgent
 from registry_pkgs.models.a2a_agent import AgentConfig, WellKnownConfig
 from registry_pkgs.models.federation import AzureAiFoundryProviderConfig
+from registry_pkgs.testing.federation_metadata import make_agentcore_a2a_metadata
 
 PROJECT_ENDPOINT = "https://acc.services.ai.azure.com/api/projects/p"
 AUTHOR_ID = PydanticObjectId()
@@ -363,6 +364,20 @@ async def test_discover_marks_enrichment_failure_when_card_fetch_fails(fake_a2a_
     agent = result[0]
     assert agent.federationMetadata.enrichmentError.startswith("a2a enrichment failed")
     assert agent.wellKnown.lastSyncStatus == "failed"
+
+
+def test_mark_enrichment_failure_sets_error_on_federation_metadata_base():
+    metadata = make_agentcore_a2a_metadata()
+    agent = SimpleNamespace(
+        federationMetadata=metadata,
+        wellKnown=WellKnownConfig(enabled=True),
+    )
+
+    AzureFoundryDiscoveryClient._mark_enrichment_failure(agent, "invalid Azure Foundry federation metadata")
+
+    assert agent.wellKnown.lastSyncStatus == "failed"
+    assert agent.wellKnown.syncError == "invalid Azure Foundry federation metadata"
+    assert metadata.enrichmentError == "a2a enrichment failed: invalid Azure Foundry federation metadata"
 
 
 @pytest.mark.asyncio

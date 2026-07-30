@@ -18,7 +18,7 @@ from registry_pkgs.models.a2a_agent import (
     preferred_transport_to_config_type,
 )
 from registry_pkgs.models.federation import AgentCoreRuntimeAccessConfig, Federation
-from registry_pkgs.models.federation_metadata import AgentCoreFederationMetadata, FederationMetadataBase
+from registry_pkgs.models.federation_metadata import FederationMetadataBase
 from registry_pkgs.workflows.a2a_client import is_agentcore_runtime
 
 from .agentcore_clients import AgentCoreClientProvider
@@ -1016,12 +1016,13 @@ class AgentCoreRuntimeInvoker:
 
     @staticmethod
     def _set_enrichment_error(
-        metadata: AgentCoreFederationMetadata | None,
+        metadata: FederationMetadataBase | None,
         error_message: str | None,
     ) -> None:
         if metadata is None:
             return
-        metadata.enrichedAt = datetime.now(UTC)
+        if hasattr(metadata, "enrichedAt"):
+            metadata.enrichedAt = datetime.now(UTC)
         metadata.enrichmentError = error_message
 
     async def _build_runtime_http_auth(

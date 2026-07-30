@@ -9,7 +9,7 @@ from registry.services.federation.agentcore_runtime import AgentCoreRuntimeInvok
 from registry_pkgs.models import A2AAgent
 from registry_pkgs.models.a2a_agent import AgentConfig
 from registry_pkgs.models.federation import AgentCoreRuntimeAccessConfig
-from registry_pkgs.testing.federation_metadata import make_agentcore_a2a_metadata
+from registry_pkgs.testing.federation_metadata import make_agentcore_a2a_metadata, make_azure_foundry_metadata
 
 
 def _build_invoker() -> AgentCoreRuntimeInvoker:
@@ -82,6 +82,14 @@ class TestAgentCoreRuntimeInvoker:
         payload = 'event: message\ndata: {"jsonrpc":"2.0","result":{"ok":true}}\n\n'
         parsed = AgentCoreRuntimeInvoker._extract_json_payload(payload)
         assert parsed["result"]["ok"] is True
+
+    def test_set_enrichment_error_does_not_add_agentcore_timestamp_to_azure_metadata(self):
+        metadata = make_azure_foundry_metadata()
+
+        AgentCoreRuntimeInvoker._set_enrichment_error(metadata, "a2a enrichment failed: boom")
+
+        assert metadata.enrichmentError == "a2a enrichment failed: boom"
+        assert "enrichedAt" not in metadata.model_dump(mode="json")
 
     @pytest.mark.asyncio
     async def test_call_with_runtime_init_retry_async_retries(self):
