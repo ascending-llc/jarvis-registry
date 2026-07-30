@@ -7,6 +7,7 @@ import { GlobalProvider } from './contexts/GlobalContext';
 import { ServerProvider } from './contexts/ServerContext';
 import { ThemeProvider } from './contexts/ThemeContext';
 import AgentRegistryOrEdit from './pages/AgentRegistryOrEdit';
+import ConsentAgent from './pages/ConsentAgent';
 import ConsentDownstream from './pages/ConsentDownstream';
 import ConsentServer from './pages/ConsentServer';
 import Dashboard from './pages/Dashboard';
@@ -52,6 +53,14 @@ const router = createBrowserRouter(
       element: (
         <ProtectedRoute>
           <ConsentServer />
+        </ProtectedRoute>
+      ),
+    },
+    {
+      path: APP_ROUTES.consentAgent,
+      element: (
+        <ProtectedRoute>
+          <ConsentAgent />
         </ProtectedRoute>
       ),
     },

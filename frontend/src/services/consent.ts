@@ -8,6 +8,8 @@ export interface ConsentContext {
   registered_at: number | null;
   server_path?: string;
   server_name?: string;
+  agent_path?: string;
+  agent_name?: string;
 }
 
 export interface ResolveDeviceCodeResponse {
@@ -29,6 +31,12 @@ const MOCK_DOWNSTREAM_CONTEXT: ConsentContext = {
 };
 
 const MOCK_SERVER_CONTEXT: ConsentContext = { ...MOCK_DOWNSTREAM_CONTEXT, server_name: 'GitHub' };
+const MOCK_AGENT_CONTEXT: ConsentContext = {
+  ...MOCK_DOWNSTREAM_CONTEXT,
+  server_path: undefined,
+  agent_path: '/research',
+  agent_name: 'Research Agent',
+};
 
 export async function resolveDeviceCode(userCode: string): Promise<ResolveDeviceCodeResponse> {
   if (MOCK_ENABLED) {
@@ -73,4 +81,19 @@ export async function approveServerConsent(nonce: string): Promise<ConsentDecisi
 export async function denyServerConsent(nonce: string): Promise<ConsentDecisionResponse> {
   if (MOCK_ENABLED) return { status: 'denied', client_branding: null };
   return service.post(API.denyServerConsent, { nonce }) as Promise<ConsentDecisionResponse>;
+}
+
+export async function getAgentConsentContext(nonce: string): Promise<ConsentContext> {
+  if (MOCK_ENABLED) return MOCK_AGENT_CONTEXT;
+  return service.get(API.getAgentConsent(nonce)) as Promise<ConsentContext>;
+}
+
+export async function approveAgentConsent(nonce: string): Promise<ConsentDecisionResponse> {
+  if (MOCK_ENABLED) return { status: 'ok', client_branding: null };
+  return service.post(API.approveAgentConsent, { nonce }) as Promise<ConsentDecisionResponse>;
+}
+
+export async function denyAgentConsent(nonce: string): Promise<ConsentDecisionResponse> {
+  if (MOCK_ENABLED) return { status: 'denied', client_branding: null };
+  return service.post(API.denyAgentConsent, { nonce }) as Promise<ConsentDecisionResponse>;
 }
