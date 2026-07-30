@@ -81,13 +81,16 @@ const ResourceConsentPage: React.FC<ResourceConsentPageProps> = ({
     }
   }, [denyConsent, nonce]);
 
+  // Deep link back to the MCP client (VS Code, Claude, Cursor) once the decision is recorded
+  // (approve or deny), mirroring OAuthCallback.tsx's post-authorization deep link. The MCP client
+  // is only ever told "the human responded" either way — its retry is what surfaces the outcome.
   useEffect(() => {
     if ((approved || denied) && clientBranding && DEEP_LINK_BRANDS.includes(clientBranding)) {
       const deepLinkTimer = setTimeout(() => {
         const link = document.createElement('a');
         link.href = `${clientBranding}://`;
         link.click();
-      }, 1000);
+      }, 1000); // Give user time to see the result message
 
       return () => clearTimeout(deepLinkTimer);
     }
