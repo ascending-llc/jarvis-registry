@@ -18,6 +18,7 @@ from registry_pkgs.models.a2a_agent import (
     preferred_transport_to_config_type,
 )
 from registry_pkgs.models.federation import AgentCoreRuntimeAccessConfig, Federation
+from registry_pkgs.models.federation_metadata import FederationMetadataBase
 from registry_pkgs.workflows.a2a_client import is_agentcore_runtime
 
 from .agentcore_clients import AgentCoreClientProvider
@@ -57,6 +58,13 @@ class AgentCoreRuntimeInvoker:
         self._get_agent_card_retry_attempts = max(1, int(settings.agentcore_get_agent_card_retry_attempts or 1))
         self._get_agent_card_retry_delay_seconds = float(settings.agentcore_get_agent_card_retry_delay_seconds or 3.0)
 
+    @staticmethod
+    def _metadata_payload(metadata: FederationMetadataBase | None) -> dict[str, Any]:
+        """Serialize typed federation metadata at SDK/HTTP helper boundaries."""
+        if metadata is None:
+            return {}
+        return metadata.model_dump(mode="json", exclude_none=True)
+
     async def enrich_mcp_server(
         self,
         *,
@@ -66,9 +74,10 @@ class AgentCoreRuntimeInvoker:
         assume_role_arn: str | None = None,
     ) -> None:
         config = server.config or {}
+        metadata_payload = self._metadata_payload(server.federationMetadata)
         runtime_url = self._resolve_runtime_http_url(
             runtime_url=config.get("url"),
-            metadata=server.federationMetadata or {},
+            metadata=metadata_payload,
             region=region,
         )
         if not runtime_url:
@@ -80,8 +89,8 @@ class AgentCoreRuntimeInvoker:
                 runtime_url=runtime_url,
                 transport_type=config.get("type"),
                 runtime_access=runtime_access,
-                metadata=server.federationMetadata or {},
-                runtime_detail=server.federationMetadata or {},
+                metadata=metadata_payload,
+                runtime_detail=metadata_payload,
                 region=region,
                 assume_role_arn=assume_role_arn,
             )
@@ -90,14 +99,12 @@ class AgentCoreRuntimeInvoker:
             self._log_runtime_enrichment_context(
                 resource_name=server.serverName,
                 runtime_arn=self._resolve_runtime_arn(
-                    metadata=server.federationMetadata or {},
-                    runtime_detail=server.federationMetadata or {},
+                    metadata=metadata_payload,
+                    runtime_detail=metadata_payload,
                 ),
-                metadata=server.federationMetadata or {},
+                metadata=metadata_payload,
             )
-            metadata = dict(server.federationMetadata or {})
-            self._set_enrichment_error(metadata, f"mcp enrichment failed: {exc}")
-            server.federationMetadata = metadata
+            self._set_enrichment_error(server.federationMetadata, f"mcp enrichment failed: {exc}")
             return
 
         if result.error_message:
@@ -105,14 +112,12 @@ class AgentCoreRuntimeInvoker:
             self._log_runtime_enrichment_context(
                 resource_name=server.serverName,
                 runtime_arn=self._resolve_runtime_arn(
-                    metadata=server.federationMetadata or {},
-                    runtime_detail=server.federationMetadata or {},
+                    metadata=metadata_payload,
+                    runtime_detail=metadata_payload,
                 ),
-                metadata=server.federationMetadata or {},
+                metadata=metadata_payload,
             )
-            metadata = dict(server.federationMetadata or {})
-            self._set_enrichment_error(metadata, result.error_message)
-            server.federationMetadata = metadata
+            self._set_enrichment_error(server.federationMetadata, result.error_message)
             return
 
         tools = result.tools or []
@@ -127,9 +132,7 @@ class AgentCoreRuntimeInvoker:
         server.config = config
         server.numTools = len(tools)
 
-        metadata = dict(server.federationMetadata or {})
-        self._set_enrichment_error(metadata, None)
-        server.federationMetadata = metadata
+        self._set_enrichment_error(server.federationMetadata, None)
 
     async def enrich_a2a_agent(
         self,
@@ -143,8 +146,9 @@ class AgentCoreRuntimeInvoker:
         """
         docs: https://docs.aws.amazon.com/bedrock-agentcore/latest/APIReference/API_GetAgentCard.html
         """
+        metadata_payload = self._metadata_payload(agent.federationMetadata)
         runtime_arn = self._resolve_runtime_arn(
-            metadata=agent.federationMetadata or {},
+            metadata=metadata_payload,
             runtime_detail=runtime_detail,
         )
         if not runtime_arn:
@@ -152,15 +156,13 @@ class AgentCoreRuntimeInvoker:
                 "Skipping A2A runtime enrichment for %s: missing runtime ARN. runtime_detail_keys=%s metadata_keys=%s",
                 agent.card.name,
                 sorted(runtime_detail.keys()),
-                sorted((agent.federationMetadata or {}).keys()),
+                sorted(metadata_payload.keys()),
             )
             if agent.wellKnown:
                 agent.wellKnown.lastSyncStatus = "failed"
                 agent.wellKnown.syncError = "missing runtime ARN for A2A enrichment"
                 agent.wellKnown.lastSyncAt = datetime.now(UTC)
-            metadata = dict(agent.federationMetadata or {})
-            self._set_enrichment_error(metadata, "a2a enrichment failed: missing runtime ARN")
-            agent.federationMetadata = metadata
+            self._set_enrichment_error(agent.federationMetadata, "a2a enrichment failed: missing runtime ARN")
             return
 
         escaped_runtime_arn = quote(runtime_arn, safe="")
@@ -174,7 +176,7 @@ class AgentCoreRuntimeInvoker:
             card_data = await self.fetch_a2a_agent_card(
                 card_url=card_url,
                 runtime_access=runtime_access,
-                metadata=agent.federationMetadata or {},
+                metadata=metadata_payload,
                 runtime_detail=runtime_detail,
                 region=region,
                 assume_role_arn=assume_role_arn,
@@ -184,15 +186,13 @@ class AgentCoreRuntimeInvoker:
             self._log_runtime_enrichment_context(
                 resource_name=agent.card.name,
                 runtime_arn=runtime_arn,
-                metadata=agent.federationMetadata or {},
+                metadata=metadata_payload,
             )
             if agent.wellKnown:
                 agent.wellKnown.lastSyncStatus = "failed"
                 agent.wellKnown.syncError = str(exc)
                 agent.wellKnown.lastSyncAt = datetime.now(UTC)
-            metadata = dict(agent.federationMetadata or {})
-            self._set_enrichment_error(metadata, f"a2a enrichment failed: {exc}")
-            agent.federationMetadata = metadata
+            self._set_enrichment_error(agent.federationMetadata, f"a2a enrichment failed: {exc}")
             return
 
         card_payload = self._extract_a2a_card_payload(card_data)
@@ -232,9 +232,7 @@ class AgentCoreRuntimeInvoker:
             agent.wellKnown.lastSyncAt = datetime.now(UTC)
             agent.wellKnown.lastSyncVersion = str(agent.card.version)
 
-        metadata = dict(agent.federationMetadata or {})
-        self._set_enrichment_error(metadata, None)
-        agent.federationMetadata = metadata
+        self._set_enrichment_error(agent.federationMetadata, None)
 
     @staticmethod
     def _normalize_agentcore_a2a_card(card_data: dict[str, Any]) -> dict[str, Any]:
@@ -1017,11 +1015,15 @@ class AgentCoreRuntimeInvoker:
         return tool_functions
 
     @staticmethod
-    def _set_enrichment_error(metadata: dict[str, Any] | None, error_message: str | None) -> None:
+    def _set_enrichment_error(
+        metadata: FederationMetadataBase | None,
+        error_message: str | None,
+    ) -> None:
         if metadata is None:
             return
-        metadata["enrichedAt"] = datetime.now(UTC)
-        metadata["enrichmentError"] = error_message
+        if hasattr(metadata, "enrichedAt"):
+            metadata.enrichedAt = datetime.now(UTC)
+        metadata.enrichmentError = error_message
 
     async def _build_runtime_http_auth(
         self,
@@ -1127,10 +1129,11 @@ class AgentCoreRuntimeInvoker:
         return AgentCoreRuntimeAccessConfig(**payload)
 
     def _promote_server_runtime_access_to_jwt(self, server: ExtendedMCPServer) -> AgentCoreRuntimeAccessConfig:
+        metadata_payload = self._metadata_payload(server.federationMetadata)
         promoted = self._promote_runtime_access_to_jwt(
             runtime_access=self._extract_server_runtime_access(server),
-            metadata=server.federationMetadata or {},
-            runtime_detail=server.federationMetadata or {},
+            metadata=metadata_payload,
+            runtime_detail=metadata_payload,
         )
         config = dict(server.config or {})
         config["runtimeAccess"] = promoted.model_dump(mode="json", exclude_none=True)
@@ -1147,10 +1150,11 @@ class AgentCoreRuntimeInvoker:
         return downgraded
 
     def _promote_agent_runtime_access_to_jwt(self, agent: A2AAgent) -> AgentCoreRuntimeAccessConfig:
+        metadata_payload = self._metadata_payload(agent.federationMetadata)
         promoted = self._promote_runtime_access_to_jwt(
             runtime_access=self._extract_agent_runtime_access(agent),
-            metadata=agent.federationMetadata or {},
-            runtime_detail=agent.federationMetadata or {},
+            metadata=metadata_payload,
+            runtime_detail=metadata_payload,
         )
         if agent.config is None:
             agent.config = AgentConfig(

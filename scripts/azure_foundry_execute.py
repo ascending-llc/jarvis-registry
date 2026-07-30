@@ -61,7 +61,7 @@ async def main() -> None:
         print(f"transport       = {agent.config.type if agent.config else '?'}")
         print(f"url             = {agent.card.url}")
         print(f"federationRefId = {agent.federationRefId}")
-        print(f"providerType    = {(agent.federationMetadata or {}).get('providerType')}")
+        print(f"providerType    = {getattr(agent.federationMetadata, 'providerType', None)}")
 
         print("=" * 70)
         print(f"EXECUTE via A2AClientRegistry + call_a2a  prompt={prompt!r}")

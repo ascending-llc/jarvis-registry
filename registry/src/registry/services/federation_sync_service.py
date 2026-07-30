@@ -27,13 +27,18 @@ from registry_pkgs.models.federation import (
     FederationLastSyncSummary,
     FederationStats,
 )
+from registry_pkgs.models.federation_metadata import (
+    FederationMetadata,
+    detect_runtime_version_change,
+    extract_enrichment_error,
+    extract_runtime_arn,
+)
 from registry_pkgs.models.federation_sync_job import (
     FederationApplySummary,
     FederationDiscoverySummary,
     FederationSyncJob,
 )
 
-from .federation.agentcore_metadata import detect_runtime_version_change, extract_runtime_arn
 from .federation.federation_handlers import (
     AwsAgentCoreSyncHandler,
     AzureAiFoundrySyncHandler,
@@ -787,6 +792,25 @@ class FederationSyncService:
         """Return True if another item in this same sync batch already claimed the key."""
         return key_value in planned_keys
 
+    def _skip_on_provider_mismatch(
+        self,
+        summary: FederationApplySummary,
+        expected_provider: FederationProviderType,
+        metadata: FederationMetadata | None,
+        resource_label: str,
+    ) -> bool:
+        """Record and skip metadata whose discriminator disagrees with its federation."""
+        actual_provider = metadata.providerType if metadata is not None else None
+        if actual_provider == expected_provider:
+            return False
+
+        self._record_apply_error(
+            summary,
+            f"{resource_label}: federationMetadata.providerType '{_enum_value(actual_provider) or '<missing>'}' "
+            f"does not match federation provider '{_enum_value(expected_provider)}'",
+        )
+        return True
+
     def _classify_mcp_items(
         self,
         federation: Federation,
@@ -818,6 +842,15 @@ class FederationSyncService:
                 continue
 
             discovered_ids.add(remote_id)
+            if self._skip_on_provider_mismatch(
+                summary,
+                federation.providerType,
+                item.federationMetadata,
+                f"MCP server {getattr(item, 'serverName', remote_id)}",
+            ):
+                summary.skippedMcpServers += 1
+                continue
+
             existing = existing_by_remote.get(remote_id)
 
             if existing is None:
@@ -903,6 +936,15 @@ class FederationSyncService:
 
             discovered_ids.add(remote_id)
             agent_name = getattr(getattr(item, "card", None), "name", None) or remote_id
+            if self._skip_on_provider_mismatch(
+                summary,
+                federation.providerType,
+                item.federationMetadata,
+                f"A2A agent {agent_name}",
+            ):
+                summary.skippedAgents += 1
+                continue
+
             existing = existing_by_remote.get(remote_id) or planned_by_remote.get(remote_id)
             item_path = getattr(item, "path", None)
             path_conflict = existing_by_path.get(item.path) if item_path else None
@@ -1089,16 +1131,12 @@ class FederationSyncService:
 
         for server, remote_id in sync_plan.mcp_creates:
             server.federationRefId = sync_plan.federation_id
-            server.federationMetadata = server.federationMetadata or {}
-            server.federationMetadata["providerType"] = _enum_value(sync_plan.provider_type)
             await server.insert(session=session)
             mutation_result.changed_mcp_runtime_arns.add(remote_id)
             resources_for_acl_inheritance.append((ResourceType.MCPSERVER, server.id))
 
         for agent, remote_id in sync_plan.a2a_creates:
             agent.federationRefId = sync_plan.federation_id
-            agent.federationMetadata = agent.federationMetadata or {}
-            agent.federationMetadata["providerType"] = _enum_value(sync_plan.provider_type)
             await agent.insert(session=session)
             mutation_result.changed_a2a_runtime_arns.add(remote_id)
             resources_for_acl_inheritance.append((ResourceType.REMOTE_AGENT, agent.id))
@@ -1654,8 +1692,8 @@ class FederationSyncService:
 
     @staticmethod
     def _extract_resource_error(item: Any) -> str | None:
-        metadata = getattr(item, "federationMetadata", None) or {}
-        error_message = metadata.get("enrichmentError")
+        metadata = getattr(item, "federationMetadata", None)
+        error_message = extract_enrichment_error(metadata)
         if error_message:
             return str(error_message)
 
@@ -1735,14 +1773,14 @@ class FederationSyncService:
         return mcp_runtime_arns, a2a_runtime_arns
 
     @staticmethod
-    def _extract_runtime_arn(metadata: dict[str, Any] | None) -> str | None:
+    def _extract_runtime_arn(metadata: FederationMetadata | None) -> str | None:
         return extract_runtime_arn(metadata)
 
     @classmethod
     def _runtime_metadata_changed(
         cls,
-        existing_metadata: dict[str, Any] | None,
-        new_metadata: dict[str, Any] | None,
+        existing_metadata: FederationMetadata | None,
+        new_metadata: FederationMetadata | None,
     ) -> bool:
         # Federation sync currently treats runtime version drift as the canonical
         # signal that a discovered resource should overwrite the persisted one.

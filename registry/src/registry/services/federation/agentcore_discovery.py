@@ -9,6 +9,10 @@ from beanie import PydanticObjectId
 from registry_pkgs.models import A2AAgent, ExtendedMCPServer
 from registry_pkgs.models.a2a_agent import TRANSPORT_JSONRPC, AgentConfig
 from registry_pkgs.models.enums import FederationProviderType
+from registry_pkgs.models.federation_metadata import (
+    AgentCoreA2AFederationMetadata,
+    AgentCoreMcpFederationMetadata,
+)
 
 from .agentcore_clients import AgentCoreClientProvider
 from .agentcore_runtime_auth import AgentCoreRuntimeAuthService
@@ -319,20 +323,20 @@ class AgentCoreFederationClient:
             tags=["agentcore", "a2a", "aws", "federated"],
             registeredBy="agentcore-federation",
             registeredAt=datetime.now(UTC),
-            federationMetadata={
-                "providerType": FederationProviderType.AWS_AGENTCORE,
-                "runtimeArn": runtime_arn,
-                "runtimeId": runtime_id,
-                "runtimeVersion": runtime_version,
-                "runtimeStatus": status,
-                "lastUpdatedAt": runtime_detail.get("lastUpdatedAt"),
-                "createdAt": runtime_detail.get("createdAt"),
-                "failureReason": runtime_detail.get("failureReason"),
-                "workloadIdentityDetails": runtime_detail.get("workloadIdentityDetails"),
-                "protocolConfiguration": runtime_detail.get("protocolConfiguration"),
-                "authorizerConfiguration": runtime_detail.get("authorizerConfiguration"),
-                "runtimeTags": runtime_detail.get("tags", {}),
-            },
+            federationMetadata=AgentCoreA2AFederationMetadata(
+                providerType=FederationProviderType.AWS_AGENTCORE,
+                runtimeArn=runtime_arn,
+                runtimeId=runtime_id,
+                runtimeVersion=runtime_version,
+                runtimeStatus=status,
+                lastUpdatedAt=runtime_detail.get("lastUpdatedAt"),
+                createdAt=runtime_detail.get("createdAt"),
+                failureReason=runtime_detail.get("failureReason"),
+                workloadIdentityDetails=runtime_detail.get("workloadIdentityDetails"),
+                protocolConfiguration=runtime_detail.get("protocolConfiguration"),
+                authorizerConfiguration=runtime_detail.get("authorizerConfiguration"),
+                runtimeTags=runtime_detail.get("tags", {}),
+            ),
             wellKnown={
                 "enabled": True,
                 "url": f"{runtime_base_url}/.well-known/agent-card.json?qualifier=DEFAULT",
@@ -385,20 +389,20 @@ class AgentCoreFederationClient:
                 "enabled": status == "READY",
             },
             "author": author_id,
-            "federationMetadata": {
-                "providerType": FederationProviderType.AWS_AGENTCORE,
-                "runtimeArn": runtime_arn,
-                "runtimeId": runtime_id,
-                "runtimeName": runtime_name,
-                "runtimeVersion": runtime_version,
-                "runtimeStatus": status,
-                "serverProtocol": "MCP",
-                "lastUpdatedAt": runtime_detail.get("lastUpdatedAt"),
-                "createdAt": runtime_detail.get("createdAt"),
-                "protocolConfiguration": runtime_detail.get("protocolConfiguration"),
-                "authorizerConfiguration": runtime_detail.get("authorizerConfiguration"),
-                "runtimeTags": runtime_detail.get("tags", {}),
-            },
+            "federationMetadata": AgentCoreMcpFederationMetadata(
+                providerType=FederationProviderType.AWS_AGENTCORE,
+                runtimeArn=runtime_arn,
+                runtimeId=runtime_id,
+                runtimeName=runtime_name,
+                runtimeVersion=runtime_version,
+                runtimeStatus=status,
+                serverProtocol="MCP",
+                lastUpdatedAt=runtime_detail.get("lastUpdatedAt"),
+                createdAt=runtime_detail.get("createdAt"),
+                protocolConfiguration=runtime_detail.get("protocolConfiguration"),
+                authorizerConfiguration=runtime_detail.get("authorizerConfiguration"),
+                runtimeTags=runtime_detail.get("tags", {}),
+            ),
         }
         return ExtendedMCPServer.from_server_info(server_info=server_info, is_enabled=status == "READY")
 

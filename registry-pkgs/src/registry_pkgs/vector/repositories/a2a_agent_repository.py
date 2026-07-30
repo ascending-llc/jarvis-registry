@@ -4,6 +4,7 @@ import asyncio
 import logging
 
 from ...models import A2AAgent
+from ...models.federation_metadata import extract_runtime_version
 from ..base_sync_repository import BaseVectorSyncRepository
 from ..client import DatabaseClient
 from ..sync_result import VectorSyncResult
@@ -85,7 +86,7 @@ class A2AAgentRepository(BaseVectorSyncRepository[A2AAgent]):
 
             if verified:
                 result.indexed = len(doc_ids)
-                result.version = self._extract_runtime_version(agent)
+                result.version = extract_runtime_version(agent.federationMetadata)
                 logger.info(
                     "Indexed %d docs for agent '%s' (agent_id=%s).",
                     result.indexed,
@@ -132,11 +133,3 @@ class A2AAgentRepository(BaseVectorSyncRepository[A2AAgent]):
 
     async def delete_by_agent_id(self, agent_id: str, agent_name: str | None = None) -> int:
         return await self.delete_by_entity_id(agent_id, agent_name)
-
-    @staticmethod
-    def _extract_runtime_version(agent: A2AAgent) -> str | None:
-        """Extract runtimeVersion / agentVersion from federationMetadata for logging."""
-        runtime_version = (agent.federationMetadata or {}).get("runtimeVersion")
-        if runtime_version is None:
-            runtime_version = (agent.federationMetadata or {}).get("agentVersion")
-        return str(runtime_version) if runtime_version is not None else None

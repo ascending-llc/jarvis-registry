@@ -9,6 +9,10 @@ from beanie import PydanticObjectId
 from registry.schemas.a2a_agent_api_schemas import AgentCreateRequest, AgentUpdateRequest
 from registry.services.a2a_agent_service import A2AAgentService, _normalize_config_url
 from registry_pkgs.models.enums import FederationProviderType
+from registry_pkgs.testing.federation_metadata import (
+    make_agentcore_a2a_metadata,
+    make_azure_foundry_metadata,
+)
 
 _SENTINEL_SESSION = object()
 
@@ -449,7 +453,7 @@ async def test_build_best_effort_auth_headers_builds_azure_entra_headers_for_fou
     service = A2AAgentService(a2a_agent_repo=None, jwt_config=SimpleNamespace())
     federation_id = PydanticObjectId()
     agent = SimpleNamespace(
-        federationMetadata={"providerType": FederationProviderType.AZURE_AI_FOUNDRY},
+        federationMetadata=make_azure_foundry_metadata(),
         federationRefId=federation_id,
         card=SimpleNamespace(),
     )
@@ -482,7 +486,7 @@ async def test_build_best_effort_auth_headers_returns_none_when_federation_missi
     service = _service()
     federation_id = PydanticObjectId()
     agent = SimpleNamespace(
-        federationMetadata={"providerType": FederationProviderType.AZURE_AI_FOUNDRY},
+        federationMetadata=make_azure_foundry_metadata(),
         federationRefId=federation_id,
         card=SimpleNamespace(),
     )
@@ -501,7 +505,7 @@ async def test_build_best_effort_auth_headers_returns_none_when_federation_missi
 async def test_build_best_effort_auth_headers_returns_none_without_federation_ref_id():
     service = _service()
     agent = SimpleNamespace(
-        federationMetadata={"providerType": FederationProviderType.AZURE_AI_FOUNDRY},
+        federationMetadata=make_azure_foundry_metadata(),
         federationRefId=None,
         card=SimpleNamespace(),
     )
@@ -518,7 +522,7 @@ async def test_build_best_effort_auth_headers_rejects_non_azure_federation():
     service = _service()
     federation_id = PydanticObjectId()
     agent = SimpleNamespace(
-        federationMetadata={"providerType": FederationProviderType.AZURE_AI_FOUNDRY},
+        federationMetadata=make_azure_foundry_metadata(),
         federationRefId=federation_id,
         card=SimpleNamespace(),
     )
@@ -544,7 +548,7 @@ async def test_build_best_effort_auth_headers_rejects_non_azure_federation():
 async def test_build_best_effort_auth_headers_keeps_agentcore_path():
     service = A2AAgentService(a2a_agent_repo=None, jwt_config=SimpleNamespace())
     agent = SimpleNamespace(
-        federationMetadata={"providerType": FederationProviderType.AWS_AGENTCORE},
+        federationMetadata=make_agentcore_a2a_metadata(),
         federationRefId=PydanticObjectId(),
         card=SimpleNamespace(),
     )
@@ -596,10 +600,7 @@ async def test_sync_wellknown_passes_foundry_agent_card_path_override():
             lastSyncVersion="1.0.0",
             syncError=None,
         ),
-        federationMetadata={
-            "providerType": FederationProviderType.AZURE_AI_FOUNDRY,
-            "agentCardPath": "agentCard/v0.3",
-        },
+        federationMetadata=make_azure_foundry_metadata(agentCardPath="agentCard/v0.3"),
         federationRefId=PydanticObjectId(),
         updatedAt=None,
     )
@@ -636,10 +637,7 @@ async def test_update_agent_passes_foundry_agent_card_path_override():
             lastSyncStatus="success",
             lastSyncVersion="1.0.0",
         ),
-        federationMetadata={
-            "providerType": FederationProviderType.AZURE_AI_FOUNDRY,
-            "agentCardPath": "agentCard/v0.3",
-        },
+        federationMetadata=make_azure_foundry_metadata(agentCardPath="agentCard/v0.3"),
         federationRefId=PydanticObjectId(),
         vectorContentHash="hash",
         updatedAt=None,
@@ -688,7 +686,7 @@ async def test_resolve_card_with_path_override_skips_generic_well_known_paths():
 
 def test_resolve_agent_card_path_override_falls_back_when_metadata_path_is_missing():
     agent = SimpleNamespace(
-        federationMetadata={"providerType": FederationProviderType.AZURE_AI_FOUNDRY},
+        federationMetadata=make_azure_foundry_metadata(),
     )
 
     assert A2AAgentService._resolve_agent_card_path_override(agent) is None

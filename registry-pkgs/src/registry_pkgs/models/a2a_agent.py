@@ -69,6 +69,12 @@ from pymongo import IndexModel
 
 from .enums import A2AEntityType
 from .federation import AgentCoreRuntimeAccessConfig
+from .federation_metadata import (
+    A2AFederationMetadata,
+    AzureFoundryFederationMetadata,
+    extract_runtime_arn,
+    extract_runtime_version,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -196,7 +202,7 @@ class A2AAgent(Document):
     updatedAt: datetime = Field(default_factory=lambda: datetime.now(UTC), description="Last update timestamp")
 
     federationRefId: PydanticObjectId | None = None
-    federationMetadata: dict[str, Any] | None = None
+    federationMetadata: A2AFederationMetadata | None = None
 
     vectorContentHash: str | None = Field(
         default=None,
@@ -357,11 +363,16 @@ class A2AAgent(Document):
         # Federation metadata lets vector sync target one federated A2A runtime precisely.
         if self.federationRefId is not None:
             base_metadata["federation_id"] = str(self.federationRefId)
-        runtime_version = (self.federationMetadata or {}).get("runtimeVersion")
+        runtime_version = extract_runtime_version(self.federationMetadata)
         if runtime_version is not None:
-            base_metadata["runtimeVersion"] = str(runtime_version)
+            version_key = (
+                "agentVersion"
+                if isinstance(self.federationMetadata, AzureFoundryFederationMetadata)
+                else "runtimeVersion"
+            )
+            base_metadata[version_key] = runtime_version
         # Keep runtimeArn for debugging and future runtime-scoped repair.
-        runtime_arn = (self.federationMetadata or {}).get("runtimeArn")
+        runtime_arn = extract_runtime_arn(self.federationMetadata)
         if runtime_arn:
             base_metadata["runtimeArn"] = runtime_arn
 
@@ -421,11 +432,14 @@ class A2AAgent(Document):
             "enabled": self.config.enabled if self.config else False,
             "tags": self.tags or [],
         }
-        fed = self.federationMetadata or {}
-        for key in ("runtimeVersion", "agentVersion"):
-            value = fed.get(key)
-            if value is not None:
-                meta[key] = str(value)
+        runtime_version = extract_runtime_version(self.federationMetadata)
+        if runtime_version is not None:
+            version_key = (
+                "agentVersion"
+                if isinstance(self.federationMetadata, AzureFoundryFederationMetadata)
+                else "runtimeVersion"
+            )
+            meta[version_key] = runtime_version
         return meta
 
     @classmethod

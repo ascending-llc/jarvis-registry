@@ -59,6 +59,7 @@ from pymongo import IndexModel
 from ..core.config import ChunkingConfig
 from ..models.enums import MCPEntityType
 from ._generated import MCPServer
+from .federation_metadata import AgentCoreMcpFederationMetadata, extract_runtime_arn, extract_runtime_version
 
 logger = logging.getLogger(__name__)
 
@@ -169,7 +170,7 @@ class ExtendedMCPServer(MCPServer):
     errorMessage: str | None = Field(default=None, alias="errorMessage", description="Last error message details")
 
     federationRefId: PydanticObjectId | None = None
-    federationMetadata: dict[str, Any] | None = None
+    federationMetadata: AgentCoreMcpFederationMetadata | None = None
 
     vectorContentHash: str | None = Field(
         default=None,
@@ -312,11 +313,11 @@ class ExtendedMCPServer(MCPServer):
         # Federation metadata lets vector sync target one federated MCP runtime precisely.
         if self.federationRefId is not None:
             metadata["federation_id"] = str(self.federationRefId)
-        runtime_version = (self.federationMetadata or {}).get("runtimeVersion")
+        runtime_version = extract_runtime_version(self.federationMetadata)
         if runtime_version is not None:
-            metadata["runtimeVersion"] = str(runtime_version)
+            metadata["runtimeVersion"] = runtime_version
         # Keep runtimeArn for debugging and future runtime-scoped repair.
-        runtime_arn = (self.federationMetadata or {}).get("runtimeArn")
+        runtime_arn = extract_runtime_arn(self.federationMetadata)
         if runtime_arn:
             metadata["runtimeArn"] = runtime_arn
         if self.tags:
@@ -334,9 +335,9 @@ class ExtendedMCPServer(MCPServer):
             "enabled": self._config_enabled,
             "tags": list(self.tags) if self.tags else [],
         }
-        runtime_version = (self.federationMetadata or {}).get("runtimeVersion")
+        runtime_version = extract_runtime_version(self.federationMetadata)
         if runtime_version is not None:
-            meta["runtimeVersion"] = str(runtime_version)
+            meta["runtimeVersion"] = runtime_version
         return meta
 
     def _split_if_needed(

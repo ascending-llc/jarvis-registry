@@ -29,6 +29,7 @@ from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.models.a2a_agent import A2AAgent, AgentConfig, normalize_a2a_agent_path
 from registry_pkgs.models.enums import FederationProviderType
 from registry_pkgs.models.federation import AzureAiFoundryProviderConfig, Federation
+from registry_pkgs.models.federation_metadata import AzureFoundryFederationMetadata
 from registry_pkgs.vector.repositories.a2a_agent_repository import A2AAgentRepository
 from registry_pkgs.workflows.a2a_client import build_headers, is_azure_foundry_runtime
 
@@ -249,8 +250,10 @@ class A2AAgentService:
         if not is_azure_foundry_runtime(agent):
             return None
 
-        path = (agent.federationMetadata or {}).get("agentCardPath")
-        return path if isinstance(path, str) and path else None
+        metadata = agent.federationMetadata
+        if not isinstance(metadata, AzureFoundryFederationMetadata):
+            return None
+        return metadata.agentCardPath or None
 
     async def _build_azure_foundry_auth_headers(
         self,

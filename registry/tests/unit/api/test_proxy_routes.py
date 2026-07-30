@@ -18,6 +18,7 @@ from starlette.requests import Request
 from registry.api.proxy_routes import dynamic_mcp_get_proxy, dynamic_mcp_post_proxy, http_json_proxy, jsonrpc_proxy
 from registry.core.config import settings
 from registry.services.generated_token_policy import INTERACTIVE_CLIENT_ID
+from registry_pkgs.testing.federation_metadata import make_azure_foundry_metadata
 
 VALID_OBJECT_ID = "507f1f77bcf86cd799439011"
 INVALID_USER_IDS = ["mcpgw", "not-an-objectid", "123", ""]
@@ -112,7 +113,7 @@ def _a2a_agent():
         path="test-agent",
         config=SimpleNamespace(enabled=True, runtimeAccess=None, url=None),
         card=SimpleNamespace(url="https://agent.example.com/a2a"),
-        federationMetadata={"providerType": "azure_ai_foundry"},
+        federationMetadata=make_azure_foundry_metadata(),
     )
 
 

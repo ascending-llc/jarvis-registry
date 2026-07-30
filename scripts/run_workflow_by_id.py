@@ -175,7 +175,7 @@ async def _print_definition_agents(definition_id: str) -> None:
         )
         if agent is not None:
             base_url = agent_base_url(agent)
-            provider = (agent.federationMetadata or {}).get("providerType", "—")
+            provider = getattr(agent.federationMetadata, "providerType", "—")
             if is_agentcore_runtime(agent):
                 auth_mode = get_agentcore_auth_mode(agent)
                 print(f"  {key:<30} A2A     → {base_url}")
@@ -197,7 +197,7 @@ async def _list_all_agents() -> None:
     print("── Enabled A2A agents ──────────────────────────────────")
     for a in agents:
         base_url = agent_base_url(a)
-        provider = (a.federationMetadata or {}).get("providerType", "—")
+        provider = getattr(a.federationMetadata, "providerType", "—")
         if is_agentcore_runtime(a):
             auth_mode = get_agentcore_auth_mode(a)
             print(f"  {a.path:<35} {a.config.type:<10} → {base_url}")

@@ -19,6 +19,11 @@ from registry_pkgs.models.federation import (
     AgentCoreRuntimeJwtConfig,
 )
 from registry_pkgs.models.federation_sync_job import FederationApplySummary
+from registry_pkgs.testing.federation_metadata import (
+    make_agentcore_a2a_metadata,
+    make_agentcore_mcp_metadata,
+    make_azure_foundry_metadata,
+)
 from tests.unit.services.federation_sync_test_helpers import (
     _FakeQuery,
     _make_federation,
@@ -36,7 +41,7 @@ async def test_build_sync_plan_handles_runtime_type_switch_without_discovery_mut
     runtime_arn = "arn:aws:bedrock-agentcore:us-east-1:123:runtime/r1"
 
     existing_mcp = SimpleNamespace(
-        federationMetadata={"runtimeArn": runtime_arn, "runtimeVersion": "1"},
+        federationMetadata=make_agentcore_mcp_metadata(runtime_arn=runtime_arn, runtime_version="1"),
         serverName="runtime-r1",
         path="/agentcore/mcp/runtime-r1",
         config={"runtimeAccess": {"mode": "iam"}},
@@ -44,7 +49,7 @@ async def test_build_sync_plan_handles_runtime_type_switch_without_discovery_mut
         tags=[],
     )
     discovered_a2a = SimpleNamespace(
-        federationMetadata={"runtimeArn": runtime_arn, "runtimeVersion": "2"},
+        federationMetadata=make_agentcore_a2a_metadata(runtime_arn=runtime_arn, runtime_version="2"),
         path="/agentcore/a2a/runtime-r1",
         config=SimpleNamespace(runtimeAccess=SimpleNamespace(mode="jwt")),
         card=SimpleNamespace(name="runtime-r1"),
@@ -91,12 +96,12 @@ async def test_build_sync_plan_updates_mcp_when_only_runtime_access_mode_changes
     existing_mcp = SimpleNamespace(
         id=PydanticObjectId(),
         federationRefId=federation.id,
-        federationMetadata={"runtimeArn": runtime_arn, "runtimeVersion": "1"},
+        federationMetadata=make_agentcore_mcp_metadata(runtime_arn=runtime_arn, runtime_version="1"),
         serverName="auth-mode-mcp",
         config={"runtimeAccess": {"mode": "iam"}},
     )
     discovered_mcp = SimpleNamespace(
-        federationMetadata={"runtimeArn": runtime_arn, "runtimeVersion": "1"},
+        federationMetadata=make_agentcore_mcp_metadata(runtime_arn=runtime_arn, runtime_version="1"),
         serverName="auth-mode-mcp",
         config={"runtimeAccess": {"mode": "jwt"}},
     )
@@ -138,12 +143,12 @@ async def test_build_sync_plan_updates_a2a_when_only_runtime_access_mode_changes
     existing_a2a = SimpleNamespace(
         id=PydanticObjectId(),
         federationRefId=federation.id,
-        federationMetadata={"runtimeArn": runtime_arn, "runtimeVersion": "1"},
+        federationMetadata=make_agentcore_a2a_metadata(runtime_arn=runtime_arn, runtime_version="1"),
         path=agent_path,
         config=SimpleNamespace(type="jsonrpc", runtimeAccess=AgentCoreRuntimeAccessConfig(mode="iam")),
     )
     discovered_a2a = SimpleNamespace(
-        federationMetadata={"runtimeArn": runtime_arn, "runtimeVersion": "1"},
+        federationMetadata=make_agentcore_a2a_metadata(runtime_arn=runtime_arn, runtime_version="1"),
         path=agent_path,
         card=SimpleNamespace(name="auth-mode-a2a"),
         config=SimpleNamespace(type="jsonrpc", runtimeAccess=AgentCoreRuntimeAccessConfig(mode="jwt")),
@@ -186,12 +191,12 @@ async def test_build_sync_plan_ignores_a2a_transport_type_only_change(
     existing_a2a = SimpleNamespace(
         id=PydanticObjectId(),
         federationRefId=federation.id,
-        federationMetadata={"runtimeArn": runtime_arn, "runtimeVersion": "1"},
+        federationMetadata=make_agentcore_a2a_metadata(runtime_arn=runtime_arn, runtime_version="1"),
         path=agent_path,
         config=SimpleNamespace(type="http_json", runtimeAccess=AgentCoreRuntimeAccessConfig(mode="jwt")),
     )
     discovered_a2a = SimpleNamespace(
-        federationMetadata={"runtimeArn": runtime_arn, "runtimeVersion": "1"},
+        federationMetadata=make_agentcore_a2a_metadata(runtime_arn=runtime_arn, runtime_version="1"),
         path=agent_path,
         card=SimpleNamespace(name="transport-only-a2a"),
         config=SimpleNamespace(type="jsonrpc", runtimeAccess=AgentCoreRuntimeAccessConfig(mode="jwt")),
@@ -236,12 +241,12 @@ async def test_build_sync_plan_updates_mcp_when_only_jwt_audiences_change(
     existing_mcp = SimpleNamespace(
         id=PydanticObjectId(),
         federationRefId=federation.id,
-        federationMetadata={"runtimeArn": runtime_arn, "runtimeVersion": "1"},
+        federationMetadata=make_agentcore_mcp_metadata(runtime_arn=runtime_arn, runtime_version="1"),
         serverName="audience-rotation-mcp",
         config={"runtimeAccess": {"mode": "jwt", "jwt": {"audiences": ["jarvis-services"]}}},
     )
     discovered_mcp = SimpleNamespace(
-        federationMetadata={"runtimeArn": runtime_arn, "runtimeVersion": "1"},
+        federationMetadata=make_agentcore_mcp_metadata(runtime_arn=runtime_arn, runtime_version="1"),
         serverName="audience-rotation-mcp",
         config={"runtimeAccess": {"mode": "jwt", "jwt": {"audiences": ["jarvis-managed-agents"]}}},
     )
@@ -284,7 +289,7 @@ async def test_build_sync_plan_updates_a2a_when_only_jwt_audiences_change(
     existing_a2a = SimpleNamespace(
         id=PydanticObjectId(),
         federationRefId=federation.id,
-        federationMetadata={"runtimeArn": runtime_arn, "runtimeVersion": "1"},
+        federationMetadata=make_agentcore_a2a_metadata(runtime_arn=runtime_arn, runtime_version="1"),
         path=agent_path,
         config=SimpleNamespace(
             type="jsonrpc",
@@ -294,7 +299,7 @@ async def test_build_sync_plan_updates_a2a_when_only_jwt_audiences_change(
         ),
     )
     discovered_a2a = SimpleNamespace(
-        federationMetadata={"runtimeArn": runtime_arn, "runtimeVersion": "1"},
+        federationMetadata=make_agentcore_a2a_metadata(runtime_arn=runtime_arn, runtime_version="1"),
         path=agent_path,
         card=SimpleNamespace(name="audience-rotation-a2a"),
         config=SimpleNamespace(
@@ -344,12 +349,12 @@ async def test_build_sync_plan_treats_unparseable_existing_runtime_access_as_cha
     existing_mcp = SimpleNamespace(
         id=PydanticObjectId(),
         federationRefId=federation.id,
-        federationMetadata={"runtimeArn": runtime_arn, "runtimeVersion": "1"},
+        federationMetadata=make_agentcore_mcp_metadata(runtime_arn=runtime_arn, runtime_version="1"),
         serverName="malformed-runtime-access-mcp",
         config={"runtimeAccess": {"mode": "jwt", "jwt": "not-a-mapping"}},
     )
     discovered_mcp = SimpleNamespace(
-        federationMetadata={"runtimeArn": runtime_arn, "runtimeVersion": "1"},
+        federationMetadata=make_agentcore_mcp_metadata(runtime_arn=runtime_arn, runtime_version="1"),
         serverName="malformed-runtime-access-mcp",
         config={"runtimeAccess": {"mode": "jwt", "jwt": {"audiences": ["jarvis-services"]}}},
     )
@@ -390,7 +395,7 @@ async def test_build_sync_plan_skips_a2a_insert_when_path_belongs_to_another_res
         id=PydanticObjectId(),
         path="/agentcore/a2a/hosted-agent-257ko",
         federationRefId=PydanticObjectId(),
-        federationMetadata={"runtimeArn": "arn:existing"},
+        federationMetadata=make_agentcore_a2a_metadata(runtime_arn="arn:existing"),
     )
     discovered_agent = SimpleNamespace(
         id=PydanticObjectId(),
@@ -400,7 +405,7 @@ async def test_build_sync_plan_skips_a2a_insert_when_path_belongs_to_another_res
         tags=[],
         wellKnown=None,
         federationRefId=None,
-        federationMetadata={"runtimeArn": "arn:new", "runtimeVersion": "1"},
+        federationMetadata=make_agentcore_a2a_metadata(runtime_arn="arn:new", runtime_version="1"),
         insert=AsyncMock(),
     )
 
@@ -440,14 +445,14 @@ async def test_build_sync_plan_skips_mcp_insert_without_marking_error(
         id=PydanticObjectId(),
         serverName="shared-server",
         federationRefId=PydanticObjectId(),
-        federationMetadata={"runtimeArn": "arn:existing"},
+        federationMetadata=make_agentcore_mcp_metadata(runtime_arn="arn:existing"),
     )
     discovered_server = SimpleNamespace(
         id=PydanticObjectId(),
         serverName="shared-server",
         tags=[],
         federationRefId=None,
-        federationMetadata={"runtimeArn": "arn:new", "runtimeVersion": "1"},
+        federationMetadata=make_agentcore_mcp_metadata(runtime_arn="arn:new", runtime_version="1"),
         insert=AsyncMock(),
     )
 
@@ -491,7 +496,7 @@ async def test_build_sync_plan_does_not_treat_planned_a2a_create_as_persisted_pa
         tags=[],
         wellKnown=None,
         federationRefId=federation.id,
-        federationMetadata={"runtimeArn": "arn:existing", "runtimeVersion": "1"},
+        federationMetadata=make_agentcore_a2a_metadata(runtime_arn="arn:existing", runtime_version="1"),
     )
     discovered_new_agent = SimpleNamespace(
         id=None,
@@ -501,7 +506,7 @@ async def test_build_sync_plan_does_not_treat_planned_a2a_create_as_persisted_pa
         tags=[],
         wellKnown=None,
         federationRefId=None,
-        federationMetadata={"runtimeArn": "arn:new", "runtimeVersion": "1"},
+        federationMetadata=make_agentcore_a2a_metadata(runtime_arn="arn:new", runtime_version="1"),
         insert=AsyncMock(),
     )
     discovered_existing_agent = SimpleNamespace(
@@ -512,7 +517,7 @@ async def test_build_sync_plan_does_not_treat_planned_a2a_create_as_persisted_pa
         tags=[],
         wellKnown=None,
         federationRefId=federation.id,
-        federationMetadata={"runtimeArn": "arn:existing", "runtimeVersion": "2"},
+        federationMetadata=make_agentcore_a2a_metadata(runtime_arn="arn:existing", runtime_version="2"),
         insert=AsyncMock(),
     )
 
@@ -554,7 +559,7 @@ async def test_build_sync_plan_records_error_when_a2a_create_path_has_no_federat
         id=PydanticObjectId(),
         path="/agentcore/a2a/orphaned-path",
         federationRefId=None,
-        federationMetadata={"runtimeArn": "arn:orphaned"},
+        federationMetadata=make_agentcore_a2a_metadata(runtime_arn="arn:orphaned"),
     )
     discovered_agent = SimpleNamespace(
         id=PydanticObjectId(),
@@ -564,7 +569,7 @@ async def test_build_sync_plan_records_error_when_a2a_create_path_has_no_federat
         tags=[],
         wellKnown=None,
         federationRefId=None,
-        federationMetadata={"runtimeArn": "arn:new", "runtimeVersion": "1"},
+        federationMetadata=make_agentcore_a2a_metadata(runtime_arn="arn:new", runtime_version="1"),
         insert=AsyncMock(),
     )
 
@@ -607,13 +612,13 @@ async def test_build_sync_plan_records_error_when_a2a_rename_path_has_no_federat
         tags=[],
         wellKnown=None,
         federationRefId=federation.id,
-        federationMetadata={"runtimeArn": "arn:existing", "runtimeVersion": "1"},
+        federationMetadata=make_agentcore_a2a_metadata(runtime_arn="arn:existing", runtime_version="1"),
     )
     orphaned_agent = SimpleNamespace(
         id=PydanticObjectId(),
         path="/agentcore/a2a/target-path",
         federationRefId=None,
-        federationMetadata={"runtimeArn": "arn:orphaned"},
+        federationMetadata=make_agentcore_a2a_metadata(runtime_arn="arn:orphaned"),
     )
     discovered_agent = SimpleNamespace(
         id=PydanticObjectId(),
@@ -623,7 +628,7 @@ async def test_build_sync_plan_records_error_when_a2a_rename_path_has_no_federat
         tags=[],
         wellKnown=None,
         federationRefId=federation.id,
-        federationMetadata={"runtimeArn": "arn:existing", "runtimeVersion": "2"},
+        federationMetadata=make_agentcore_a2a_metadata(runtime_arn="arn:existing", runtime_version="2"),
     )
 
     def _fake_mcp_find(*_args, **_kwargs):
@@ -661,14 +666,14 @@ async def test_build_sync_plan_records_error_when_mcp_create_servername_has_no_f
         id=PydanticObjectId(),
         serverName="orphaned-server",
         federationRefId=None,
-        federationMetadata={"runtimeArn": "arn:orphaned"},
+        federationMetadata=make_agentcore_mcp_metadata(runtime_arn="arn:orphaned"),
     )
     discovered_server = SimpleNamespace(
         id=PydanticObjectId(),
         serverName="orphaned-server",
         tags=[],
         federationRefId=None,
-        federationMetadata={"runtimeArn": "arn:new", "runtimeVersion": "1"},
+        federationMetadata=make_agentcore_mcp_metadata(runtime_arn="arn:new", runtime_version="1"),
         insert=AsyncMock(),
     )
 
@@ -710,13 +715,13 @@ async def test_build_sync_plan_skips_mcp_rename_when_servername_owned_by_another
         config={"runtimeAccess": {"mode": "public"}},
         tags=[],
         federationRefId=federation.id,
-        federationMetadata={"runtimeArn": "arn:existing", "runtimeVersion": "1"},
+        federationMetadata=make_agentcore_mcp_metadata(runtime_arn="arn:existing", runtime_version="1"),
     )
     conflict_server = SimpleNamespace(
         id=PydanticObjectId(),
         serverName="taken-name",
         federationRefId=PydanticObjectId(),
-        federationMetadata={"runtimeArn": "arn:other"},
+        federationMetadata=make_agentcore_mcp_metadata(runtime_arn="arn:other"),
     )
     discovered_server = SimpleNamespace(
         id=PydanticObjectId(),
@@ -725,7 +730,7 @@ async def test_build_sync_plan_skips_mcp_rename_when_servername_owned_by_another
         config={"runtimeAccess": {"mode": "public"}},
         tags=[],
         federationRefId=None,
-        federationMetadata={"runtimeArn": "arn:existing", "runtimeVersion": "2"},
+        federationMetadata=make_agentcore_mcp_metadata(runtime_arn="arn:existing", runtime_version="2"),
     )
 
     def _fake_mcp_find(query, session=None):
@@ -766,13 +771,13 @@ async def test_build_sync_plan_records_error_when_mcp_rename_servername_has_no_f
         config={"runtimeAccess": {"mode": "public"}},
         tags=[],
         federationRefId=federation.id,
-        federationMetadata={"runtimeArn": "arn:existing", "runtimeVersion": "1"},
+        federationMetadata=make_agentcore_mcp_metadata(runtime_arn="arn:existing", runtime_version="1"),
     )
     orphaned_server = SimpleNamespace(
         id=PydanticObjectId(),
         serverName="orphaned-name",
         federationRefId=None,
-        federationMetadata={"runtimeArn": "arn:orphaned"},
+        federationMetadata=make_agentcore_mcp_metadata(runtime_arn="arn:orphaned"),
     )
     discovered_server = SimpleNamespace(
         id=PydanticObjectId(),
@@ -781,7 +786,7 @@ async def test_build_sync_plan_records_error_when_mcp_rename_servername_has_no_f
         config={"runtimeAccess": {"mode": "public"}},
         tags=[],
         federationRefId=None,
-        federationMetadata={"runtimeArn": "arn:existing", "runtimeVersion": "2"},
+        federationMetadata=make_agentcore_mcp_metadata(runtime_arn="arn:existing", runtime_version="2"),
     )
 
     def _fake_mcp_find(query, session=None):
@@ -823,7 +828,7 @@ async def test_build_sync_plan_same_batch_a2a_create_collision(
         tags=[],
         wellKnown=None,
         federationRefId=None,
-        federationMetadata={"runtimeArn": "arn:a", "runtimeVersion": "1"},
+        federationMetadata=make_agentcore_a2a_metadata(runtime_arn="arn:a", runtime_version="1"),
         insert=AsyncMock(),
     )
     agent_b = SimpleNamespace(
@@ -834,7 +839,7 @@ async def test_build_sync_plan_same_batch_a2a_create_collision(
         tags=[],
         wellKnown=None,
         federationRefId=None,
-        federationMetadata={"runtimeArn": "arn:b", "runtimeVersion": "1"},
+        federationMetadata=make_agentcore_a2a_metadata(runtime_arn="arn:b", runtime_version="1"),
         insert=AsyncMock(),
     )
 
@@ -875,7 +880,7 @@ async def test_build_sync_plan_same_batch_mcp_create_collision(
         serverName="colliding-name",
         tags=[],
         federationRefId=None,
-        federationMetadata={"runtimeArn": "arn:a", "runtimeVersion": "1"},
+        federationMetadata=make_agentcore_mcp_metadata(runtime_arn="arn:a", runtime_version="1"),
         insert=AsyncMock(),
     )
     server_b = SimpleNamespace(
@@ -883,7 +888,7 @@ async def test_build_sync_plan_same_batch_mcp_create_collision(
         serverName="colliding-name",
         tags=[],
         federationRefId=None,
-        federationMetadata={"runtimeArn": "arn:b", "runtimeVersion": "1"},
+        federationMetadata=make_agentcore_mcp_metadata(runtime_arn="arn:b", runtime_version="1"),
         insert=AsyncMock(),
     )
 
@@ -924,7 +929,7 @@ async def test_build_sync_plan_same_batch_mcp_rename_collision(
         serverName="target-name",
         tags=[],
         federationRefId=None,
-        federationMetadata={"runtimeArn": "arn:new", "runtimeVersion": "1"},
+        federationMetadata=make_agentcore_mcp_metadata(runtime_arn="arn:new", runtime_version="1"),
         insert=AsyncMock(),
     )
     existing_server = SimpleNamespace(
@@ -934,7 +939,7 @@ async def test_build_sync_plan_same_batch_mcp_rename_collision(
         config={"runtimeAccess": {"mode": "public"}},
         tags=[],
         federationRefId=federation.id,
-        federationMetadata={"runtimeArn": "arn:existing", "runtimeVersion": "1"},
+        federationMetadata=make_agentcore_mcp_metadata(runtime_arn="arn:existing", runtime_version="1"),
     )
     discovered_existing = SimpleNamespace(
         id=PydanticObjectId(),
@@ -943,7 +948,7 @@ async def test_build_sync_plan_same_batch_mcp_rename_collision(
         config={"runtimeAccess": {"mode": "public"}},
         tags=[],
         federationRefId=None,
-        federationMetadata={"runtimeArn": "arn:existing", "runtimeVersion": "2"},
+        federationMetadata=make_agentcore_mcp_metadata(runtime_arn="arn:existing", runtime_version="2"),
     )
 
     def _fake_mcp_find(query, session=None):
@@ -1011,36 +1016,87 @@ class TestCheckBatchConflict:
         assert FederationSyncService._check_batch_conflict("my-key", {}) is False
 
 
+class TestProviderMismatch:
+    def test_mcp_mismatch_is_recorded_and_skipped(self, federation_sync_service):
+        federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+        item = SimpleNamespace(
+            serverName="wrong-provider",
+            federationMetadata=make_azure_foundry_metadata(runtime_arn="azure-agent"),
+        )
+        summary = FederationApplySummary()
+        plan = SimpleNamespace(mcp_creates=[], mcp_updates=[], mcp_pre_existing_acl_targets=[])
+
+        discovered_ids = federation_sync_service._classify_mcp_items(
+            federation,
+            [item],
+            {},
+            {},
+            summary,
+            plan,
+        )
+
+        assert discovered_ids == {"azure-agent"}
+        assert summary.skippedMcpServers == 1
+        assert summary.errors == 1
+        assert "does not match federation provider 'aws_agentcore'" in summary.errorMessages[0]
+        assert plan.mcp_creates == []
+
+    def test_a2a_mismatch_is_recorded_and_skipped(self, federation_sync_service):
+        federation = _make_federation(FederationProviderType.AZURE_AI_FOUNDRY, {})
+        item = SimpleNamespace(
+            path="/a2a/wrong-provider",
+            card=SimpleNamespace(name="wrong-provider"),
+            federationMetadata=make_agentcore_a2a_metadata(runtime_arn="arn:aws:wrong-provider"),
+        )
+        summary = FederationApplySummary()
+        plan = SimpleNamespace(a2a_creates=[], a2a_updates=[], a2a_pre_existing_acl_targets=[])
+
+        discovered_ids = federation_sync_service._classify_a2a_items(
+            federation,
+            [item],
+            {},
+            {},
+            summary,
+            plan,
+        )
+
+        assert discovered_ids == {"arn:aws:wrong-provider"}
+        assert summary.skippedAgents == 1
+        assert summary.errors == 1
+        assert "does not match federation provider 'azure_ai_foundry'" in summary.errorMessages[0]
+        assert plan.a2a_creates == []
+
+
 class TestIsResourceUnchanged:
     def test_unchanged_when_metadata_and_config_same(self, federation_sync_service):
         existing = SimpleNamespace(
-            federationMetadata={"runtimeArn": "arn:1", "runtimeVersion": "1"},
+            federationMetadata=make_agentcore_mcp_metadata(runtime_arn="arn:1", runtime_version="1"),
             config={"runtimeAccess": {"mode": "iam"}},
         )
         discovered = SimpleNamespace(
-            federationMetadata={"runtimeArn": "arn:1", "runtimeVersion": "1"},
+            federationMetadata=make_agentcore_mcp_metadata(runtime_arn="arn:1", runtime_version="1"),
             config={"runtimeAccess": {"mode": "iam"}},
         )
         assert federation_sync_service._is_resource_unchanged(existing, discovered) is True
 
     def test_changed_when_metadata_differs(self, federation_sync_service):
         existing = SimpleNamespace(
-            federationMetadata={"runtimeArn": "arn:1", "runtimeVersion": "1"},
+            federationMetadata=make_agentcore_mcp_metadata(runtime_arn="arn:1", runtime_version="1"),
             config={"runtimeAccess": {"mode": "iam"}},
         )
         discovered = SimpleNamespace(
-            federationMetadata={"runtimeArn": "arn:1", "runtimeVersion": "2"},
+            federationMetadata=make_agentcore_mcp_metadata(runtime_arn="arn:1", runtime_version="2"),
             config={"runtimeAccess": {"mode": "iam"}},
         )
         assert federation_sync_service._is_resource_unchanged(existing, discovered) is False
 
     def test_changed_when_config_differs(self, federation_sync_service):
         existing = SimpleNamespace(
-            federationMetadata={"runtimeArn": "arn:1", "runtimeVersion": "1"},
+            federationMetadata=make_agentcore_mcp_metadata(runtime_arn="arn:1", runtime_version="1"),
             config={"runtimeAccess": {"mode": "iam"}},
         )
         discovered = SimpleNamespace(
-            federationMetadata={"runtimeArn": "arn:1", "runtimeVersion": "1"},
+            federationMetadata=make_agentcore_mcp_metadata(runtime_arn="arn:1", runtime_version="1"),
             config={"runtimeAccess": {"mode": "jwt"}},
         )
         assert federation_sync_service._is_resource_unchanged(existing, discovered) is False
@@ -1048,8 +1104,8 @@ class TestIsResourceUnchanged:
 
 class TestCollectStaleItems:
     def test_marks_undiscovered_docs_for_deletion(self, federation_sync_service):
-        doc_stale = SimpleNamespace(federationMetadata={"runtimeArn": "arn:stale"})
-        doc_kept = SimpleNamespace(federationMetadata={"runtimeArn": "arn:kept"})
+        doc_stale = SimpleNamespace(federationMetadata=make_agentcore_mcp_metadata(runtime_arn="arn:stale"))
+        doc_kept = SimpleNamespace(federationMetadata=make_agentcore_mcp_metadata(runtime_arn="arn:kept"))
         summary = FederationApplySummary()
         delete_list = []
 
@@ -1061,7 +1117,7 @@ class TestCollectStaleItems:
         assert delete_list == [(doc_stale, "arn:stale")]
 
     def test_keeps_all_when_all_rediscovered(self, federation_sync_service):
-        doc = SimpleNamespace(federationMetadata={"runtimeArn": "arn:1"})
+        doc = SimpleNamespace(federationMetadata=make_agentcore_mcp_metadata(runtime_arn="arn:1"))
         summary = FederationApplySummary()
         delete_list = []
 
@@ -1071,7 +1127,7 @@ class TestCollectStaleItems:
         assert delete_list == []
 
     def test_ignores_docs_without_arn(self, federation_sync_service):
-        doc = SimpleNamespace(federationMetadata={})
+        doc = SimpleNamespace(federationMetadata=None)
         summary = FederationApplySummary()
         delete_list = []
 
@@ -1209,7 +1265,9 @@ async def test_build_sync_plan_skips_mcp_create_on_enrichment_error(
     federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
     discovered = SimpleNamespace(
         serverName="broken-server",
-        federationMetadata={"runtimeArn": "arn:broken", "runtimeVersion": "1", "enrichmentError": "timeout"},
+        federationMetadata=make_agentcore_mcp_metadata(
+            runtime_arn="arn:broken", runtime_version="1", enrichment_error="timeout"
+        ),
     )
 
     def _fake_mcp_find(query, session=None):
@@ -1245,7 +1303,9 @@ async def test_build_sync_plan_skips_a2a_create_on_enrichment_error(
         path="/agentcore/a2a/broken",
         card=SimpleNamespace(name="broken-agent"),
         config=SimpleNamespace(enabled=True),
-        federationMetadata={"runtimeArn": "arn:broken", "runtimeVersion": "1", "enrichmentError": "connection refused"},
+        federationMetadata=make_agentcore_a2a_metadata(
+            runtime_arn="arn:broken", runtime_version="1", enrichment_error="connection refused"
+        ),
     )
 
     def _fake_mcp_find(*_args, **_kwargs):
@@ -1284,13 +1344,13 @@ async def test_build_sync_plan_preserves_existing_a2a_on_transient_enrichment_fa
     existing_a2a = SimpleNamespace(
         id=PydanticObjectId(),
         federationRefId=federation.id,
-        federationMetadata={"runtimeArn": runtime_arn, "runtimeVersion": "1"},
+        federationMetadata=make_agentcore_a2a_metadata(runtime_arn=runtime_arn, runtime_version="1"),
         path=agent_path,
         card=SimpleNamespace(name="flaky-agent"),
         config=SimpleNamespace(type="jsonrpc", runtimeAccess=AgentCoreRuntimeAccessConfig(mode="iam")),
     )
     discovered_agent = SimpleNamespace(
-        federationMetadata={"runtimeArn": runtime_arn, "runtimeVersion": "1"},
+        federationMetadata=make_agentcore_a2a_metadata(runtime_arn=runtime_arn, runtime_version="1"),
         path=agent_path,
         card=SimpleNamespace(name="flaky-agent"),
         config=SimpleNamespace(type="jsonrpc", runtimeAccess=AgentCoreRuntimeAccessConfig(mode="iam")),
@@ -1335,7 +1395,7 @@ async def test_build_sync_plan_records_error_when_mcp_missing_remote_id(
     federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
     discovered = SimpleNamespace(
         serverName="no-arn-server",
-        federationMetadata={},
+        federationMetadata=None,
     )
 
     def _fake_mcp_find(query, session=None):
@@ -1370,7 +1430,7 @@ async def test_build_sync_plan_records_error_when_a2a_missing_remote_id(
         path="/agentcore/a2a/no-arn",
         card=SimpleNamespace(name="no-arn-agent"),
         config=SimpleNamespace(enabled=True),
-        federationMetadata={},
+        federationMetadata=None,
     )
 
     def _fake_mcp_find(*_args, **_kwargs):
@@ -1409,7 +1469,7 @@ async def test_build_sync_plan_same_batch_a2a_rename_collision(
         tags=[],
         wellKnown=None,
         federationRefId=None,
-        federationMetadata={"runtimeArn": "arn:new", "runtimeVersion": "1"},
+        federationMetadata=make_agentcore_a2a_metadata(runtime_arn="arn:new", runtime_version="1"),
     )
     existing_agent = SimpleNamespace(
         id=PydanticObjectId(),
@@ -1419,7 +1479,7 @@ async def test_build_sync_plan_same_batch_a2a_rename_collision(
         tags=[],
         wellKnown=None,
         federationRefId=federation.id,
-        federationMetadata={"runtimeArn": "arn:existing", "runtimeVersion": "1"},
+        federationMetadata=make_agentcore_a2a_metadata(runtime_arn="arn:existing", runtime_version="1"),
     )
     discovered_existing = SimpleNamespace(
         id=PydanticObjectId(),
@@ -1429,7 +1489,7 @@ async def test_build_sync_plan_same_batch_a2a_rename_collision(
         tags=[],
         wellKnown=None,
         federationRefId=federation.id,
-        federationMetadata={"runtimeArn": "arn:existing", "runtimeVersion": "2"},
+        federationMetadata=make_agentcore_a2a_metadata(runtime_arn="arn:existing", runtime_version="2"),
     )
 
     def _fake_mcp_find(*_args, **_kwargs):
@@ -1467,13 +1527,15 @@ async def test_build_sync_plan_mcp_enrichment_error_does_not_skip_stale_detectio
     existing = SimpleNamespace(
         id=PydanticObjectId(),
         federationRefId=federation.id,
-        federationMetadata={"runtimeArn": runtime_arn, "runtimeVersion": "1"},
+        federationMetadata=make_agentcore_mcp_metadata(runtime_arn=runtime_arn, runtime_version="1"),
         serverName="enrich-fail-server",
         config={"runtimeAccess": {"mode": "iam"}},
     )
     discovered = SimpleNamespace(
         serverName="enrich-fail-server",
-        federationMetadata={"runtimeArn": runtime_arn, "runtimeVersion": "2", "enrichmentError": "500 error"},
+        federationMetadata=make_agentcore_mcp_metadata(
+            runtime_arn=runtime_arn, runtime_version="2", enrichment_error="500 error"
+        ),
     )
 
     def _fake_mcp_find(query, session=None):
@@ -1510,13 +1572,13 @@ async def test_build_sync_plan_mcp_update_unchanged_tracks_for_acl(
     existing = SimpleNamespace(
         id=existing_id,
         federationRefId=federation.id,
-        federationMetadata={"runtimeArn": runtime_arn, "runtimeVersion": "1"},
+        federationMetadata=make_agentcore_mcp_metadata(runtime_arn=runtime_arn, runtime_version="1"),
         serverName="steady-server",
         config={"runtimeAccess": {"mode": "iam"}},
     )
     discovered = SimpleNamespace(
         serverName="steady-server",
-        federationMetadata={"runtimeArn": runtime_arn, "runtimeVersion": "1"},
+        federationMetadata=make_agentcore_mcp_metadata(runtime_arn=runtime_arn, runtime_version="1"),
         config={"runtimeAccess": {"mode": "iam"}},
     )
 
@@ -1554,13 +1616,13 @@ async def test_build_sync_plan_mcp_rename_self_conflict_is_no_op(
     existing = SimpleNamespace(
         id=existing_id,
         federationRefId=federation.id,
-        federationMetadata={"runtimeArn": runtime_arn, "runtimeVersion": "1"},
+        federationMetadata=make_agentcore_mcp_metadata(runtime_arn=runtime_arn, runtime_version="1"),
         serverName="old-name",
         config={"runtimeAccess": {"mode": "iam"}},
     )
     discovered = SimpleNamespace(
         serverName="new-name",
-        federationMetadata={"runtimeArn": runtime_arn, "runtimeVersion": "2"},
+        federationMetadata=make_agentcore_mcp_metadata(runtime_arn=runtime_arn, runtime_version="2"),
         config={"runtimeAccess": {"mode": "iam"}},
     )
 
@@ -1568,7 +1630,7 @@ async def test_build_sync_plan_mcp_rename_self_conflict_is_no_op(
         id=existing_id,
         serverName="new-name",
         federationRefId=federation.id,
-        federationMetadata={"runtimeArn": runtime_arn},
+        federationMetadata=make_agentcore_mcp_metadata(runtime_arn=runtime_arn),
     )
 
     def _fake_mcp_find(query, session=None):

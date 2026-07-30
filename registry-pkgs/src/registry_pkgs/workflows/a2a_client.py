@@ -29,7 +29,10 @@ from a2a.utils.message import get_message_text
 from registry_pkgs.core.agentcore_jwt import mint_agentcore_runtime_jwt
 from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.models.a2a_agent import TRANSPORT_HTTP_JSON, TRANSPORT_JSONRPC, A2AAgent
-from registry_pkgs.models.enums import FederationProviderType
+from registry_pkgs.models.federation_metadata import (
+    AgentCoreA2AFederationMetadata,
+    AzureFoundryFederationMetadata,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -99,14 +102,12 @@ class A2ACallResult:
 
 def is_agentcore_runtime(agent: A2AAgent) -> bool:
     """Return True when the agent is a federated AWS Bedrock AgentCore runtime."""
-    meta = agent.federationMetadata or {}
-    return meta.get("providerType") == FederationProviderType.AWS_AGENTCORE
+    return isinstance(agent.federationMetadata, AgentCoreA2AFederationMetadata)
 
 
 def is_azure_foundry_runtime(agent: A2AAgent) -> bool:
     """Return True when the agent is a federated Azure AI Foundry hosted agent."""
-    meta = agent.federationMetadata or {}
-    return meta.get("providerType") == FederationProviderType.AZURE_AI_FOUNDRY
+    return isinstance(agent.federationMetadata, AzureFoundryFederationMetadata)
 
 
 def get_agentcore_auth_mode(agent: A2AAgent) -> str:
@@ -115,8 +116,11 @@ def get_agentcore_auth_mode(agent: A2AAgent) -> str:
         mode = agent.config.runtimeAccess.mode
         return str(mode.value if hasattr(mode, "value") else mode).upper()
 
-    meta = agent.federationMetadata or {}
-    config = meta.get("authorizerConfiguration") or {}
+    metadata = agent.federationMetadata
+    if not isinstance(metadata, AgentCoreA2AFederationMetadata):
+        return "IAM"
+
+    config = metadata.authorizerConfiguration or {}
     if not isinstance(config, dict) or not config:
         return "IAM"
 
@@ -415,7 +419,7 @@ async def call_a2a(
         and headers_provider is None
         and (is_agentcore_runtime(agent) or is_azure_foundry_runtime(agent))
     ):
-        provider = (agent.federationMetadata or {}).get("providerType", "unknown")
+        provider = getattr(agent.federationMetadata, "providerType", "unknown")
         provider_value = provider.value if hasattr(provider, "value") else provider
         raise ValueError(
             f"call_a2a: httpx_client or headers_provider is required for federated agent {agent.path!r} "

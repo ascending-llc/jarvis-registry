@@ -123,8 +123,7 @@ def _build_definition(args: argparse.Namespace) -> WorkflowDefinition:
 
 def _a2a_agent_summary(agent: A2AAgent) -> str:
     """Return a one-line summary for an A2A agent: auth mode, provider, discoveryUrl."""
-    meta = agent.federationMetadata or {}
-    provider = meta.get("providerType", "—")
+    provider = getattr(agent.federationMetadata, "providerType", "—")
 
     if agent.config and agent.config.runtimeAccess:
         mode = str(
@@ -216,8 +215,7 @@ async def _print_node_agent_details(nodes: list[WorkflowNode]) -> None:
     print(f"  {'PATH':<35}  {'AUTH':<5}  {'PROVIDER':<15}  {'DISCOVERY_URL'}")
     print(f"  {'-' * 35}  {'-' * 5}  {'-' * 15}  {'-' * 40}")
     for agent in sorted(agents, key=lambda a: a.path):
-        meta = agent.federationMetadata or {}
-        provider = meta.get("providerType", "—")
+        provider = getattr(agent.federationMetadata, "providerType", "—")
         if agent.config and agent.config.runtimeAccess:
             mode = str(
                 agent.config.runtimeAccess.mode.value

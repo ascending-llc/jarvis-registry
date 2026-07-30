@@ -23,7 +23,10 @@ from beanie import PydanticObjectId
 
 from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.models.a2a_agent import A2AAgent, AgentConfig
-from registry_pkgs.models.enums import FederationProviderType
+from registry_pkgs.testing.federation_metadata import (
+    make_agentcore_a2a_metadata,
+    make_azure_foundry_metadata,
+)
 from registry_pkgs.workflows.a2a_client import (
     A2ACallResult,
     _ensure_a2a_result_fields,
@@ -57,7 +60,7 @@ def _make_agent(url: str = "https://agent.example.com", transport: str = "jsonrp
             skills=[],
         ),
         config=AgentConfig(title="Test Agent", type=transport, url=url),
-        federationMetadata={},
+        federationMetadata=None,
     )
 
 
@@ -93,7 +96,7 @@ def test_build_headers_returns_empty_headers_for_non_agentcore_agent():
 
 def test_build_headers_returns_agentcore_jwt_and_session_header():
     agent = _make_agent()
-    agent.federationMetadata = {"providerType": FederationProviderType.AWS_AGENTCORE}
+    agent.federationMetadata = make_agentcore_a2a_metadata()
 
     with patch("registry_pkgs.workflows.a2a_client._make_agentcore_jwt", return_value="signed-agentcore-jwt"):
         headers = build_headers(agent, jwt_config=_jwt_config())
@@ -674,7 +677,7 @@ def test_is_azure_foundry_runtime_matches_provider_type_value():
     from registry_pkgs.workflows.a2a_client import is_azure_foundry_runtime
 
     agent = _make_agent()
-    agent.federationMetadata = {"providerType": "azure_ai_foundry"}
+    agent.federationMetadata = make_azure_foundry_metadata()
     assert is_azure_foundry_runtime(agent) is True
 
 
@@ -682,10 +685,10 @@ def test_is_azure_foundry_runtime_false_for_unknown_provider():
     from registry_pkgs.workflows.a2a_client import is_azure_foundry_runtime
 
     agent = _make_agent()
-    agent.federationMetadata = {"providerType": "aws_agentcore"}
+    agent.federationMetadata = make_agentcore_a2a_metadata()
     assert is_azure_foundry_runtime(agent) is False
 
-    agent.federationMetadata = {}
+    agent.federationMetadata = None
     assert is_azure_foundry_runtime(agent) is False
 
 
@@ -693,7 +696,7 @@ def test_is_azure_foundry_runtime_false_for_unknown_provider():
 async def test_call_a2a_raises_when_httpx_client_missing_for_agentcore():
     """Federated AgentCore agents require a pre-authenticated httpx client."""
     agent = _make_agent()
-    agent.federationMetadata = {"providerType": FederationProviderType.AWS_AGENTCORE}
+    agent.federationMetadata = make_agentcore_a2a_metadata()
 
     with pytest.raises(
         ValueError,
@@ -706,7 +709,7 @@ async def test_call_a2a_raises_when_httpx_client_missing_for_agentcore():
 async def test_call_a2a_raises_when_httpx_client_missing_for_azure_foundry():
     """Federated Azure AI Foundry agents require a pre-authenticated httpx client."""
     agent = _make_agent()
-    agent.federationMetadata = {"providerType": FederationProviderType.AZURE_AI_FOUNDRY}
+    agent.federationMetadata = make_azure_foundry_metadata()
 
     with pytest.raises(
         ValueError,
@@ -732,7 +735,7 @@ async def test_call_a2a_does_not_build_credentials_itself():
 
 def test_extra_call_headers_returns_agentcore_session_header_only():
     agent = _make_agent()
-    agent.federationMetadata = {"providerType": FederationProviderType.AWS_AGENTCORE}
+    agent.federationMetadata = make_agentcore_a2a_metadata()
 
     headers = _extra_call_headers(agent)
 
@@ -745,14 +748,14 @@ def test_extra_call_headers_returns_empty_for_azure_and_plain_agents():
 
     assert _extra_call_headers(agent) == {}
 
-    agent.federationMetadata = {"providerType": FederationProviderType.AZURE_AI_FOUNDRY}
+    agent.federationMetadata = make_azure_foundry_metadata()
     assert _extra_call_headers(agent) == {}
 
 
 @pytest.mark.asyncio
 async def test_call_a2a_reuses_agentcore_session_header_across_polling_requests():
     agent = _make_agent()
-    agent.federationMetadata = {"providerType": FederationProviderType.AWS_AGENTCORE}
+    agent.federationMetadata = make_agentcore_a2a_metadata()
     submitted = _task(TaskState.submitted, artifacts=None)
     completed = _task(TaskState.completed, artifacts=[_artifact("Done", ["finally"])])
     mock_factory, mock_client = _mock_client(
@@ -819,7 +822,7 @@ def _real_client_agent(*, name: str = "Test Agent") -> A2AAgent:
 
 def _azure_foundry_agent() -> A2AAgent:
     agent = _real_client_agent(name="Azure Test Agent")
-    agent.federationMetadata = {"providerType": FederationProviderType.AZURE_AI_FOUNDRY}
+    agent.federationMetadata = make_azure_foundry_metadata()
     return agent
 
 
@@ -918,7 +921,7 @@ async def test_call_a2a_uses_standard_transport_for_non_azure_jsonrpc_agent():
     Uses the real ClientFactory (unlike other call_a2a tests, which mock it out) so the
     transport-registration branch in call_a2a actually runs.
     """
-    agent = _real_client_agent()  # federationMetadata={} → not Azure Foundry
+    agent = _real_client_agent()  # federationMetadata=None → not Azure Foundry
 
     raw_response = {
         "jsonrpc": "2.0",

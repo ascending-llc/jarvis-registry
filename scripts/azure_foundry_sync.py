@@ -118,9 +118,10 @@ async def main() -> None:
         agents = await A2AAgent.find({"federationRefId": federation.id}).to_list()
         print(f"agent count = {len(agents)}")
         for a in agents:
-            meta = a.federationMetadata or {}
+            metadata = a.federationMetadata
             print(
-                f"  path={a.path} name={meta.get('agentName')} ver={meta.get('agentVersion')} "
+                f"  path={a.path} name={getattr(metadata, 'agentName', None)} "
+                f"ver={getattr(metadata, 'agentVersion', None)} "
                 f"transport={a.config.type if a.config else '?'} enabled={a.config.enabled if a.config else False} "
                 f"federationRefId={a.federationRefId} wellKnown={getattr(a.wellKnown, 'lastSyncStatus', None)}"
             )
