@@ -2,6 +2,7 @@ import type { Node, NodeProps } from '@xyflow/react';
 import { Handle, Position, useUpdateNodeInternals } from '@xyflow/react';
 import { useContext, useEffect } from 'react';
 import { CanvasActionsContext } from '../CanvasView';
+import { GateApprovalToolbar } from './GateApprovalToolbar';
 
 import './index.css';
 
@@ -51,18 +52,21 @@ export const AgentNode: React.FC<NodeProps<Node<import('../types').AgentNodeData
 };
 
 /** Approval Gate (HITL) node. */
-export const GateNode: React.FC<NodeProps<Node<import('../types').GateNodeData>>> = ({ data, selected }) => {
+export const GateNode: React.FC<NodeProps<Node<import('../types').GateNodeData>>> = ({ id, data, selected }) => {
   return (
-    <div className={`node-wrap gate ${selected ? 'selected' : ''}`}>
-      <Handle type='target' position={Position.Left} />
-      <Header iconClass='gate' iconLabel='⏸' title={data.label || 'Approval Gate'} dotClass='gate' />
-      <div className='node-body'>{data.description || 'Pause run for human review'}</div>
-      <div className='node-footer'>
-        <span className='node-badge gate font-mono'>⏸ awaiting human</span>
-        {data.timeout && <span className='node-hint font-mono'>{data.timeout}</span>}
+    <>
+      <GateApprovalToolbar gateNodeId={id} />
+      <div className={`node-wrap gate ${selected ? 'selected' : ''}`}>
+        <Handle type='target' position={Position.Left} />
+        <Header iconClass='gate' iconLabel='⏸' title={data.label || 'Approval Gate'} dotClass='gate' />
+        <div className='node-body'>{data.description || 'Pause run for human review'}</div>
+        <div className='node-footer'>
+          <span className='node-badge gate font-mono'>⏸ awaiting human</span>
+          {data.timeout && <span className='node-hint font-mono'>{data.timeout}</span>}
+        </div>
+        <Handle type='source' position={Position.Right} />
       </div>
-      <Handle type='source' position={Position.Right} />
-    </div>
+    </>
   );
 };
 

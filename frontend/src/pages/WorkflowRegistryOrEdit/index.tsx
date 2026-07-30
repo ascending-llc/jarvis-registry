@@ -18,6 +18,7 @@ import { useServer } from '@/contexts/ServerContext';
 import SERVICES from '@/services';
 import type { WorkflowNode as ApiWorkflowNode, Workflow } from '@/services/workflow/type';
 import DeleteWorkflowDialog from './DeleteWorkflowDialog';
+import { useActiveWorkflowRun } from './hooks/useActiveWorkflowRun';
 import TriggerRunModal from './TriggerRunModal';
 import UnsavedChangesDialog from './UnsavedChangesDialog';
 
@@ -34,6 +35,7 @@ const WorkflowRegistryOrEdit: React.FC = () => {
   const isReadOnly = searchParams.get('isReadOnly') === 'true';
   const isEditMode = !!id;
   const canvasRef = useRef<WorkflowCanvasRef>(null);
+  const triggeringRef = useRef(false);
 
   // ── 2. Resource State ────────────────────────────────────────────────────────────
   const [workflow, setWorkflow] = useState<Partial<Workflow> | null>(null);
@@ -54,6 +56,11 @@ const WorkflowRegistryOrEdit: React.FC = () => {
   const [shareOpen, setShareOpen] = useState(false);
   const [runHistoryRefresh, setRunHistoryRefresh] = useState(0);
   const canShareWorkflow = isEditMode && workflow?.permissions?.SHARE === true;
+  const activeWorkflowRun = useActiveWorkflowRun(id ?? undefined, message => showToast(message, 'error'));
+
+  useEffect(() => {
+    if (activeWorkflowRun.isLocked) setTriggerModalOpen(false);
+  }, [activeWorkflowRun.isLocked]);
 
   // ── Side Effects: Block navigation & BeforeUnload ──────────────────────────────
   const blocker = useBlocker(({ currentLocation, nextLocation }) => {
@@ -204,16 +211,25 @@ const WorkflowRegistryOrEdit: React.FC = () => {
       showToast('Save the workflow before triggering a run', 'error');
       return;
     }
+    if (activeWorkflowRun.isLocked || triggeringRef.current) {
+      setTriggerModalOpen(false);
+      showToast('A workflow run is already active or starting', 'error');
+      return;
+    }
+
+    triggeringRef.current = true;
     setTriggerModalOpen(false);
     setMutatingAction('triggering');
     try {
-      await SERVICES.WORKFLOW.triggerWorkflowRun(id, { initialInput });
+      const response = await SERVICES.WORKFLOW.triggerWorkflowRun(id, { initialInput });
+      activeWorkflowRun.trackRun(response.runId);
       setRunHistoryRefresh(k => k + 1);
       showToast('Workflow run triggered!', 'success');
     } catch (error: any) {
       const msg = error?.detail?.message || (typeof error?.detail === 'string' ? error.detail : '');
       showToast(msg || 'Failed to trigger workflow run', 'error');
     } finally {
+      triggeringRef.current = false;
       setMutatingAction('idle');
     }
   };
@@ -301,7 +317,7 @@ const WorkflowRegistryOrEdit: React.FC = () => {
               <>
                 <button
                   onClick={() => setTriggerModalOpen(true)}
-                  disabled={mutatingAction !== 'idle' || !id}
+                  disabled={mutatingAction !== 'idle' || !id || activeWorkflowRun.isLocked}
                   className='inline-flex items-center gap-1 px-2.5 py-1 border border-transparent rounded-md text-xs font-medium text-white bg-[var(--jarvis-primary)] hover:opacity-90 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed'
                 >
                   {mutatingAction === 'triggering' ? (
@@ -350,6 +366,8 @@ const WorkflowRegistryOrEdit: React.FC = () => {
             workflowId={id ?? undefined}
             workflow={workflow}
             refreshRunHistoryKey={runHistoryRefresh}
+            activeWorkflowRun={activeWorkflowRun.activeRun}
+            refetchActiveWorkflowRun={activeWorkflowRun.refetchNow}
             initialNodes={initialCanvas.nodes}
             initialEdges={initialCanvas.edges}
             isReadOnly={isReadOnly}
