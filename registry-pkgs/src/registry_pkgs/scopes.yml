@@ -259,6 +259,15 @@ user-read:
   - action: deny_server_consent
     method: POST
     endpoint: /mcp/consent/server/deny
+  - action: get_agent_consent_context
+    method: GET
+    endpoint: /mcp/consent/agent
+  - action: approve_agent_consent
+    method: POST
+    endpoint: /mcp/consent/agent
+  - action: deny_agent_consent
+    method: POST
+    endpoint: /mcp/consent/agent/deny
   - action: oauth_callback
     method: GET
     endpoint: /mcp/{server_path}/oauth/callback
