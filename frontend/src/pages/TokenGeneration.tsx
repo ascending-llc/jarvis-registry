@@ -18,7 +18,7 @@ const TokenGeneration: React.FC = () => {
   const [generatedToken, setGeneratedToken] = useState<string>('');
   const [tokenDetails, setTokenDetails] = useState<any>(null);
   const [loading, setLoading] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const [copiedTarget, setCopiedTarget] = useState<'token' | 'cli-helper' | null>(null);
   const [error, setError] = useState<string>('');
 
   const expirationOptions = [
@@ -72,15 +72,21 @@ const TokenGeneration: React.FC = () => {
     }
   };
 
-  const handleCopyToken = async () => {
+  const handleCopy = async (value: string, target: 'token' | 'cli-helper') => {
+    const showCopiedFeedback = () => {
+      setCopiedTarget(target);
+      setTimeout(() => {
+        setCopiedTarget(currentTarget => (currentTarget === target ? null : currentTarget));
+      }, 2000);
+    };
+
     try {
-      await navigator.clipboard.writeText(generatedToken);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      await navigator.clipboard.writeText(value);
+      showCopiedFeedback();
     } catch (_error) {
       // Fallback for older browsers
       const textArea = document.createElement('textarea');
-      textArea.value = generatedToken;
+      textArea.value = value;
       textArea.style.position = 'fixed';
       textArea.style.left = '-999999px';
       textArea.style.top = '-999999px';
@@ -90,10 +96,9 @@ const TokenGeneration: React.FC = () => {
 
       try {
         document.execCommand('copy');
-        setCopied(true);
-        setTimeout(() => setCopied(false), 2000);
+        showCopiedFeedback();
       } catch (err) {
-        console.error('Failed to copy token:', err);
+        console.error('Failed to copy value:', err);
       }
 
       document.body.removeChild(textArea);
@@ -116,6 +121,7 @@ const TokenGeneration: React.FC = () => {
   };
 
   const scopeValidationError = validateCustomScopes();
+  const cliHelper = `export AUTH_TOKEN="${generatedToken}"`;
 
   return (
     <div className='flex flex-col h-full'>
@@ -429,24 +435,49 @@ const TokenGeneration: React.FC = () => {
 
               {/* Token Display */}
               <div className='relative mb-4'>
-                <div className='rounded-lg border border-[var(--jarvis-success)]/25 bg-[var(--jarvis-card)] p-4'>
+                <div className='rounded-lg border border-[var(--jarvis-success)]/25 bg-[var(--jarvis-card)] p-4 pr-12'>
                   <code className='break-all text-sm font-mono text-[var(--jarvis-text)]'>{generatedToken}</code>
                 </div>
 
                 <div className='absolute right-2 top-2 z-10'>
                   <IconButton
                     ariaLabel='Copy token'
-                    tooltip={copied ? 'Copied!' : 'Copy token'}
-                    onClick={handleCopyToken}
+                    tooltip={copiedTarget === 'token' ? 'Copied!' : 'Copy token'}
+                    onClick={() => handleCopy(generatedToken, 'token')}
                     size='card'
                     className='text-[var(--jarvis-icon)] hover:bg-[var(--jarvis-card-muted)] hover:text-[var(--jarvis-icon-hover)] border-none bg-transparent hover:bg-transparent shadow-none'
                   >
-                    {copied ? (
+                    {copiedTarget === 'token' ? (
                       <CheckIcon className='h-4 w-4 text-[var(--jarvis-success-text)]' />
                     ) : (
                       <ClipboardIcon className='h-4 w-4' />
                     )}
                   </IconButton>
+                </div>
+              </div>
+
+              {/* CLI Helper */}
+              <div className='mb-4'>
+                <h4 className='mb-2 text-sm font-semibold text-[var(--jarvis-text-strong)]'>CLI Helper</h4>
+                <div className='relative'>
+                  <div className='rounded-lg border border-[var(--jarvis-success)]/25 bg-[var(--jarvis-card)] p-4 pr-12'>
+                    <code className='break-all text-sm font-mono text-[var(--jarvis-text)]'>{cliHelper}</code>
+                  </div>
+                  <div className='absolute right-2 top-2 z-10'>
+                    <IconButton
+                      ariaLabel='Copy CLI helper'
+                      tooltip={copiedTarget === 'cli-helper' ? 'Copied!' : 'Copy CLI helper'}
+                      onClick={() => handleCopy(cliHelper, 'cli-helper')}
+                      size='card'
+                      className='text-[var(--jarvis-icon)] hover:bg-[var(--jarvis-card-muted)] hover:text-[var(--jarvis-icon-hover)] border-none bg-transparent hover:bg-transparent shadow-none'
+                    >
+                      {copiedTarget === 'cli-helper' ? (
+                        <CheckIcon className='h-4 w-4 text-[var(--jarvis-success-text)]' />
+                      ) : (
+                        <ClipboardIcon className='h-4 w-4' />
+                      )}
+                    </IconButton>
+                  </div>
                 </div>
               </div>
 
