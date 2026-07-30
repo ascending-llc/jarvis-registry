@@ -7,6 +7,7 @@ export const APP_ROUTES = {
   device: '/device',
   consentDownstream: '/consent/downstream',
   consentServer: '/consent/server',
+  consentAgent: '/consent/agent',
   serverRegistry: '/server-registry',
   serverEdit: '/server-edit',
   agentRegistry: '/agent-registry',

@@ -72,6 +72,45 @@ def test_server_consent_shares_client_hash() -> None:
     assert store.has_server_consent("user-1", "client-1", "/github") is True
 
 
+def test_agent_consent_shares_client_hash_with_namespaced_field() -> None:
+    redis = _FakeRedis()
+    store = ConsentStore(redis_client=redis, key_prefix="jarvis-auth-server-test")
+
+    assert store.has_agent_consent("user-1", "client-1", "/github") is False
+
+    store.grant_agent_consent("user-1", "client-1", "/github")
+
+    key = "jarvis-auth-server-test:mcp:consent:user-1:client-1"
+    assert redis.hashes[key]["agent:/github"] == "1"
+    assert store.has_agent_consent("user-1", "client-1", "/github") is True
+
+
+def test_agent_and_server_consent_fields_do_not_collide() -> None:
+    redis = _FakeRedis()
+    store = ConsentStore(redis_client=redis, key_prefix="jarvis-auth-server-test")
+
+    store.grant_server_consent("user-1", "client-1", "/shared")
+
+    assert store.has_server_consent("user-1", "client-1", "/shared") is True
+    assert store.has_agent_consent("user-1", "client-1", "/shared") is False
+
+    store.grant_agent_consent("user-1", "client-1", "/shared")
+
+    assert store.has_agent_consent("user-1", "client-1", "/shared") is True
+    key = "jarvis-auth-server-test:mcp:consent:user-1:client-1"
+    assert set(redis.hashes[key]) == {"/shared", "agent:/shared"}
+
+
+def test_agent_consent_does_not_grant_same_path_server_consent() -> None:
+    redis = _FakeRedis()
+    store = ConsentStore(redis_client=redis, key_prefix="jarvis-auth-server-test")
+
+    store.grant_agent_consent("user-1", "client-1", "/shared")
+
+    assert store.has_agent_consent("user-1", "client-1", "/shared") is True
+    assert store.has_server_consent("user-1", "client-1", "/shared") is False
+
+
 def test_pending_consent_peek_and_consume_are_one_shot() -> None:
     redis = _FakeRedis()
     store = PendingConsentStore(redis_client=redis, key_prefix="jarvis-auth-server-test")

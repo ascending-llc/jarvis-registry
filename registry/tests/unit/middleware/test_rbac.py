@@ -895,3 +895,34 @@ class TestRealScopesConfigDownstreamOAuth:
         mw = ScopePermissionMiddleware(FastAPI())
         path = f"/mcp/downstream/oauth/authorize/{self._USER_ID}/github/sub/path"
         assert mw._has_permission(["user-read"], path, "GET") is True
+
+
+@pytest.mark.unit
+class TestRealScopesConfigAgentConsent:
+    """Validate the real scopes.yml permits the complete Agent consent decision flow."""
+
+    @pytest.mark.parametrize(
+        ("path", "method"),
+        [
+            ("/mcp/consent/agent", "GET"),
+            ("/mcp/consent/agent", "POST"),
+            ("/mcp/consent/agent/deny", "POST"),
+        ],
+    )
+    def test_agent_consent_granted_with_user_read(self, path: str, method: str) -> None:
+        mw = ScopePermissionMiddleware(FastAPI())
+
+        assert mw._has_permission(["user-read"], path, method) is True
+
+    @pytest.mark.parametrize(
+        ("path", "method"),
+        [
+            ("/mcp/consent/agent", "GET"),
+            ("/mcp/consent/agent", "POST"),
+            ("/mcp/consent/agent/deny", "POST"),
+        ],
+    )
+    def test_agent_consent_denied_without_user_read(self, path: str, method: str) -> None:
+        mw = ScopePermissionMiddleware(FastAPI())
+
+        assert mw._has_permission(["agents-read"], path, method) is False

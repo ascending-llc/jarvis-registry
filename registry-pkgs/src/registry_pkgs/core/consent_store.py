@@ -75,6 +75,36 @@ class ConsentStore:
             server_path=server_path,
         )
 
+    def has_agent_consent(
+        self,
+        user_id: str,
+        client_id: str,
+        agent_path: str,
+    ) -> bool:
+        key = self._key(user_id, client_id)
+        return self._has_consent_field(
+            key,
+            f"agent:{agent_path}",
+            user_id=user_id,
+            client_id=client_id,
+            server_path=agent_path,
+        )
+
+    def grant_agent_consent(
+        self,
+        user_id: str,
+        client_id: str,
+        agent_path: str,
+    ) -> None:
+        key = self._key(user_id, client_id)
+        self._grant_consent_field(
+            key,
+            f"agent:{agent_path}",
+            user_id=user_id,
+            client_id=client_id,
+            server_path=agent_path,
+        )
+
     def _has_consent_field(
         self,
         key: str,

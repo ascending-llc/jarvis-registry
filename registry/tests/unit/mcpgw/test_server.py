@@ -13,7 +13,7 @@ from mcp.types import (
 
 from registry.core.config import settings
 from registry.core.exceptions import InternalServerException
-from registry.mcpgw.tools import server
+from registry.mcpgw.tools import server, utils
 from registry.mcpgw.tools.server import execute_tool_impl
 from registry.services.generated_token_policy import INTERACTIVE_CLIENT_ID
 
@@ -311,21 +311,21 @@ async def test_execute_tool_impl_acl_runtime_error_returns_retryable_error(monke
 
 
 def test_get_state_metadata_returns_unrecognized_and_no_notify_for_missing_client_params():
-    result = server._get_state_metadata(None)
+    result = utils._get_state_metadata(None)
 
-    assert result["client_branding"] == server.ClientBranding.UNRECOGNIZED
+    assert result["client_branding"] == utils.ClientBranding.UNRECOGNIZED
     assert result["notify_elicitation_complete"] is False
 
 
 @pytest.mark.parametrize(
     ("client_name", "expected_branding"),
     [
-        ("Visual Studio Code", server.ClientBranding.VSCODE),
-        ("claude-ai/1.0", server.ClientBranding.CLAUDE),
-        ("probe (via mcp-remote 1.0)", server.ClientBranding.CURSOR),
-        ("mcp-stdio-client (via mcp-remote 1.0)", server.ClientBranding.CURSOR),
-        ("claude-code", server.ClientBranding.UNRECOGNIZED),
-        ("some-other-client", server.ClientBranding.UNRECOGNIZED),
+        ("Visual Studio Code", utils.ClientBranding.VSCODE),
+        ("claude-ai/1.0", utils.ClientBranding.CLAUDE),
+        ("probe (via mcp-remote 1.0)", utils.ClientBranding.CURSOR),
+        ("mcp-stdio-client (via mcp-remote 1.0)", utils.ClientBranding.CURSOR),
+        ("claude-code", utils.ClientBranding.UNRECOGNIZED),
+        ("some-other-client", utils.ClientBranding.UNRECOGNIZED),
     ],
 )
 @pytest.mark.parametrize("supports_url_elicitation", [True, False])
@@ -339,7 +339,7 @@ def test_get_state_metadata_notify_flag_matches_url_elicitation_support(
     supports URL mode elicitation, regardless of which brand it's recognized as."""
     client_params = _make_client_params(client_name, supports_url_elicitation=supports_url_elicitation)
 
-    result = server._get_state_metadata(client_params)
+    result = utils._get_state_metadata(client_params)
 
     assert result["client_branding"] == expected_branding
     assert result["notify_elicitation_complete"] is supports_url_elicitation
@@ -386,9 +386,9 @@ async def test_execute_tool_impl_without_server_consent_raises_url_elicitation(m
     ctx.request_context.lifespan_context.consent_store.has_server_consent.return_value = False
     downstream_call = AsyncMock()
     monkeypatch.setattr(server, "_downstream_tool_call", downstream_call)
-    monkeypatch.setattr(server, "_support_url_elicitation", lambda _client_params: True)
+    monkeypatch.setattr(utils, "_support_url_elicitation", lambda _client_params: True)
 
-    with pytest.raises(server.UrlElicitationRequiredError):
+    with pytest.raises(utils.UrlElicitationRequiredError):
         await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
 
     ctx.request_context.lifespan_context.pending_consent_store.save.assert_called_once()

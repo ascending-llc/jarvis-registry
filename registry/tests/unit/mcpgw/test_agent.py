@@ -19,8 +19,10 @@ from a2a.types import (
 from beanie import PydanticObjectId
 from mcp.types import BlobResourceContents, EmbeddedResource, ImageContent, TextContent, TextResourceContents
 
-from registry.mcpgw.tools import agent
+from registry.core.config import settings
+from registry.mcpgw.tools import agent, utils
 from registry.mcpgw.tools.agent import AgentMessageInput, _convert_response, execute_agent_impl
+from registry.services.generated_token_policy import INTERACTIVE_CLIENT_ID
 from registry_pkgs.workflows.a2a_client import A2ACallResult
 
 
@@ -41,25 +43,32 @@ def _make_ctx(
     a2a_client_registry=None,
     *,
     user_id: str = "507f1f77bcf86cd799439011",
+    client_id: str = settings.headless_agent_client_id,
     accessible_agent_ids: list[str] | None = None,
 ):
     accessible: object = _PermissiveAccessibleSet() if accessible_agent_ids is None else accessible_agent_ids
     acl_service = MagicMock()
     acl_service.get_accessible_resource_ids = AsyncMock(return_value=accessible)
 
+    consent_store = MagicMock()
+    consent_store.has_agent_consent.return_value = True
     lifespan_context = SimpleNamespace(
         jwt_signing_config=jwt_config or SimpleNamespace(),
         a2a_client_registry=a2a_client_registry
         or SimpleNamespace(get_client=AsyncMock(return_value=SimpleNamespace())),
         acl_service=acl_service,
+        consent_store=consent_store,
+        pending_consent_store=MagicMock(),
+        session_store=MagicMock(),
     )
-    request_state = SimpleNamespace(user={"user_id": user_id})
+    request_state = SimpleNamespace(user={"user_id": user_id, "client_id": client_id})
     request_context = SimpleNamespace(
         lifespan_context=lifespan_context,
         request=SimpleNamespace(state=request_state),
     )
-    ctx = AsyncMock()
+    ctx = MagicMock()
     ctx.request_context = request_context
+    ctx.session = SimpleNamespace(client_params=None)
     return ctx
 
 
@@ -68,6 +77,8 @@ def _make_agent(agent_id: str | None = None):
     agent = MagicMock()
     agent.id = oid
     agent.path = "/test-agent"
+    agent.config = SimpleNamespace(title="Test Agent")
+    agent.card = SimpleNamespace(name="Test Agent")
     return agent
 
 
@@ -153,6 +164,111 @@ async def test_execute_agent_happy_path_returns_text():
 
     assert result.isError is not True
     assert any(isinstance(c, TextContent) and "Agent response text" in c.text for c in result.content)
+
+
+@pytest.mark.asyncio
+async def test_execute_agent_without_agent_consent_returns_elicitation():
+    valid_id = str(PydanticObjectId())
+    ctx = _make_ctx(client_id=INTERACTIVE_CLIENT_ID, accessible_agent_ids=[valid_id])
+    ctx.request_context.lifespan_context.consent_store.has_agent_consent.return_value = False
+    target_agent = _make_agent(valid_id)
+
+    with (
+        patch("registry.mcpgw.tools.agent.A2AAgent") as mock_model,
+        patch("registry.mcpgw.tools.agent.call_a2a", new_callable=AsyncMock) as mock_call,
+    ):
+        mock_model.id = MagicMock()
+        mock_model.find_one = AsyncMock(return_value=target_agent)
+
+        result = await execute_agent_impl(valid_id, _msg("Do something"), ctx)
+
+    assert result.isError is True
+    assert "explicitly consent" in result.content[0].text
+    assert "/consent/agent?nonce=" in result.content[0].text
+    mock_call.assert_not_awaited()
+    ctx.request_context.lifespan_context.consent_store.has_agent_consent.assert_called_once_with(
+        "507f1f77bcf86cd799439011",
+        INTERACTIVE_CLIENT_ID,
+        "/test-agent",
+    )
+    ctx.request_context.lifespan_context.pending_consent_store.save.assert_called_once()
+    _, pending = ctx.request_context.lifespan_context.pending_consent_store.save.call_args.args
+    assert pending["agent_path"] == "/test-agent"
+    assert pending["elicitation_id"]
+    assert pending["notify_elicitation_complete"] is False
+
+
+@pytest.mark.asyncio
+async def test_execute_agent_without_consent_raises_url_elicitation_for_capable_client(monkeypatch):
+    valid_id = str(PydanticObjectId())
+    ctx = _make_ctx(client_id=INTERACTIVE_CLIENT_ID, accessible_agent_ids=[valid_id])
+    ctx.request_context.lifespan_context.consent_store.has_agent_consent.return_value = False
+    target_agent = _make_agent(valid_id)
+    monkeypatch.setattr(utils, "_support_url_elicitation", lambda _client_params: True)
+
+    with (
+        patch("registry.mcpgw.tools.agent.A2AAgent") as mock_model,
+        patch("registry.mcpgw.tools.agent.call_a2a", new_callable=AsyncMock) as mock_call,
+    ):
+        mock_model.id = MagicMock()
+        mock_model.find_one = AsyncMock(return_value=target_agent)
+
+        with pytest.raises(utils.UrlElicitationRequiredError):
+            await execute_agent_impl(valid_id, _msg("Do something"), ctx)
+
+    mock_call.assert_not_awaited()
+    ctx.request_context.lifespan_context.session_store.append.assert_called_once()
+    elicitation_id, saved_session = ctx.request_context.lifespan_context.session_store.append.call_args.args
+    assert elicitation_id
+    assert saved_session is ctx.session
+    _, pending = ctx.request_context.lifespan_context.pending_consent_store.save.call_args.args
+    assert pending["elicitation_id"] == elicitation_id
+    assert pending["notify_elicitation_complete"] is True
+
+
+@pytest.mark.asyncio
+async def test_execute_agent_headless_client_bypasses_consent_check():
+    valid_id = str(PydanticObjectId())
+    ctx = _make_ctx(client_id=settings.headless_agent_client_id, accessible_agent_ids=[valid_id])
+    target_agent = _make_agent(valid_id)
+
+    with (
+        patch("registry.mcpgw.tools.agent.A2AAgent") as mock_model,
+        patch("registry.mcpgw.tools.agent.call_a2a", new_callable=AsyncMock) as mock_call,
+    ):
+        mock_model.id = MagicMock()
+        mock_model.find_one = AsyncMock(return_value=target_agent)
+        mock_call.return_value = _result_with_message("ok")
+
+        await execute_agent_impl(valid_id, _msg("Do something"), ctx)
+
+    ctx.request_context.lifespan_context.consent_store.has_agent_consent.assert_not_called()
+    mock_call.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_execute_agent_existing_agent_consent_bypasses_elicitation():
+    valid_id = str(PydanticObjectId())
+    ctx = _make_ctx(client_id=INTERACTIVE_CLIENT_ID, accessible_agent_ids=[valid_id])
+    target_agent = _make_agent(valid_id)
+
+    with (
+        patch("registry.mcpgw.tools.agent.A2AAgent") as mock_model,
+        patch("registry.mcpgw.tools.agent.call_a2a", new_callable=AsyncMock) as mock_call,
+    ):
+        mock_model.id = MagicMock()
+        mock_model.find_one = AsyncMock(return_value=target_agent)
+        mock_call.return_value = _result_with_message("ok")
+
+        await execute_agent_impl(valid_id, _msg("Do something"), ctx)
+
+    ctx.request_context.lifespan_context.consent_store.has_agent_consent.assert_called_once_with(
+        "507f1f77bcf86cd799439011",
+        INTERACTIVE_CLIENT_ID,
+        "/test-agent",
+    )
+    ctx.request_context.lifespan_context.pending_consent_store.save.assert_not_called()
+    mock_call.assert_awaited_once()
 
 
 @pytest.mark.asyncio

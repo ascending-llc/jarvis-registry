@@ -31,6 +31,9 @@ const API = {
   getServerConsent: (nonce: string) => `${MCP_BASE_URL}/consent/server?nonce=${encodeURIComponent(nonce)}`,
   approveServerConsent: `${MCP_BASE_URL}/consent/server`,
   denyServerConsent: `${MCP_BASE_URL}/consent/server/deny`,
+  getAgentConsent: (nonce: string) => `${MCP_BASE_URL}/consent/agent?nonce=${encodeURIComponent(nonce)}`,
+  approveAgentConsent: `${MCP_BASE_URL}/consent/agent`,
+  denyAgentConsent: `${MCP_BASE_URL}/consent/agent/deny`,
 
   // server
   getSearch: `${BASE_URL}/search`,
