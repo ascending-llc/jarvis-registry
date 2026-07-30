@@ -7,7 +7,10 @@ import pytest
 from pydantic import TypeAdapter
 
 from registry_pkgs.models.enums import FederationProviderType
-from registry_pkgs.models.federation_metadata import AgentCoreMcpFederationMetadata
+from registry_pkgs.models.federation_metadata import (
+    A2AFederationMetadata,
+    AgentCoreMcpFederationMetadata,
+)
 from scripts.verify import check_federation_metadata
 
 
@@ -70,6 +73,142 @@ class _FakeDatabase:
         collection_name: str,
     ) -> _FakeCollection:
         return _FakeCollection(self._collections.get(collection_name, []))
+
+
+def test_schema_checks_use_exact_collection_and_provider_model() -> None:
+    mcp_metadata = _mcp_metadata(runtime_arn="arn:mcp")
+    del mcp_metadata["runtimeName"]
+    del mcp_metadata["serverProtocol"]
+
+    assert check_federation_metadata._core_field_errors(mcp_metadata, "mcpservers") == [
+        "runtimeName",
+        "serverProtocol",
+    ]
+    assert check_federation_metadata._find_unknown_extras(
+        {**_mcp_metadata(runtime_arn="arn:mcp"), "failureReason": "wrong shape"},
+        FederationProviderType.AWS_AGENTCORE.value,
+        "mcpservers",
+    ) == ["failureReason"]
+    assert check_federation_metadata._find_unknown_extras(
+        {
+            "providerType": FederationProviderType.AZURE_AI_FOUNDRY.value,
+            "runtimeArn": "azure-agent",
+            "agentName": "azure-agent",
+            "agentVersion": "1",
+            "enrichedAt": "2026-07-30T00:00:00Z",
+        },
+        FederationProviderType.AZURE_AI_FOUNDRY.value,
+        "a2a_agents",
+    ) == ["enrichedAt"]
+
+
+@pytest.mark.asyncio
+async def test_audit_classifies_provider_schema_and_datetime_issues(monkeypatch) -> None:
+    documents = [
+        {
+            "_id": "missing-provider",
+            "federationRefId": "federation-1",
+            "federationMetadata": {"runtimeArn": "arn:missing-provider"},
+        },
+        {
+            "_id": "invalid-provider",
+            "federationRefId": "federation-1",
+            "federationMetadata": {"providerType": "unknown", "runtimeArn": "arn:invalid"},
+        },
+        {
+            "_id": "missing-core",
+            "federationRefId": "federation-1",
+            "federationMetadata": {
+                "providerType": FederationProviderType.AWS_AGENTCORE.value,
+                "runtimeArn": "arn:missing-core",
+                "runtimeId": "runtime-id",
+                "runtimeVersion": "1",
+                "runtimeStatus": "READY",
+            },
+        },
+        {
+            "_id": "unknown-extra",
+            "federationRefId": "federation-1",
+            "federationMetadata": {
+                **_mcp_metadata(runtime_arn="arn:extra"),
+                "failureReason": "wrong model",
+            },
+        },
+        {
+            "_id": "bad-datetime",
+            "federationRefId": "federation-1",
+            "federationMetadata": {
+                **_mcp_metadata(runtime_arn="arn:bad-datetime"),
+                "createdAt": "not-a-date",
+            },
+        },
+        {
+            "_id": "empty-runtime-arn",
+            "federationRefId": "federation-1",
+            "federationMetadata": _mcp_metadata(runtime_arn=""),
+        },
+        {
+            "_id": "azure-mcp",
+            "federationRefId": "federation-1",
+            "federationMetadata": {
+                "providerType": FederationProviderType.AZURE_AI_FOUNDRY.value,
+                "runtimeArn": "azure-agent",
+                "agentName": "azure-agent",
+                "agentVersion": "1",
+            },
+        },
+    ]
+    monkeypatch.setattr(
+        check_federation_metadata.MongoDB,
+        "get_database",
+        lambda: _FakeDatabase({"mcpservers": documents}),
+    )
+
+    result = await check_federation_metadata._audit_collection(
+        collection_name="mcpservers",
+        metadata_adapter=TypeAdapter(AgentCoreMcpFederationMetadata),
+        sample_limit=20,
+    )
+
+    assert result.issue_counts["missing_provider_type"] == 1
+    assert result.issue_counts["invalid_provider"] == 1
+    assert result.issue_counts["missing_core_fields"] == 2
+    assert result.issue_counts["unknown_extras"] == 1
+    assert result.issue_counts["bad_datetime"] == 1
+    assert result.issue_counts["empty_runtime_arn"] == 1
+    assert result.issue_counts["azure_mcp_anomaly"] == 1
+    assert result.issue_counts["invalid_samples"] == 3
+
+
+@pytest.mark.asyncio
+async def test_audit_accepts_valid_azure_a2a_metadata(monkeypatch) -> None:
+    documents = [
+        {
+            "_id": "azure-a2a",
+            "federationRefId": "federation-1",
+            "federationMetadata": {
+                "providerType": FederationProviderType.AZURE_AI_FOUNDRY.value,
+                "runtimeArn": "azure-agent",
+                "agentName": "azure-agent",
+                "agentVersion": "1",
+                "createdAt": 1_784_276_472,
+            },
+        }
+    ]
+    monkeypatch.setattr(
+        check_federation_metadata.MongoDB,
+        "get_database",
+        lambda: _FakeDatabase({"a2a_agents": documents}),
+    )
+
+    result = await check_federation_metadata._audit_collection(
+        collection_name="a2a_agents",
+        metadata_adapter=TypeAdapter(A2AFederationMetadata),
+        sample_limit=20,
+    )
+
+    assert result.by_provider == {FederationProviderType.AZURE_AI_FOUNDRY.value: 1}
+    assert result.issue_counts == {}
 
 
 @pytest.mark.asyncio

@@ -91,6 +91,14 @@ class TestAgentCoreRuntimeInvoker:
         assert metadata.enrichmentError == "a2a enrichment failed: boom"
         assert "enrichedAt" not in metadata.model_dump(mode="json")
 
+    def test_set_enrichment_error_updates_agentcore_timestamp(self):
+        metadata = make_agentcore_a2a_metadata()
+
+        AgentCoreRuntimeInvoker._set_enrichment_error(metadata, "a2a enrichment failed: boom")
+
+        assert metadata.enrichmentError == "a2a enrichment failed: boom"
+        assert metadata.enrichedAt is not None
+
     @pytest.mark.asyncio
     async def test_call_with_runtime_init_retry_async_retries(self):
         invoker = _build_invoker()

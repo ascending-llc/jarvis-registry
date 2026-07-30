@@ -10,6 +10,11 @@ from pydantic import ValidationError
 
 from registry_pkgs.models.a2a_agent import A2AAgent
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
+from registry_pkgs.models.federation_metadata import (
+    AgentCoreA2AFederationMetadata,
+    AgentCoreMcpFederationMetadata,
+    AzureFoundryFederationMetadata,
+)
 from registry_pkgs.testing.federation_metadata import (
     make_agentcore_a2a_metadata,
     make_agentcore_mcp_metadata,
@@ -34,6 +39,23 @@ class TestExtendedMCPServerStructure:
         assert "config" in required_fields
         assert "author" in required_fields
         # path is now optional to support external systems that don't provide it
+
+    def test_model_validate_coerces_stored_metadata_dict_to_concrete_model(self, monkeypatch):
+        monkeypatch.setattr(ExtendedMCPServer, "get_pymongo_collection", classmethod(lambda cls: None))
+        server = ExtendedMCPServer.model_validate(
+            {
+                "serverName": "agentcore-mcp",
+                "config": {"title": "AgentCore MCP", "enabled": True},
+                "author": str(PydanticObjectId()),
+                "path": "/agentcore/mcp/demo",
+                "federationMetadata": make_agentcore_mcp_metadata(
+                    legacyField="preserved",
+                ).model_dump(mode="python"),
+            }
+        )
+
+        assert isinstance(server.federationMetadata, AgentCoreMcpFederationMetadata)
+        assert server.federationMetadata.model_extra == {"legacyField": "preserved"}
 
     def test_root_level_fields_not_in_config(self):
         """Verify registry-specific fields are stored at root level, not in config."""
@@ -441,6 +463,87 @@ class TestExtendedMCPServerStructure:
         docs = agent.to_documents()
         assert docs
         assert docs[0].metadata.get("runtimeVersion") == "11"
+
+    @pytest.mark.parametrize(
+        ("metadata", "expected_type"),
+        [
+            (
+                make_agentcore_a2a_metadata().model_dump(mode="python"),
+                AgentCoreA2AFederationMetadata,
+            ),
+            (
+                make_azure_foundry_metadata(
+                    createdAt=1_784_276_472,
+                    legacyField="preserved",
+                ).model_dump(mode="python"),
+                AzureFoundryFederationMetadata,
+            ),
+        ],
+    )
+    def test_a2a_model_validate_coerces_stored_metadata_dict_to_concrete_model(
+        self,
+        monkeypatch,
+        metadata,
+        expected_type,
+    ):
+        monkeypatch.setattr(A2AAgent, "get_pymongo_collection", classmethod(lambda cls: None))
+        agent = A2AAgent.model_validate(
+            {
+                "path": "federated-agent",
+                "card": {
+                    "name": "Federated Agent",
+                    "description": "A federated agent",
+                    "url": "https://example.com/a2a",
+                    "version": "1",
+                    "capabilities": {"streaming": True},
+                    "defaultInputModes": ["text/plain"],
+                    "defaultOutputModes": ["application/json"],
+                    "skills": [],
+                },
+                "config": {
+                    "title": "Federated Agent",
+                    "description": "A federated agent",
+                    "enabled": True,
+                    "type": "jsonrpc",
+                },
+                "author": str(PydanticObjectId()),
+                "federationMetadata": metadata,
+            }
+        )
+
+        assert isinstance(agent.federationMetadata, expected_type)
+        if isinstance(agent.federationMetadata, AzureFoundryFederationMetadata):
+            assert agent.federationMetadata.createdAt is not None
+            assert agent.federationMetadata.createdAt.tzinfo == UTC
+            assert agent.federationMetadata.model_extra == {"legacyField": "preserved"}
+
+    def test_a2a_model_validate_rejects_unknown_federation_provider(self):
+        with pytest.raises(ValidationError):
+            A2AAgent.model_validate(
+                {
+                    "path": "invalid-provider-agent",
+                    "card": {
+                        "name": "Invalid Provider Agent",
+                        "description": "A federated agent",
+                        "url": "https://example.com/a2a",
+                        "version": "1",
+                        "capabilities": {"streaming": True},
+                        "defaultInputModes": ["text/plain"],
+                        "defaultOutputModes": ["application/json"],
+                        "skills": [],
+                    },
+                    "config": {
+                        "title": "Invalid Provider Agent",
+                        "enabled": True,
+                        "type": "jsonrpc",
+                    },
+                    "author": str(PydanticObjectId()),
+                    "federationMetadata": {
+                        "providerType": "unknown-provider",
+                        "runtimeArn": "invalid",
+                    },
+                }
+            )
 
     def test_a2a_to_documents_includes_card_name_metadata(self):
         """card_name carries the protocol card name, distinct from config.title, on every doc."""

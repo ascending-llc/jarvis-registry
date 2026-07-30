@@ -10,14 +10,16 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import Any
 
-from pydantic import TypeAdapter, ValidationError
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from registry_pkgs.core.config import MongoConfig
 from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.models.enums import FederationProviderType
 from registry_pkgs.models.federation_metadata import (
     A2AFederationMetadata,
+    AgentCoreA2AFederationMetadata,
     AgentCoreMcpFederationMetadata,
+    AzureFoundryFederationMetadata,
 )
 
 _BLOCKING_ISSUES = {
@@ -80,12 +82,18 @@ def _runtime_arn_of(metadata: Any) -> Any:
     return getattr(metadata, "runtimeArn", None)
 
 
-def _core_fields_for(provider_type: str | None) -> list[str]:
+def _metadata_model_for(
+    collection_name: str,
+    provider_type: str | None,
+) -> type[BaseModel] | None:
     if provider_type == FederationProviderType.AWS_AGENTCORE.value:
-        return ["runtimeArn", "runtimeId", "runtimeVersion", "runtimeStatus"]
-    if provider_type == FederationProviderType.AZURE_AI_FOUNDRY.value:
-        return ["runtimeArn", "agentName", "agentVersion"]
-    return []
+        if collection_name == "mcpservers":
+            return AgentCoreMcpFederationMetadata
+        if collection_name == "a2a_agents":
+            return AgentCoreA2AFederationMetadata
+    if provider_type == FederationProviderType.AZURE_AI_FOUNDRY.value and collection_name == "a2a_agents":
+        return AzureFoundryFederationMetadata
+    return None
 
 
 def _is_bad_datetime(value: Any) -> bool:
@@ -114,50 +122,30 @@ def _find_bad_datetime_fields(metadata: dict[str, Any]) -> list[str]:
     return bad
 
 
-def _find_unknown_extras(metadata: dict[str, Any], provider_type: str | None) -> list[str]:
-    known_common = {
-        "enrichmentError",
-        "providerType",
-        "runtimeArn",
-        "lastUpdatedAt",
-        "createdAt",
-        "enrichedAt",
-    }
-    known_agentcore = {
-        "runtimeId",
-        "runtimeName",
-        "runtimeVersion",
-        "runtimeStatus",
-        "serverProtocol",
-        "failureReason",
-        "workloadIdentityDetails",
-        "protocolConfiguration",
-        "authorizerConfiguration",
-        "runtimeTags",
-    }
-    known_azure = {
-        "agentName",
-        "agentVersion",
-        "agentGuid",
-        "versionId",
-        "status",
-        "modifiedAt",
-        "projectEndpoint",
-        "a2aBaseUrl",
-        "agentCardPath",
-        "authorizationSchemes",
-    }
-    allowed = known_common
-    if provider_type == FederationProviderType.AWS_AGENTCORE.value:
-        allowed = allowed | known_agentcore
-    elif provider_type == FederationProviderType.AZURE_AI_FOUNDRY.value:
-        allowed = allowed | known_azure
-    return [key for key in metadata if key not in allowed]
+def _find_unknown_extras(
+    metadata: dict[str, Any],
+    provider_type: str | None,
+    collection_name: str,
+) -> list[str]:
+    metadata_model = _metadata_model_for(collection_name, provider_type)
+    if metadata_model is None:
+        return []
+    return [key for key in metadata if key not in metadata_model.model_fields]
 
 
-def _core_field_errors(metadata: dict[str, Any]) -> list[str]:
+def _core_field_errors(
+    metadata: dict[str, Any],
+    collection_name: str,
+) -> list[str]:
     provider_type = _provider_type_of(metadata)
-    required = _core_fields_for(provider_type)
+    metadata_model = _metadata_model_for(collection_name, provider_type)
+    if metadata_model is None:
+        return []
+    required = [
+        field_name
+        for field_name, field_info in metadata_model.model_fields.items()
+        if field_name != "providerType" and field_info.is_required()
+    ]
     missing: list[str] = []
     for field in required:
         value = metadata.get(field)
@@ -273,7 +261,7 @@ async def _audit_collection(
                 continue
 
         # Core field presence.
-        core_missing = _core_field_errors(metadata_dict)
+        core_missing = _core_field_errors(metadata_dict, collection_name)
         if core_missing:
             _record_issue(
                 issue_counts,
@@ -284,7 +272,7 @@ async def _audit_collection(
             )
 
         # Unknown extra fields.
-        extras = _find_unknown_extras(metadata_dict, provider_type)
+        extras = _find_unknown_extras(metadata_dict, provider_type, collection_name)
         if extras:
             _record_issue(
                 issue_counts,

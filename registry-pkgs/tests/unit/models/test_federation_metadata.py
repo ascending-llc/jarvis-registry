@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
 from registry_pkgs.models.enums import FederationProviderType
 from registry_pkgs.models.federation_metadata import (
+    A2AFederationMetadata,
     AgentCoreA2AFederationMetadata,
     AgentCoreMcpFederationMetadata,
     AzureFoundryFederationMetadata,
@@ -15,7 +18,7 @@ from registry_pkgs.models.federation_metadata import (
     extract_runtime_version,
 )
 
-_A2A_ADAPTER = TypeAdapter(AgentCoreA2AFederationMetadata | AzureFoundryFederationMetadata)
+_A2A_ADAPTER = TypeAdapter(A2AFederationMetadata)
 
 
 class TestAgentCoreMcpFederationMetadata:
@@ -106,6 +109,15 @@ class TestAgentCoreA2AFederationMetadata:
         )
         assert metadata.runtimeVersion == 2
 
+    def test_rejects_missing_required_field(self):
+        with pytest.raises(ValidationError):
+            AgentCoreA2AFederationMetadata(
+                providerType=FederationProviderType.AWS_AGENTCORE,
+                runtimeArn="arn:aws:bedrock-agentcore:us-east-1:123:runtime/a2a",
+                runtimeId="r1",
+                runtimeVersion="1",
+            )
+
     def test_validate_assignment_enforces_type(self):
         metadata = AgentCoreA2AFederationMetadata(
             providerType=FederationProviderType.AWS_AGENTCORE,
@@ -149,6 +161,14 @@ class TestAzureFoundryFederationMetadata:
         )
         assert metadata.agentVersion == 3
 
+    def test_rejects_missing_required_field(self):
+        with pytest.raises(ValidationError):
+            AzureFoundryFederationMetadata(
+                providerType=FederationProviderType.AZURE_AI_FOUNDRY,
+                runtimeArn="azure-agent",
+                agentName="azure-agent",
+            )
+
     def test_keeps_extra_fields(self):
         metadata = AzureFoundryFederationMetadata(
             providerType=FederationProviderType.AZURE_AI_FOUNDRY,
@@ -161,6 +181,52 @@ class TestAzureFoundryFederationMetadata:
         assert metadata.versionId == "asst_abc"
         assert metadata.model_extra is not None
         assert metadata.model_extra.get("legacyField") == "preserved"
+
+    @pytest.mark.parametrize(
+        ("raw_value", "expected_year"),
+        [
+            (1_784_276_472, 2026),
+            (1_784_276_472_000, 2026),
+        ],
+    )
+    def test_created_at_accepts_epoch_seconds_and_milliseconds(self, raw_value: int, expected_year: int):
+        metadata = AzureFoundryFederationMetadata(
+            providerType=FederationProviderType.AZURE_AI_FOUNDRY,
+            runtimeArn="azure-agent",
+            agentName="azure-agent",
+            agentVersion="1",
+            createdAt=raw_value,
+        )
+
+        assert metadata.createdAt is not None
+        assert metadata.createdAt.year == expected_year
+        assert metadata.createdAt.tzinfo == UTC
+
+    def test_json_round_trip_preserves_provider_and_extra_fields(self):
+        metadata = AzureFoundryFederationMetadata(
+            providerType=FederationProviderType.AZURE_AI_FOUNDRY,
+            runtimeArn="azure-agent",
+            agentName="azure-agent",
+            agentVersion="1",
+            createdAt=datetime(2026, 7, 17, 8, 21, 12, tzinfo=UTC),
+            legacyField="preserved",
+        )
+
+        restored = _A2A_ADAPTER.validate_json(metadata.model_dump_json())
+
+        assert isinstance(restored, AzureFoundryFederationMetadata)
+        assert restored.createdAt == metadata.createdAt
+        assert restored.model_extra == {"legacyField": "preserved"}
+
+    def test_rejects_invalid_datetime(self):
+        with pytest.raises(ValidationError):
+            AzureFoundryFederationMetadata(
+                providerType=FederationProviderType.AZURE_AI_FOUNDRY,
+                runtimeArn="azure-agent",
+                agentName="azure-agent",
+                agentVersion="1",
+                createdAt="not-a-date",
+            )
 
 
 class TestA2AFederationMetadataDiscriminator:
@@ -198,6 +264,11 @@ class TestA2AFederationMetadataDiscriminator:
 
 
 class TestHelperFunctions:
+    def test_extract_helpers_return_none_for_missing_metadata(self):
+        assert extract_runtime_arn(None) is None
+        assert extract_runtime_version(None) is None
+        assert detect_runtime_version_change(None, None) == []
+
     def test_extract_runtime_arn_prefers_runtime_arn(self):
         metadata = AgentCoreA2AFederationMetadata(
             providerType=FederationProviderType.AWS_AGENTCORE,

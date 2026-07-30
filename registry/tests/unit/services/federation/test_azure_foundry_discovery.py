@@ -332,7 +332,7 @@ async def test_discover_filters_to_a2a_enabled_agents_only(fake_a2a_agent_factor
     assert agent.federationMetadata.agentVersion == "3"
     assert agent.wellKnown.lastSyncStatus == "success"
     assert agent.path == "/with-a2a"
-    assert "enrichmentError" not in agent.federationMetadata
+    assert agent.federationMetadata.enrichmentError is None
 
 
 @pytest.mark.asyncio
