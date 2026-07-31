@@ -150,7 +150,11 @@ async def test_run_sync_remains_active_and_rejects_second_sync_during_vector_tai
         return VectorSyncOutcome()
 
     federation_sync_service._discover_entities = AsyncMock(return_value={"mcp_servers": [], "a2a_agents": []})
-    federation_sync_service._commit_sync_transaction = AsyncMock(return_value=mutation_result)
+    federation_sync_service._commit_bookkeeping_transaction = AsyncMock(
+        return_value=SimpleNamespace(summary=mutation_result.summary)
+    )
+    federation_sync_service._apply_sync_plan = AsyncMock(return_value=mutation_result)
+    federation_sync_service.federation_job_service.update_apply_summary = AsyncMock()
     federation_sync_service._sync_vector_index_after_commit = AsyncMock(side_effect=_block_vector_sync)
     federation_sync_service._finalize_sync_status = AsyncMock()
     federation_sync_service.federation_job_service.mark_syncing = AsyncMock(side_effect=_mark_syncing)
@@ -345,7 +349,7 @@ async def test_sync_vector_index_after_commit_logs_summary_when_nothing_to_rebui
 
 
 @pytest.mark.asyncio
-async def test_commit_sync_transaction_defers_terminal_status_when_resource_enrichment_fails(
+async def test_bookkeeping_transaction_returns_plan_with_enrichment_errors(
     federation_sync_service: FederationSyncService,
 ):
     federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
@@ -356,30 +360,26 @@ async def test_commit_sync_transaction_defers_terminal_status_when_resource_enri
         discoverySummary=SimpleNamespace(discoveredMcpServers=1, discoveredAgents=1),
     )
     summary = FederationApplySummary(errors=1, errorMessages=["A2A agent pharmacy_fraud_a2a: boom"])
-    mutation_result = FederationSyncMutationResult(summary=summary)
+    plan = SimpleNamespace(
+        summary=summary,
+        discovered_mcp_count=1,
+        discovered_a2a_count=1,
+    )
 
     federation_sync_service.federation_job_service.mark_syncing = AsyncMock()
     federation_sync_service.federation_crud_service.mark_syncing = AsyncMock()
     federation_sync_service.federation_job_service.update_discovery_summary = AsyncMock()
-    federation_sync_service._build_sync_plan = AsyncMock(
-        return_value=SimpleNamespace(
-            summary=summary,
-            discovered_mcp_count=1,
-            discovered_a2a_count=1,
-        )
-    )
-    federation_sync_service._apply_sync_plan = AsyncMock(return_value=mutation_result)
-    federation_sync_service.federation_job_service.update_apply_summary = AsyncMock()
+    federation_sync_service._build_sync_plan = AsyncMock(return_value=plan)
     session = object()
 
-    result = await federation_sync_service._commit_sync_transaction(
+    result = await federation_sync_service._commit_bookkeeping_transaction(
         federation=federation,
         job=job,
         discovered={"mcp_servers": [SimpleNamespace()], "a2a_agents": [SimpleNamespace()]},
         session=session,
     )
 
-    assert result == mutation_result
+    assert result == plan
     assert result.summary.errorMessages == ["A2A agent pharmacy_fraud_a2a: boom"]
     assert federation_sync_service.federation_crud_service.mark_syncing.await_args.kwargs["last_sync"].status == (
         FederationSyncStatus.SYNCING
@@ -606,3 +606,162 @@ def test_build_last_sync_includes_vector_sync_failed_counts():
 
     assert last_sync.summary.vectorSyncFailedMcpServers == 1
     assert last_sync.summary.vectorSyncFailedAgents == 1
+
+
+# ---------------------------------------------------------------------------
+# T10 – imported_total nets mongo apply failures
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_imported_total_nets_apply_failures(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+
+    monkeypatch.setattr(
+        "registry.services.federation_sync_service.ExtendedMCPServer.find",
+        lambda *a, **kw: _FakeQuery([SimpleNamespace(numTools=1)]),
+    )
+
+    discovery_summary = SimpleNamespace(discoveredMcpServers=3, discoveredAgents=2)
+    apply_summary = FederationApplySummary(
+        createdMcpServers=2,
+        updatedMcpServers=1,
+        unchangedMcpServers=0,
+        mongoApplyFailedMcpServers=1,
+        createdAgents=1,
+        updatedAgents=1,
+        unchangedAgents=0,
+        mongoApplyFailedAgents=1,
+    )
+
+    stats = await federation_sync_service._build_federation_stats(
+        federation.id,
+        discovery_summary,
+        apply_summary,
+        session=None,
+    )
+
+    expected_imported = (2 + 1 + 0 - 0 - 1) + (1 + 1 + 0 - 0 - 1)
+    assert stats.importedTotal == expected_imported
+    assert stats.unimportedTotal == (3 + 2) - expected_imported
+
+
+# ---------------------------------------------------------------------------
+# T11 – finalize partial success (some failures, importedTotal > 0 → SUCCESS)
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_finalize_partial_success(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    job = SimpleNamespace(
+        id=PydanticObjectId(),
+        jobType="full_sync",
+        createdAt=datetime.now(UTC),
+        startedAt=datetime.now(UTC),
+        discoverySummary=SimpleNamespace(discoveredMcpServers=10, discoveredAgents=0),
+    )
+    mutation_result = FederationSyncMutationResult(
+        summary=FederationApplySummary(
+            createdMcpServers=10,
+            mongoApplyFailedMcpServers=1,
+            errors=1,
+            errorMessages=["MCP server create failed (remote_id=arn:bad): write conflict"],
+        ),
+    )
+    vector_outcome = VectorSyncOutcome()
+
+    mock_stats = SimpleNamespace(importedTotal=9, unimportedTotal=1)
+    federation_sync_service._build_federation_stats = AsyncMock(return_value=mock_stats)
+    federation_sync_service.federation_crud_service.mark_sync_success = AsyncMock()
+    federation_sync_service.federation_crud_service.mark_sync_failed = AsyncMock()
+    federation_sync_service.federation_job_service.mark_success = AsyncMock()
+    federation_sync_service.federation_job_service.mark_failed = AsyncMock()
+
+    await federation_sync_service._finalize_sync_status(federation, job, mutation_result, vector_outcome)
+
+    federation_sync_service.federation_crud_service.mark_sync_success.assert_awaited_once()
+    federation_sync_service.federation_job_service.mark_success.assert_awaited_once()
+    federation_sync_service.federation_crud_service.mark_sync_failed.assert_not_awaited()
+    success_call = federation_sync_service.federation_job_service.mark_success.await_args
+    assert success_call.kwargs.get("message") is not None
+
+
+# ---------------------------------------------------------------------------
+# T12 – finalize total failure (importedTotal == 0 → FAILED)
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_finalize_total_failure(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    job = SimpleNamespace(
+        id=PydanticObjectId(),
+        jobType="full_sync",
+        createdAt=datetime.now(UTC),
+        startedAt=datetime.now(UTC),
+        discoverySummary=SimpleNamespace(discoveredMcpServers=3, discoveredAgents=0),
+    )
+    mutation_result = FederationSyncMutationResult(
+        summary=FederationApplySummary(
+            createdMcpServers=3,
+            mongoApplyFailedMcpServers=3,
+            errors=3,
+            errorMessages=[
+                "MCP server create failed (remote_id=arn:1): err",
+                "MCP server create failed (remote_id=arn:2): err",
+                "MCP server create failed (remote_id=arn:3): err",
+            ],
+        ),
+    )
+    vector_outcome = VectorSyncOutcome()
+
+    mock_stats = SimpleNamespace(importedTotal=0, unimportedTotal=3)
+    federation_sync_service._build_federation_stats = AsyncMock(return_value=mock_stats)
+    federation_sync_service.federation_crud_service.mark_sync_failed = AsyncMock()
+    federation_sync_service.federation_crud_service.mark_sync_success = AsyncMock()
+    federation_sync_service.federation_job_service.mark_failed = AsyncMock()
+    federation_sync_service.federation_job_service.mark_success = AsyncMock()
+
+    await federation_sync_service._finalize_sync_status(federation, job, mutation_result, vector_outcome)
+
+    federation_sync_service.federation_crud_service.mark_sync_failed.assert_awaited_once()
+    federation_sync_service.federation_job_service.mark_failed.assert_awaited_once()
+    federation_sync_service.federation_crud_service.mark_sync_success.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# T14 – delete failure does not affect imported_total
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_delete_failure_does_not_affect_imported_total(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+
+    monkeypatch.setattr(
+        "registry.services.federation_sync_service.ExtendedMCPServer.find",
+        lambda *a, **kw: _FakeQuery([]),
+    )
+
+    discovery_summary = SimpleNamespace(discoveredMcpServers=2, discoveredAgents=0)
+    apply_summary = FederationApplySummary(
+        createdMcpServers=2,
+        deletedMcpServers=1,
+        errors=1,
+        errorMessages=["MCP server delete failed (runtime_arn=arn:del-bad): delete error"],
+    )
+
+    stats = await federation_sync_service._build_federation_stats(
+        federation.id,
+        discovery_summary,
+        apply_summary,
+        session=None,
+    )
+
+    assert stats.importedTotal == 2
+    assert stats.unimportedTotal == 0

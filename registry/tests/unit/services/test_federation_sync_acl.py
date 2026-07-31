@@ -207,7 +207,7 @@ async def test_apply_sync_plan_inherits_acl_to_unchanged_mcp_and_a2a_resources(
     federation_sync_service._get_federation_acl_entries = AsyncMock(return_value=(federation_acl_entries, True))
     federation_sync_service._batch_inherit_federation_acl = AsyncMock()
 
-    await federation_sync_service._apply_sync_plan(sync_plan, session=None)
+    await federation_sync_service._apply_sync_plan(sync_plan)
 
     federation_sync_service._batch_inherit_federation_acl.assert_awaited_once_with(
         federation_acl_entries=federation_acl_entries,
@@ -215,7 +215,6 @@ async def test_apply_sync_plan_inherits_acl_to_unchanged_mcp_and_a2a_resources(
             (ResourceType.MCPSERVER, mcp_id),
             (ResourceType.REMOTE_AGENT, a2a_id),
         ],
-        session=None,
     )
 
 
@@ -256,12 +255,12 @@ async def test_apply_sync_plan_updates_a2a_runtime_access(
     federation_sync_service._get_federation_acl_entries = AsyncMock(return_value=([], True))
     federation_sync_service._batch_inherit_federation_acl = AsyncMock()
 
-    await federation_sync_service._apply_sync_plan(sync_plan, session=None)
+    await federation_sync_service._apply_sync_plan(sync_plan)
 
     assert existing_a2a.config.runtimeAccess is updated_runtime_access
     assert existing_a2a.config.runtimeAccess.mode == "jwt"
     assert existing_a2a.config.type == update_a2a_item.config.type
-    existing_a2a.save.assert_awaited_once_with(session=None)
+    existing_a2a.save.assert_awaited_once_with()
     federation_sync_service._batch_inherit_federation_acl.assert_not_awaited()
 
 
@@ -388,7 +387,7 @@ async def test_apply_sync_plan_inherits_acl_to_created_updated_and_unchanged_res
     federation_sync_service._get_federation_acl_entries = AsyncMock(return_value=(federation_acl_entries, True))
     federation_sync_service._batch_inherit_federation_acl = AsyncMock()
 
-    await federation_sync_service._apply_sync_plan(sync_plan, session=None)
+    await federation_sync_service._apply_sync_plan(sync_plan)
 
     # Verify that _batch_inherit_federation_acl was called
     federation_sync_service._batch_inherit_federation_acl.assert_awaited_once()
@@ -421,10 +420,11 @@ async def test_apply_sync_plan_inherits_acl_to_created_updated_and_unchanged_res
 
 
 @pytest.mark.asyncio
-async def test_apply_sync_plan_raises_when_federation_acl_query_fails(
+async def test_apply_sync_plan_degrades_when_federation_acl_query_fails(
     federation_sync_service: FederationSyncService,
     monkeypatch,
 ):
+    """ACL query failure no longer raises — it degrades gracefully and records an error."""
     sync_plan = FederationSyncPlan(
         summary=FederationApplySummary(),
         federation_id=PydanticObjectId(),
@@ -436,9 +436,10 @@ async def test_apply_sync_plan_raises_when_federation_acl_query_fails(
     federation_sync_service._get_federation_acl_entries = AsyncMock(return_value=([], False))
     federation_sync_service._batch_inherit_federation_acl = AsyncMock()
 
-    with pytest.raises(RuntimeError, match="could not query federation ACL"):
-        await federation_sync_service._apply_sync_plan(sync_plan, session=None)
+    result = await federation_sync_service._apply_sync_plan(sync_plan)
 
+    assert result.summary.errors >= 1
+    assert any("ACL query failed" in msg for msg in result.summary.errorMessages)
     federation_sync_service._batch_inherit_federation_acl.assert_not_awaited()
 
 
@@ -1105,3 +1106,113 @@ async def test_batch_inherit_acl_raises_after_failure(federation_sync_service: F
             federation_acl_entries=federation_acl_entries,
             resources=[(ResourceType.MCPSERVER, server_id)],
         )
+
+
+# ---------------------------------------------------------------------------
+# T7 – failed resource excluded from ACL inheritance
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_failed_resource_excluded_from_acl_inheritance(
+    federation_sync_service: FederationSyncService,
+):
+    federation_id = PydanticObjectId()
+    ok = SimpleNamespace(
+        id=None,
+        insert=AsyncMock(side_effect=lambda **kw: setattr(ok, "id", PydanticObjectId())),
+    )
+    bad = SimpleNamespace(id=None, insert=AsyncMock(side_effect=Exception("insert fail")))
+
+    sync_plan = FederationSyncPlan(
+        summary=FederationApplySummary(createdMcpServers=2),
+        federation_id=federation_id,
+        provider_type=FederationProviderType.AWS_AGENTCORE,
+        discovered_mcp_count=2,
+        discovered_a2a_count=0,
+        mcp_creates=[(ok, "arn:ok"), (bad, "arn:bad")],
+    )
+
+    acl_entries = [
+        _make_acl_entry(PrincipalType.USER, "kent", RegistryResourceType.FEDERATION, federation_id, RoleBits.OWNER)
+    ]
+    federation_sync_service._get_federation_acl_entries = AsyncMock(return_value=(acl_entries, True))
+    federation_sync_service._batch_inherit_federation_acl = AsyncMock()
+
+    await federation_sync_service._apply_sync_plan(sync_plan)
+
+    federation_sync_service._batch_inherit_federation_acl.assert_awaited_once()
+    call_resources = federation_sync_service._batch_inherit_federation_acl.await_args.kwargs["resources"]
+    resource_ids = {str(rid) for _, rid in call_resources}
+    assert str(ok.id) in resource_ids
+    assert bad.id is None  # never got an ID because insert failed
+
+
+# ---------------------------------------------------------------------------
+# T8 – ACL query failure degrades gracefully (resources still written)
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_acl_query_failure_degrades_gracefully(
+    federation_sync_service: FederationSyncService,
+):
+    federation_id = PydanticObjectId()
+    mcp = SimpleNamespace(
+        id=None,
+        insert=AsyncMock(side_effect=lambda **kw: setattr(mcp, "id", PydanticObjectId())),
+    )
+
+    sync_plan = FederationSyncPlan(
+        summary=FederationApplySummary(createdMcpServers=1),
+        federation_id=federation_id,
+        provider_type=FederationProviderType.AWS_AGENTCORE,
+        discovered_mcp_count=1,
+        discovered_a2a_count=0,
+        mcp_creates=[(mcp, "arn:mcp1")],
+    )
+
+    federation_sync_service._get_federation_acl_entries = AsyncMock(return_value=([], False))
+    federation_sync_service._batch_inherit_federation_acl = AsyncMock()
+
+    result = await federation_sync_service._apply_sync_plan(sync_plan)
+
+    mcp.insert.assert_awaited_once()
+    assert mcp.id is not None
+    assert "arn:mcp1" in result.changed_mcp_runtime_arns
+    assert any("ACL query failed" in msg for msg in result.summary.errorMessages)
+    federation_sync_service._batch_inherit_federation_acl.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# T9 – ACL inheritance failure degrades gracefully
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_acl_inheritance_failure_degrades_gracefully(
+    federation_sync_service: FederationSyncService,
+):
+    federation_id = PydanticObjectId()
+    mcp = SimpleNamespace(
+        id=None,
+        insert=AsyncMock(side_effect=lambda **kw: setattr(mcp, "id", PydanticObjectId())),
+    )
+
+    sync_plan = FederationSyncPlan(
+        summary=FederationApplySummary(createdMcpServers=1),
+        federation_id=federation_id,
+        provider_type=FederationProviderType.AWS_AGENTCORE,
+        discovered_mcp_count=1,
+        discovered_a2a_count=0,
+        mcp_creates=[(mcp, "arn:mcp1")],
+    )
+
+    acl_entries = [
+        _make_acl_entry(PrincipalType.USER, "kent", RegistryResourceType.FEDERATION, federation_id, RoleBits.OWNER)
+    ]
+    federation_sync_service._get_federation_acl_entries = AsyncMock(return_value=(acl_entries, True))
+    federation_sync_service._batch_inherit_federation_acl = AsyncMock(
+        side_effect=RuntimeError("ACL inheritance failed")
+    )
+
+    result = await federation_sync_service._apply_sync_plan(sync_plan)
+
+    mcp.insert.assert_awaited_once()
+    assert "arn:mcp1" in result.changed_mcp_runtime_arns
+    assert result.summary.mongoApplyFailedMcpServers == 0
+    assert any("ACL inheritance failed" in msg for msg in result.summary.errorMessages)
