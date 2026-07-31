@@ -40,13 +40,23 @@ from ..mcpgw.tools.utils import build_authenticated_headers, get_target_url, par
 from ..services.a2a_agent_service import A2AAgentService
 from ..services.access_control_service import ACLService
 from ..services.federation.a2a_client_registry import A2AClientRegistry
-from ..services.generated_token_policy import is_consent_exempt
+from ..services.generated_token_policy import is_consent_exempt, is_direct_connect_a2a_client
 from ..services.oauth.oauth_service import MCPOAuthService
 from ..services.server_service import ServerServiceV1
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["MCP Proxy"])
+
+_DIRECT_CONNECT_A2A_TOKEN_REQUIREMENT = "A2A invocation requires a token generated from the Jarvis Registry frontend."
+
+# A2A v0.3.x reserves -32001 through -32006 for its own error types (TaskNotFoundError,
+# TaskNotCancelableError, PushNotificationNotSupportedError, UnsupportedOperationError,
+# ContentTypeNotSupportedError, InvalidAgentResponseError) -- none of which mean "access
+# denied". This is a Jarvis-Registry-specific denial code within JSON-RPC 2.0's
+# implementation-defined server-error range (-32000 to -32099), chosen to avoid colliding
+# with any A2A-reserved type.
+_A2A_ACCESS_DENIED_ERROR_CODE = -32007
 
 
 async def _parse_json_rpc_body(request: Request) -> dict[str, Any] | None:
@@ -583,6 +593,12 @@ async def jsonrpc_proxy(
 ):
     try:
         user_id = user_context.get("user_id")
+        client_id = user_context.get("client_id", "")
+        if not is_direct_connect_a2a_client(client_id, settings.headless_agent_client_id):
+            return _jsonrpc_a2a_error_response(
+                _A2A_ACCESS_DENIED_ERROR_CODE,
+                f"Access denied: direct-connect {_DIRECT_CONNECT_A2A_TOKEN_REQUIREMENT}",
+            )
 
         agent = await a2a_agent_service.get_agent_by_path(agent_path)
         if agent is None:
@@ -596,7 +612,9 @@ async def jsonrpc_proxy(
                 required_permission="VIEW",
             )
         except HTTPException:
-            return _jsonrpc_a2a_error_response(-32001, f"Access denied to A2A agent '{agent_path}'")
+            return _jsonrpc_a2a_error_response(
+                _A2A_ACCESS_DENIED_ERROR_CODE, f"Access denied to A2A agent '{agent_path}'"
+            )
 
         if not (agent.config and agent.config.enabled):
             return _jsonrpc_a2a_error_response(-32004, f"A2A agent '{agent_path}' is disabled")
@@ -634,7 +652,7 @@ async def jsonrpc_proxy(
 
 
 # Route 2: HTTP+JSON binding — all paths with at least one segment
-@router.route("/a2a/{agent_path}/{http_json_path:path}", methods=["GET", "POST", "DELETE", "PUT"])
+@router.api_route("/a2a/{agent_path}/{http_json_path:path}", methods=["GET", "POST", "DELETE", "PUT"])
 async def http_json_proxy(
     request: Request,
     agent_path: str,
@@ -646,6 +664,12 @@ async def http_json_proxy(
 ):
     try:
         user_id = user_context.get("user_id")
+        client_id = user_context.get("client_id", "")
+        if not is_direct_connect_a2a_client(client_id, settings.headless_agent_client_id):
+            return JSONResponse(
+                status_code=403,
+                content={"error": f"Direct-connect {_DIRECT_CONNECT_A2A_TOKEN_REQUIREMENT}"},
+            )
 
         agent = await a2a_agent_service.get_agent_by_path(agent_path)
         if agent is None:
