@@ -15,7 +15,13 @@ from beanie import PydanticObjectId
 from fastapi import HTTPException
 from starlette.requests import Request
 
-from registry.api.proxy_routes import dynamic_mcp_get_proxy, dynamic_mcp_post_proxy, http_json_proxy, jsonrpc_proxy
+from registry.api.proxy_routes import (
+    _A2A_ACCESS_DENIED_ERROR_CODE,
+    dynamic_mcp_get_proxy,
+    dynamic_mcp_post_proxy,
+    http_json_proxy,
+    jsonrpc_proxy,
+)
 from registry.core.config import settings
 from registry.services.generated_token_policy import INTERACTIVE_CLIENT_ID
 from registry_pkgs.testing.federation_metadata import make_azure_foundry_metadata
@@ -422,7 +428,7 @@ async def test_jsonrpc_proxy_rejects_disallowed_client_before_agent_lookup(clien
 
     body = json.loads(response.body)
     assert response.status_code == 200
-    assert body["error"]["code"] == -32001
+    assert body["error"]["code"] == _A2A_ACCESS_DENIED_ERROR_CODE
     assert "token generated from the Jarvis Registry frontend" in body["error"]["message"]
     a2a_agent_service.get_agent_by_path.assert_not_awaited()
 

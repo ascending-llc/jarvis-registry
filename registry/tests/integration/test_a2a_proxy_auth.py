@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
-from registry.api.proxy_routes import router
+from registry.api.proxy_routes import _A2A_ACCESS_DENIED_ERROR_CODE, router
 from registry.core.config import settings
 from registry.deps import get_a2a_agent_service, get_a2a_client_registry, get_acl_service
 from registry.middleware.auth import UnifiedAuthMiddleware
@@ -57,7 +57,7 @@ def test_valid_dcr_jwt_is_denied_by_jsonrpc_a2a_route(a2a_proxy_context: SimpleN
     )
 
     assert response.status_code == 200
-    assert response.json()["error"]["code"] == -32001
+    assert response.json()["error"]["code"] == _A2A_ACCESS_DENIED_ERROR_CODE
     a2a_proxy_context.agent_service.get_agent_by_path.assert_not_awaited()
 
 
