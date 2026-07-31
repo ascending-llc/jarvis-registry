@@ -1141,8 +1141,9 @@ async def test_failed_resource_excluded_from_acl_inheritance(
 
     federation_sync_service._batch_inherit_federation_acl.assert_awaited_once()
     call_resources = federation_sync_service._batch_inherit_federation_acl.await_args.kwargs["resources"]
-    resource_ids = {str(rid) for _, rid in call_resources}
-    assert str(ok.id) in resource_ids
+    resource_ids = {rid for _, rid in call_resources}
+    assert ok.id in resource_ids
+    assert None not in resource_ids  # failed insert must not be queued for ACL inheritance
     assert bad.id is None  # never got an ID because insert failed
 
 
