@@ -130,6 +130,8 @@ class FederationSyncMutationResult:
     summary: FederationApplySummary
     changed_mcp_runtime_arns: set[str] = field(default_factory=set)
     changed_a2a_runtime_arns: set[str] = field(default_factory=set)
+    deleted_mcp_runtime_arns: set[str] = field(default_factory=set)
+    deleted_a2a_runtime_arns: set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -1147,6 +1149,7 @@ class FederationSyncService:
                 await stale.delete()
                 if stale_runtime_arn:
                     mutation_result.changed_mcp_runtime_arns.add(stale_runtime_arn)
+                    mutation_result.deleted_mcp_runtime_arns.add(stale_runtime_arn)
             except Exception as exc:
                 logger.exception(
                     "Failed to delete MCP server: federation_id=%s runtime_arn=%s",
@@ -1163,6 +1166,7 @@ class FederationSyncService:
                 await stale.delete()
                 if stale_runtime_arn:
                     mutation_result.changed_a2a_runtime_arns.add(stale_runtime_arn)
+                    mutation_result.deleted_a2a_runtime_arns.add(stale_runtime_arn)
             except Exception as exc:
                 logger.exception(
                     "Failed to delete A2A agent: federation_id=%s runtime_arn=%s",
@@ -1562,7 +1566,9 @@ class FederationSyncService:
                 )
                 error_msg = f"mcp runtime rebuild failed:{federation.id}:{runtime_arn}:{exc}"
                 outcome.error_messages.append(error_msg)
-                if runtime_arn in mutation_result.changed_mcp_runtime_arns:
+                is_changed = runtime_arn in mutation_result.changed_mcp_runtime_arns
+                is_delete = runtime_arn in mutation_result.deleted_mcp_runtime_arns
+                if is_changed and not is_delete:
                     outcome.failed_changed_mcp_runtime_arns.add(runtime_arn)
                 else:
                     outcome.failed_repair_only_runtime_arns.add(runtime_arn)
@@ -1579,7 +1585,9 @@ class FederationSyncService:
                 )
                 error_msg = f"a2a runtime rebuild failed:{federation.id}:{runtime_arn}:{exc}"
                 outcome.error_messages.append(error_msg)
-                if runtime_arn in mutation_result.changed_a2a_runtime_arns:
+                is_changed = runtime_arn in mutation_result.changed_a2a_runtime_arns
+                is_delete = runtime_arn in mutation_result.deleted_a2a_runtime_arns
+                if is_changed and not is_delete:
                     outcome.failed_changed_a2a_runtime_arns.add(runtime_arn)
                 else:
                     outcome.failed_repair_only_runtime_arns.add(runtime_arn)

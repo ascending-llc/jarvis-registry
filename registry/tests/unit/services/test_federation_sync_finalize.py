@@ -588,6 +588,32 @@ async def test_sync_vector_index_classifies_changed_vs_repair_failures(
     assert len(outcome.error_messages) == 2
 
 
+@pytest.mark.asyncio
+async def test_delete_arn_vector_failure_classified_as_repair_only(
+    federation_sync_service: FederationSyncService,
+):
+    """Delete ARN vector failures must not inflate vectorSyncFailed* and make imported_total negative."""
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    job = SimpleNamespace(id=PydanticObjectId())
+    mutation_result = FederationSyncMutationResult(
+        summary=FederationApplySummary(deletedMcpServers=1),
+        changed_mcp_runtime_arns={"arn:mcp:deleted"},
+        deleted_mcp_runtime_arns={"arn:mcp:deleted"},
+    )
+
+    federation_sync_service._current_mcp_runtime_arns = AsyncMock(return_value=[])
+    federation_sync_service._current_a2a_runtime_arns = AsyncMock(return_value=[])
+    federation_sync_service._sync_mcp_vectors_for_runtime = AsyncMock(side_effect=RuntimeError("weaviate down"))
+    federation_sync_service._sync_a2a_vectors_for_runtime = AsyncMock()
+
+    outcome = await federation_sync_service._sync_vector_index_after_commit(
+        federation=federation, job=job, mutation_result=mutation_result
+    )
+
+    assert "arn:mcp:deleted" not in outcome.failed_changed_mcp_runtime_arns
+    assert "arn:mcp:deleted" in outcome.failed_repair_only_runtime_arns
+
+
 def test_build_last_sync_includes_vector_sync_failed_counts():
     job = SimpleNamespace(
         id=PydanticObjectId(),
