@@ -300,30 +300,36 @@ class FederationSyncService:
         """
         Sync execution follows a fixed flow:
             1. discover remote resources
-            2. apply federation/job/resource mutations in one transaction
-            3. rebuild vector indexes outside the Mongo transaction
-            4. finalize federation/job stats, lastSync, and status from the
-               combined apply + vector-sync outcome
+            2. bookkeeping (phase markers, discovery summary, sync plan) — atomic transaction
+            3. apply per-resource writes — outside the transaction, failures isolated
+            4. rebuild vector indexes — best-effort, per-resource
+            5. finalize federation/job stats, lastSync, and status
 
-        Mongo remains the source of truth, so the vector rebuild still happens after
-        the transaction commits. Vector sync runs in a best-effort sub-step: per-resource
-        failures are captured in a ``VectorSyncOutcome`` instead of raised. Stats and
-        lastSync are only built by ``_finalize_sync_status`` once this outcome is known,
-        so they can never disagree about a vector-sync failure. The job is reported as
-        successful as long as at least one resource fully completes the pipeline (or
-        nothing was discovered at all).
+        The Mongo transaction only covers bookkeeping (step 2) so that a single
+        resource's write failure in step 3 does not roll back the entire batch.
+        Each resource write is individually atomic (single-document).  Per-resource
+        failures are captured in ``FederationApplySummary`` counters and the loop
+        continues.  Vector sync (step 4) already isolates failures via
+        ``VectorSyncOutcome``.  The job is reported as successful as long as at
+        least one resource fully completes the pipeline (or nothing was discovered).
         """
         try:
             discovered = await self._discover_entities(federation, author_id=author_id)
+
             async with MongoDB.get_client().start_session() as mongo_session:
                 async with await mongo_session.start_transaction():
-                    mutation_result = await self._commit_sync_transaction(
+                    sync_plan = await self._commit_bookkeeping_transaction(
                         federation=federation,
                         job=job,
                         discovered=discovered,
                         session=mongo_session,
                     )
+
+            mutation_result = await self._apply_sync_plan(sync_plan)
+
+            await self.federation_job_service.update_apply_summary(job, mutation_result.summary)
             await self.federation_job_service.mark_syncing(job, FederationJobPhase.SYNCING_VECTORS)
+
             try:
                 vector_sync_outcome = await self._sync_vector_index_after_commit(
                     federation=federation,
@@ -494,15 +500,21 @@ class FederationSyncService:
         )
         return federation, job
 
-    async def _commit_sync_transaction(
+    async def _commit_bookkeeping_transaction(
         self,
         *,
         federation: Federation,
         job: FederationSyncJob,
         discovered: dict[str, list[Any]],
         session: AsyncClientSession,
-    ) -> FederationSyncMutationResult:
-        """Apply the discovered federation state in one Mongo transaction."""
+    ) -> FederationSyncPlan:
+        """Run bookkeeping updates and build the sync plan inside a Mongo transaction.
+
+        The transaction ensures that the Federation and FederationSyncJob documents
+        stay mutually consistent (phase markers, discovery summary).  The actual
+        per-resource writes happen *outside* this transaction so that individual
+        failures can be isolated without rolling back the entire batch.
+        """
         discovered_mcp = discovered.get("mcp_servers", [])
         discovered_a2a = discovered.get("a2a_agents", [])
 
@@ -525,9 +537,7 @@ class FederationSyncService:
             discovered_a2a=discovered_a2a,
             session=session,
         )
-        mutation_result = await self._apply_sync_plan(sync_plan, session=session)
-        await self.federation_job_service.update_apply_summary(job, mutation_result.summary, session=session)
-        return mutation_result
+        return sync_plan
 
     async def update_federation_and_create_resync_job(
         self,
@@ -1090,23 +1100,33 @@ class FederationSyncService:
     async def _apply_sync_plan(
         self,
         sync_plan: FederationSyncPlan,
-        session: AsyncClientSession,
     ) -> FederationSyncMutationResult:
-        """Apply a previously computed sync plan inside the current transaction."""
-        mutation_result = FederationSyncMutationResult(summary=sync_plan.summary)
+        """Apply a previously computed sync plan with per-resource failure isolation.
 
-        # Query Federation ACL entries once for batch inheritance
+        Each resource write runs outside any multi-document transaction so that a
+        single failure does not roll back the entire batch.  Failures are recorded
+        in the plan's ``FederationApplySummary`` and the loop continues.
+        """
+        summary = sync_plan.summary
+        mutation_result = FederationSyncMutationResult(summary=summary)
+
+        # Query Federation ACL entries once for batch inheritance.
+        # Degrade gracefully if the query fails — resources are still written.
         federation_acl_entries, acl_query_success = await self._get_federation_acl_entries(
             sync_plan.federation_id,
-            session=session,
         )
 
         if not acl_query_success:
             logger.error(
-                "Failed to query Federation ACL entries for federation %s",
+                "Failed to query Federation ACL entries for federation %s — "
+                "resources will be written without ACL inheritance",
                 sync_plan.federation_id,
             )
-            raise RuntimeError(f"ACL inheritance failed: could not query federation ACL for {sync_plan.federation_id}")
+            self._record_apply_error(
+                summary,
+                f"ACL query failed for federation {sync_plan.federation_id}: resources written without ACL inheritance",
+            )
+            federation_acl_entries = []
 
         # Track all resources that need ACL inheritance
         resources_for_acl_inheritance: list[tuple[str, Any]] = []
@@ -1117,70 +1137,152 @@ class FederationSyncService:
             (ResourceType.REMOTE_AGENT, resource_id) for resource_id in sync_plan.a2a_pre_existing_acl_targets
         )
 
-        # Deletes run first so that unique-indexed fields (serverName, path) are freed
+        # --- Deletes ---
+        # Run first so that unique-indexed fields (serverName, path) are freed
         # before new docs with the same name/path are inserted.
+        # Delete failures are logged but do NOT increment mongoApplyFailed*
+        # because deletes are not part of imported_total.
         for stale, stale_runtime_arn in sync_plan.mcp_deletes:
-            await stale.delete(session=session)
-            if stale_runtime_arn:
-                mutation_result.changed_mcp_runtime_arns.add(stale_runtime_arn)
+            try:
+                await stale.delete()
+                if stale_runtime_arn:
+                    mutation_result.changed_mcp_runtime_arns.add(stale_runtime_arn)
+            except Exception as exc:
+                logger.exception(
+                    "Failed to delete MCP server: federation_id=%s runtime_arn=%s",
+                    sync_plan.federation_id,
+                    stale_runtime_arn,
+                )
+                self._record_apply_error(
+                    summary,
+                    f"MCP server delete failed (runtime_arn={stale_runtime_arn}): {exc}",
+                )
 
         for stale, stale_runtime_arn in sync_plan.a2a_deletes:
-            await stale.delete(session=session)
-            if stale_runtime_arn:
-                mutation_result.changed_a2a_runtime_arns.add(stale_runtime_arn)
+            try:
+                await stale.delete()
+                if stale_runtime_arn:
+                    mutation_result.changed_a2a_runtime_arns.add(stale_runtime_arn)
+            except Exception as exc:
+                logger.exception(
+                    "Failed to delete A2A agent: federation_id=%s runtime_arn=%s",
+                    sync_plan.federation_id,
+                    stale_runtime_arn,
+                )
+                self._record_apply_error(
+                    summary,
+                    f"A2A agent delete failed (runtime_arn={stale_runtime_arn}): {exc}",
+                )
 
+        # --- Creates ---
         for server, remote_id in sync_plan.mcp_creates:
-            server.federationRefId = sync_plan.federation_id
-            await server.insert(session=session)
-            mutation_result.changed_mcp_runtime_arns.add(remote_id)
-            resources_for_acl_inheritance.append((ResourceType.MCPSERVER, server.id))
+            try:
+                server.federationRefId = sync_plan.federation_id
+                await server.insert()
+                mutation_result.changed_mcp_runtime_arns.add(remote_id)
+                resources_for_acl_inheritance.append((ResourceType.MCPSERVER, server.id))
+            except Exception as exc:
+                logger.exception(
+                    "Failed to create MCP server: federation_id=%s remote_id=%s",
+                    sync_plan.federation_id,
+                    remote_id,
+                )
+                self._record_apply_error(
+                    summary,
+                    f"MCP server create failed (remote_id={remote_id}): {exc}",
+                )
+                summary.mongoApplyFailedMcpServers += 1
 
         for agent, remote_id in sync_plan.a2a_creates:
-            agent.federationRefId = sync_plan.federation_id
-            await agent.insert(session=session)
-            mutation_result.changed_a2a_runtime_arns.add(remote_id)
-            resources_for_acl_inheritance.append((ResourceType.REMOTE_AGENT, agent.id))
+            try:
+                agent.federationRefId = sync_plan.federation_id
+                await agent.insert()
+                mutation_result.changed_a2a_runtime_arns.add(remote_id)
+                resources_for_acl_inheritance.append((ResourceType.REMOTE_AGENT, agent.id))
+            except Exception as exc:
+                logger.exception(
+                    "Failed to create A2A agent: federation_id=%s remote_id=%s",
+                    sync_plan.federation_id,
+                    remote_id,
+                )
+                self._record_apply_error(
+                    summary,
+                    f"A2A agent create failed (remote_id={remote_id}): {exc}",
+                )
+                summary.mongoApplyFailedAgents += 1
 
+        # --- Updates ---
         for existing, item, remote_id in sync_plan.mcp_updates:
-            existing.serverName = item.serverName
-            existing.path = item.path
-            existing.tags = list(item.tags or [])
-            existing.config = dict(item.config or {})
-            existing.numTools = item.numTools
-            existing.federationMetadata = item.federationMetadata
-            await existing.save(session=session)
-            mutation_result.changed_mcp_runtime_arns.add(remote_id)
-            resources_for_acl_inheritance.append((ResourceType.MCPSERVER, existing.id))
+            try:
+                existing.serverName = item.serverName
+                existing.path = item.path
+                existing.tags = list(item.tags or [])
+                existing.config = dict(item.config or {})
+                existing.numTools = item.numTools
+                existing.federationMetadata = item.federationMetadata
+                await existing.save()
+                mutation_result.changed_mcp_runtime_arns.add(remote_id)
+                resources_for_acl_inheritance.append((ResourceType.MCPSERVER, existing.id))
+            except Exception as exc:
+                logger.exception(
+                    "Failed to update MCP server: federation_id=%s remote_id=%s",
+                    sync_plan.federation_id,
+                    remote_id,
+                )
+                self._record_apply_error(
+                    summary,
+                    f"MCP server update failed (remote_id={remote_id}): {exc}",
+                )
+                summary.mongoApplyFailedMcpServers += 1
 
         for existing, item, remote_id in sync_plan.a2a_updates:
-            existing.path = item.path
-            existing.card = item.card
-            existing.tags = list(item.tags or [])
-            existing.wellKnown = item.wellKnown
-            existing.federationMetadata = item.federationMetadata
-            if item.config and existing.config:
-                # For an A2AAgent document created via Federation, the two fields `type` and `runtimeAccess` of `A2AAgent.config: AgentConfig`
-                # should both be set according to data retrieved during the discovery process—`type` represents the A2A agent's actual
-                # preferred protocol binding on its agent card; `runtimeAccess` tells us how to satisfy authentication requirements
-                # when actually invoking it.
-                if hasattr(item.config, "type"):
-                    existing.config.type = item.config.type
-                if hasattr(item.config, "runtimeAccess"):
-                    existing.config.runtimeAccess = item.config.runtimeAccess
-                existing.config.enabled = item.config.enabled
-            elif item.config:
-                existing.config = item.config
-            await existing.save(session=session)
-            mutation_result.changed_a2a_runtime_arns.add(remote_id)
-            resources_for_acl_inheritance.append((ResourceType.REMOTE_AGENT, existing.id))
+            try:
+                existing.path = item.path
+                existing.card = item.card
+                existing.tags = list(item.tags or [])
+                existing.wellKnown = item.wellKnown
+                existing.federationMetadata = item.federationMetadata
+                if item.config and existing.config:
+                    if hasattr(item.config, "type"):
+                        existing.config.type = item.config.type
+                    if hasattr(item.config, "runtimeAccess"):
+                        existing.config.runtimeAccess = item.config.runtimeAccess
+                    existing.config.enabled = item.config.enabled
+                elif item.config:
+                    existing.config = item.config
+                await existing.save()
+                mutation_result.changed_a2a_runtime_arns.add(remote_id)
+                resources_for_acl_inheritance.append((ResourceType.REMOTE_AGENT, existing.id))
+            except Exception as exc:
+                logger.exception(
+                    "Failed to update A2A agent: federation_id=%s remote_id=%s",
+                    sync_plan.federation_id,
+                    remote_id,
+                )
+                self._record_apply_error(
+                    summary,
+                    f"A2A agent update failed (remote_id={remote_id}): {exc}",
+                )
+                summary.mongoApplyFailedAgents += 1
 
-        # Batch inherit Federation ACL to all synced resources
+        # --- ACL inheritance ---
+        # Degrade gracefully if ACL inheritance fails — resources are already
+        # persisted and ACL can be re-applied on the next sync (INSERT-only idempotent).
         if federation_acl_entries and resources_for_acl_inheritance:
-            await self._batch_inherit_federation_acl(
-                federation_acl_entries=federation_acl_entries,
-                resources=resources_for_acl_inheritance,
-                session=session,
-            )
+            try:
+                await self._batch_inherit_federation_acl(
+                    federation_acl_entries=federation_acl_entries,
+                    resources=resources_for_acl_inheritance,
+                )
+            except Exception as exc:
+                logger.exception(
+                    "ACL inheritance failed, continuing without ACL: federation_id=%s",
+                    sync_plan.federation_id,
+                )
+                self._record_apply_error(
+                    summary,
+                    f"ACL inheritance failed for {len(resources_for_acl_inheritance)} resources: {exc}",
+                )
         elif not federation_acl_entries and resources_for_acl_inheritance:
             logger.info(
                 "No ACL entries found on Federation %s, skipping ACL inheritance for %d resources",
@@ -1558,10 +1660,12 @@ class FederationSyncService:
             + apply_summary.updatedMcpServers
             + apply_summary.unchangedMcpServers
             - apply_summary.vectorSyncFailedMcpServers
+            - apply_summary.mongoApplyFailedMcpServers
             + apply_summary.createdAgents
             + apply_summary.updatedAgents
             + apply_summary.unchangedAgents
             - apply_summary.vectorSyncFailedAgents
+            - apply_summary.mongoApplyFailedAgents
         )
         unimported_total = (mcp_server_count + agent_count) - imported_total
 
