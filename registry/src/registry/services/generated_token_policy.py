@@ -27,3 +27,16 @@ def is_consent_exempt(
 ) -> bool:
     """Return whether a client ID is exempt from per-resource consent."""
     return client_id == headless_agent_client_id
+
+
+def is_direct_connect_a2a_client(
+    client_id: str,
+    headless_agent_client_id: str,
+) -> bool:
+    """Return whether a client ID may use the direct-connect A2A proxy routes.
+
+    Both allowed client IDs are issued only through the authenticated Registry token-vending
+    endpoint, not through Dynamic Client Registration. Other clients are denied because the
+    direct-connect A2A routes do not have a per-agent consent fallback.
+    """
+    return client_id in {headless_agent_client_id, INTERACTIVE_CLIENT_ID}
