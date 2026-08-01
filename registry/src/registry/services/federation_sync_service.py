@@ -1299,10 +1299,12 @@ class FederationSyncService:
     async def _get_federation_acl_entries(
         self,
         federation_id: Any,
-        session: AsyncClientSession | None = None,
     ) -> tuple[list[RegistryAclEntry], bool]:
         """
         Get all ACL entries for a Federation (query once, use multiple times).
+
+        Only called from ``_apply_sync_plan``, which runs with no active Mongo
+        transaction — this never participates in one.
 
         Returns:
             Tuple of (entries, query_success):
@@ -1317,7 +1319,6 @@ class FederationSyncService:
                     "principalType": {"$ne": PrincipalType.PUBLIC.value},
                     "principalId": {"$ne": None},
                 },
-                session=session,
             ).to_list()
 
             logger.debug("Found %d ACL entries for federation %s", len(entries), federation_id)
@@ -1334,7 +1335,6 @@ class FederationSyncService:
         self,
         federation_acl_entries: list[RegistryAclEntry],
         resources: list[tuple[str, Any]],
-        session: AsyncClientSession | None = None,
     ) -> None:
         """
         Batch inherit Federation ACL to multiple resources using INSERT-only logic.
@@ -1350,6 +1350,9 @@ class FederationSyncService:
         - If NOT exists → INSERT new ACL entry with same permission
         - If EXISTS → DO NOTHING (keep existing permission, never UPDATE)
         - Users not in Federation ACL are not affected
+
+        Only called from ``_apply_sync_plan``, which runs with no active Mongo
+        transaction — this never participates in one.
 
         Args:
             federation_acl_entries: Pre-fetched Federation ACL entries (excluding PUBLIC)
@@ -1381,7 +1384,6 @@ class FederationSyncService:
                     "resourceType": {"$in": resource_types_in_scope},
                     "resourceId": {"$in": [resource_id for _, resource_id in resources]},
                 },
-                session=session,
             ).to_list()
             # The MongoDB query above pre-filters by resourceType and resourceId using separate
             # $in clauses, but those are evaluated independently — it can return an entry whose
@@ -1414,7 +1416,6 @@ class FederationSyncService:
             target_resource_types = {_acl_key_part(resource_type) for resource_type, _ in resources}
             target_roles = await RegistryAccessRole.find(
                 {"resourceType": {"$in": sorted(target_resource_types)}},
-                session=session,
             ).to_list()
             role_id_lookup: dict[tuple[str, int], PydanticObjectId] = {
                 (_acl_key_part(role.resourceType), role.permBits): role.id for role in target_roles
@@ -1470,7 +1471,7 @@ class FederationSyncService:
             if new_acl_entries:
                 for i in range(0, len(new_acl_entries), ACL_INHERITANCE_BATCH_SIZE):
                     batch = new_acl_entries[i : i + ACL_INHERITANCE_BATCH_SIZE]
-                    await RegistryAclEntry.insert_many(batch, session=session, ordered=False)
+                    await RegistryAclEntry.insert_many(batch, ordered=False)
                     stats["inserted_count"] += len(batch)
 
                 logger.info(

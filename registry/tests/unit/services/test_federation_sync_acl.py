@@ -444,12 +444,13 @@ async def test_apply_sync_plan_degrades_when_federation_acl_query_fails(
 
 
 @pytest.mark.asyncio
-async def test_get_federation_acl_entries_uses_current_transaction_session(
+async def test_get_federation_acl_entries_queries_without_a_session(
     federation_sync_service: FederationSyncService,
     monkeypatch,
 ):
+    """_get_federation_acl_entries is only called from _apply_sync_plan, which runs with
+    no active Mongo transaction/session — it must not pass a session to the query."""
     federation_id = PydanticObjectId()
-    session = object()
     find_calls = []
 
     def mock_find(query, **kwargs):
@@ -458,7 +459,7 @@ async def test_get_federation_acl_entries_uses_current_transaction_session(
 
     monkeypatch.setattr("registry.services.federation_sync_service.RegistryAclEntry.find", mock_find)
 
-    entries, query_success = await federation_sync_service._get_federation_acl_entries(federation_id, session=session)
+    entries, query_success = await federation_sync_service._get_federation_acl_entries(federation_id)
 
     assert entries == []
     assert query_success is True
@@ -470,7 +471,7 @@ async def test_get_federation_acl_entries_uses_current_transaction_session(
                 "principalType": {"$ne": PrincipalType.PUBLIC.value},
                 "principalId": {"$ne": None},
             },
-            "kwargs": {"session": session},
+            "kwargs": {},
         }
     ]
 
