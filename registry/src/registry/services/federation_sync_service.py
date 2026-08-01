@@ -1798,6 +1798,8 @@ class FederationSyncService:
                 skippedAgents=apply_summary.skippedAgents,
                 vectorSyncFailedMcpServers=apply_summary.vectorSyncFailedMcpServers,
                 vectorSyncFailedAgents=apply_summary.vectorSyncFailedAgents,
+                mongoApplyFailedMcpServers=apply_summary.mongoApplyFailedMcpServers,
+                mongoApplyFailedAgents=apply_summary.mongoApplyFailedAgents,
                 errors=apply_summary.errors,
                 errorMessages=list(apply_summary.errorMessages or []),
             ),

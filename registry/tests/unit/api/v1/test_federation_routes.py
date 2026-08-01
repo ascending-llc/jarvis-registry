@@ -767,6 +767,8 @@ async def test_list_federations_includes_last_sync(sample_federation, sample_use
                     updatedAgents=0,
                     deletedAgents=0,
                     unchangedAgents=0,
+                    mongoApplyFailedMcpServers=1,
+                    mongoApplyFailedAgents=0,
                     errors=0,
                     errorMessages=[],
                 ),
@@ -798,6 +800,8 @@ async def test_list_federations_includes_last_sync(sample_federation, sample_use
     assert result.federations[0].lastSync.status == FederationSyncStatus.SUCCESS
     assert result.federations[0].lastSync.summary is not None
     assert result.federations[0].lastSync.summary.discoveredMcpServers == 2
+    assert result.federations[0].lastSync.summary.mongoApplyFailedMcpServers == 1
+    assert result.federations[0].lastSync.summary.mongoApplyFailedAgents == 0
 
 
 @pytest.mark.asyncio

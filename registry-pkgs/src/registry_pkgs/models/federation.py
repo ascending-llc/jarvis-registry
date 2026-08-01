@@ -159,6 +159,8 @@ class FederationLastSyncSummary(BaseModel):
     skippedAgents: int = 0
     vectorSyncFailedMcpServers: int = 0
     vectorSyncFailedAgents: int = 0
+    mongoApplyFailedMcpServers: int = 0
+    mongoApplyFailedAgents: int = 0
 
     errors: int = 0
     errorMessages: list[str] = Field(default_factory=list)

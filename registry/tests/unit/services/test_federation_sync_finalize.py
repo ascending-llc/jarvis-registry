@@ -626,12 +626,16 @@ def test_build_last_sync_includes_vector_sync_failed_counts():
         createdAgents=1,
         vectorSyncFailedMcpServers=1,
         vectorSyncFailedAgents=1,
+        mongoApplyFailedMcpServers=1,
+        mongoApplyFailedAgents=1,
     )
 
     last_sync = FederationSyncService._build_last_sync(job, summary)
 
     assert last_sync.summary.vectorSyncFailedMcpServers == 1
     assert last_sync.summary.vectorSyncFailedAgents == 1
+    assert last_sync.summary.mongoApplyFailedMcpServers == 1
+    assert last_sync.summary.mongoApplyFailedAgents == 1
 
 
 # ---------------------------------------------------------------------------
