@@ -173,6 +173,8 @@ def _to_last_sync_response(last_sync) -> FederationLastSyncResponse | None:
             skippedAgents=int(getattr(summary, "skippedAgents", 0) or 0),
             vectorSyncFailedMcpServers=int(getattr(summary, "vectorSyncFailedMcpServers", 0) or 0),
             vectorSyncFailedAgents=int(getattr(summary, "vectorSyncFailedAgents", 0) or 0),
+            mongoApplyFailedMcpServers=int(getattr(summary, "mongoApplyFailedMcpServers", 0) or 0),
+            mongoApplyFailedAgents=int(getattr(summary, "mongoApplyFailedAgents", 0) or 0),
             errors=int(getattr(summary, "errors", 0) or 0),
             errorMessages=list(getattr(summary, "errorMessages", []) or []),
         )

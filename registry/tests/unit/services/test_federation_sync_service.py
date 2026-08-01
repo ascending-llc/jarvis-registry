@@ -277,7 +277,11 @@ async def test_run_sync_calls_vector_sync_after_commit(
     )
 
     federation_sync_service._discover_entities = AsyncMock(return_value={"mcp_servers": [], "a2a_agents": []})
-    federation_sync_service._commit_sync_transaction = AsyncMock(return_value=mutation_result)
+    federation_sync_service._commit_bookkeeping_transaction = AsyncMock(
+        return_value=SimpleNamespace(summary=mutation_result.summary)
+    )
+    federation_sync_service._apply_sync_plan = AsyncMock(return_value=mutation_result)
+    federation_sync_service.federation_job_service.update_apply_summary = AsyncMock()
     federation_sync_service._sync_vector_index_after_commit = AsyncMock(return_value=VectorSyncOutcome())
     federation_sync_service._finalize_sync_status = AsyncMock()
     federation_sync_service.federation_job_service.mark_syncing = AsyncMock()
@@ -286,12 +290,13 @@ async def test_run_sync_calls_vector_sync_after_commit(
     result = await federation_sync_service.run_sync(federation=federation, job=job, author_id=_DEFAULT_USER_OBJECT_ID)
 
     assert result == job
-    federation_sync_service._commit_sync_transaction.assert_awaited_once_with(
+    federation_sync_service._commit_bookkeeping_transaction.assert_awaited_once_with(
         federation=federation,
         job=job,
         discovered={"mcp_servers": [], "a2a_agents": []},
         session=mongo_session,
     )
+    federation_sync_service._apply_sync_plan.assert_awaited_once()
     federation_sync_service._sync_vector_index_after_commit.assert_awaited_once_with(
         federation=federation,
         job=job,
@@ -322,7 +327,11 @@ async def test_run_sync_passes_vector_outcome_to_finalize(
     )
 
     federation_sync_service._discover_entities = AsyncMock(return_value={"mcp_servers": [], "a2a_agents": []})
-    federation_sync_service._commit_sync_transaction = AsyncMock(return_value=mutation_result)
+    federation_sync_service._commit_bookkeeping_transaction = AsyncMock(
+        return_value=SimpleNamespace(summary=mutation_result.summary)
+    )
+    federation_sync_service._apply_sync_plan = AsyncMock(return_value=mutation_result)
+    federation_sync_service.federation_job_service.update_apply_summary = AsyncMock()
     federation_sync_service._sync_vector_index_after_commit = AsyncMock(return_value=vector_outcome)
     federation_sync_service._finalize_sync_status = AsyncMock()
     federation_sync_service.federation_job_service.mark_syncing = AsyncMock()
@@ -356,7 +365,11 @@ async def test_run_sync_finalizes_committed_apply_when_vector_sync_setup_fails(
     )
 
     federation_sync_service._discover_entities = AsyncMock(return_value={"mcp_servers": [], "a2a_agents": []})
-    federation_sync_service._commit_sync_transaction = AsyncMock(return_value=mutation_result)
+    federation_sync_service._commit_bookkeeping_transaction = AsyncMock(
+        return_value=SimpleNamespace(summary=mutation_result.summary)
+    )
+    federation_sync_service._apply_sync_plan = AsyncMock(return_value=mutation_result)
+    federation_sync_service.federation_job_service.update_apply_summary = AsyncMock()
     federation_sync_service._sync_vector_index_after_commit = AsyncMock(
         side_effect=RuntimeError("Mongo runtime ARN read failed")
     )
@@ -584,7 +597,11 @@ async def test_run_sync_forwards_author_id_to_discover_entities(
 
     discover_mock = AsyncMock(return_value={"mcp_servers": [], "a2a_agents": []})
     federation_sync_service._discover_entities = discover_mock
-    federation_sync_service._commit_sync_transaction = AsyncMock(return_value=mutation_result)
+    federation_sync_service._commit_bookkeeping_transaction = AsyncMock(
+        return_value=SimpleNamespace(summary=mutation_result.summary)
+    )
+    federation_sync_service._apply_sync_plan = AsyncMock(return_value=mutation_result)
+    federation_sync_service.federation_job_service.update_apply_summary = AsyncMock()
     federation_sync_service._sync_vector_index_after_commit = AsyncMock(return_value=VectorSyncOutcome())
     federation_sync_service._finalize_sync_status = AsyncMock()
     federation_sync_service.federation_job_service.mark_syncing = AsyncMock()
@@ -593,3 +610,276 @@ async def test_run_sync_forwards_author_id_to_discover_entities(
     await federation_sync_service.run_sync(federation=federation, job=job, author_id=_DEFAULT_USER_OBJECT_ID)
 
     discover_mock.assert_awaited_once_with(federation, author_id=_DEFAULT_USER_OBJECT_ID)
+
+
+# ---------------------------------------------------------------------------
+# T1 – single MCP create failure, others persist
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_single_mcp_create_failure_others_persist(
+    federation_sync_service: FederationSyncService,
+):
+    federation_id = PydanticObjectId()
+    ok1 = SimpleNamespace(id=None, insert=AsyncMock(side_effect=lambda **kw: setattr(ok1, "id", PydanticObjectId())))
+    bad = SimpleNamespace(id=None, insert=AsyncMock(side_effect=Exception("write conflict")))
+    ok3 = SimpleNamespace(id=None, insert=AsyncMock(side_effect=lambda **kw: setattr(ok3, "id", PydanticObjectId())))
+
+    from registry.services.federation_sync_service import FederationSyncPlan
+
+    sync_plan = FederationSyncPlan(
+        summary=FederationApplySummary(createdMcpServers=3),
+        federation_id=federation_id,
+        provider_type=FederationProviderType.AWS_AGENTCORE,
+        discovered_mcp_count=3,
+        discovered_a2a_count=0,
+        mcp_creates=[(ok1, "arn:ok1"), (bad, "arn:bad"), (ok3, "arn:ok3")],
+    )
+    federation_sync_service._get_federation_acl_entries = AsyncMock(return_value=([], True))
+
+    result = await federation_sync_service._apply_sync_plan(sync_plan)
+
+    ok1.insert.assert_awaited_once()
+    bad.insert.assert_awaited_once()
+    ok3.insert.assert_awaited_once()
+    assert result.summary.mongoApplyFailedMcpServers == 1
+    assert "arn:ok1" in result.changed_mcp_runtime_arns
+    assert "arn:ok3" in result.changed_mcp_runtime_arns
+    assert "arn:bad" not in result.changed_mcp_runtime_arns
+    assert any("arn:bad" in msg for msg in result.summary.errorMessages)
+
+
+# ---------------------------------------------------------------------------
+# T2 – single A2A create failure, others persist
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_single_a2a_create_failure_others_persist(
+    federation_sync_service: FederationSyncService,
+):
+    federation_id = PydanticObjectId()
+    ok1 = SimpleNamespace(id=None, insert=AsyncMock(side_effect=lambda **kw: setattr(ok1, "id", PydanticObjectId())))
+    bad = SimpleNamespace(id=None, insert=AsyncMock(side_effect=Exception("timeout")))
+    ok3 = SimpleNamespace(id=None, insert=AsyncMock(side_effect=lambda **kw: setattr(ok3, "id", PydanticObjectId())))
+
+    from registry.services.federation_sync_service import FederationSyncPlan
+
+    sync_plan = FederationSyncPlan(
+        summary=FederationApplySummary(createdAgents=3),
+        federation_id=federation_id,
+        provider_type=FederationProviderType.AWS_AGENTCORE,
+        discovered_mcp_count=0,
+        discovered_a2a_count=3,
+        a2a_creates=[(ok1, "arn:a2a-ok1"), (bad, "arn:a2a-bad"), (ok3, "arn:a2a-ok3")],
+    )
+    federation_sync_service._get_federation_acl_entries = AsyncMock(return_value=([], True))
+
+    result = await federation_sync_service._apply_sync_plan(sync_plan)
+
+    assert result.summary.mongoApplyFailedAgents == 1
+    assert "arn:a2a-ok1" in result.changed_a2a_runtime_arns
+    assert "arn:a2a-ok3" in result.changed_a2a_runtime_arns
+    assert "arn:a2a-bad" not in result.changed_a2a_runtime_arns
+
+
+# ---------------------------------------------------------------------------
+# T3 – mixed-type failure isolation
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_mixed_type_failure_isolation(
+    federation_sync_service: FederationSyncService,
+):
+    federation_id = PydanticObjectId()
+
+    mcp_ok = SimpleNamespace(
+        id=None, insert=AsyncMock(side_effect=lambda **kw: setattr(mcp_ok, "id", PydanticObjectId()))
+    )
+    mcp_bad = SimpleNamespace(id=None, insert=AsyncMock(side_effect=Exception("mcp fail")))
+    a2a_ok = SimpleNamespace(
+        id=None, insert=AsyncMock(side_effect=lambda **kw: setattr(a2a_ok, "id", PydanticObjectId()))
+    )
+    a2a_bad = SimpleNamespace(id=None, insert=AsyncMock(side_effect=Exception("a2a fail")))
+
+    from registry.services.federation_sync_service import FederationSyncPlan
+
+    sync_plan = FederationSyncPlan(
+        summary=FederationApplySummary(createdMcpServers=2, createdAgents=2),
+        federation_id=federation_id,
+        provider_type=FederationProviderType.AWS_AGENTCORE,
+        discovered_mcp_count=2,
+        discovered_a2a_count=2,
+        mcp_creates=[(mcp_ok, "arn:mcp-ok"), (mcp_bad, "arn:mcp-bad")],
+        a2a_creates=[(a2a_ok, "arn:a2a-ok"), (a2a_bad, "arn:a2a-bad")],
+    )
+    federation_sync_service._get_federation_acl_entries = AsyncMock(return_value=([], True))
+
+    result = await federation_sync_service._apply_sync_plan(sync_plan)
+
+    assert result.summary.mongoApplyFailedMcpServers == 1
+    assert result.summary.mongoApplyFailedAgents == 1
+    assert "arn:mcp-ok" in result.changed_mcp_runtime_arns
+    assert "arn:a2a-ok" in result.changed_a2a_runtime_arns
+    assert len(result.summary.errorMessages) == 2
+
+
+# ---------------------------------------------------------------------------
+# T4 – update failure isolation
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_update_failure_isolation(
+    federation_sync_service: FederationSyncService,
+):
+    federation_id = PydanticObjectId()
+
+    existing_ok = SimpleNamespace(
+        id=PydanticObjectId(),
+        serverName="ok",
+        path="/ok",
+        tags=[],
+        config={},
+        numTools=1,
+        federationMetadata=None,
+        save=AsyncMock(),
+    )
+    update_ok = SimpleNamespace(
+        serverName="ok-v2",
+        path="/ok-v2",
+        tags=[],
+        config={},
+        numTools=2,
+        federationMetadata=None,
+    )
+    existing_bad = SimpleNamespace(
+        id=PydanticObjectId(),
+        serverName="bad",
+        path="/bad",
+        tags=[],
+        config={},
+        numTools=1,
+        federationMetadata=None,
+        save=AsyncMock(side_effect=Exception("save failed")),
+    )
+    update_bad = SimpleNamespace(
+        serverName="bad-v2",
+        path="/bad-v2",
+        tags=[],
+        config={},
+        numTools=3,
+        federationMetadata=None,
+    )
+
+    from registry.services.federation_sync_service import FederationSyncPlan
+
+    sync_plan = FederationSyncPlan(
+        summary=FederationApplySummary(updatedMcpServers=2),
+        federation_id=federation_id,
+        provider_type=FederationProviderType.AWS_AGENTCORE,
+        discovered_mcp_count=2,
+        discovered_a2a_count=0,
+        mcp_updates=[
+            (existing_ok, update_ok, "arn:ok"),
+            (existing_bad, update_bad, "arn:bad"),
+        ],
+    )
+    federation_sync_service._get_federation_acl_entries = AsyncMock(return_value=([], True))
+
+    result = await federation_sync_service._apply_sync_plan(sync_plan)
+
+    existing_ok.save.assert_awaited_once()
+    existing_bad.save.assert_awaited_once()
+    assert result.summary.mongoApplyFailedMcpServers == 1
+    assert "arn:ok" in result.changed_mcp_runtime_arns
+    assert "arn:bad" not in result.changed_mcp_runtime_arns
+
+
+# ---------------------------------------------------------------------------
+# T5 – delete failure isolation (does NOT increment mongoApplyFailed*)
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_delete_failure_isolation(
+    federation_sync_service: FederationSyncService,
+):
+    federation_id = PydanticObjectId()
+    stale_ok = SimpleNamespace(id=PydanticObjectId(), delete=AsyncMock())
+    stale_bad = SimpleNamespace(id=PydanticObjectId(), delete=AsyncMock(side_effect=Exception("delete failed")))
+
+    from registry.services.federation_sync_service import FederationSyncPlan
+
+    sync_plan = FederationSyncPlan(
+        summary=FederationApplySummary(deletedMcpServers=2),
+        federation_id=federation_id,
+        provider_type=FederationProviderType.AWS_AGENTCORE,
+        discovered_mcp_count=0,
+        discovered_a2a_count=0,
+        mcp_deletes=[(stale_ok, "arn:del-ok"), (stale_bad, "arn:del-bad")],
+    )
+    federation_sync_service._get_federation_acl_entries = AsyncMock(return_value=([], True))
+
+    result = await federation_sync_service._apply_sync_plan(sync_plan)
+
+    stale_ok.delete.assert_awaited_once()
+    stale_bad.delete.assert_awaited_once()
+    assert result.summary.mongoApplyFailedMcpServers == 0
+    assert result.summary.mongoApplyFailedAgents == 0
+    assert "arn:del-ok" in result.changed_mcp_runtime_arns
+    assert "arn:del-bad" not in result.changed_mcp_runtime_arns
+    assert any("arn:del-bad" in msg for msg in result.summary.errorMessages)
+
+
+# ---------------------------------------------------------------------------
+# T6 – failed resource not in changed_runtime_arns
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_failed_resource_not_in_changed_runtime_arns(
+    federation_sync_service: FederationSyncService,
+):
+    federation_id = PydanticObjectId()
+    bad_mcp = SimpleNamespace(id=None, insert=AsyncMock(side_effect=Exception("fail")))
+    bad_a2a = SimpleNamespace(id=None, insert=AsyncMock(side_effect=Exception("fail")))
+
+    from registry.services.federation_sync_service import FederationSyncPlan
+
+    sync_plan = FederationSyncPlan(
+        summary=FederationApplySummary(createdMcpServers=1, createdAgents=1),
+        federation_id=federation_id,
+        provider_type=FederationProviderType.AWS_AGENTCORE,
+        discovered_mcp_count=1,
+        discovered_a2a_count=1,
+        mcp_creates=[(bad_mcp, "arn:bad-mcp")],
+        a2a_creates=[(bad_a2a, "arn:bad-a2a")],
+    )
+    federation_sync_service._get_federation_acl_entries = AsyncMock(return_value=([], True))
+
+    result = await federation_sync_service._apply_sync_plan(sync_plan)
+
+    assert len(result.changed_mcp_runtime_arns) == 0
+    assert len(result.changed_a2a_runtime_arns) == 0
+    assert result.summary.mongoApplyFailedMcpServers == 1
+    assert result.summary.mongoApplyFailedAgents == 1
+
+
+# ---------------------------------------------------------------------------
+# T13 – bookkeeping transaction failure aborts entire run
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_bookkeeping_failure_aborts_whole_run(
+    federation_sync_service: FederationSyncService,
+    monkeypatch,
+):
+    federation = _make_federation(FederationProviderType.AWS_AGENTCORE, {"region": "us-east-1"})
+    job = SimpleNamespace(
+        id=PydanticObjectId(),
+        jobType="full_sync",
+        startedAt=datetime.now(UTC),
+        discoverySummary=SimpleNamespace(discoveredMcpServers=0, discoveredAgents=0),
+    )
+
+    federation_sync_service._discover_entities = AsyncMock(return_value={"mcp_servers": [], "a2a_agents": []})
+    federation_sync_service._commit_bookkeeping_transaction = AsyncMock(side_effect=RuntimeError("mark_syncing failed"))
+    federation_sync_service._apply_sync_plan = AsyncMock()
+    federation_sync_service.federation_job_service.mark_failed = AsyncMock()
+    federation_sync_service.federation_crud_service.mark_sync_failed = AsyncMock()
+    _patch_mongo_session(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="mark_syncing failed"):
+        await federation_sync_service.run_sync(federation=federation, job=job, author_id=_DEFAULT_USER_OBJECT_ID)
+
+    federation_sync_service._apply_sync_plan.assert_not_awaited()
