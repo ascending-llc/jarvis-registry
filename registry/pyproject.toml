@@ -78,11 +78,11 @@ registry = ["py.typed"]
 dev = { shell = "uv run uvicorn registry.main:app --reload --host 0.0.0.0 --port 8000" }
 
 # Run all tests
-test = { shell = "uv run pytest tests/ -v" }
-test-cov = { shell = "uv run pytest tests/ -v --cov=registry --cov-report=html --cov-report=term --cov-report=xml" }
+test = { shell = "uv run pytest tests/" }
+test-cov = { shell = "uv run pytest tests/ --cov=registry --cov-report=html --cov-report=term --cov-report=xml" }
 
 # Run unit tests only
-test-unit = { shell = "uv run pytest tests/unit -v -m unit" }
+test-unit = { shell = "uv run pytest tests/unit -m unit" }
 
 # Run integration tests only
-test-integration = { shell = "uv run pytest tests/integration -v -m integration" }
+test-integration = { shell = "uv run pytest tests/integration -m integration" }

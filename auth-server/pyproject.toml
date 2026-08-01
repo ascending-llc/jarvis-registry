@@ -52,11 +52,11 @@ auth_server = ["py.typed", "*.yaml", "*.yml", "*.json"]
 dev = { shell = "uv run uvicorn auth_server.server:app --reload --host 0.0.0.0 --port 8888" }
 
 # Run all tests
-test = { shell = "uv run pytest tests/ -v" }
-test-cov = { shell = "uv run pytest tests/ -v --cov=auth_server --cov-report=html --cov-report=term --cov-report=xml" }
+test = { shell = "uv run pytest tests/" }
+test-cov = { shell = "uv run pytest tests/ --cov=auth_server --cov-report=html --cov-report=term --cov-report=xml" }
 
 # Run unit tests only
-test-unit = { shell = "uv run pytest tests/ -v -m unit" }
+test-unit = { shell = "uv run pytest tests/ -m unit" }
 
 # Run integration tests only
-test-integration = { shell = "uv run pytest tests/ -v -m integration" }
+test-integration = { shell = "uv run pytest tests/ -m integration" }

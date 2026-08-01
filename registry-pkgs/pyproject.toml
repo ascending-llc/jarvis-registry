@@ -56,5 +56,5 @@ registry_pkgs = ["py.typed", "*.yml"]
 # Tasks of this specific workspace member should be run from the member directory, i.e. `registry-pkgs`.
 [tool.poe.tasks]
 # Run tests
-test = { shell = "uv run pytest tests -v" }
-test-cov = { shell = "uv run pytest tests -v --cov=registry_pkgs --cov-report=html --cov-report=term --cov-report=xml" }
+test = { shell = "uv run pytest tests" }
+test-cov = { shell = "uv run pytest tests --cov=registry_pkgs --cov-report=html --cov-report=term --cov-report=xml" }
