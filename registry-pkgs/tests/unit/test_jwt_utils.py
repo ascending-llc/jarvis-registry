@@ -392,7 +392,8 @@ class TestDecodeJwtWithJwk:
     """Tests for decode_jwt_with_jwk."""
 
     @pytest.fixture(scope="class")
-    def jwks(self):
+    @classmethod
+    def jwks(cls):
         """Return a JWKS dict built from the module-level public key."""
         return build_jwks(_PUBLIC_KEY, _KID)
 

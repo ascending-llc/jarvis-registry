@@ -262,10 +262,10 @@ class TestAccessTokenScoping:
             oauth2_temp_session = test_signer.dumps(session_data)
 
             # Call the actual callback route
+            test_client.cookies.set(settings.oauth2_temp_session_cookie_name, oauth2_temp_session)
             response = test_client.get(
                 f"{API_PREFIX}/oauth2/callback/keycloak",
                 params={"code": "auth_code_123", "state": "test_state"},
-                cookies={settings.oauth2_temp_session_cookie_name: oauth2_temp_session},
                 follow_redirects=False,
             )
 
@@ -395,10 +395,10 @@ class TestAccessTokenScoping:
             oauth2_temp_session = test_signer.dumps(session_data)
 
             # Call the actual callback route
+            test_client.cookies.set(settings.oauth2_temp_session_cookie_name, oauth2_temp_session)
             response = test_client.get(
                 f"{API_PREFIX}/oauth2/callback/keycloak",
                 params={"code": "auth_code_456", "state": "test_state"},
-                cookies={settings.oauth2_temp_session_cookie_name: oauth2_temp_session},
                 follow_redirects=False,
             )
 

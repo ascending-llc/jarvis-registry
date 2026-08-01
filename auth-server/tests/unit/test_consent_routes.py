@@ -127,10 +127,10 @@ def test_consent_page_requires_query_and_cookie_nonce_match() -> None:
     client, _, _, pending_store = _client()
     pending_store.save("nonce-1", _pending_payload())
 
+    client.cookies.set(settings.oauth2_consent_nonce_cookie_name, "different")
     response = client.get(
         "/auth/oauth2/consent",
         params={"nonce": "nonce-1"},
-        cookies={settings.oauth2_consent_nonce_cookie_name: "different"},
     )
 
     assert response.status_code == 400
@@ -141,10 +141,10 @@ def test_consent_page_renders_client_metadata_and_post_forms() -> None:
     client, _, _, pending_store = _client()
     pending_store.save("nonce-1", _pending_payload())
 
+    client.cookies.set(settings.oauth2_consent_nonce_cookie_name, "nonce-1")
     response = client.get(
         "/auth/oauth2/consent",
         params={"nonce": "nonce-1"},
-        cookies={settings.oauth2_consent_nonce_cookie_name: "nonce-1"},
     )
 
     assert response.status_code == 200
@@ -157,10 +157,10 @@ def test_approve_consent_rejects_form_cookie_nonce_mismatch() -> None:
     client, _, _, pending_store = _client()
     pending_store.save("nonce-1", _pending_payload())
 
+    client.cookies.set(settings.oauth2_consent_nonce_cookie_name, "different")
     response = client.post(
         "/auth/oauth2/consent/approve",
         data={"nonce": "nonce-1"},
-        cookies={settings.oauth2_consent_nonce_cookie_name: "different"},
     )
 
     assert response.status_code == 400
@@ -172,10 +172,10 @@ def test_approve_consent_grants_and_finishes_oauth_callback() -> None:
     client, oauth_store, consent_store, pending_store = _client()
     pending_store.save("nonce-1", _pending_payload())
 
+    client.cookies.set(settings.oauth2_consent_nonce_cookie_name, "nonce-1")
     response = client.post(
         "/auth/oauth2/consent/approve",
         data={"nonce": "nonce-1"},
-        cookies={settings.oauth2_consent_nonce_cookie_name: "nonce-1"},
         follow_redirects=False,
     )
 
@@ -194,10 +194,10 @@ def test_deny_consent_is_post_and_consumes_pending_nonce() -> None:
     client, _, _, pending_store = _client()
     pending_store.save("nonce-1", _pending_payload())
 
+    client.cookies.set(settings.oauth2_consent_nonce_cookie_name, "nonce-1")
     response = client.post(
         "/auth/oauth2/consent/deny",
         data={"nonce": "nonce-1"},
-        cookies={settings.oauth2_consent_nonce_cookie_name: "nonce-1"},
         follow_redirects=False,
     )
 
@@ -210,10 +210,10 @@ def test_deny_consent_rejects_form_cookie_nonce_mismatch() -> None:
     client, _, _, pending_store = _client()
     pending_store.save("nonce-1", _pending_payload())
 
+    client.cookies.set(settings.oauth2_consent_nonce_cookie_name, "different")
     response = client.post(
         "/auth/oauth2/consent/deny",
         data={"nonce": "nonce-1"},
-        cookies={settings.oauth2_consent_nonce_cookie_name: "different"},
     )
 
     assert response.status_code == 400
@@ -257,10 +257,10 @@ def test_oauth_callback_without_client_consent_redirects_to_consent(
         "code_challenge_method": "S256",
     }
 
+    client.cookies.set(settings.oauth2_temp_session_cookie_name, signer.dumps(session_data))
     response = client.get(
         "/auth/oauth2/callback/keycloak",
         params={"code": "idp-code", "state": "internal-state"},
-        cookies={settings.oauth2_temp_session_cookie_name: signer.dumps(session_data)},
         follow_redirects=False,
     )
 
@@ -309,10 +309,10 @@ def test_oauth_callback_with_cached_client_consent_skips_consent(
         "code_challenge_method": "S256",
     }
 
+    client.cookies.set(settings.oauth2_temp_session_cookie_name, signer.dumps(session_data))
     response = client.get(
         "/auth/oauth2/callback/keycloak",
         params={"code": "idp-code", "state": "internal-state"},
-        cookies={settings.oauth2_temp_session_cookie_name: signer.dumps(session_data)},
         follow_redirects=False,
     )
 
@@ -360,10 +360,10 @@ def test_oauth_callback_registry_client_skips_consent(
         "code_challenge_method": "S256",
     }
 
+    client.cookies.set(settings.oauth2_temp_session_cookie_name, signer.dumps(session_data))
     response = client.get(
         "/auth/oauth2/callback/keycloak",
         params={"code": "idp-code", "state": "internal-state"},
-        cookies={settings.oauth2_temp_session_cookie_name: signer.dumps(session_data)},
         follow_redirects=False,
     )
 
