@@ -64,7 +64,7 @@ from typing import Any, ClassVar
 from a2a.types import AgentCard
 from beanie import Document, Insert, PydanticObjectId, Replace, Save, SaveChanges, Update, before_event
 from langchain_core.documents import Document as LangChainDocument
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_serializer, model_validator
 from pymongo import IndexModel
 
 from .enums import A2AEntityType
@@ -546,13 +546,13 @@ class A2AAgent(Document):
 
     # ========== Pydantic Configuration ==========
     model_config = ConfigDict(
-        json_encoders={
-            datetime: lambda v: v.isoformat() if v else None,
-            HttpUrl: str,
-        },
         populate_by_name=True,
         use_enum_values=True,
     )
+
+    @field_serializer("registeredAt", "createdAt", "updatedAt", when_used="json")
+    def _serialize_datetime(self, value: datetime | None) -> str | None:
+        return value.isoformat() if value else None
 
     # ========== Special Methods ==========
     def __repr__(self) -> str:

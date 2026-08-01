@@ -180,10 +180,10 @@ class TestSessionExpiration:
         app.dependency_overrides[get_oauth2_config] = lambda: mock_oauth_config
         app.dependency_overrides[get_signer] = lambda: mock_signer
 
+        test_client.cookies.set(settings.oauth2_temp_session_cookie_name, "expired_session")
         response = test_client.get(
             "/auth/oauth2/callback/entra",
             params={"code": "fake_code", "state": state},
-            cookies={settings.oauth2_temp_session_cookie_name: "expired_session"},
         )
 
         # Should return 401
@@ -214,10 +214,10 @@ class TestSessionExpiration:
         app.dependency_overrides[get_oauth2_config] = lambda: mock_oauth_config
         app.dependency_overrides[get_signer] = lambda: mock_signer
 
+        test_client.cookies.set(settings.oauth2_temp_session_cookie_name, "invalid_session")
         response = test_client.get(
             "/auth/oauth2/callback/entra",
             params={"code": "fake_code", "state": state},
-            cookies={settings.oauth2_temp_session_cookie_name: "invalid_session"},
         )
 
         # Should return 401 (not 400)
@@ -246,10 +246,10 @@ class TestMissingParameters:
         app.dependency_overrides[get_oauth2_config] = lambda: mock_oauth_config
         app.dependency_overrides[get_signer] = lambda: mock_signer
 
+        test_client.cookies.set(settings.oauth2_temp_session_cookie_name, "test_session")
         response = test_client.get(
             "/auth/oauth2/callback/entra",
             params={"state": "test_state"},
-            cookies={settings.oauth2_temp_session_cookie_name: "test_session"},
         )
 
         assert response.status_code == 400
@@ -264,10 +264,10 @@ class TestMissingParameters:
         app.dependency_overrides[get_oauth2_config] = lambda: mock_oauth_config
         app.dependency_overrides[get_signer] = lambda: mock_signer
 
+        test_client.cookies.set(settings.oauth2_temp_session_cookie_name, "test_session")
         response = test_client.get(
             "/auth/oauth2/callback/entra",
             params={"code": "test_code"},
-            cookies={settings.oauth2_temp_session_cookie_name: "test_session"},
         )
 
         assert response.status_code == 400

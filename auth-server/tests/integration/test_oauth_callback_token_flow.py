@@ -127,10 +127,10 @@ class TestOAuth2CallbackStandardFlow:
             temp_session = test_signer.dumps(session_data)
 
             # Make callback request
+            test_client.cookies.set(settings.oauth2_temp_session_cookie_name, temp_session)
             response = test_client.get(
                 f"{API_PREFIX}/oauth2/callback/keycloak",
                 params={"code": "provider_auth_code", "state": "test-state-123"},
-                cookies={settings.oauth2_temp_session_cookie_name: temp_session},
                 follow_redirects=False,
             )
 
@@ -245,10 +245,10 @@ class TestOAuth2CallbackStandardFlow:
             }
             temp_session = test_signer.dumps(session_data)
 
+            test_client.cookies.set(settings.oauth2_temp_session_cookie_name, temp_session)
             response = test_client.get(
                 f"{API_PREFIX}/oauth2/callback/keycloak",
                 params={"code": "provider_auth_code", "state": "test-state-456"},
-                cookies={settings.oauth2_temp_session_cookie_name: temp_session},
                 follow_redirects=False,
             )
 
@@ -338,10 +338,10 @@ class TestOAuth2CallbackStandardFlow:
             }
             temp_session = test_signer.dumps(session_data)
 
+            test_client.cookies.set(settings.oauth2_temp_session_cookie_name, temp_session)
             response = test_client.get(
                 f"{API_PREFIX}/oauth2/callback/keycloak",
                 params={"code": "keycloak_code", "state": "test-state-789"},
-                cookies={settings.oauth2_temp_session_cookie_name: temp_session},
                 follow_redirects=False,
             )
 
@@ -426,10 +426,10 @@ class TestOAuth2CallbackStandardFlow:
             }
             temp_session = test_signer.dumps(session_data)
 
+            test_client.cookies.set(settings.oauth2_temp_session_cookie_name, temp_session)
             response = test_client.get(
                 f"{API_PREFIX}/oauth2/callback/keycloak",
                 params={"code": "keycloak_code", "state": "test-state-invalid-signature"},
-                cookies={settings.oauth2_temp_session_cookie_name: temp_session},
                 follow_redirects=False,
             )
 
@@ -499,10 +499,10 @@ class TestOAuth2CallbackStandardFlow:
             }
             temp_session = test_signer.dumps(session_data)
 
+            test_client.cookies.set(settings.oauth2_temp_session_cookie_name, temp_session)
             response = test_client.get(
                 f"{API_PREFIX}/oauth2/callback/entra",
                 params={"code": "entra_code", "state": "test-state-entra-invalid-sig"},
-                cookies={settings.oauth2_temp_session_cookie_name: temp_session},
                 follow_redirects=False,
             )
 
@@ -579,10 +579,10 @@ class TestOAuth2CallbackStandardFlow:
             }
             temp_session = test_signer.dumps(session_data)
 
+            test_client.cookies.set(settings.oauth2_temp_session_cookie_name, temp_session)
             response = test_client.get(
                 f"{API_PREFIX}/oauth2/callback/keycloak",
                 params={"code": "keycloak_code", "state": "test-state-access-token-only"},
-                cookies={settings.oauth2_temp_session_cookie_name: temp_session},
                 follow_redirects=False,
             )
 
@@ -675,10 +675,10 @@ class TestOAuth2CallbackStandardFlow:
             }
             temp_session = test_signer.dumps(session_data)
 
+            test_client.cookies.set(settings.oauth2_temp_session_cookie_name, temp_session)
             response = test_client.get(
                 f"{API_PREFIX}/oauth2/callback/keycloak",
                 params={"code": "code", "state": "test-state"},
-                cookies={settings.oauth2_temp_session_cookie_name: temp_session},
                 follow_redirects=False,
             )
 

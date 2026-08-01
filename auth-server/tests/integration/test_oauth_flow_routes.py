@@ -585,10 +585,10 @@ class TestDeviceFlowCallbackAndConsent:
                 "sub": "idp-123",
                 "groups": ["registry-users"],
             }
+            test_client.cookies.set("oauth2_temp_session", session_cookie)
             response = test_client.get(
                 f"{API_PREFIX}/oauth2/callback/keycloak",
                 params={"code": "provider-code", "state": state_param},
-                cookies={"oauth2_temp_session": session_cookie},
             )
 
         assert response.status_code == 200
@@ -630,10 +630,10 @@ class TestDeviceFlowCallbackAndConsent:
                 "sub": "idp-123",
                 "groups": ["registry-users"],
             }
+            test_client.cookies.set("oauth2_temp_session", session_cookie)
             response = test_client.get(
                 f"{API_PREFIX}/oauth2/callback/keycloak",
                 params={"code": "provider-code", "state": state_param},
-                cookies={"oauth2_temp_session": session_cookie},
                 follow_redirects=False,
             )
 
@@ -665,10 +665,10 @@ class TestDeviceFlowCallbackAndConsent:
             },
         )
 
+        test_client.cookies.set("oauth2_consent_nonce", nonce)
         response = test_client.post(
             f"{API_PREFIX}/oauth2/consent/approve",
             data={"nonce": nonce},
-            cookies={"oauth2_consent_nonce": nonce},
         )
 
         assert response.status_code == 200
@@ -690,10 +690,10 @@ class TestDeviceFlowCallbackAndConsent:
             },
         )
 
+        test_client.cookies.set("oauth2_consent_nonce", nonce)
         response = test_client.post(
             f"{API_PREFIX}/oauth2/consent/deny",
             data={"nonce": nonce},
-            cookies={"oauth2_consent_nonce": nonce},
         )
 
         assert response.status_code == 200
