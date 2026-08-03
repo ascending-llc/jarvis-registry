@@ -3,24 +3,7 @@ import type React from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 
-import logo from '@/assets/jarvis_logo_w_text_light_bkg.svg';
-
-// Common layout components to reduce duplication
-const PageLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => (
-  <div className='min-h-screen bg-[var(--jarvis-card)] bg-[var(--jarvis-card)] flex flex-col'>
-    <header className='bg-[var(--jarvis-card)] bg-[var(--jarvis-card)] border-b border-[color:var(--jarvis-border)] border-[color:var(--jarvis-border)] py-4 text-center'>
-      <img src={logo} alt='Jarvis Registry Logo' className='h-12 w-auto mx-auto' />
-    </header>
-    <main className='flex-grow flex items-center justify-center px-4 py-8'>{children}</main>
-    <Footer />
-  </div>
-);
-
-const Footer: React.FC = () => (
-  <footer className='py-4 text-center text-sm text-[var(--jarvis-muted)] text-[var(--jarvis-muted)]'>
-    © {new Date().getFullYear()} Jarvis. All rights reserved.
-  </footer>
-);
+import { AuthPageLayout } from '@/components/auth/AuthPageLayout';
 
 const OAuthCallback: React.FC = () => {
   const [searchParams] = useSearchParams();
@@ -81,7 +64,7 @@ const OAuthCallback: React.FC = () => {
   // Render error state
   if (type === 'error') {
     return (
-      <PageLayout>
+      <AuthPageLayout>
         <div className='card p-10 max-w-md w-full text-center animate-slide-up'>
           <div className='mx-auto mb-8 w-16 h-16 bg-[var(--jarvis-danger)] dark:bg-[var(--jarvis-danger)] rounded-full flex items-center justify-center animate-pulse'>
             <XMarkIcon className='w-10 h-10 text-white' strokeWidth={3} />
@@ -119,13 +102,13 @@ const OAuthCallback: React.FC = () => {
             </p>
           </div>
         </div>
-      </PageLayout>
+      </AuthPageLayout>
     );
   }
 
   // Render success state (default)
   return (
-    <PageLayout>
+    <AuthPageLayout>
       <div className='card p-10 max-w-md w-full text-center animate-slide-up'>
         <div className='mx-auto mb-8 w-16 h-16 bg-[var(--jarvis-success)] dark:bg-[var(--jarvis-primary)] rounded-full flex items-center justify-center animate-pulse'>
           <CheckCircleIcon className='w-10 h-10 text-white' />
@@ -157,7 +140,7 @@ const OAuthCallback: React.FC = () => {
           This window will close automatically in {countdown} seconds
         </div>
       </div>
-    </PageLayout>
+    </AuthPageLayout>
   );
 };
 

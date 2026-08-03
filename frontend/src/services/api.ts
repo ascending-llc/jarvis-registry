@@ -22,6 +22,19 @@ const API = {
   revokeAuth: (id: string) => `${MCP_BASE_URL}/oauth/token/${id}`,
   getDiscover: `${MCP_BASE_URL}/oauth/discover`,
 
+  // consent (as-1522 / as-1524 / as-1727 / as-1728)
+  resolveDeviceCode: (userCode: string) =>
+    `${MCP_BASE_URL}/consent/device/resolve?user_code=${encodeURIComponent(userCode)}`,
+  getDownstreamConsent: (nonce: string) => `${MCP_BASE_URL}/consent/downstream?nonce=${encodeURIComponent(nonce)}`,
+  approveDownstreamConsent: `${MCP_BASE_URL}/consent/downstream`,
+  denyDownstreamConsent: `${MCP_BASE_URL}/consent/downstream/deny`,
+  getServerConsent: (nonce: string) => `${MCP_BASE_URL}/consent/server?nonce=${encodeURIComponent(nonce)}`,
+  approveServerConsent: `${MCP_BASE_URL}/consent/server`,
+  denyServerConsent: `${MCP_BASE_URL}/consent/server/deny`,
+  getAgentConsent: (nonce: string) => `${MCP_BASE_URL}/consent/agent?nonce=${encodeURIComponent(nonce)}`,
+  approveAgentConsent: `${MCP_BASE_URL}/consent/agent`,
+  denyAgentConsent: `${MCP_BASE_URL}/consent/agent/deny`,
+
   // server
   getSearch: `${BASE_URL}/search`,
   getVersion: '/api/version',
@@ -54,6 +67,7 @@ const API = {
   updateFederation: (id: string) => `${FEDERATION_BASE_URL}/${id}`,
   deleteFederation: (id: string) => `${FEDERATION_BASE_URL}/${id}`,
   syncFederation: (id: string) => `${FEDERATION_BASE_URL}/${id}/sync`,
+  getFederationSyncJob: (federationId: string, jobId: string) => `${FEDERATION_BASE_URL}/${federationId}/jobs/${jobId}`,
 
   // workflow
   getWorkflowsList: `${WORKFLOW_BASE_URL}`,

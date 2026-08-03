@@ -14,10 +14,12 @@ import pytest
 from authlib.oauth2.rfc7636 import create_s256_code_challenge
 from fastapi.testclient import TestClient
 
+from auth_server.core.config import settings
 from auth_server.deps import get_auth_provider, get_oauth2_config, get_oauth_state_store, get_signer, get_user_service
 from auth_server.server import app
 from registry_pkgs.core.jwt_utils import decode_jwt_unverified
 from registry_pkgs.core.oauth_state_store import REFRESH_TOKEN_TTL_SECONDS as REFRESH_TOKEN_EXPIRY_SECONDS
+from tests.conftest import test_consent_store
 from tests.integration.conftest import _mock_keycloak_provider
 from tests.support.oauth_state_store import authorization_codes_storage, refresh_tokens_storage, test_oauth_state_store
 
@@ -228,8 +230,11 @@ class TestAccessTokenScoping:
 
         with patch("auth_server.routes.oauth_flow.settings") as mock_settings:
             mock_settings.auth_server_external_url = "http://localhost:8888"
+            mock_settings.auth_server_api_prefix = ""
             mock_settings.oauth_session_ttl_seconds = 600
             mock_settings.secret_key = "test-secret-key"
+            mock_settings.oauth2_temp_session_cookie_name = settings.oauth2_temp_session_cookie_name
+            mock_settings.oauth2_consent_nonce_cookie_name = settings.oauth2_consent_nonce_cookie_name
 
             test_signer = URLSafeTimedSerializer("test-secret-key")
 
@@ -257,10 +262,10 @@ class TestAccessTokenScoping:
             oauth2_temp_session = test_signer.dumps(session_data)
 
             # Call the actual callback route
+            test_client.cookies.set(settings.oauth2_temp_session_cookie_name, oauth2_temp_session)
             response = test_client.get(
                 f"{API_PREFIX}/oauth2/callback/keycloak",
                 params={"code": "auth_code_123", "state": "test_state"},
-                cookies={"oauth2_temp_session": oauth2_temp_session},
                 follow_redirects=False,
             )
 
@@ -358,8 +363,11 @@ class TestAccessTokenScoping:
 
         with patch("auth_server.routes.oauth_flow.settings") as mock_settings:
             mock_settings.auth_server_external_url = "http://localhost:8888"
+            mock_settings.auth_server_api_prefix = ""
             mock_settings.oauth_session_ttl_seconds = 600
             mock_settings.secret_key = "test-secret-key"
+            mock_settings.oauth2_temp_session_cookie_name = settings.oauth2_temp_session_cookie_name
+            mock_settings.oauth2_consent_nonce_cookie_name = settings.oauth2_consent_nonce_cookie_name
 
             test_signer = URLSafeTimedSerializer("test-secret-key")
 
@@ -387,10 +395,10 @@ class TestAccessTokenScoping:
             oauth2_temp_session = test_signer.dumps(session_data)
 
             # Call the actual callback route
+            test_client.cookies.set(settings.oauth2_temp_session_cookie_name, oauth2_temp_session)
             response = test_client.get(
                 f"{API_PREFIX}/oauth2/callback/keycloak",
                 params={"code": "auth_code_456", "state": "test_state"},
-                cookies={"oauth2_temp_session": oauth2_temp_session},
                 follow_redirects=False,
             )
 
@@ -523,6 +531,88 @@ class TestRefreshTokenRotation:
 
         # Verify expiry is extended
         assert new_token_data["expires_at"] > current_time + 1209500  # Close to 14 days
+
+    def test_refresh_token_requires_client_consent(
+        self,
+        test_client_with_user_service: TestClient,
+        clear_device_storage,
+        mock_user_service,
+    ):
+        """Existing refresh tokens must not mint new access tokens until the user consents."""
+        client_id = "test-client"
+        old_refresh_token = secrets.token_urlsafe(32)
+        current_time = int(time.time())
+        user_info = {
+            "username": "test_user",
+            "email": "test@example.com",
+            "groups": ["jarvis-registry-admin"],
+        }
+        refresh_tokens_storage[old_refresh_token] = {
+            "client_id": client_id,
+            "user_info": user_info,
+            "scope": "servers-read agents-read",
+            "expires_at": current_time + REFRESH_TOKEN_EXPIRY_SECONDS,
+        }
+
+        test_consent_store.default_client_consent = False
+        try:
+            response = test_client_with_user_service.post(
+                f"{API_PREFIX}/oauth2/token",
+                data={
+                    "grant_type": "refresh_token",
+                    "refresh_token": old_refresh_token,
+                    "client_id": client_id,
+                },
+            )
+        finally:
+            test_consent_store.default_client_consent = True
+
+        assert response.status_code == 400
+        body = response.json()
+        assert body["error"] == "invalid_grant"
+        assert "consent" in body["error_description"].lower()
+        assert old_refresh_token in refresh_tokens_storage
+        assert len(refresh_tokens_storage) == 1
+        mock_user_service.resolve_user_id.assert_awaited_once_with(user_info)
+
+    def test_refresh_token_with_client_consent_rotates(
+        self,
+        test_client_with_user_service: TestClient,
+        clear_device_storage,
+    ):
+        """A prior consent record allows refresh-token rotation to continue."""
+        client_id = "test-client"
+        old_refresh_token = secrets.token_urlsafe(32)
+        current_time = int(time.time())
+        user_info = {
+            "username": "test_user",
+            "email": "test@example.com",
+            "groups": ["jarvis-registry-admin"],
+        }
+        refresh_tokens_storage[old_refresh_token] = {
+            "client_id": client_id,
+            "user_info": user_info,
+            "scope": "servers-read agents-read",
+            "expires_at": current_time + REFRESH_TOKEN_EXPIRY_SECONDS,
+        }
+        test_consent_store.default_client_consent = False
+        test_consent_store.grant_client_consent("user-id-123", client_id)
+        try:
+            response = test_client_with_user_service.post(
+                f"{API_PREFIX}/oauth2/token",
+                data={
+                    "grant_type": "refresh_token",
+                    "refresh_token": old_refresh_token,
+                    "client_id": client_id,
+                },
+            )
+        finally:
+            test_consent_store.default_client_consent = True
+
+        assert response.status_code == 200
+        new_refresh_token = response.json()["refresh_token"]
+        assert old_refresh_token not in refresh_tokens_storage
+        assert new_refresh_token in refresh_tokens_storage
 
     def test_old_refresh_token_cannot_be_reused(self, test_client_with_user_service: TestClient, clear_device_storage):
         """Test that after rotation, old refresh token is invalidated."""

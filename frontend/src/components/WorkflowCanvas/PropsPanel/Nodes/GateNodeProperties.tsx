@@ -9,7 +9,7 @@ interface Props {
 }
 
 export const GateNodeProperties: React.FC<Props> = ({ node }) => {
-  const { onNodeDataChange } = useWorkflowPanel();
+  const { isReadOnly, onNodeDataChange } = useWorkflowPanel();
   const nodeData = node.data;
 
   return (
@@ -27,6 +27,7 @@ export const GateNodeProperties: React.FC<Props> = ({ node }) => {
             className='resize-none h-[52px] leading-snug w-full bg-[var(--jarvis-card-muted)] border border-[var(--jarvis-border)] rounded-md text-[var(--jarvis-text-strong)] font-sans text-xs px-2 py-1.5 outline-none'
             value={nodeData.reviewerPrompt ?? 'Review and approve to proceed, or reject to cancel.'}
             onChange={e => onNodeDataChange(node.id, { reviewerPrompt: e.target.value })}
+            disabled={isReadOnly}
           />
         </div>
         <div className='mb-2'>
@@ -39,6 +40,7 @@ export const GateNodeProperties: React.FC<Props> = ({ node }) => {
             ]}
             value={nodeData.timeout ?? '24h'}
             onChange={val => onNodeDataChange(node.id, { timeout: val })}
+            disabled={isReadOnly}
           />
         </div>
         <div className='mb-2'>
@@ -51,6 +53,7 @@ export const GateNodeProperties: React.FC<Props> = ({ node }) => {
             ]}
             value={nodeData.onTimeout ?? 'cancel'}
             onChange={val => onNodeDataChange(node.id, { onTimeout: val })}
+            disabled={isReadOnly}
           />
         </div>
       </div>

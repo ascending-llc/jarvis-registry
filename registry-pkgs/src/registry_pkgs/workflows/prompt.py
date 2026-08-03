@@ -1,0 +1,159 @@
+"""Prompt rendering for workflow step executors.
+
+Single source of truth for how step intention is assembled into the Markdown
+prompt that an MCP- or A2A-backed LLM actually receives.
+
+Architecture note
+-----------------
+Intention data (step_objective, workflow_description, the run's initial_input,
+dependency objectives and their runtime outputs) travels from the compiler into
+each executor call via ``StepInput.additional_data``.  The compiler's
+``_with_intention_data`` wrapper injects this data per-node; ``build_prompt`` in
+helpers.py reads it back and delegates to ``render_step_prompt`` here.
+
+``render_step_prompt`` is the **only** place Markdown gets built.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class DependencySpec:
+    """One upstream node this step explicitly depends on.
+
+    Attributes:
+        name:      The node name as it appears in referenced_node_names.
+        objective: The upstream node's own step_objective — shown even when
+                   content is absent so the LLM knows the intended source.
+        content:   Stringified output summary of the upstream node, or None when that
+                   node has not yet produced a result (e.g. a not-yet-executed
+                   parallel branch).  None means "list in Dependencies but omit
+                   from Current Step Inputs".
+    """
+
+    name: str
+    objective: str
+    content: str | None = None
+
+
+_GOAL_PREFIX = "**IMPORTANT: The goal of this step is to"
+_PARAMS_HEADER = "Workflow Trigger Parameters (fixed for this run; available to every step):"
+_WORKFLOW_CTX_PREFIX = "This step is part of a larger workflow:"
+_DEPS_HEADER = "Dependencies:"
+_INPUTS_HEADER = "Current Step Inputs:"
+_TRIGGER_LABEL = "Workflow trigger input"
+_INDENT = "  "
+
+
+def _indented_block(value: str) -> str:
+    """Indent every line two spaces so multi-line content nests inside the prompt without code fences."""
+    return "\n".join(f"{_INDENT}{line}" if line else _INDENT for line in value.splitlines())
+
+
+def render_step_prompt(
+    *,
+    step_objective: str,
+    workflow_description: str | None,
+    dependencies: list[DependencySpec],
+    initial_input: str | None,
+    trigger_parameters: str | None = None,
+) -> str:
+    """Assemble the Markdown prompt handed to an MCP/A2A executor's underlying LLM.
+
+    Prompt structure (all sections separated by blank lines):
+
+        **IMPORTANT: The goal of this step is to {step_objective}.**
+
+        Workflow Trigger Parameters (fixed for this run; available to every step):
+
+          <indented JSON>
+
+        This step is part of a larger workflow: {workflow_description}
+
+        Dependencies:
+        - "{dep.name}": {dep.objective}.
+        [... one line per dependency ...]
+
+        Current Step Inputs:
+        - "{dep.name}" outputs:
+
+          <indented output summary>
+        [... one block per dependency that has produced output ...]
+
+    Rules:
+    - ``trigger_parameters`` section omitted when falsy; otherwise rendered on
+      *every* node regardless of dependencies or graph position — unlike
+      ``initial_input`` below, it is not gated to entry nodes.
+    - ``workflow_description`` section omitted when None.
+    - ``Dependencies`` section always lists every declared dependency with its
+      objective, even when content is not yet available (parallel branches).
+    - ``Current Step Inputs`` lists only dependencies whose content is not None.
+    - When there are no dependencies AND this is an entry node (``initial_input``
+      is not None), ``Current Step Inputs`` shows the original workflow trigger
+      instead of dependency outputs.
+    - A mid-graph STEP node with no ``referenced_node_names`` and no available
+      ``initial_input`` receives only the goal line (plus ``trigger_parameters``
+      when present) — this is intentional (explicit-over-clever: every
+      cross-step dependency must be declared).
+
+    Args:
+        step_objective:      Plain-language description of what this step must do.
+                             Required; the returned string is meaningless without it.
+        workflow_description: Optional top-level workflow context injected once at
+                             the top of the prompt as orientation for the LLM.
+        dependencies:        Resolved upstream nodes.  ``DependencySpec.content``
+                             is None when the node hasn't executed yet.
+        initial_input:       The original workflow trigger text, passed only for
+                             entry nodes (``previous_step_outputs`` empty).
+        trigger_parameters:  JSON-rendered ``WorkflowRun.initial_input``, shown to
+                             every node so any step can reference user-supplied
+                             trigger fields (e.g. a Slack member ID) without that
+                             data having to be relayed through upstream node output.
+    """
+    sections: list[str] = []
+
+    # 1. Goal — always first and most prominent
+    sections.append(f"{_GOAL_PREFIX} {step_objective}.**")
+
+    # 2. Trigger parameters — global, run-scoped values available to every step
+    if trigger_parameters:
+        sections.append(f"{_PARAMS_HEADER}\n\n{_indented_block(trigger_parameters)}")
+
+    # 3. Workflow context — orientation without being prescriptive
+    if workflow_description:
+        sections.append(f"{_WORKFLOW_CTX_PREFIX} {workflow_description}")
+
+    if dependencies:
+        # 4a. List every declared dependency and its objective (even if no output yet)
+        dep_lines = "\n".join(f'- "{d.name}": {d.objective}.' for d in dependencies)
+        sections.append(f"{_DEPS_HEADER}\n{dep_lines}")
+
+        # 4b. Current Step Inputs — only dependencies that have produced output
+        with_content = [d for d in dependencies if d.content is not None]
+        if with_content:
+            input_blocks = "\n\n".join(
+                f'- "{d.name}" outputs:\n\n{_indented_block(d.content or "")}' for d in with_content
+            )
+            sections.append(f"{_INPUTS_HEADER}\n{input_blocks}")
+
+    elif initial_input:
+        # 4c. Entry node with no dependencies — show original trigger
+        sections.append(f"{_INPUTS_HEADER}\n- {_TRIGGER_LABEL}:\n\n{_indented_block(initial_input)}")
+
+    return "\n\n".join(sections)
+
+
+# ---------------------------------------------------------------------------
+# additional_data key constants
+# ---------------------------------------------------------------------------
+# These string keys are the contract between compiler._with_intention_data
+# (writer) and helpers.build_prompt (reader).  Centralising them here means
+# a typo in either file is caught at import time.
+
+ADDITIONAL_DATA_STEP_OBJECTIVE = "jarvis_step_objective"
+ADDITIONAL_DATA_WORKFLOW_DESCRIPTION = "jarvis_workflow_description"
+ADDITIONAL_DATA_DEPENDENCY_NODE_NAMES = "jarvis_dependency_node_names"
+ADDITIONAL_DATA_DEPENDENCY_OBJECTIVES = "jarvis_dependency_objectives"
+ADDITIONAL_DATA_INITIAL_INPUT = "jarvis_initial_input"

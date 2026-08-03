@@ -4,6 +4,7 @@ Dynamic MCP server proxy routes.
 
 import json
 import logging
+import secrets
 from typing import Any
 from uuid import uuid4
 
@@ -12,36 +13,50 @@ from beanie import PydanticObjectId
 from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
+from httpx._decoders import SUPPORTED_DECODERS
 from redis import Redis
 
+from registry_pkgs.core.consent_store import ConsentStore, PendingConsentStore
 from registry_pkgs.models import ResourceType
-from registry_pkgs.models.a2a_agent import AgentConfig
-from registry_pkgs.models.enums import AgentCoreRuntimeAccessMode, FederationProviderType
+from registry_pkgs.models.enums import AgentCoreRuntimeAccessMode
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 
 from ..auth.dependencies import CurrentUser, UserContextDict
 from ..auth.oauth.types import ClientBranding
-from ..core.a2a_proxy import A2AProxyClientRegistry
 from ..core.config import settings
 from ..core.exceptions import InternalServerException, UrlElicitationRequiredException
 from ..deps import (
     get_a2a_agent_service,
-    get_a2a_proxy_client_registry,
+    get_a2a_client_registry,
     get_acl_service,
+    get_consent_store,
     get_mcp_proxy_client,
     get_oauth_service,
+    get_pending_consent_store,
     get_redis_client,
     get_server_service,
 )
 from ..mcpgw.tools.utils import build_authenticated_headers, get_target_url, parse_elicitation_id
 from ..services.a2a_agent_service import A2AAgentService
 from ..services.access_control_service import ACLService
+from ..services.federation.a2a_client_registry import A2AClientRegistry
+from ..services.generated_token_policy import is_consent_exempt, is_direct_connect_a2a_client
 from ..services.oauth.oauth_service import MCPOAuthService
 from ..services.server_service import ServerServiceV1
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["MCP Proxy"])
+
+_DIRECT_CONNECT_A2A_TOKEN_REQUIREMENT = "A2A invocation requires a token generated from the Jarvis Registry frontend."
+
+# A2A v0.3.x reserves -32001 through -32006 for its own error types (TaskNotFoundError,
+# TaskNotCancelableError, PushNotificationNotSupportedError, UnsupportedOperationError,
+# ContentTypeNotSupportedError, InvalidAgentResponseError) -- none of which mean "access
+# denied". This is a Jarvis-Registry-specific denial code within JSON-RPC 2.0's
+# implementation-defined server-error range (-32000 to -32099), chosen to avoid colliding
+# with any A2A-reserved type.
+_A2A_ACCESS_DENIED_ERROR_CODE = -32007
 
 
 async def _parse_json_rpc_body(request: Request) -> dict[str, Any] | None:
@@ -119,10 +134,57 @@ def _sanitize_hop_by_hop_headers(headers: httpx.Headers) -> dict[str, str]:
     return {k: v for k, v in headers.items() if k.lower() not in _HOP_BY_HOP_HEADERS}
 
 
+# Content-codings that httpx's automatic response decoding (`Response.aread`/`aiter_bytes`) is
+# actually able to reverse *in this process*. Derived directly from httpx's own decoder registry
+# rather than a hand-maintained list, because the real answer is environment-dependent: `br`
+# (Brotli) and `zstd` only decode if the optional `brotli`/`brotlicffi` or `zstandard` packages
+# happen to be installed -- `httpx/_decoders.py` builds `SUPPORTED_DECODERS` by probing those
+# imports at module load time and popping the entry when the import fails. A hardcoded list would
+# silently drift from that reality the moment an optional codec dependency is added or removed
+# (e.g. this repo currently has `zstandard` but not `brotli`) -- exactly the class of bug this
+# check exists to prevent. `SUPPORTED_DECODERS` is a private ("_"-prefixed) httpx module, so this
+# is a deliberate, narrow coupling to non-public API: if a future httpx version restructures or
+# removes it, this import fails loudly at process start-up rather than silently going stale. See
+# `test_httpx_decoders_supported_decoders_is_accessible` in the test suite for a canary that fails
+# the moment CI's httpx version breaks this assumption, before it could surface as a prod bug.
+_HTTPX_DECODABLE_CONTENT_ENCODINGS = frozenset(SUPPORTED_DECODERS.keys())
+
+
+def _pop_content_encoding_if_fully_decoded(response_headers: dict[str, str], backend_headers: httpx.Headers) -> None:
+    """
+    Strip `Content-Encoding` from the outgoing response headers, but only when every coding it
+    lists is one that httpx's `aread()`/`aiter_bytes()` actually reversed already.
+
+    We read the backend response body via `aread()`/`aiter_bytes()` above, which auto-decompresses
+    it according to `Content-Encoding` -- but only for codings httpx recognizes (see
+    `_HTTPX_DECODABLE_CONTENT_ENCODINGS`). Any other content-coding token -- a legitimate one httpx
+    just doesn't support (e.g. the RFC 8188 `aes128gcm` encryption coding), or plain Brotli/Zstandard
+    in a deployment missing the optional codec package -- is silently left alone by httpx: it drops
+    the unrecognized token and decodes nothing for it, with no error raised. The bytes we're holding
+    are then still in their original encoded form even though nothing looks wrong.
+
+    If we always stripped `Content-Encoding` regardless, we would forward those still-encoded bytes
+    to our client while the header tells it no further decoding is needed -- a correctness bug, not
+    a cosmetic one (the client would try to parse ciphertext/compressed bytes as plain JSON). So we
+    only strip the header when every listed coding is one we can confirm was actually reversed;
+    otherwise we leave both the header and the (untouched) body exactly as received from upstream,
+    which keeps the two consistent with each other.
+    """
+    encodings = backend_headers.get_list("content-encoding", split_commas=True)
+
+    if encodings and all(value.strip().lower() in _HTTPX_DECODABLE_CONTENT_ENCODINGS for value in encodings):
+        response_headers.pop("content-encoding", None)
+
+
 # MCP handshake methods that fire before a tool-call context exists. When the downstream MCP
 # server requires authorization, these get an HTTP 401 RFC 9728 discovery challenge instead of a
 # URL mode elicitation, which most MCP clients cannot process at this stage.
 _INIT_METHODS = frozenset({"initialize", "tools/list"})
+
+# Custom JSON-RPC error code signaling that a URL mode elicitation (out-of-band browser step) is
+# required before the request can proceed — shared by the downstream-OAuth-expired and
+# consent-required elicitation paths.
+_URL_ELICITATION_REQUIRED_ERROR_CODE = -32042
 
 
 def _build_jsonrpc_error_result(request_id: str | int | None, error_text: str) -> dict[str, Any]:
@@ -263,7 +325,7 @@ async def proxy_to_mcp_server(
             status_code=200,
             content=_build_jsonrpc_error(
                 request_id,
-                -32042,
+                _URL_ELICITATION_REQUIRED_ERROR_CODE,
                 llm_msg,
                 error_data,
             ),
@@ -317,6 +379,11 @@ async def proxy_to_mcp_server(
                 # Starlette recalculates Content-Length from the buffered body; the upstream's
                 # value may be stale or wrong (e.g. when upstream mis-reports under chunked encoding).
                 response_headers.pop("content-length", None)
+                # `content_bytes` above came from `aread()`, which already reversed the backend's
+                # Content-Encoding whenever httpx knows how to (see
+                # `_pop_content_encoding_if_fully_decoded`). Forwarding the original header
+                # unchanged in that case would tell our client to decode an already-decoded body.
+                _pop_content_encoding_if_fully_decoded(response_headers, backend_response.headers)
                 return Response(
                     content=content_bytes,
                     status_code=backend_response.status_code,
@@ -329,6 +396,9 @@ async def proxy_to_mcp_server(
             response_headers = _sanitize_hop_by_hop_headers(backend_response.headers)
             # Content-Length cannot be set for a stream of indeterminate length.
             response_headers.pop("content-length", None)
+            # `stream_sse()` below yields from `aiter_bytes()`, which decodes each chunk the same
+            # way `aread()` does above -- so the same Content-Encoding caveat applies here too.
+            _pop_content_encoding_if_fully_decoded(response_headers, backend_response.headers)
             response_headers.update(
                 {
                     "Cache-Control": "no-cache",
@@ -449,6 +519,11 @@ async def _forward_a2a(
                 # value may be stale or wrong (e.g. AgentCore adds Transfer-Encoding: chunked
                 # to complete JSON responses, causing the reported Content-Length to be unreliable).
                 response_headers.pop("content-length", None)
+                # `content_bytes` above came from `aread()`, which already reversed the backend's
+                # Content-Encoding whenever httpx knows how to (see
+                # `_pop_content_encoding_if_fully_decoded`). Forwarding the original header
+                # unchanged in that case would tell our client to decode an already-decoded body.
+                _pop_content_encoding_if_fully_decoded(response_headers, backend_response.headers)
                 return Response(
                     content=content_bytes,
                     status_code=backend_response.status_code,
@@ -461,6 +536,9 @@ async def _forward_a2a(
             response_headers = _sanitize_hop_by_hop_headers(backend_response.headers)
             # Content-Length cannot be set for a stream of indeterminate length.
             response_headers.pop("content-length", None)
+            # `stream_sse()` below yields from `aiter_bytes()`, which decodes each chunk the same
+            # way `aread()` does above -- so the same Content-Encoding caveat applies here too.
+            _pop_content_encoding_if_fully_decoded(response_headers, backend_response.headers)
             response_headers.update(
                 {
                     "Cache-Control": "no-cache",
@@ -503,18 +581,6 @@ async def _forward_a2a(
         return JSONResponse(status_code=502, content={"error": "Failed to communicate with agent"})
 
 
-def _is_agentcore_jwt(
-    agent_config: AgentConfig | None,
-    federation_metadata: dict[str, Any] | None,
-) -> bool:
-    fed = federation_metadata or {}
-    return (
-        agent_config is not None
-        and agent_config.runtimeAccess is not None
-        and fed.get("providerType") == FederationProviderType.AWS_AGENTCORE
-    )
-
-
 # Route 1: JSON-RPC binding — bare base path, POST only
 @router.post("/a2a/{agent_path}")
 async def jsonrpc_proxy(
@@ -523,10 +589,16 @@ async def jsonrpc_proxy(
     user_context: CurrentUser,
     a2a_agent_service: A2AAgentService = Depends(get_a2a_agent_service),
     acl_service: ACLService = Depends(get_acl_service),
-    proxy_client_registry: A2AProxyClientRegistry = Depends(get_a2a_proxy_client_registry),
+    a2a_client_registry: A2AClientRegistry = Depends(get_a2a_client_registry),
 ):
     try:
         user_id = user_context.get("user_id")
+        client_id = user_context.get("client_id", "")
+        if not is_direct_connect_a2a_client(client_id, settings.headless_agent_client_id):
+            return _jsonrpc_a2a_error_response(
+                _A2A_ACCESS_DENIED_ERROR_CODE,
+                f"Access denied: direct-connect {_DIRECT_CONNECT_A2A_TOKEN_REQUIREMENT}",
+            )
 
         agent = await a2a_agent_service.get_agent_by_path(agent_path)
         if agent is None:
@@ -540,7 +612,9 @@ async def jsonrpc_proxy(
                 required_permission="VIEW",
             )
         except HTTPException:
-            return _jsonrpc_a2a_error_response(-32001, f"Access denied to A2A agent '{agent_path}'")
+            return _jsonrpc_a2a_error_response(
+                _A2A_ACCESS_DENIED_ERROR_CODE, f"Access denied to A2A agent '{agent_path}'"
+            )
 
         if not (agent.config and agent.config.enabled):
             return _jsonrpc_a2a_error_response(-32004, f"A2A agent '{agent_path}' is disabled")
@@ -566,10 +640,10 @@ async def jsonrpc_proxy(
         else:
             return _jsonrpc_a2a_error_response(-32603, f"No invocation URL available for agent '{agent_path}'")
 
-        agentcore_jwt = _is_agentcore_jwt(agent.config, agent.federationMetadata)
-        proxy_client = proxy_client_registry.get(agent_path, agentcore_jwt=agentcore_jwt)
+        proxy_client = await a2a_client_registry.get_client(agent)
 
-        logger.info(f"A2A JSON-RPC proxy: agent={agent_path} agentcore={agentcore_jwt} {base_url}")
+        provider = getattr(agent.federationMetadata, "providerType", "plain")
+        logger.info(f"A2A JSON-RPC proxy: agent={agent_path} provider={provider} {base_url}")
 
         return await _forward_a2a(request, base_url, proxy_client, agent_path, is_jsonrpc=True)
     except Exception:
@@ -578,7 +652,7 @@ async def jsonrpc_proxy(
 
 
 # Route 2: HTTP+JSON binding — all paths with at least one segment
-@router.route("/a2a/{agent_path}/{http_json_path:path}", methods=["GET", "POST", "DELETE", "PUT"])
+@router.api_route("/a2a/{agent_path}/{http_json_path:path}", methods=["GET", "POST", "DELETE", "PUT"])
 async def http_json_proxy(
     request: Request,
     agent_path: str,
@@ -586,10 +660,16 @@ async def http_json_proxy(
     user_context: CurrentUser,
     a2a_agent_service: A2AAgentService = Depends(get_a2a_agent_service),
     acl_service: ACLService = Depends(get_acl_service),
-    proxy_client_registry: A2AProxyClientRegistry = Depends(get_a2a_proxy_client_registry),
+    a2a_client_registry: A2AClientRegistry = Depends(get_a2a_client_registry),
 ):
     try:
         user_id = user_context.get("user_id")
+        client_id = user_context.get("client_id", "")
+        if not is_direct_connect_a2a_client(client_id, settings.headless_agent_client_id):
+            return JSONResponse(
+                status_code=403,
+                content={"error": f"Direct-connect {_DIRECT_CONNECT_A2A_TOKEN_REQUIREMENT}"},
+            )
 
         agent = await a2a_agent_service.get_agent_by_path(agent_path)
         if agent is None:
@@ -632,14 +712,12 @@ async def http_json_proxy(
                 content={"error": f"No invocation URL available for agent '{agent_path}'"},
             )
 
-        agentcore_jwt = _is_agentcore_jwt(agent.config, agent.federationMetadata)
-        proxy_client = proxy_client_registry.get(agent_path, agentcore_jwt=agentcore_jwt)
+        proxy_client = await a2a_client_registry.get_client(agent)
 
         target_url = base_url.rstrip("/") + "/" + http_json_path.lstrip("/")
 
-        logger.info(
-            f"A2A HTTP+JSON proxy: agent={agent_path} path=/{http_json_path} agentcore={agentcore_jwt} {target_url}"
-        )
+        provider = getattr(agent.federationMetadata, "providerType", "plain")
+        logger.info(f"A2A HTTP+JSON proxy: agent={agent_path} provider={provider} path=/{http_json_path} {target_url}")
 
         return await _forward_a2a(request, target_url, proxy_client, agent_path)
     except Exception:
@@ -658,6 +736,8 @@ async def dynamic_mcp_post_proxy(
     proxy_client: httpx.AsyncClient = Depends(get_mcp_proxy_client),
     redis_client: Redis = Depends(get_redis_client),
     acl_service: ACLService = Depends(get_acl_service),
+    consent_store: ConsentStore = Depends(get_consent_store),
+    pending_store: PendingConsentStore = Depends(get_pending_consent_store),
 ):
     """
     Dynamic catch-all route for MCP server proxying, but only works for POST.
@@ -735,6 +815,42 @@ async def dynamic_mcp_post_proxy(
             content=_build_jsonrpc_error_result(request_id, "Access denied to this MCP server."),
         )
 
+    user_id = auth_context["user_id"]
+    client_id = auth_context["client_id"]
+    mcp_method = msg_body.get("method")
+    requires_server_consent = mcp_method not in _INIT_METHODS and not is_consent_exempt(
+        client_id,
+        settings.headless_agent_client_id,
+    )
+    if requires_server_consent and not consent_store.has_server_consent(user_id, client_id, server.path):
+        nonce = secrets.token_urlsafe(32)
+        pending_store.save(nonce, {"user_id": user_id, "client_id": client_id, "server_path": server.path})
+        auth_url = f"{settings.registry_client_url}/consent/server?nonce={nonce}"
+        elicitation_id = str(uuid4())
+        llm_msg = (
+            "Jarvis Registry needs the user's explicit consent before this client can call the "
+            f"'{server.serverName}' MCP server. Please direct the user to open the provided URL in a browser "
+            "window, grant consent, and come back to retry the same request again."
+        )
+        user_msg = (
+            "Jarvis Registry needs your explicit consent before this application can call the "
+            f"'{server.serverName}' MCP server on your behalf. Please follow the URL to review and approve."
+        )
+        error_data = {
+            "elicitations": [
+                {
+                    "mode": "url",
+                    "message": user_msg,
+                    "url": auth_url,
+                    "elicitationId": elicitation_id,
+                }
+            ]
+        }
+        return JSONResponse(
+            status_code=200,
+            content=_build_jsonrpc_error(request_id, _URL_ELICITATION_REQUIRED_ERROR_CODE, llm_msg, error_data),
+        )
+
     # Check if server is enabled
     config = server.config or {}
     if not config.get("enabled", False):
@@ -778,7 +894,7 @@ async def dynamic_mcp_post_proxy(
         oauth_service=oauth_service,
         proxy_client=proxy_client,
         redis_client=redis_client,
-        mcp_method=msg_body.get("method"),
+        mcp_method=mcp_method,
     )
 
 
@@ -804,6 +920,14 @@ async def dynamic_mcp_get_proxy(
     FastAPI matches routes in order, so this will capture all unmatched routes.
 
     MCP protocol only uses GET and POST methods.
+
+    Not consent-gated: this route carries no JSON-RPC method (it only opens the transport-level
+    channel MCP servers push notifications through), so unlike the POST handler it has no way to
+    exempt handshake calls from a consent check by method name. MCP clients such as VS Code
+    Copilot open this GET concurrently with the POST `initialize`, so gating it produces a 403
+    before consent could possibly exist yet — perceived by the client as a second, spurious
+    re-auth prompt alongside the correctly-gated one from the first real `tools/call` over POST.
+    The ACL check above remains the access-control boundary for this route.
     """
     if not ObjectId.is_valid(user_id):
         return JSONResponse(

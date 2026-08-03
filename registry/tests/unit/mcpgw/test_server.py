@@ -1,11 +1,21 @@
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from beanie import PydanticObjectId
+from mcp.types import (
+    ClientCapabilities,
+    ElicitationCapability,
+    Implementation,
+    InitializeRequestParams,
+    UrlElicitationCapability,
+)
 
-from registry.mcpgw.tools import server
+from registry.core.config import settings
+from registry.core.exceptions import InternalServerException
+from registry.mcpgw.tools import server, utils
 from registry.mcpgw.tools.server import execute_tool_impl
+from registry.services.generated_token_policy import INTERACTIVE_CLIENT_ID
 
 
 class _PermissiveAccessibleSet:
@@ -34,10 +44,14 @@ def _make_ctx(
         mcp_client_service=MagicMock(),
         oauth_service=MagicMock(),
         redis_client=MagicMock(),
+        session_store=MagicMock(),
+        consent_store=MagicMock(),
+        pending_consent_store=MagicMock(),
     )
+    lifespan_context.consent_store.has_server_consent.return_value = True
     request_state = SimpleNamespace()
     if include_user_context:
-        request_state.user = {"user_id": user_id, "username": "test"}
+        request_state.user = {"user_id": user_id, "username": "test", "client_id": "claude"}
     request_context = SimpleNamespace(
         lifespan_context=lifespan_context,
         request=SimpleNamespace(state=request_state),
@@ -65,6 +79,34 @@ def _make_server(server_id: str | None = None):
     )
 
 
+def _make_client_params(name: str, *, supports_url_elicitation: bool) -> InitializeRequestParams:
+    elicitation = ElicitationCapability(url=UrlElicitationCapability()) if supports_url_elicitation else None
+    return InitializeRequestParams(
+        protocolVersion="2025-11-25",
+        capabilities=ClientCapabilities(elicitation=elicitation),
+        clientInfo=Implementation(name=name, version="1.0"),
+    )
+
+
+# Module where the metrics context managers look up the domain record functions.
+DECORATORS_PATH = "registry.core.telemetry_decorators"
+
+
+def _patch_server_service(monkeypatch, server_obj):
+    """Stub _get_server_service so get_server_by_id returns the given server (or None)."""
+    fake_service = SimpleNamespace(get_server_by_id=AsyncMock(return_value=server_obj))
+    monkeypatch.setattr(server, "_get_server_service", lambda ctx: fake_service)
+    # record_server_request hits the real metrics client; neutralize it for unit tests.
+    monkeypatch.setattr(server, "record_server_request", lambda *a, **k: None)
+
+
+def _patch_server_service_raises(monkeypatch, exc: Exception):
+    """Stub _get_server_service so get_server_by_id raises before `server` is ever assigned."""
+    fake_service = SimpleNamespace(get_server_by_id=AsyncMock(side_effect=exc))
+    monkeypatch.setattr(server, "_get_server_service", lambda ctx: fake_service)
+    monkeypatch.setattr(server, "record_server_request", lambda *a, **k: None)
+
+
 @pytest.mark.asyncio
 async def test_execute_tool_wrapper_uses_tool_name_as_downstream_name(monkeypatch):
     execute_tool = dict(server.get_tools())["execute_tool"]
@@ -82,6 +124,121 @@ async def test_execute_tool_wrapper_uses_tool_name_as_downstream_name(monkeypatc
     )
 
     execute_mock.assert_awaited_once_with(ctx, "tavily_search", arguments, "server-123")
+
+
+@pytest.mark.unit
+@pytest.mark.metrics
+class TestExecutionMetricsWiring:
+    """The metrics context managers are wired into the FastMCP execution impls."""
+
+    def _tool_ctx(self):
+        # execute_tool_impl reads ctx.request_context.request.state.user up front
+        # and now validates user_id as an ObjectId, so use a valid one.
+        state = SimpleNamespace(user={"username": "alice", "user_id": "507f1f77bcf86cd799439011"})
+        request = SimpleNamespace(state=state)
+        request_context = SimpleNamespace(request=request)
+        return SimpleNamespace(request_context=request_context)
+
+    @pytest.mark.asyncio
+    async def test_execute_tool_impl_records_server_not_found(self, monkeypatch):
+        _patch_server_service(monkeypatch, None)
+        with patch(f"{DECORATORS_PATH}._record_tool_execution") as mock_record:
+            result = await server.execute_tool_impl(
+                ctx=self._tool_ctx(),
+                tool_name="tavily_search",
+                arguments={},
+                server_id="missing",
+            )
+
+        assert result.isError is True
+        mock_record.assert_called_once()
+        call_kwargs = mock_record.call_args[1]
+        assert call_kwargs["tool_name"] == "tavily_search"
+        assert call_kwargs["success"] is False
+        assert call_kwargs["error_type"] == "server_not_found"
+
+    @pytest.mark.asyncio
+    async def test_read_resource_impl_records_success(self, monkeypatch):
+        server_obj = SimpleNamespace(serverName="docs-server", path="/docs")
+        _patch_server_service(monkeypatch, server_obj)
+        with patch(f"{DECORATORS_PATH}._record_resource_access") as mock_record:
+            await server.read_resource_impl(
+                user_context={"username": "alice"},
+                server_id="s1",
+                resource_uri="tavily://search-results/AI",
+                ctx=SimpleNamespace(),
+            )
+
+        mock_record.assert_called_once()
+        call_kwargs = mock_record.call_args[1]
+        assert call_kwargs["server_name"] == "docs-server"
+        assert call_kwargs["success"] is True
+        assert call_kwargs["error_type"] == "none"
+        # Unbounded resource_uri must never become a metric label.
+        assert "resource_uri" not in call_kwargs
+
+    @pytest.mark.asyncio
+    async def test_read_resource_impl_records_server_not_found(self, monkeypatch):
+        _patch_server_service(monkeypatch, None)
+        with patch(f"{DECORATORS_PATH}._record_resource_access") as mock_record:
+            result = await server.read_resource_impl(
+                user_context={"username": "alice"},
+                server_id="missing",
+                resource_uri="tavily://x",
+                ctx=SimpleNamespace(),
+            )
+
+        assert result.isError is True
+        call_kwargs = mock_record.call_args[1]
+        assert call_kwargs["success"] is False
+        assert call_kwargs["error_type"] == "server_not_found"
+
+    @pytest.mark.asyncio
+    async def test_read_resource_impl_get_server_by_id_raises_returns_internal_error(self, monkeypatch):
+        """Regression test for [m1]: `server` must be bound before get_server_by_id can raise,
+        otherwise the except block's `if server is not None` crashes with UnboundLocalError."""
+        _patch_server_service_raises(monkeypatch, RuntimeError("db unavailable"))
+        with patch(f"{DECORATORS_PATH}._record_resource_access"), pytest.raises(InternalServerException):
+            await server.read_resource_impl(
+                user_context={"username": "alice"},
+                server_id="s1",
+                resource_uri="tavily://x",
+                ctx=SimpleNamespace(),
+            )
+
+    @pytest.mark.asyncio
+    async def test_execute_prompt_impl_records_success(self, monkeypatch):
+        server_obj = SimpleNamespace(serverName="prompt-server", path="/prompts")
+        _patch_server_service(monkeypatch, server_obj)
+        with patch(f"{DECORATORS_PATH}._record_prompt_execution") as mock_record:
+            await server.execute_prompt_impl(
+                user_context={"username": "alice"},
+                server_id="s1",
+                prompt_name="research_assistant",
+                arguments={"topic": "AI"},
+                ctx=SimpleNamespace(),
+            )
+
+        mock_record.assert_called_once()
+        call_kwargs = mock_record.call_args[1]
+        assert call_kwargs["prompt_name"] == "research_assistant"
+        assert call_kwargs["server_name"] == "prompt-server"
+        assert call_kwargs["success"] is True
+        assert call_kwargs["error_type"] == "none"
+
+    @pytest.mark.asyncio
+    async def test_execute_prompt_impl_get_server_by_id_raises_returns_internal_error(self, monkeypatch):
+        """Regression test for [m1]: `server` must be bound before get_server_by_id can raise,
+        otherwise the except block's `if server is not None` crashes with UnboundLocalError."""
+        _patch_server_service_raises(monkeypatch, RuntimeError("db unavailable"))
+        with patch(f"{DECORATORS_PATH}._record_prompt_execution"), pytest.raises(InternalServerException):
+            await server.execute_prompt_impl(
+                user_context={"username": "alice"},
+                server_id="s1",
+                prompt_name="research_assistant",
+                arguments={"topic": "AI"},
+                ctx=SimpleNamespace(),
+            )
 
 
 @pytest.mark.asyncio
@@ -123,6 +280,7 @@ async def test_execute_tool_impl_acl_denied_returns_error(monkeypatch):
     other_id = str(PydanticObjectId())
     ctx = _make_ctx(accessible_server_ids=[other_id])
     ctx.request_context.lifespan_context.server_service.get_server_by_id.return_value = _make_server(server_id)
+    ctx.request_context.request.state.user["client_id"] = settings.headless_agent_client_id
     downstream_call = AsyncMock()
     monkeypatch.setattr(server, "_downstream_tool_call", downstream_call)
 
@@ -130,6 +288,7 @@ async def test_execute_tool_impl_acl_denied_returns_error(monkeypatch):
 
     assert result.isError is True
     assert "Access denied" in result.content[0].text
+    ctx.request_context.lifespan_context.consent_store.has_server_consent.assert_not_called()
     downstream_call.assert_not_awaited()
 
 
@@ -151,6 +310,108 @@ async def test_execute_tool_impl_acl_runtime_error_returns_retryable_error(monke
     downstream_call.assert_not_awaited()
 
 
+def test_get_state_metadata_returns_unrecognized_and_no_notify_for_missing_client_params():
+    result = utils._get_state_metadata(None)
+
+    assert result["client_branding"] == utils.ClientBranding.UNRECOGNIZED
+    assert result["notify_elicitation_complete"] is False
+
+
+@pytest.mark.parametrize(
+    ("client_name", "expected_branding"),
+    [
+        ("Visual Studio Code", utils.ClientBranding.VSCODE),
+        ("claude-ai/1.0", utils.ClientBranding.CLAUDE),
+        ("probe (via mcp-remote 1.0)", utils.ClientBranding.CURSOR),
+        ("mcp-stdio-client (via mcp-remote 1.0)", utils.ClientBranding.CURSOR),
+        ("claude-code", utils.ClientBranding.UNRECOGNIZED),
+        ("some-other-client", utils.ClientBranding.UNRECOGNIZED),
+    ],
+)
+@pytest.mark.parametrize("supports_url_elicitation", [True, False])
+def test_get_state_metadata_notify_flag_matches_url_elicitation_support(
+    client_name,
+    expected_branding,
+    supports_url_elicitation,
+):
+    """notify_elicitation_complete must mirror _support_url_elicitation for every branding: a session
+    is only ever registered in SessionStore (making a later notification possible) when the client
+    supports URL mode elicitation, regardless of which brand it's recognized as."""
+    client_params = _make_client_params(client_name, supports_url_elicitation=supports_url_elicitation)
+
+    result = utils._get_state_metadata(client_params)
+
+    assert result["client_branding"] == expected_branding
+    assert result["notify_elicitation_complete"] is supports_url_elicitation
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_impl_without_server_consent_returns_elicitation_fallback(monkeypatch):
+    server_id = str(PydanticObjectId())
+    ctx = _make_ctx(accessible_server_ids=[server_id])
+    ctx.request_context.lifespan_context.server_service.get_server_by_id.return_value = _make_server(server_id)
+    ctx.request_context.request.state.user["client_id"] = INTERACTIVE_CLIENT_ID
+    ctx.request_context.lifespan_context.consent_store.has_server_consent.return_value = False
+    downstream_call = AsyncMock()
+    monkeypatch.setattr(server, "_downstream_tool_call", downstream_call)
+
+    result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
+
+    assert result.isError is True
+    assert "explicitly consent" in result.content[0].text
+    assert "/consent/server?nonce=" in result.content[0].text
+    ctx.request_context.lifespan_context.pending_consent_store.save.assert_called_once()
+    _, pending = ctx.request_context.lifespan_context.pending_consent_store.save.call_args.args
+    assert pending["user_id"] == "507f1f77bcf86cd799439011"
+    assert pending["client_id"] == INTERACTIVE_CLIENT_ID
+    assert pending["server_path"] == "/github"
+    assert pending["elicitation_id"]
+    # ctx.session.client_params is None here, so the client is treated as not supporting URL mode
+    # elicitation: no session gets registered in SessionStore, so there's nothing to notify later.
+    assert pending["notify_elicitation_complete"] is False
+    ctx.request_context.lifespan_context.consent_store.has_server_consent.assert_called_once_with(
+        "507f1f77bcf86cd799439011",
+        INTERACTIVE_CLIENT_ID,
+        "/github",
+    )
+    downstream_call.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_impl_without_server_consent_raises_url_elicitation(monkeypatch):
+    server_id = str(PydanticObjectId())
+    ctx = _make_ctx(accessible_server_ids=[server_id])
+    ctx.request_context.lifespan_context.server_service.get_server_by_id.return_value = _make_server(server_id)
+    ctx.request_context.request.state.user["client_id"] = INTERACTIVE_CLIENT_ID
+    ctx.request_context.lifespan_context.consent_store.has_server_consent.return_value = False
+    downstream_call = AsyncMock()
+    monkeypatch.setattr(server, "_downstream_tool_call", downstream_call)
+    monkeypatch.setattr(utils, "_support_url_elicitation", lambda _client_params: True)
+
+    with pytest.raises(utils.UrlElicitationRequiredError):
+        await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
+
+    ctx.request_context.lifespan_context.pending_consent_store.save.assert_called_once()
+    ctx.request_context.lifespan_context.consent_store.has_server_consent.assert_called_once_with(
+        "507f1f77bcf86cd799439011",
+        INTERACTIVE_CLIENT_ID,
+        "/github",
+    )
+    ctx.request_context.lifespan_context.session_store.append.assert_called_once()
+    elicitation_id, saved_session = ctx.request_context.lifespan_context.session_store.append.call_args.args
+    assert elicitation_id
+    assert saved_session is ctx.session
+
+    # The same elicitation_id must be threaded into the pending-consent payload so that
+    # approve_server_consent can later find this exact paused session to notify.
+    _, pending = ctx.request_context.lifespan_context.pending_consent_store.save.call_args.args
+    assert pending["elicitation_id"] == elicitation_id
+    # A session was registered above, so the pending payload must say so, or approve_server_consent
+    # will skip the notification even though a session is waiting for it.
+    assert pending["notify_elicitation_complete"] is True
+    downstream_call.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 async def test_execute_tool_impl_acl_allowed_proceeds(monkeypatch):
     server_id = str(PydanticObjectId())
@@ -167,3 +428,46 @@ async def test_execute_tool_impl_acl_allowed_proceeds(monkeypatch):
     result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
 
     assert not result.isError
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_impl_headless_agent_bypasses_server_consent(monkeypatch):
+    server_id = str(PydanticObjectId())
+    ctx = _make_ctx(accessible_server_ids=[server_id])
+    ctx.request_context.lifespan_context.server_service.get_server_by_id.return_value = _make_server(server_id)
+    ctx.request_context.request.state.user["client_id"] = settings.headless_agent_client_id
+    ctx.request_context.lifespan_context.consent_store.has_server_consent.return_value = False
+    monkeypatch.setattr(server, "record_server_request", MagicMock())
+    monkeypatch.setattr(server, "build_authenticated_headers", AsyncMock(return_value={}))
+    downstream_call = AsyncMock(return_value={"result": {"content": [{"type": "text", "text": "ok"}]}})
+    monkeypatch.setattr(server, "_downstream_tool_call", downstream_call)
+
+    result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
+
+    ctx.request_context.lifespan_context.consent_store.has_server_consent.assert_not_called()
+    downstream_call.assert_awaited_once()
+    assert not result.isError
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_impl_downstream_tool_error_records_error_type(monkeypatch):
+    """Regression test for [m3]: a downstream tool-level failure (isError=True) must be
+    recorded with a non-default error_type, not silently left as "none"."""
+    server_id = str(PydanticObjectId())
+    ctx = _make_ctx(accessible_server_ids=[server_id])
+    ctx.request_context.lifespan_context.server_service.get_server_by_id.return_value = _make_server(server_id)
+    monkeypatch.setattr(server, "record_server_request", MagicMock())
+    monkeypatch.setattr(server, "build_authenticated_headers", AsyncMock(return_value={}))
+    monkeypatch.setattr(
+        server,
+        "_downstream_tool_call",
+        AsyncMock(return_value={"result": {"content": [{"type": "text", "text": "boom"}], "isError": True}}),
+    )
+
+    with patch(f"{DECORATORS_PATH}._record_tool_execution") as mock_record:
+        result = await execute_tool_impl(ctx, "tavily_search", {"query": "ai"}, server_id)
+
+    assert result.isError is True
+    call_kwargs = mock_record.call_args[1]
+    assert call_kwargs["success"] is False
+    assert call_kwargs["error_type"] == "downstream_tool_error"

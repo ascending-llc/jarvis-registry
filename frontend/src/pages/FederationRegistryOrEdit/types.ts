@@ -7,7 +7,8 @@ export interface FederationFormConfig {
   region: string;
   assumeRoleArn: string;
   resourceTagsFilter: string; // The comma separated string in the form
-  azureTenantId: string;
-  azureSubscriptionId: string;
-  azureResourceGroup: string;
+  projectEndpoint: string;
+  tenantId: string;
+  clientId: string;
+  clientSecret: string;
 }

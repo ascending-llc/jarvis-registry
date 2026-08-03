@@ -113,8 +113,10 @@ async def test_update_resource_permissions_uses_injected_acl_service(sample_user
             acl_service=acl_service,
         )
 
-    acl_service.check_user_permission.assert_awaited_once()
-    assert acl_service.check_user_permission.await_args.kwargs["session"] is mock_session
+    assert acl_service.check_user_permission.await_count == 2
+    first_check, second_check = acl_service.check_user_permission.await_args_list
+    assert "session" not in first_check.kwargs
+    assert second_check.kwargs["session"] is mock_session
     acl_service.validate_at_least_one_owner_remains.assert_awaited_once()
     assert acl_service.validate_at_least_one_owner_remains.await_args.kwargs["session"] is mock_session
     assert acl_service.delete_permission.await_count == 2
@@ -308,8 +310,10 @@ async def test_remove_principal_without_role_id(sample_user_context):
     assert acl_service.delete_permission.await_count == 2
     for call in acl_service.delete_permission.await_args_list:
         assert call.kwargs["session"] is mock_session
-    acl_service.check_user_permission.assert_awaited_once()
-    assert acl_service.check_user_permission.await_args.kwargs["session"] is mock_session
+    assert acl_service.check_user_permission.await_count == 2
+    first_check, second_check = acl_service.check_user_permission.await_args_list
+    assert "session" not in first_check.kwargs
+    assert second_check.kwargs["session"] is mock_session
     acl_service.grant_permission.assert_not_awaited()
     assert result.results["resourceId"] == resource_id
 

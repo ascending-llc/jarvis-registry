@@ -10,11 +10,12 @@ Tests cover:
 """
 
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from starlette.types import Receive, Scope, Send
 
 from registry.middleware.rbac import (
     ScopePermissionMiddleware,
@@ -33,6 +34,29 @@ def restore_rbac_for_rbac_tests(monkeypatch):
     # Restore the original _has_permission method
     monkeypatch.setattr(ScopePermissionMiddleware, "_has_permission", _original_has_permission)
     yield
+
+
+def test_lifespan_scope_passes_through_without_error():
+    app = FastAPI()
+    app.add_middleware(ScopePermissionMiddleware)
+
+    with TestClient(app):
+        pass
+
+
+async def test_non_http_scope_forwarded_to_app_unchanged():
+    calls: list[Scope] = []
+
+    async def stub_app(scope: Scope, receive: Receive, send: Send) -> None:
+        del receive, send
+        calls.append(scope)
+
+    middleware = ScopePermissionMiddleware(stub_app)
+    scope: Scope = {"type": "websocket", "path": "/ws"}
+
+    await middleware(scope, AsyncMock(), AsyncMock())
+
+    assert calls == [scope]
 
 
 @pytest.mark.unit
@@ -871,3 +895,34 @@ class TestRealScopesConfigDownstreamOAuth:
         mw = ScopePermissionMiddleware(FastAPI())
         path = f"/mcp/downstream/oauth/authorize/{self._USER_ID}/github/sub/path"
         assert mw._has_permission(["user-read"], path, "GET") is True
+
+
+@pytest.mark.unit
+class TestRealScopesConfigAgentConsent:
+    """Validate the real scopes.yml permits the complete Agent consent decision flow."""
+
+    @pytest.mark.parametrize(
+        ("path", "method"),
+        [
+            ("/mcp/consent/agent", "GET"),
+            ("/mcp/consent/agent", "POST"),
+            ("/mcp/consent/agent/deny", "POST"),
+        ],
+    )
+    def test_agent_consent_granted_with_user_read(self, path: str, method: str) -> None:
+        mw = ScopePermissionMiddleware(FastAPI())
+
+        assert mw._has_permission(["user-read"], path, method) is True
+
+    @pytest.mark.parametrize(
+        ("path", "method"),
+        [
+            ("/mcp/consent/agent", "GET"),
+            ("/mcp/consent/agent", "POST"),
+            ("/mcp/consent/agent/deny", "POST"),
+        ],
+    )
+    def test_agent_consent_denied_without_user_read(self, path: str, method: str) -> None:
+        mw = ScopePermissionMiddleware(FastAPI())
+
+        assert mw._has_permission(["agents-read"], path, method) is False

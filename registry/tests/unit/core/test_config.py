@@ -14,6 +14,8 @@ from pydantic import ValidationError
 
 from registry.core.config import Settings
 
+_GOVERNANCE_SONNET_AIP_ARN = "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/abcdefghijkl"
+
 # Module-level RSA key pair so tests that clear os.environ still satisfy the JWT validator.
 _TEST_RSA_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 
@@ -153,7 +155,7 @@ class TestSettings:
 
         Settings()
 
-        for key in ("JWT_PRIVATE_KEY and JWT_PUBLIC_KEY", "CREDS_KEY", "TOOL_DISCOVERY_MODE"):
+        for key in ("JWT_PRIVATE_KEY and JWT_PUBLIC_KEY", "CREDS_KEY", "TOOL_DISCOVERY_MODE", "LLM Model ID"):
             assert f"{key} validation is disabled." in caplog.text
 
     @pytest.mark.unit
@@ -182,3 +184,127 @@ class TestSettings:
         settings = Settings()
 
         assert settings.service_base_path == ""
+
+    @pytest.mark.unit
+    @patch.dict(os.environ, _SETTINGS_ENV, clear=True)
+    def test_aws_bedrock_sonnet_aip_arn_defaults_to_empty_string(self) -> None:
+        settings = Settings(_env_file=None)
+
+        assert settings.aws_bedrock_sonnet_aip_arn == ""
+        assert settings.aws_bedrock_require_aip is False
+
+    @pytest.mark.unit
+    @patch.dict(
+        os.environ,
+        {
+            **_SETTINGS_ENV,
+            "AWS_BEDROCK_SONNET_AIP_ARN": "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/test",
+        },
+        clear=True,
+    )
+    def test_aws_bedrock_sonnet_aip_arn_loaded_from_env(self) -> None:
+        settings = Settings(_env_file=None)
+
+        assert (
+            settings.aws_bedrock_sonnet_aip_arn
+            == "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/test"
+        )
+
+    @pytest.mark.unit
+    @patch.dict(os.environ, _SETTINGS_ENV, clear=True)
+    def test_workflow_llm_model_id_falls_back_to_model_id(self) -> None:
+        settings = Settings(aws_bedrock_sonnet_aip_arn="", _env_file=None)
+
+        assert settings.workflow_llm_model_id == "amazon.nova-2-lite-v1:0"
+
+    @pytest.mark.unit
+    @patch.dict(
+        os.environ,
+        {
+            **_SETTINGS_ENV,
+            "AWS_BEDROCK_SONNET_AIP_ARN": " arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/test ",
+        },
+        clear=True,
+    )
+    def test_workflow_llm_model_id_prefers_trimmed_aip_arn(self) -> None:
+        settings = Settings(_env_file=None)
+
+        assert (
+            settings.workflow_llm_model_id
+            == "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/test"
+        )
+
+    @pytest.mark.unit
+    @patch.dict(
+        os.environ,
+        {
+            **_SETTINGS_ENV,
+            "AWS_BEDROCK_SONNET_AIP_ARN": f" {_GOVERNANCE_SONNET_AIP_ARN} ",
+        },
+        clear=True,
+    )
+    def test_workflow_llm_model_id_accepts_governance_haiku_aip_override(self) -> None:
+        settings = Settings(_env_file=None)
+
+        assert settings.workflow_llm_model_id == _GOVERNANCE_SONNET_AIP_ARN
+
+    @pytest.mark.unit
+    @patch.dict(
+        os.environ,
+        {
+            **_SETTINGS_ENV,
+            "AWS_BEDROCK_SONNET_AIP_ARN": "",
+            "AWS_BEDROCK_REQUIRE_AIP": "true",
+        },
+        clear=True,
+    )
+    def test_settings_requires_aip_arn_when_require_aip_true(self) -> None:
+        with pytest.raises(ValidationError, match="AWS_BEDROCK_SONNET_AIP_ARN must be set"):
+            Settings(_env_file=None)
+
+    @pytest.mark.unit
+    @patch.dict(
+        os.environ,
+        {
+            **_SETTINGS_ENV,
+            "AWS_BEDROCK_SONNET_AIP_ARN": _GOVERNANCE_SONNET_AIP_ARN,
+            "AWS_BEDROCK_REQUIRE_AIP": "true",
+        },
+        clear=True,
+    )
+    def test_settings_allows_require_aip_true_when_arn_set(self) -> None:
+        settings = Settings(_env_file=None)
+
+        assert settings.workflow_llm_model_id == _GOVERNANCE_SONNET_AIP_ARN
+
+    @pytest.mark.unit
+    @patch.dict(
+        os.environ,
+        {
+            **_SETTINGS_ENV,
+            "AWS_BEDROCK_SONNET_AIP_ARN": "",
+            "AWS_BEDROCK_REQUIRE_AIP": "false",
+            "AWS_WORKFLOW_LLM_MODEL": "",
+        },
+        clear=True,
+    )
+    def test_settings_requires_workflow_llm_model_when_no_aip_arn_and_not_required(self) -> None:
+        with pytest.raises(ValidationError, match="AWS_WORKFLOW_LLM_MODEL must be set"):
+            Settings(_env_file=None)
+
+    @pytest.mark.unit
+    @patch.dict(
+        os.environ,
+        {
+            **_SETTINGS_ENV,
+            "AWS_BEDROCK_SONNET_AIP_ARN": _GOVERNANCE_SONNET_AIP_ARN,
+            "AWS_BEDROCK_REQUIRE_AIP": "false",
+            "AWS_WORKFLOW_LLM_MODEL": "",
+        },
+        clear=True,
+    )
+    def test_settings_allows_blank_workflow_llm_model_when_aip_arn_set(self) -> None:
+        """Regression test: the AIP-ARN branch must short-circuit the workflow-model-id check."""
+        settings = Settings(_env_file=None)
+
+        assert settings.workflow_llm_model_id == _GOVERNANCE_SONNET_AIP_ARN

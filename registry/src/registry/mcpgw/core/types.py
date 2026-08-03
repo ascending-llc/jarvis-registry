@@ -4,12 +4,14 @@ from httpx import AsyncClient
 from redis import Redis
 
 from registry_pkgs.core.config import JwtSigningConfig
+from registry_pkgs.core.consent_store import ConsentStore, PendingConsentStore
 from registry_pkgs.vector.repositories.a2a_agent_repository import A2AAgentRepository
 from registry_pkgs.vector.repositories.mcp_server_repository import MCPServerRepository
 
 from ...core.mcp_client import MCPClientService
 from ...core.session_store import SessionStore
 from ...services.access_control_service import ACLService
+from ...services.federation.a2a_client_registry import A2AClientRegistry
 from ...services.oauth.oauth_service import MCPOAuthService
 from ...services.search.service import SearchService
 from ...services.server_service import ServerServiceV1
@@ -20,7 +22,7 @@ class McpAppContext:
     """MCP application context with typed dependencies."""
 
     proxy_client: AsyncClient
-    a2a_httpx_client: AsyncClient
+    a2a_client_registry: A2AClientRegistry
     server_service: ServerServiceV1
     mcp_server_repo: MCPServerRepository
     a2a_agent_repo: A2AAgentRepository
@@ -31,3 +33,5 @@ class McpAppContext:
     redis_client: Redis
     jwt_signing_config: JwtSigningConfig
     acl_service: ACLService
+    consent_store: ConsentStore
+    pending_consent_store: PendingConsentStore

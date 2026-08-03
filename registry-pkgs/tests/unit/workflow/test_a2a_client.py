@@ -1,9 +1,11 @@
 from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 from a2a.client import ClientConfig
 from a2a.types import (
+    AgentCapabilities,
     AgentCard,
     Artifact,
     Message,
@@ -21,8 +23,17 @@ from beanie import PydanticObjectId
 
 from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.models.a2a_agent import A2AAgent, AgentConfig
-from registry_pkgs.models.enums import FederationProviderType
-from registry_pkgs.workflows.a2a_client import A2ACallResult, build_headers, call_a2a
+from registry_pkgs.testing.federation_metadata import (
+    make_agentcore_a2a_metadata,
+    make_azure_foundry_metadata,
+)
+from registry_pkgs.workflows.a2a_client import (
+    A2ACallResult,
+    _ensure_a2a_result_fields,
+    _extra_call_headers,
+    build_headers,
+    call_a2a,
+)
 
 
 def _jwt_config() -> JwtSigningConfig:
@@ -49,7 +60,7 @@ def _make_agent(url: str = "https://agent.example.com", transport: str = "jsonrp
             skills=[],
         ),
         config=AgentConfig(title="Test Agent", type=transport, url=url),
-        federationMetadata={},
+        federationMetadata=None,
     )
 
 
@@ -85,7 +96,7 @@ def test_build_headers_returns_empty_headers_for_non_agentcore_agent():
 
 def test_build_headers_returns_agentcore_jwt_and_session_header():
     agent = _make_agent()
-    agent.federationMetadata = {"providerType": FederationProviderType.AWS_AGENTCORE}
+    agent.federationMetadata = make_agentcore_a2a_metadata()
 
     with patch("registry_pkgs.workflows.a2a_client._make_agentcore_jwt", return_value="signed-agentcore-jwt"):
         headers = build_headers(agent, jwt_config=_jwt_config())
@@ -244,10 +255,9 @@ async def test_call_a2a_message_reply_sets_message_field():
     mock_factory, _ = _mock_client([_msg("Hello world!")])
 
     with (
-        patch("registry_pkgs.workflows.a2a_client.build_headers", return_value={}),
         patch("registry_pkgs.workflows.a2a_client.ClientFactory", return_value=mock_factory),
     ):
-        result = await call_a2a(agent, "Say hello", jwt_config=_jwt_config())
+        result = await call_a2a(agent, "Say hello")
 
     assert result.success is True
     assert result.task is None
@@ -285,10 +295,9 @@ async def test_call_a2a_streaming_multiple_artifacts_preserves_boundaries():
     mock_factory, _ = _mock_client(events)
 
     with (
-        patch("registry_pkgs.workflows.a2a_client.build_headers", return_value={}),
         patch("registry_pkgs.workflows.a2a_client.ClientFactory", return_value=mock_factory),
     ):
-        result = await call_a2a(agent, "test", jwt_config=_jwt_config())
+        result = await call_a2a(agent, "test")
 
     assert result.success is True
     assert [a.name for a in result.task.artifacts] == ["Summary", "Detail"]
@@ -309,10 +318,9 @@ async def test_call_a2a_non_streaming_task_completion_returns_artifacts():
     mock_factory, _ = _mock_client([(completed_task, None)])
 
     with (
-        patch("registry_pkgs.workflows.a2a_client.build_headers", return_value={}),
         patch("registry_pkgs.workflows.a2a_client.ClientFactory", return_value=mock_factory),
     ):
-        result = await call_a2a(agent, "test", jwt_config=_jwt_config())
+        result = await call_a2a(agent, "test")
 
     assert result.success is True
     assert result.task_state == TaskState.completed
@@ -338,11 +346,10 @@ async def test_call_a2a_polls_when_server_returns_submitted():
     )
 
     with (
-        patch("registry_pkgs.workflows.a2a_client.build_headers", return_value={}),
         patch("registry_pkgs.workflows.a2a_client.ClientFactory", return_value=mock_factory),
         patch("registry_pkgs.workflows.a2a_client.asyncio.sleep", new_callable=AsyncMock),
     ):
-        result = await call_a2a(agent, "test", jwt_config=_jwt_config())
+        result = await call_a2a(agent, "test")
 
     assert result.success is True
     assert result.task_state == TaskState.completed
@@ -366,12 +373,11 @@ async def test_call_a2a_polling_timeout_returns_failure():
     monotonic_values = iter([0.0, 1000.0, 1000.0, 1000.0])
 
     with (
-        patch("registry_pkgs.workflows.a2a_client.build_headers", return_value={}),
         patch("registry_pkgs.workflows.a2a_client.ClientFactory", return_value=mock_factory),
         patch("registry_pkgs.workflows.a2a_client.asyncio.sleep", new_callable=AsyncMock),
         patch("registry_pkgs.workflows.a2a_client.time.monotonic", side_effect=lambda: next(monotonic_values)),
     ):
-        result = await call_a2a(agent, "test", jwt_config=_jwt_config())
+        result = await call_a2a(agent, "test")
 
     assert result.success is False
     assert "polling timed out" in result.error
@@ -386,10 +392,9 @@ async def test_call_a2a_empty_stream_returns_failure():
     mock_factory, _ = _mock_client([])
 
     with (
-        patch("registry_pkgs.workflows.a2a_client.build_headers", return_value={}),
         patch("registry_pkgs.workflows.a2a_client.ClientFactory", return_value=mock_factory),
     ):
-        result = await call_a2a(agent, "test", jwt_config=_jwt_config())
+        result = await call_a2a(agent, "test")
 
     assert result.success is False
     assert "no" in result.error.lower()
@@ -400,13 +405,12 @@ async def test_call_a2a_exception_returns_failure():
     agent = _make_agent()
 
     with (
-        patch("registry_pkgs.workflows.a2a_client.build_headers", return_value={}),
         patch(
             "registry_pkgs.workflows.a2a_client.ClientFactory",
             side_effect=RuntimeError("connection refused"),
         ),
     ):
-        result = await call_a2a(agent, "test", jwt_config=_jwt_config())
+        result = await call_a2a(agent, "test")
 
     assert result.success is False
     assert "connection refused" in result.error
@@ -421,10 +425,9 @@ async def test_call_a2a_input_required_returns_distinct_error():
     mock_factory, _ = _mock_client([(paused, None)])
 
     with (
-        patch("registry_pkgs.workflows.a2a_client.build_headers", return_value={}),
         patch("registry_pkgs.workflows.a2a_client.ClientFactory", return_value=mock_factory),
     ):
-        result = await call_a2a(agent, "test", jwt_config=_jwt_config())
+        result = await call_a2a(agent, "test")
 
     assert result.success is False
     assert result.task_state == TaskState.input_required
@@ -440,10 +443,9 @@ async def test_call_a2a_auth_required_returns_distinct_error():
     mock_factory, _ = _mock_client([(paused, None)])
 
     with (
-        patch("registry_pkgs.workflows.a2a_client.build_headers", return_value={}),
         patch("registry_pkgs.workflows.a2a_client.ClientFactory", return_value=mock_factory),
     ):
-        result = await call_a2a(agent, "test", jwt_config=_jwt_config())
+        result = await call_a2a(agent, "test")
 
     assert result.success is False
     assert result.task_state == TaskState.auth_required
@@ -465,10 +467,9 @@ async def test_call_a2a_status_message_alone_is_valid_content():
     mock_factory, _ = _mock_client([(task, None)])
 
     with (
-        patch("registry_pkgs.workflows.a2a_client.build_headers", return_value={}),
         patch("registry_pkgs.workflows.a2a_client.ClientFactory", return_value=mock_factory),
     ):
-        result = await call_a2a(agent, "test", jwt_config=_jwt_config())
+        result = await call_a2a(agent, "test")
 
     assert result.success is True
     assert result.render_text() == "All done, no files needed."
@@ -482,10 +483,9 @@ async def test_call_a2a_non_completed_terminal_state_returns_failure_with_task()
     mock_factory, _ = _mock_client([(failed_task, None)])
 
     with (
-        patch("registry_pkgs.workflows.a2a_client.build_headers", return_value={}),
         patch("registry_pkgs.workflows.a2a_client.ClientFactory", return_value=mock_factory),
     ):
-        result = await call_a2a(agent, "test", jwt_config=_jwt_config())
+        result = await call_a2a(agent, "test")
 
     assert result.success is False
     assert result.task_state == TaskState.failed
@@ -510,10 +510,9 @@ async def test_call_a2a_failed_surfaces_status_message_detail():
     mock_factory, _ = _mock_client([(failed_task, None)])
 
     with (
-        patch("registry_pkgs.workflows.a2a_client.build_headers", return_value={}),
         patch("registry_pkgs.workflows.a2a_client.ClientFactory", return_value=mock_factory),
     ):
-        result = await call_a2a(agent, "test", jwt_config=_jwt_config())
+        result = await call_a2a(agent, "test")
 
     assert result.success is False
     assert result.task_state == TaskState.failed
@@ -534,10 +533,9 @@ async def test_call_a2a_uses_http_json_protocol_for_rest_transport():
         return mock_factory
 
     with (
-        patch("registry_pkgs.workflows.a2a_client.build_headers", return_value={}),
         patch("registry_pkgs.workflows.a2a_client.ClientFactory", side_effect=capturing_factory),
     ):
-        result = await call_a2a(agent, "test", jwt_config=_jwt_config())
+        result = await call_a2a(agent, "test")
 
     assert result.success is True
     assert result.render_text() == "rest response"
@@ -562,10 +560,9 @@ async def test_call_a2a_uses_jsonrpc_protocol_for_jsonrpc_transport():
         return mock_factory
 
     with (
-        patch("registry_pkgs.workflows.a2a_client.build_headers", return_value={}),
         patch("registry_pkgs.workflows.a2a_client.ClientFactory", side_effect=capturing_factory),
     ):
-        result = await call_a2a(agent, "test", jwt_config=_jwt_config())
+        result = await call_a2a(agent, "test")
 
     assert result.success is True
     assert result.render_text() == "jsonrpc response"
@@ -593,10 +590,9 @@ async def test_call_a2a_negotiates_transport_when_card_disagrees_with_config():
         return mock_factory
 
     with (
-        patch("registry_pkgs.workflows.a2a_client.build_headers", return_value={}),
         patch("registry_pkgs.workflows.a2a_client.ClientFactory", side_effect=capturing_factory),
     ):
-        result = await call_a2a(agent, "test", jwt_config=_jwt_config())
+        result = await call_a2a(agent, "test")
 
     assert result.success is True
     assert len(captured_configs) == 1
@@ -624,10 +620,9 @@ async def test_call_a2a_forwards_shared_httpx_client_to_client_config():
     shared = _httpx.AsyncClient()
     try:
         with (
-            patch("registry_pkgs.workflows.a2a_client.build_headers", return_value={}),
             patch("registry_pkgs.workflows.a2a_client.ClientFactory", side_effect=capturing_factory),
         ):
-            result = await call_a2a(agent, "test", jwt_config=_jwt_config(), httpx_client=shared)
+            result = await call_a2a(agent, "test", httpx_client=shared)
     finally:
         await shared.aclose()
 
@@ -649,10 +644,9 @@ async def test_call_a2a_does_not_close_shared_httpx_client():
     shared = _httpx.AsyncClient()
     try:
         with (
-            patch("registry_pkgs.workflows.a2a_client.build_headers", return_value={}),
             patch("registry_pkgs.workflows.a2a_client.ClientFactory", return_value=mock_factory),
         ):
-            await call_a2a(agent, "test", jwt_config=_jwt_config(), httpx_client=shared)
+            await call_a2a(agent, "test", httpx_client=shared)
     finally:
         await shared.aclose()
 
@@ -668,13 +662,121 @@ async def test_call_a2a_uses_async_with_when_no_shared_httpx_client():
     mock_factory, mock_client = _mock_client([_msg("ok")])
 
     with (
-        patch("registry_pkgs.workflows.a2a_client.build_headers", return_value={}),
         patch("registry_pkgs.workflows.a2a_client.ClientFactory", return_value=mock_factory),
     ):
-        await call_a2a(agent, "test", jwt_config=_jwt_config())  # no httpx_client
+        await call_a2a(agent, "test")  # no httpx_client
 
     mock_client.__aenter__.assert_awaited_once()
     mock_client.__aexit__.assert_awaited_once()
+
+
+# ── Provider detection + call-scoped extra headers ────────────────────────────
+
+
+def test_is_azure_foundry_runtime_matches_provider_type_value():
+    from registry_pkgs.workflows.a2a_client import is_azure_foundry_runtime
+
+    agent = _make_agent()
+    agent.federationMetadata = make_azure_foundry_metadata()
+    assert is_azure_foundry_runtime(agent) is True
+
+
+def test_is_azure_foundry_runtime_false_for_unknown_provider():
+    from registry_pkgs.workflows.a2a_client import is_azure_foundry_runtime
+
+    agent = _make_agent()
+    agent.federationMetadata = make_agentcore_a2a_metadata()
+    assert is_azure_foundry_runtime(agent) is False
+
+    agent.federationMetadata = None
+    assert is_azure_foundry_runtime(agent) is False
+
+
+@pytest.mark.asyncio
+async def test_call_a2a_raises_when_httpx_client_missing_for_agentcore():
+    """Federated AgentCore agents require a pre-authenticated httpx client."""
+    agent = _make_agent()
+    agent.federationMetadata = make_agentcore_a2a_metadata()
+
+    with pytest.raises(
+        ValueError,
+        match=r"httpx_client or headers_provider is required for federated agent .*providerType='aws_agentcore'",
+    ):
+        await call_a2a(agent, "test")
+
+
+@pytest.mark.asyncio
+async def test_call_a2a_raises_when_httpx_client_missing_for_azure_foundry():
+    """Federated Azure AI Foundry agents require a pre-authenticated httpx client."""
+    agent = _make_agent()
+    agent.federationMetadata = make_azure_foundry_metadata()
+
+    with pytest.raises(
+        ValueError,
+        match=r"httpx_client or headers_provider is required for federated agent .*providerType='azure_ai_foundry'",
+    ):
+        await call_a2a(agent, "test")
+
+
+@pytest.mark.asyncio
+async def test_call_a2a_does_not_build_credentials_itself():
+    """call_a2a now relies on the supplied httpx_client for Authorization."""
+    agent = _make_agent()
+    mock_factory, _ = _mock_client([_msg("ok")])
+
+    with (
+        patch("registry_pkgs.workflows.a2a_client.build_headers") as build_headers_spy,
+        patch("registry_pkgs.workflows.a2a_client.ClientFactory", return_value=mock_factory),
+    ):
+        await call_a2a(agent, "test")
+
+    build_headers_spy.assert_not_called()
+
+
+def test_extra_call_headers_returns_agentcore_session_header_only():
+    agent = _make_agent()
+    agent.federationMetadata = make_agentcore_a2a_metadata()
+
+    headers = _extra_call_headers(agent)
+
+    assert set(headers) == {"X-Amzn-Bedrock-AgentCore-Runtime-Session-Id"}
+    assert headers["X-Amzn-Bedrock-AgentCore-Runtime-Session-Id"]
+
+
+def test_extra_call_headers_returns_empty_for_azure_and_plain_agents():
+    agent = _make_agent()
+
+    assert _extra_call_headers(agent) == {}
+
+    agent.federationMetadata = make_azure_foundry_metadata()
+    assert _extra_call_headers(agent) == {}
+
+
+@pytest.mark.asyncio
+async def test_call_a2a_reuses_agentcore_session_header_across_polling_requests():
+    agent = _make_agent()
+    agent.federationMetadata = make_agentcore_a2a_metadata()
+    submitted = _task(TaskState.submitted, artifacts=None)
+    completed = _task(TaskState.completed, artifacts=[_artifact("Done", ["finally"])])
+    mock_factory, mock_client = _mock_client(
+        [(submitted, None)],
+        get_task_responses=[completed],
+    )
+    httpx_client = httpx.AsyncClient()
+
+    with (
+        patch("registry_pkgs.workflows.a2a_client.ClientFactory", return_value=mock_factory),
+        patch("registry_pkgs.workflows.a2a_client.asyncio.sleep", new_callable=AsyncMock),
+    ):
+        result = await call_a2a(agent, "test", httpx_client=httpx_client)
+
+    assert result.success is True
+    send_context = mock_client.send_message.call_args.kwargs["context"]
+    poll_context = mock_client.get_task.await_args.kwargs["context"]
+    send_headers = send_context.state["http_kwargs"]["headers"]
+    poll_headers = poll_context.state["http_kwargs"]["headers"]
+    assert send_headers["X-Amzn-Bedrock-AgentCore-Runtime-Session-Id"]
+    assert send_headers == poll_headers
 
 
 @pytest.mark.asyncio
@@ -691,11 +793,157 @@ async def test_call_a2a_accepts_pre_parsed_message():
     mock_factory, _ = _mock_client([_msg("ok")])
 
     with (
-        patch("registry_pkgs.workflows.a2a_client.build_headers", return_value={}),
         patch("registry_pkgs.workflows.a2a_client.ClientFactory", return_value=mock_factory),
         patch("registry_pkgs.workflows.a2a_client._create_message") as mock_create,
     ):
-        result = await call_a2a(agent, pre_parsed, jwt_config=_jwt_config())
+        result = await call_a2a(agent, pre_parsed)
 
     assert result.success is True
     mock_create.assert_not_called()
+
+
+def _real_client_agent(*, name: str = "Test Agent") -> A2AAgent:
+    """Agent with a fully-realized AgentCard (real AgentCapabilities, not `_make_agent`'s
+    bare `{}`), needed by any test that exercises the real ClientFactory/BaseClient instead
+    of mocking it — BaseClient reads `card.capabilities.streaming` directly."""
+    agent = _make_agent(transport="jsonrpc")
+    agent.card = AgentCard.model_construct(
+        name=name,
+        url="https://agent.example.com",
+        version="1.0.0",
+        protocol_version="0.3.0",
+        capabilities=AgentCapabilities(streaming=False),
+        defaultInputModes=["text/plain"],
+        defaultOutputModes=["text/plain"],
+        skills=[],
+    )
+    return agent
+
+
+def _azure_foundry_agent() -> A2AAgent:
+    agent = _real_client_agent(name="Azure Test Agent")
+    agent.federationMetadata = make_azure_foundry_metadata()
+    return agent
+
+
+def test_ensure_a2a_result_fields_adds_missing_artifact_id():
+    result = {
+        "kind": "task",
+        "id": "task-1",
+        "context_id": "ctx-1",
+        "status": {"state": "completed"},
+        "artifacts": [
+            {"parts": [{"kind": "text", "text": "first"}]},
+            {"parts": [{"kind": "text", "text": "second"}]},
+        ],
+    }
+    _ensure_a2a_result_fields(result)
+
+    assert result["artifacts"][0]["artifact_id"]
+    assert result["artifacts"][1]["artifact_id"]
+    assert result["artifacts"][0]["artifact_id"] != result["artifacts"][1]["artifact_id"]
+
+
+def test_ensure_a2a_result_fields_is_idempotent():
+    result = {
+        "kind": "task",
+        "artifacts": [{"artifact_id": "existing-id", "parts": [{"kind": "text", "text": "keep"}]}],
+    }
+    _ensure_a2a_result_fields(result)
+
+    assert result["artifacts"][0]["artifact_id"] == "existing-id"
+
+
+def test_ensure_a2a_result_fields_respects_camelcase_artifact_id():
+    """A spec-compliant response using the camelCase wire alias must not be touched."""
+    result = {
+        "kind": "task",
+        "artifacts": [{"artifactId": "wire-id", "parts": [{"kind": "text", "text": "keep"}]}],
+    }
+    _ensure_a2a_result_fields(result)
+
+    assert result["artifacts"][0]["artifactId"] == "wire-id"
+    assert "artifact_id" not in result["artifacts"][0]
+
+
+def test_ensure_a2a_result_fields_leaves_message_result_untouched():
+    result = {
+        "kind": "message",
+        "message_id": "msg-1",
+        "role": "user",
+        "parts": [{"kind": "text", "text": "hello"}],
+    }
+    _ensure_a2a_result_fields(result)
+
+    assert "artifact_id" not in result
+
+
+@pytest.mark.asyncio
+async def test_call_a2a_tolerates_azure_foundry_missing_artifact_id():
+    """Azure Foundry returns Task artifacts without artifact_id; the call must succeed."""
+    agent = _azure_foundry_agent()
+    httpx_client = httpx.AsyncClient()
+
+    raw_response = {
+        "jsonrpc": "2.0",
+        "id": "rpc-1",
+        "result": {
+            "kind": "task",
+            "id": "task-1",
+            "context_id": "ctx-1",
+            "status": {"state": "completed"},
+            "artifacts": [{"parts": [{"kind": "text", "text": "hello from azure"}]}],
+        },
+    }
+
+    with (
+        patch(
+            "a2a.client.transports.jsonrpc.JsonRpcTransport._send_request",
+            new_callable=AsyncMock,
+            return_value=raw_response,
+        ) as send_request_spy,
+    ):
+        result = await call_a2a(agent, "test", httpx_client=httpx_client)
+
+    send_request_spy.assert_awaited_once()
+    assert result.success is True
+    assert result.task is not None
+    assert result.task.artifacts[0].artifact_id
+    assert result.render_text() == "hello from azure"
+
+
+@pytest.mark.asyncio
+async def test_call_a2a_uses_standard_transport_for_non_azure_jsonrpc_agent():
+    """Non-Azure JSON-RPC agents must keep the default strict transport: a Task response
+    missing artifact_id must fail Pydantic validation exactly like the standard a2a-sdk
+    JsonRpcTransport would, proving the Azure-tolerant subclass is not registered here.
+
+    Uses the real ClientFactory (unlike other call_a2a tests, which mock it out) so the
+    transport-registration branch in call_a2a actually runs.
+    """
+    agent = _real_client_agent()  # federationMetadata=None → not Azure Foundry
+
+    raw_response = {
+        "jsonrpc": "2.0",
+        "id": "rpc-1",
+        "result": {
+            "kind": "task",
+            "id": "task-1",
+            "context_id": "ctx-1",
+            "status": {"state": "completed"},
+            "artifacts": [{"parts": [{"kind": "text", "text": "hello"}]}],
+        },
+    }
+
+    with (
+        patch(
+            "a2a.client.transports.jsonrpc.JsonRpcTransport._send_request",
+            new_callable=AsyncMock,
+            return_value=raw_response,
+        ) as send_request_spy,
+    ):
+        result = await call_a2a(agent, "test")
+
+    send_request_spy.assert_awaited_once()
+    assert result.success is False
+    assert "artifactid" in (result.error or "").lower()

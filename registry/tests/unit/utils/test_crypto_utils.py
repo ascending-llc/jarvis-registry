@@ -1,5 +1,6 @@
 """Unit tests for crypto_utils module."""
 
+import time
 from unittest.mock import patch
 
 from registry.core.config import settings
@@ -9,7 +10,6 @@ from registry.utils.crypto_utils import (
     encrypt_auth_fields,
     generate_access_token,
     generate_refresh_token,
-    generate_service_jwt,
     is_encrypted,
     verify_access_token,
     verify_refresh_token,
@@ -62,6 +62,41 @@ class TestCrudSessionTokens:
         assert claims is not None
         assert claims["token_type"] == "refresh_token"
         assert claims["client_id"] == settings.registry_app_name
+
+    def test_refresh_token_session_started_at_defaults_to_now(self):
+        before = int(time.time())
+        token = generate_refresh_token(
+            user_id="u1",
+            username="alice",
+            auth_method="oauth2",
+            provider="entra",
+            groups=["g1"],
+            scopes=["servers-read"],
+            role="user",
+            email="alice@example.com",
+        )
+        after = int(time.time())
+        claims = verify_refresh_token(token)
+        assert claims is not None
+        assert "session_started_at" in claims
+        assert before <= claims["session_started_at"] <= after
+
+    def test_refresh_token_session_started_at_carried_forward(self):
+        fixed_ts = 1_700_000_000
+        token = generate_refresh_token(
+            user_id="u1",
+            username="alice",
+            auth_method="oauth2",
+            provider="entra",
+            groups=["g1"],
+            scopes=["servers-read"],
+            role="user",
+            email="alice@example.com",
+            session_started_at=fixed_ts,
+        )
+        claims = verify_refresh_token(token)
+        assert claims is not None
+        assert claims["session_started_at"] == fixed_ts
 
     def test_access_verifier_rejects_refresh_token(self):
         token = generate_refresh_token(
@@ -144,36 +179,6 @@ class TestEncryptionPattern:
         """Test regex pattern rejects IV shorter than 32 chars"""
         invalid = "0123456789abcdef:data"
         assert ENCRYPTED_VALUE_PATTERN.match(invalid) is None
-
-
-class TestGenerateServiceJwt:
-    """Tests for generate_service_jwt() function"""
-
-    @patch("registry.utils.crypto_utils.encode_jwt", return_value="encoded-token")
-    @patch("registry.utils.crypto_utils.build_jwt_payload", return_value={"sub": "testuser"})
-    @patch("registry.utils.crypto_utils.settings")
-    def test_internal_service_jwt_uses_scope_claim(self, mock_settings, mock_build_payload, mock_encode_jwt):
-        mock_settings.registry_app_name = "registry"
-        mock_settings.jwt_issuer = "https://registry.example.com"
-        mock_settings.jwt_audience = "registry-api"
-        mock_settings.jwt_private_key = "private-key"
-        mock_settings.jwt_self_signed_kid = "kid-v1"
-
-        token = generate_service_jwt(
-            user_id="user-1",
-            username="testuser",
-            scopes=["workflow:run", "servers:read"],
-        )
-
-        assert token == "encoded-token"
-        extra_claims = mock_build_payload.call_args.kwargs["extra_claims"]
-        assert extra_claims["scope"] == "workflow:run servers:read"
-        assert "scopes" not in extra_claims
-        mock_encode_jwt.assert_called_once_with(
-            {"sub": "testuser"},
-            "private-key",
-            kid="kid-v1",
-        )
 
 
 class TestEncryptAuthFields:

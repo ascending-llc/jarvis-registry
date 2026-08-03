@@ -109,7 +109,7 @@ export const nodeRunToEntry = (run: WorkflowRun, nodeRun: NodeRun, nodeType?: st
   status: NODE_STATUS_MAP[nodeRun.status] ?? 'fail',
   time: `${formatTime(run.startedAt)} · attempt ${nodeRun.attempt}`,
   dur: formatDuration(nodeRun.startedAt ?? run.startedAt, nodeRun.finishedAt),
-  err: nodeRun.error ?? run.errorSummary ?? undefined,
+  err: nodeRun.error ?? undefined,
   actions: nodeRun.status === 'failed' ? ['retry'] : [],
   input: nodeRun.inputSnapshot ?? undefined,
   output: nodeRun.outputSnapshot ?? undefined,

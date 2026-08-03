@@ -6,10 +6,47 @@ both workspaces, so the single source of truth lives here in ``registry-pkgs`` w
 ``registry`` and ``auth-server`` can import it.
 """
 
+import secrets
+import string
+
+from pydantic import BaseModel
+
 DOWNSTREAM_OAUTH_NAMESPACE = "proxy/server/oauth"
 
 # Redis key prefix for a Layer B authorization code's stashed PKCE / binding context.
 DOWNSTREAM_OAUTH_CODE_PREFIX = "downstream_mcp_code:"
+
+DEVICE_CODE_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code"
+_USER_CODE_LENGTH = 8
+_USER_CODE_GROUP_LENGTH = 4
+_USER_CODE_CHARACTERS = "".join(
+    character for character in string.ascii_uppercase + string.digits if character not in {"0", "O", "1", "I"}
+)
+
+
+class DeviceCodeResponse(BaseModel):
+    """RFC 8628 device-authorization response shared by both authorization servers."""
+
+    device_code: str
+    user_code: str
+    verification_uri: str
+    verification_uri_complete: str
+    expires_in: int
+    interval: int
+
+
+def generate_user_code() -> str:
+    """Generate a human-readable code without visually ambiguous characters."""
+    code = "".join(secrets.choice(_USER_CODE_CHARACTERS) for _ in range(_USER_CODE_LENGTH))
+    return f"{code[:_USER_CODE_GROUP_LENGTH]}-{code[_USER_CODE_GROUP_LENGTH:]}"
+
+
+def normalize_user_code(user_code: str) -> str:
+    """Normalize manual entry while accepting an omitted separator."""
+    compact = "".join(character for character in user_code.upper() if character.isalnum())
+    if len(compact) == _USER_CODE_LENGTH:
+        return f"{compact[:_USER_CODE_GROUP_LENGTH]}-{compact[_USER_CODE_GROUP_LENGTH:]}"
+    return user_code.strip().upper()
 
 
 def downstream_mcp_issuer(jwt_issuer: str, user_id: str, server_path: str) -> str:

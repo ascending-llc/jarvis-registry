@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from agno.media import File, Image
 from agno.run.base import RunStatus
 from agno.run.workflow import WorkflowRunOutput
 from agno.session import WorkflowSession
@@ -175,7 +176,7 @@ class TestWorkflowPersistence:
         monkeypatch.setattr(persistence, "NodeRun", FakeNodeRun)
 
         sync = _sync_with_fake_run()
-        sync._node_by_name = {"fetch": WorkflowNode(name="fetch", executor_key="tool")}
+        sync._node_by_name = {"fetch": WorkflowNode(name="fetch", executor_key="tool", step_objective="fetch data")}
 
         await sync._upsert_node_run(
             StepOutput(step_name="fetch", content="ok", success=True),
@@ -206,6 +207,56 @@ class TestWorkflowPersistence:
         assert save_kwargs == {"session": None}
 
     @pytest.mark.asyncio
+    async def test_upsert_node_run_persists_media_metadata_in_output_snapshot(self, monkeypatch: pytest.MonkeyPatch):
+        saved = []
+
+        class FakeNodeRun:
+            workflow_run_id = _FieldExpr("workflow_run_id")
+            node_id = _FieldExpr("node_id")
+
+            def __init__(self, **kwargs):
+                self.__dict__.update(kwargs)
+                self.attempt = 0
+                self.status = NodeRunStatus.PENDING
+                self.input_snapshot = None
+                self.output_snapshot = None
+                self.session_state_snapshot = None
+                self.finished_at = None
+                self.error = None
+                self.selected_a2a_key = None
+
+            @classmethod
+            async def find_one(cls, *args, **kwargs):
+                return None
+
+            async def save(self, **kwargs):
+                saved.append((self, kwargs))
+
+        monkeypatch.setattr(persistence, "NodeRun", FakeNodeRun)
+
+        sync = _sync_with_fake_run()
+        sync._node_by_name = {"draw": WorkflowNode(name="draw", executor_key="tool", step_objective="draw")}
+
+        await sync._upsert_node_run(
+            StepOutput(
+                step_name="draw",
+                content=None,
+                success=True,
+                images=[Image(content=b"raw-bytes", id="pic.jpg", mime_type="image/jpeg")],
+                files=[File(id="doc.pdf", filename="doc.pdf", file_type="application/pdf")],
+            ),
+        )
+
+        node_run, _ = saved[0]
+        # Media-only output (content is None) must still produce a snapshot,
+        # and only metadata — never bytes — may be persisted.
+        assert node_run.output_snapshot == {
+            "content": "",
+            "images": [{"id": "pic.jpg", "mime_type": "image/jpeg"}],
+            "files": [{"id": "doc.pdf", "filename": "doc.pdf", "file_type": "application/pdf"}],
+        }
+
+    @pytest.mark.asyncio
     async def test_upsert_node_run_updates_existing_node_run(self, monkeypatch: pytest.MonkeyPatch):
         saved: list[NodeRun] = []
         existing = NodeRun.model_construct(
@@ -228,7 +279,9 @@ class TestWorkflowPersistence:
         monkeypatch.setattr(NodeRun, "save", fake_save)
 
         sync = _sync_with_fake_run()
-        sync._node_by_name = {"fetch": WorkflowNode(id="node-1", name="fetch", executor_key="tool")}
+        sync._node_by_name = {
+            "fetch": WorkflowNode(id="node-1", name="fetch", executor_key="tool", step_objective="fetch data")
+        }
 
         await sync._upsert_node_run(StepOutput(step_name="fetch", content="bad", success=False, error="boom"))
 
@@ -270,7 +323,7 @@ class TestWorkflowPersistence:
         monkeypatch.setattr(persistence, "NodeRun", FakeNodeRun)
 
         sync = _sync_with_fake_run()
-        sync._node_by_name = {"fetch": WorkflowNode(name="fetch", executor_key="tool")}
+        sync._node_by_name = {"fetch": WorkflowNode(name="fetch", executor_key="tool", step_objective="fetch data")}
 
         await sync._upsert_node_run(
             StepOutput(step_name="fetch", content="ok", success=True),
@@ -350,7 +403,14 @@ class TestWorkflowPersistence:
 
     def test_resolve_status_skip_tolerated_failure_keeps_run_completed(self):
         """A failed step whose node is on_error=skip must not force the run to FAILED."""
-        node_by_name = {"opt": WorkflowNode(name="opt", executor_key="t", step_config=StepConfig(on_error="skip"))}
+        node_by_name = {
+            "opt": WorkflowNode(
+                name="opt",
+                executor_key="t",
+                step_config=StepConfig(on_error="skip"),
+                step_objective="run optional step",
+            )
+        }
         run_output = WorkflowRunOutput(content="done", status=RunStatus.completed)
         status = persistence._resolve_workflow_run_status(
             run_output,
@@ -361,7 +421,14 @@ class TestWorkflowPersistence:
 
     def test_resolve_status_non_skip_failure_still_forces_failed(self):
         """A failed step on a fail/default node still forces FAILED (regression guard)."""
-        node_by_name = {"crit": WorkflowNode(name="crit", executor_key="t", step_config=StepConfig(on_error="fail"))}
+        node_by_name = {
+            "crit": WorkflowNode(
+                name="crit",
+                executor_key="t",
+                step_config=StepConfig(on_error="fail"),
+                step_objective="run critical step",
+            )
+        }
         run_output = WorkflowRunOutput(content="done", status=RunStatus.completed)
         status = persistence._resolve_workflow_run_status(
             run_output,
@@ -409,7 +476,12 @@ class TestWorkflowPersistence:
 
         sync = _sync_with_fake_run()
         sync._node_by_name = {
-            "opt": WorkflowNode(name="opt", executor_key="t", step_config=StepConfig(on_error="skip"))
+            "opt": WorkflowNode(
+                name="opt",
+                executor_key="t",
+                step_config=StepConfig(on_error="skip"),
+                step_objective="run optional step",
+            )
         }
 
         await sync._upsert_node_run(StepOutput(step_name="opt", content="boom", success=False, error="boom"))

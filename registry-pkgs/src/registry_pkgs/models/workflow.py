@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections import Counter
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -216,6 +217,19 @@ class WorkflowNode(BaseModel):
     # ROUTER-only: named choices.
     choices: list[RouterChoice] = Field(default_factory=list)
 
+    # Names of previously-executed nodes whose outputs should be explicitly injected
+    # into this node's prompt at runtime.  The compiler wraps the executor with
+    # _with_intention_data which pulls each name from StepInput.previous_step_outputs
+    # and includes it in the structured prompt.  Only valid on STEP nodes;
+    # non-STEP nodes raise ValueError in _validate_shape.
+    referenced_node_names: list[str] = Field(default_factory=list)
+
+    # Plain-language statement of what this step must accomplish.
+    # Required on STEP nodes; forbidden on all other node types.
+    # Rendered into the executor's prompt alongside WorkflowDefinition.description
+    # and referenced nodes' objectives via render_step_prompt().
+    step_objective: str | None = None
+
     # CEL expression used by condition / router nodes.
     # Condition: returns bool; available variables: input, previous_step_content,
     #            previous_step_outputs, additional_data, session_state
@@ -223,6 +237,14 @@ class WorkflowNode(BaseModel):
     #            step_choices (list of all choice names)
     condition_cel: str | None = None
     loop_config: LoopConfig | None = None
+
+    @field_validator("step_objective")
+    @classmethod
+    def _normalize_step_objective(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        collapsed = re.sub(r"\s+", " ", value).strip()
+        return collapsed or None
 
     @field_validator("a2a_pool")
     @classmethod
@@ -254,7 +276,14 @@ class WorkflowNode(BaseModel):
                 raise ValueError("step node must not define condition_cel")
             if self.loop_config is not None:
                 raise ValueError("step node must not define loop_config")
+            if not self.step_objective:
+                raise ValueError("step node requires step_objective")
             return self
+
+        if self.referenced_node_names:
+            raise ValueError("referenced_node_names is only supported on step nodes")
+        if self.step_objective is not None:
+            raise ValueError("step_objective is only valid on step nodes")
 
         if self.node_type == WorkflowNodeType.PARALLEL:
             if len(self.children) < 2:
@@ -404,6 +433,48 @@ class ResolvedDependency(BaseModel):
     source_node_run_id: PydanticObjectId | None = None
 
 
+def _collect_node_names_with_duplicates(nodes: list[WorkflowNode]) -> list[str]:
+    """Depth-first collect of every node name, preserving duplicates for Counter-based uniqueness check."""
+    names: list[str] = []
+    for node in nodes:
+        names.append(node.name)
+        names.extend(_collect_node_names_with_duplicates(node.children))
+        names.extend(_collect_node_names_with_duplicates(node.true_steps))
+        names.extend(_collect_node_names_with_duplicates(node.false_steps))
+        for choice in node.choices:
+            names.extend(_collect_node_names_with_duplicates(choice.steps))
+    return names
+
+
+def _collect_all_node_names(nodes: list[WorkflowNode]) -> set[str]:
+    """Recursively collect every node name in the workflow tree."""
+    names: set[str] = set()
+    for node in nodes:
+        names.add(node.name)
+        names.update(_collect_all_node_names(node.children))
+        names.update(_collect_all_node_names(node.true_steps))
+        names.update(_collect_all_node_names(node.false_steps))
+        for choice in node.choices:
+            names.update(_collect_all_node_names(choice.steps))
+    return names
+
+
+def _validate_references_exist(nodes: list[WorkflowNode], all_names: set[str]) -> None:
+    """Raise ValueError if any step node references a name absent from the definition."""
+    for node in nodes:
+        if node.referenced_node_names:
+            unknown = [n for n in node.referenced_node_names if n not in all_names]
+            if unknown:
+                raise ValueError(
+                    f"node {node.name!r} references unknown node names {unknown}; available names: {sorted(all_names)}"
+                )
+        _validate_references_exist(node.children, all_names)
+        _validate_references_exist(node.true_steps, all_names)
+        _validate_references_exist(node.false_steps, all_names)
+        for choice in node.choices:
+            _validate_references_exist(choice.steps, all_names)
+
+
 class WorkflowDefinition(Document):
     name: str
     description: str | None = None
@@ -420,6 +491,28 @@ class WorkflowDefinition(Document):
         if not value:
             raise ValueError("workflow definition requires at least 1 root node")
         return value
+
+    @model_validator(mode="after")
+    def _validate_node_names_unique(self) -> WorkflowDefinition:
+        """Every node name must be unique across the entire workflow tree.
+
+        referenced_node_names resolution relies on one flat name→node map spanning
+        the whole tree, so two nodes sharing a name in different branches are already
+        ambiguous even if they never execute concurrently.
+        """
+        duplicates = sorted(
+            name for name, count in Counter(_collect_node_names_with_duplicates(self.nodes)).items() if count > 1
+        )
+        if duplicates:
+            raise ValueError(f"node names must be unique across the workflow; duplicates found: {duplicates}")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_referenced_node_names_exist(self) -> WorkflowDefinition:
+        """Every name in referenced_node_names must match a node that exists in the definition."""
+        all_names = _collect_all_node_names(self.nodes)
+        _validate_references_exist(self.nodes, all_names)
+        return self
 
     class Settings:
         name = "workflow_definitions"
@@ -514,11 +607,12 @@ class WorkflowRun(Document):
     pending_requirements: list[dict[str, Any]] = Field(default_factory=list)
 
     # Non-sensitive identity of the triggering user, captured so an HITL resume
-    # can re-mint a short-lived service JWT on their behalf. We deliberately do
-    # NOT persist the raw bearer token — see _prepare_resume_credentials.
+    # can reconstruct their auth context. We deliberately do NOT persist the raw
+    # bearer token — see ``WorkflowControlService._refresh_triggering_auth_context``.
     triggering_user_id: str | None = None
     triggering_username: str | None = None
     triggering_scopes: list[str] | None = None
+    triggering_client_id: str | None = None
 
     class Settings:
         name = "workflow_runs"

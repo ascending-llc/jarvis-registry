@@ -47,6 +47,7 @@ class FederationStatsResponse(BaseModel):
     agentCount: int = 0
     toolCount: int = 0
     importedTotal: int = 0
+    unimportedTotal: int = 0
 
     model_config = ConfigDict(populate_by_name=True, use_enum_values=True, from_attributes=True)
 
@@ -59,11 +60,17 @@ class FederationLastSyncSummaryResponse(BaseModel):
     updatedMcpServers: int = 0
     deletedMcpServers: int = 0
     unchangedMcpServers: int = 0
+    skippedMcpServers: int = 0
 
     createdAgents: int = 0
     updatedAgents: int = 0
     deletedAgents: int = 0
     unchangedAgents: int = 0
+    skippedAgents: int = 0
+    vectorSyncFailedMcpServers: int = 0
+    vectorSyncFailedAgents: int = 0
+    mongoApplyFailedMcpServers: int = 0
+    mongoApplyFailedAgents: int = 0
 
     errors: int = 0
     errorMessages: list[str] = Field(default_factory=list)
@@ -111,6 +118,7 @@ class FederationSyncJobResponse(BaseModel):
     phase: str
     startedAt: datetime | None = None
     finishedAt: datetime | None = None
+    error: str | None = None
 
     model_config = ConfigDict(populate_by_name=True, use_enum_values=True, from_attributes=True)
 
@@ -123,6 +131,7 @@ class FederationSyncDryRunSummaryResponse(BaseModel):
     updatedMcpServers: int = 0
     deletedMcpServers: int = 0
     unchangedMcpServers: int = 0
+    skippedMcpServers: int = 0
 
     createdAgents: int = 0
     updatedAgents: int = 0

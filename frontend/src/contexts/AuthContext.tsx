@@ -1,7 +1,7 @@
 import type React from 'react';
 import { createContext, type ReactNode, useContext, useEffect, useState } from 'react';
 
-import { getBasePath } from '@/config';
+import { APP_ROUTES, getBrowserPath, isLoginBrowserPath } from '@/routes';
 import SERVICES from '@/services';
 
 interface User {
@@ -41,7 +41,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const isOnLoginPage = typeof window !== 'undefined' && window.location.pathname === `${getBasePath()}/login`;
+    const isOnLoginPage = typeof window !== 'undefined' && isLoginBrowserPath(window.location.pathname);
     if (isOnLoginPage) {
       setUser(null);
       setLoading(false);
@@ -78,7 +78,12 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     } catch (_error) {
       // Ignore errors during logout
     } finally {
-      setUser(null);
+      const loginPath = getBrowserPath(APP_ROUTES.login);
+      try {
+        window.location.replace(loginPath);
+      } catch (_error) {
+        window.location.assign(loginPath);
+      }
     }
   };
 

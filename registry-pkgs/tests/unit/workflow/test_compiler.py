@@ -1,7 +1,9 @@
+import json
 from types import SimpleNamespace
 
 import pytest
-from agno.workflow import StepInput
+from agno.media import File, Image
+from agno.workflow import StepInput, StepOutput
 from agno.workflow.step import OnError
 from beanie import PydanticObjectId
 
@@ -16,14 +18,21 @@ from registry_pkgs.models.workflow import (
 )
 from registry_pkgs.workflows import compiler
 from registry_pkgs.workflows.compiler import step_kwargs
+from registry_pkgs.workflows.helpers import build_prompt, step_output_to_prompt_text
+from registry_pkgs.workflows.serialization import content_to_str
 
 
 async def _executor(*args, **kwargs):
     return SimpleNamespace(content="ok")
 
 
-def _step_node(name: str, executor_key: str = "tool") -> WorkflowNode:
-    return WorkflowNode(name=name, node_type=WorkflowNodeType.STEP, executor_key=executor_key)
+def _step_node(name: str, executor_key: str = "tool", objective: str | None = None) -> WorkflowNode:
+    return WorkflowNode(
+        name=name,
+        node_type=WorkflowNodeType.STEP,
+        executor_key=executor_key,
+        step_objective=objective or f"complete {name}",
+    )
 
 
 def _workflow_definition(nodes: list[WorkflowNode]) -> WorkflowDefinition:
@@ -312,6 +321,86 @@ class TestWorkflowCompiler:
 
 
 @pytest.mark.unit
+class TestMediaSnapshotIntegration:
+    """P2: media metadata round-trips through snapshots and rerun/retry replay."""
+
+    def test_serialize_step_output_includes_media_metadata(self):
+        output = StepOutput(
+            step_name="draw",
+            content="see image",
+            success=True,
+            images=[Image(content=b"raw-bytes", id="pic.jpg", mime_type="image/jpeg")],
+            files=[File(id="doc.pdf", filename="doc.pdf", file_type="application/pdf")],
+        )
+
+        serialized = compiler._serialize_step_output(output)
+
+        assert serialized["content"] == "see image"
+        assert serialized["images"] == [{"id": "pic.jpg", "mime_type": "image/jpeg"}]
+        assert serialized["files"] == [{"id": "doc.pdf", "filename": "doc.pdf", "file_type": "application/pdf"}]
+        assert b"raw-bytes" not in repr(serialized).encode()
+
+    def test_serialize_step_output_text_only_has_no_media_keys(self):
+        serialized = compiler._serialize_step_output(StepOutput(step_name="echo", content="ok", success=True))
+
+        assert "images" not in serialized
+        assert "files" not in serialized
+
+    @pytest.mark.asyncio
+    async def test_injected_executor_replays_media_shells(self):
+        node = _step_node("draw", "painter")
+        definition = _workflow_definition([node])
+        workflow = compiler.compile_workflow(
+            definition,
+            _workflow_run(),
+            executor_registry={"painter": _executor},
+            injected_outputs={
+                node.id: {
+                    "content": "generated an image",
+                    "session_state": {"restored": True},
+                    "images": [{"id": "pic.jpg", "mime_type": "image/jpeg"}],
+                    "files": [{"id": "doc.pdf", "filename": "doc.pdf", "file_type": "application/pdf"}],
+                }
+            },
+        )
+        session_state: dict = {}
+
+        output = await workflow.steps[0].executor(StepInput(input="ignored"), session_state)
+
+        assert output.content == "generated an image"
+        assert session_state["restored"] is True
+        (image,) = output.images
+        assert image.id == "pic.jpg"
+        assert image.mime_type == "image/jpeg"
+        (file,) = output.files
+        assert file.filename == "doc.pdf"
+        # Replayed shells must render the same dependency-prompt media summary
+        # as the live run so downstream prompts are identical on rerun/retry.
+        summary = step_output_to_prompt_text(output)
+        assert "Images:\n- pic.jpg, mime_type=image/jpeg" in summary
+        assert "Files:\n- doc.pdf" in summary
+
+    @pytest.mark.asyncio
+    async def test_injected_executor_without_media_replays_content_only(self):
+        node = _step_node("echo", "tool")
+        definition = _workflow_definition([node])
+        workflow = compiler.compile_workflow(
+            definition,
+            _workflow_run(),
+            executor_registry={"tool": _executor},
+            injected_outputs={node.id: {"content": "plain text", "session_state": {}}},
+        )
+
+        output = await workflow.steps[0].executor(StepInput(input="ignored"), {})
+
+        assert output.content == "plain text"
+        assert output.images is None
+        assert output.videos is None
+        assert output.audio is None
+        assert output.files is None
+
+
+@pytest.mark.unit
 class TestStepConfig:
     # ── StepConfig model validation ──────────────────────────────────────────
 
@@ -380,12 +469,14 @@ class TestStepConfig:
                 name="flaky-step",
                 node_type=WorkflowNodeType.STEP,
                 executor_key="flaky-tool",
+                step_objective="run flaky step",
                 step_config=StepConfig(max_retries=3, on_error="skip"),
             ),
             WorkflowNode(
                 name="critical-step",
                 node_type=WorkflowNodeType.STEP,
                 executor_key="critical-tool",
+                step_objective="run critical step",
                 step_config=StepConfig(max_retries=0, on_error="fail"),
             ),
         ]
@@ -988,6 +1079,671 @@ class TestNestedBranches:
             "LOOP",
             "body",
         ]
+
+
+@pytest.mark.unit
+class TestIntentionData:
+    """_with_intention_data injects per-node prompt context through StepInput.additional_data."""
+
+    def _step_node_with_refs(self, name: str, refs: list[str], objective: str | None = None) -> WorkflowNode:
+        return WorkflowNode(
+            name=name,
+            node_type=WorkflowNodeType.STEP,
+            executor_key="tool",
+            referenced_node_names=refs,
+            step_objective=objective or f"complete {name}",
+        )
+
+    def _make_previous_outputs(self, **kwargs: str) -> dict:
+        from agno.workflow import StepOutput
+
+        return {name: StepOutput(step_name=name, content=content, success=True) for name, content in kwargs.items()}
+
+    @pytest.mark.asyncio
+    async def test_build_prompt_renders_dependency_output_from_additional_data(self):
+        upstream = _step_node("Weather Agent", "tool", "fetch weather")
+        node = self._step_node_with_refs("echo", ["Weather Agent"], "summarise the weather")
+        definition = _workflow_definition([upstream, node])
+        received_prompts: list[str] = []
+
+        async def capturing_executor(step_input, session_state=None):
+            received_prompts.append(build_prompt(step_input))
+            return SimpleNamespace(content="ok")
+
+        workflow2 = compiler.compile_workflow(
+            definition, _workflow_run(), executor_registry={"tool": capturing_executor}
+        )
+        previous = self._make_previous_outputs(**{"Weather Agent": "32°C, windy"})
+        await workflow2.steps[1].executor(
+            StepInput(input="summarise the weather", previous_step_outputs=previous),
+            {},
+        )
+
+        assert len(received_prompts) == 1
+        prompt = received_prompts[0]
+        assert "**IMPORTANT: The goal of this step is to summarise the weather.**" in prompt
+        assert 'Dependencies:\n- "Weather Agent": fetch weather.' in prompt
+        assert 'Current Step Inputs:\n- "Weather Agent" outputs:' in prompt
+        assert "32°C, windy" in prompt
+
+    @pytest.mark.asyncio
+    async def test_implicit_previous_step_precedes_explicit_dependencies(self):
+        upstream_a = _step_node("Node A", "tool", "produce A")
+        upstream_b = _step_node("Node B", "tool", "produce B")
+        node = self._step_node_with_refs("echo", ["Node A", "Node B"], "combine outputs")
+        definition = _workflow_definition([upstream_a, upstream_b, node])
+        received_prompts: list[str] = []
+
+        async def capturing_executor(step_input, session_state=None):
+            received_prompts.append(build_prompt(step_input))
+            return SimpleNamespace(content="ok")
+
+        workflow = compiler.compile_workflow(
+            definition, _workflow_run(), executor_registry={"tool": capturing_executor}
+        )
+        previous = self._make_previous_outputs(**{"Node A": "output-a", "Node B": "output-b"})
+        await workflow.steps[2].executor(StepInput(input="task", previous_step_outputs=previous), {})
+
+        prompt = received_prompts[0]
+        assert prompt.index('"Node B": produce B.') < prompt.index('"Node A": produce A.')
+        assert prompt.count('"Node B": produce B.') == 1
+        assert "output-a" in prompt
+        assert "output-b" in prompt
+
+    @pytest.mark.asyncio
+    async def test_triple_echo_implicit_direct_dependencies_are_injected(self):
+        first = _step_node("Echo Agent 1", "tool", "echo input as output")
+        second = _step_node("Echo Agent 2", "tool", "echo input as output")
+        third = self._step_node_with_refs("Echo Agent 3", ["Echo Agent 1"], "echo input as output")
+        definition = _workflow_definition([first, second, third])
+        received_prompts: list[str] = []
+
+        async def capturing_executor(step_input, session_state=None):
+            received_prompts.append(build_prompt(step_input))
+            return SimpleNamespace(content="ok")
+
+        workflow = compiler.compile_workflow(
+            definition, _workflow_run(), executor_registry={"tool": capturing_executor}
+        )
+        await workflow.steps[1].executor(
+            StepInput(input="task", previous_step_outputs=self._make_previous_outputs(**{"Echo Agent 1": "one"})),
+            {},
+        )
+        await workflow.steps[2].executor(
+            StepInput(
+                input="task",
+                previous_step_outputs=self._make_previous_outputs(
+                    **{
+                        "Echo Agent 1": "one",
+                        "Echo Agent 2": "two",
+                    }
+                ),
+            ),
+            {},
+        )
+
+        second_prompt = received_prompts[0]
+        assert '"Echo Agent 1": echo input as output.' in second_prompt
+        assert "one" in second_prompt
+
+        third_prompt = received_prompts[1]
+        assert third_prompt.index('"Echo Agent 2": echo input as output.') < third_prompt.index(
+            '"Echo Agent 1": echo input as output.'
+        )
+        assert third_prompt.count('"Echo Agent 1": echo input as output.') == 1
+        assert "two" in third_prompt
+        assert "one" in third_prompt
+
+    @pytest.mark.asyncio
+    async def test_implicit_dependency_is_deduped_when_also_explicit(self):
+        first = _step_node("First", "tool", "produce first")
+        second = self._step_node_with_refs("Second", ["First"], "consume first")
+        definition = _workflow_definition([first, second])
+        received_prompts: list[str] = []
+
+        async def capturing_executor(step_input, session_state=None):
+            received_prompts.append(build_prompt(step_input))
+            return SimpleNamespace(content="ok")
+
+        workflow = compiler.compile_workflow(
+            definition, _workflow_run(), executor_registry={"tool": capturing_executor}
+        )
+        await workflow.steps[1].executor(
+            StepInput(input="task", previous_step_outputs=self._make_previous_outputs(First="first-output")),
+            {},
+        )
+
+        prompt = received_prompts[0]
+        assert prompt.count('"First": produce first.') == 1
+        assert prompt.count('"First" outputs:') == 1
+
+    @pytest.mark.asyncio
+    async def test_implicit_dependency_does_not_skip_over_container_nodes(self):
+        first = _step_node("First", "tool", "produce first")
+        parallel = WorkflowNode(
+            name="Parallel",
+            node_type=WorkflowNodeType.PARALLEL,
+            children=[
+                _step_node("Parallel Child", "tool", "produce child"),
+                _step_node("Parallel Sibling", "tool", "produce sibling"),
+            ],
+        )
+        after = _step_node("After Parallel", "tool", "run after parallel")
+        definition = _workflow_definition([first, parallel, after])
+        received_prompts: list[str] = []
+
+        async def capturing_executor(step_input, session_state=None):
+            received_prompts.append(build_prompt(step_input))
+            return SimpleNamespace(content="ok")
+
+        workflow = compiler.compile_workflow(
+            definition, _workflow_run(), executor_registry={"tool": capturing_executor}
+        )
+        await workflow.steps[2].executor(
+            StepInput(
+                input="task",
+                previous_step_outputs=self._make_previous_outputs(
+                    **{
+                        "First": "first-output",
+                        "Parallel Child": "child-output",
+                        "Parallel Sibling": "sibling-output",
+                    }
+                ),
+            ),
+            {},
+        )
+
+        prompt = received_prompts[0]
+        assert "Dependencies:" not in prompt
+        assert "first-output" not in prompt
+        assert "child-output" not in prompt
+        assert "sibling-output" not in prompt
+
+    @pytest.mark.asyncio
+    async def test_missing_dependency_output_lists_dependency_without_current_input(self):
+        """A referenced node with no runtime output is listed but not rendered as an input block."""
+        ghost = _step_node("Ghost Node", "tool", "produce ghost output")
+        node = self._step_node_with_refs("echo", ["Ghost Node"], "consume ghost output")
+        definition = _workflow_definition([ghost, node])
+        received_prompts: list[str] = []
+
+        async def capturing_executor(step_input, session_state=None):
+            received_prompts.append(build_prompt(step_input))
+            return SimpleNamespace(content="ok")
+
+        workflow = compiler.compile_workflow(
+            definition, _workflow_run(), executor_registry={"tool": capturing_executor}
+        )
+        # previous_step_outputs does NOT contain "Ghost Node"
+        await workflow.steps[1].executor(StepInput(input="my task", previous_step_outputs={}), {})
+
+        prompt = received_prompts[0]
+        assert 'Dependencies:\n- "Ghost Node": produce ghost output.' in prompt
+        assert "Current Step Inputs:" not in prompt
+
+    @pytest.mark.skip(reason="truncation temporarily disabled")
+    @pytest.mark.asyncio
+    async def test_long_output_is_truncated_in_dependency_prompt(self):
+        upstream = _step_node("Big Node", "tool", "produce long output")
+        node = self._step_node_with_refs("echo", ["Big Node"], "consume long output")
+        definition = _workflow_definition([upstream, node])
+        received_prompts: list[str] = []
+
+        async def capturing_executor(step_input, session_state=None):
+            received_prompts.append(build_prompt(step_input))
+            return SimpleNamespace(content="ok")
+
+        workflow = compiler.compile_workflow(
+            definition, _workflow_run(), executor_registry={"tool": capturing_executor}
+        )
+        long_content = "x" * 10_000
+        previous = self._make_previous_outputs(**{"Big Node": long_content})
+        await workflow.steps[1].executor(StepInput(input="task", previous_step_outputs=previous), {})
+
+        prompt = received_prompts[0]
+        assert "x" * 8000 in prompt
+        assert "[truncated: 2000 chars omitted]" in prompt
+
+    @pytest.mark.asyncio
+    async def test_no_dependencies_entry_node_renders_initial_input(self):
+        node = _step_node("plain", "tool", "handle initial input")
+        definition = _workflow_definition([node])
+        received_prompts: list[str] = []
+
+        async def capturing_executor(step_input, session_state=None):
+            received_prompts.append(build_prompt(step_input))
+            return SimpleNamespace(content="ok")
+
+        workflow = compiler.compile_workflow(
+            definition, _workflow_run(), executor_registry={"tool": capturing_executor}
+        )
+        previous = self._make_previous_outputs(**{"Some Node": "irrelevant"})
+        await workflow.steps[0].executor(StepInput(input="original task", previous_step_outputs=previous), {})
+
+        assert received_prompts[0] == "**IMPORTANT: The goal of this step is to handle initial input.**"
+
+        await workflow.steps[0].executor(StepInput(input="original task"), {})
+        assert "Workflow trigger input" in received_prompts[1]
+        assert "original task" in received_prompts[1]
+
+    @pytest.mark.asyncio
+    async def test_input_snapshot_captures_original_input_before_injection(self):
+        """_with_input_capture records the pre-additional_data StepInput."""
+        upstream = _step_node("Upstream", "tool", "produce upstream content")
+        node = self._step_node_with_refs("echo", ["Upstream"], "consume upstream content")
+        definition = _workflow_definition([upstream, node])
+
+        workflow = compiler.compile_workflow(definition, _workflow_run(), executor_registry={"tool": _executor})
+        session_state: dict = {}
+        previous = self._make_previous_outputs(**{"Upstream": "upstream-content"})
+        raw_input = StepInput(input="original task", previous_step_outputs=previous, additional_data={"custom": "keep"})
+        await workflow.steps[1].executor(
+            raw_input,
+            session_state,
+        )
+
+        snapshot = session_state[compiler.NODE_INPUT_SNAPSHOTS_KEY][node.id]
+        assert snapshot["input"] == "original task"
+        assert snapshot["additional_data"] == {"custom": "keep"}
+        assert raw_input.additional_data == {"custom": "keep"}
+
+    @pytest.mark.asyncio
+    async def test_intention_data_preserves_existing_additional_data_and_overrides_system_keys(self):
+        node = _step_node("echo", "tool", "official objective")
+        definition = _workflow_definition([node])
+        received: list[dict] = []
+
+        async def capturing_executor(step_input, session_state=None):
+            received.append(step_input.additional_data)
+            return SimpleNamespace(content="ok")
+
+        workflow = compiler.compile_workflow(
+            definition, _workflow_run(), executor_registry={"tool": capturing_executor}
+        )
+        await workflow.steps[0].executor(
+            StepInput(
+                input="task",
+                additional_data={"custom": "keep", "step_objective": "caller objective"},
+            ),
+            {},
+        )
+
+        assert received == [
+            {
+                "custom": "keep",
+                "step_objective": "caller objective",
+                "jarvis_step_objective": "official objective",
+                "jarvis_workflow_description": None,
+                "jarvis_dependency_node_names": [],
+                "jarvis_dependency_objectives": {},
+                "jarvis_initial_input": None,
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_shared_executor_key_has_isolated_step_objectives(self):
+        first = _step_node("first", "tool", "do the first task")
+        second = _step_node("second", "tool", "do the second task")
+        definition = _workflow_definition([first, second])
+        prompts: list[str] = []
+
+        async def shared_executor(step_input, session_state=None):
+            prompts.append(build_prompt(step_input))
+            return SimpleNamespace(content="ok")
+
+        workflow = compiler.compile_workflow(definition, _workflow_run(), executor_registry={"tool": shared_executor})
+        await workflow.steps[0].executor(StepInput(input="task"), {})
+        await workflow.steps[1].executor(StepInput(input="task"), {})
+
+        assert "**IMPORTANT: The goal of this step is to do the first task.**" in prompts[0]
+        assert "**IMPORTANT: The goal of this step is to do the second task.**" in prompts[1]
+
+    @pytest.mark.asyncio
+    async def test_workflow_description_is_rendered_into_prompt(self):
+        node = _step_node("echo", "tool", "complete the step")
+        definition = WorkflowDefinition.model_construct(
+            id=PydanticObjectId(),
+            name="demo-workflow",
+            description="coordinate a research workflow",
+            nodes=[node],
+        )
+        prompts: list[str] = []
+
+        async def capturing_executor(step_input, session_state=None):
+            prompts.append(build_prompt(step_input))
+            return SimpleNamespace(content="ok")
+
+        workflow = compiler.compile_workflow(
+            definition, _workflow_run(), executor_registry={"tool": capturing_executor}
+        )
+        await workflow.steps[0].executor(StepInput(input="task"), {})
+
+        assert "This step is part of a larger workflow: coordinate a research workflow" in prompts[0]
+
+    @pytest.mark.asyncio
+    async def test_run_initial_input_rendered_as_trigger_parameters_for_entry_node(self):
+        node = _step_node("github", "tool", "find the last merged PR")
+        definition = _workflow_definition([node])
+        run = WorkflowRun.model_construct(
+            id=PydanticObjectId(),
+            workflow_definition_id=PydanticObjectId(),
+            status=WorkflowRunStatus.RUNNING,
+            initial_input={"memberId": "U123", "displayName": "Kent"},
+        )
+        prompts: list[str] = []
+
+        async def capturing_executor(step_input, session_state=None):
+            prompts.append(build_prompt(step_input))
+            return SimpleNamespace(content="ok")
+
+        workflow = compiler.compile_workflow(definition, run, executor_registry={"tool": capturing_executor})
+        await workflow.steps[0].executor(StepInput(input="task"), {})
+
+        assert "Workflow Trigger Parameters" in prompts[0]
+        assert '"memberId": "U123"' in prompts[0]
+        assert '"displayName": "Kent"' in prompts[0]
+
+    @pytest.mark.asyncio
+    async def test_run_initial_input_rendered_for_downstream_node_with_dependencies(self):
+        """A node with an (implicit or explicit) dependency still sees run.initial_input.
+
+        This is the github -> slack scenario: `slack` implicitly depends on `github`
+        as the previous step in the same sequence, so the old entry-node-only
+        `initial_input` never reached it — but trigger_parameters is unconditional.
+        """
+        github = _step_node("github", "tool", "find the last merged PR")
+        slack = _step_node("slack", "tool", "message the user from initial input")
+        definition = _workflow_definition([github, slack])
+        run = WorkflowRun.model_construct(
+            id=PydanticObjectId(),
+            workflow_definition_id=PydanticObjectId(),
+            status=WorkflowRunStatus.RUNNING,
+            initial_input={"memberId": "U123", "displayName": "Kent"},
+        )
+        prompts: list[str] = []
+
+        async def capturing_executor(step_input, session_state=None):
+            prompts.append(build_prompt(step_input))
+            return SimpleNamespace(content="ok")
+
+        workflow = compiler.compile_workflow(definition, run, executor_registry={"tool": capturing_executor})
+        previous = self._make_previous_outputs(**{"github": "PR #42: Fix the bug"})
+        await workflow.steps[1].executor(StepInput(input="task", previous_step_outputs=previous), {})
+
+        prompt = prompts[0]
+        assert "Workflow Trigger Parameters" in prompt
+        assert '"memberId": "U123"' in prompt
+        assert '"displayName": "Kent"' in prompt
+        # Still a genuine dependency, not the old entry-node-only trigger-input path.
+        assert 'Dependencies:\n- "github": find the last merged PR.' in prompt
+
+    @pytest.mark.asyncio
+    async def test_run_without_initial_input_omits_trigger_parameters(self):
+        node = _step_node("echo", "tool", "do the thing")
+        definition = _workflow_definition([node])
+        prompts: list[str] = []
+
+        async def capturing_executor(step_input, session_state=None):
+            prompts.append(build_prompt(step_input))
+            return SimpleNamespace(content="ok")
+
+        workflow = compiler.compile_workflow(
+            definition, _workflow_run(), executor_registry={"tool": capturing_executor}
+        )
+        await workflow.steps[0].executor(StepInput(input="task"), {})
+
+        assert "Workflow Trigger Parameters" not in prompts[0]
+
+    @pytest.mark.asyncio
+    async def test_oversized_initial_input_is_truncated_in_trigger_parameters(self):
+        """trigger_parameters gets the same 8000-char cap as dependency content (helpers._truncate)."""
+        node = _step_node("echo", "tool", "do the thing")
+        definition = _workflow_definition([node])
+        oversized_input = {"blob": "x" * 10_000}
+        run = WorkflowRun.model_construct(
+            id=PydanticObjectId(),
+            workflow_definition_id=PydanticObjectId(),
+            status=WorkflowRunStatus.RUNNING,
+            initial_input=oversized_input,
+        )
+        prompts: list[str] = []
+
+        async def capturing_executor(step_input, session_state=None):
+            prompts.append(build_prompt(step_input))
+            return SimpleNamespace(content="ok")
+
+        workflow = compiler.compile_workflow(definition, run, executor_registry={"tool": capturing_executor})
+        await workflow.steps[0].executor(StepInput(input="task"), {})
+
+        prompt = prompts[0]
+        full_json = content_to_str(oversized_input)
+        omitted = len(full_json) - 8000
+        # `_indented_block` reflows the truncated text's line-leading whitespace, so assert on
+        # the un-reflowable pieces: the full oversized run must not survive intact, and the
+        # truncation note must carry the exact omitted-char count.
+        assert "x" * 10_000 not in prompt
+        assert f"[truncated: {omitted} chars omitted]" in prompt
+
+    def test_build_prompt_falls_back_without_additional_data(self):
+        assert build_prompt(StepInput(input="hello")) == "hello"
+        assert build_prompt(StepInput(input="")) == "(no input)"
+
+    def test_step_objective_is_required_on_step_node(self):
+        with pytest.raises(ValueError, match="step node requires step_objective"):
+            WorkflowNode(name="missing-objective", node_type=WorkflowNodeType.STEP, executor_key="tool")
+
+    def test_step_objective_rejected_on_non_step_node(self):
+        with pytest.raises(ValueError, match="step_objective is only valid on step nodes"):
+            WorkflowNode(
+                name="par",
+                node_type=WorkflowNodeType.PARALLEL,
+                step_objective="not allowed",
+                children=[_step_node("a", "x"), _step_node("b", "y")],
+            )
+
+    def test_step_objective_whitespace_is_normalized(self):
+        node = WorkflowNode(
+            name="normalise",
+            node_type=WorkflowNodeType.STEP,
+            executor_key="tool",
+            step_objective="  do\n  the\tthing  ",
+        )
+        assert node.step_objective == "do the thing"
+
+    def test_duplicate_node_names_rejected_at_definition_time(self):
+        first = _step_node("dup", "tool-a")
+        second = _step_node("dup", "tool-b")
+        with pytest.raises(ValueError, match="duplicates found: \\['dup'\\]"):
+            WorkflowDefinition(name="bad", nodes=[first, second])
+
+    @pytest.mark.asyncio
+    async def test_retry_does_not_accumulate_additional_data(self):
+        """Each retry attempt receives a fresh enriched copy rather than mutating StepInput."""
+        upstream = _step_node("Upstream", "tool", "produce upstream content")
+        node = self._step_node_with_refs("echo", ["Upstream"], "consume upstream")
+        definition = _workflow_definition([upstream, node])
+        call_data: list[dict] = []
+
+        async def capturing_executor(step_input, session_state=None):
+            call_data.append(step_input.additional_data)
+            return SimpleNamespace(content="ok", success=True, error=None)
+
+        workflow = compiler.compile_workflow(
+            definition, _workflow_run(), executor_registry={"tool": capturing_executor}
+        )
+        previous = self._make_previous_outputs(**{"Upstream": "upstream-content"})
+        shared_input = StepInput(
+            input="original task",
+            previous_step_outputs=previous,
+            additional_data={"custom": "value"},
+        )
+        await workflow.steps[1].executor(shared_input, {})
+        await workflow.steps[1].executor(shared_input, {})
+
+        assert shared_input.additional_data == {"custom": "value"}
+        assert [data["jarvis_dependency_node_names"] for data in call_data] == [["Upstream"], ["Upstream"]]
+
+    def test_referenced_node_names_rejected_on_non_step_node(self):
+        with pytest.raises(ValueError, match="referenced_node_names is only supported on step nodes"):
+            WorkflowNode(
+                name="par",
+                node_type=WorkflowNodeType.PARALLEL,
+                referenced_node_names=["some-node"],
+                children=[_step_node("a", "x"), _step_node("b", "y")],
+            )
+
+    def test_unknown_referenced_node_name_rejected_at_definition_time(self):
+        """A typo in referenced_node_names is caught when the WorkflowDefinition is built."""
+        from registry_pkgs.models.workflow import _collect_all_node_names, _validate_references_exist
+
+        node = self._step_node_with_refs("echo", ["Typo Node Name"])
+        nodes = [node]
+        all_names = _collect_all_node_names(nodes)
+        with pytest.raises(ValueError, match="references unknown node names"):
+            _validate_references_exist(nodes, all_names)
+
+    def test_valid_referenced_node_name_accepted(self):
+        """A name that matches a sibling node in the definition must not raise."""
+        from registry_pkgs.models.workflow import _collect_all_node_names, _validate_references_exist
+
+        upstream = _step_node("Upstream", "tool")
+        downstream = self._step_node_with_refs("Downstream", ["Upstream"])
+        nodes = [upstream, downstream]
+        all_names = _collect_all_node_names(nodes)
+        _validate_references_exist(nodes, all_names)
+
+    def test_referenced_node_name_in_nested_branch_accepted(self):
+        """A referenced name that lives inside a nested branch (e.g. parallel child) is valid."""
+        from registry_pkgs.models.workflow import _collect_all_node_names, _validate_references_exist
+
+        inner = _step_node("Inner Step", "tool")
+        parallel = WorkflowNode(
+            name="Par",
+            node_type=WorkflowNodeType.PARALLEL,
+            children=[inner, _step_node("Other", "tool")],
+        )
+        consumer = self._step_node_with_refs("Consumer", ["Inner Step"])
+        nodes = [parallel, consumer]
+        all_names = _collect_all_node_names(nodes)
+        _validate_references_exist(nodes, all_names)
+
+    @pytest.mark.asyncio
+    async def test_falsy_but_real_content_is_rendered(self):
+        """0, False, {}, [] are legitimate step outputs and must not be silently dropped.
+
+        The guard must be `is None`, not truthiness, so falsy-but-real content
+        still gets rendered into the downstream prompt.
+        """
+        from agno.workflow import StepOutput
+
+        for falsy_content in [False, 0, {}, []]:
+            upstream = _step_node("Validator", "tool", "validate data")
+            node = self._step_node_with_refs("echo", ["Validator"], "consume validation")
+            definition = _workflow_definition([upstream, node])
+            received_prompts: list[str] = []
+
+            async def capturing_executor(step_input, session_state=None, _prompts=received_prompts):
+                _prompts.append(build_prompt(step_input))
+                return SimpleNamespace(content="ok")
+
+            workflow = compiler.compile_workflow(
+                definition, _workflow_run(), executor_registry={"tool": capturing_executor}
+            )
+            previous = {"Validator": StepOutput(step_name="Validator", content=falsy_content, success=True)}
+            await workflow.steps[1].executor(StepInput(input="task", previous_step_outputs=previous), {})
+
+            assert 'Current Step Inputs:\n- "Validator" outputs:' in received_prompts[-1], (
+                f"falsy content {falsy_content!r} was silently dropped but should have been rendered"
+            )
+
+    @pytest.mark.asyncio
+    async def test_dict_content_serialized_as_json_not_python_repr(self):
+        """StepOutput.content typed as Union[str, Dict, ...].
+
+        When content is a dict, injecting it via f-string would produce Python
+        repr (single-quoted keys).  _content_to_str must emit valid JSON instead.
+        """
+        from agno.workflow import StepOutput
+
+        upstream = _step_node("Structured Node", "tool", "produce structured data")
+        node = self._step_node_with_refs("echo", ["Structured Node"], "analyse structured data")
+        definition = _workflow_definition([upstream, node])
+        received_prompts: list[str] = []
+
+        async def capturing_executor(step_input, session_state=None):
+            received_prompts.append(build_prompt(step_input))
+            return SimpleNamespace(content="ok")
+
+        workflow = compiler.compile_workflow(
+            definition, _workflow_run(), executor_registry={"tool": capturing_executor}
+        )
+        dict_content = {"temperature": 32.3, "unit": "celsius", "city": "New York"}
+        previous = {"Structured Node": StepOutput(step_name="Structured Node", content=dict_content, success=True)}
+        await workflow.steps[1].executor(StepInput(input="analyse", previous_step_outputs=previous), {})
+
+        prompt = received_prompts[0]
+        assert 'Current Step Inputs:\n- "Structured Node" outputs:' in prompt
+        # Must not be Python repr (single-quoted keys)
+        assert "{'temperature'" not in prompt
+        # Must be valid JSON embedded in the prompt
+        json_start = prompt.index("{")
+        embedded = prompt[json_start : prompt.rindex("}") + 1]
+        parsed = json.loads(embedded)
+        assert parsed["temperature"] == 32.3
+        assert parsed["city"] == "New York"
+
+    @pytest.mark.asyncio
+    async def test_step_output_media_is_summarized_in_dependency_prompt(self):
+        from agno.media import Audio, File, Image, Video
+        from agno.workflow import StepOutput
+
+        upstream = _step_node("Media Node", "tool", "produce media")
+        node = self._step_node_with_refs("echo", ["Media Node"], "consume media")
+        definition = _workflow_definition([upstream, node])
+        received_prompts: list[str] = []
+
+        async def capturing_executor(step_input, session_state=None):
+            received_prompts.append(build_prompt(step_input))
+            return SimpleNamespace(content="ok")
+
+        workflow = compiler.compile_workflow(
+            definition, _workflow_run(), executor_registry={"tool": capturing_executor}
+        )
+        previous = {
+            "Media Node": StepOutput(
+                step_name="Media Node",
+                content="done",
+                images=[Image(content=b"image-bytes", mime_type="image/png", id="image-1")],
+                videos=[Video(content=b"video-bytes", mime_type="video/mp4", id="video-1")],
+                audio=[Audio(content=b"audio-bytes", mime_type="audio/mpeg", id="audio-1")],
+                files=[
+                    File(
+                        content='{"title": "Result"}',
+                        mime_type="application/json",
+                        file_type="application/json",
+                        filename="metadata.json",
+                    )
+                ],
+                success=True,
+            )
+        }
+        await workflow.steps[1].executor(StepInput(input="analyse", previous_step_outputs=previous), {})
+
+        prompt = received_prompts[0]
+        assert "Text output:" in prompt
+        assert "  done" in prompt
+        assert "Images:" in prompt
+        assert "- image-1, mime_type=image/png" in prompt
+        assert "Videos:" in prompt
+        assert "- video-1, mime_type=video/mp4" in prompt
+        assert "Audio:" in prompt
+        assert "- audio-1, mime_type=audio/mpeg" in prompt
+        assert "Files:" in prompt
+        assert "- metadata.json, mime_type=application/json, file_type=application/json" in prompt
+        assert '{"title": "Result"}' in prompt
+        assert "image-bytes" not in prompt
+        assert "video-bytes" not in prompt
+        assert "audio-bytes" not in prompt
 
 
 @pytest.mark.unit

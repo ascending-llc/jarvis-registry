@@ -3,9 +3,11 @@ from unittest.mock import AsyncMock
 
 import pytest
 from a2a.types import AgentCard
+from agno.workflow import StepInput
 from beanie import PydanticObjectId
 from pydantic import HttpUrl
 
+from registry_pkgs.core import agentcore_jwt
 from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.models.a2a_agent import A2AAgent, AgentConfig
 from registry_pkgs.models.enums import AgentCoreRuntimeAccessMode
@@ -13,7 +15,6 @@ from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 from registry_pkgs.models.federation import AgentCoreRuntimeAccessConfig, AgentCoreRuntimeJwtConfig
 from registry_pkgs.workflows import a2a_client, executor_resolver
 from registry_pkgs.workflows import a2a_executor as a2a_exec
-from registry_pkgs.workflows import mcp_executor as mcp_exec
 from registry_pkgs.workflows.helpers import build_prompt
 
 
@@ -23,16 +24,20 @@ def _jwt_config(**overrides) -> JwtSigningConfig:
         "jwt_issuer": "https://jarvis.example.com",
         "jwt_self_signed_kid": "kid-v1",
         "jwt_audience": "jarvis-services",
+        "registry_app_name": "jarvis-registry-client",
     }
     defaults.update(overrides)
     return JwtSigningConfig(**defaults)
 
 
-def _mcp_server(name: str = "github") -> ExtendedMCPServer:
+def _mcp_server(name: str = "github", runtime_access: dict | None = None) -> ExtendedMCPServer:
+    config = {"description": "server description", "url": f"https://{name}.example.com/mcp"}
+    if runtime_access is not None:
+        config["runtimeAccess"] = runtime_access
     return ExtendedMCPServer.model_construct(
         id=PydanticObjectId(),
         serverName=name,
-        config={"description": "server description"},
+        config=config,
         author=PydanticObjectId(),
     )
 
@@ -98,10 +103,8 @@ class TestExecutorResolver:
         registry = await executor_resolver.build_executor_registry(
             ["alpha", "beta", "alpha"],
             llm=SimpleNamespace(),
-            registry_url="https://registry.example.com",
-            registry_token="token",
+            auth_context=None,
             jwt_config=_jwt_config(),
-            user_id=None,
         )
 
         assert seen == ["alpha", "beta"]
@@ -120,10 +123,8 @@ class TestExecutorResolver:
         resolved = await executor_resolver._resolve_executor(
             "github",
             llm=SimpleNamespace(),
-            registry_url="https://registry.example.com",
-            registry_token="token",
+            auth_context=None,
             jwt_config=_jwt_config(),
-            accessible_agent_ids=None,
         )
 
         assert resolved == "mcp-executor"
@@ -138,16 +139,14 @@ class TestExecutorResolver:
         resolved = await executor_resolver._resolve_executor(
             "echo",
             llm=SimpleNamespace(),
-            registry_url="https://registry.example.com",
-            registry_token="token",
+            auth_context=None,
             jwt_config=_jwt_config(),
-            accessible_agent_ids=None,
         )
 
-        output = await resolved(SimpleNamespace(input="hello", previous_step_content="ctx"), {"echo_count": 0})
+        output = await resolved(StepInput(input="hello", previous_step_content="ctx"), {"echo_count": 0})
 
         assert output.success is True
-        assert output.content == "Context from previous step:\nctx\n\nhello"
+        assert output.content == "hello"
         mcp_find_one.assert_not_awaited()
         a2a_find_one.assert_not_awaited()
 
@@ -159,7 +158,7 @@ class TestExecutorResolver:
         monkeypatch.setattr(executor_resolver.A2AAgent, "find_one", find_one)
         captured_agents: list = []
 
-        def fake_make_a2a_executor(agent, *, jwt_config, httpx_client=None):
+        def fake_make_a2a_executor(agent, *, jwt_config, httpx_client=None, headers_provider=None):
             captured_agents.append(agent)
             return "a2a-executor"
 
@@ -168,10 +167,8 @@ class TestExecutorResolver:
         resolved = await executor_resolver._resolve_executor(
             "deep-intel",
             llm=SimpleNamespace(),
-            registry_url="https://registry.example.com",
-            registry_token="token",
+            auth_context=None,
             jwt_config=_jwt_config(),
-            accessible_agent_ids=None,
         )
 
         assert resolved == "a2a-executor"
@@ -189,147 +186,9 @@ class TestExecutorResolver:
             await executor_resolver._resolve_executor(
                 "unknown",
                 llm=SimpleNamespace(),
-                registry_url="https://registry.example.com",
-                registry_token="token",
+                auth_context=None,
                 jwt_config=_jwt_config(),
-                accessible_agent_ids=None,
             )
-
-    @pytest.mark.asyncio
-    async def test_resolve_executor_raises_permission_error_when_agent_not_accessible(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
-        self._patch_beanie_filters(monkeypatch)
-        agent = _a2a_agent("deep-intel")
-        monkeypatch.setattr(executor_resolver.ExtendedMCPServer, "find_one", AsyncMock(return_value=None))
-        monkeypatch.setattr(executor_resolver.A2AAgent, "find_one", AsyncMock(return_value=agent))
-        monkeypatch.setattr(executor_resolver, "make_a2a_executor", lambda *args, **kwargs: "a2a-executor")
-
-        with pytest.raises(PermissionError, match="user lacks access"):
-            await executor_resolver._resolve_executor(
-                "deep-intel",
-                llm=SimpleNamespace(),
-                registry_url="https://registry.example.com",
-                registry_token="token",
-                jwt_config=_jwt_config(),
-                accessible_agent_ids=set(),  # explicitly empty: no access
-            )
-
-    @pytest.mark.asyncio
-    async def test_resolve_executor_allows_accessible_a2a_agent(self, monkeypatch: pytest.MonkeyPatch):
-        self._patch_beanie_filters(monkeypatch)
-        agent = _a2a_agent("deep-intel")
-        monkeypatch.setattr(executor_resolver.ExtendedMCPServer, "find_one", AsyncMock(return_value=None))
-        monkeypatch.setattr(executor_resolver.A2AAgent, "find_one", AsyncMock(return_value=agent))
-        monkeypatch.setattr(executor_resolver, "make_a2a_executor", lambda *args, **kwargs: "a2a-executor")
-
-        resolved = await executor_resolver._resolve_executor(
-            "deep-intel",
-            llm=SimpleNamespace(),
-            registry_url="https://registry.example.com",
-            registry_token="token",
-            jwt_config=_jwt_config(),
-            accessible_agent_ids={str(agent.id)},
-        )
-
-        assert resolved == "a2a-executor"
-
-
-@pytest.mark.unit
-class TestMcpExecutor:
-    """Tests for mcp_executor.make_mcp_executor."""
-
-    def test_make_mcp_executor_requires_registry_token(self):
-        with pytest.raises(ValueError, match="registry_token is required"):
-            mcp_exec.make_mcp_executor(
-                _mcp_server("github"),
-                llm=SimpleNamespace(),
-                registry_url="https://registry.example.com",
-                registry_token="",
-            )
-
-    @pytest.mark.asyncio
-    async def test_make_mcp_executor_returns_step_output(self, monkeypatch: pytest.MonkeyPatch):
-        fake_agent_instance = SimpleNamespace(arun=AsyncMock(return_value=SimpleNamespace(content="done")))
-        fake_mcp_tools = SimpleNamespace(initialized=True, connect=AsyncMock())
-
-        monkeypatch.setattr(mcp_exec, "MCPTools", lambda *args, **kwargs: fake_mcp_tools)
-        monkeypatch.setattr(mcp_exec, "Agent", lambda **kwargs: fake_agent_instance)
-
-        executor = mcp_exec.make_mcp_executor(
-            _mcp_server("github"),
-            llm=SimpleNamespace(),
-            registry_url="https://registry.example.com",
-            registry_token="token",
-        )
-
-        output = await executor(SimpleNamespace(input="hello", previous_step_content="ctx"), {})
-
-        assert output.success is True
-        assert output.content == "done"
-        fake_mcp_tools.connect.assert_awaited_once_with(force=False)
-        fake_agent_instance.arun.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_make_mcp_executor_reraises_agent_failures(self, monkeypatch: pytest.MonkeyPatch):
-        fake_agent_instance = SimpleNamespace(arun=AsyncMock(side_effect=RuntimeError("init failed")))
-        fake_mcp_tools = SimpleNamespace(initialized=True, connect=AsyncMock())
-
-        monkeypatch.setattr(mcp_exec, "MCPTools", lambda *args, **kwargs: fake_mcp_tools)
-        monkeypatch.setattr(mcp_exec, "Agent", lambda **kwargs: fake_agent_instance)
-
-        executor = mcp_exec.make_mcp_executor(
-            _mcp_server("github"),
-            llm=SimpleNamespace(),
-            registry_url="https://registry.example.com",
-            registry_token="token",
-        )
-
-        with pytest.raises(RuntimeError, match="MCP executor 'github' failed: init failed"):
-            await executor(SimpleNamespace(input="hello", previous_step_content="ctx"), {})
-
-    @pytest.mark.asyncio
-    async def test_make_mcp_executor_raises_when_agent_returns_error_status(self, monkeypatch: pytest.MonkeyPatch):
-        fake_agent_instance = SimpleNamespace(
-            arun=AsyncMock(return_value=SimpleNamespace(content="Unable to locate credentials", status="error"))
-        )
-        fake_mcp_tools = SimpleNamespace(initialized=True, connect=AsyncMock())
-
-        monkeypatch.setattr(mcp_exec, "MCPTools", lambda *args, **kwargs: fake_mcp_tools)
-        monkeypatch.setattr(mcp_exec, "Agent", lambda **kwargs: fake_agent_instance)
-
-        executor = mcp_exec.make_mcp_executor(
-            _mcp_server("github"),
-            llm=SimpleNamespace(),
-            registry_url="https://registry.example.com",
-            registry_token="token",
-        )
-
-        with pytest.raises(RuntimeError, match="Unable to locate credentials"):
-            await executor(SimpleNamespace(input="hello", previous_step_content="ctx"), {})
-
-    @pytest.mark.asyncio
-    async def test_make_mcp_executor_raises_when_agent_returns_credential_error_content(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ):
-        fake_agent_instance = SimpleNamespace(
-            arun=AsyncMock(return_value=SimpleNamespace(content="Unable to locate credentials", status="completed"))
-        )
-        fake_mcp_tools = SimpleNamespace(initialized=True, connect=AsyncMock())
-
-        monkeypatch.setattr(mcp_exec, "MCPTools", lambda *args, **kwargs: fake_mcp_tools)
-        monkeypatch.setattr(mcp_exec, "Agent", lambda **kwargs: fake_agent_instance)
-
-        executor = mcp_exec.make_mcp_executor(
-            _mcp_server("github"),
-            llm=SimpleNamespace(),
-            registry_url="https://registry.example.com",
-            registry_token="token",
-        )
-
-        with pytest.raises(RuntimeError, match="Unable to locate credentials"):
-            await executor(SimpleNamespace(input="hello", previous_step_content="ctx"), {})
 
 
 @pytest.mark.unit
@@ -351,8 +210,8 @@ class TestA2AExecutor:
             )
             return {"sub": subject}
 
-        monkeypatch.setattr(a2a_client, "build_jwt_payload", fake_build_payload)
-        monkeypatch.setattr(a2a_client, "encode_jwt", lambda *args, **kwargs: "signed-jwt")
+        monkeypatch.setattr(agentcore_jwt, "build_jwt_payload", fake_build_payload)
+        monkeypatch.setattr(agentcore_jwt, "encode_jwt", lambda *args, **kwargs: "signed-jwt")
 
         agent = _a2a_agent()
         agent.config.runtimeAccess = AgentCoreRuntimeAccessConfig(
@@ -404,7 +263,7 @@ class TestA2AExecutor:
                 captured_kwargs.update(kwargs)
                 return A2ACallResult(success=True)
 
-            step_input = SimpleNamespace(previous_step_content=None, input="hello")
+            step_input = StepInput(input="hello")
             with patch("registry_pkgs.workflows.a2a_executor.call_a2a", side_effect=fake_call_a2a):
                 await executor(step_input)
 
@@ -412,88 +271,160 @@ class TestA2AExecutor:
         finally:
             await shared.aclose()
 
+    @pytest.mark.asyncio
+    async def test_make_a2a_executor_preserves_message_files_and_data(self, monkeypatch: pytest.MonkeyPatch):
+        from a2a.types import DataPart, FilePart, FileWithBytes, Message, Part, Role, TextPart
+
+        from registry_pkgs.workflows.a2a_client import A2ACallResult
+        from registry_pkgs.workflows.a2a_executor import make_a2a_executor
+
+        msg = Message(
+            kind="message",
+            role=Role.agent,
+            message_id="m",
+            parts=[
+                Part(root=TextPart(kind="text", text="done")),
+                Part(
+                    root=FilePart(
+                        kind="file",
+                        file=FileWithBytes(
+                            bytes="aW1hZ2U=",
+                            mimeType="image/jpeg",
+                            name="result.jpg",
+                        ),
+                    )
+                ),
+                Part(
+                    root=FilePart(
+                        kind="file",
+                        file=FileWithBytes(
+                            bytes="dmlkZW8=",
+                            mimeType="video/mp4",
+                            name="clip.mp4",
+                        ),
+                    )
+                ),
+                Part(
+                    root=FilePart(
+                        kind="file",
+                        file=FileWithBytes(
+                            bytes="YXVkaW8=",
+                            mimeType="audio/mpeg",
+                            name="sound.mp3",
+                        ),
+                    )
+                ),
+                Part(root=DataPart(kind="data", data={"title": "Result"})),
+            ],
+        )
+
+        async def fake_call_a2a(*args, **kwargs):
+            return A2ACallResult(message=msg, success=True)
+
+        monkeypatch.setattr(a2a_exec, "call_a2a", fake_call_a2a)
+
+        output = await make_a2a_executor(_a2a_agent(), jwt_config=_jwt_config())(StepInput(input="hello"))
+
+        assert output.content == "done"
+        assert output.images and output.images[0].mime_type == "image/jpeg"
+        assert output.videos and output.videos[0].mime_type == "video/mp4"
+        assert output.audio and output.audio[0].mime_type == "audio/mpeg"
+        assert output.files and output.files[0].mime_type == "application/json"
+        assert '"title": "Result"' in output.files[0].content
+
+    @pytest.mark.asyncio
+    async def test_make_a2a_executor_preserves_task_artifact_files_and_data(self, monkeypatch: pytest.MonkeyPatch):
+        from a2a.types import Artifact, DataPart, FilePart, FileWithBytes, Part, Task, TaskState, TaskStatus
+
+        from registry_pkgs.workflows.a2a_client import A2ACallResult
+        from registry_pkgs.workflows.a2a_executor import make_a2a_executor
+
+        task = Task(
+            id="task",
+            context_id="ctx",
+            kind="task",
+            status=TaskStatus(state=TaskState.completed),
+            artifacts=[
+                Artifact(
+                    artifact_id="a1",
+                    name="report",
+                    parts=[
+                        Part(root=DataPart(kind="data", data={"rows": 2})),
+                        Part(
+                            root=FilePart(
+                                kind="file",
+                                file=FileWithBytes(
+                                    bytes="eyJvayI6IHRydWV9",
+                                    mimeType="application/json",
+                                    name="report.json",
+                                ),
+                            )
+                        ),
+                    ],
+                )
+            ],
+        )
+
+        async def fake_call_a2a(*args, **kwargs):
+            return A2ACallResult(task=task, success=True)
+
+        monkeypatch.setattr(a2a_exec, "call_a2a", fake_call_a2a)
+
+        output = await make_a2a_executor(_a2a_agent(), jwt_config=_jwt_config())(StepInput(input="hello"))
+
+        assert output.files and len(output.files) == 2
+        data_file = next(f for f in output.files if f.filename == "report-data-1.json")
+        assert '"rows": 2' in data_file.content
+        report_file = next(f for f in output.files if f.filename == "report.json")
+        assert report_file.mime_type == "application/json"
+
+    @pytest.mark.asyncio
+    async def test_make_a2a_executor_keeps_unsupported_file_mime_metadata(self, monkeypatch: pytest.MonkeyPatch):
+        from a2a.types import FilePart, FileWithBytes, Message, Part, Role
+
+        from registry_pkgs.workflows.a2a_client import A2ACallResult
+        from registry_pkgs.workflows.a2a_executor import make_a2a_executor
+
+        msg = Message(
+            kind="message",
+            role=Role.agent,
+            message_id="m",
+            parts=[
+                Part(
+                    root=FilePart(
+                        kind="file",
+                        file=FileWithBytes(
+                            bytes="emlw",
+                            mimeType="application/zip",
+                            name="bundle.zip",
+                        ),
+                    )
+                ),
+            ],
+        )
+
+        async def fake_call_a2a(*args, **kwargs):
+            return A2ACallResult(message=msg, success=True)
+
+        monkeypatch.setattr(a2a_exec, "call_a2a", fake_call_a2a)
+
+        output = await make_a2a_executor(_a2a_agent(), jwt_config=_jwt_config())(StepInput(input="hello"))
+
+        assert output.files and output.files[0].filename == "bundle.zip"
+        assert output.files[0].mime_type is None
+        assert output.files[0].file_type == "application/zip"
+
 
 @pytest.mark.unit
 class TestHelpers:
     """Tests for shared workflow helper utilities."""
 
-    def test_build_prompt_joins_previous_step_content_and_input(self):
-        prompt = build_prompt(SimpleNamespace(previous_step_content="ctx", input="hello"))
-        empty_prompt = build_prompt(SimpleNamespace(previous_step_content=None, input=""))
+    def test_build_prompt_falls_back_to_raw_input_without_intention_data(self):
+        prompt = build_prompt(StepInput(previous_step_content="ctx", input="hello"))
+        empty_prompt = build_prompt(StepInput(previous_step_content=None, input=""))
 
-        assert prompt == "Context from previous step:\nctx\n\nhello"
+        assert prompt == "hello"
         assert empty_prompt == "(no input)"
-
-
-@pytest.mark.unit
-class TestLoadAccessibleAgentIds:
-    """Tests for _load_accessible_agent_ids ACL helper."""
-
-    @pytest.mark.asyncio
-    async def test_returns_agent_ids_with_view_permission(self, monkeypatch: pytest.MonkeyPatch):
-        from beanie import PydanticObjectId
-
-        from registry_pkgs.models.enums import PermissionBits
-        from registry_pkgs.models.extended_acl_entry import RegistryAclEntry
-
-        rid1 = PydanticObjectId()
-        rid2 = PydanticObjectId()
-        rid3 = PydanticObjectId()
-
-        entry1 = SimpleNamespace(permBits=PermissionBits.VIEW, resourceId=rid1)
-        entry2 = SimpleNamespace(permBits=PermissionBits.EDIT, resourceId=rid2)  # no VIEW
-        entry3 = SimpleNamespace(permBits=PermissionBits.VIEW, resourceId=rid3)
-
-        def fake_find(query):
-            class FakeQuery:
-                async def to_list(self):
-                    return [entry1, entry2, entry3]
-
-            return FakeQuery()
-
-        monkeypatch.setattr(RegistryAclEntry, "find", fake_find)
-
-        result = await executor_resolver._load_accessible_agent_ids(str(PydanticObjectId()))
-        assert result == {str(rid1), str(rid3)}
-
-    @pytest.mark.asyncio
-    async def test_returns_empty_set_when_no_entries(self, monkeypatch: pytest.MonkeyPatch):
-        from registry_pkgs.models.extended_acl_entry import RegistryAclEntry
-
-        def fake_find(query):
-            class FakeQuery:
-                async def to_list(self):
-                    return []
-
-            return FakeQuery()
-
-        monkeypatch.setattr(RegistryAclEntry, "find", fake_find)
-
-        result = await executor_resolver._load_accessible_agent_ids(str(PydanticObjectId()))
-        assert result == set()
-
-    @pytest.mark.asyncio
-    async def test_build_executor_registry_passes_acl_set_to_resolver(self, monkeypatch: pytest.MonkeyPatch):
-        async def fake_resolve(key: str, **kwargs):
-            return kwargs.get("accessible_agent_ids")
-
-        monkeypatch.setattr(executor_resolver, "_resolve_executor", fake_resolve)
-
-        async def fake_load_acl(user_id: str) -> set[str]:
-            return {"agent-1"}
-
-        monkeypatch.setattr(executor_resolver, "_load_accessible_agent_ids", fake_load_acl)
-
-        registry = await executor_resolver.build_executor_registry(
-            ["alpha"],
-            llm=SimpleNamespace(),
-            registry_url="https://registry.example.com",
-            registry_token="token",
-            jwt_config=_jwt_config(),
-            user_id="user-123",
-        )
-
-        assert registry == {"alpha": {"agent-1"}}
 
 
 @pytest.mark.unit
@@ -524,10 +455,9 @@ class TestA2APoolExecutorQueries:
             pool_keys=["agent-a", "agent-b"],
             selector_llm=SimpleNamespace(),
             jwt_config=_jwt_config(),
-            accessible_agent_ids=None,
         )
 
-        result = await executor(SimpleNamespace(input="hello", previous_step_content=None), {})
+        result = await executor(StepInput(input="hello"), {})
 
         assert result.success is False  # no agents found → pool resolution failed
         assert len(captured_queries) == 1, "expected exactly one find() call"
@@ -554,12 +484,11 @@ class TestA2APoolExecutorQueries:
             pool_keys=["agent-a"],
             selector_llm=SimpleNamespace(),
             jwt_config=_jwt_config(),
-            accessible_agent_ids=None,
         )
 
         # Pre-fill cache to simulate retry path
         state = {"a2a_target_retry-pool": "agent-a"}
-        result = await executor(SimpleNamespace(input="hello", previous_step_content=None), state)
+        result = await executor(StepInput(input="hello"), state)
 
         assert result.success is False
         assert "not found or disabled" in result.error

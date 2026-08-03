@@ -3,85 +3,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from beanie import PydanticObjectId
-from fastapi import HTTPException, Request
+from fastapi import HTTPException
 
-from registry.api.v1.workflow import token_helpers, workflow_routes
+from registry.api.v1.workflow import workflow_routes
 from registry.schemas.acl_schema import ResourcePermissions
 from registry.schemas.workflow_api_schemas import WorkflowCreateRequest, WorkflowUpdateRequest
 
 
-def _request_with_headers(headers: dict[str, str]) -> Request:
-    request = MagicMock(spec=Request)
-    request.headers = headers
-    return request
-
-
 def _canvas() -> dict[str, dict[str, float]]:
     return {"viewport": {"x": 0, "y": 0, "zoom": 1}}
-
-
-def test_build_registry_token_prefers_authorization_header(monkeypatch: pytest.MonkeyPatch):
-    generate_service_jwt = MagicMock(return_value="generated-token")
-    monkeypatch.setattr(token_helpers, "generate_service_jwt", generate_service_jwt)
-
-    token = token_helpers.build_registry_token(
-        _request_with_headers({"Authorization": "Bearer header-token"}),
-        {
-            "user_id": "user-1",
-            "username": "testuser",
-            "groups": [],
-            "scopes": ["workflow:run"],
-            "auth_method": "jwt",
-            "provider": "jwt",
-            "auth_source": "jwt_auth",
-        },
-    )
-
-    assert token == "header-token"
-    generate_service_jwt.assert_not_called()
-
-
-def test_build_registry_token_generates_service_jwt_without_authorization_header(monkeypatch: pytest.MonkeyPatch):
-    generate_service_jwt = MagicMock(return_value="generated-token")
-    monkeypatch.setattr(token_helpers, "generate_service_jwt", generate_service_jwt)
-
-    token = token_helpers.build_registry_token(
-        _request_with_headers({}),
-        {
-            "user_id": "user-1",
-            "username": "testuser",
-            "groups": [],
-            "scopes": ["workflow:run"],
-            "auth_method": "traditional",
-            "provider": "local",
-            "auth_source": "jwt_session_auth",
-        },
-    )
-
-    assert token == "generated-token"
-    generate_service_jwt.assert_called_once_with(
-        user_id="user-1",
-        username="testuser",
-        scopes=["workflow:run"],
-    )
-
-
-def test_build_registry_token_requires_user_id_without_authorization_header():
-    with pytest.raises(HTTPException) as exc_info:
-        token_helpers.build_registry_token(
-            _request_with_headers({}),
-            {
-                "user_id": None,
-                "username": "testuser",
-                "groups": [],
-                "scopes": ["workflow:run"],
-                "auth_method": "traditional",
-                "provider": "local",
-                "auth_source": "jwt_session_auth",
-            },
-        )
-
-    assert exc_info.value.status_code == 401
 
 
 def test_workflow_create_request_deserializes_motivating_example_from_json():
@@ -195,8 +125,8 @@ async def test_create_workflow_route_forwards_condition_request_to_service():
                 name="B",
                 node_type="condition",
                 condition_cel="input.x",
-                true_steps=[WorkflowNode(name="C", node_type="step", executor_key="tool-c")],
-                false_steps=[WorkflowNode(name="D", node_type="step", executor_key="tool-d")],
+                true_steps=[WorkflowNode(name="C", node_type="step", executor_key="tool-c", step_objective="run C")],
+                false_steps=[WorkflowNode(name="D", node_type="step", executor_key="tool-d", step_objective="run D")],
             )
         ],
         created_at=datetime.now(UTC),
@@ -216,12 +146,18 @@ async def test_create_workflow_route_forwards_condition_request_to_service():
         "scopes": ["workflow:create"],
     }
 
-    response = await workflow_routes.create_workflow(
-        data=request,
-        user_context=user_context,
-        workflow_service=mock_service,
-        acl_service=mock_acl,
-    )
+    mock_session = AsyncMock()
+    mock_client = MagicMock()
+    mock_client.start_session.return_value.__aenter__.return_value = mock_session
+    mock_session.start_transaction.return_value.__aenter__.return_value = None
+
+    with patch("registry.api.v1.workflow.workflow_routes.MongoDB.get_client", return_value=mock_client):
+        response = await workflow_routes.create_workflow(
+            data=request,
+            user_context=user_context,
+            workflow_service=mock_service,
+            acl_service=mock_acl,
+        )
 
     mock_service.create_workflow.assert_awaited_once()
     mock_acl.grant_permission.assert_awaited_once()
@@ -240,6 +176,49 @@ async def test_create_workflow_route_forwards_condition_request_to_service():
     assert detail_cond.nodeType == "condition"
     assert [n.name for n in detail_cond.trueSteps] == ["C"]
     assert [n.name for n in detail_cond.falseSteps] == ["D"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("user_context", [{}, {"username": "x"}, {"user_id": ""}, {"user_id": None}])
+async def test_create_workflow_returns_403_when_user_id_missing(user_context):
+    """create_workflow must return 403 (not 401) when user_context lacks a truthy user_id.
+
+    403 avoids tripping the frontend's blanket 401-triggers-token-refresh interceptor
+    for a condition that isn't actually about token expiry.
+    """
+    request = WorkflowCreateRequest.model_validate(
+        {
+            "name": "Demo",
+            "canvas": _canvas(),
+            "nodes": [{"name": "A", "nodeType": "step", "executorKey": "tool-a"}],
+        }
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await workflow_routes.create_workflow(
+            data=request,
+            user_context=user_context,
+            workflow_service=MagicMock(),
+            acl_service=MagicMock(),
+        )
+
+    assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("user_context", [{}, {"username": "x"}, {"user_id": ""}, {"user_id": None}])
+async def test_update_workflow_returns_403_when_user_id_missing(user_context):
+    """update_workflow must return 403 (not 401) when user_context lacks a truthy user_id."""
+    with pytest.raises(HTTPException) as exc_info:
+        await workflow_routes.update_workflow(
+            workflow_id=str(PydanticObjectId()),
+            data=WorkflowUpdateRequest(name="Updated"),
+            user_context=user_context,
+            workflow_service=MagicMock(),
+            acl_service=MagicMock(),
+        )
+
+    assert exc_info.value.status_code == 403
 
 
 @pytest.mark.asyncio
@@ -283,6 +262,7 @@ async def test_update_workflow_passes_session_to_service(monkeypatch: pytest.Mon
     workflow_service.update_workflow.assert_awaited_once_with(
         workflow_id=workflow_id,
         data=data,
+        user_id=PydanticObjectId(user_context["user_id"]),
         session=mock_session,
     )
 
@@ -294,7 +274,7 @@ def _fake_workflow(name: str = "wf", version: int = 1):
         id=PydanticObjectId(),
         name=name,
         description=None,
-        nodes=[WorkflowNode(name="s", node_type="step", executor_key="tool")],
+        nodes=[WorkflowNode(name="s", node_type="step", executor_key="tool", step_objective="run s")],
         version=version,
         created_at=datetime.now(UTC),
         updated_at=datetime.now(UTC),
@@ -427,9 +407,16 @@ async def test_trigger_run_forwards_requested_version(monkeypatch):
     from registry.schemas.workflow_api_schemas import WorkflowRunTriggerRequest
     from registry_pkgs.models.enums import WorkflowRunStatus
 
-    monkeypatch.setattr(token_helpers, "generate_service_jwt", MagicMock(return_value="svc-token"))
-
-    user_context = {"user_id": str(PydanticObjectId()), "username": "u", "groups": [], "scopes": []}
+    user_context = {
+        "user_id": str(PydanticObjectId()),
+        "client_id": "client-1",
+        "username": "u",
+        "groups": [],
+        "scopes": [],
+        "auth_method": "jwt",
+        "provider": "jwt",
+        "auth_source": "jwt_auth",
+    }
 
     run = SimpleNamespace(
         id=PydanticObjectId(),
@@ -446,8 +433,6 @@ async def test_trigger_run_forwards_requested_version(monkeypatch):
     mock_acl = MagicMock()
     mock_acl.check_user_permission = AsyncMock(return_value=ResourcePermissions(VIEW=True))
 
-    request = MagicMock(spec=Request)
-    request.headers = {"Authorization": "Bearer abc"}
     background_tasks = MagicMock()
 
     await workflow_routes.trigger_workflow_run(
@@ -455,7 +440,6 @@ async def test_trigger_run_forwards_requested_version(monkeypatch):
         data=WorkflowRunTriggerRequest(version=2),
         background_tasks=background_tasks,
         user_context=user_context,
-        request=request,
         workflow_service=mock_service,
         workflow_runner=MagicMock(),
         acl_service=mock_acl,
@@ -463,6 +447,8 @@ async def test_trigger_run_forwards_requested_version(monkeypatch):
 
     assert mock_service.trigger_workflow_run.await_args.kwargs["version"] == 2
     background_tasks.add_task.assert_called_once()
+    _, kwargs = background_tasks.add_task.call_args
+    assert kwargs["auth_context"] is user_context
 
 
 @pytest.mark.asyncio
@@ -479,16 +465,12 @@ async def test_trigger_run_forbidden_without_view():
     mock_acl = MagicMock()
     mock_acl.check_user_permission = AsyncMock(side_effect=HTTPException(status_code=403, detail="no view"))
 
-    request = MagicMock(spec=Request)
-    request.headers = {"Authorization": "Bearer abc"}
-
     with pytest.raises(HTTPException) as exc_info:
         await workflow_routes.trigger_workflow_run(
             workflow_id=str(PydanticObjectId()),
             data=WorkflowRunTriggerRequest(),
             background_tasks=MagicMock(),
             user_context=user_context,
-            request=request,
             workflow_service=mock_service,
             workflow_runner=MagicMock(),
             acl_service=mock_acl,
@@ -609,7 +591,7 @@ async def test_get_workflow_run_status_returns_run_status_response():
     assert response.status == WorkflowRunStatus.RUNNING.value
     assert len(response.node_runs) == 1
     assert response.node_runs[0].node_id == "n1"
-    mock_control.get_run_status.assert_awaited_once_with(wf_id, run_id)
+    mock_control.get_run_status.assert_awaited_once_with(wf_id, run_id, auth_context=user_context)
 
 
 @pytest.mark.asyncio
@@ -644,24 +626,44 @@ async def test_get_workflow_run_status_nudges_continue_run_on_expired_requiremen
         triggering_user_id="user-1",
         triggering_username="u",
         triggering_scopes=[],
+        triggering_client_id="client-1",
     )
 
     fake_node_run = MagicMock()
     fake_node_run.find.return_value.to_list = AsyncMock(return_value=[])
     monkeypatch.setattr(wcs_module, "NodeRun", fake_node_run)
-    monkeypatch.setattr(wcs_module, "generate_service_jwt", MagicMock(return_value="svc"))
 
     continue_mock = AsyncMock()
+    refreshed_context = {
+        "user_id": "user-1",
+        "client_id": "client-1",
+        "username": "u",
+        "groups": [],
+        "scopes": [],
+        "auth_method": "service",
+        "provider": "workflow",
+        "auth_source": "workflow_resume",
+    }
     service = wcs_module.WorkflowControlService(
         directive_queue=DirectiveQueue(),
         runner_factory=lambda: SimpleNamespace(continue_run=continue_mock),
+        auth_context_refresher=AsyncMock(return_value=refreshed_context),
     )
     service._load_run = AsyncMock(return_value=run)
 
     mock_acl = MagicMock()
     mock_acl.check_user_permission = AsyncMock(return_value=None)
 
-    user_context = {"user_id": user_id, "username": "u", "groups": [], "scopes": []}
+    user_context = {
+        "user_id": user_id,
+        "client_id": "client-2",
+        "username": "u",
+        "groups": [],
+        "scopes": [],
+        "auth_method": "jwt",
+        "provider": "jwt",
+        "auth_source": "jwt_auth",
+    }
 
     await get_workflow_run_status(
         workflow_id=wf_id,
@@ -674,6 +676,7 @@ async def test_get_workflow_run_status_nudges_continue_run_on_expired_requiremen
 
     continue_mock.assert_awaited_once()
     assert continue_mock.await_args.kwargs["existing_run_id"] == run_id
+    assert continue_mock.await_args.kwargs["auth_context"] == refreshed_context
 
 
 def test_workflow_create_request_parses_human_review_with_retry():

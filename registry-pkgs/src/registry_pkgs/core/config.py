@@ -6,10 +6,12 @@ from urllib.parse import urlparse
 from cryptography.exceptions import UnsupportedAlgorithm
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey, RSAPublicKey
 from cryptography.hazmat.primitives.serialization import load_pem_private_key, load_pem_public_key
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .scopes import ScopesConfig, load_scopes_config
+
+INTERACTIVE_TOKEN_CLIENT_ID = "user-generated"
 
 
 class ChunkingConfig(BaseModel):
@@ -69,6 +71,10 @@ class JwtSigningConfig(BaseModel):
     jwt_issuer: str = Field(description="Issuer (`iss`) claim — the registry's public URL")
     jwt_self_signed_kid: str = Field(description="`kid` header for self-signed JWKS lookup")
     jwt_audience: str = Field(description="Default audience (`aud`) claim")
+    registry_app_name: str = Field(
+        default="jarvis-registry-client",
+        description="Application name used as JWT subject for service-to-service calls",
+    )
 
 
 class JwtTokenConfig(BaseModel):
@@ -91,6 +97,10 @@ class TelemetryConfig(BaseModel):
     )
     otel_prometheus_enabled: bool = Field(default=False, description="Enable Prometheus metrics endpoint")
     otel_prometheus_port: int = Field(default=9464, description="Prometheus metrics port")
+    build_version: str = Field(
+        default="unknown",
+        description="Build identifier (release tag or commit SHA) used as the OTel service.version resource attribute",
+    )
 
 
 class JarvisBaseSettings(BaseSettings):
@@ -149,6 +159,9 @@ class JarvisBaseSettings(BaseSettings):
     registry_app_name: str = "jarvis-registry-client"
     registry_client_secret: str = ""
 
+    # ==================== Sentinel client ID for non-interactive agent-vended tokens ====================
+    headless_agent_client_id: str = "jarvis-headless-agent"
+
     # ==================== Logging ====================
     log_level: str = "INFO"
     log_format: str = "%(asctime)s,p%(process)s,{%(name)s:%(lineno)d},%(levelname)s,%(message)s"
@@ -163,6 +176,23 @@ class JarvisBaseSettings(BaseSettings):
     otel_exporter_otlp_endpoint: str = "http://otel-collector:4318"
     otel_prometheus_enabled: bool = False
     otel_prometheus_port: int = 9464
+    build_version: str = "unknown"
+
+    # ==================== Auth Provider ====================
+    auth_provider: str = "entra"  # cognito, keycloak, entra
+
+    @field_validator("auth_provider")
+    @classmethod
+    def validate_auth_provider(cls, v: str) -> str:
+        allowed = ["cognito", "keycloak", "entra"]
+        if v.lower() not in allowed:
+            raise ValueError(f"auth_provider must be one of {allowed}, got '{v}'")
+        return v.lower()
+
+    # ==================== Entra ID Settings ====================
+    entra_tenant_id: str | None = None
+    entra_client_id: str | None = None
+    entra_client_secret: str | None = None
 
     # ==================== Scopes ====================
     scopes_config_path: str = ""
@@ -170,6 +200,25 @@ class JarvisBaseSettings(BaseSettings):
     # ==================== Model Validation ====================
     # Skip model validation if set to "disabled". Disabling should only happen for import checks in CI.
     x_jarvis_registry_import_checks: str = "enabled"
+
+    @field_validator("headless_agent_client_id")
+    @classmethod
+    def _validate_headless_agent_client_id(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("headless_agent_client_id must not be empty")
+        if normalized == INTERACTIVE_TOKEN_CLIENT_ID:
+            raise ValueError(
+                f"headless_agent_client_id must not use the reserved interactive client ID "
+                f"'{INTERACTIVE_TOKEN_CLIENT_ID}'"
+            )
+        return normalized
+
+    @model_validator(mode="after")
+    def _validate_headless_agent_client_id_is_not_registry_client(self) -> Self:
+        if self.headless_agent_client_id == self.registry_app_name:
+            raise ValueError("headless_agent_client_id must not match registry_app_name")
+        return self
 
     @model_validator(mode="after")
     def _validate_jwt_key_pair(self) -> Self:
@@ -261,6 +310,7 @@ class JarvisBaseSettings(BaseSettings):
             jwt_issuer=self.jwt_issuer,
             jwt_self_signed_kid=self.jwt_self_signed_kid,
             jwt_audience=self.jwt_audience,
+            registry_app_name=self.registry_app_name,
         )
 
     @cached_property
@@ -282,6 +332,7 @@ class JarvisBaseSettings(BaseSettings):
             otel_exporter_otlp_endpoint=self.otel_exporter_otlp_endpoint,
             otel_prometheus_enabled=self.otel_prometheus_enabled,
             otel_prometheus_port=self.otel_prometheus_port,
+            build_version=self.build_version,
         )
 
     @cached_property

@@ -298,7 +298,7 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
         status: w.status || 'active',
         lastRunAt: w.lastRunAt,
         runCount: w.runCount ?? 0,
-        permissions: w.permissions || { VIEW: true, EDIT: true },
+        permissions: w.permissions,
       }));
       setWorkflows(transformedWorkflows);
     } catch (error: any) {

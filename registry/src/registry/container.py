@@ -9,6 +9,7 @@ from agno.models.aws import AwsBedrock
 from beanie import PydanticObjectId
 from redis import Redis
 
+from registry_pkgs.core.consent_store import ConsentStore, PendingConsentStore
 from registry_pkgs.core.oauth_state_store import DownstreamOAuthStateStore, OAuthClientStore, OAuthStateStore
 from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.vector.client import DatabaseClient
@@ -26,10 +27,22 @@ from .health.service import HealthMonitoringService
 from .services.a2a_agent_service import A2AAgentService
 from .services.access_control_service import ACLService, load_role_cache
 from .services.agent_scanner import AgentScannerService
+from .services.federation.a2a_client_registry import A2AClientRegistry
+from .services.federation.azure_foundry_proxy_auth import (
+    A2aHeadersProvider,
+    AzureFoundryClientCache,
+    make_a2a_headers_provider,
+)
 from .services.federation_crud_service import FederationCrudService
 from .services.federation_job_service import FederationJobService
 from .services.federation_service import FederationService
 from .services.federation_sync_service import FederationSyncService
+from .services.group_directory_client import (
+    CognitoGroupDirectoryClient,
+    EntraIdGroupDirectoryClient,
+    IdPGroupDirectoryClient,
+    KeycloakGroupDirectoryClient,
+)
 from .services.group_service import GroupService
 from .services.oauth.connection_service import MCPConnectionService
 from .services.oauth.mcp_service import MCPService
@@ -42,6 +55,7 @@ from .services.security_scanner import SecurityScannerService
 from .services.server_service import ServerServiceV1
 from .services.user_service import UserService
 from .services.workflow_control_service import WorkflowControlService
+from .services.workflow_mcp_headers_provider import McpHeadersProvider, make_mcp_headers_provider
 from .services.workflow_service import WorkflowService
 from .services.workflow_shutdown import cancel_in_flight_runs
 
@@ -127,8 +141,22 @@ class RegistryContainer:
         return UserService()
 
     @cached_property
+    def group_directory_client(self) -> IdPGroupDirectoryClient:
+        provider = self.settings.auth_provider
+        if provider == "entra":
+            return EntraIdGroupDirectoryClient(
+                tenant_id=self.settings.entra_tenant_id or "",
+                client_id=self.settings.entra_client_id or "",
+                client_secret=self.settings.entra_client_secret or "",
+                graph_url=self.settings.entra_graph_url,
+            )
+        if provider == "cognito":
+            return CognitoGroupDirectoryClient()
+        return KeycloakGroupDirectoryClient()
+
+    @cached_property
     def group_service(self) -> GroupService:
-        return GroupService()
+        return GroupService(group_directory_client=self.group_directory_client)
 
     @cached_property
     def acl_service(self) -> ACLService:
@@ -156,6 +184,21 @@ class RegistryContainer:
         )
 
     @cached_property
+    def consent_store(self) -> ConsentStore:
+        """Share auth-server's consent namespace for cross-service OAuth flows."""
+        return ConsentStore(
+            redis_client=self.redis_client,
+            key_prefix=self.settings.auth_server_redis_key_prefix,
+        )
+
+    @cached_property
+    def pending_consent_store(self) -> PendingConsentStore:
+        return PendingConsentStore(
+            redis_client=self.redis_client,
+            key_prefix=self.settings.auth_server_redis_key_prefix,
+        )
+
+    @cached_property
     def downstream_refresh_token_store(self) -> OAuthStateStore:
         """Persist registry-owned direct-connect refresh tokens under registry's Redis namespace."""
         return OAuthStateStore(
@@ -168,12 +211,14 @@ class RegistryContainer:
     def oauth_state_store(self) -> DownstreamOAuthStateStore:
         """Redis-backed OAuth state for the direct-connect downstream flow.
 
-        Direct-connect refresh tokens live under registry's own ``redis_key_prefix``; DCR client
-        records are read through an explicit client facade over auth-server's namespace.
+        Direct-connect refresh tokens and device-flow state live under registry's own
+        ``redis_key_prefix``; DCR client records are read through an explicit client facade over
+        auth-server's namespace.
         """
         return DownstreamOAuthStateStore(
             client_store=self.oauth_client_store,
             refresh_token_store=self.downstream_refresh_token_store,
+            device_store=self.downstream_refresh_token_store,
         )
 
     @cached_property
@@ -230,14 +275,34 @@ class RegistryContainer:
 
     @cached_property
     def workflow_service(self) -> WorkflowService:
-        return WorkflowService()
+        return WorkflowService(acl_service=self.acl_service)
+
+    @cached_property
+    def a2a_client_registry(self) -> A2AClientRegistry:
+        return A2AClientRegistry(
+            agentcore_registry=self.a2a_proxy_client_registry,
+            azure_client_cache=AzureFoundryClientCache(),
+        )
+
+    @cached_property
+    def a2a_headers_provider(self) -> A2aHeadersProvider:
+        """App-scoped A2A headers provider; resolves Azure Entra credentials fresh per call (no caching)."""
+        return make_a2a_headers_provider(jwt_config=self.settings.jwt_signing_config)
+
+    @cached_property
+    def mcp_headers_provider(self) -> McpHeadersProvider:
+        """App-scoped MCP headers provider for manually-registered workflow MCP servers."""
+        return make_mcp_headers_provider(
+            oauth_service=self.oauth_service,
+            redis_client=self.redis_client,
+        )
 
     @cached_property
     def workflow_runner(self) -> WorkflowRunner:
         """Build the app-scoped WorkflowRunner used by API-triggered runs."""
         try:
             llm = AwsBedrock(
-                id=self.settings.aws_workflow_llm_model,
+                id=self.settings.workflow_llm_model_id,
                 aws_region=self.settings.aws_region,
                 aws_access_key_id=self.settings.aws_access_key_id,
                 aws_secret_access_key=self.settings.aws_secret_access_key,
@@ -246,12 +311,15 @@ class RegistryContainer:
 
             return WorkflowRunner(
                 llm=llm,
-                registry_url=self.settings.registry_internal_url,
                 db_client=MongoDB.get_client(),
                 db_name=MongoDB.database_name,
                 jwt_config=self.settings.jwt_signing_config,
                 directive_queue=self.directive_queue,
                 a2a_httpx_client=self.a2a_httpx_client,
+                headers_provider=self.a2a_headers_provider,
+                redis_client=self.redis_client,
+                redis_key_prefix=self.settings.redis_key_prefix,
+                mcp_headers_provider=self.mcp_headers_provider,
             )
 
         except Exception:
@@ -276,16 +344,7 @@ class RegistryContainer:
 
     @cached_property
     def a2a_httpx_client(self) -> httpx.AsyncClient:
-        """Shared httpx client for A2A agent invocations.
-
-        Reused by:
-          - mcpgw `execute_agent` tool (via McpAppContext)
-          - workflow A2A executors (via WorkflowRunner)
-
-        Settings mirror `mcp_proxy_client` but A2A streaming responses can
-        be long-running, so we keep an open read timeout. Closed on
-        container shutdown.
-        """
+        """Shared httpx client for A2A agent invocations (workflow executors + mcpgw)."""
         return httpx.AsyncClient(
             timeout=httpx.Timeout(connect=30.0, read=None, write=60.0, pool=30.0),
             follow_redirects=False,
@@ -313,7 +372,11 @@ class RegistryContainer:
 
     @cached_property
     def a2a_proxy_client_registry(self) -> A2AProxyClientRegistry:
-        return A2AProxyClientRegistry(jwt_expires_in_seconds=3600)
+        return A2AProxyClientRegistry(
+            jwt_signing_config=self.settings.jwt_signing_config,
+            jwt_subject=self.settings.registry_app_name,
+            jwt_expires_in_seconds=3600,
+        )
 
     async def startup(self) -> None:
         """Warm services that need async initialization before the app can serve traffic."""
@@ -355,7 +418,7 @@ class RegistryContainer:
         await self.health_service.shutdown()
         await self.mcp_proxy_client.aclose()
         await self.a2a_httpx_client.aclose()
-        await self.a2a_proxy_client_registry.close()
+        await self.a2a_client_registry.close()
 
     def _initialize_federation(self) -> None:
         """Run optional federation sync on startup without failing the whole application."""

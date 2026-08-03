@@ -7,6 +7,7 @@ import pytest
 from beanie import PydanticObjectId
 
 from registry_pkgs.models.enums import WorkflowDirective, WorkflowRunStatus
+from registry_pkgs.models.workflow import StepConfig
 from registry_pkgs.workflows.control import DirectiveQueue
 from registry_pkgs.workflows.control.wrapper import WorkflowCancelledError, with_control
 
@@ -96,6 +97,104 @@ class TestControlWrapper:
         executor.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_executor_exception_converted_to_failed_step_output(self, monkeypatch: pytest.MonkeyPatch):
+        """An executor that raises should yield StepOutput(success=False) instead of propagating."""
+        run_id = str(PydanticObjectId())
+        queue = DirectiveQueue()
+        queue.register(run_id)
+
+        executor = AsyncMock(side_effect=RuntimeError("RuntimeError: downstream server exploded"))
+        wrapped = with_control(
+            executor,
+            run_id=run_id,
+            node_id="node-1",
+            node_name="github",
+            step_config=None,
+            directive_queue=queue,
+        )
+
+        monkeypatch.setattr(
+            "registry_pkgs.workflows.control.wrapper._read_mongodb_directive",
+            AsyncMock(return_value=None),
+        )
+        monkeypatch.setattr(
+            "registry_pkgs.workflows.control.wrapper._record_attempt_start",
+            AsyncMock(),
+        )
+
+        result = await wrapped(SimpleNamespace(input="hello"), {})
+
+        assert result.success is False
+        assert result.error == "RuntimeError: downstream server exploded"
+        assert result.content == ""
+        executor.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_executor_exception_triggers_retry(self, monkeypatch: pytest.MonkeyPatch):
+        """When on_error=retry, a raising executor should be retried like a failed StepOutput."""
+        run_id = str(PydanticObjectId())
+        queue = DirectiveQueue()
+        queue.register(run_id)
+
+        success_output = SimpleNamespace(success=True, content="done", error=None)
+        executor = AsyncMock(side_effect=[RuntimeError("transient"), success_output])
+
+        step_config = StepConfig(on_error="retry", max_retries=2, backoff_base_seconds=0.01, backoff_max_seconds=0.01)
+        wrapped = with_control(
+            executor,
+            run_id=run_id,
+            node_id="node-1",
+            node_name="github",
+            step_config=step_config,
+            directive_queue=queue,
+        )
+
+        monkeypatch.setattr(
+            "registry_pkgs.workflows.control.wrapper._read_mongodb_directive",
+            AsyncMock(return_value=None),
+        )
+        monkeypatch.setattr(
+            "registry_pkgs.workflows.control.wrapper._record_attempt_start",
+            AsyncMock(),
+        )
+        monkeypatch.setattr("registry_pkgs.workflows.control.wrapper.asyncio.sleep", AsyncMock())
+
+        result = await wrapped(SimpleNamespace(input="hello"), {})
+
+        assert result.success is True
+        assert result.content == "done"
+        assert executor.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_cancelled_error_not_swallowed_by_exception_handler(self, monkeypatch: pytest.MonkeyPatch):
+        """WorkflowCancelledError raised by the executor must propagate — the try/except must not catch it."""
+        run_id = str(PydanticObjectId())
+        queue = DirectiveQueue()
+        queue.register(run_id)
+
+        executor = AsyncMock(side_effect=WorkflowCancelledError("cancelled"))
+        wrapped = with_control(
+            executor,
+            run_id=run_id,
+            node_id="node-1",
+            node_name="github",
+            step_config=None,
+            directive_queue=queue,
+        )
+
+        monkeypatch.setattr(
+            "registry_pkgs.workflows.control.wrapper._read_mongodb_directive",
+            AsyncMock(return_value=None),
+        )
+        monkeypatch.setattr(
+            "registry_pkgs.workflows.control.wrapper._record_attempt_start",
+            AsyncMock(),
+        )
+
+        with pytest.raises(WorkflowCancelledError):
+            await wrapped(SimpleNamespace(input="hello"), {})
+
+    @pytest.mark.asyncio
     async def test_pause_timeout_raises_cancelled_error(self, monkeypatch: pytest.MonkeyPatch):
         run_id = str(PydanticObjectId())
         queue = DirectiveQueue()
@@ -158,6 +257,7 @@ class TestHumanReviewModelValidation:
             name="s",
             node_type="step",
             executor_key="tool",
+            step_objective="run step",
             human_review=HumanReviewSpec(
                 requires_confirmation=True,
                 requires_user_input=True,
@@ -177,8 +277,8 @@ class TestHumanReviewModelValidation:
                 name="p",
                 node_type="parallel",
                 children=[
-                    WorkflowNode(name="a", executor_key="x"),
-                    WorkflowNode(name="b", executor_key="y"),
+                    WorkflowNode(name="a", executor_key="x", step_objective="run a"),
+                    WorkflowNode(name="b", executor_key="y", step_objective="run b"),
                 ],
                 human_review=HumanReviewSpec(requires_confirmation=True),
             )
@@ -191,7 +291,7 @@ class TestHumanReviewModelValidation:
             name="loop_ok",
             node_type="loop",
             loop_config=LoopConfig(max_iterations=3),
-            children=[WorkflowNode(name="c", executor_key="x")],
+            children=[WorkflowNode(name="c", executor_key="x", step_objective="run c")],
             human_review=HumanReviewSpec(requires_iteration_review=True),
         )
         assert loop_ok.human_review.requires_iteration_review is True
@@ -202,7 +302,7 @@ class TestHumanReviewModelValidation:
                 name="loop_bad",
                 node_type="loop",
                 loop_config=LoopConfig(max_iterations=3),
-                children=[WorkflowNode(name="c", executor_key="x")],
+                children=[WorkflowNode(name="c", executor_key="x", step_objective="run c")],
                 human_review=HumanReviewSpec(requires_user_input=True),
             )
 
@@ -214,7 +314,7 @@ class TestHumanReviewModelValidation:
                 name="c",
                 node_type="condition",
                 condition_cel="true",
-                true_steps=[WorkflowNode(name="t", executor_key="x")],
+                true_steps=[WorkflowNode(name="t", executor_key="x", step_objective="run t")],
                 human_review=HumanReviewSpec(requires_user_input=True),
             )
 
@@ -226,5 +326,6 @@ class TestHumanReviewModelValidation:
                 name="s",
                 node_type="step",
                 executor_key="tool",
+                step_objective="run step",
                 human_review=HumanReviewSpec(requires_iteration_review=True),
             )

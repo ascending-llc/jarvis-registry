@@ -31,13 +31,14 @@ class Settings(JarvisBaseSettings):
     csrf_cookie_name: str = "jarvis_registry_csrf"
     session_max_age_seconds: int = 60 * 60 * 8
     session_cookie_domain: str | None = None
+    oauth2_code_verifier_cookie_name: str = "registry_oauth2_code_verifier"
+    oauth2_state_nonce_cookie_name: str = "registry_oauth2_state_nonce"
 
     # ==================== Service URLs ====================
     registry_internal_url: str = "http://localhost:7860"
 
     # ==================== Headers ====================
     auth_egress_header: str = "Authorization"
-    internal_auth_header: str = "X-Jarvis-Auth"
     csrf_header_name: str = "X-Jarvis-CSRF"
 
     # ==================== API ====================
@@ -125,6 +126,8 @@ class Settings(JarvisBaseSettings):
     aws_region: str = "us-east-1"
     embedding_model: str = "amazon.titan-embed-text-v2:0"
     aws_workflow_llm_model: str = "amazon.nova-2-lite-v1:0"
+    aws_bedrock_sonnet_aip_arn: str = ""
+    aws_bedrock_require_aip: bool = False
     aws_access_key_id: str | None = None
     aws_secret_access_key: str | None = None
     aws_session_token: str | None = None
@@ -150,6 +153,13 @@ class Settings(JarvisBaseSettings):
     # ==================== Encryption ====================
     creds_key: str = ""
 
+    # ==================== Entra Group Sync ====================
+    # entra_tenant_id / entra_client_id / entra_client_secret are inherited from JarvisBaseSettings.
+    # `entra_group_sync_enabled = False` if using Registry together with Jarvis Chat; `True` if using Registry by itself.
+    # This is because Jarvis Chat already performs group sync.
+    entra_group_sync_enabled: bool = False
+    entra_graph_url: str = "https://graph.microsoft.com"
+
     # ==================== Keycloak Integration ====================
     keycloak_url: str = "http://keycloak:8080"
     keycloak_realm: str = "mcp-gateway"
@@ -162,9 +172,6 @@ class Settings(JarvisBaseSettings):
     federation_config_path: str = "/app/config/federation.json"
     asor_access_token: str | None = None
     asor_client_credentials: str | None = None
-
-    # ==================== Build Metadata ====================
-    build_version: str = "1.0.0"
 
     # ==================== Model Validation ====================
 
@@ -199,6 +206,26 @@ class Settings(JarvisBaseSettings):
 
         return self
 
+    @model_validator(mode="after")
+    def _validate_llm_model_id(self) -> Self:
+        if self.x_jarvis_registry_import_checks == "disabled":
+            logging.warning("LLM Model ID validation is disabled. This should only happen in CI import checks.")
+
+            return self
+
+        if self.aws_bedrock_require_aip and self.aws_bedrock_sonnet_aip_arn.strip() == "":
+            raise ValueError("AWS_BEDROCK_SONNET_AIP_ARN must be set when AWS_BEDROCK_REQUIRE_AIP is true.")
+        elif (
+            not self.aws_bedrock_require_aip
+            and self.aws_bedrock_sonnet_aip_arn.strip() == ""
+            and self.aws_workflow_llm_model.strip() == ""
+        ):
+            raise ValueError(
+                "When AWS_BEDROCK_REQUIRE_AIP is false, AWS_BEDROCK_SONNET_AIP_ARN is not set, AWS_WORKFLOW_LLM_MODEL must be set."
+            )
+
+        return self
+
     @cached_property
     def registry_redirect_uri(self) -> str:
         return f"{self.registry_url.rstrip('/')}/redirect"
@@ -210,6 +237,14 @@ class Settings(JarvisBaseSettings):
     @cached_property
     def is_local_dev(self) -> bool:
         return not Path("/app").exists()
+
+    @cached_property
+    def workflow_llm_model_id(self) -> str:
+        aip_arn = self.aws_bedrock_sonnet_aip_arn.strip()
+        if aip_arn:
+            return aip_arn
+
+        return self.aws_workflow_llm_model.strip()
 
     @cached_property
     def use_external_discovery(self) -> bool:

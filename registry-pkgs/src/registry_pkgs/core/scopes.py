@@ -105,3 +105,15 @@ def map_groups_to_scopes(groups: list[str], config: ScopesConfig) -> list[str]:
 
     logger.info(f"Mapped {len(groups)} groups to {len(unique_scopes)} unique scopes")
     return unique_scopes
+
+
+def filter_known_groups(groups: list[str], config: ScopesConfig) -> list[str]:
+    """Filter a user's raw IdP groups down to those with a scope mapping in scopes.yml.
+
+    Groups outside `group_mappings` carry no authorization meaning to this application —
+    `map_groups_to_scopes` already discards them when deriving scopes. Filtering them out
+    before a group list is minted into a JWT keeps that dead weight out of every session
+    cookie instead of transmitting and then ignoring it.
+    """
+    group_mappings = load_scopes_config(config).get("group_mappings", {})
+    return [group for group in groups if group in group_mappings]

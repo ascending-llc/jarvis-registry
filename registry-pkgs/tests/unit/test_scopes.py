@@ -9,6 +9,7 @@ import yaml
 
 from registry_pkgs.core import scopes
 from registry_pkgs.core.config import ScopesConfig
+from registry_pkgs.core.scopes import filter_known_groups
 
 
 @pytest.fixture
@@ -366,3 +367,43 @@ class TestMapGroupsToScopes:
             assert result == ["scope1", "scope2", "scope3", "scope4"]
         finally:
             temp_path.unlink()
+
+
+class TestFilterKnownGroups:
+    """Tests for filter_known_groups function."""
+
+    def test_known_group_is_kept(self, temp_scopes_file, reset_scopes_cache):
+        """A group present in group_mappings is kept in the output."""
+        config = _scopes_config(str(temp_scopes_file))
+        result = filter_known_groups(["admin"], config)
+        assert result == ["admin"]
+
+    def test_unknown_group_is_removed(self, temp_scopes_file, reset_scopes_cache):
+        """A group absent from group_mappings is removed."""
+        config = _scopes_config(str(temp_scopes_file))
+        result = filter_known_groups(["All-Company-Employees"], config)
+        assert result == []
+
+    def test_mixed_groups_keeps_only_known(self, temp_scopes_file, reset_scopes_cache):
+        """Mix of known and unknown groups returns only the known subset."""
+        config = _scopes_config(str(temp_scopes_file))
+        result = filter_known_groups(["admin", "All-Company-Employees", "user"], config)
+        assert result == ["admin", "user"]
+
+    def test_empty_input_returns_empty(self, temp_scopes_file, reset_scopes_cache):
+        """Empty input list returns empty output."""
+        config = _scopes_config(str(temp_scopes_file))
+        result = filter_known_groups([], config)
+        assert result == []
+
+    def test_preserves_input_order(self, temp_scopes_file, reset_scopes_cache):
+        """Output preserves the original order of known groups."""
+        config = _scopes_config(str(temp_scopes_file))
+        result = filter_known_groups(["user", "admin"], config)
+        assert result == ["user", "admin"]
+
+    def test_does_not_deduplicate(self, temp_scopes_file, reset_scopes_cache):
+        """Duplicate known groups are not removed — mirrors map_groups_to_scopes input convention."""
+        config = _scopes_config(str(temp_scopes_file))
+        result = filter_known_groups(["admin", "admin"], config)
+        assert result == ["admin", "admin"]

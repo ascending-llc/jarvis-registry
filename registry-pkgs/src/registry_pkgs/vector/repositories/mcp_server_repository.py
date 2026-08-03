@@ -4,6 +4,7 @@ import asyncio
 import logging
 
 from ...models import ExtendedMCPServer
+from ...models.federation_metadata import extract_runtime_version
 from ..base_sync_repository import BaseVectorSyncRepository
 from ..client import DatabaseClient
 from ..sync_result import VectorSyncResult
@@ -101,7 +102,7 @@ class MCPServerRepository(BaseVectorSyncRepository[ExtendedMCPServer]):
 
             if verified:
                 result.indexed = len(doc_ids)
-                result.version = self._extract_runtime_version(server)
+                result.version = extract_runtime_version(server.federationMetadata)
                 logger.info(
                     "Indexed %d docs for server '%s' (server_id=%s).",
                     result.indexed,
@@ -158,8 +159,3 @@ class MCPServerRepository(BaseVectorSyncRepository[ExtendedMCPServer]):
         except Exception as e:
             logger.error("Get by server_id failed: %s", e)
             return None
-
-    @staticmethod
-    def _extract_runtime_version(server: ExtendedMCPServer) -> str | None:
-        runtime_version = (server.federationMetadata or {}).get("runtimeVersion")
-        return str(runtime_version) if runtime_version is not None else None

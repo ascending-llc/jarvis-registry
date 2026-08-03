@@ -1,7 +1,10 @@
+from unittest.mock import AsyncMock
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.testclient import TestClient
+from starlette.types import Receive, Scope, Send
 
 from registry.app_factory import _configure_middleware
 from registry.core.config import settings
@@ -103,3 +106,23 @@ def test_configured_middleware_order_runs_cors_then_csrf_then_auth():
         UnifiedAuthMiddleware,
         ScopePermissionMiddleware,
     ]
+
+
+def test_lifespan_scope_passes_through_without_error():
+    with TestClient(_build_app()):
+        pass
+
+
+async def test_non_http_scope_forwarded_to_app_unchanged():
+    calls: list[Scope] = []
+
+    async def stub_app(scope: Scope, receive: Receive, send: Send) -> None:
+        del receive, send
+        calls.append(scope)
+
+    middleware = CSRFMiddleware(stub_app)
+    scope: Scope = {"type": "websocket", "path": "/ws"}
+
+    await middleware(scope, AsyncMock(), AsyncMock())
+
+    assert calls == [scope]

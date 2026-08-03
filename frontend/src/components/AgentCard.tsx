@@ -1,6 +1,7 @@
 import {
   ArrowPathIcon,
   ClockIcon,
+  CommandLineIcon,
   PencilSquareIcon,
   WrenchScrewdriverIcon,
   XMarkIcon,
@@ -9,7 +10,10 @@ import type React from 'react';
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import agentcoreIcon from '@/assets/agentcore.svg';
+import azureAiIcon from '@/assets/azureai-color.svg';
+import AgentConnectionModal from '@/components/AgentConnectionModal';
 import IconButton from '@/components/IconButton';
+import { FEDERATED_TAG } from '@/constants/tags';
 import { useGlobal } from '@/contexts/GlobalContext';
 import { useServer } from '@/contexts/ServerContext';
 import SERVICES from '@/services';
@@ -69,13 +73,17 @@ const AgentCard: React.FC<AgentCardProps> = ({ agent }) => {
   const [loading, setLoading] = useState(false);
   const [loadingRefresh, setLoadingRefresh] = useState(false);
   const [showSkills, setShowSkills] = useState(false);
+  const [showConnectionInstructions, setShowConnectionInstructions] = useState(false);
   const canEdit = !!agent.permissions?.EDIT;
+  const agentTitle = agent.card?.name || agent.config?.title || agent.name;
 
   const numSkills = 'numSkills' in agent ? agent.numSkills : agent.skills?.length || 0;
   const hasSkillsDetails = 'skills' in agent && Array.isArray(agent.skills) && agent.skills.length > 0;
 
   const hasAgentCoreTags =
-    agent.tags?.includes('federated') && agent.tags?.includes('aws') && agent.tags?.includes('agentcore');
+    agent.tags?.includes(FEDERATED_TAG) && agent.tags?.includes('aws') && agent.tags?.includes('agentcore');
+  const hasAzureFoundryTags =
+    agent.tags?.includes(FEDERATED_TAG) && agent.tags?.includes('azure') && agent.tags?.includes('foundry');
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -148,11 +156,11 @@ const AgentCard: React.FC<AgentCardProps> = ({ agent }) => {
                     className='max-w-[160px] cursor-pointer truncate text-base font-medium text-[var(--jarvis-text)] transition-colors hover:text-[var(--jarvis-text-strong)]'
                     onClick={() => navigate(`/agent-edit?id=${agent.id}&isReadOnly=true`)}
                   >
-                    {agent.card?.name || agent.config?.title || agent.name}
+                    {agentTitle}
                   </h3>
                 ) : (
                   <h3 className='max-w-[160px] truncate text-base font-medium text-[var(--jarvis-text)]'>
-                    {agent.card?.name || agent.config?.title || agent.name}
+                    {agentTitle}
                   </h3>
                 )}
               </div>
@@ -170,6 +178,15 @@ const AgentCard: React.FC<AgentCardProps> = ({ agent }) => {
                   <PencilSquareIcon className='h-3.5 w-3.5' />
                 </IconButton>
               )}
+              <IconButton
+                ariaLabel='View agent connection instructions'
+                tooltip='Connection instructions'
+                onClick={() => setShowConnectionInstructions(true)}
+                size='card'
+                className='text-[var(--jarvis-icon)] hover:bg-[var(--jarvis-primary-soft)] hover:text-[var(--jarvis-icon-hover)]'
+              >
+                <CommandLineIcon className='h-3.5 w-3.5' />
+              </IconButton>
             </div>
           </div>
 
@@ -323,7 +340,7 @@ const AgentCard: React.FC<AgentCardProps> = ({ agent }) => {
           </div>
         </div>
 
-        {/* AgentCore Icon - Fixed position */}
+        {/* Federation Provider Icon - Fixed position */}
         {hasAgentCoreTags && (
           <img
             src={agentcoreIcon}
@@ -332,7 +349,25 @@ const AgentCard: React.FC<AgentCardProps> = ({ agent }) => {
             title='AWS AgentCore'
           />
         )}
+        {hasAzureFoundryTags && (
+          <div className='absolute bottom-14 right-3 flex h-6 w-6 items-center justify-center rounded-md bg-[var(--jarvis-info-soft)] p-1 shadow-sm'>
+            <img
+              src={azureAiIcon}
+              alt='Azure AI Foundry'
+              className='h-full w-full object-contain'
+              title='Azure AI Foundry'
+            />
+          </div>
+        )}
       </div>
+
+      <AgentConnectionModal
+        agentTitle={agentTitle}
+        agentPath={agent.path}
+        enabled={agent.enabled}
+        isOpen={showConnectionInstructions}
+        onClose={() => setShowConnectionInstructions(false)}
+      />
 
       {/* Skills Modal */}
       {showSkills && (

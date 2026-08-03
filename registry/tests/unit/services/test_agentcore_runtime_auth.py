@@ -116,7 +116,7 @@ async def test_build_runtime_http_auth_jwt_signs_bearer_token_with_expected_clai
     # iss is derived from discoveryUrl (scheme + host), not from settings.jwt_issuer
     assert claims["iss"] == "https://issuer"
     assert claims["sub"] == settings.registry_app_name
-    assert claims["aud"] == settings.jwt_audience
+    assert claims["aud"] == "jarvis-services"
     assert claims["client_id"] == "jarvis-registry"
     assert claims["scope"] == "sync:read tools:read"
     assert claims["tenant"] == "prod"

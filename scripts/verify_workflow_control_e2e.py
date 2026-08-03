@@ -20,6 +20,12 @@ Usage:
     uv run python scripts/verify_workflow_control_e2e.py --modules A,C,D    # subset
     uv run python scripts/verify_workflow_control_e2e.py --keep-data        # keep test data on exit
 
+Environment variables:
+    AWS_BEDROCK_SONNET_AIP_ARN
+        AIP ARN used before BEDROCK_MODEL when set.
+    BEDROCK_MODEL
+        Bedrock model ID fallback (default: us.amazon.nova-lite-v1:0).
+
 Pattern follows ``scripts/test_control_e2e.py``: direct service+runner calls
 against real MongoDB; ACL/route layers covered by their unit tests.  Mock step
 executor returns instantly so e2e total runtime stays under ~2 min.
@@ -40,6 +46,7 @@ from agno.models.aws import AwsBedrock
 from agno.workflow import StepInput, StepOutput
 from agno.workflow.step import StepExecutor
 from beanie import PydanticObjectId
+from bedrock_model import resolve_bedrock_model_id
 from dotenv import load_dotenv
 from fastapi import HTTPException
 
@@ -56,6 +63,7 @@ from registry.schemas.workflow_api_schemas import (
     convert_node_to_input,
 )
 from registry.services.access_control_service import ACLService, load_role_cache
+from registry.services.group_directory_client import KeycloakGroupDirectoryClient
 from registry.services.group_service import GroupService
 from registry.services.user_service import UserService
 from registry.services.workflow_control_service import WorkflowControlService
@@ -95,7 +103,7 @@ USER_B = PydanticObjectId()
 class MockRunner(WorkflowRunner):
     """Replace MCP/A2A executors with instant in-process mocks."""
 
-    async def _build_registry(self, definition, registry_token, user_id):
+    async def _build_registry(self, definition, auth_context):
         all_nodes = flatten_workflow_nodes(definition.nodes)
         keys = list(dict.fromkeys(n.executor_key for n in all_nodes if n.executor_key))
 
@@ -121,7 +129,10 @@ class MockRunner(WorkflowRunner):
 
 def _build_runner(queue: DirectiveQueue) -> MockRunner:
     llm = AwsBedrock(
-        id=os.getenv("BEDROCK_MODEL", "us.amazon.nova-lite-v1:0"),
+        id=resolve_bedrock_model_id(
+            model_env_var="BEDROCK_MODEL",
+            fallback_model_id="us.amazon.nova-lite-v1:0",
+        ),
         aws_region=settings.aws_region,
         aws_session_token=settings.aws_session_token,
         aws_access_key_id=settings.aws_access_key_id,
@@ -129,7 +140,6 @@ def _build_runner(queue: DirectiveQueue) -> MockRunner:
     )
     return MockRunner(
         llm=llm,
-        registry_url=os.getenv("REGISTRY_URL", "http://localhost:7860"),
         db_client=MongoDB.get_client(),
         db_name=MongoDB.database_name,
         jwt_config=settings.jwt_signing_config,
@@ -151,7 +161,7 @@ class FailingMockRunner(WorkflowRunner):
         self._fail_counts = fail_counts or {}
         self.attempts: dict[str, int] = {}
 
-    async def _build_registry(self, definition, registry_token, user_id):
+    async def _build_registry(self, definition, auth_context):
         all_nodes = flatten_workflow_nodes(definition.nodes)
         keys = list(dict.fromkeys(n.executor_key for n in all_nodes if n.executor_key))
 
@@ -170,7 +180,10 @@ class FailingMockRunner(WorkflowRunner):
 
 def _build_failing_runner(queue: DirectiveQueue, fail_counts: dict[str, int]) -> FailingMockRunner:
     llm = AwsBedrock(
-        id=os.getenv("BEDROCK_MODEL", "us.amazon.nova-lite-v1:0"),
+        id=resolve_bedrock_model_id(
+            model_env_var="BEDROCK_MODEL",
+            fallback_model_id="us.amazon.nova-lite-v1:0",
+        ),
         aws_region=settings.aws_region,
         aws_session_token=settings.aws_session_token,
         aws_access_key_id=settings.aws_access_key_id,
@@ -178,7 +191,6 @@ def _build_failing_runner(queue: DirectiveQueue, fail_counts: dict[str, int]) ->
     )
     return FailingMockRunner(
         llm=llm,
-        registry_url=os.getenv("REGISTRY_URL", "http://localhost:7860"),
         db_client=MongoDB.get_client(),
         db_name=MongoDB.database_name,
         jwt_config=settings.jwt_signing_config,
@@ -300,9 +312,7 @@ async def _trigger_run_inproc(
         triggering_user_id=str(USER_A),
     )
     await run.insert()
-    task = asyncio.create_task(
-        runner.run(workflow_id, "e2e", registry_token="test", user_id=str(USER_A), existing_run_id=str(run.id))
-    )
+    task = asyncio.create_task(runner.run(workflow_id, "e2e", auth_context=None, existing_run_id=str(run.id)))
     return str(run.id), task
 
 
@@ -1005,7 +1015,7 @@ async def module_g(workflow_service, control_service, acl_service, queue, runner
         str(wf.id),
         run_id,
         first_node_id,
-        registry_token="test",
+        auth_context=None,
         user_id=str(USER_A),
     )
     r.check(
@@ -1020,7 +1030,7 @@ async def module_g(workflow_service, control_service, acl_service, queue, runner
     # Reuses the G1 completed run (which has COMPLETED NodeRuns for a + b).
     second_node_id = wf.nodes[1].id
     child2 = await control_service.send_retry(
-        str(wf.id), run_id, second_node_id, registry_token="test", user_id=str(USER_A)
+        str(wf.id), run_id, second_node_id, auth_context=None, user_id=str(USER_A)
     )
     deps = {d.node_id: str(d.resolution).lower() for d in child2.resolved_dependencies}
     r.check(
@@ -1038,7 +1048,7 @@ async def module_g(workflow_service, control_service, acl_service, queue, runner
     parent_failed.status = WorkflowRunStatus.FAILED
     await parent_failed.save()
     child3 = await control_service.send_retry(
-        str(wf_f.id), str(parent_failed.id), wf_f.nodes[0].id, registry_token="test", user_id=str(USER_A)
+        str(wf_f.id), str(parent_failed.id), wf_f.nodes[0].id, auth_context=None, user_id=str(USER_A)
     )
     r.check(
         "G3 retry a FAILED run → child created",
@@ -1051,7 +1061,7 @@ async def module_g(workflow_service, control_service, acl_service, queue, runner
     raised_400 = False
     try:
         await control_service.send_retry(
-            str(wf_f.id), str(pending_run.id), wf_f.nodes[0].id, registry_token="test", user_id=str(USER_A)
+            str(wf_f.id), str(pending_run.id), wf_f.nodes[0].id, auth_context=None, user_id=str(USER_A)
         )
     except HTTPException as exc:
         raised_400 = exc.status_code == 400
@@ -1064,7 +1074,7 @@ async def module_g(workflow_service, control_service, acl_service, queue, runner
     raised_cancel = False
     try:
         await control_service.send_retry(
-            str(wf_f.id), str(cancelled_run.id), wf_f.nodes[0].id, registry_token="test", user_id=str(USER_A)
+            str(wf_f.id), str(cancelled_run.id), wf_f.nodes[0].id, auth_context=None, user_id=str(USER_A)
         )
     except HTTPException as exc:
         raised_cancel = exc.status_code == 400
@@ -1073,9 +1083,7 @@ async def module_g(workflow_service, control_service, acl_service, queue, runner
     # G6: retry with an unknown from_node_id → 400.
     raised_node = False
     try:
-        await control_service.send_retry(
-            str(wf.id), run_id, "no-such-node-id", registry_token="test", user_id=str(USER_A)
-        )
+        await control_service.send_retry(str(wf.id), run_id, "no-such-node-id", auth_context=None, user_id=str(USER_A))
     except HTTPException as exc:
         raised_node = exc.status_code == 400
     r.check("G6 retry with unknown from_node_id → 400", raised_node)
@@ -1429,7 +1437,7 @@ async def amain(selected: list[str], keep_data: bool) -> int:
     runner = _build_runner(queue)
     acl_service = ACLService(
         user_service=UserService(),
-        group_service=GroupService(),
+        group_service=GroupService(group_directory_client=KeycloakGroupDirectoryClient()),
         role_cache=await load_role_cache(),
     )
     control_service = WorkflowControlService(directive_queue=queue, runner_factory=lambda: runner)

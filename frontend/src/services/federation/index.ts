@@ -43,6 +43,18 @@ const deleteFederation: (federationId: string) => Promise<void> = async federati
   await Request.delete(API.deleteFederation(federationId));
 
 /**
+ * Fetch the latest status for a federation sync job
+ * @param federationId The UUID or ID of the federation provider
+ * @param jobId The sync job ID returned when the sync was started
+ */
+const getFederationSyncJob: (
+  federationId: string,
+  jobId: string,
+  config?: AxiosRequestConfig,
+) => Promise<TYPE.FederationSyncJobStatus> = async (federationId, jobId, config) =>
+  await Request.get(API.getFederationSyncJob(federationId, jobId), undefined, config);
+
+/**
  * Trigger a background sync job for the specified external federation
  * @param federationId The UUID or ID of the federation provider
  * @param data Optional params like forcing a full resync and audit strings
@@ -51,7 +63,7 @@ const syncFederation: (
   federationId: string,
   data?: { force?: boolean; reason?: string; dryRun?: boolean; providerConfig?: Record<string, unknown> },
   config?: AxiosRequestConfig,
-) => Promise<any> = async (federationId, data, config) =>
+) => Promise<TYPE.FederationSyncJobStatus | TYPE.FederationSyncDryRunResult> = async (federationId, data, config) =>
   await Request.post(API.syncFederation(federationId), data, config);
 
 const FEDERATION = {
@@ -60,6 +72,7 @@ const FEDERATION = {
   createFederation,
   updateFederation,
   deleteFederation,
+  getFederationSyncJob,
   syncFederation,
 };
 

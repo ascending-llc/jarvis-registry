@@ -2,40 +2,14 @@ import type { Edge } from '@xyflow/react';
 import { useCallback } from 'react';
 import { ADD_NODE_MARGIN_X, BRANCH_SPACING, DASHED_EDGE, NODE_WIDTH } from '../constants';
 import { estimateNodeHeight } from '../layout';
-import type { AgentInfo, AgentNodeData, LogicStep, McpNodeData, NodeData, PickerItem, WorkflowNode } from '../types';
+import { getDefaultNodeData } from '../nodeDefaults';
+import type { AgentNodeData, LogicStep, McpNodeData, NodeData, PickerItem, WorkflowNode } from '../types';
+import { pruneInvalidRefs } from '../utils/dag';
 
 const CATEGORY_TYPE: Record<string, (item: PickerItem | LogicStep) => string> = {
   agent: _item => 'agent',
   mcp: _item => 'mcp',
   logic: item => item.id,
-};
-
-const getDefaultNodeData = (type: string, label: string, desc: string): NodeData => {
-  const base = { label, description: desc || '' };
-  if (type === 'parallel') {
-    const pData = base as import('../types').ParallelNodeData;
-    return { ...base, branches: pData.branches || ['Branch A', 'Branch B'] };
-  }
-  if (type === 'router') {
-    const rData = base as import('../types').RouterNodeData;
-    return {
-      ...base,
-      cases: rData.cases || ['critical', 'normal'],
-      routeBy: 'session_state.severity',
-      defaultCase: 'low-priority',
-    };
-  }
-  if (type === 'loop') return { ...base, maxIterations: 5, exitCondition: 'session_state.done == true' };
-  if (type === 'pool')
-    return {
-      ...base,
-      agents: [
-        { id: 'classifier-agent', label: 'Classifier Agent', desc: '', path: 'classifier-agent' },
-        { id: 'responder-agent', label: 'Responder Agent', desc: '', path: 'responder-agent' },
-      ] satisfies AgentInfo[],
-    };
-  if (type === 'cond') return { ...base, expression: 'session_state.score > 0.8' };
-  return base as NodeData;
 };
 
 export const useCanvasMutations = ({
@@ -48,6 +22,7 @@ export const useCanvasMutations = ({
   generateNodeId,
   generateEdgeId,
   onChange,
+  isReadOnly,
 }: {
   nodes: WorkflowNode[];
   edges: Edge[];
@@ -58,18 +33,21 @@ export const useCanvasMutations = ({
   generateNodeId: () => string;
   generateEdgeId: () => string;
   onChange?: () => void;
+  isReadOnly: boolean;
 }) => {
   const onNodeDataChange = useCallback(
     (nodeId: string, patch: Partial<NodeData>) => {
+      if (isReadOnly) return;
       setNodes(prev => prev.map(n => (n.id === nodeId ? { ...n, data: { ...n.data, ...patch } } : n)));
       setSelected(prev => (prev?.id === nodeId ? { ...prev, data: { ...prev.data, ...patch } } : prev));
       onChange?.();
     },
-    [setNodes, setSelected, onChange],
+    [isReadOnly, setNodes, setSelected, onChange],
   );
 
   const onDeleteNode = useCallback(
     (nodeId: string) => {
+      if (isReadOnly) return;
       const deletedNode = nodes.find(n => n.id === nodeId);
       if (deletedNode?.type === 'add') {
         setNodes(prev => prev.filter(n => n.id !== nodeId));
@@ -125,8 +103,12 @@ export const useCanvasMutations = ({
         });
       }
 
-      setNodes(prev => prev.filter(n => n.id !== nodeId && !addNodesToRemove.has(n.id)).concat(newAddNodes));
-      setEdges(prev => prev.filter(e => e.source !== nodeId && e.target !== nodeId).concat(newEdges));
+      const nextEdges = edges.filter(e => e.source !== nodeId && e.target !== nodeId).concat(newEdges);
+      const nextNodes = nodes.filter(n => n.id !== nodeId && !addNodesToRemove.has(n.id)).concat(newAddNodes);
+      const validatedNodes = pruneInvalidRefs(nextNodes, nextEdges) as WorkflowNode[];
+
+      setNodes(validatedNodes);
+      setEdges(nextEdges);
       setSelected(null);
       onChange?.();
     },
@@ -141,11 +123,13 @@ export const useCanvasMutations = ({
       generateEdgeId,
       onChange,
       DASHED_EDGE,
+      isReadOnly,
     ],
   );
 
   const onDeleteEdges = useCallback(
     (edgesToDelete: Edge[]) => {
+      if (isReadOnly) return;
       const newAddNodes: WorkflowNode[] = [];
       const newEdges: Edge[] = [];
 
@@ -176,12 +160,16 @@ export const useCanvasMutations = ({
       }
 
       if (newAddNodes.length > 0) {
-        setNodes(prev => [...prev, ...newAddNodes]);
-        setEdges(prev => [...prev.filter(e => !edgesToDelete.find(del => del.id === e.id)), ...newEdges]);
+        const nextNodes = [...nodes, ...newAddNodes];
+        const nextEdges = [...edges.filter(e => !edgesToDelete.find(del => del.id === e.id)), ...newEdges];
+        const validatedNodes = pruneInvalidRefs(nextNodes, nextEdges) as WorkflowNode[];
+
+        setNodes(validatedNodes);
+        setEdges(nextEdges);
         onChange?.();
       }
     },
-    [nodes, setNodes, setEdges, generateNodeId, generateEdgeId, onChange],
+    [nodes, edges, setNodes, setEdges, generateNodeId, generateEdgeId, onChange, isReadOnly],
   );
 
   const onDynamicBranchesChange = useCallback(
@@ -191,6 +179,7 @@ export const useCanvasMutations = ({
       nextBranches: string[],
       options: { dataKey: 'branches' | 'cases'; handlePrefix: string },
     ) => {
+      if (isReadOnly) return;
       const { dataKey, handlePrefix } = options;
       if (prevBranches === nextBranches) return;
 
@@ -250,7 +239,8 @@ export const useCanvasMutations = ({
           },
         ];
 
-        setNodes(nextNodes as WorkflowNode[]);
+        const validatedNodes = pruneInvalidRefs(nextNodes, nextEdges) as WorkflowNode[];
+        setNodes(validatedNodes);
         setEdges(nextEdges);
         setSelected(prev =>
           prev?.id === nodeId ? { ...prev, data: { ...prev.data, [dataKey]: nextBranches } } : prev,
@@ -303,14 +293,15 @@ export const useCanvasMutations = ({
           });
 
         const safeNodes = nextNodes as WorkflowNode[];
-        setNodes(safeNodes);
+        const validatedNodes = pruneInvalidRefs(safeNodes, nextEdges) as WorkflowNode[];
+        setNodes(validatedNodes);
         setEdges(nextEdges);
         setSelected(prev =>
           prev?.id === nodeId ? { ...prev, data: { ...prev.data, [dataKey]: nextBranches } } : prev,
         );
       }
     },
-    [nodes, edges, setNodes, setEdges, setSelected, generateNodeId, generateEdgeId, onChange],
+    [nodes, edges, setNodes, setEdges, setSelected, generateNodeId, generateEdgeId, onChange, isReadOnly],
   );
 
   const onParallelBranchesChange = useCallback(
@@ -329,6 +320,7 @@ export const useCanvasMutations = ({
 
   const onPick = useCallback(
     (pendingAddId: string, category: 'agent' | 'mcp' | 'logic', item: PickerItem | LogicStep) => {
+      if (isReadOnly) return;
       onChange?.();
 
       const nodeType = CATEGORY_TYPE[category](item);
@@ -438,12 +430,13 @@ export const useCanvasMutations = ({
         ];
       })();
 
-      setNodes(nextNodes as WorkflowNode[]);
+      const validatedNodes = pruneInvalidRefs(nextNodes as WorkflowNode[], nextEdges) as WorkflowNode[];
+      setNodes(validatedNodes);
       setEdges(nextEdges);
 
       setSelected(newNode);
     },
-    [nodes, edges, setNodes, setEdges, setSelected, generateNodeId, generateEdgeId, onChange],
+    [nodes, edges, setNodes, setEdges, setSelected, generateNodeId, generateEdgeId, onChange, isReadOnly],
   );
 
   return {

@@ -175,6 +175,21 @@ class WorkflowNodeInput(APIBaseModel):
         default_factory=list,
         description="Named choices for ROUTER nodes (at least 2 required)",
     )
+    referencedNodeNames: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Names of upstream nodes whose outputs are injected into this node's prompt at runtime. "
+            "Only valid on step nodes — sending this on any other node type returns 400."
+        ),
+    )
+    stepObjective: str | None = Field(
+        None,
+        description=(
+            "Required for step nodes: a plain-language statement of what this step should accomplish. "
+            "Rendered into the executor's prompt alongside WorkflowDefinition.description and "
+            "referenced nodes' objectives. Forbidden on non-step nodes."
+        ),
+    )
     conditionCel: str | None = Field(None, description="CEL expression for condition/router nodes")
     loopConfig: LoopConfigInput | None = Field(None, description="Loop configuration for loop nodes")
     humanReview: HumanReviewConfig | None = Field(
@@ -203,6 +218,8 @@ class WorkflowNodeOutput(APIBaseModel):
     trueSteps: list["WorkflowNodeOutput"] = Field(default_factory=list)
     falseSteps: list["WorkflowNodeOutput"] = Field(default_factory=list)
     choices: list[RouterChoiceOutput] = Field(default_factory=list)
+    referencedNodeNames: list[str] = Field(default_factory=list)
+    stepObjective: str | None = None
     conditionCel: str | None = None
     loopConfig: LoopConfigInput | None = None
     # ``null`` when no HITL configured.
@@ -426,6 +443,7 @@ class StepRequirementSummary(APIBaseModel):
     retryCount: int = 0
     maxRetries: int | None = None
     timeoutAt: datetime | None = None
+    requirementKind: str | None = None
     onTimeout: OnTimeoutPolicy = OnTimeoutPolicy.CANCEL
     onReject: OnRejectPolicy = OnRejectPolicy.SKIP
 
@@ -538,6 +556,8 @@ def _convert_node_to_output(node: Any) -> WorkflowNodeOutput:
             )
             for choice in node.choices
         ],
+        referencedNodeNames=node.referenced_node_names,
+        stepObjective=node.step_objective,
         conditionCel=node.condition_cel,
         loopConfig=(
             LoopConfigInput(
@@ -610,6 +630,8 @@ def convert_node_to_input(node: Any) -> WorkflowNodeInput:
             )
             for choice in node.choices
         ],
+        referencedNodeNames=node.referenced_node_names,
+        stepObjective=node.step_objective,
         conditionCel=node.condition_cel,
         loopConfig=(
             LoopConfigInput(

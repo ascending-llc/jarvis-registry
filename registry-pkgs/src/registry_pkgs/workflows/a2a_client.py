@@ -4,14 +4,15 @@ import asyncio
 import logging
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlparse
 
 import httpx
 from a2a.client import ClientConfig, ClientFactory
 from a2a.client.base_client import BaseClient
 from a2a.client.middleware import ClientCallContext
+from a2a.client.transports.jsonrpc import JsonRpcTransport
 from a2a.types import (
     Message,
     Part,
@@ -25,10 +26,13 @@ from a2a.types import (
 from a2a.utils.artifact import get_artifact_text
 from a2a.utils.message import get_message_text
 
+from registry_pkgs.core.agentcore_jwt import mint_agentcore_runtime_jwt
 from registry_pkgs.core.config import JwtSigningConfig
-from registry_pkgs.core.jwt_utils import build_jwt_payload, encode_jwt
 from registry_pkgs.models.a2a_agent import TRANSPORT_HTTP_JSON, TRANSPORT_JSONRPC, A2AAgent
-from registry_pkgs.models.enums import FederationProviderType
+from registry_pkgs.models.federation_metadata import (
+    AgentCoreA2AFederationMetadata,
+    AzureFoundryFederationMetadata,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +41,8 @@ _A2A_HTTP_TIMEOUT = 300
 # a2a poll timeout needs to be strictly less than _A2A_JWT_TTL_SECONDS and _A2A_HTTP_TIMEOUT
 _A2A_POLL_TIMEOUT = _A2A_HTTP_TIMEOUT * 0.6
 
+HeadersProvider = Callable[[A2AAgent], Awaitable[dict[str, str]]]
+ClientProvider = Callable[[A2AAgent], Awaitable[httpx.AsyncClient]]
 _IN_PROGRESS_STATES: frozenset[TaskState] = frozenset({TaskState.submitted, TaskState.working})
 
 _AGENTCORE_IAM_UNSUPPORTED_MSG = (
@@ -94,22 +100,14 @@ class A2ACallResult:
         return "\n\n".join(blocks)
 
 
-def _normalize_claim_value(value: Any) -> Any:
-    if isinstance(value, str):
-        return value.strip()
-    if isinstance(value, list):
-        return [_normalize_claim_value(item) for item in value]
-    if isinstance(value, tuple):
-        return tuple(_normalize_claim_value(item) for item in value)
-    if isinstance(value, dict):
-        return {key: _normalize_claim_value(item) for key, item in value.items()}
-    return value
-
-
 def is_agentcore_runtime(agent: A2AAgent) -> bool:
     """Return True when the agent is a federated AWS Bedrock AgentCore runtime."""
-    meta = agent.federationMetadata or {}
-    return meta.get("providerType") == FederationProviderType.AWS_AGENTCORE
+    return isinstance(agent.federationMetadata, AgentCoreA2AFederationMetadata)
+
+
+def is_azure_foundry_runtime(agent: A2AAgent) -> bool:
+    """Return True when the agent is a federated Azure AI Foundry hosted agent."""
+    return isinstance(agent.federationMetadata, AzureFoundryFederationMetadata)
 
 
 def get_agentcore_auth_mode(agent: A2AAgent) -> str:
@@ -118,8 +116,11 @@ def get_agentcore_auth_mode(agent: A2AAgent) -> str:
         mode = agent.config.runtimeAccess.mode
         return str(mode.value if hasattr(mode, "value") else mode).upper()
 
-    meta = agent.federationMetadata or {}
-    config = meta.get("authorizerConfiguration") or {}
+    metadata = agent.federationMetadata
+    if not isinstance(metadata, AgentCoreA2AFederationMetadata):
+        return "IAM"
+
+    config = metadata.authorizerConfiguration or {}
     if not isinstance(config, dict) or not config:
         return "IAM"
 
@@ -145,33 +146,12 @@ def _make_agentcore_jwt(
     if agent.config and agent.config.runtimeAccess and agent.config.runtimeAccess.jwt:
         runtime_jwt = agent.config.runtimeAccess.jwt
 
-    extra_claims: dict[str, Any] = {}
-    issuer = jwt_config.jwt_issuer
-    audience = jwt_config.jwt_audience
-
-    if runtime_jwt:
-        if runtime_jwt.allowedClients:
-            extra_claims["client_id"] = _normalize_claim_value(runtime_jwt.allowedClients[0])
-        if runtime_jwt.allowedScopes:
-            cleaned = [s for s in (_normalize_claim_value(s) for s in runtime_jwt.allowedScopes) if s]
-            if cleaned:
-                extra_claims["scope"] = " ".join(cleaned)
-        if runtime_jwt.customClaims:
-            extra_claims.update(_normalize_claim_value(runtime_jwt.customClaims))
-        if runtime_jwt.discoveryUrl:
-            parsed = urlparse(runtime_jwt.discoveryUrl)
-            issuer = f"{parsed.scheme}://{parsed.netloc}"
-        if runtime_jwt.audiences:
-            audience = _normalize_claim_value(runtime_jwt.audiences[0])
-
-    payload = build_jwt_payload(
+    return mint_agentcore_runtime_jwt(
+        runtime_jwt,
         subject="jarvis-workflow",
-        issuer=issuer,
-        audience=audience,
+        signing=jwt_config,
         expires_in_seconds=expires_in_seconds,
-        extra_claims=extra_claims or None,
     )
-    return encode_jwt(payload, jwt_config.jwt_private_key, kid=jwt_config.jwt_self_signed_kid)
 
 
 def agent_base_url(agent: A2AAgent) -> str:
@@ -200,6 +180,13 @@ def build_headers(agent: A2AAgent, *, jwt_config: JwtSigningConfig) -> dict[str,
     return {}
 
 
+def _extra_call_headers(agent: A2AAgent) -> dict[str, str]:
+    """Build per-invocation headers that must stay stable throughout one call_a2a call."""
+    if is_agentcore_runtime(agent):
+        return {"X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": str(uuid.uuid4())}
+    return {}
+
+
 def _create_message(text: str) -> Message:
     return Message(
         kind="message",
@@ -207,6 +194,41 @@ def _create_message(text: str) -> Message:
         parts=[Part(root=TextPart(kind="text", text=text))],
         message_id=uuid.uuid4().hex,
     )
+
+
+def _ensure_a2a_result_fields(result: Any) -> None:
+    """Patch common A2A response omissions in-place so a2a-sdk validation passes.
+
+    Azure AI Foundry hosted agents return Task objects whose artifacts omit the
+    required ``artifact_id`` field. The a2a-sdk models enforce the field, so we
+    synthesize a UUID for any artifact that lacks one. This is a defensive,
+    idempotent workaround for a server-side spec deviation.
+    """
+    if not isinstance(result, dict) or result.get("kind") != "task":
+        return
+    for artifact in result.get("artifacts") or []:
+        # Accept both the camelCase wire alias and the snake_case field name;
+        # a2a-sdk models validate either (validate_by_name + validate_by_alias).
+        if isinstance(artifact, dict) and not (artifact.get("artifactId") or artifact.get("artifact_id")):
+            artifact["artifact_id"] = str(uuid.uuid4())
+
+
+class _AzureTolerantJsonRpcTransport(JsonRpcTransport):
+    """JSON-RPC transport that tolerates Azure Foundry A2A response omissions.
+
+    Overrides the raw request sender so the response body can be sanitized
+    before the a2a-sdk strict Pydantic models validate it.
+    """
+
+    async def _send_request(
+        self,
+        rpc_request_payload: dict[str, Any],
+        http_kwargs: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        response_data = await super()._send_request(rpc_request_payload, http_kwargs)
+        if isinstance(response_data, dict):
+            _ensure_a2a_result_fields(response_data.get("result"))
+        return response_data
 
 
 async def _consume_stream(
@@ -357,23 +379,31 @@ async def call_a2a(
     agent: A2AAgent,
     text: str | Message,
     *,
-    jwt_config: JwtSigningConfig,
+    jwt_config: JwtSigningConfig | None = None,
     httpx_client: httpx.AsyncClient | None = None,
+    headers_provider: HeadersProvider | None = None,
 ) -> A2ACallResult:
     """Invoke an A2A agent via the a2a-sdk ClientFactory.
 
     Transport (jsonrpc / http_json) is selected from agent.config.type.
-    Auth headers and timeout are injected per-call via ClientCallContext.
+    Auth headers come from one of two paths:
+
+    * **Workflow path** — caller supplies ``headers_provider`` (and optionally
+      ``jwt_config``); headers are built per-call by the provider callback.
+    * **Proxy / MCP gateway path** — caller supplies a pre-authenticated
+      ``httpx_client`` obtained from ``A2AClientRegistry``; only non-credential
+      per-invocation headers are added here.
 
     Args:
-        agent:        A2AAgent document from MongoDB.
-        text:         User message string or pre-parsed A2A Message to send.
-        jwt_config:   JWT signing config for service-to-agent auth.
-        httpx_client: Optional shared httpx client.
+        agent:            A2AAgent document from MongoDB.
+        text:             User message string or pre-parsed A2A Message to send.
+        jwt_config:       JWT signing config for service-to-agent auth (workflow path).
+        httpx_client:     Optional shared httpx client.
+        headers_provider: Optional callback that returns auth headers per-call.
 
     Returns:
-        A2ACallResult. `success=True` requires content present AND (for the
-        Task path) `task.status.state == completed`.
+        A2ACallResult. ``success=True`` requires content present AND (for the
+        Task path) ``task.status.state == completed``.
     """
     agent_name = agent.config.title if agent.config else agent.card.name
     transport_type = (agent.config.type if agent.config else TRANSPORT_JSONRPC).lower()
@@ -382,6 +412,18 @@ async def call_a2a(
         return A2ACallResult(
             success=False,
             error=f"Unsupported transport type '{transport_type}' for agent {agent_name!r}. Supported: {sorted(_PROTOCOL_MAP)}",
+        )
+
+    if (
+        httpx_client is None
+        and headers_provider is None
+        and (is_agentcore_runtime(agent) or is_azure_foundry_runtime(agent))
+    ):
+        provider = getattr(agent.federationMetadata, "providerType", "unknown")
+        provider_value = provider.value if hasattr(provider, "value") else provider
+        raise ValueError(
+            f"call_a2a: httpx_client or headers_provider is required for federated agent {agent.path!r} "
+            f"(providerType={provider_value!r})."
         )
 
     logger.debug(
@@ -400,10 +442,16 @@ async def call_a2a(
         t for t in (TransportProtocol.jsonrpc, TransportProtocol.http_json) if t != configured
     ]
 
+    if headers_provider is not None:
+        headers = await headers_provider(agent)
+    elif jwt_config is not None:
+        headers = build_headers(agent, jwt_config=jwt_config)
+    else:
+        headers = _extra_call_headers(agent)
     context = ClientCallContext(
         state={
             "http_kwargs": {
-                "headers": build_headers(agent, jwt_config=jwt_config),
+                "headers": headers,
                 "timeout": _A2A_HTTP_TIMEOUT,
             }
         }
@@ -416,8 +464,26 @@ async def call_a2a(
             httpx_client=httpx_client,
         )
 
+        factory = ClientFactory(config)
+        if is_azure_foundry_runtime(agent):
+            # Azure AI Foundry agents omit required artifact_id on Task artifacts.
+            # Register a tolerant JSON-RPC transport that patches the raw response
+            # before the a2a-sdk strict Pydantic models validate it. Only the
+            # jsonrpc transport is covered: federation sync always registers
+            # Foundry agents with type=jsonrpc, so http_json is unreachable here.
+            factory.register(
+                TransportProtocol.jsonrpc,
+                lambda card, url, cfg, interceptors: _AzureTolerantJsonRpcTransport(
+                    cfg.httpx_client or httpx.AsyncClient(),
+                    card,
+                    url,
+                    interceptors,
+                    cfg.extensions or None,
+                ),
+            )
+
         # ClientFactory.create() is annotated -> Client, but always returns BaseClient in a2a-sdk==0.3.24.
-        client: BaseClient = ClientFactory(config).create(agent_card)  # type: ignore[assignment]
+        client: BaseClient = factory.create(agent_card)  # type: ignore[assignment]
         if httpx_client is None:
             async with client:
                 return await _call_with_open_client(client, agent_name, text, context)

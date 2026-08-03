@@ -3,6 +3,7 @@ from functools import cache, cached_property
 from itsdangerous import URLSafeTimedSerializer
 from redis import Redis
 
+from registry_pkgs.core.consent_store import ConsentStore, PendingConsentStore
 from registry_pkgs.core.oauth_state_store import OAuthStateStore
 
 from .core.config import AuthSettings
@@ -56,6 +57,14 @@ class AuthContainer:
             key_prefix=self._settings.redis_key_prefix,
             client_secret_hash_key=self._settings.secret_key,
         )
+
+    @cached_property
+    def consent_store(self) -> ConsentStore:
+        return ConsentStore(redis_client=self.redis_client, key_prefix=self._settings.redis_key_prefix)
+
+    @cached_property
+    def pending_consent_store(self) -> PendingConsentStore:
+        return PendingConsentStore(redis_client=self.redis_client, key_prefix=self._settings.redis_key_prefix)
 
     @cache
     def get_provider_config(self, provider: AllowedProvider) -> AuthProviderConfig | EntraConfig:

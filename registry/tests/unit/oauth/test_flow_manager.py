@@ -130,6 +130,7 @@ class TestFlowStateManager:
             oauth_config,
             flow_id,
             state_metadata=state_metadata,
+            device_code="device-1",
         )
 
         assert metadata.server_name == server_name
@@ -137,6 +138,7 @@ class TestFlowStateManager:
         assert metadata.authorization_url == authorization_url
         assert metadata.code_verifier == code_verifier
         assert metadata.client_info.client_id == "test-client-id"
+        assert metadata.device_code == "device-1"
 
         state_dict = manager.decode_state(metadata.state)
         elicitation_id = state_dict["meta"]["elicitation_id"]

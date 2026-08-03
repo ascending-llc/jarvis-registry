@@ -415,9 +415,9 @@ class TestBuildCompleteHeaders:
     """Test suite for build_complete_headers_for_server function."""
 
     @pytest.fixture(autouse=True)
-    def mock_generate_service_jwt(self):
-        """Patch generate_service_jwt so tests don't need a real RSA private key."""
-        with patch("registry.services.server_service.generate_service_jwt", return_value="mock-service-jwt"):
+    def mock_sign_agentcore_jwt(self):
+        """Patch sign_agentcore_jwt so tests without explicit override don't need a real RSA private key."""
+        with patch("registry.services.server_service.sign_agentcore_jwt", return_value="mock-agentcore-jwt"):
             yield
 
     @pytest.fixture
@@ -477,6 +477,92 @@ class TestBuildCompleteHeaders:
         server.serverName = "custom-headers-server"
         server.config = {"headers": [{"X-Custom-Header": "value1"}, {"X-Another-Header": "value2"}]}
         return server
+
+    @pytest.fixture
+    def mock_agentcore_jwt_server(self):
+        """Create mock AgentCore Runtime MCP server with resource-level JWT config."""
+        from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
+
+        server = Mock(spec=ExtendedMCPServer)
+        server.id = "server-123"
+        server.serverName = "agentcore-server"
+        server.config = {
+            "runtimeAccess": {
+                "mode": "jwt",
+                "jwt": {
+                    "discoveryUrl": "https://agentcore-issuer.example.com/.well-known/openid-configuration",
+                    "audiences": ["agentcore-runtime", "secondary-audience"],
+                    "allowedClients": [" jarvis-registry "],
+                    "allowedScopes": [" tools:read ", " tools:call "],
+                    "customClaims": {"tenant": " prod "},
+                },
+            }
+        }
+        return server
+
+    @pytest.fixture
+    def jwt_signing_config(self):
+        """Create signing config with a real test key so JWT claims can be decoded."""
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+
+        from registry_pkgs.core.config import JwtSigningConfig
+
+        rsa_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        private_key = rsa_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.TraditionalOpenSSL,
+            encryption_algorithm=serialization.NoEncryption(),
+        ).decode("utf-8")
+
+        return JwtSigningConfig(
+            jwt_private_key=private_key,
+            jwt_issuer="https://registry.example.com",
+            jwt_self_signed_kid="server-service-test-key",
+            jwt_audience="jarvis-services",
+            registry_app_name="jarvis-registry",
+        )
+
+    @pytest.mark.asyncio
+    async def test_agentcore_jwt_uses_server_runtime_access_claims(
+        self,
+        mock_agentcore_jwt_server,
+        jwt_signing_config,
+    ):
+        """AgentCore MCP proxy JWT derives iss/aud from the specific server config."""
+        from unittest.mock import patch
+
+        from registry.services.server_service import build_complete_headers_for_server
+        from registry_pkgs.core.agentcore_jwt import mint_agentcore_runtime_jwt
+        from registry_pkgs.core.jwt_utils import decode_jwt_unverified
+
+        with (
+            patch(
+                "registry.services.server_service.decrypt_auth_fields", return_value=mock_agentcore_jwt_server.config
+            ),
+            patch("registry.services.server_service.settings") as mock_settings,
+            patch("registry.services.server_service.sign_agentcore_jwt") as mock_sign,
+        ):
+            mock_settings.registry_app_name = "jarvis-registry"
+            mock_settings.redis_key_prefix = "test-registry"
+            mock_settings.jwt_signing_config = jwt_signing_config
+            mock_sign.side_effect = lambda *args, **kwargs: mint_agentcore_runtime_jwt(
+                kwargs.get("runtime_jwt_config") or (args[0] if args else None),
+                subject=kwargs.get("signing", jwt_signing_config).registry_app_name,
+                signing=kwargs.get("signing", jwt_signing_config),
+                expires_in_seconds=3600,
+            )
+
+            headers = await build_complete_headers_for_server(Mock(), mock_agentcore_jwt_server, None)
+
+        token = headers["Authorization"].split(" ", 1)[1]
+        claims = decode_jwt_unverified(token)
+        assert claims["iss"] == "https://agentcore-issuer.example.com"
+        assert claims["aud"] == "agentcore-runtime"
+        assert claims["sub"] == "jarvis-registry"
+        assert claims["client_id"] == "jarvis-registry"
+        assert claims["scope"] == "tools:read tools:call"
+        assert claims["tenant"] == "prod"
 
     @pytest.mark.asyncio
     async def test_oauth_server_success(self, mock_oauth_server):

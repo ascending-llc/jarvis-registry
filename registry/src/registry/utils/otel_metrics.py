@@ -79,6 +79,7 @@ def record_tool_execution(
     success: bool,
     duration_seconds: float | None = None,
     method: str = "UNKNOWN",
+    error_type: str = "none",
 ) -> None:
     """
     Record tool execution with success rate and latency tracking.
@@ -93,12 +94,15 @@ def record_tool_execution(
         success: Whether the execution was successful
         duration_seconds: Execution duration in seconds for p50/p95/p99 calculation
         method: HTTP method (e.g., "POST", "GET") - defaults to "UNKNOWN"
+        error_type: Failure-mode label (e.g., exception class name or a semantic tag like
+            "server_not_found"); "none" on success. Must be a bounded, low-cardinality value.
     """
     attributes = {
         "tool_name": tool_name,
         "server_name": server_name,
         "status": "success" if success else "failure",
         "method": method,
+        "error_type": error_type,
     }
 
     metrics.record_counter("mcp_tool_execution_total", 1, attributes)
@@ -108,10 +112,10 @@ def record_tool_execution(
 
 
 def record_resource_access(
-    resource_uri: str,
     server_name: str,
     success: bool,
     duration_seconds: float | None = None,
+    error_type: str = "none",
 ) -> None:
     """
     Record resource access operation.
@@ -120,16 +124,21 @@ def record_resource_access(
     - counter: mcp_resource_access_total
     - histogram: mcp_resource_access_duration_seconds
 
+    Note: resource_uri is intentionally NOT recorded as a label - it is unbounded
+    (e.g., "tavily://search-results/<query>") and would cause Prometheus cardinality
+    explosion. Use server_name for per-server breakdown instead.
+
     Args:
-        resource_uri: URI of the accessed resource
         server_name: Name of the MCP server
         success: Whether the access was successful
         duration_seconds: Access duration in seconds
+        error_type: Failure-mode label (exception class name or semantic tag);
+            "none" on success. Must be a bounded, low-cardinality value.
     """
     attributes = {
-        "resource_uri": resource_uri,
         "server_name": server_name,
         "status": "success" if success else "failure",
+        "error_type": error_type,
     }
 
     metrics.record_counter("mcp_resource_access_total", 1, attributes)
@@ -143,6 +152,7 @@ def record_prompt_execution(
     server_name: str,
     success: bool,
     duration_seconds: float | None = None,
+    error_type: str = "none",
 ) -> None:
     """
     Record prompt execution operation.
@@ -156,11 +166,14 @@ def record_prompt_execution(
         server_name: Name of the MCP server
         success: Whether the execution was successful
         duration_seconds: Execution duration in seconds
+        error_type: Failure-mode label (exception class name or semantic tag);
+            "none" on success. Must be a bounded, low-cardinality value.
     """
     attributes = {
         "prompt_name": prompt_name,
         "server_name": server_name,
         "status": "success" if success else "failure",
+        "error_type": error_type,
     }
 
     metrics.record_counter("mcp_prompt_execution_total", 1, attributes)

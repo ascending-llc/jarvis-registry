@@ -1,7 +1,10 @@
+from unittest.mock import AsyncMock
+
 import pytest
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from starlette.testclient import TestClient
+from starlette.types import Receive, Scope, Send
 
 from registry.core.config import settings
 from registry.middleware.auth import UnifiedAuthMiddleware
@@ -37,6 +40,14 @@ def _build_app() -> FastAPI:
     @app.post("/api/v1/mcp/downstream/oauth/token/{user_id}/{server_path:path}")
     async def ds_token_ep(user_id: str, server_path: str):
         return JSONResponse({"ok": "token"})
+
+    @app.post("/api/v1/mcp/downstream/oauth/device/{user_id}/{server_path:path}")
+    async def ds_device_ep(user_id: str, server_path: str):
+        return JSONResponse({"ok": "device"})
+
+    @app.get("/api/v1/mcp/consent/device/resolve")
+    async def ds_device_resolve_ep():
+        return JSONResponse({"ok": "resolve"})
 
     return app
 
@@ -182,6 +193,16 @@ def test_downstream_token_endpoint_is_public(client):
     assert resp.status_code == 200
 
 
+def test_downstream_device_endpoint_is_public(client):
+    resp = client.post(f"/api/v1/mcp/downstream/oauth/device/{USER_A}/github")
+    assert resp.status_code == 200
+
+
+def test_downstream_device_resolver_is_public(client):
+    resp = client.get("/api/v1/mcp/consent/device/resolve")
+    assert resp.status_code == 200
+
+
 def test_downstream_authorize_endpoint_is_not_public(client):
     resp = client.get(f"/api/v1/mcp/downstream/oauth/authorize/{USER_A}/github")
     assert resp.status_code == 401
@@ -204,3 +225,23 @@ def test_all_proxy_router_paths_classify_as_proxy():
 def test_crud_paths_classify_as_non_proxy(path):
     mw = UnifiedAuthMiddleware(FastAPI())
     assert mw._is_proxy_route(path) is False
+
+
+def test_lifespan_scope_passes_through_without_error():
+    with TestClient(_build_app()):
+        pass
+
+
+async def test_non_http_scope_forwarded_to_app_unchanged():
+    calls: list[Scope] = []
+
+    async def stub_app(scope: Scope, receive: Receive, send: Send) -> None:
+        del receive, send
+        calls.append(scope)
+
+    middleware = UnifiedAuthMiddleware(stub_app)
+    scope: Scope = {"type": "websocket", "path": "/ws"}
+
+    await middleware(scope, AsyncMock(), AsyncMock())
+
+    assert calls == [scope]

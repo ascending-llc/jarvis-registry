@@ -24,8 +24,6 @@ from registry_pkgs.core.jwt_tokens import mint_crud_session_token, verify_crud_s
 from registry_pkgs.core.jwt_utils import (
     ExpiredSignatureError,
     InvalidTokenError,
-    build_jwt_payload,
-    encode_jwt,
 )
 
 from ..core.config import settings
@@ -34,7 +32,10 @@ logger = logging.getLogger(__name__)
 
 # Token expiration defaults
 ACCESS_TOKEN_EXPIRES_HOURS = 24  # 1 day
-REFRESH_TOKEN_EXPIRES_DAYS = 7  # 7 days
+REFRESH_TOKEN_EXPIRES_DAYS = 2  # 48 hours
+REFRESH_TOKEN_EXPIRES_SECONDS = REFRESH_TOKEN_EXPIRES_DAYS * 86400
+ABSOLUTE_SESSION_EXPIRES_DAYS = 14
+ABSOLUTE_SESSION_EXPIRES_SECONDS = ABSOLUTE_SESSION_EXPIRES_DAYS * 86400
 
 
 # Algorithm constants
@@ -63,77 +64,6 @@ def is_encrypted(value: str) -> bool:
     if not value or not isinstance(value, str):
         return False
     return bool(ENCRYPTED_VALUE_PATTERN.match(value))
-
-
-def generate_service_jwt(
-    user_id: str | None = None,
-    username: str | None = None,
-    scopes: list[str] | None = None,
-    for_agentcore_runtime: bool = False,
-    expires_in_seconds: int = 300,
-) -> str:
-    """
-    Generate service JWT for MCP server authentication.
-
-    Supports two modes:
-    1. Internal service JWT: Registry -> MCP server requests with user context
-    2. AgentCore Runtime JWT: Simple JWT for AWS AgentCore Runtime authentication
-
-    Args:
-        user_id: User ID to include in JWT (required for internal mode)
-        username: Optional username/email (for internal mode)
-        scopes: Optional list of scopes (for internal mode)
-        for_agentcore_runtime: If True, generates simplified JWT for AgentCore Runtime
-        expires_in_seconds: Token expiration in seconds (default: 300 = 5 minutes)
-
-    Returns:
-        JWT token string (without Bearer prefix)
-    """
-    now = int(datetime.now(UTC).timestamp())
-
-    if for_agentcore_runtime:
-        # AgentCore Runtime mode: AWS only validates iss, aud, and signature
-        # Generate minimal JWT with only required claims
-        payload = build_jwt_payload(
-            subject=settings.registry_app_name,
-            issuer=settings.jwt_issuer,
-            audience=settings.jwt_audience,
-            expires_in_seconds=expires_in_seconds,
-            iat=now,
-            extra_claims=None,
-        )
-    else:
-        # Internal service mode: Include user context
-        if not user_id:
-            raise ValueError("user_id is required for internal service JWT")
-
-        # Build extra claims
-        extra_claims = {
-            "user_id": user_id,
-            "jti": f"registry-{now}",
-            "client_id": settings.registry_app_name,
-            "token_type": "service",
-        }
-
-        # Add optional scopes
-        if scopes:
-            extra_claims["scope"] = " ".join(scopes)
-
-        # Build JWT payload using centralized helper
-        payload = build_jwt_payload(
-            subject=username or user_id,
-            issuer=settings.jwt_issuer,
-            audience=settings.jwt_audience,
-            expires_in_seconds=expires_in_seconds,
-            iat=now,
-            extra_claims=extra_claims,
-        )
-
-    # Sign with the registry JWT private key. `kid` header claim is optional according to RFC 7515,
-    # but AgentCore Runtime requires it.
-    token = encode_jwt(payload, settings.jwt_private_key, kid=settings.jwt_self_signed_kid)
-
-    return token
 
 
 def encrypt_value(plaintext: str) -> str:
@@ -474,11 +404,14 @@ def generate_refresh_token(
     role: str,
     email: str,
     expires_days: int = REFRESH_TOKEN_EXPIRES_DAYS,
+    session_started_at: int | None = None,
 ) -> str:
     """
     Generate a JWT refresh token.
 
     Refresh tokens now include groups and scopes to enable token refresh without re-authentication.
+    They are stateless JWTs: reissuing a token renews the browser cookie but does not revoke
+    the previous token before its own expiration.
     This is especially important for OAuth2 users who cannot re-authenticate automatically.
 
     Args:
@@ -490,12 +423,17 @@ def generate_refresh_token(
         scopes: List of permission scopes
         role: User role
         email: User's email
-        expires_days: Token expiration in days (default: 7)
+        expires_days: Token expiration in days (default: 2)
+        session_started_at: Unix timestamp of original login; stamped once and carried forward
+            through every rotation to enforce the absolute 14-day session cap.
 
     Returns:
         JWT token string
     """
     expires_in_seconds = expires_days * 86400  # Convert days to seconds
+
+    if session_started_at is None:
+        session_started_at = int(datetime.now(UTC).timestamp())
 
     # Build extra claims - include groups/scopes for token refresh
     extra_claims = {
@@ -506,6 +444,7 @@ def generate_refresh_token(
         "scope": " ".join(scopes) if isinstance(scopes, list) else scopes,
         "role": role,
         "email": email,
+        "session_started_at": session_started_at,
     }
 
     # CRUD-session (cookie) class: audience, client_id and token_class are set by the layer.
@@ -574,14 +513,14 @@ def verify_refresh_token(token: str) -> dict[str, Any] | None:
 
 
 def generate_token_pair(
-    user_id: str = None,
-    username: str = None,
-    email: str = None,
-    groups: list = None,
-    scopes: list = None,
-    role: str = None,
-    auth_method: str = None,
-    provider: str = None,
+    user_id: str | None = None,
+    username: str | None = None,
+    email: str | None = None,
+    groups: list | None = None,
+    scopes: list | None = None,
+    role: str | None = None,
+    auth_method: str | None = None,
+    provider: str | None = None,
     idp_id: str | None = None,
     user_info: dict[str, Any] | None = None,
     iat: int | None = None,

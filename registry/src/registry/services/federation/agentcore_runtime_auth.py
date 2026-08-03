@@ -4,7 +4,6 @@ import json
 import logging
 from collections.abc import Callable
 from typing import Any
-from urllib.parse import urlparse
 
 import httpx
 from botocore.auth import SigV4Auth
@@ -12,7 +11,7 @@ from botocore.awsrequest import AWSRequest
 
 from registry.core.config import settings
 from registry.services.federation.agentcore_clients import AgentCoreClientProvider
-from registry_pkgs.core.jwt_utils import build_jwt_payload, encode_jwt
+from registry_pkgs.core.agentcore_jwt import mint_agentcore_runtime_jwt
 from registry_pkgs.models.enums import AgentCoreRuntimeAccessMode
 from registry_pkgs.models.federation import AgentCoreRuntimeAccessConfig
 
@@ -229,37 +228,12 @@ class AgentCoreRuntimeAuthService:
         if jwt_config is None:
             raise ValueError("JWT runtime requires resource-level runtimeAccess.jwt configuration")
 
-        audience_claim = settings.jwt_audience
-
-        # The runtime authorizer may validate client_id / scope claims even
-        # though we are not using OAuth. We synthesize those claims directly
-        # from federation config when present.
-        extra_claims: dict[str, Any] = {}
-        if jwt_config.allowedClients:
-            extra_claims["client_id"] = jwt_config.allowedClients[0]
-        if jwt_config.allowedScopes:
-            extra_claims["scope"] = " ".join(jwt_config.allowedScopes)
-        if jwt_config.customClaims:
-            extra_claims.update(jwt_config.customClaims)
-
-        # Derive the issuer from discoveryUrl so the iss claim matches what
-        # AgentCore's JWT authorizer expects (the base URL of the OIDC endpoint),
-        # regardless of what AUTH_SERVER_EXTERNAL_URL is set to locally.
-        discovery_url = jwt_config.discoveryUrl
-        if discovery_url:
-            parsed = urlparse(discovery_url)
-            issuer = f"{parsed.scheme}://{parsed.netloc}"
-        else:
-            issuer = settings.jwt_issuer
-
-        payload = build_jwt_payload(
+        token = mint_agentcore_runtime_jwt(
+            jwt_config,
             subject=settings.registry_app_name,
-            issuer=issuer,
-            audience=audience_claim,
+            signing=settings.jwt_signing_config,
             expires_in_seconds=_JWT_EXPIRES_IN_SECONDS,
-            extra_claims=extra_claims or None,
         )
-        token = encode_jwt(payload, settings.jwt_private_key, kid=settings.jwt_self_signed_kid)
         return {"Authorization": f"Bearer {token}"}, None
 
     @staticmethod

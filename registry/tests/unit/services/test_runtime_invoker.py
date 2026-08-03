@@ -9,6 +9,7 @@ from registry.services.federation.agentcore_runtime import AgentCoreRuntimeInvok
 from registry_pkgs.models import A2AAgent
 from registry_pkgs.models.a2a_agent import AgentConfig
 from registry_pkgs.models.federation import AgentCoreRuntimeAccessConfig
+from registry_pkgs.testing.federation_metadata import make_agentcore_a2a_metadata, make_azure_foundry_metadata
 
 
 def _build_invoker() -> AgentCoreRuntimeInvoker:
@@ -44,7 +45,7 @@ def _build_fake_a2a_agent(*, runtime_arn: str | None) -> SimpleNamespace:
         registeredBy="tester",
         registeredAt=None,
         federationRefId=None,
-        federationMetadata={"runtimeArn": runtime_arn} if runtime_arn else {},
+        federationMetadata=make_agentcore_a2a_metadata(runtime_arn=runtime_arn or ""),
         wellKnown=SimpleNamespace(
             lastSyncStatus=None,
             syncError=None,
@@ -81,6 +82,22 @@ class TestAgentCoreRuntimeInvoker:
         payload = 'event: message\ndata: {"jsonrpc":"2.0","result":{"ok":true}}\n\n'
         parsed = AgentCoreRuntimeInvoker._extract_json_payload(payload)
         assert parsed["result"]["ok"] is True
+
+    def test_set_enrichment_error_does_not_add_agentcore_timestamp_to_azure_metadata(self):
+        metadata = make_azure_foundry_metadata()
+
+        AgentCoreRuntimeInvoker._set_enrichment_error(metadata, "a2a enrichment failed: boom")
+
+        assert metadata.enrichmentError == "a2a enrichment failed: boom"
+        assert "enrichedAt" not in metadata.model_dump(mode="json")
+
+    def test_set_enrichment_error_updates_agentcore_timestamp(self):
+        metadata = make_agentcore_a2a_metadata()
+
+        AgentCoreRuntimeInvoker._set_enrichment_error(metadata, "a2a enrichment failed: boom")
+
+        assert metadata.enrichmentError == "a2a enrichment failed: boom"
+        assert metadata.enrichedAt is not None
 
     @pytest.mark.asyncio
     async def test_call_with_runtime_init_retry_async_retries(self):
@@ -241,7 +258,9 @@ class TestAgentCoreRuntimeInvoker:
         )
 
         await invoker.enrich_a2a_agent(
-            agent=agent, runtime_detail=dict(agent.federationMetadata or {}), region="us-east-1"
+            agent=agent,
+            runtime_detail=agent.federationMetadata.model_dump(mode="json"),
+            region="us-east-1",
         )
 
         assert agent.card.version == "2"
@@ -285,7 +304,9 @@ class TestAgentCoreRuntimeInvoker:
         monkeypatch.setattr(A2AAgent, "from_a2a_agent_card", _fake_from_a2a_agent_card)
 
         await invoker.enrich_a2a_agent(
-            agent=agent, runtime_detail=dict(agent.federationMetadata or {}), region="us-east-1"
+            agent=agent,
+            runtime_detail=agent.federationMetadata.model_dump(mode="json"),
+            region="us-east-1",
         )
 
         assert captured["card_data"]["skills"][0]["examples"] == [
@@ -309,7 +330,9 @@ class TestAgentCoreRuntimeInvoker:
         monkeypatch.setattr(A2AAgent, "from_a2a_agent_card", _fake_from_a2a_agent_card)
 
         await invoker.enrich_a2a_agent(
-            agent=agent, runtime_detail=dict(agent.federationMetadata or {}), region="us-east-1"
+            agent=agent,
+            runtime_detail=agent.federationMetadata.model_dump(mode="json"),
+            region="us-east-1",
         )
 
         assert captured["config"] == agent.config
@@ -325,7 +348,7 @@ class TestAgentCoreRuntimeInvoker:
         assert agent.wellKnown.lastSyncStatus == "failed"
         assert agent.wellKnown.syncError == "missing runtime ARN for A2A enrichment"
         assert agent.federationMetadata is not None
-        assert agent.federationMetadata["enrichmentError"] == "a2a enrichment failed: missing runtime ARN"
+        assert agent.federationMetadata.enrichmentError == "a2a enrichment failed: missing runtime ARN"
 
     @pytest.mark.asyncio
     async def test_fetch_mcp_runtime_capabilities_jwt_uses_http_only(self, monkeypatch):

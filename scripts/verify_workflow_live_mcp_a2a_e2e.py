@@ -38,6 +38,7 @@ load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 from registry import settings  # noqa: E402
 from registry.services.access_control_service import ACLService, load_role_cache  # noqa: E402
+from registry.services.group_directory_client import KeycloakGroupDirectoryClient  # noqa: E402
 from registry.services.group_service import GroupService  # noqa: E402
 from registry.services.user_service import UserService  # noqa: E402
 from registry_pkgs.core.config import MongoConfig  # noqa: E402
@@ -132,7 +133,7 @@ def _build_definition(args: argparse.Namespace) -> WorkflowDefinition:
 async def _grant_owner(user_id: str, workflow_id: PydanticObjectId) -> None:
     acl = ACLService(
         user_service=UserService(),
-        group_service=GroupService(),
+        group_service=GroupService(group_directory_client=KeycloakGroupDirectoryClient()),
         role_cache=await load_role_cache(),
     )
     await acl.grant_permission(
@@ -153,7 +154,7 @@ async def _grant_agent_access(user_id: str, agent_keys: list[str]) -> None:
     """
     acl = ACLService(
         user_service=UserService(),
-        group_service=GroupService(),
+        group_service=GroupService(group_directory_client=KeycloakGroupDirectoryClient()),
         role_cache=await load_role_cache(),
     )
     for key in dict.fromkeys(agent_keys):

@@ -109,192 +109,6 @@ def track_registry_operation(
     return decorator
 
 
-def track_tool_execution[F: Callable[..., Any]](func: F) -> F:
-    """
-    Decorator to automatically track tool execution metrics.
-
-    Extracts tool_name from request body before execution,
-    and server_path from result after execution.
-
-    Example:
-        @router.post("/tools/call")
-        @track_tool_execution
-        async def execute_tool(body: ToolExecutionRequest, user_context: CurrentUser):
-            ...
-    """
-
-    @wraps(func)
-    async def wrapper(*args: Any, **kwargs: Any) -> Any:
-        start_time = time.perf_counter()
-        success = False
-        tool_name = "unknown"
-        server_name = "unknown"
-
-        try:
-            # Extract tool name from request body
-            body = kwargs.get("body")
-            if body and hasattr(body, "tool_name"):
-                tool_name = body.tool_name
-
-            # Execute business logic
-            result = await func(*args, **kwargs)
-            success = True
-
-            # HTTP Response
-            if hasattr(result, "server_path"):
-                path_segments = result.server_path.strip("/").split("/")
-                server_name = path_segments[0] if path_segments else "unknown"
-            # SSE
-            elif body and hasattr(body, "server_path"):
-                path_segments = body.server_path.strip("/").split("/")
-                server_name = path_segments[0] if path_segments else "unknown"
-
-            return result
-
-        except Exception:
-            success = False
-            raise
-
-        finally:
-            duration = time.perf_counter() - start_time
-            try:
-                _record_tool_execution(
-                    tool_name=tool_name,
-                    server_name=server_name,
-                    success=success,
-                    duration_seconds=duration,
-                    method="POST",
-                )
-            except Exception as e:
-                logger.warning(f"Failed to record tool execution metric: {e}")
-
-    return wrapper  # type: ignore
-
-
-def track_resource_access[F: Callable[..., Any]](func: F) -> F:
-    """
-    Decorator to automatically track resource access metrics.
-
-    Extracts resource_uri from request body before execution,
-    and server_path from result after execution.
-
-    Example:
-        @router.post("/resources/read")
-        @track_resource_access
-        async def read_resource(body: ResourceReadRequest, user_context: CurrentUser):
-            ...
-    """
-
-    @wraps(func)
-    async def wrapper(*args: Any, **kwargs: Any) -> Any:
-        start_time = time.perf_counter()
-        success = False
-        resource_uri = "unknown"
-        server_name = "unknown"
-
-        try:
-            # Extract resource URI from request body
-            body = kwargs.get("body")
-            if body and hasattr(body, "resource_uri"):
-                resource_uri = body.resource_uri
-
-            # Execute business logic
-            result = await func(*args, **kwargs)
-            success = True
-
-            # Extract server name from result if available
-            if hasattr(result, "server_path"):
-                # Extract first path segment (e.g., "/github/api" -> "github")
-                path_segments = result.server_path.strip("/").split("/")
-                server_name = path_segments[0] if path_segments else "unknown"
-            elif body and hasattr(body, "server_path"):
-                # Fallback to request body
-                path_segments = body.server_path.strip("/").split("/")
-                server_name = path_segments[0] if path_segments else "unknown"
-
-            return result
-
-        except Exception:
-            success = False
-            raise
-
-        finally:
-            duration = time.perf_counter() - start_time
-            try:
-                _record_resource_access(
-                    resource_uri=resource_uri,
-                    server_name=server_name,
-                    success=success,
-                    duration_seconds=duration,
-                )
-            except Exception as e:
-                logger.warning(f"Failed to record resource access metric: {e}")
-
-    return wrapper  # type: ignore
-
-
-def track_prompt_execution[F: Callable[..., Any]](func: F) -> F:
-    """
-    Decorator to automatically track prompt execution metrics.
-
-    Extracts prompt_name from request body before execution,
-    and server_path from result after execution.
-
-    Example:
-        @router.post("/prompts/execute")
-        @track_prompt_execution
-        async def execute_prompt(body: PromptExecutionRequest, user_context: CurrentUser):
-            ...
-    """
-
-    @wraps(func)
-    async def wrapper(*args: Any, **kwargs: Any) -> Any:
-        start_time = time.perf_counter()
-        success = False
-        prompt_name = "unknown"
-        server_name = "unknown"
-
-        try:
-            # Extract prompt name from request body
-            body = kwargs.get("body")
-            if body and hasattr(body, "prompt_name"):
-                prompt_name = body.prompt_name
-
-            # Execute business logic
-            result = await func(*args, **kwargs)
-            success = True
-
-            # Extract server name from result if available
-            if hasattr(result, "server_path"):
-                # Extract first path segment (e.g., "/github/api" -> "github")
-                path_segments = result.server_path.strip("/").split("/")
-                server_name = path_segments[0] if path_segments else "unknown"
-            elif body and hasattr(body, "server_path"):
-                # Fallback to request body
-                path_segments = body.server_path.strip("/").split("/")
-                server_name = path_segments[0] if path_segments else "unknown"
-
-            return result
-
-        except Exception:
-            success = False
-            raise
-
-        finally:
-            duration = time.perf_counter() - start_time
-            try:
-                _record_prompt_execution(
-                    prompt_name=prompt_name,
-                    server_name=server_name,
-                    success=success,
-                    duration_seconds=duration,
-                )
-            except Exception as e:
-                logger.warning(f"Failed to record prompt execution metric: {e}")
-
-    return wrapper  # type: ignore
-
-
 def track_tool_discovery[F: Callable[..., Any]](func: F) -> F:
     """
     Decorator to automatically track tool discovery metrics.
@@ -428,53 +242,45 @@ class AuthMetricsContext:
             logger.warning(f"Failed to record auth metric: {e}")
 
 
-class ToolExecutionMetricsContext:
+class _ExecutionMetricsContext:
     """
-    Context manager for tracking tool execution with dynamic info.
+    Base async context manager for MCP execution metrics (tool/resource/prompt).
 
-    Useful for proxy functions where tool info may be extracted at various points.
+    Handles the shared lifecycle: start the timer on enter; on exit, default success
+    to False when an exception propagated, auto-capture error_type from the exception
+    class (when not set explicitly), and delegate the actual recording to _record().
 
-    Example:
-        async with ToolExecutionMetricsContext(method=request.method) as ctx:
-            ctx.set_server_name(server.serverName)
-            tool_name = extract_tool_from_body(body)
-            ctx.set_tool_name(tool_name)
+    Subclasses set the metric-specific name label and override _record().
 
-            response = await proxy_request(target_url)
-
-            ctx.set_success(response.status_code < 400)
-            return response
+    The success/error_type contract:
+    - Clean success: caller calls set_success(True); error_type stays "none".
+    - Handled failure (e.g. an isError result with no exception): caller calls
+      set_success(False) and may set_error_type("server_not_found") for the failure mode.
+    - Raised exception: __aexit__ forces success=False and sets error_type to the
+      exception class name unless the caller already set one.
     """
 
-    def __init__(
-        self,
-        tool_name: str = "unknown",
-        server_name: str = "unknown",
-        method: str = "UNKNOWN",
-    ):
+    def __init__(self, server_name: str = "unknown") -> None:
         self._start_time: float = 0
-        self._tool_name: str = tool_name
         self._server_name: str = server_name
-        self._method: str = method
         self._success: bool = False
-
-    def set_tool_name(self, tool_name: str) -> None:
-        """Set the tool name."""
-        self._tool_name = tool_name
+        self._error_type: str = "none"
+        self._error_type_set: bool = False
 
     def set_server_name(self, server_name: str) -> None:
-        """Set the server name."""
+        """Set the MCP server name."""
         self._server_name = server_name
-
-    def set_method(self, method: str) -> None:
-        """Set the HTTP method."""
-        self._method = method
 
     def set_success(self, success: bool) -> None:
         """Set the success status."""
         self._success = success
 
-    async def __aenter__(self) -> "ToolExecutionMetricsContext":
+    def set_error_type(self, error_type: str) -> None:
+        """Set a bounded, low-cardinality failure-mode label."""
+        self._error_type = error_type
+        self._error_type_set = True
+
+    async def __aenter__(self):
         self._start_time = time.perf_counter()
         return self
 
@@ -486,16 +292,119 @@ class ToolExecutionMetricsContext:
     ) -> None:
         if exc_type is not None:
             self._success = False
+            if not self._error_type_set:
+                self._error_type = exc_type.__name__
 
         duration = time.perf_counter() - self._start_time
 
         try:
-            _record_tool_execution(
-                tool_name=self._tool_name,
-                server_name=self._server_name,
-                success=self._success,
-                duration_seconds=duration,
-                method=self._method,
-            )
+            self._record(duration)
         except Exception as e:
-            logger.warning(f"Failed to record tool execution metric: {e}")
+            logger.warning(f"Failed to record execution metric: {e}")
+
+    def _record(self, duration: float) -> None:
+        """Record the metric. Overridden by subclasses."""
+        raise NotImplementedError
+
+
+class ToolExecutionMetricsContext(_ExecutionMetricsContext):
+    """
+    Context manager for tracking tool execution with dynamic info.
+
+    Useful for proxy functions where tool/server info is resolved at various points.
+
+    Example:
+        async with ToolExecutionMetricsContext(tool_name=tool_name, method="POST") as ctx:
+            server = await get_server_by_id(server_id)
+            ctx.set_server_name(server.serverName)
+            result = await proxy_tool_call(...)
+            ctx.set_success(not result.isError)
+            return result
+    """
+
+    def __init__(
+        self,
+        tool_name: str = "unknown",
+        server_name: str = "unknown",
+        method: str = "UNKNOWN",
+    ) -> None:
+        super().__init__(server_name=server_name)
+        self._tool_name: str = tool_name
+        self._method: str = method
+
+    def set_tool_name(self, tool_name: str) -> None:
+        """Set the tool name."""
+        self._tool_name = tool_name
+
+    def set_method(self, method: str) -> None:
+        """Set the HTTP method."""
+        self._method = method
+
+    def _record(self, duration: float) -> None:
+        _record_tool_execution(
+            tool_name=self._tool_name,
+            server_name=self._server_name,
+            success=self._success,
+            duration_seconds=duration,
+            method=self._method,
+            error_type=self._error_type,
+        )
+
+
+class ResourceAccessMetricsContext(_ExecutionMetricsContext):
+    """
+    Context manager for tracking resource access with dynamic info.
+
+    Note: resource_uri is intentionally not recorded (unbounded cardinality).
+
+    Example:
+        async with ResourceAccessMetricsContext() as ctx:
+            server = await get_server_by_id(server_id)
+            ctx.set_server_name(server.serverName)
+            result = await read_resource(...)
+            ctx.set_success(not result.isError)
+            return result
+    """
+
+    def _record(self, duration: float) -> None:
+        _record_resource_access(
+            server_name=self._server_name,
+            success=self._success,
+            duration_seconds=duration,
+            error_type=self._error_type,
+        )
+
+
+class PromptExecutionMetricsContext(_ExecutionMetricsContext):
+    """
+    Context manager for tracking prompt execution with dynamic info.
+
+    Example:
+        async with PromptExecutionMetricsContext(prompt_name=prompt_name) as ctx:
+            server = await get_server_by_id(server_id)
+            ctx.set_server_name(server.serverName)
+            result = await execute_prompt(...)
+            ctx.set_success(not result.isError)
+            return result
+    """
+
+    def __init__(
+        self,
+        prompt_name: str = "unknown",
+        server_name: str = "unknown",
+    ) -> None:
+        super().__init__(server_name=server_name)
+        self._prompt_name: str = prompt_name
+
+    def set_prompt_name(self, prompt_name: str) -> None:
+        """Set the prompt name."""
+        self._prompt_name = prompt_name
+
+    def _record(self, duration: float) -> None:
+        _record_prompt_execution(
+            prompt_name=self._prompt_name,
+            server_name=self._server_name,
+            success=self._success,
+            duration_seconds=duration,
+            error_type=self._error_type,
+        )

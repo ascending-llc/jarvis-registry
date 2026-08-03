@@ -50,16 +50,20 @@ const RunHistoryModal: React.FC<RunHistoryModalProps> = ({ isOpen, runEntry, onC
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isOpen, onClose]);
 
+  const isError = runEntry
+    ? runEntry.err !== undefined || (activeTab === 'out' && runEntry.status === 'fail')
+    : false;
+
   const { codeHtml, size } = useMemo(() => {
-    const data = activeTab === 'in' ? runEntry?.input : runEntry?.output;
+    const data = activeTab === 'in' ? runEntry?.input : isError ? runEntry?.err : runEntry?.output;
     return {
       codeHtml: syntaxHighlight(data),
       size: formatBytes(data),
     };
-  }, [activeTab, runEntry]);
+  }, [activeTab, runEntry, isError]);
 
   const handleCopy = async () => {
-    const data = activeTab === 'in' ? runEntry?.input : runEntry?.output;
+    const data = activeTab === 'in' ? runEntry?.input : isError ? runEntry?.err : runEntry?.output;
     if (!data) return;
     try {
       await navigator.clipboard.writeText(JSON.stringify(data, null, 2));
@@ -76,8 +80,6 @@ const RunHistoryModal: React.FC<RunHistoryModalProps> = ({ isOpen, runEntry, onC
   };
 
   if (!isOpen || !runEntry) return null;
-
-  const isError = runEntry.err !== undefined || (activeTab === 'out' && runEntry.status === 'fail');
 
   let typeLabel = 'NODE';
   if (runEntry.type === 'workflow') {

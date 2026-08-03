@@ -15,11 +15,3 @@ class WorkflowConfigError(ValueError):
     Distinguishable from unexpected runtime failures so callers can choose a
     lower log level (WARNING instead of ERROR with traceback).
     """
-
-
-class MissingRegistryTokenError(WorkflowConfigError):
-    """Raised when an MCP executor is requested but no registry_token was supplied.
-
-    Typical cause: the run was triggered via a cookie-only session (no
-    ``Authorization: Bearer`` header) without the service-JWT fallback in place.
-    """

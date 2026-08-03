@@ -1,15 +1,22 @@
 import { CheckIcon, CogIcon, PlayIcon } from '@heroicons/react/24/outline';
-import type { Edge, Node } from '@xyflow/react';
+import type { Edge } from '@xyflow/react';
 import type React from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { HiOutlineShare } from 'react-icons/hi2';
 import { useBlocker, useNavigate, useSearchParams } from 'react-router-dom';
+import ShareModal from '@/components/ShareModal';
 import WorkflowCanvas from '@/components/WorkflowCanvas';
-import { apiNodesToCanvas, canvasToApiNodes, validateApiNodes } from '@/components/WorkflowCanvas/convert';
-import type { WorkflowCanvasRef } from '@/components/WorkflowCanvas/types';
+import {
+  apiNodesToCanvas,
+  canvasToApiNodes,
+  validateApiNodes,
+  validateCanvasNodes,
+} from '@/components/WorkflowCanvas/convert';
+import type { WorkflowNode as CanvasWorkflowNode, WorkflowCanvasRef } from '@/components/WorkflowCanvas/types';
 import { useGlobal } from '@/contexts/GlobalContext';
 import { useServer } from '@/contexts/ServerContext';
 import SERVICES from '@/services';
-import type { Workflow, WorkflowNode as ApiWorkflowNode } from '@/services/workflow/type';
+import type { WorkflowNode as ApiWorkflowNode, Workflow } from '@/services/workflow/type';
 import DeleteWorkflowDialog from './DeleteWorkflowDialog';
 import TriggerRunModal from './TriggerRunModal';
 import UnsavedChangesDialog from './UnsavedChangesDialog';
@@ -44,7 +51,9 @@ const WorkflowRegistryOrEdit: React.FC = () => {
   };
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [triggerModalOpen, setTriggerModalOpen] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
   const [runHistoryRefresh, setRunHistoryRefresh] = useState(0);
+  const canShareWorkflow = isEditMode && workflow?.permissions?.SHARE === true;
 
   // ── Side Effects: Block navigation & BeforeUnload ──────────────────────────────
   const blocker = useBlocker(({ currentLocation, nextLocation }) => {
@@ -103,15 +112,45 @@ const WorkflowRegistryOrEdit: React.FC = () => {
   };
 
   // ── Derive initial canvas elements from loaded workflow ────────────────────
-  const { nodes: initialNodes, edges: initialEdges } = useMemo(() => {
-    if (!isEditMode || !workflow) return { nodes: undefined, edges: undefined };
-    const { nodes, edges } = apiNodesToCanvas(workflow.nodes ?? []);
-    return { nodes: nodes as Node[], edges };
+  const initialCanvas = useMemo(() => {
+    if (!isEditMode || !workflow) return { nodes: undefined, edges: undefined, error: null };
+    try {
+      const converted = apiNodesToCanvas(workflow.nodes ?? []);
+      return { ...converted, error: null };
+    } catch (error) {
+      return {
+        nodes: undefined,
+        edges: undefined,
+        error: error instanceof Error ? error.message : 'Failed to load workflow graph',
+      };
+    }
   }, [isEditMode, workflow]);
 
+  useEffect(() => {
+    if (initialCanvas.error) showToast(initialCanvas.error, 'error');
+  }, [initialCanvas.error, showToast]);
+
   // ── Actions: Save ────────────────────────────────────────────────────────────
-  const handleSave = async (nodes: Node[], edges: Edge[], viewport: { x: number; y: number; zoom: number }) => {
-    const apiNodes = canvasToApiNodes(nodes as unknown as Parameters<typeof canvasToApiNodes>[0], edges);
+  const handleSave = async (
+    nodes: CanvasWorkflowNode[],
+    edges: Edge[],
+    viewport: { x: number; y: number; zoom: number },
+  ) => {
+    if (isReadOnly) return;
+    const canvasValidationError = validateCanvasNodes(nodes, edges);
+    if (canvasValidationError) {
+      showToast(canvasValidationError, 'error');
+      return;
+    }
+
+    let apiNodes: ReturnType<typeof canvasToApiNodes>;
+    try {
+      apiNodes = canvasToApiNodes(nodes, edges);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Failed to convert workflow', 'error');
+      return;
+    }
+
     if (apiNodes.length === 0) {
       showToast('Add at least one node before saving', 'error');
       return;
@@ -181,12 +220,14 @@ const WorkflowRegistryOrEdit: React.FC = () => {
 
   // ── Actions: Workflow metadata change (from PropsPanel) ──────────────────────
   const handleWorkflowChange = (patch: Partial<Pick<Workflow, 'name' | 'description'>>) => {
+    if (isReadOnly) return;
     setWorkflow(prev => (prev ? { ...prev, ...patch } : prev));
     setHasChanges(true);
   };
 
   // ── Actions: Delete workflow ─────────────────────────────────────────────────
   const handleDeleteWorkflow = async () => {
+    if (isReadOnly) return;
     if (!id) return;
 
     setMutatingAction('deleting');
@@ -241,35 +282,52 @@ const WorkflowRegistryOrEdit: React.FC = () => {
           )}
         </div>
 
-        {!isReadOnly && (
+        {canShareWorkflow || !isReadOnly ? (
           <div className='flex items-center gap-2 flex-shrink-0'>
-            <button
-              onClick={() => setTriggerModalOpen(true)}
-              disabled={mutatingAction !== 'idle' || !id}
-              className='inline-flex items-center gap-1 px-2.5 py-1 border border-transparent rounded-md text-xs font-medium text-white bg-[var(--jarvis-primary)] hover:opacity-90 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed'
-            >
-              {mutatingAction === 'triggering' ? (
-                <span className='h-3.5 w-3.5 animate-spin rounded-full border-b-2 border-white' />
-              ) : (
-                <PlayIcon className='h-3.5 w-3.5' />
-              )}
-              Trigger run
-            </button>
+            {canShareWorkflow && (
+              <button
+                type='button'
+                onClick={() => setShareOpen(true)}
+                disabled={loadingDetail}
+                title='Share workflow'
+                aria-label='Share workflow'
+                className='inline-flex items-center justify-center rounded-md border border-transparent bg-[var(--jarvis-primary-soft)] p-1.5 text-[var(--jarvis-primary-text)] hover:bg-[var(--jarvis-primary)]/20 focus:outline-none focus:ring-2 focus:ring-[var(--jarvis-primary)] focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50'
+              >
+                <HiOutlineShare className='h-4 w-4' />
+              </button>
+            )}
 
-            <button
-              onClick={() => canvasRef.current?.save()}
-              disabled={mutatingAction !== 'idle' || loadingDetail}
-              className='inline-flex items-center justify-center gap-1 px-2.5 py-1 border border-transparent rounded-md text-xs font-medium text-white bg-[var(--jarvis-primary-hover)] hover:opacity-90 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed'
-            >
-              {mutatingAction === 'saving' ? (
-                <span className='h-3.5 w-3.5 animate-spin rounded-full border-b-2 border-white' />
-              ) : (
-                <CheckIcon className='h-3.5 w-3.5' />
-              )}
-              {isEditMode ? 'Update' : 'Save'}
-            </button>
+            {!isReadOnly && (
+              <>
+                <button
+                  onClick={() => setTriggerModalOpen(true)}
+                  disabled={mutatingAction !== 'idle' || !id}
+                  className='inline-flex items-center gap-1 px-2.5 py-1 border border-transparent rounded-md text-xs font-medium text-white bg-[var(--jarvis-primary)] hover:opacity-90 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed'
+                >
+                  {mutatingAction === 'triggering' ? (
+                    <span className='h-3.5 w-3.5 animate-spin rounded-full border-b-2 border-white' />
+                  ) : (
+                    <PlayIcon className='h-3.5 w-3.5' />
+                  )}
+                  Trigger run
+                </button>
+
+                <button
+                  onClick={() => canvasRef.current?.save()}
+                  disabled={mutatingAction !== 'idle' || loadingDetail}
+                  className='inline-flex items-center justify-center gap-1 px-2.5 py-1 border border-transparent rounded-md text-xs font-medium text-white bg-[var(--jarvis-primary-hover)] hover:opacity-90 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed'
+                >
+                  {mutatingAction === 'saving' ? (
+                    <span className='h-3.5 w-3.5 animate-spin rounded-full border-b-2 border-white' />
+                  ) : (
+                    <CheckIcon className='h-3.5 w-3.5' />
+                  )}
+                  {isEditMode ? 'Update' : 'Save'}
+                </button>
+              </>
+            )}
           </div>
-        )}
+        ) : null}
       </div>
 
       {/* ── Canvas ──────────────────────────────────────────────────────────── */}
@@ -277,6 +335,12 @@ const WorkflowRegistryOrEdit: React.FC = () => {
         {loadingDetail ? (
           <div className='flex h-full items-center justify-center'>
             <div className='h-8 w-8 animate-spin rounded-full border-b-2 border-[var(--jarvis-primary)]' />
+          </div>
+        ) : initialCanvas.error ? (
+          <div className='flex h-full items-center justify-center p-8'>
+            <div className='max-w-lg rounded-lg border border-[var(--jarvis-danger)] bg-[var(--jarvis-danger-soft)] p-4 text-sm text-[var(--jarvis-danger-text)]'>
+              Unable to load workflow graph: {initialCanvas.error}
+            </div>
           </div>
         ) : (
           // key forces canvas remount when switching between workflows
@@ -286,11 +350,13 @@ const WorkflowRegistryOrEdit: React.FC = () => {
             workflowId={id ?? undefined}
             workflow={workflow}
             refreshRunHistoryKey={runHistoryRefresh}
-            initialNodes={initialNodes}
-            initialEdges={initialEdges}
+            initialNodes={initialCanvas.nodes}
+            initialEdges={initialCanvas.edges}
             isReadOnly={isReadOnly}
             isNewWorkflow={!isEditMode}
-            onDeleteWorkflow={() => setDeleteDialogOpen(true)}
+            onDeleteWorkflow={() => {
+              if (!isReadOnly) setDeleteDialogOpen(true);
+            }}
             onWorkflowChange={handleWorkflowChange}
             onSave={handleSave}
             onChange={() => setHasChanges(true)}
@@ -322,6 +388,16 @@ const WorkflowRegistryOrEdit: React.FC = () => {
         onTrigger={handleTrigger}
         triggering={mutatingAction === 'triggering'}
       />
+
+      {shareOpen && id && (
+        <ShareModal
+          itemName={workflow?.name ?? 'Workflow'}
+          resourceId={id}
+          resourceType='workflow'
+          isOpen={shareOpen}
+          onClose={() => setShareOpen(false)}
+        />
+      )}
     </div>
   );
 };

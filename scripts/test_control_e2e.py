@@ -15,6 +15,12 @@ Tests:
 
 Usage:
     uv run python scripts/test_control_e2e.py
+
+Environment variables:
+    AWS_BEDROCK_SONNET_AIP_ARN
+        AIP ARN used before BEDROCK_MODEL when set.
+    BEDROCK_MODEL
+        Bedrock model ID fallback (default: us.amazon.nova-lite-v1:0).
 """
 
 from __future__ import annotations
@@ -31,6 +37,7 @@ from uuid import uuid4
 from agno.models.aws import AwsBedrock
 from agno.workflow import StepInput, StepOutput
 from agno.workflow.step import StepExecutor
+from bedrock_model import resolve_bedrock_model_id
 from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
@@ -72,8 +79,7 @@ class MockWorkflowRunner(WorkflowRunner):
     async def _build_registry(
         self,
         definition: WorkflowDefinition,
-        registry_token: str,
-        user_id: str | None,
+        auth_context: dict[str, Any] | None,
     ) -> dict[str, StepExecutor]:
         """Return a slow mock executor for every executor_key in the definition."""
         all_nodes = flatten_workflow_nodes(definition.nodes)
@@ -96,7 +102,10 @@ class MockWorkflowRunner(WorkflowRunner):
 def _make_runner(queue: DirectiveQueue) -> MockWorkflowRunner:
     """Build a MockWorkflowRunner wired to *queue*."""
     llm = AwsBedrock(
-        id=os.getenv("BEDROCK_MODEL", "us.amazon.nova-lite-v1:0"),
+        id=resolve_bedrock_model_id(
+            model_env_var="BEDROCK_MODEL",
+            fallback_model_id="us.amazon.nova-lite-v1:0",
+        ),
         aws_region=settings.aws_region,
         aws_session_token=settings.aws_session_token,
         aws_access_key_id=settings.aws_access_key_id,
@@ -104,7 +113,6 @@ def _make_runner(queue: DirectiveQueue) -> MockWorkflowRunner:
     )
     return MockWorkflowRunner(
         llm=llm,
-        registry_url=os.getenv("REGISTRY_URL", "http://localhost:7860"),
         db_client=MongoDB.get_client(),
         db_name=MongoDB.database_name,
         jwt_config=settings.jwt_signing_config,
@@ -176,7 +184,7 @@ async def test_pause_resume_completes(queue: DirectiveQueue) -> bool:
     await run_doc.insert()
     run_id = str(run_doc.id)
     run_task = asyncio.create_task(
-        runner.run(def_id, "e2e pause-resume test", registry_token="test", user_id=None, existing_run_id=run_id)
+        runner.run(def_id, "e2e pause-resume test", auth_context=None, existing_run_id=run_id)
     )
     print(f"  Run {run_id} started")
 
@@ -225,7 +233,7 @@ async def test_pause_cancel(queue: DirectiveQueue) -> bool:
     await run_doc.insert()
     run_id = str(run_doc.id)
     run_task = asyncio.create_task(
-        runner.run(def_id, "e2e pause-cancel test", registry_token="test", user_id=None, existing_run_id=run_id)
+        runner.run(def_id, "e2e pause-cancel test", auth_context=None, existing_run_id=run_id)
     )
     print(f"  Run {run_id} started")
 
@@ -266,9 +274,7 @@ async def test_cancel_mid_run(queue: DirectiveQueue) -> bool:
     )
     await run_doc.insert()
     run_id = str(run_doc.id)
-    run_task = asyncio.create_task(
-        runner.run(def_id, "e2e cancel-mid test", registry_token="test", user_id=None, existing_run_id=run_id)
-    )
+    run_task = asyncio.create_task(runner.run(def_id, "e2e cancel-mid test", auth_context=None, existing_run_id=run_id))
     print(f"  Run {run_id} started")
 
     svc = WorkflowControlService(directive_queue=queue)
@@ -305,9 +311,7 @@ async def test_retry_completed(queue: DirectiveQueue) -> bool:
         initial_input={"user_text": "e2e retry seed"},
     )
     await seed_run.insert()
-    run, _ = await runner.run(
-        def_id, "e2e retry seed", registry_token="test", user_id=None, existing_run_id=str(seed_run.id)
-    )
+    run, _ = await runner.run(def_id, "e2e retry seed", auth_context=None, existing_run_id=str(seed_run.id))
     run_id = str(run.id)
     _check(f"Seed run completed (status={run.status})", str(run.status) == "completed")
 
@@ -321,7 +325,7 @@ async def test_retry_completed(queue: DirectiveQueue) -> bool:
         def_id,
         run_id,
         first_node_id,
-        registry_token="test",
+        auth_context=None,
         user_id=None,
     )
     child_id = str(child.id)

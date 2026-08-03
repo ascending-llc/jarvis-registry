@@ -2,12 +2,23 @@ import API from '@/services/api';
 import Request from '@/services/request';
 
 import type * as TYPE from './type';
+import { EMPTY_WORKFLOW_PERMISSIONS } from './type';
 
-const getWorkflowsList = async (data?: TYPE.GetWorkflowsListRequest): Promise<TYPE.GetWorkflowsListResponse> =>
-  await Request.get(API.getWorkflowsList, data);
+const getWorkflowsList = async (data?: TYPE.GetWorkflowsListRequest): Promise<TYPE.GetWorkflowsListResponse> => {
+  const response = await Request.get(API.getWorkflowsList, data);
+  return {
+    ...response,
+    workflows: (response?.workflows ?? []).map((w: TYPE.Workflow) => ({
+      ...w,
+      permissions: w.aclPermission ?? EMPTY_WORKFLOW_PERMISSIONS,
+    })),
+  };
+};
 
-const getWorkflowDetail = async (id: string): Promise<TYPE.GetWorkflowDetailResponse> =>
-  await Request.get(API.getWorkflowDetail(id));
+const getWorkflowDetail = async (id: string): Promise<TYPE.GetWorkflowDetailResponse> => {
+  const data = await Request.get(API.getWorkflowDetail(id));
+  return { ...data, permissions: data?.aclPermission ?? EMPTY_WORKFLOW_PERMISSIONS };
+};
 
 const createWorkflow = async (data: TYPE.CreateWorkflowRequest): Promise<TYPE.CreateWorkflowResponse> =>
   await Request.post(API.createWorkflow, data);

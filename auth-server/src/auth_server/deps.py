@@ -2,6 +2,7 @@ from fastapi import Depends, Request
 from itsdangerous import URLSafeTimedSerializer
 from redis import Redis
 
+from registry_pkgs.core.consent_store import ConsentStore, PendingConsentStore
 from registry_pkgs.core.oauth_state_store import OAuthStateStore
 
 from .container import AuthContainer
@@ -52,6 +53,14 @@ def get_redis_client(container: AuthContainer = Depends(get_container)) -> Redis
 
 def get_oauth_state_store(container: AuthContainer = Depends(get_container)) -> OAuthStateStore:
     return container.oauth_state_store
+
+
+def get_consent_store(container: AuthContainer = Depends(get_container)) -> ConsentStore:
+    return container.consent_store
+
+
+def get_pending_consent_store(container: AuthContainer = Depends(get_container)) -> PendingConsentStore:
+    return container.pending_consent_store
 
 
 def check_if_https(request: Request) -> bool:

@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import json
+import copy
 import logging
-from datetime import date, datetime
 from typing import TYPE_CHECKING, Any
 
 from agno.workflow import (
@@ -18,7 +17,6 @@ from agno.workflow import (
 )
 from agno.workflow.step import OnError, StepExecutor
 from agno.workflow.types import HumanReview
-from pydantic import BaseModel
 
 from registry_pkgs.models.enums import OnRejectPolicy, OnTimeoutPolicy, WorkflowNodeType
 from registry_pkgs.models.workflow import (
@@ -29,7 +27,20 @@ from registry_pkgs.models.workflow import (
     WorkflowRun,
 )
 from registry_pkgs.workflows.hitl.field_types import field_type_to_agno
+from registry_pkgs.workflows.media_snapshot import (
+    media_from_snapshot,
+    serialize_media_items,
+    serialize_step_output_media,
+)
 from registry_pkgs.workflows.persistence import WorkflowRunSyncer
+from registry_pkgs.workflows.prompt import (
+    ADDITIONAL_DATA_DEPENDENCY_NODE_NAMES,
+    ADDITIONAL_DATA_DEPENDENCY_OBJECTIVES,
+    ADDITIONAL_DATA_INITIAL_INPUT,
+    ADDITIONAL_DATA_STEP_OBJECTIVE,
+    ADDITIONAL_DATA_WORKFLOW_DESCRIPTION,
+)
+from registry_pkgs.workflows.serialization import json_safe, try_parse_json
 from registry_pkgs.workflows.types import NODE_INPUT_SNAPSHOTS_KEY, POOL_KEY_PREFIX
 
 if TYPE_CHECKING:
@@ -53,70 +64,84 @@ _ON_TIMEOUT_TO_AGNO: dict[OnTimeoutPolicy, str] = {
 }
 
 
-def _try_parse_json(value: Any) -> Any:
-    """If value is a JSON object/array string, return the parsed object; else return value unchanged.
-
-    Restricted to object/array shapes (not bare JSON scalars) so plain-text prompts that
-    happen to be valid JSON primitives (e.g. "123", "true") are not silently retyped.
-    """
-    if not isinstance(value, str):
-        return value
-    stripped = value.strip()
-    if not stripped or stripped[0] not in "{[":
-        return value
-    try:
-        parsed = json.loads(stripped)
-    except json.JSONDecodeError:
-        return value
-    return parsed if isinstance(parsed, (dict, list)) else value
-
-
-def _json_safe(value: Any) -> Any:
-    """Return a Mongo-safe, debug-friendly representation of workflow input values."""
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    if isinstance(value, (datetime, date)):
-        return value.isoformat()
-    if isinstance(value, BaseModel):
-        return value.model_dump(mode="json")
-    if isinstance(value, dict):
-        return {str(k): _json_safe(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple, set)):
-        return [_json_safe(item) for item in value]
-    if hasattr(value, "to_dict"):
-        try:
-            return _json_safe(value.to_dict())
-        except Exception:
-            return str(value)
-    return str(value)
-
-
 def _serialize_step_output(value: StepOutput) -> dict[str, Any]:
-    """Serialize a previous StepOutput without recursively storing full internals."""
-    return {
+    """Serialize a previous StepOutput without recursively storing full internals.
+
+    Media fields are persisted as metadata only (no bytes) via
+    ``serialize_step_output_media`` so snapshots stay Mongo-safe and small.
+    """
+    serialized = {
         "step_name": value.step_name,
         "step_id": value.step_id,
-        "content": _json_safe(value.content),
+        "content": json_safe(value.content),
         "success": value.success,
         "error": value.error,
     }
+    serialized.update(serialize_step_output_media(value))
+    return serialized
 
 
 def _serialize_step_input(step_input: StepInput) -> dict[str, Any]:
-    """Serialize the fields users need to debug how a node was invoked."""
+    """Serialize the fields users need to debug how a node was invoked.
+
+    Captures the pre-injection StepInput (before _with_intention_data enriches
+    additional_data) so the snapshot reflects the raw agno-level input, not the
+    rendered prompt.
+    """
     previous_outputs = step_input.previous_step_outputs or {}
     return {
-        "input": _json_safe(_try_parse_json(step_input.input)),
-        "previous_step_content": _json_safe(step_input.previous_step_content),
+        "input": json_safe(try_parse_json(step_input.input)),
+        "previous_step_content": json_safe(step_input.previous_step_content),
         "previous_step_outputs": {
             str(name): _serialize_step_output(output) for name, output in previous_outputs.items()
         },
-        "additional_data": _json_safe(step_input.additional_data),
-        "images": _json_safe(step_input.images),
-        "videos": _json_safe(step_input.videos),
-        "audio": _json_safe(step_input.audio),
-        "files": _json_safe(step_input.files),
+        "additional_data": json_safe(step_input.additional_data),
+        "images": serialize_media_items(step_input.images, "images"),
+        "videos": serialize_media_items(step_input.videos, "videos"),
+        "audio": serialize_media_items(step_input.audio, "audio"),
+        "files": serialize_media_items(step_input.files, "files"),
     }
+
+
+def _dedupe_preserve_order(names: list[str]) -> list[str]:
+    """Dedupe while keeping first-occurrence order (implicit dep stays ahead of explicit refs)."""
+    return list(dict.fromkeys(names))
+
+
+def _build_implicit_previous_step_names(nodes: list[WorkflowNode]) -> dict[str, str]:
+    """Map each STEP node id to the immediately previous STEP in the same ordered list.
+
+    Branch containers (Loop / Condition / Router) form independent chains inside
+    each branch; Parallel siblings never depend on each other; a container node
+    breaks the chain (a STEP never implicitly depends on a container).
+    """
+    implicit_by_node_id: dict[str, str] = {}
+
+    def visit_sequence(sequence: list[WorkflowNode]) -> None:
+        """Walk one ordered node list, linking STEP→previous-STEP and recursing into containers."""
+        previous_node: WorkflowNode | None = None
+        for node in sequence:
+            if node.node_type == WorkflowNodeType.STEP:
+                if previous_node is not None and previous_node.node_type == WorkflowNodeType.STEP:
+                    implicit_by_node_id[node.id] = previous_node.name
+
+            if node.node_type == WorkflowNodeType.LOOP:
+                visit_sequence(node.children)
+            elif node.node_type == WorkflowNodeType.CONDITION:
+                visit_sequence(node.true_steps)
+                visit_sequence(node.false_steps)
+            elif node.node_type == WorkflowNodeType.ROUTER:
+                for choice in node.choices:
+                    visit_sequence(choice.steps)
+            elif node.node_type == WorkflowNodeType.PARALLEL:
+                # Parallel children have no ordering semantics, so do not create
+                # implicit dependencies between siblings.
+                for child in node.children:
+                    visit_sequence([child])
+            previous_node = node
+
+    visit_sequence(nodes)
+    return implicit_by_node_id
 
 
 def _with_input_capture(
@@ -132,6 +157,55 @@ def _with_input_capture(
         return await executor(step_input, session_state)
 
     return _capturing
+
+
+def _with_intention_data(
+    node: WorkflowNode,
+    executor: StepExecutor,
+    node_by_name: dict[str, WorkflowNode],
+    workflow_description: str | None,
+    dependency_node_names: list[str],
+    initial_input: dict[str, Any] | None,
+) -> StepExecutor:
+    """Inject per-node intention into ``StepInput.additional_data`` before calling the executor.
+
+    Constructed fresh per ``WorkflowNode`` in ``_build`` so per-node objective and
+    dependency data can never leak across nodes that share the same executor in
+    ``executor_registry`` (two nodes with the same ``executorKey`` share one executor
+    object, but each gets its own wrapper closure with its own captured variables).
+
+    The wrapper uses ``copy.copy(step_input)`` so the original object is never
+    mutated — ``_with_input_capture`` (outermost) therefore snapshots the
+    pre-injection ``StepInput``, exactly preserving today's ``NodeRun.input_snapshot``
+    semantics.
+
+    Keys written to ``additional_data`` are the constants defined in ``prompt.py``
+    (``ADDITIONAL_DATA_*``).  ``build_prompt`` in ``helpers.py`` reads them back
+    and calls ``render_step_prompt`` to assemble the final Markdown prompt.
+
+    ``initial_input`` is ``WorkflowRun.initial_input`` — the run's trigger payload —
+    forwarded to *every* node regardless of dependencies, so a downstream node can
+    reference a trigger field (e.g. a Slack member ID) directly instead of relying
+    on an upstream node to relay it through its own output.
+    """
+    dependency_objectives: dict[str, str] = {
+        name: node_by_name[name].step_objective or "" for name in dependency_node_names if name in node_by_name
+    }
+
+    async def _wrapped(step_input: StepInput, session_state: dict | None = None) -> StepOutput:
+        enriched = copy.copy(step_input)
+        enriched.additional_data = {
+            **(step_input.additional_data or {}),
+            ADDITIONAL_DATA_STEP_OBJECTIVE: node.step_objective or "",
+            ADDITIONAL_DATA_WORKFLOW_DESCRIPTION: workflow_description,
+            ADDITIONAL_DATA_DEPENDENCY_NODE_NAMES: dependency_node_names,
+            ADDITIONAL_DATA_DEPENDENCY_OBJECTIVES: dependency_objectives,
+            ADDITIONAL_DATA_INITIAL_INPUT: initial_input,
+        }
+        return await executor(enriched, session_state)
+
+    _wrapped.__name__ = f"intention_wrapper({node.name})"
+    return _wrapped
 
 
 def _to_agno_human_review(spec: HumanReviewSpec | None) -> HumanReview | None:
@@ -200,9 +274,13 @@ def compile_workflow(
     if (db_client is None) != (db_name is None):
         raise ValueError("compile_workflow requires db_client and db_name together")
 
+    # Build unconditionally — needed for dependency-goal resolution in
+    # _with_intention_data regardless of whether DB sync is active.
+    node_by_name: dict[str, WorkflowNode] = {n.name: n for n in flatten_workflow_nodes(definition.nodes)}
+    implicit_previous_step_names = _build_implicit_previous_step_names(definition.nodes)
+
     db: WorkflowRunSyncer | None = None
     if db_client is not None and db_name is not None:
-        node_by_name = {n.name: n for n in flatten_workflow_nodes(definition.nodes)}
         db = WorkflowRunSyncer(
             workflow_run=run,
             node_by_name=node_by_name,
@@ -224,14 +302,26 @@ def compile_workflow(
         nodes_to_compile = definition.nodes[: cut + 1]
 
     def _make_injected_executor(data: dict[str, Any]) -> StepExecutor:
-        """Return a pass-through executor that replays *content* and *session_state*."""
+        """Return a pass-through executor that replays *content*, *media metadata* and *session_state*.
+
+        Media are rebuilt as metadata-only shells (no bytes) so downstream
+        dependency prompts render the same media summary as a live run.
+        """
+        media = media_from_snapshot(data)
 
         async def _injected(step_input: StepInput, session_state: dict | None = None) -> StepOutput:
             if session_state is not None:
                 state_updates = data.get("session_state")
                 if state_updates:
                     session_state.update(state_updates)
-            return StepOutput(content=data.get("content"), success=True)
+            return StepOutput(
+                content=data.get("content"),
+                images=media["images"],
+                videos=media["videos"],
+                audio=media["audio"],
+                files=media["files"],
+                success=True,
+            )
 
         return _injected
 
@@ -253,7 +343,23 @@ def compile_workflow(
                         f"executor key {lookup_key!r} not found in executor_registry "
                         f"(registered: {list(executor_registry)})"
                     )
+                # Live executors rely on build_prompt(), so inject per-node intention
+                # into StepInput.additional_data before invoking the underlying executor.
+                implicit_name = implicit_previous_step_names.get(node.id)
+                dependency_node_names = _dedupe_preserve_order(
+                    ([implicit_name] if implicit_name else []) + list(node.referenced_node_names)
+                )
+                executor = _with_intention_data(
+                    node,
+                    executor,
+                    node_by_name,
+                    definition.description,
+                    dependency_node_names,
+                    run.initial_input,
+                )
 
+            # _with_input_capture snapshots the pre-injection StepInput, so it
+            # must be the outermost wrapper around both live and injected paths.
             executor = _with_input_capture(node, executor)
 
             # Wrap with directive checking and retry backoff when a queue is present.

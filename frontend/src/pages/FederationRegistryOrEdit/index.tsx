@@ -1,6 +1,6 @@
 import { ArrowPathIcon, CalendarIcon, ClockIcon, TrashIcon } from '@heroicons/react/24/outline';
 import type React from 'react';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { FiServer } from 'react-icons/fi';
 import { HiOutlineShare } from 'react-icons/hi2';
 import { useNavigate, useSearchParams } from 'react-router-dom';
@@ -8,6 +8,11 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import ShareModal from '@/components/ShareModal';
 import { useGlobal } from '@/contexts/GlobalContext';
 import { useServer } from '@/contexts/ServerContext';
+import {
+  getFederationSyncErrorMessage,
+  getFederationSyncViewState,
+  useFederationSyncPolling,
+} from '@/hooks/useFederationSyncPolling';
 import SERVICES from '@/services';
 import type { Federation } from '@/services/federation/type';
 import UTILS from '@/utils';
@@ -22,9 +27,10 @@ const INIT_DATA: FederationFormConfig = {
   region: '',
   assumeRoleArn: '',
   resourceTagsFilter: '',
-  azureTenantId: '',
-  azureSubscriptionId: '',
-  azureResourceGroup: '',
+  projectEndpoint: '',
+  tenantId: '',
+  clientId: '',
+  clientSecret: '',
 };
 
 const FederationRegistryOrEdit: React.FC = () => {
@@ -37,8 +43,13 @@ const FederationRegistryOrEdit: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [federation, setFederation] = useState<Federation | null>(null);
-  const [isSyncing, setIsSyncing] = useState(false);
+  const [isStartingSync, setIsStartingSync] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
+  const currentFederationIdRef = useRef(id);
+  const detailRequestGenerationRef = useRef(0);
+  const syncRequestPendingRef = useRef(false);
+  const syncRequestGenerationRef = useRef(0);
+  currentFederationIdRef.current = id;
 
   const [formData, setFormData] = useState<FederationFormConfig>(INIT_DATA);
   const [errors, setErrors] = useState<Record<string, string | undefined>>({});
@@ -52,19 +63,24 @@ const FederationRegistryOrEdit: React.FC = () => {
   const isEditMode = !!id;
   const isReadOnly = searchParams.get('isReadOnly') === 'true';
 
-  useEffect(() => {
-    if (id) getDetail();
-  }, [id]);
-
   const goBack = () => {
     navigate(-1);
   };
 
   const getDetail = async () => {
-    if (!id) return;
+    const federationId = id;
+    if (!federationId) return;
+
+    const detailRequestGeneration = ++detailRequestGenerationRef.current;
     setLoadingDetail(true);
     try {
-      const data = await SERVICES.FEDERATION.getFederation(id);
+      const data = await SERVICES.FEDERATION.getFederation(federationId);
+      if (
+        detailRequestGeneration !== detailRequestGenerationRef.current ||
+        currentFederationIdRef.current !== federationId
+      ) {
+        return;
+      }
       setFederation(data);
       setFormData({
         providerType: data.providerType,
@@ -77,16 +93,73 @@ const FederationRegistryOrEdit: React.FC = () => {
               .map(([k, v]) => `${k}:${v}`)
               .join(', ')
           : '',
-        azureTenantId: data.providerConfig?.tenantId || '',
-        azureSubscriptionId: data.providerConfig?.subscriptionId || '',
-        azureResourceGroup: data.providerConfig?.resourceGroup || '',
+        projectEndpoint: data.providerConfig?.projectEndpoint || '',
+        tenantId: data.providerConfig?.tenantId || '',
+        clientId: data.providerConfig?.clientId || '',
+        // clientSecret is stored encrypted server-side and never returned by the API;
+        // leave blank and only resubmit it when the user retypes a new value.
+        clientSecret: '',
       });
     } catch (_error: any) {
-      showToast(_error?.detail?.message || 'Failed to fetch external registry details', 'error');
+      if (detailRequestGeneration === detailRequestGenerationRef.current) {
+        showToast(_error?.detail?.message || 'Failed to fetch external registry details', 'error');
+      }
     } finally {
-      setLoadingDetail(false);
+      if (detailRequestGeneration === detailRequestGenerationRef.current) {
+        setLoadingDetail(false);
+      }
     }
   };
+
+  const { jobStatus, isPolling, pollingError, startPolling, retryPolling, stopPolling } = useFederationSyncPolling(
+    job => {
+      if (job.federationId !== currentFederationIdRef.current) return;
+      showToast(
+        job.status === 'success' ? 'Sync completed successfully' : job.error || 'Sync failed',
+        job.status === 'success' ? 'success' : 'error',
+      );
+      void getDetail();
+    },
+  );
+
+  useEffect(() => {
+    stopPolling();
+    detailRequestGenerationRef.current += 1;
+    syncRequestGenerationRef.current += 1;
+    syncRequestPendingRef.current = false;
+    setIsStartingSync(false);
+    setFederation(null);
+    if (id) void getDetail();
+    return () => {
+      detailRequestGenerationRef.current += 1;
+      syncRequestGenerationRef.current += 1;
+      syncRequestPendingRef.current = false;
+    };
+  }, [id, stopPolling]);
+
+  useEffect(() => {
+    const jobId = federation?.lastSync?.jobId;
+    if (
+      id &&
+      federation?.id === id &&
+      jobId &&
+      (federation.syncStatus === 'pending' || federation.syncStatus === 'syncing')
+    ) {
+      startPolling(id, jobId);
+      return;
+    }
+    stopPolling();
+  }, [federation?.id, federation?.lastSync?.jobId, federation?.syncStatus, id, startPolling, stopPolling]);
+
+  const syncView = getFederationSyncViewState({
+    serverStatus: federation?.syncStatus,
+    syncMessage: federation?.syncMessage,
+    hasServerJobId: Boolean(federation?.lastSync?.jobId),
+    isStarting: isStartingSync,
+    isPolling,
+    pollingError,
+    jobStatus,
+  });
 
   const validate = () => {
     const newErrors: Record<string, string> = {};
@@ -99,10 +172,24 @@ const FederationRegistryOrEdit: React.FC = () => {
       if (!formData.region.trim()) newErrors.region = 'AWS Region is required';
       if (!formData.assumeRoleArn.trim()) newErrors.assumeRoleArn = 'Role ARN is required';
     } else if (formData.providerType === 'azure_ai_foundry') {
-      if (!formData.region.trim()) newErrors.region = 'Azure Region is required';
-      if (!formData.azureTenantId.trim()) newErrors.azureTenantId = 'Tenant ID is required';
-      if (!formData.azureSubscriptionId.trim()) newErrors.azureSubscriptionId = 'Subscription ID is required';
-      if (!formData.azureResourceGroup.trim()) newErrors.azureResourceGroup = 'Resource Group is required';
+      if (!formData.projectEndpoint.trim()) newErrors.projectEndpoint = 'Project Endpoint is required';
+
+      // Service-principal auth is all-or-nothing: either leave all three blank to fall
+      // back to managed identity, or fill in all three (mirrors the backend validation
+      // in FederationCrudService.validate_provider_config).
+      const servicePrincipalFields: { key: 'tenantId' | 'clientId' | 'clientSecret'; label: string }[] = [
+        { key: 'tenantId', label: 'Tenant ID' },
+        { key: 'clientId', label: 'Client ID' },
+        { key: 'clientSecret', label: 'Client Secret' },
+      ];
+      const filledCount = servicePrincipalFields.filter(({ key }) => formData[key].trim()).length;
+      if (filledCount > 0 && filledCount < servicePrincipalFields.length) {
+        servicePrincipalFields.forEach(({ key, label }) => {
+          if (!formData[key].trim()) {
+            newErrors[key] = `${label} is required when configuring service-principal authentication`;
+          }
+        });
+      }
     }
 
     setErrors(newErrors);
@@ -163,11 +250,10 @@ const FederationRegistryOrEdit: React.FC = () => {
             resourceTagsFilter: parseTagsFilter(formData.resourceTagsFilter),
           }
         : {
-            region: formData.region,
-            tenantId: formData.azureTenantId,
-            subscriptionId: formData.azureSubscriptionId,
-            resourceGroup: formData.azureResourceGroup,
-            resourceTagsFilter: parseTagsFilter(formData.resourceTagsFilter),
+            projectEndpoint: formData.projectEndpoint,
+            tenantId: formData.tenantId,
+            clientId: formData.clientId,
+            clientSecret: formData.clientSecret,
           };
 
       const result = await SERVICES.FEDERATION.syncFederation(
@@ -179,8 +265,9 @@ const FederationRegistryOrEdit: React.FC = () => {
         { timeout: 120000 },
       );
 
-      const discoveredMcp = result?.summary?.discoveredMcpServers ?? 0;
-      const discoveredAgents = result?.summary?.discoveredAgents ?? 0;
+      const summary = 'summary' in result ? result.summary : null;
+      const discoveredMcp = summary?.discoveredMcpServers ?? 0;
+      const discoveredAgents = summary?.discoveredAgents ?? 0;
 
       setTestConnectionResult({
         success: true,
@@ -197,18 +284,42 @@ const FederationRegistryOrEdit: React.FC = () => {
   };
 
   const handleSync = async () => {
-    if (!id || isSyncing) return;
-    setIsSyncing(true);
+    if (!id || syncRequestPendingRef.current || isPolling) return;
+
+    if (syncView.action === 'retry') {
+      retryPolling();
+      return;
+    }
+    if (syncView.action === 'refresh') {
+      void getDetail();
+      return;
+    }
+    if (syncView.action === 'none') return;
+
+    const federationId = id;
+    syncRequestPendingRef.current = true;
+    const syncRequestGeneration = ++syncRequestGenerationRef.current;
+    setIsStartingSync(true);
     showToast('Sync started in background', 'info');
 
     try {
-      await SERVICES.FEDERATION.syncFederation(id, undefined, { timeout: 120000 });
-      showToast('Sync completed successfully', 'success');
-      getDetail();
-    } catch (error: any) {
-      showToast(error?.detail?.message || 'Failed to sync', 'error');
+      const job = await SERVICES.FEDERATION.syncFederation(federationId);
+      if (
+        syncRequestGeneration !== syncRequestGenerationRef.current ||
+        currentFederationIdRef.current !== federationId
+      ) {
+        return;
+      }
+      if (!('id' in job)) throw new Error('Failed to start sync');
+      startPolling(federationId, job.id);
+    } catch (error: unknown) {
+      if (syncRequestGeneration !== syncRequestGenerationRef.current) return;
+      showToast(getFederationSyncErrorMessage(error, 'Failed to start sync'), 'error');
     } finally {
-      setIsSyncing(false);
+      if (syncRequestGeneration === syncRequestGenerationRef.current) {
+        syncRequestPendingRef.current = false;
+        setIsStartingSync(false);
+      }
     }
   };
 
@@ -224,11 +335,10 @@ const FederationRegistryOrEdit: React.FC = () => {
             resourceTagsFilter: parseTagsFilter(formData.resourceTagsFilter),
           }
         : {
-            region: formData.region,
-            tenantId: formData.azureTenantId,
-            subscriptionId: formData.azureSubscriptionId,
-            resourceGroup: formData.azureResourceGroup,
-            resourceTagsFilter: parseTagsFilter(formData.resourceTagsFilter),
+            projectEndpoint: formData.projectEndpoint,
+            tenantId: formData.tenantId,
+            clientId: formData.clientId,
+            clientSecret: formData.clientSecret,
           };
 
       if (isEditMode && id && federation) {
@@ -334,7 +444,7 @@ const FederationRegistryOrEdit: React.FC = () => {
             {isReadOnly && federation && (
               <div className='mt-8 border-t border-[color:var(--jarvis-border)] pt-6'>
                 <h3 className='text-lg font-medium text-[var(--jarvis-text-strong)] mb-4'>Discovered Resources</h3>
-                <div className='grid grid-cols-3 gap-4'>
+                <div className='grid grid-cols-4 gap-4'>
                   <div className='bg-[var(--jarvis-bg)] bg-[var(--jarvis-card)] rounded-lg p-5 border border-[color:var(--jarvis-border)] text-center'>
                     <div className='text-3xl font-bold text-[var(--jarvis-primary)]'>
                       {federation.stats?.mcpServerCount || 0}
@@ -352,6 +462,12 @@ const FederationRegistryOrEdit: React.FC = () => {
                       {federation.stats?.importedTotal || 0}
                     </div>
                     <div className='text-sm text-[var(--jarvis-muted)] mt-1'>Total Imported</div>
+                  </div>
+                  <div className='bg-[var(--jarvis-bg)] bg-[var(--jarvis-card)] rounded-lg p-5 border border-[color:var(--jarvis-border)] text-center'>
+                    <div className='text-3xl font-bold text-[var(--jarvis-danger-text)]'>
+                      {federation.stats?.unimportedTotal || 0}
+                    </div>
+                    <div className='text-sm text-[var(--jarvis-muted)] mt-1'>Total Unimported</div>
                   </div>
                 </div>
               </div>
@@ -391,14 +507,25 @@ const FederationRegistryOrEdit: React.FC = () => {
               </button>
 
               {isReadOnly && (
-                <button
-                  onClick={handleSync}
-                  disabled={loading || loadingDetail || isSyncing}
-                  className='inline-flex items-center justify-center gap-2 min-w-[80px] sm:min-w-[120px] md:min-w-[160px] px-4 py-2 border border-[var(--jarvis-primary-soft)] rounded-md shadow-sm text-sm font-medium text-[var(--jarvis-primary)] bg-[var(--jarvis-card)] hover:bg-[var(--jarvis-primary-soft)] hover:bg-[var(--jarvis-primary-soft)] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[var(--jarvis-primary)] disabled:opacity-50 disabled:cursor-not-allowed'
-                >
-                  <ArrowPathIcon className='h-4 w-4' />
-                  Sync Now
-                </button>
+                <>
+                  {syncView.kind !== 'idle' && (
+                    <span
+                      className='self-center text-sm text-[var(--jarvis-muted)]'
+                      aria-live='polite'
+                      title={syncView.detail ?? undefined}
+                    >
+                      {syncView.label}
+                    </span>
+                  )}
+                  <button
+                    onClick={handleSync}
+                    disabled={loading || loadingDetail || syncView.action === 'none'}
+                    className='inline-flex items-center justify-center gap-2 min-w-[80px] sm:min-w-[120px] md:min-w-[160px] px-4 py-2 border border-[var(--jarvis-primary-soft)] rounded-md shadow-sm text-sm font-medium text-[var(--jarvis-primary)] bg-[var(--jarvis-card)] hover:bg-[var(--jarvis-primary-soft)] hover:bg-[var(--jarvis-primary-soft)] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[var(--jarvis-primary)] disabled:opacity-50 disabled:cursor-not-allowed'
+                  >
+                    <ArrowPathIcon className={`h-4 w-4 ${syncView.isBusy ? 'animate-spin' : ''}`} />
+                    {syncView.actionLabel}
+                  </button>
+                </>
               )}
 
               {!isReadOnly && (

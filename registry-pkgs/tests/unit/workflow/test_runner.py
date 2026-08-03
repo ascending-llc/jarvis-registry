@@ -1,13 +1,14 @@
+import logging
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock
 
 import pytest
 from agno.run.base import RunStatus
 from agno.run.workflow import WorkflowRunOutput
 from beanie import PydanticObjectId
 
-from registry_pkgs.models.enums import WorkflowRunStatus
+from registry_pkgs.models.enums import NodeRunStatus, WorkflowRunStatus
 from registry_pkgs.models.workflow import WorkflowDefinition, WorkflowNode, WorkflowRun
 from registry_pkgs.workflows import runner
 from registry_pkgs.workflows.control.wrapper import WorkflowCancelledError
@@ -21,11 +22,26 @@ class _FieldExpr:
         return (self.name, "==", other)
 
 
+class _AsyncIter:
+    """Async iterable wrapper for testing Beanie find() results."""
+
+    def __init__(self, items: list):
+        self._items = items
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if not self._items:
+            raise StopAsyncIteration
+        return self._items.pop(0)
+
+
 def _definition() -> WorkflowDefinition:
     return WorkflowDefinition.model_construct(
         id=PydanticObjectId(),
         name="demo-workflow",
-        nodes=[WorkflowNode(name="fetch", executor_key="tool")],
+        nodes=[WorkflowNode(name="fetch", executor_key="tool", step_objective="fetch data")],
     )
 
 
@@ -44,7 +60,6 @@ def _make_runner(**kwargs) -> runner.WorkflowRunner:
 
     defaults = {
         "llm": object(),
-        "registry_url": "http://localhost:7860",
         "db_client": object(),
         "db_name": "jarvis",
         "jwt_config": JwtSigningConfig(
@@ -52,6 +67,7 @@ def _make_runner(**kwargs) -> runner.WorkflowRunner:
             jwt_issuer="https://jarvis.example.com",
             jwt_self_signed_kid="kid-v1",
             jwt_audience="jarvis-services",
+            registry_app_name="jarvis-registry-client",
         ),
     }
     defaults.update(kwargs)
@@ -84,7 +100,7 @@ class TestWorkflowRunnerRun:
         r = _make_runner()
 
         with pytest.raises(ValueError, match="not found"):
-            await r.run(str(PydanticObjectId()), "hello", registry_token="tok", user_id=None, existing_run_id="any-id")
+            await r.run(str(PydanticObjectId()), "hello", auth_context=None, existing_run_id="any-id")
 
     @pytest.mark.asyncio
     async def test_orchestrates_build_registry_execute_and_returns_node_runs(self, monkeypatch: pytest.MonkeyPatch):
@@ -98,6 +114,7 @@ class TestWorkflowRunnerRun:
         )
         node_runs = [SimpleNamespace(node_name="fetch")]
         fake_registry = {"tool": object()}
+        auth_context = {"user_id": "user-1"}
 
         monkeypatch.setattr(runner.WorkflowDefinition, "get", AsyncMock(return_value=definition))
         monkeypatch.setattr(runner.WorkflowRun, "get", AsyncMock(return_value=run_doc))
@@ -109,19 +126,17 @@ class TestWorkflowRunnerRun:
         monkeypatch.setattr(runner.NodeRun, "find", lambda *args, **kwargs: find_query)
 
         r = _make_runner()
-        user_id = "user-1"
         run_id = str(run_doc.id)
         actual_run, actual_nodes = await r.run(
             str(definition.id),
             "hello",
-            registry_token="user-tok",
-            user_id=user_id,
+            auth_context=auth_context,
             existing_run_id=run_id,
         )
 
         assert actual_run is run_doc
         assert actual_nodes == node_runs
-        runner.WorkflowRunner._build_registry.assert_awaited_once_with(definition, "user-tok", user_id)
+        runner.WorkflowRunner._build_registry.assert_awaited_once_with(definition, auth_context)
         runner.WorkflowRunner._execute.assert_awaited_once_with(run_doc, definition, "hello", fake_registry, None, None)
 
     @pytest.mark.asyncio
@@ -153,8 +168,7 @@ class TestWorkflowRunnerRun:
         await r.run(
             str(snapshot_definition.id),
             "hello",
-            registry_token="user-tok",
-            user_id="user-1",
+            auth_context=None,
             existing_run_id=str(run_doc.id),
         )
 
@@ -178,6 +192,7 @@ class TestWorkflowRunnerRun:
         )
         node_runs = [SimpleNamespace(node_name="fetch")]
         fake_registry = {"tool": object()}
+        auth_context = {"user_id": "user-1"}
 
         monkeypatch.setattr(runner.WorkflowDefinition, "get", AsyncMock(return_value=definition))
         monkeypatch.setattr(runner.WorkflowRun, "get", AsyncMock(return_value=existing_run))
@@ -192,8 +207,7 @@ class TestWorkflowRunnerRun:
         actual_run, actual_nodes = await r.run(
             str(definition.id),
             "hello",
-            registry_token="user-tok",
-            user_id="user-1",
+            auth_context=auth_context,
             existing_run_id=str(existing_run.id),
         )
 
@@ -204,8 +218,7 @@ class TestWorkflowRunnerRun:
         existing_run.save.assert_awaited_once()
         runner.WorkflowRunner._build_registry.assert_awaited_once_with(
             definition,
-            "user-tok",
-            "user-1",
+            auth_context,
         )
         runner.WorkflowRunner._execute.assert_awaited_once_with(
             existing_run, definition, "hello", fake_registry, None, None
@@ -223,40 +236,48 @@ class TestBuildRegistry:
             id=PydanticObjectId(),
             name="test",
             nodes=[
-                WorkflowNode(name="mcp-step", executor_key="mcp-tool"),
-                WorkflowNode(name="pool-step", a2a_pool=["agent-a", "agent-b"]),
+                WorkflowNode(name="mcp-step", executor_key="mcp-tool", step_objective="run MCP step"),
+                WorkflowNode(name="pool-step", a2a_pool=["agent-a", "agent-b"], step_objective="run pool step"),
             ],
         )
 
         captured = {}
+        auth_context = {"user_id": "user-1"}
 
         async def fake_build(
             executor_keys,
             *,
             llm,
-            registry_url,
-            registry_token,
+            auth_context,
             jwt_config,
-            user_id,
             pool_nodes,
             selector_llm,
             a2a_httpx_client=None,
+            headers_provider=None,
+            redis_client=None,
+            redis_key_prefix=None,
+            mcp_headers_provider=None,
         ):
             captured["executor_keys"] = executor_keys
             captured["pool_nodes"] = [n.name for n in pool_nodes]
-            captured["registry_token"] = registry_token
-            captured["user_id"] = user_id
+            captured["auth_context"] = auth_context
+            captured["redis_key_prefix"] = redis_key_prefix
+            captured["mcp_headers_provider"] = mcp_headers_provider
             return {}
 
         monkeypatch.setattr(runner, "build_executor_registry", fake_build)
 
-        r = _make_runner(registry_url="http://reg")
-        await r._build_registry(definition, "my-token", "user-1")
+        r = _make_runner(
+            redis_key_prefix="test-registry",
+            mcp_headers_provider=lambda *args, **kwargs: {},
+        )
+        await r._build_registry(definition, auth_context)
 
         assert captured["executor_keys"] == ["mcp-tool"]
         assert captured["pool_nodes"] == ["pool-step"]
-        assert captured["registry_token"] == "my-token"
-        assert captured["user_id"] == "user-1"
+        assert captured["auth_context"] is auth_context
+        assert captured["redis_key_prefix"] == "test-registry"
+        assert captured["mcp_headers_provider"] is r._mcp_headers_provider
 
 
 @pytest.mark.unit
@@ -281,7 +302,7 @@ class TestRunSetsRunningStatus:
         monkeypatch.setattr(runner.NodeRun, "find", lambda *args, **kwargs: find_query)
 
         r = _make_runner()
-        await r.run(str(definition.id), "hello", registry_token="tok", user_id=None, existing_run_id=str(run_doc.id))
+        await r.run(str(definition.id), "hello", auth_context=None, existing_run_id=str(run_doc.id))
 
         assert run_doc.status == WorkflowRunStatus.RUNNING
         assert run_doc.definition_snapshot["name"] == definition.name
@@ -331,6 +352,9 @@ class TestExecute:
         )
 
         monkeypatch.setattr(runner, "compile_workflow", lambda *args, **kwargs: workflow)
+        monkeypatch.setattr(runner.NodeRun, "workflow_run_id", _FieldExpr("workflow_run_id"), raising=False)
+        monkeypatch.setattr(runner.NodeRun, "status", _FieldExpr("status"), raising=False)
+        monkeypatch.setattr(runner.NodeRun, "find", lambda *args, **kwargs: _AsyncIter([]))
         r = _make_runner()
 
         with pytest.raises(RuntimeError, match="boom"):
@@ -355,6 +379,9 @@ class TestExecute:
         )
 
         monkeypatch.setattr(runner, "compile_workflow", lambda *args, **kwargs: workflow)
+        monkeypatch.setattr(runner.NodeRun, "workflow_run_id", _FieldExpr("workflow_run_id"), raising=False)
+        monkeypatch.setattr(runner.NodeRun, "status", _FieldExpr("status"), raising=False)
+        monkeypatch.setattr(runner.NodeRun, "find", lambda *args, **kwargs: _AsyncIter([]))
         r = _make_runner()
 
         await r._execute(run_doc, _definition(), "hello", {})
@@ -366,6 +393,173 @@ class TestExecute:
         run_doc.save.assert_awaited_once()
         run_doc.sync.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_finalize_failure_transitions_dangling_node_runs(self, monkeypatch: pytest.MonkeyPatch):
+        """When _execute fails, any NodeRun still RUNNING/AWAITING_APPROVAL
+        must be transitioned to FAILED with error and finished_at set."""
+        workflow = SimpleNamespace(arun=AsyncMock(side_effect=RuntimeError("llm broke")))
+        run_oid = PydanticObjectId()
+        run_doc = SimpleNamespace(
+            status=WorkflowRunStatus.RUNNING,
+            error_summary=None,
+            finished_at=None,
+            save=AsyncMock(),
+            id=run_oid,
+        )
+
+        dangling_running = SimpleNamespace(
+            status=NodeRunStatus.RUNNING,
+            error=None,
+            finished_at=None,
+            node_id="step-1",
+            save=AsyncMock(),
+        )
+        dangling_awaiting = SimpleNamespace(
+            status=NodeRunStatus.AWAITING_APPROVAL,
+            error=None,
+            finished_at=None,
+            node_id="step-2",
+            save=AsyncMock(),
+        )
+
+        monkeypatch.setattr(runner, "compile_workflow", lambda *args, **kwargs: workflow)
+        monkeypatch.setattr(runner.NodeRun, "workflow_run_id", _FieldExpr("workflow_run_id"), raising=False)
+        monkeypatch.setattr(runner.NodeRun, "status", _FieldExpr("status"), raising=False)
+        monkeypatch.setattr(
+            runner.NodeRun, "find", lambda *args, **kwargs: _AsyncIter([dangling_running, dangling_awaiting])
+        )
+
+        r = _make_runner()
+        with pytest.raises(RuntimeError, match="llm broke"):
+            await r._execute(run_doc, _definition(), "hello", {})
+
+        assert dangling_running.status == NodeRunStatus.FAILED
+        assert dangling_running.error == "llm broke"
+        assert isinstance(dangling_running.finished_at, datetime)
+        dangling_running.save.assert_awaited_once()
+
+        assert dangling_awaiting.status == NodeRunStatus.FAILED
+        assert dangling_awaiting.error == "llm broke"
+        assert isinstance(dangling_awaiting.finished_at, datetime)
+        dangling_awaiting.save.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_finalize_cancel_transitions_dangling_node_runs_to_cancelled(self, monkeypatch: pytest.MonkeyPatch):
+        """When _execute is cancelled, dangling NodeRuns must transition to CANCELLED, not FAILED."""
+        workflow = SimpleNamespace(arun=AsyncMock(side_effect=WorkflowCancelledError("user cancelled")))
+        run_oid = PydanticObjectId()
+        run_doc = SimpleNamespace(
+            status=WorkflowRunStatus.RUNNING,
+            error_summary=None,
+            finished_at=None,
+            save=AsyncMock(),
+            sync=AsyncMock(),
+            id=run_oid,
+        )
+
+        dangling_node = SimpleNamespace(
+            status=NodeRunStatus.RUNNING,
+            error=None,
+            finished_at=None,
+            node_id="step-1",
+            save=AsyncMock(),
+        )
+
+        monkeypatch.setattr(runner, "compile_workflow", lambda *args, **kwargs: workflow)
+        monkeypatch.setattr(runner, "agno_acancel_run", AsyncMock())
+        monkeypatch.setattr(runner.NodeRun, "workflow_run_id", _FieldExpr("workflow_run_id"), raising=False)
+        monkeypatch.setattr(runner.NodeRun, "status", _FieldExpr("status"), raising=False)
+        monkeypatch.setattr(runner.NodeRun, "find", lambda *args, **kwargs: _AsyncIter([dangling_node]))
+
+        r = _make_runner()
+        await r._execute(run_doc, _definition(), "hello", {})
+
+        assert dangling_node.status == NodeRunStatus.CANCELLED
+        assert dangling_node.error == "user cancelled"
+        assert isinstance(dangling_node.finished_at, datetime)
+        dangling_node.save.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_finalize_failure_reraises_original_exception_when_cleanup_fails(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ):
+        """If _finalize_dangling_node_runs itself raises, the failure must be swallowed/logged —
+        the original workflow exception still propagates and the WorkflowRun's own FAILED state
+        is still persisted."""
+        workflow = SimpleNamespace(arun=AsyncMock(side_effect=RuntimeError("llm broke")))
+        run_oid = PydanticObjectId()
+        run_doc = SimpleNamespace(
+            status=WorkflowRunStatus.RUNNING,
+            error_summary=None,
+            finished_at=None,
+            save=AsyncMock(),
+            id=run_oid,
+        )
+
+        dangling_node = SimpleNamespace(
+            status=NodeRunStatus.RUNNING,
+            error=None,
+            finished_at=None,
+            node_id="step-1",
+            save=AsyncMock(side_effect=RuntimeError("mongo down")),
+        )
+
+        monkeypatch.setattr(runner, "compile_workflow", lambda *args, **kwargs: workflow)
+        monkeypatch.setattr(runner.NodeRun, "workflow_run_id", _FieldExpr("workflow_run_id"), raising=False)
+        monkeypatch.setattr(runner.NodeRun, "status", _FieldExpr("status"), raising=False)
+        monkeypatch.setattr(runner.NodeRun, "find", lambda *args, **kwargs: _AsyncIter([dangling_node]))
+
+        r = _make_runner()
+        with caplog.at_level(logging.WARNING, logger="registry_pkgs.workflows.runner"):
+            with pytest.raises(RuntimeError, match="llm broke"):
+                await r._execute(run_doc, _definition(), "hello", {})
+
+        assert run_doc.status == WorkflowRunStatus.FAILED
+        assert run_doc.error_summary == "llm broke"
+        run_doc.save.assert_awaited_once()
+        assert any("failed to clean up dangling NodeRuns" in record.message for record in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_finalize_cancel_does_not_raise_when_cleanup_fails(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ):
+        """If _finalize_dangling_node_runs raises during cancellation, the failure must be
+        swallowed/logged — _execute must not raise and the WorkflowRun's own CANCELLED state
+        must still be persisted."""
+        workflow = SimpleNamespace(arun=AsyncMock(side_effect=WorkflowCancelledError("user cancelled")))
+        run_oid = PydanticObjectId()
+        run_doc = SimpleNamespace(
+            status=WorkflowRunStatus.RUNNING,
+            error_summary=None,
+            finished_at=None,
+            save=AsyncMock(),
+            sync=AsyncMock(),
+            id=run_oid,
+        )
+
+        dangling_node = SimpleNamespace(
+            status=NodeRunStatus.RUNNING,
+            error=None,
+            finished_at=None,
+            node_id="step-1",
+            save=AsyncMock(side_effect=RuntimeError("mongo down")),
+        )
+
+        monkeypatch.setattr(runner, "compile_workflow", lambda *args, **kwargs: workflow)
+        monkeypatch.setattr(runner, "agno_acancel_run", AsyncMock())
+        monkeypatch.setattr(runner.NodeRun, "workflow_run_id", _FieldExpr("workflow_run_id"), raising=False)
+        monkeypatch.setattr(runner.NodeRun, "status", _FieldExpr("status"), raising=False)
+        monkeypatch.setattr(runner.NodeRun, "find", lambda *args, **kwargs: _AsyncIter([dangling_node]))
+
+        r = _make_runner()
+        with caplog.at_level(logging.WARNING, logger="registry_pkgs.workflows.runner"):
+            await r._execute(run_doc, _definition(), "hello", {})
+
+        assert run_doc.status == WorkflowRunStatus.CANCELLED
+        assert run_doc.error_summary == "user cancelled"
+        run_doc.save.assert_awaited_once()
+        assert any("failed to clean up dangling NodeRuns" in record.message for record in caplog.records)
+
 
 @pytest.mark.unit
 class TestContinueRunHydrationFailure:
@@ -373,6 +567,8 @@ class TestContinueRunHydrationFailure:
     async def test_hydration_failure_preserves_pending_and_marks_failed(self, monkeypatch: pytest.MonkeyPatch):
         """If hydrate_requirement fails, pending_requirements must survive and the run
         must be finalized FAILED — never wiped and stranded as RUNNING."""
+        from unittest.mock import Mock
+
         run_oid = PydanticObjectId()
         original_pending = [{"step_id": "s1", "schema_version": 1}]
         run_doc = SimpleNamespace(
@@ -397,11 +593,14 @@ class TestContinueRunHydrationFailure:
         monkeypatch.setattr(runner.WorkflowRun, "get", AsyncMock(return_value=run_doc))
         monkeypatch.setattr(runner, "definition_from_snapshot", lambda snapshot: SimpleNamespace())
         monkeypatch.setattr(runner, "hydrate_requirement", Mock(side_effect=RuntimeError("schema drift")))
+        monkeypatch.setattr(runner.NodeRun, "workflow_run_id", _FieldExpr("workflow_run_id"), raising=False)
+        monkeypatch.setattr(runner.NodeRun, "status", _FieldExpr("status"), raising=False)
+        monkeypatch.setattr(runner.NodeRun, "find", lambda *args, **kwargs: _AsyncIter([]))
 
         r = _make_runner(db_client=_FakeClient())
 
         with pytest.raises(RuntimeError, match="schema drift"):
-            await r.continue_run(existing_run_id=str(run_oid), registry_token="tok", user_id="u1")
+            await r.continue_run(existing_run_id=str(run_oid), auth_context=None)
 
         # The persisted pending requirements were NOT cleared (still recoverable).
         assert run_doc.pending_requirements == original_pending

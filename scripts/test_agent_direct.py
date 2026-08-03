@@ -32,7 +32,6 @@ from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
-from registry import settings
 from registry_pkgs.core.config import MongoConfig
 from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.models.a2a_agent import A2AAgent
@@ -70,7 +69,7 @@ async def _list_agents() -> None:
     print(f"\n── Enabled A2A agents ({len(agents)}) ─────────────────────────────────")
     for a in agents:
         base_url = agent_base_url(a)
-        provider = (a.federationMetadata or {}).get("providerType", "—")
+        provider = getattr(a.federationMetadata, "providerType", "—")
         transport = a.config.type if a.config else "—"
         auth_mode = get_agentcore_auth_mode(a) if is_agentcore_runtime(a) else "—"
         print(f"  path={a.path:<35} transport={transport}  provider={provider}  auth={auth_mode}")
@@ -132,7 +131,6 @@ async def main(path: str, message: str, *, list_agents: bool = False, transport:
             result = await call_a2a(
                 agent,
                 message,
-                jwt_config=settings.jwt_signing_config,
                 httpx_client=a2a_httpx,
             )
 
