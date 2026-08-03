@@ -61,7 +61,7 @@ import re
 from datetime import UTC, datetime
 from typing import Any, ClassVar
 
-from a2a.types import AgentCard
+from a2a.types import AgentCard, AgentInterface, TransportProtocol
 from beanie import Document, Insert, PydanticObjectId, Replace, Save, SaveChanges, Update, before_event
 from langchain_core.documents import Document as LangChainDocument
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_serializer, model_validator
@@ -90,6 +90,37 @@ _A2A_PREFERRED_TRANSPORT_MAP: dict[str, str] = {
     "HTTP+JSON": TRANSPORT_HTTP_JSON,
     "JSONRPC": TRANSPORT_JSONRPC,
 }
+
+
+class NoSupportedTransportError(ValueError):
+    """Raised when an AgentCard has no usable non-gRPC transport."""
+
+
+def strip_grpc_and_select_preferred_transport(card: AgentCard) -> tuple[str, list[AgentInterface]]:
+    """Remove gRPC declarations and select a transport supported by Registry."""
+    filtered_interfaces = [
+        interface for interface in (card.additional_interfaces or []) if interface.transport != TransportProtocol.grpc
+    ]
+
+    preferred = card.preferred_transport
+    if preferred == TransportProtocol.grpc:
+        preferred = None
+
+    if preferred is None:
+        surviving = {interface.transport for interface in filtered_interfaces}
+        if TransportProtocol.jsonrpc in surviving:
+            preferred = TransportProtocol.jsonrpc
+        elif TransportProtocol.http_json in surviving:
+            preferred = TransportProtocol.http_json
+
+    if preferred is None and not filtered_interfaces:
+        raise NoSupportedTransportError(
+            f"AgentCard '{card.name}' has no usable transport after removing gRPC "
+            f"(preferred_transport={card.preferred_transport!r}, "
+            f"additional_interfaces={[i.transport for i in (card.additional_interfaces or [])]!r})"
+        )
+
+    return preferred, filtered_interfaces
 
 
 def normalize_a2a_agent_path(value: Any) -> str:
@@ -272,6 +303,11 @@ class A2AAgent(Document):
         contents = sorted(doc.page_content for doc in docs)
         per_doc_hashes = [hashlib.sha256(c.encode()).hexdigest() for c in contents]
         self.vectorContentHash = hashlib.sha256("".join(per_doc_hashes).encode()).hexdigest()
+
+    @before_event(Insert, Replace, Save, SaveChanges, Update)
+    def _validate_transport_availability(self) -> None:
+        """Reject writes when the card has no transport supported by Registry."""
+        strip_grpc_and_select_preferred_transport(self.card)
 
     # ========== Vector Search Integration ==========
     COLLECTION_NAME: ClassVar[str] = "A2a_agents"
