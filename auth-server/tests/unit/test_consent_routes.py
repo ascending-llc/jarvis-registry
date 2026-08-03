@@ -151,6 +151,36 @@ def test_consent_page_renders_client_metadata_and_post_forms() -> None:
     assert "External App" in response.text
     assert 'action="/auth/oauth2/consent/approve"' in response.text
     assert 'action="/auth/oauth2/consent/deny"' in response.text
+    assert "Redirects to" in response.text
+    assert "https://client.example.com/callback" in response.text
+
+
+def test_consent_page_omits_redirect_uri_for_device_flow() -> None:
+    client, _, _, pending_store = _client()
+    pending_store.save(
+        "nonce-device",
+        {
+            "flow_type": "device",
+            "device_code": "dev-code-1",
+            "mapped_user": {
+                "user_id": "507f1f77bcf86cd799439011",
+                "username": "alice",
+                "groups": [],
+            },
+            "resolved_scopes": ["servers-read"],
+            "session_data": {"client_id": "external-client"},
+        },
+    )
+
+    client.cookies.set(settings.oauth2_consent_nonce_cookie_name, "nonce-device")
+    response = client.get(
+        "/auth/oauth2/consent",
+        params={"nonce": "nonce-device"},
+    )
+
+    assert response.status_code == 200
+    assert "External App" in response.text
+    assert "Redirects to" not in response.text
 
 
 def test_approve_consent_rejects_form_cookie_nonce_mismatch() -> None:
