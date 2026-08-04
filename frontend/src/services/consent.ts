@@ -4,6 +4,7 @@ import service from './request';
 export interface ConsentContext {
   client_name: string;
   client_uri: string | null;
+  redirect_uri?: string | null;
   ip_address: string | null;
   registered_at: number | null;
   server_path?: string;
@@ -25,14 +26,16 @@ export const DEEP_LINK_BRANDS = ['cursor', 'vscode', 'claude'];
 const MOCK_DOWNSTREAM_CONTEXT: ConsentContext = {
   client_name: 'Claude Desktop (mock)',
   client_uri: 'https://claude.ai',
+  redirect_uri: 'https://claude.ai/callback',
   ip_address: '203.0.113.7',
   registered_at: Math.floor(Date.now() / 1000) - 120,
   server_path: 'github',
 };
 
-const MOCK_SERVER_CONTEXT: ConsentContext = { ...MOCK_DOWNSTREAM_CONTEXT, server_name: 'GitHub' };
+const MOCK_SERVER_CONTEXT: ConsentContext = { ...MOCK_DOWNSTREAM_CONTEXT, redirect_uri: undefined, server_name: 'GitHub' };
 const MOCK_AGENT_CONTEXT: ConsentContext = {
   ...MOCK_DOWNSTREAM_CONTEXT,
+  redirect_uri: undefined,
   server_path: undefined,
   agent_path: '/research',
   agent_name: 'Research Agent',

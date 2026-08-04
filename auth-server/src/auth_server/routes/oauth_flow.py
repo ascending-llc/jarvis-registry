@@ -1048,6 +1048,7 @@ async def consent_page(
             render_consent_page(
                 client_name=client_metadata.get("client_name", "Unknown application"),
                 client_uri=client_metadata.get("client_uri"),
+                redirect_uri=pending["session_data"].get("client_redirect_uri"),
                 ip_address=client_metadata.get("ip_address"),
                 registered_at=client_metadata.get("registered_at"),
                 nonce=oauth2_consent_nonce,
