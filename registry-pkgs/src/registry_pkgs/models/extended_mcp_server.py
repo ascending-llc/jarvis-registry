@@ -201,8 +201,11 @@ class ExtendedMCPServer(MCPServer):
             bool(self.config.get("enabled")) if self.config and isinstance(self.config.get("enabled"), bool) else False
         )
 
+    # Beanie's init_actions (>=2.1.0) skips any @before_event/@after_event method whose name
+    # starts with "_" (https://github.com/BeanieODM/beanie/issues/1316), so this hook cannot
+    # be underscore-prefixed or it silently never runs.
     @before_event(Insert, Replace, Save, SaveChanges, Update)
-    def _refresh_content_hash(self):
+    def refresh_content_hash(self):
         """Recompute vectorContentHash before every write.
 
         Service layer captures the hash before .save() and compares after to decide whether to
