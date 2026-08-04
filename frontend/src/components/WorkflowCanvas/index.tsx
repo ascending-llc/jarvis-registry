@@ -6,6 +6,7 @@ import { useWorkflowCanvas } from './hooks/useWorkflowCanvas';
 import NodePicker from './NodePicker';
 import PropsPanel from './PropsPanel';
 import { WorkflowPanelProvider } from './PropsPanel/WorkflowPanelContext';
+import { WorkflowRuntimeProvider } from './runtime/WorkflowRuntimeContext';
 import type { AgentInfo, WorkflowCanvasProps, WorkflowCanvasRef } from './types';
 
 import './index.css';
@@ -17,6 +18,8 @@ const WorkflowCanvasInner = forwardRef<WorkflowCanvasRef, WorkflowCanvasProps>(
       workflowId,
       workflow: workflowData,
       refreshRunHistoryKey,
+      activeWorkflowRun,
+      refetchActiveWorkflowRun,
       initialNodes,
       initialEdges,
       isReadOnly,
@@ -90,32 +93,40 @@ const WorkflowCanvasInner = forwardRef<WorkflowCanvasRef, WorkflowCanvasProps>(
     return (
       <div className='workflow-canvas-root h-full w-full flex flex-col overflow-hidden'>
         <div className='flex-1 flex overflow-hidden'>
-          <CanvasView canvas={canvas} defaultViewport={workflowData?.canvas?.viewport} isReadOnly={isReadOnly} />
-
-          <WorkflowPanelProvider
+          <WorkflowRuntimeProvider
             workflowId={workflowId}
-            refreshRunHistoryKey={refreshRunHistoryKey}
-            workflow={workflowData ?? null}
-            selectedNode={canvas.selectedNode}
+            activeRun={activeWorkflowRun}
             nodes={canvas.nodes}
             edges={canvas.edges}
-            isReadOnly={isReadOnly}
-            agentSchemas={AGENT_SCHEMAS}
-            onOpenAgentPicker={onOpenAgentPicker}
-            onNodeDataChange={canvas.onNodeDataChange}
-            onParallelBranchesChange={canvas.onParallelBranchesChange}
-            onRouterCasesChange={canvas.onRouterCasesChange}
-            onDeleteNode={canvas.onDeleteNode}
-            onDeleteWorkflow={onDeleteWorkflow}
-            onWorkflowChange={onWorkflowChange}
+            refetchActiveRun={refetchActiveWorkflowRun}
           >
-            <PropsPanel
-              panelMode={panelMode}
-              isNewWorkflow={isNewWorkflow}
-              collapsed={canvas.panelCollapsed}
-              onCollapsedChange={canvas.setPanelCollapsed}
-            />
-          </WorkflowPanelProvider>
+            <CanvasView canvas={canvas} defaultViewport={workflowData?.canvas?.viewport} isReadOnly={isReadOnly} />
+
+            <WorkflowPanelProvider
+              workflowId={workflowId}
+              refreshRunHistoryKey={refreshRunHistoryKey}
+              workflow={workflowData ?? null}
+              selectedNode={canvas.selectedNode}
+              nodes={canvas.nodes}
+              edges={canvas.edges}
+              isReadOnly={isReadOnly}
+              agentSchemas={AGENT_SCHEMAS}
+              onOpenAgentPicker={onOpenAgentPicker}
+              onNodeDataChange={canvas.onNodeDataChange}
+              onParallelBranchesChange={canvas.onParallelBranchesChange}
+              onRouterCasesChange={canvas.onRouterCasesChange}
+              onDeleteNode={canvas.onDeleteNode}
+              onDeleteWorkflow={onDeleteWorkflow}
+              onWorkflowChange={onWorkflowChange}
+            >
+              <PropsPanel
+                panelMode={panelMode}
+                isNewWorkflow={isNewWorkflow}
+                collapsed={canvas.panelCollapsed}
+                onCollapsedChange={canvas.setPanelCollapsed}
+              />
+            </WorkflowPanelProvider>
+          </WorkflowRuntimeProvider>
         </div>
 
         {pickerOpen && pendingAdd && (

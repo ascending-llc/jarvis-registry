@@ -1,5 +1,5 @@
 import type { Edge, Node } from '@xyflow/react';
-import type { Workflow } from '@/services/workflow/type';
+import type { Workflow, WorkflowRunStatusResponse } from '@/services/workflow/type';
 
 export type PanelMode = 'node' | 'workflow';
 
@@ -16,6 +16,8 @@ export interface WorkflowCanvasProps {
   workflowId?: string;
   workflow?: Partial<Workflow> | null;
   refreshRunHistoryKey?: number;
+  activeWorkflowRun: WorkflowRunStatusResponse | null;
+  refetchActiveWorkflowRun: () => Promise<void>;
   initialNodes?: WorkflowNode[];
   initialEdges?: Edge[];
   isReadOnly: boolean;
