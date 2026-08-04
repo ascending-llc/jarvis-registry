@@ -291,7 +291,7 @@ class A2AAgent(Document):
             self.createdAt = datetime.now(UTC)
 
     @before_event(Insert, Replace, Save, SaveChanges, Update)
-    def _refresh_content_hash(self):
+    def refresh_content_hash(self):
         """Recompute vectorContentHash before every write.
 
         Service layer captures the hash before .save() and compares after to decide whether to
@@ -304,8 +304,11 @@ class A2AAgent(Document):
         per_doc_hashes = [hashlib.sha256(c.encode()).hexdigest() for c in contents]
         self.vectorContentHash = hashlib.sha256("".join(per_doc_hashes).encode()).hexdigest()
 
+    # Beanie's init_actions (>=2.1.0) skips any @before_event/@after_event method whose name
+    # starts with "_" (https://github.com/BeanieODM/beanie/issues/1316), so these two hooks
+    # cannot be underscore-prefixed or they silently never run.
     @before_event(Insert, Replace, Save, SaveChanges, Update)
-    def _validate_transport_availability(self) -> None:
+    def validate_transport_availability(self) -> None:
         """Reject writes when the card has no transport supported by Registry."""
         strip_grpc_and_select_preferred_transport(self.card)
 

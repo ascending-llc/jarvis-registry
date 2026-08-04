@@ -130,7 +130,7 @@ def test_no_grpc_card_is_a_content_preserving_passthrough() -> None:
 
 
 def test_transport_validation_hook_covers_every_document_write_event() -> None:
-    event_types = A2AAgent._validate_transport_availability.event_types
+    event_types = A2AAgent.validate_transport_availability.event_types
 
     assert set(event_types) == {Insert, Replace, Save, SaveChanges, Update}
 
@@ -139,7 +139,7 @@ def test_transport_validation_hook_rejects_grpc_only_card() -> None:
     agent = _agent(_card(TransportProtocol.grpc, [_interface(TransportProtocol.grpc, "grpc")]))
 
     with pytest.raises(NoSupportedTransportError):
-        agent._validate_transport_availability()
+        agent.validate_transport_availability()
 
 
 async def _skip_document_validation(*_args: object, **_kwargs: object) -> None:
@@ -156,7 +156,7 @@ async def _run_transport_validation_before_write(
     del event_type, exclude
 
     if action_direction == ActionDirections.BEFORE:
-        instance._validate_transport_availability()
+        instance.validate_transport_availability()
 
 
 @pytest.mark.asyncio
