@@ -2,7 +2,7 @@
 
 from collections.abc import Generator
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from fastapi import FastAPI
@@ -41,7 +41,10 @@ def a2a_proxy_context() -> Generator[SimpleNamespace, None, None]:
     app.add_middleware(UnifiedAuthMiddleware)
     app.include_router(router, prefix="/proxy")
 
-    agent_service = SimpleNamespace(get_agent_by_path=AsyncMock())
+    agent_service = SimpleNamespace(
+        get_agent_by_path=AsyncMock(),
+        build_managed_agent_card=Mock(),
+    )
     app.dependency_overrides[get_a2a_agent_service] = lambda: agent_service
     app.dependency_overrides[get_acl_service] = lambda: AsyncMock()
     app.dependency_overrides[get_a2a_client_registry] = lambda: AsyncMock()
@@ -72,6 +75,27 @@ def test_valid_dcr_jwt_is_denied_by_http_json_a2a_route(a2a_proxy_context: Simpl
         "error": "Direct-connect A2A invocation requires a token generated from the Jarvis Registry frontend."
     }
     a2a_proxy_context.agent_service.get_agent_by_path.assert_not_awaited()
+
+
+def test_managed_agent_card_routes_are_public_and_not_swallowed(
+    a2a_proxy_context: SimpleNamespace,
+) -> None:
+    agent = SimpleNamespace(config=SimpleNamespace(enabled=True))
+    managed_card = {
+        "name": "Managed Agent",
+        "preferredTransport": "JSONRPC",
+        "url": "https://registry.example/proxy/a2a/test-agent",
+    }
+    a2a_proxy_context.agent_service.get_agent_by_path.return_value = agent
+    a2a_proxy_context.agent_service.build_managed_agent_card.return_value = managed_card
+
+    primary = a2a_proxy_context.client.get("/proxy/a2a/test-agent/agent-card.json")
+    alias = a2a_proxy_context.client.get("/proxy/a2a/test-agent/.well-known/agent-card.json")
+
+    assert primary.status_code == 200
+    assert primary.content == alias.content
+    assert primary.json() == managed_card
+    assert a2a_proxy_context.agent_service.get_agent_by_path.await_count == 2
 
 
 @pytest.mark.parametrize("client_id", [INTERACTIVE_CLIENT_ID, settings.headless_agent_client_id])

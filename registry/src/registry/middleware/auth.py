@@ -79,6 +79,8 @@ class UnifiedAuthMiddleware:
                 f"/api/{settings.api_version}/mcp/downstream/oauth/device/{{user_id}}/{{server_path:path}}",
                 f"/api/{settings.api_version}/mcp/downstream/oauth/token/{{user_id}}/{{server_path:path}}",
                 f"/api/{settings.api_version}/mcp/consent/device/resolve",
+                "/proxy/a2a/{agent_path}/agent-card.json",
+                "/proxy/a2a/{agent_path}/.well-known/agent-card.json",
                 "/.well-known/{path:path}",  # OAuth discovery endpoints must be public
             ]
         )

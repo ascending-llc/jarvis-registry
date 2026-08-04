@@ -18,6 +18,7 @@ from redis import Redis
 
 from registry_pkgs.core.consent_store import ConsentStore, PendingConsentStore
 from registry_pkgs.models import ResourceType
+from registry_pkgs.models.a2a_agent import NoSupportedTransportError
 from registry_pkgs.models.enums import AgentCoreRuntimeAccessMode
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 
@@ -49,6 +50,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["MCP Proxy"])
 
 _DIRECT_CONNECT_A2A_TOKEN_REQUIREMENT = "A2A invocation requires a token generated from the Jarvis Registry frontend."
+_MANAGED_AGENT_CARD_NOT_FOUND_DETAIL = "A2A agent not found"
 
 # A2A v0.3.x reserves -32001 through -32006 for its own error types (TaskNotFoundError,
 # TaskNotCancelableError, PushNotificationNotSupportedError, UnsupportedOperationError,
@@ -466,6 +468,34 @@ def _jsonrpc_a2a_error_response(code: int, message: str) -> JSONResponse:
     )
 
 
+async def _serve_managed_agent_card(
+    agent_path: str,
+    a2a_agent_service: A2AAgentService,
+) -> JSONResponse:
+    """Return the public Registry-managed Agent Card for an enabled agent."""
+    try:
+        agent = await a2a_agent_service.get_agent_by_path(agent_path)
+        if agent is None or agent.config is None or not agent.config.enabled:
+            return JSONResponse(
+                status_code=404,
+                content={"detail": _MANAGED_AGENT_CARD_NOT_FOUND_DETAIL},
+            )
+
+        return JSONResponse(
+            status_code=200,
+            content=a2a_agent_service.build_managed_agent_card(agent),
+        )
+    except NoSupportedTransportError:
+        logger.exception("Managed Agent Card has no supported transport: agent=%s", agent_path)
+    except Exception:
+        logger.exception("Failed to serve managed Agent Card: agent=%s", agent_path)
+
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error"},
+    )
+
+
 async def _forward_a2a(
     request: Request,
     target_url: str,
@@ -649,6 +679,24 @@ async def jsonrpc_proxy(
     except Exception:
         logger.exception(f"Unexpected error in jsonrpc_proxy for agent [{agent_path}]")
         return _jsonrpc_a2a_error_response(-32603, "Internal server error")
+
+
+@router.get("/a2a/{agent_path}/agent-card.json")
+async def managed_agent_card(
+    agent_path: str,
+    a2a_agent_service: A2AAgentService = Depends(get_a2a_agent_service),
+) -> JSONResponse:
+    """Serve the primary public managed Agent Card endpoint."""
+    return await _serve_managed_agent_card(agent_path, a2a_agent_service)
+
+
+@router.get("/a2a/{agent_path}/.well-known/agent-card.json")
+async def managed_agent_card_well_known_alias(
+    agent_path: str,
+    a2a_agent_service: A2AAgentService = Depends(get_a2a_agent_service),
+) -> JSONResponse:
+    """Serve the SDK-compatible managed Agent Card alias."""
+    return await _serve_managed_agent_card(agent_path, a2a_agent_service)
 
 
 # Route 2: HTTP+JSON binding — all paths with at least one segment

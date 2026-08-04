@@ -4,10 +4,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from a2a.client import A2AClientHTTPError
+from a2a.types import AgentCard, TransportProtocol
 from beanie import PydanticObjectId
 
 from registry.schemas.a2a_agent_api_schemas import AgentCreateRequest, AgentUpdateRequest
 from registry.services.a2a_agent_service import A2AAgentService, _normalize_config_url
+from registry_pkgs.models.a2a_agent import A2AAgent, AgentConfig, NoSupportedTransportError
 from registry_pkgs.models.enums import FederationProviderType
 from registry_pkgs.testing.federation_metadata import (
     make_agentcore_a2a_metadata,
@@ -33,6 +35,155 @@ class _AsyncCM:
 def _service() -> A2AAgentService:
     # No repo -> the _schedule_* helpers return early (no asyncio.create_task).
     return A2AAgentService(a2a_agent_repo=None)
+
+
+def _managed_card_agent(
+    *,
+    config: AgentConfig | None = None,
+    grpc_only: bool = False,
+) -> A2AAgent:
+    additional_interfaces = [{"transport": "GRPC", "url": "https://origin.example/grpc"}]
+    if not grpc_only:
+        additional_interfaces = [
+            {"transport": "HTTP+JSON", "url": "https://origin.example/http"},
+            *additional_interfaces,
+            {"transport": "JSONRPC", "url": "https://origin.example/jsonrpc"},
+        ]
+
+    card = AgentCard.model_validate(
+        {
+            "name": "Origin Agent",
+            "description": "Origin description",
+            "url": "https://origin.example/grpc",
+            "version": "1.2.3",
+            "protocolVersion": "0.3.0",
+            "capabilities": {"streaming": True},
+            "defaultInputModes": ["text/plain"],
+            "defaultOutputModes": ["application/json"],
+            "preferredTransport": "GRPC",
+            "additionalInterfaces": additional_interfaces,
+            "supportsAuthenticatedExtendedCard": True,
+            "securitySchemes": {
+                "originKey": {
+                    "type": "apiKey",
+                    "name": "X-Origin-Key",
+                    "in": "header",
+                }
+            },
+            "security": [{"originKey": []}],
+            "signatures": [{"protected": "header", "signature": "signature"}],
+            "skills": [
+                {
+                    "id": "weather",
+                    "name": "Weather",
+                    "description": "Returns weather",
+                    "tags": ["weather"],
+                    "security": [{"originKey": []}],
+                }
+            ],
+            "provider": {
+                "organization": "Origin Corp",
+                "url": "https://origin.example",
+            },
+            "documentationUrl": "https://origin.example/docs",
+            "iconUrl": "https://origin.example/icon.png",
+        }
+    )
+    return A2AAgent.model_construct(
+        id=PydanticObjectId(),
+        path="weather-agent",
+        card=card,
+        config=config,
+        author=PydanticObjectId(),
+    )
+
+
+def test_build_managed_agent_card_applies_all_transformations(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("registry.services.a2a_agent_service.settings.jwt_issuer", "https://registry.example")
+    monkeypatch.setattr("registry.services.a2a_agent_service.settings.service_base_path", "/gateway")
+    monkeypatch.setattr(
+        "registry.services.a2a_agent_service.settings.auth_server_external_url",
+        "https://auth.example",
+    )
+    monkeypatch.setattr("registry.services.a2a_agent_service.settings.auth_provider", "entra")
+    agent = _managed_card_agent(
+        config=AgentConfig(
+            title="Curated Agent",
+            description="Curated description",
+            type="jsonrpc",
+            enabled=True,
+        )
+    )
+    original_card = agent.card.model_dump(mode="json", by_alias=True, exclude_none=True)
+
+    managed_card = _service().build_managed_agent_card(agent)
+
+    proxy_url = "https://registry.example/gateway/proxy/a2a/weather-agent"
+    assert managed_card["preferredTransport"] == TransportProtocol.jsonrpc
+    assert managed_card["url"] == proxy_url
+    assert managed_card["additionalInterfaces"] == [
+        {"transport": "HTTP+JSON", "url": proxy_url},
+        {"transport": "JSONRPC", "url": proxy_url},
+    ]
+    assert managed_card["supportsAuthenticatedExtendedCard"] is False
+    assert managed_card["securitySchemes"] == {
+        "oauth2": {
+            "type": "oauth2",
+            "flows": {
+                "authorizationCode": {
+                    "authorizationUrl": "https://auth.example/oauth2/login/entra",
+                    "tokenUrl": "https://auth.example/oauth2/token",
+                    "refreshUrl": "https://auth.example/oauth2/token",
+                    "scopes": {"a2a-proxy-ops": "Invoke managed A2A agents via the Jarvis Registry proxy"},
+                }
+            },
+            "oauth2MetadataUrl": "https://registry.example/.well-known/oauth-authorization-server",
+        }
+    }
+    assert managed_card["security"] == [{"oauth2": ["a2a-proxy-ops"]}]
+    assert "signatures" not in managed_card
+    assert "security" not in managed_card["skills"][0]
+    assert managed_card["skills"][0]["tags"] == ["weather"]
+    assert managed_card["name"] == "Curated Agent"
+    assert managed_card["description"] == "Curated description"
+    for field in (
+        "capabilities",
+        "defaultInputModes",
+        "defaultOutputModes",
+        "provider",
+        "documentationUrl",
+        "iconUrl",
+        "version",
+        "protocolVersion",
+    ):
+        assert managed_card[field] == original_card[field]
+    assert agent.card.model_dump(mode="json", by_alias=True, exclude_none=True) == original_card
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        None,
+        AgentConfig(title="", description="", type="jsonrpc", enabled=True),
+    ],
+)
+def test_build_managed_agent_card_falls_back_to_origin_metadata(config: AgentConfig | None) -> None:
+    agent = _managed_card_agent(config=config)
+
+    managed_card = _service().build_managed_agent_card(agent)
+
+    assert managed_card["name"] == "Origin Agent"
+    assert managed_card["description"] == "Origin description"
+
+
+def test_build_managed_agent_card_rejects_legacy_grpc_only_card() -> None:
+    agent = _managed_card_agent(
+        config=AgentConfig(title="Legacy", description="", type="grpc", enabled=True),
+        grpc_only=True,
+    )
+
+    with pytest.raises(NoSupportedTransportError):
+        _service().build_managed_agent_card(agent)
 
 
 @pytest.mark.asyncio

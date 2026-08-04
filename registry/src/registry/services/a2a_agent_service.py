@@ -26,24 +26,52 @@ from registry.core.exceptions import (
 )
 from registry.services.federation.azure_foundry_auth import AzureFoundryAuthService
 from registry_pkgs.core.config import JwtSigningConfig
-from registry_pkgs.models.a2a_agent import A2AAgent, AgentConfig, normalize_a2a_agent_path
+from registry_pkgs.models.a2a_agent import (
+    A2AAgent,
+    AgentConfig,
+    normalize_a2a_agent_path,
+    strip_grpc_and_select_preferred_transport,
+)
 from registry_pkgs.models.enums import FederationProviderType
 from registry_pkgs.models.federation import AzureAiFoundryProviderConfig, Federation
 from registry_pkgs.models.federation_metadata import AzureFoundryFederationMetadata
 from registry_pkgs.vector.repositories.a2a_agent_repository import A2AAgentRepository
 from registry_pkgs.workflows.a2a_client import build_headers, is_azure_foundry_runtime
 
+from ..core.config import settings
 from ..schemas.a2a_agent_api_schemas import AgentCreateRequest, AgentUpdateRequest
 
 logger = logging.getLogger(__name__)
 
 
 _WELL_KNOWN_SUFFIX_RE = re.compile(r"/\.well-known(/.*)?$")
+_A2A_PROXY_SCOPE = "a2a-proxy-ops"
+_A2A_PROXY_SCOPE_DESCRIPTION = "Invoke managed A2A agents via the Jarvis Registry proxy"
 
 
 def _normalize_config_url(url: str) -> str:
     """Strip trailing slash and any terminal /.well-known/... suffix from a URL."""
     return _WELL_KNOWN_SUFFIX_RE.sub("", url.rstrip("/"))
+
+
+def _build_managed_agent_security() -> tuple[dict[str, Any], list[dict[str, list[str]]]]:
+    """Build the Registry OAuth requirements advertised by managed agent cards."""
+    token_url = f"{settings.auth_server_external_url}/oauth2/token"
+    security_schemes = {
+        "oauth2": {
+            "type": "oauth2",
+            "flows": {
+                "authorizationCode": {
+                    "authorizationUrl": (f"{settings.auth_server_external_url}/oauth2/login/{settings.auth_provider}"),
+                    "tokenUrl": token_url,
+                    "refreshUrl": token_url,
+                    "scopes": {_A2A_PROXY_SCOPE: _A2A_PROXY_SCOPE_DESCRIPTION},
+                }
+            },
+            "oauth2MetadataUrl": f"{settings.jwt_issuer}/.well-known/oauth-authorization-server",
+        }
+    }
+    return security_schemes, [{"oauth2": [_A2A_PROXY_SCOPE]}]
 
 
 class A2AAgentService:
@@ -456,6 +484,35 @@ class A2AAgentService:
             Agent document, or None if not found
         """
         return await A2AAgent.find_one({"path": path})
+
+    def build_managed_agent_card(self, agent: A2AAgent) -> dict[str, Any]:
+        """Build an ephemeral Agent Card that advertises the Registry proxy and OAuth."""
+        managed_card = agent.card.model_dump(mode="json", by_alias=True, exclude_none=True)
+        preferred_transport, additional_interfaces = strip_grpc_and_select_preferred_transport(agent.card)
+        base_url = f"{settings.jwt_issuer}{settings.service_base_path}/proxy/a2a/{agent.path}"
+        security_schemes, security = _build_managed_agent_security()
+
+        managed_card["preferredTransport"] = preferred_transport
+        managed_card["url"] = base_url
+        managed_card["additionalInterfaces"] = [
+            {
+                **interface.model_dump(mode="json", by_alias=True, exclude_none=True),
+                "url": base_url,
+            }
+            for interface in additional_interfaces
+        ]
+        managed_card["supportsAuthenticatedExtendedCard"] = False
+        managed_card["securitySchemes"] = security_schemes
+        managed_card["security"] = security
+        managed_card.pop("signatures", None)
+
+        for skill in managed_card.get("skills", []):
+            skill.pop("security", None)
+
+        config = agent.config
+        managed_card["name"] = config.title if config and config.title else agent.card.name
+        managed_card["description"] = config.description if config and config.description else agent.card.description
+        return managed_card
 
     async def create_agent(
         self,
