@@ -13,6 +13,7 @@ import {
   validateCanvasNodes,
 } from '@/components/WorkflowCanvas/convert';
 import type { WorkflowNode as CanvasWorkflowNode, WorkflowCanvasRef } from '@/components/WorkflowCanvas/types';
+import { useAuth } from '@/contexts/AuthContext';
 import { useGlobal } from '@/contexts/GlobalContext';
 import { useServer } from '@/contexts/ServerContext';
 import SERVICES from '@/services';
@@ -28,12 +29,15 @@ const WorkflowRegistryOrEdit: React.FC = () => {
   // ── 1. Context & Routing ─────────────────────────────────────────────────────────
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
+  const { user } = useAuth();
   const { showToast } = useGlobal();
   const { refreshWorkflowData, handleWorkflowUpdate } = useServer();
 
   const id = searchParams.get('id');
   const isReadOnly = searchParams.get('isReadOnly') === 'true';
   const isEditMode = !!id;
+  const canControlWorkflow = user?.scopes?.includes('workflows-control') === true;
+  const canTriggerWorkflow = isEditMode && canControlWorkflow;
   const canvasRef = useRef<WorkflowCanvasRef>(null);
   const triggeringRef = useRef(false);
 
@@ -207,6 +211,11 @@ const WorkflowRegistryOrEdit: React.FC = () => {
 
   // ── Actions: Trigger run ─────────────────────────────────────────────────────
   const handleTrigger = async (initialInput: Record<string, any> = {}) => {
+    if (!canControlWorkflow) {
+      setTriggerModalOpen(false);
+      showToast('You do not have permission to control workflows', 'error');
+      return;
+    }
     if (!id) {
       showToast('Save the workflow before triggering a run', 'error');
       return;
@@ -298,7 +307,7 @@ const WorkflowRegistryOrEdit: React.FC = () => {
           )}
         </div>
 
-        {canShareWorkflow || !isReadOnly ? (
+        {canShareWorkflow || canTriggerWorkflow || !isReadOnly ? (
           <div className='flex items-center gap-2 flex-shrink-0'>
             {canShareWorkflow && (
               <button
@@ -313,34 +322,34 @@ const WorkflowRegistryOrEdit: React.FC = () => {
               </button>
             )}
 
-            {!isReadOnly && (
-              <>
-                <button
-                  onClick={() => setTriggerModalOpen(true)}
-                  disabled={mutatingAction !== 'idle' || !id || activeWorkflowRun.isLocked}
-                  className='inline-flex items-center gap-1 px-2.5 py-1 border border-transparent rounded-md text-xs font-medium text-white bg-[var(--jarvis-primary)] hover:opacity-90 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed'
-                >
-                  {mutatingAction === 'triggering' ? (
-                    <span className='h-3.5 w-3.5 animate-spin rounded-full border-b-2 border-white' />
-                  ) : (
-                    <PlayIcon className='h-3.5 w-3.5' />
-                  )}
-                  Trigger run
-                </button>
+            {canTriggerWorkflow && (
+              <button
+                onClick={() => setTriggerModalOpen(true)}
+                disabled={mutatingAction !== 'idle' || activeWorkflowRun.isLocked}
+                className='inline-flex items-center gap-1 px-2.5 py-1 border border-transparent rounded-md text-xs font-medium text-white bg-[var(--jarvis-primary)] hover:opacity-90 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed'
+              >
+                {mutatingAction === 'triggering' ? (
+                  <span className='h-3.5 w-3.5 animate-spin rounded-full border-b-2 border-white' />
+                ) : (
+                  <PlayIcon className='h-3.5 w-3.5' />
+                )}
+                Trigger run
+              </button>
+            )}
 
-                <button
-                  onClick={() => canvasRef.current?.save()}
-                  disabled={mutatingAction !== 'idle' || loadingDetail}
-                  className='inline-flex items-center justify-center gap-1 px-2.5 py-1 border border-transparent rounded-md text-xs font-medium text-white bg-[var(--jarvis-primary-hover)] hover:opacity-90 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed'
-                >
-                  {mutatingAction === 'saving' ? (
-                    <span className='h-3.5 w-3.5 animate-spin rounded-full border-b-2 border-white' />
-                  ) : (
-                    <CheckIcon className='h-3.5 w-3.5' />
-                  )}
-                  {isEditMode ? 'Update' : 'Save'}
-                </button>
-              </>
+            {!isReadOnly && (
+              <button
+                onClick={() => canvasRef.current?.save()}
+                disabled={mutatingAction !== 'idle' || loadingDetail}
+                className='inline-flex items-center justify-center gap-1 px-2.5 py-1 border border-transparent rounded-md text-xs font-medium text-white bg-[var(--jarvis-primary-hover)] hover:opacity-90 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed'
+              >
+                {mutatingAction === 'saving' ? (
+                  <span className='h-3.5 w-3.5 animate-spin rounded-full border-b-2 border-white' />
+                ) : (
+                  <CheckIcon className='h-3.5 w-3.5' />
+                )}
+                {isEditMode ? 'Update' : 'Save'}
+              </button>
             )}
           </div>
         ) : null}
