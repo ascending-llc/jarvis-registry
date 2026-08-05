@@ -6,8 +6,9 @@ format. These tests verify that both handlers reject non-ObjectId user_id values
 """
 
 import json
+import logging
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, call
 from uuid import UUID
 
 import pytest
@@ -16,14 +17,19 @@ from fastapi import HTTPException
 from starlette.requests import Request
 
 from registry.api.proxy_routes import (
-    _A2A_ACCESS_DENIED_ERROR_CODE,
+    _serve_managed_agent_card,
     dynamic_mcp_get_proxy,
     dynamic_mcp_post_proxy,
     http_json_proxy,
     jsonrpc_proxy,
+    managed_agent_card,
+    managed_agent_card_well_known_alias,
+    router,
 )
 from registry.core.config import settings
 from registry.services.generated_token_policy import INTERACTIVE_CLIENT_ID
+from registry_pkgs.models.a2a_agent import NoSupportedTransportError
+from registry_pkgs.models.enums import AgentCoreRuntimeAccessMode
 from registry_pkgs.testing.federation_metadata import make_azure_foundry_metadata
 
 VALID_OBJECT_ID = "507f1f77bcf86cd799439011"
@@ -126,6 +132,84 @@ def _a2a_agent():
         card=SimpleNamespace(url="https://agent.example.com/a2a"),
         federationMetadata=make_azure_foundry_metadata(),
     )
+
+
+def _managed_card_service(agent: object | None, card: dict | None = None) -> SimpleNamespace:
+    return SimpleNamespace(
+        get_agent_by_path=AsyncMock(return_value=agent),
+        build_managed_agent_card=Mock(return_value=card or {"name": "Managed Agent"}),
+    )
+
+
+async def test_managed_agent_card_routes_return_byte_identical_content() -> None:
+    agent = _a2a_agent()
+    service = _managed_card_service(agent, {"name": "Managed Agent", "preferredTransport": "JSONRPC"})
+
+    primary = await managed_agent_card("test-agent", service)
+    alias = await managed_agent_card_well_known_alias("test-agent", service)
+
+    assert primary.status_code == 200
+    assert primary.body == alias.body
+    assert service.get_agent_by_path.await_count == 2
+    assert service.build_managed_agent_card.call_args_list == [call(agent), call(agent)]
+
+
+@pytest.mark.parametrize(
+    "agent",
+    [
+        None,
+        SimpleNamespace(config=None),
+        SimpleNamespace(config=SimpleNamespace(enabled=False)),
+    ],
+    ids=["not-found", "missing-config", "disabled"],
+)
+async def test_managed_agent_card_returns_indistinguishable_not_found(agent: object | None) -> None:
+    service = _managed_card_service(agent)
+
+    response = await _serve_managed_agent_card("test-agent", service)
+
+    assert response.status_code == 404
+    assert response.body == b'{"detail":"A2A agent not found"}'
+    service.build_managed_agent_card.assert_not_called()
+
+
+async def test_managed_agent_card_is_available_for_enabled_iam_agent() -> None:
+    agent = SimpleNamespace(
+        config=SimpleNamespace(
+            enabled=True,
+            runtimeAccess=SimpleNamespace(mode=AgentCoreRuntimeAccessMode.IAM),
+        )
+    )
+    service = _managed_card_service(agent)
+
+    response = await _serve_managed_agent_card("iam-agent", service)
+
+    assert response.status_code == 200
+    service.build_managed_agent_card.assert_called_once_with(agent)
+
+
+async def test_managed_agent_card_maps_unsupported_legacy_transport_to_500(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    agent = _a2a_agent()
+    service = _managed_card_service(agent)
+    service.build_managed_agent_card.side_effect = NoSupportedTransportError("legacy gRPC-only card")
+
+    with caplog.at_level(logging.ERROR, logger="registry.api.proxy_routes"):
+        response = await _serve_managed_agent_card("legacy-agent", service)
+
+    assert response.status_code == 500
+    assert response.body == b'{"detail":"Internal server error"}'
+    assert "legacy-agent" in caplog.text
+    assert "legacy gRPC-only card" not in response.body.decode()
+
+
+def test_managed_agent_card_routes_are_registered_before_http_json_catch_all() -> None:
+    paths = [route.path for route in router.routes]
+    catch_all_index = paths.index("/a2a/{agent_path}/{http_json_path:path}")
+
+    assert paths.index("/a2a/{agent_path}/agent-card.json") < catch_all_index
+    assert paths.index("/a2a/{agent_path}/.well-known/agent-card.json") < catch_all_index
 
 
 @pytest.mark.parametrize("user_id", INVALID_USER_IDS)
@@ -408,59 +492,10 @@ async def test_get_proxy_acl_allowed_continues():
     assert "disabled" in body["detail"].lower()
 
 
-@pytest.mark.parametrize("client_id", ["mcp-client-dcr", None], ids=["dcr-client", "missing-client-id"])
-async def test_jsonrpc_proxy_rejects_disallowed_client_before_agent_lookup(client_id):
-    a2a_agent_service = SimpleNamespace(get_agent_by_path=AsyncMock())
-    user_context = dict(_AUTH_CONTEXT)
-    if client_id is None:
-        user_context.pop("client_id")
-    else:
-        user_context["client_id"] = client_id
-
-    response = await jsonrpc_proxy(
-        request=_a2a_request(),
-        agent_path="test-agent",
-        user_context=user_context,
-        a2a_agent_service=a2a_agent_service,
-        acl_service=AsyncMock(),
-        a2a_client_registry=AsyncMock(),
-    )
-
-    body = json.loads(response.body)
-    assert response.status_code == 200
-    assert body["error"]["code"] == _A2A_ACCESS_DENIED_ERROR_CODE
-    assert "token generated from the Jarvis Registry frontend" in body["error"]["message"]
-    a2a_agent_service.get_agent_by_path.assert_not_awaited()
-
-
-@pytest.mark.parametrize("client_id", ["mcp-client-dcr", None], ids=["dcr-client", "missing-client-id"])
-async def test_http_json_proxy_rejects_disallowed_client_before_agent_lookup(client_id):
-    a2a_agent_service = SimpleNamespace(get_agent_by_path=AsyncMock())
-    user_context = dict(_AUTH_CONTEXT)
-    if client_id is None:
-        user_context.pop("client_id")
-    else:
-        user_context["client_id"] = client_id
-
-    response = await http_json_proxy(
-        request=_a2a_request(method="GET"),
-        agent_path="test-agent",
-        http_json_path="tasks/1",
-        user_context=user_context,
-        a2a_agent_service=a2a_agent_service,
-        acl_service=AsyncMock(),
-        a2a_client_registry=AsyncMock(),
-    )
-
-    body = json.loads(response.body)
-    assert response.status_code == 403
-    assert body == {
-        "error": "Direct-connect A2A invocation requires a token generated from the Jarvis Registry frontend."
-    }
-    a2a_agent_service.get_agent_by_path.assert_not_awaited()
-
-
-@pytest.mark.parametrize("client_id", [INTERACTIVE_CLIENT_ID, settings.headless_agent_client_id])
+@pytest.mark.parametrize(
+    "client_id",
+    [INTERACTIVE_CLIENT_ID, settings.headless_agent_client_id, "mcp-client-dcr"],
+)
 async def test_jsonrpc_proxy_gets_client_from_a2a_client_registry(monkeypatch, client_id):
     agent = _a2a_agent()
     proxy_client = Mock()
@@ -487,7 +522,10 @@ async def test_jsonrpc_proxy_gets_client_from_a2a_client_registry(monkeypatch, c
     )
 
 
-@pytest.mark.parametrize("client_id", [INTERACTIVE_CLIENT_ID, settings.headless_agent_client_id])
+@pytest.mark.parametrize(
+    "client_id",
+    [INTERACTIVE_CLIENT_ID, settings.headless_agent_client_id, "mcp-client-dcr"],
+)
 async def test_http_json_proxy_gets_client_from_a2a_client_registry(monkeypatch, client_id):
     agent = _a2a_agent()
     proxy_client = Mock()
