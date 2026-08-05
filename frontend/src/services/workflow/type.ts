@@ -135,6 +135,36 @@ export type ToggleWorkflowStateResponse = Workflow;
 
 export type UpdateWorkflowResponse = Workflow;
 
+export const WORKFLOW_RUN_STATUSES = [
+  'pending',
+  'running',
+  'paused',
+  'awaiting_approval',
+  'completed',
+  'failed',
+  'cancelled',
+] as const;
+
+export type WorkflowRunStatus = (typeof WORKFLOW_RUN_STATUSES)[number];
+
+export const TERMINAL_RUN_STATUSES: ReadonlySet<WorkflowRunStatus> = new Set([
+  'completed',
+  'failed',
+  'cancelled',
+]);
+
+export const isWorkflowRunStatus = (value: unknown): value is WorkflowRunStatus =>
+  typeof value === 'string' && (WORKFLOW_RUN_STATUSES as readonly string[]).includes(value);
+
+export interface StepRequirementSummary {
+  stepId: string;
+  stepName?: string;
+  requiresConfirmation: boolean;
+  confirmationMessage?: string;
+  confirmed: boolean | null;
+  onReject: 'skip' | 'cancel' | 'retry' | 'else_branch';
+}
+
 export interface ResolvedDependency {
   nodeId: string;
   resolution: 'reuse_previous_output' | 'rerun';
@@ -151,14 +181,14 @@ export interface TriggerWorkflowRunRequest {
 export interface TriggerWorkflowRunResponse {
   runId: string;
   workflowDefinitionId: string;
-  status: string;
+  status: WorkflowRunStatus;
   triggerSource: string;
   startedAt: string;
   message: string;
 }
 
 export interface GetWorkflowRunsListRequest {
-  status?: 'pending' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled';
+  status?: WorkflowRunStatus;
   page?: number;
   perPage?: number;
 }
@@ -180,7 +210,7 @@ export interface NodeRun {
 export interface WorkflowRun {
   id: string;
   workflowDefinitionId: string;
-  status: 'pending' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled';
+  status: WorkflowRunStatus;
   triggerSource?: string;
   startedAt: string;
   finishedAt?: string;
@@ -191,6 +221,7 @@ export interface WorkflowRun {
   finalOutput?: Record<string, any>;
   definitionSnapshot?: Omit<Workflow, 'id' | 'createdAt' | 'updatedAt'>;
   resolvedDependencies?: ResolvedDependency[];
+  pendingRequirements?: StepRequirementSummary[];
 }
 
 export interface GetWorkflowRunsListResponse {
@@ -200,14 +231,34 @@ export interface GetWorkflowRunsListResponse {
 
 export type GetWorkflowRunDetailResponse = WorkflowRun;
 
+export interface WorkflowRunStatusResponse {
+  runId: string;
+  workflowId: string;
+  status: WorkflowRunStatus;
+  pendingRequirements: StepRequirementSummary[];
+}
+
+export interface ResolveRequirementRequest {
+  stepId: string;
+  resolution: 'confirm' | 'reject';
+  feedback?: string;
+}
+
+export interface ResolveRequirementResponse {
+  runId: string;
+  status: WorkflowRunStatus;
+  resolvedStepId: string;
+  message: string;
+}
+
 export interface ReplayWorkflowRunResponse {
   runId: string;
-  status: string;
+  status: WorkflowRunStatus;
   message: string;
 }
 
 export interface RerunWorkflowNodeResponse {
   runId: string;
-  status: string;
+  status: WorkflowRunStatus;
   message: string;
 }

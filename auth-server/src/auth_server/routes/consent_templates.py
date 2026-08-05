@@ -25,6 +25,7 @@ def render_consent_page(
     *,
     client_name: str,
     client_uri: str | None,
+    redirect_uri: str | None,
     ip_address: str | None,
     registered_at: int | None,
     nonce: str,
@@ -33,6 +34,7 @@ def render_consent_page(
 ) -> str:
     safe_name = html.escape(client_name or "Unknown application")
     safe_uri = html.escape(client_uri) if client_uri else None
+    safe_redirect_uri = html.escape(redirect_uri) if redirect_uri else None
     safe_nonce = html.escape(nonce)
     safe_approve_action = html.escape(approve_action, quote=True)
     safe_deny_action = html.escape(deny_action, quote=True)
@@ -40,6 +42,8 @@ def render_consent_page(
     meta_lines = []
     if safe_uri:
         meta_lines.append(f'<p class="meta">{safe_uri}</p>')
+    if safe_redirect_uri:
+        meta_lines.append(f'<p class="meta">Redirects to <code>{safe_redirect_uri}</code></p>')
     if registered_at:
         registered_dt = datetime.fromtimestamp(registered_at, tz=UTC).strftime("%Y-%m-%d %H:%M UTC")
         line = f'<p class="meta">Registered {html.escape(registered_dt)}'

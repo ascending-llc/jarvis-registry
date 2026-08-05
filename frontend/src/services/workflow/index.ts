@@ -1,6 +1,7 @@
 import API from '@/services/api';
 import Request from '@/services/request';
 
+import { normalizeWorkflowRunStatusResponse } from './normalizers';
 import type * as TYPE from './type';
 import { EMPTY_WORKFLOW_PERMISSIONS } from './type';
 
@@ -41,10 +42,26 @@ const triggerWorkflowRun = async (
 const getWorkflowRunsList = async (
   id: string,
   data?: TYPE.GetWorkflowRunsListRequest,
-): Promise<TYPE.GetWorkflowRunsListResponse> => await Request.get(API.getWorkflowRunsList(id), data);
+): Promise<TYPE.GetWorkflowRunsListResponse> =>
+  await Request.get(API.getWorkflowRunsList(id), {
+    status: data?.status,
+    page: data?.page,
+    per_page: data?.perPage,
+  });
 
 const getWorkflowRunDetail = async (id: string, runId: string): Promise<TYPE.GetWorkflowRunDetailResponse> =>
   await Request.get(API.getWorkflowRunDetail(id, runId));
+
+const getWorkflowRunStatus = async (id: string, runId: string): Promise<TYPE.WorkflowRunStatusResponse> => {
+  const response = await Request.get(API.getWorkflowRunStatus(id, runId));
+  return normalizeWorkflowRunStatusResponse(response);
+};
+
+const approveWorkflowRun = async (
+  id: string,
+  runId: string,
+  data: TYPE.ResolveRequirementRequest,
+): Promise<TYPE.ResolveRequirementResponse> => await Request.post(API.approveWorkflowRun(id, runId), data);
 
 const replayWorkflowRun = async (id: string, runId: string): Promise<TYPE.ReplayWorkflowRunResponse> =>
   await Request.post(API.replayWorkflowRun(id, runId));
@@ -62,6 +79,8 @@ const WORKFLOW = {
   triggerWorkflowRun,
   getWorkflowRunsList,
   getWorkflowRunDetail,
+  getWorkflowRunStatus,
+  approveWorkflowRun,
   replayWorkflowRun,
   rerunWorkflowNode,
 };

@@ -79,6 +79,8 @@ const API = {
   triggerWorkflowRun: (id: string) => `${WORKFLOW_BASE_URL}/${id}/runs`,
   getWorkflowRunsList: (id: string) => `${WORKFLOW_BASE_URL}/${id}/runs`,
   getWorkflowRunDetail: (id: string, runId: string) => `${WORKFLOW_BASE_URL}/${id}/runs/${runId}`,
+  getWorkflowRunStatus: (id: string, runId: string) => `${WORKFLOW_BASE_URL}/${id}/runs/${runId}/status`,
+  approveWorkflowRun: (id: string, runId: string) => `${WORKFLOW_BASE_URL}/${id}/runs/${runId}/approve`,
   replayWorkflowRun: (id: string, runId: string) => `${WORKFLOW_BASE_URL}/${id}/runs/${runId}/replay`,
   rerunWorkflowNode: (id: string, runId: string, nodeId: string) =>
     `${WORKFLOW_BASE_URL}/${id}/runs/${runId}/nodes/${nodeId}/rerun`,

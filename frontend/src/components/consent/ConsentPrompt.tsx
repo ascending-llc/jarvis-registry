@@ -4,6 +4,7 @@ import type React from 'react';
 interface ConsentPromptProps {
   clientName: string;
   clientUri: string | null;
+  redirectUri?: string | null;
   ipAddress: string | null;
   registeredAt: number | null;
   description: string;
@@ -18,7 +19,7 @@ const ConsentPrompt: React.FC<ConsentPromptProps> & {
   Error: React.FC<{ message: string; details?: string }>;
   Success: React.FC<{ message: string; submessage?: string }>;
   Declined: React.FC<{ message: string }>;
-} = ({ clientName, clientUri, ipAddress, registeredAt, description, onApprove, onDeny, approving, denying }) => {
+} = ({ clientName, clientUri, redirectUri, ipAddress, registeredAt, description, onApprove, onDeny, approving, denying }) => {
   const registeredLabel = registeredAt ? new Date(registeredAt * 1000).toLocaleString() : null;
   const busy = approving || denying;
 
@@ -28,6 +29,11 @@ const ConsentPrompt: React.FC<ConsentPromptProps> & {
         <span className='text-[var(--jarvis-primary)]'>{clientName}</span> wants to access your account
       </h1>
       {clientUri && <p className='text-sm text-[var(--jarvis-muted)] break-all mb-1'>{clientUri}</p>}
+      {redirectUri && (
+        <p className='text-sm text-[var(--jarvis-muted)] break-all mb-1'>
+          Redirects to <code>{redirectUri}</code>
+        </p>
+      )}
       {registeredLabel && (
         <p className='text-xs text-[var(--jarvis-muted)] mb-4'>
           Registered {registeredLabel}

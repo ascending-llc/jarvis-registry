@@ -74,6 +74,7 @@ async def get_downstream_consent_context(
         return {
             "client_name": client_metadata.get("client_name", "Unknown application"),
             "client_uri": client_metadata.get("client_uri"),
+            "redirect_uri": pending.get("redirect_uri"),
             "ip_address": client_metadata.get("ip_address"),
             "registered_at": client_metadata.get("registered_at"),
             "server_path": pending["server_path"],
