@@ -61,6 +61,7 @@ Security enforcement (authentication, RBAC, ACL) remains consistent for federate
 
 ## Next Steps
 
+- [Workflow Orchestration](workflow-orchestration.md) — How AgentCore agents participate in multi-agent, MCP, and skill workflows
 - [MCP Server Registry](mcp-registry.md) — Sharing and lifecycle for MCP resources
 - [A2A Agent Registry](a2a-registry.md) — Sharing and lifecycle for agent resources
 - [Registry Endpoint](registry-endpoint.md) — How clients discover and invoke federated resources

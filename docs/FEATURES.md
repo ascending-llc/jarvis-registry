@@ -4,90 +4,68 @@ Jarvis Registry is the enterprise control plane for AI — connecting copilots, 
 
 ---
 
-## 1. Gateway & Proxy
-
-A single authenticated entry point that handles every transport your MCP servers and agents speak — without requiring separate infrastructure per protocol.
-
-**For MCP servers and AI copilots:**
-
-- **SSE Transport**: Server-Sent Events for streaming tool responses to copilots and IDEs (Cursor, Claude Desktop, GitHub Copilot, VS Code)
-- **Streamable HTTP**: Bidirectional MCP transport compatible with the latest MCP specification, supporting long-running tool calls
-- **Single Endpoint**: One URL gives every MCP-compatible client access to your entire enterprise tool catalog — no per-tool configuration
-
-**For A2A agents:**
-
-- **JSON-RPC 2.0 over HTTP**: The primary inter-agent transport; compatible with AWS AgentCore Runtime and standard A2A clients
-- **HTTP+JSON**: REST-style A2A transport for agents running on standard web stacks (ALB, API Gateway, Azure Front Door)
-- **Transport Negotiation**: The gateway reads transport constraints from the Registry per agent and routes accordingly — no caller needs to know which transport a target agent supports
-
-**Enforcement that flows from the Registry:**
-
-- Routing, rate limiting, and access policy are derived from Registry metadata, not hardcoded gateway config
-- Transport mismatches (e.g. a caller requesting gRPC against an HTTP/1.1-backed agent) are caught before the request is forwarded
-
----
-
-## 2. Registry
+## 1. Registry
 
 The Registry is the compliance enforcement layer — not just a catalog. Both MCP servers and A2A agents are validated on registration and their metadata drives every gateway decision at runtime. This is the distinction between a registry that stores entries and one that actually enforces protocol compliance.
 
 **For MCP servers:**
 
 - **Tool Declaration Validation**: Validates that each registered MCP server's tool manifest is complete — required fields, input schemas, and capability declarations are all checked on registration, not at first use
-- **Transport Compliance**: Verifies that declared MCP transports (SSE, Streamable HTTP) match the actual server capabilities before the server is made discoverable
-- **Version Tracking**: Tracks the MCP specification version each server is registered against, so clients can safely negotiate capabilities at runtime
+- **Transport Compliance**: Verifies that declared MCP transports (SSE, Streamable HTTP) match the actual server capabilities before the server is made discoverable; misconfigured transport declarations are rejected before the server is made discoverable
+- **OAuth Egress**: Manages outbound OAuth credentials for MCP servers that call downstream protected APIs — token acquisition, rotation, and per-server credential mapping are handled centrally so individual servers don't carry credentials
+- **Security Scanning**: Registered MCP servers are scanned for common security issues — exposed secrets, overly broad tool scopes, and missing input validation — surfaced as warnings or blocking violations depending on policy
 
 **For A2A agents:**
 
 - **AgentCard Schema Validation**: On registration, validates the AgentCard against the A2A spec — required fields (name, description, url, capabilities), transport declarations, and authentication metadata must all be correct; a partially filled AgentCard is a misconfigured agent, not a registered one
-- **Transport Declaration Accuracy**: Flags transport claims that are impossible given the agent's runtime (e.g. gRPC claimed on an HTTP/1.1 stack)
-- **A2A Spec Version per Agent**: Tracks whether each agent is operating under A2A v0.3 or v1.0 — critical for safely routing v1.0 callers to legacy agents without silent payload mismatches
+- **A2A Spec Compliance**: Enforces that each agent's declared capabilities, skill definitions, and input/output modes conform to the registered spec version — not just that the AgentCard parses, but that it is internally consistent. Tracks whether each agent is operating under A2A v0.3 or v1.0 — critical for safely routing v1.0 callers to legacy agents without silent payload mismatches
+- **Transport Declaration Accuracy**: Flags transport claims that are impossible given the agent's runtime (e.g. gRPC claimed on an HTTP/1.1 stack); prevents callers from reaching agents over transports they don't actually support
 - **Custom Discovery Paths**: Stores non-standard AgentCard paths (e.g. Azure AI Foundry serves `agentCard/v0.3` rather than `/.well-known/agent-card.json`) and surfaces them to callers before discovery is attempted
-- **Auth Prerequisites**: Records which auth patterns each agent requires — pre-configured IdP JWTAuthorizers (as with AWS AgentCore), RBAC role assignments (as with Azure Foundry), or standard OAuth 2.0 Client Credentials — and makes this available before the first invocation
 
 **Platform-native runtime federation:**
 
 Jarvis Registry federates agents across AWS AgentCore Runtime, Azure AI Foundry Agent Service, and self-hosted A2A runtimes in a single searchable catalog. Each platform makes different choices around transport, AgentCard discovery paths, and auth prerequisites that break standard A2A assumptions — the Registry stores those per-runtime differences and surfaces them to callers, so no custom client code is needed per target platform. Agents from all three origins are discoverable, routable, and governed by the same ACL policies through the same gateway.
 
-**Gateway propagation:**
+- **Azure AI Foundry Federation**: Import and govern agents hosted on Azure AI Foundry — handling non-standard AgentCard discovery paths, Entra ID RBAC prerequisites, and HTTP+JSON transport constraints automatically. Any MCP client or A2A orchestrator can invoke Foundry agents through Jarvis Registry without platform-specific client code. [Watch the demo →](https://ascendingdc.com/jarvis-ai/videos/azure-ai-foundry-federation-with-jarvis-registry-access-governed-agents-from-any-interface/?autoplay=1)
 
-Registry data without gateway enforcement is documentation. Every constraint stored in the Registry — transport, auth, spec version, discovery path, platform runtime — is propagated to the gateway so that invocation policy is always derived from the same source of truth as registration.
-
----
-
-## 3. Identity & Access Management
-
-A governance enforcement layer that sits above your IdP — not a replacement for it. Jarvis Registry manages the auth complexity that neither the A2A spec nor platform-native registries handle automatically, and propagates enforced policy to the gateway.
-
-**IdP integration (Keycloak, Amazon Cognito, Microsoft Entra ID):**
-
-- **OAuth 2.0/OIDC**: Centralized token validation, refresh, and vending for both human users and AI agents against your existing IdP
-- **JWT Token Management**: Validates tokens at the gateway before any tool or agent is invoked — every request is authenticated
-- **Multi-Provider**: Supports Keycloak, Cognito, and Entra ID in the same deployment; useful for multi-cloud agent fleets
-
-**Machine-to-machine (M2M) auth for agents:**
-
-- **Client Credentials Flow**: Manages OAuth 2.0 Client Credentials for service-to-service agent calls, including token acquisition and rotation
-- **Per-Agent Auth Mapping**: Stores which IdP configuration, pre-registered client, or RBAC role assignment is required for each agent — the setup that AWS AgentCore and Azure Foundry both require as manual out-of-band steps is tracked and enforced here
-- **Auth Pattern Awareness**: Records whether an agent requires M2M client credentials, user-delegated access, or both — information that is absent from the AgentCard spec itself
-
-**Access control:**
-
-- **Role-Based Access Control (RBAC)**: Assign permissions by role, group, or service principal — for both human users and agents acting as callers
-- **Fine-Grained ACL**: Enforce access policies down to the individual MCP tool or A2A agent capability — not just the server or agent boundary
-- **Zero-Trust Posture**: Every request — from copilot or agent — is authenticated and authorized before reaching a backend tool or target agent; learn more about [AI governance frameworks](https://exploreagentic.ai/ai-governance/) that inform this design
+- **AWS AgentCore Federation**: Import and govern agents deployed on AWS AgentCore Runtime — resolving pre-configured JWTAuthorizer requirements, Bedrock-native transport constraints, and per-agent credential mapping. Orchestrators reach AgentCore agents through the same governed gateway as every other registered agent. [Watch the demo →](https://ascendingdc.com/jarvis-ai/videos/aws-agentcore-federation-with-jarvis-registry-access-governed-agents-from-any-interface/?autoplay=1)
 
 ---
 
-## 4. Skill & Context-Based Discovery
+## 2. MCP Gateway
 
-Agents and copilots find the right MCP server or A2A agent at runtime — without hardcoded routing or static tool lists.
+Single authenticated entry point for AI copilots and MCP-compatible clients — handling discovery, access control, elicitation, and credential management centrally so individual MCP servers carry none of that complexity.
 
-- **Semantic Search**: Vector-powered search matches natural language queries to MCP servers and A2A agents by skill, description, and declared capabilities — see [Enterprise RAG architecture](https://exploreagentic.ai/enterprise-rag/) for the retrieval patterns that underpin this feature
-- **MCP Server Discovery**: Surfaces the right MCP server for a given tool need, respecting ACL so agents only see servers they are authorized to call
-- **A2A Agent Discovery**: Resolves registered agents by capability, including custom discovery paths and auth prerequisites the caller needs before invoking — no caller needs to know Foundry serves a non-standard AgentCard path
-- **Tag & Skill Filtering**: Multi-dimensional filtering by capability, domain, transport, or A2A spec version
-- **Hybrid Search**: Combines semantic similarity and exact tag matching for precision and recall
+- **Unified Catalog**: Clients discover tools, prompts, and resources across all registered MCP servers through a single endpoint — no per-server configuration or manual tool list maintenance
+- **ACL-Filtered Discovery**: Discovery results are scoped per caller identity — agents and copilots only see tools, prompts, and resources they are authorized to invoke; unauthorized entries are invisible, not just blocked
+- **Transport Negotiation**: Supports SSE (Server-Sent Events) for streaming responses to copilots and IDEs (Cursor, Claude Desktop, GitHub Copilot, VS Code) and Streamable HTTP for bidirectional long-running tool calls — the gateway selects the right transport per client based on capability negotiation
+- **Registry-Driven Enforcement**: Routing, rate limiting, and access policy are derived from Registry metadata, not hardcoded gateway config; policy changes in the Registry take effect immediately without gateway redeployment
+- **Interactive Tool Flows**: The gateway implements the MCP elicitation spec natively — tools can request additional input from the user mid-invocation without the client needing custom elicitation handling
+- **Token Encryption at Rest**: OAuth tokens and credentials stored for MCP server egress are encrypted at rest — no plaintext credentials in the database or config
+- **Token Caching**: Validated inbound tokens are cached for their remaining TTL to avoid redundant IdP round-trips on every tool call; cache entries are invalidated on token revocation
+- **Credential Isolation**: Per-server egress credentials are scoped and isolated — a compromised MCP server cannot access credentials belonging to another server
+
+---
+
+## 3. Agent Gateway
+
+Single authenticated entry point for A2A agents — handling skill discovery, transport negotiation, and security scanning centrally so callers need no platform-specific client code per target runtime.
+
+- **Agent & Skill Discovery**: Resolves registered A2A agents and their skills by capability, tags, and spec version — callers query the gateway to find the right agent for a task without knowing which runtime hosts it or which transport it speaks
+- **Transport Negotiation**: Supports JSON-RPC 2.0 over HTTP (primary inter-agent transport, compatible with AWS AgentCore and standard A2A clients) and HTTP+JSON for agents on standard web stacks (ALB, API Gateway, Azure Front Door) — the gateway reads per-agent transport constraints from the Registry and routes accordingly; transport mismatches are caught before the request is forwarded
+- **Security Scanning**: Registered agents are scanned for security issues on registration — misconfigured CORS policies, missing auth declarations, and overly permissive skill scopes are flagged before the agent is made discoverable
+- **Registry-Driven Enforcement**: Routing, rate limiting, and ACL policy are derived from Registry metadata, not hardcoded gateway config; policy changes take effect immediately without gateway redeployment
+
+---
+
+## 4. Skill Gateway
+
+The Skill Gateway is the organization-wide control plane for AI skills — managing how skills are defined, organized, discovered, and kept in sync with your source of truth. Callers never need to know where a skill lives, which transport it speaks, or which team owns it.
+
+- **Organization Skill Management**: Define and organize skills across teams, domains, and environments from a central control plane — skills are versioned, tagged by capability and owner, and grouped into namespaces so large organizations can manage hundreds of skills without collision or sprawl
+- **Skill Discovery**: Semantic vector search matches natural language queries to skills by description, tags, and declared capabilities — ACL-filtered so callers only see skills they are authorized to invoke; see [Enterprise RAG architecture](https://exploreagentic.ai/enterprise-rag/) for the retrieval patterns that underpin this feature
+- **Skill Lifecycle Management**: Skills have explicit lifecycle states (draft, active, deprecated) — deprecated skills surface warnings to callers before they are removed, and active skills can be promoted or rolled back without gateway redeployment
+- **Git Provider Sync**: Skills are synced bidirectionally with your Git provider (GitHub, GitLab, Bitbucket) — skill definitions live in version-controlled repositories and changes are reflected in the gateway automatically; pull requests, branch-based staging, and audit history flow from your existing Git workflow into the Skill Gateway without manual import steps
 
 ---
 
@@ -102,7 +80,25 @@ Visibility and control over complex, multi-agent operations — across agents re
 
 ---
 
-## 6. Observability with OpenTelemetry
+## 6. Identity & Access Management
+
+A governance enforcement layer that sits above your IdP — not a replacement for it. Jarvis Registry manages the auth complexity that neither the A2A spec nor platform-native registries handle automatically, and propagates enforced policy to the gateway.
+
+**IdP integration (Keycloak, Amazon Cognito, Microsoft Entra ID):**
+
+- **OAuth 2.0/OIDC**: Centralized token validation, refresh, and vending for both human users and AI agents against your existing IdP
+- **JWT Token Management**: Validates tokens at the gateway before any tool or agent is invoked — every request is authenticated
+- **Multi-Provider**: Supports Keycloak, Cognito, and Entra ID in the same deployment; useful for multi-cloud agent fleets
+
+**Access control:**
+
+- **Role-Based Access Control (RBAC)**: Assign permissions by role, group, or service principal — for both human users and agents acting as callers
+- **Fine-Grained ACL**: Enforce access policies down to the individual MCP tool or A2A agent capability — not just the server or agent boundary
+- **Zero-Trust Posture**: Every request — from copilot or agent — is authenticated and authorized before reaching a backend tool or target agent; learn more about [AI governance frameworks](https://exploreagentic.ai/ai-governance/) that inform this design
+
+---
+
+## 7. Observability with OpenTelemetry
 
 Full visibility into every request, tool call, and agent interaction — from copilot to tool response, and from orchestrator to worker agent.
 
@@ -130,6 +126,7 @@ Jarvis Registry is cloud-native and runs anywhere.
 | Use Case | How Jarvis Registry Helps |
 |---|---|
 | **Enterprise AI Copilot Rollout** | Give every developer a single, governed MCP endpoint for internal tools — no individual server setup, transport config, or custom auth code |
+| **Custom Chatbot Backends** | Custom-built chatbots connect to a single gateway endpoint to access all enterprise tools, prompts, and resources — no per-tool integration code, credentials, or discovery logic in the chatbot itself; ACL ensures each chatbot only sees what it is authorized to use |
 | **Autonomous Agent Fleets** | Register A2A agents from any runtime (AgentCore, Foundry, self-hosted) with validated AgentCards and enforced transport and auth constraints |
 | **Multi-Cloud Agent Coordination** | Bridge agents across AWS, Azure, and GCP; the Registry holds the per-runtime transport and auth metadata so orchestrators don't need custom code per target |
 | **A2A Spec Version Migration** | Track which agents are on v0.3 and which are on v1.0; prevent silent payload mismatches when routing callers across spec versions |
