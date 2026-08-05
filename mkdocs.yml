@@ -107,8 +107,8 @@ nav:
     - Configuration: configuration.md
   - Core Features:
     - IDP Integration: features/auth-server.md
-    - MCPServer Gateway & Registry: features/mcp-registry.md
-    - A2AAgent Gateway & Registry: features/a2a-registry.md
+    - MCPServer Gateway & Registry: features/mcp-gateway-registry.md
+    - A2AAgent Gateway & Registry: features/a2a-gateway-registry.md
     - AgentCore Federation: features/agentcore-federation.md
     - FoundryAI Federation: features/foundry-ai-federation.md
     - Workflow Orchestration: features/workflow-orchestration.md
