@@ -9,6 +9,8 @@ from .acl_entry import AclEntry, PrincipalModel, PrincipalType, ResourceType
 from .group import Group
 from .key import Key
 from .mcp_server import MCPServer
+from .skill import Skill
+from .skill_file import SkillFile
 from .token import Token
 from .user import SystemRoles, User
 
@@ -18,6 +20,8 @@ __all__ = [
     "Group",
     "Key",
     "MCPServer",
+    "Skill",
+    "SkillFile",
     "PrincipalModel",
     "PrincipalType",
     "ResourceType",
