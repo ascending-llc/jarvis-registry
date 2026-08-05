@@ -99,8 +99,12 @@ def _managed_card_agent(
 
 
 def test_build_managed_agent_card_applies_all_transformations(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("registry.services.a2a_agent_service.settings.jwt_issuer", "https://registry.example")
-    monkeypatch.setattr("registry.services.a2a_agent_service.settings.service_base_path", "/gateway")
+    # `registry_url` and `jwt_issuer` are deliberately set to different hosts here: `url` /
+    # `additionalInterfaces[*].url` live on the registry backend (registry_url), while
+    # `oauth2MetadataUrl` lives on the auth-server (jwt_issuer). A regression that conflates
+    # the two (e.g. building the proxy URL from jwt_issuer) must fail this test.
+    monkeypatch.setattr("registry.services.a2a_agent_service.settings.registry_url", "https://registry.example/gateway")
+    monkeypatch.setattr("registry.services.a2a_agent_service.settings.jwt_issuer", "https://auth-issuer.example")
     monkeypatch.setattr(
         "registry.services.a2a_agent_service.settings.auth_server_external_url",
         "https://auth.example",
@@ -137,7 +141,7 @@ def test_build_managed_agent_card_applies_all_transformations(monkeypatch: pytes
                     "scopes": {"a2a-proxy-ops": "Invoke managed A2A agents via the Jarvis Registry proxy"},
                 }
             },
-            "oauth2MetadataUrl": "https://registry.example/.well-known/oauth-authorization-server",
+            "oauth2MetadataUrl": "https://auth-issuer.example/.well-known/oauth-authorization-server",
         }
     }
     assert managed_card["security"] == [{"oauth2": ["a2a-proxy-ops"]}]

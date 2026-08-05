@@ -489,7 +489,7 @@ class A2AAgentService:
         """Build an ephemeral Agent Card that advertises the Registry proxy and OAuth."""
         managed_card = agent.card.model_dump(mode="json", by_alias=True, exclude_none=True)
         preferred_transport, additional_interfaces = strip_grpc_and_select_preferred_transport(agent.card)
-        base_url = f"{settings.jwt_issuer}{settings.service_base_path}/proxy/a2a/{agent.path}"
+        base_url = f"{settings.registry_url}/proxy/a2a/{agent.path}"
         security_schemes, security = _build_managed_agent_security()
 
         managed_card["preferredTransport"] = preferred_transport
