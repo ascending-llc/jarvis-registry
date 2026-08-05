@@ -29,6 +29,22 @@ def _build_app() -> FastAPI:
     async def direct_connect_ep(user_id: str, server_path: str):
         return JSONResponse({"ok": "direct", "user_id": user_id, "server_path": server_path})
 
+    @app.get("/proxy/a2a/{agent_path}/agent-card.json")
+    async def managed_agent_card_ep(agent_path: str):
+        return JSONResponse({"ok": "managed-card", "agent_path": agent_path})
+
+    @app.get("/proxy/a2a/{agent_path}/.well-known/agent-card.json")
+    async def managed_agent_card_alias_ep(agent_path: str):
+        return JSONResponse({"ok": "managed-card-alias", "agent_path": agent_path})
+
+    @app.api_route("/proxy/a2a/{agent_path}", methods=["GET", "POST"])
+    async def direct_a2a_ep(agent_path: str):
+        return JSONResponse({"ok": "a2a", "agent_path": agent_path})
+
+    @app.get("/proxy/a2a/{agent_path}/{suffix:path}")
+    async def direct_a2a_suffix_ep(agent_path: str, suffix: str):
+        return JSONResponse({"ok": "a2a-suffix", "agent_path": agent_path, "suffix": suffix})
+
     @app.get("/api/v1/servers")
     async def crud_ep():
         return JSONResponse({"ok": "crud"})
@@ -201,6 +217,35 @@ def test_downstream_device_endpoint_is_public(client):
 def test_downstream_device_resolver_is_public(client):
     resp = client.get("/api/v1/mcp/consent/device/resolve")
     assert resp.status_code == 200
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/proxy/a2a/weather/agent-card.json",
+        "/proxy/a2a/weather/.well-known/agent-card.json",
+    ],
+)
+def test_managed_agent_card_paths_are_public(client: TestClient, path: str) -> None:
+    resp = client.get(path)
+    assert resp.status_code == 200
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("POST", "/proxy/a2a/weather"),
+        ("GET", "/proxy/a2a/weather/tasks/1"),
+        ("GET", "/proxy/a2a/weather/not-agent-card.json"),
+    ],
+)
+def test_other_a2a_paths_still_require_bearer(
+    client: TestClient,
+    method: str,
+    path: str,
+) -> None:
+    resp = client.request(method, path)
+    assert resp.status_code == 401
 
 
 def test_downstream_authorize_endpoint_is_not_public(client):
