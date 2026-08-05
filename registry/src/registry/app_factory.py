@@ -44,6 +44,10 @@ OPENAPI_TAGS = [
         "name": "Anthropic Registry API",
         "description": "Anthropic-compatible registry API (v0.1) for MCP server discovery",
     },
+    {
+        "name": "Skills Sync",
+        "description": "Bearer-authenticated skill metadata and content sync endpoints.",
+    },
 ]
 
 
