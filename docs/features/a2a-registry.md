@@ -1,6 +1,6 @@
-# A2A Agent Registry
+# A2A Agent Gateway & Registry
 
-The A2A Agent Registry is the central catalog for [autonomous agents](https://exploreagentic.ai/agentic-ai/) exposed through Jarvis Registry. It lets platform teams register agents, organize them by skills and capabilities, control who can access them, and expose them through the same secure gateway used for MCP servers.
+The A2A Agent Gateway & Registry is the central catalog for [autonomous agents](https://exploreagentic.ai/agentic-ai/) exposed through Jarvis Registry. It lets platform teams register agents, organize them by skills and capabilities, control who can access them, and expose them through the same secure gateway used for MCP servers.
 
 ---
 
