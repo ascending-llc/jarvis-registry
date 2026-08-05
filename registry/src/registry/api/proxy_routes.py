@@ -41,7 +41,7 @@ from ..mcpgw.tools.utils import build_authenticated_headers, get_target_url, par
 from ..services.a2a_agent_service import A2AAgentService
 from ..services.access_control_service import ACLService
 from ..services.federation.a2a_client_registry import A2AClientRegistry
-from ..services.generated_token_policy import is_consent_exempt, is_direct_connect_a2a_client
+from ..services.generated_token_policy import is_consent_exempt
 from ..services.oauth.oauth_service import MCPOAuthService
 from ..services.server_service import ServerServiceV1
 
@@ -49,7 +49,6 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["MCP Proxy"])
 
-_DIRECT_CONNECT_A2A_TOKEN_REQUIREMENT = "A2A invocation requires a token generated from the Jarvis Registry frontend."
 _MANAGED_AGENT_CARD_NOT_FOUND_DETAIL = "A2A agent not found"
 
 # A2A v0.3.x reserves -32001 through -32006 for its own error types (TaskNotFoundError,
@@ -623,13 +622,6 @@ async def jsonrpc_proxy(
 ):
     try:
         user_id = user_context.get("user_id")
-        client_id = user_context.get("client_id", "")
-        if not is_direct_connect_a2a_client(client_id, settings.headless_agent_client_id):
-            return _jsonrpc_a2a_error_response(
-                _A2A_ACCESS_DENIED_ERROR_CODE,
-                f"Access denied: direct-connect {_DIRECT_CONNECT_A2A_TOKEN_REQUIREMENT}",
-            )
-
         agent = await a2a_agent_service.get_agent_by_path(agent_path)
         if agent is None:
             return _jsonrpc_a2a_error_response(-32603, f"A2A agent with path '{agent_path}' not found")
@@ -712,13 +704,6 @@ async def http_json_proxy(
 ):
     try:
         user_id = user_context.get("user_id")
-        client_id = user_context.get("client_id", "")
-        if not is_direct_connect_a2a_client(client_id, settings.headless_agent_client_id):
-            return JSONResponse(
-                status_code=403,
-                content={"error": f"Direct-connect {_DIRECT_CONNECT_A2A_TOKEN_REQUIREMENT}"},
-            )
-
         agent = await a2a_agent_service.get_agent_by_path(agent_path)
         if agent is None:
             return JSONResponse(status_code=404, content={"error": f"A2A agent with path '{agent_path}' not found"})

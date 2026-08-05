@@ -17,7 +17,6 @@ from fastapi import HTTPException
 from starlette.requests import Request
 
 from registry.api.proxy_routes import (
-    _A2A_ACCESS_DENIED_ERROR_CODE,
     _serve_managed_agent_card,
     dynamic_mcp_get_proxy,
     dynamic_mcp_post_proxy,
@@ -493,59 +492,10 @@ async def test_get_proxy_acl_allowed_continues():
     assert "disabled" in body["detail"].lower()
 
 
-@pytest.mark.parametrize("client_id", ["mcp-client-dcr", None], ids=["dcr-client", "missing-client-id"])
-async def test_jsonrpc_proxy_rejects_disallowed_client_before_agent_lookup(client_id):
-    a2a_agent_service = SimpleNamespace(get_agent_by_path=AsyncMock())
-    user_context = dict(_AUTH_CONTEXT)
-    if client_id is None:
-        user_context.pop("client_id")
-    else:
-        user_context["client_id"] = client_id
-
-    response = await jsonrpc_proxy(
-        request=_a2a_request(),
-        agent_path="test-agent",
-        user_context=user_context,
-        a2a_agent_service=a2a_agent_service,
-        acl_service=AsyncMock(),
-        a2a_client_registry=AsyncMock(),
-    )
-
-    body = json.loads(response.body)
-    assert response.status_code == 200
-    assert body["error"]["code"] == _A2A_ACCESS_DENIED_ERROR_CODE
-    assert "token generated from the Jarvis Registry frontend" in body["error"]["message"]
-    a2a_agent_service.get_agent_by_path.assert_not_awaited()
-
-
-@pytest.mark.parametrize("client_id", ["mcp-client-dcr", None], ids=["dcr-client", "missing-client-id"])
-async def test_http_json_proxy_rejects_disallowed_client_before_agent_lookup(client_id):
-    a2a_agent_service = SimpleNamespace(get_agent_by_path=AsyncMock())
-    user_context = dict(_AUTH_CONTEXT)
-    if client_id is None:
-        user_context.pop("client_id")
-    else:
-        user_context["client_id"] = client_id
-
-    response = await http_json_proxy(
-        request=_a2a_request(method="GET"),
-        agent_path="test-agent",
-        http_json_path="tasks/1",
-        user_context=user_context,
-        a2a_agent_service=a2a_agent_service,
-        acl_service=AsyncMock(),
-        a2a_client_registry=AsyncMock(),
-    )
-
-    body = json.loads(response.body)
-    assert response.status_code == 403
-    assert body == {
-        "error": "Direct-connect A2A invocation requires a token generated from the Jarvis Registry frontend."
-    }
-    a2a_agent_service.get_agent_by_path.assert_not_awaited()
-
-
-@pytest.mark.parametrize("client_id", [INTERACTIVE_CLIENT_ID, settings.headless_agent_client_id])
+@pytest.mark.parametrize(
+    "client_id",
+    [INTERACTIVE_CLIENT_ID, settings.headless_agent_client_id, "mcp-client-dcr"],
+)
 async def test_jsonrpc_proxy_gets_client_from_a2a_client_registry(monkeypatch, client_id):
     agent = _a2a_agent()
     proxy_client = Mock()
@@ -572,7 +522,10 @@ async def test_jsonrpc_proxy_gets_client_from_a2a_client_registry(monkeypatch, c
     )
 
 
-@pytest.mark.parametrize("client_id", [INTERACTIVE_CLIENT_ID, settings.headless_agent_client_id])
+@pytest.mark.parametrize(
+    "client_id",
+    [INTERACTIVE_CLIENT_ID, settings.headless_agent_client_id, "mcp-client-dcr"],
+)
 async def test_http_json_proxy_gets_client_from_a2a_client_registry(monkeypatch, client_id):
     agent = _a2a_agent()
     proxy_client = Mock()
