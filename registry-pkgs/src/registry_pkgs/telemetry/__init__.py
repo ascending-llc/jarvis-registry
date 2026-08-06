@@ -1,10 +1,13 @@
 import logging
 
-from opentelemetry import metrics
+from opentelemetry import metrics, trace
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.sdk.metrics.view import ExplicitBucketHistogramAggregation, View
 from opentelemetry.sdk.resources import SERVICE_NAME, Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
 from ..core.config import TelemetryConfig
 from .decorators import (
@@ -14,6 +17,7 @@ from .decorators import (
 
 __all__ = [
     "setup_metrics",
+    "setup_tracing",
     "shutdown_telemetry",
     "LATENCY_BUCKETS",
     "track_duration",
@@ -22,6 +26,8 @@ __all__ = [
 
 
 logger = logging.getLogger(__name__)
+
+_tracer_provider: TracerProvider | None = None
 
 # Histogram bucket boundaries for latency metrics (in seconds)
 # These buckets are designed to capture p50, p95, p99 accurately
@@ -175,8 +181,52 @@ def setup_metrics(
         logger.warning(f"Telemetry initialization failed: {e}")
 
 
-def shutdown_telemetry():
+def setup_tracing(
+    service_name: str,
+    telemetry_config: TelemetryConfig,
+    otlp_endpoint: str | None = None,
+    enable_tracing: bool = True,
+) -> None:
+    """Configure request tracing to export asynchronously through OTLP/HTTP."""
+    global _tracer_provider
+
+    if not enable_tracing:
+        return
+
+    if _tracer_provider is not None:
+        return
+
+    try:
+        endpoint = (otlp_endpoint or telemetry_config.otel_exporter_otlp_endpoint).rstrip("/")
+        if not endpoint:
+            logger.warning("No OTLP endpoint configured - traces will not be exported")
+            return
+
+        resource = Resource.create(
+            attributes={
+                SERVICE_NAME: service_name,
+                _SERVICE_VERSION: telemetry_config.build_version,
+                "application": service_name,
+            }
+        )
+        exporter = OTLPSpanExporter(endpoint=f"{endpoint}/v1/traces", timeout=5)
+        provider = TracerProvider(resource=resource)
+        provider.add_span_processor(BatchSpanProcessor(exporter))
+        trace.set_tracer_provider(provider)
+        _tracer_provider = provider
+        logger.info("OTLP traces configured for %s", endpoint)
+    except Exception as exc:
+        logger.warning("Tracing setup failed: %s", exc)
+
+
+def shutdown_telemetry() -> None:
     """Gracefully shutdown telemetry providers."""
+    try:
+        if _tracer_provider is not None:
+            _tracer_provider.shutdown()
+    except Exception:  # nosec B110 - intentional suppression during teardown
+        pass
+
     try:
         provider = metrics.get_meter_provider()
         if hasattr(provider, "shutdown"):
