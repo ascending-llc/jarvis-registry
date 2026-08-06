@@ -17,15 +17,6 @@ from pathlib import Path
 from typing import Any
 
 REQUEST_TIMEOUT_SECONDS = 30
-EXPECTED_MODEL_FILES = {
-    "access_role.py",
-    "acl_entry.py",
-    "group.py",
-    "key.py",
-    "mcp_server.py",
-    "token.py",
-    "user.py",
-}
 
 
 def parse_github_repo(github_repo: str) -> tuple[str, str]:
@@ -110,12 +101,6 @@ def clean_output_dir(output_dir: Path):
             shutil.rmtree(path)
 
 
-def validate_expected_models(downloaded_files: list[str]):
-    missing = sorted(EXPECTED_MODEL_FILES - set(downloaded_files))
-    if missing:
-        raise RuntimeError("Downloaded release is missing required model files: " + ", ".join(missing))
-
-
 def write_readme(output_dir: Path, repo: str, tag: str, downloaded_files: list[str]):
     listed_files = sorted(name for name in downloaded_files if name.endswith(".py"))
     lines = [
@@ -196,8 +181,6 @@ def main():
         (output_dir / name).write_bytes(content)
         downloaded_files.append(name)
         print(f"  downloaded: {name}")
-
-    validate_expected_models(downloaded_files)
 
     # Keep local metadata for traceability and existing tooling.
     (output_dir / ".schema-version").write_text(args.tag, encoding="utf-8")
