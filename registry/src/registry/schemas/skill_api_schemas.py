@@ -30,6 +30,7 @@ class SkillFileResponse(BaseModel):
     mimeType: str
     bytes: int
     isBinary: bool | None = None
+    isExecutable: bool = False
 
 
 class SkillContentResponse(BaseModel):
@@ -39,6 +40,9 @@ class SkillContentResponse(BaseModel):
     body: str
     frontmatter: dict[str, Any] = Field(default_factory=dict)
     alwaysApply: bool = False
+    disableModelInvocation: bool = False
+    userInvocable: bool = True
+    allowedTools: list[str] | None = None
     category: str = ""
     contentHash: str
     files: list[SkillFileResponse]

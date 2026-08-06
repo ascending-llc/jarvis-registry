@@ -51,6 +51,9 @@ def _make_skill(
     skill.version = 1
     skill.fileCount = 0
     skill.alwaysApply = False
+    skill.disableModelInvocation = False
+    skill.userInvocable = True
+    skill.allowedTools = None
     skill.frontmatter = {}
     skill.tags = ["python", "test"]
     skill.path = None
@@ -67,6 +70,7 @@ def _make_skill_file(relative_path: str, content: str = "data") -> MagicMock:
     sf.mimeType = "text/plain"
     sf.bytes = len(content)
     sf.isBinary = None
+    sf.isExecutable = False
     return sf
 
 
@@ -263,6 +267,43 @@ class TestGetSkillContent:
 
         assert resp.status_code == 200
         assert resp.json()["files"][0]["isBinary"] is None
+
+    @patch("registry.api.v1.skill.skill_routes.get_skill_with_files", new_callable=AsyncMock)
+    def test_get_content_includes_new_skill_fields(self, mock_get, skill_app):
+        skill_id = PydanticObjectId()
+        skill = _make_skill(skill_id=skill_id)
+        skill.disableModelInvocation = True
+        skill.userInvocable = False
+        skill.allowedTools = ["bash", "read"]
+        mock_get.return_value = (skill, [])
+
+        resp = skill_app.client.get(
+            f"/proxy/skills/{skill_id}/content",
+            headers={"Authorization": f"Bearer {_mint_token()}"},
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["disableModelInvocation"] is True
+        assert data["userInvocable"] is False
+        assert data["allowedTools"] == ["bash", "read"]
+
+    @patch("registry.api.v1.skill.skill_routes.get_skill_with_files", new_callable=AsyncMock)
+    def test_get_content_includes_is_executable(self, mock_get, skill_app):
+        skill_id = PydanticObjectId()
+        skill = _make_skill(skill_id=skill_id)
+        executable_file = _make_skill_file("scripts/deploy.sh", "#!/bin/bash\necho deploy")
+        executable_file.isExecutable = True
+        mock_get.return_value = (skill, [executable_file])
+
+        resp = skill_app.client.get(
+            f"/proxy/skills/{skill_id}/content",
+            headers={"Authorization": f"Bearer {_mint_token()}"},
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["files"][0]["isExecutable"] is True
 
     @patch("registry.api.v1.skill.skill_routes.get_skill_with_files", new_callable=AsyncMock)
     def test_get_content_unreconstructable_content_returns_409(self, mock_get, skill_app):

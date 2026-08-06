@@ -18,6 +18,9 @@ def _make_skill(name: str = "test-skill", body: str = "body") -> MagicMock:
     skill.name = name
     skill.description = "description"
     skill.alwaysApply = False
+    skill.disableModelInvocation = False
+    skill.userInvocable = True
+    skill.allowedTools = None
     skill.category = "testing"
     skill.frontmatter = {"name": name, "description": "description"}
     skill.body = body
@@ -31,6 +34,7 @@ def _make_file(relative_path: str, content: str | None, is_binary: bool | None =
     skill_file.relativePath = relative_path
     skill_file.content = content
     skill_file.isBinary = is_binary
+    skill_file.isExecutable = False
     return skill_file
 
 
@@ -45,14 +49,31 @@ class TestComputeSkillContentHash:
         assert first.startswith("sha256:")
         assert len(first) == 71
 
-    @pytest.mark.parametrize("field", ["name", "description", "alwaysApply", "category", "body", "frontmatter"])
+    @pytest.mark.parametrize(
+        "field",
+        [
+            "name",
+            "description",
+            "alwaysApply",
+            "disableModelInvocation",
+            "userInvocable",
+            "allowedTools",
+            "category",
+            "body",
+            "frontmatter",
+        ],
+    )
     def test_skill_definition_change_changes_hash(self, field):
         original = _make_skill()
         changed = _make_skill()
         if field == "frontmatter":
             value = {"changed": True}
-        elif field == "alwaysApply":
+        elif field in ("alwaysApply", "disableModelInvocation"):
             value = True
+        elif field == "userInvocable":
+            value = False
+        elif field == "allowedTools":
+            value = ["tool_a", "tool_b"]
         else:
             value = "changed"
         setattr(changed, field, value)
