@@ -44,6 +44,7 @@ Usage::
 from __future__ import annotations
 
 import logging
+import time
 from datetime import UTC, datetime
 from typing import Any
 
@@ -64,6 +65,7 @@ from registry_pkgs.models.workflow import (
     WorkflowNode,
     WorkflowRun,
 )
+from registry_pkgs.telemetry.workflow_metrics import record_workflow_run
 from registry_pkgs.workflows.a2a_client import HeadersProvider
 from registry_pkgs.workflows.compiler import StepExecutor, compile_workflow, flatten_workflow_nodes
 from registry_pkgs.workflows.control import DirectiveQueue, WorkflowCancelledError
@@ -223,6 +225,7 @@ class WorkflowRunner:
         if self._directive_queue is not None:
             self._directive_queue.register(str(run.id))
 
+        _metrics_start = time.perf_counter()
         try:
             try:
                 executor_registry = await self._build_registry(definition, auth_context)
@@ -246,12 +249,29 @@ class WorkflowRunner:
                 raise
             await self._execute(run, definition, user_text, executor_registry, injected_outputs, stop_after_node_id)
         finally:
-            # Always unregister — even on failure — so the queue slot is freed.
             if self._directive_queue is not None:
                 self._directive_queue.unregister(str(run.id))
+            self._record_run_metrics(str(definition_id), getattr(definition, "name", "unknown"), run, _metrics_start)
 
         node_runs = await NodeRun.find(NodeRun.workflow_run_id == run.id).to_list()
         return run, node_runs
+
+    @staticmethod
+    def _record_run_metrics(
+        workflow_id: str,
+        workflow_name: str,
+        run: WorkflowRun,
+        start_time: float,
+    ) -> None:
+        try:
+            record_workflow_run(
+                workflow_id=workflow_id,
+                workflow_name=workflow_name,
+                status=run.status.value.lower(),
+                duration_seconds=time.perf_counter() - start_time,
+            )
+        except Exception:
+            logger.warning("Failed to record workflow run metrics", exc_info=True)
 
     async def _build_registry(
         self,
@@ -349,7 +369,7 @@ class WorkflowRunner:
             )
 
         # Reconstruct definition from the snapshot to guarantee version determinism
-        snapshot_def = definition_from_snapshot(run.definition_snapshot)
+        snapshot_def: WorkflowDefinition | None = definition_from_snapshot(run.definition_snapshot)
 
         # Pull the pending requirements out; hydration happens inside the try below.
         pending = list(run.pending_requirements)
@@ -357,6 +377,7 @@ class WorkflowRunner:
         if self._directive_queue is not None:
             self._directive_queue.register(existing_run_id)
 
+        _metrics_start = time.perf_counter()
         try:
             requirements = [hydrate_requirement(item) for item in pending]
             executor_registry = await self._build_registry(snapshot_def, auth_context)
@@ -391,6 +412,9 @@ class WorkflowRunner:
         finally:
             if self._directive_queue is not None:
                 self._directive_queue.unregister(existing_run_id)
+            wf_id = str(run.definition_snapshot.get("id", "unknown")) if run.definition_snapshot else "unknown"
+            wf_name = getattr(snapshot_def, "name", "unknown") if snapshot_def else "unknown"
+            self._record_run_metrics(wf_id, wf_name, run, _metrics_start)
 
         node_runs = await NodeRun.find(NodeRun.workflow_run_id == run.id).to_list()
         return run, node_runs
