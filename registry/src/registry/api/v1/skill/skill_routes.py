@@ -96,6 +96,7 @@ async def get_skill_content(
             mimeType=sf.mimeType,
             bytes=sf.bytes,
             isBinary=sf.isBinary,
+            isExecutable=sf.isExecutable,
         )
         for sf in sorted(skill_files, key=lambda f: f.relativePath)
     ]
@@ -107,6 +108,9 @@ async def get_skill_content(
         body=skill.body,
         frontmatter=skill.frontmatter,
         alwaysApply=skill.alwaysApply,
+        disableModelInvocation=skill.disableModelInvocation,
+        userInvocable=skill.userInvocable,
+        allowedTools=skill.allowedTools,
         category=skill.category,
         contentHash=skill.contentHash,
         files=files,

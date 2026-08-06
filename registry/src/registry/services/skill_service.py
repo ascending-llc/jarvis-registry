@@ -45,7 +45,13 @@ def _canonical_manifest(skill: Skill, skill_files: list[SkillFile]) -> dict[str,
             raise SkillContentUnavailableError(
                 f"Skill file {skill_file.relativePath} has no cached content; Registry cannot reconstruct it"
             )
-        files.append({"relativePath": skill_file.relativePath, "content": skill_file.content})
+        files.append(
+            {
+                "relativePath": skill_file.relativePath,
+                "content": skill_file.content,
+                "isExecutable": skill_file.isExecutable,
+            }
+        )
 
     return {
         "format": CONTENT_HASH_FORMAT,
@@ -53,6 +59,9 @@ def _canonical_manifest(skill: Skill, skill_files: list[SkillFile]) -> dict[str,
             "name": skill.name,
             "description": skill.description,
             "alwaysApply": skill.alwaysApply,
+            "disableModelInvocation": skill.disableModelInvocation,
+            "userInvocable": skill.userInvocable,
+            "allowedTools": skill.allowedTools,
             "category": skill.category,
             "frontmatter": skill.frontmatter,
             "body": skill.body,

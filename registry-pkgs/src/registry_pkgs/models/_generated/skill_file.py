@@ -9,7 +9,8 @@ class SkillFile(Document):
     content: str | None = None
     mimeType: str
     bytes: int
-    isBinary: bool | None = None
+    isBinary: bool = False
+    isExecutable: bool = False
     tenantId: str | None = None
     createdAt: datetime | None = None
     updatedAt: datetime | None = None

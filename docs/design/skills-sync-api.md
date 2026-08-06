@@ -124,6 +124,9 @@ Accept: application/json
     "model": "claude-sonnet"
   },
   "alwaysApply": false,
+  "disableModelInvocation": false,
+  "userInvocable": true,
+  "allowedTools": null,
   "category": "development",
   "contentHash": "sha256:<digest>",
   "files": [
@@ -132,7 +135,8 @@ Accept: application/json
       "content": "# Decisions\n",
       "mimeType": "text/markdown",
       "bytes": 12,
-      "isBinary": false
+      "isBinary": false,
+      "isExecutable": false
     }
   ]
 }
@@ -148,6 +152,9 @@ Accept: application/json
 | `body` | string | Markdown body without YAML frontmatter |
 | `frontmatter` | object | Additional YAML frontmatter fields |
 | `alwaysApply` | boolean | Maps to the `always-apply` YAML key |
+| `disableModelInvocation` | boolean | Whether the skill disables direct model invocation |
+| `userInvocable` | boolean | Whether users can invoke this skill directly |
+| `allowedTools` | string array or null | Whitelist of tools this skill is allowed to use; `null` means no restriction |
 | `category` | string | Maps to the `category` YAML key |
 | `contentHash` | string | Hash of this response's synchronizable definition |
 | `files` | array | Supporting files under the Skill directory |
@@ -156,6 +163,7 @@ Accept: application/json
 | `files[].mimeType` | string | Source MIME type |
 | `files[].bytes` | integer | Source file size in bytes |
 | `files[].isBinary` | boolean or null | Source binary classification; Registry does not infer this value |
+| `files[].isExecutable` | boolean | Whether the file should be written with execute permission |
 
 ## Local Directory Reconstruction
 
@@ -175,12 +183,17 @@ The CLI creates one directory per Skill:
 name: mongoose-to-beanie
 description: Convert Mongoose schemas to Beanie models
 always-apply: false
+disable-model-invocation: false
+user-invocable: true
 category: development
 model: claude-sonnet
 ---
 
 # Mongoose to Beanie
 ```
+
+When `allowedTools` is non-null, it maps to `allowed-tools` in the frontmatter. When `isExecutable` is `true` on a
+supporting file, the CLI must set the file's execute permission (`chmod +x`) after writing.
 
 Clients must reject absolute paths, parent traversal (`..`), duplicate paths, backslashes, and non-normalized POSIX
 paths before writing supporting files.
@@ -199,15 +212,18 @@ The logical manifest is:
 {
   "format": "jarvis-skill-content-v1",
   "skill": {
-    "name": "mongoose-to-beanie",
-    "description": "Convert Mongoose schemas to Beanie models",
+    "allowedTools": null,
     "alwaysApply": false,
+    "body": "# Mongoose to Beanie\n",
     "category": "development",
+    "description": "Convert Mongoose schemas to Beanie models",
+    "disableModelInvocation": false,
     "frontmatter": {"model": "claude-sonnet"},
-    "body": "# Mongoose to Beanie\n"
+    "name": "mongoose-to-beanie",
+    "userInvocable": true
   },
   "files": [
-    {"content": "# Decisions\n", "relativePath": "references/decisions.md"}
+    {"content": "# Decisions\n", "isExecutable": false, "relativePath": "references/decisions.md"}
   ]
 }
 ```
