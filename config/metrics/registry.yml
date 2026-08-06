@@ -43,6 +43,18 @@ counters:
     unit: "1"
     capture: true
 
+  # Workflow: executor invocations
+  - name: workflow_agent_invocations_total
+    description: Total workflow executor invocations (MCP, A2A, pool, builtin)
+    unit: "1"
+    capture: true
+
+  # Workflow: workflow runs
+  - name: workflow_runs_total
+    description: Total workflow run completions
+    unit: "1"
+    capture: true
+
 histograms:
   # Registry operation latency
   - name: registry_operation_duration_seconds
@@ -77,5 +89,17 @@ histograms:
   # Auth request latency (for middleware)
   - name: auth_request_duration_seconds
     description: Authentication request duration in seconds
+    unit: "s"
+    capture: true
+
+  # Workflow: executor call latency
+  - name: workflow_agent_call_seconds
+    description: Workflow executor call latency in seconds
+    unit: "s"
+    capture: true
+
+  # Workflow: workflow run latency
+  - name: workflow_run_seconds
+    description: Total workflow run latency in seconds
     unit: "s"
     capture: true

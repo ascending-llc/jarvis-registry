@@ -123,4 +123,5 @@ exclude-signatures = [
     {signature = '106fdc9de93fafffff0f42f31d3f6b3284aefd08cc839b04342103cbd9b00f7a', reason = 'consent route unit test uses synthetic OAuth fixtures and mocked tokens, not real credentials'},
     {signature = '62df927a97f0a0def09c24a1a6a94278b15bb82892f1e4a33a4d7a7274203036', reason = 'base64 test media fixtures (1x1 PNG, silent WAV, minimal MP4/CSV) in data-URI extraction unit test are not credentials'},
     {signature = 'ba0567896f2ffb7c1701179146296d8e5f9c6bf11907bed3ae10734b767ba434', reason = 'synthetic MongoDB ObjectId in consent route unit test is not a credential'},
+    {signature = 'c72defc4e901de19821a7608e0f845ad3f5a26320b330abec1233191919fdf47', reason = 'OTEL histogram bucket boundaries are numeric arrays, not credentials'},
 ]
