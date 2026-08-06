@@ -19,6 +19,7 @@ const WorkflowCanvasInner = forwardRef<WorkflowCanvasRef, WorkflowCanvasProps>(
       workflow: workflowData,
       refreshRunHistoryKey,
       activeWorkflowRun,
+      isMonitoringActive,
       refetchActiveWorkflowRun,
       initialNodes,
       initialEdges,
@@ -27,7 +28,6 @@ const WorkflowCanvasInner = forwardRef<WorkflowCanvasRef, WorkflowCanvasProps>(
       onDeleteWorkflow,
       onWorkflowChange,
       onSave,
-      onChange,
     },
     ref,
   ) => {
@@ -45,7 +45,7 @@ const WorkflowCanvasInner = forwardRef<WorkflowCanvasRef, WorkflowCanvasProps>(
       setPickerOpen(true);
     };
 
-    const canvas = useWorkflowCanvas(initialNodes, initialEdges, onChange, handleOpenNodePicker, isReadOnly);
+    const canvas = useWorkflowCanvas(initialNodes, initialEdges, handleOpenNodePicker, isReadOnly);
 
     // Switch panel mode based on selection
     useEffect(() => {
@@ -96,6 +96,7 @@ const WorkflowCanvasInner = forwardRef<WorkflowCanvasRef, WorkflowCanvasProps>(
           <WorkflowRuntimeProvider
             workflowId={workflowId}
             activeRun={activeWorkflowRun}
+            isMonitoringActive={isMonitoringActive}
             nodes={canvas.nodes}
             edges={canvas.edges}
             refetchActiveRun={refetchActiveWorkflowRun}

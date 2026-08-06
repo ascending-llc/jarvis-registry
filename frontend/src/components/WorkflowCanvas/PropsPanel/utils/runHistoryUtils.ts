@@ -1,6 +1,6 @@
 import SERVICES from '@/services';
 import { normalizePendingRequirements } from '@/services/workflow/normalizers';
-import type { NodeRun, WorkflowRun, WorkflowRunStatus } from '@/services/workflow/type';
+import type { NodeRun, NodeRunStatus, WorkflowRun, WorkflowRunStatus } from '@/services/workflow/type';
 import type { RunEntry } from '../../types';
 
 export const STATUS_MAP: Record<WorkflowRunStatus, RunEntry['status']> = {
@@ -23,9 +23,10 @@ export const ACTIONS_BY_STATUS: Record<WorkflowRunStatus, RunEntry['actions']> =
   cancelled: ['retry'],
 };
 
-export const NODE_STATUS_MAP: Record<string, RunEntry['status']> = {
+export const NODE_STATUS_MAP: Record<NodeRunStatus, RunEntry['status']> = {
   running: 'live',
   pending: 'live',
+  awaiting_approval: 'paused',
   completed: 'ok',
   failed: 'fail',
   skipped: 'fail',

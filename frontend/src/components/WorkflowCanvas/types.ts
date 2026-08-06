@@ -17,6 +17,7 @@ export interface WorkflowCanvasProps {
   workflow?: Partial<Workflow> | null;
   refreshRunHistoryKey?: number;
   activeWorkflowRun: WorkflowRunStatusResponse | null;
+  isMonitoringActive: boolean;
   refetchActiveWorkflowRun: () => Promise<void>;
   initialNodes?: WorkflowNode[];
   initialEdges?: Edge[];
@@ -25,7 +26,6 @@ export interface WorkflowCanvasProps {
   onDeleteWorkflow: () => void;
   onWorkflowChange: (patch: Partial<Pick<Workflow, 'name' | 'description'>>) => void;
   onSave?: (nodes: WorkflowNode[], edges: Edge[], viewport: { x: number; y: number; zoom: number }) => void;
-  onChange?: () => void;
 }
 
 /** Base node data */
