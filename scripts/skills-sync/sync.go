@@ -35,18 +35,22 @@ type skillFile struct {
 	RelativePath string  `json:"relativePath"`
 	Content      *string `json:"content"`
 	IsBinary     *bool   `json:"isBinary"`
+	IsExecutable bool    `json:"isExecutable"`
 }
 
 type skillContent struct {
-	ID          string         `json:"id"`
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	AlwaysApply bool           `json:"alwaysApply"`
-	Category    string         `json:"category"`
-	Frontmatter map[string]any `json:"frontmatter"`
-	Body        string         `json:"body"`
-	ContentHash string         `json:"contentHash"`
-	Files       []skillFile    `json:"files"`
+	ID                     string         `json:"id"`
+	Name                   string         `json:"name"`
+	Description            string         `json:"description"`
+	AlwaysApply            bool           `json:"alwaysApply"`
+	DisableModelInvocation bool           `json:"disableModelInvocation"`
+	UserInvocable          bool           `json:"userInvocable"`
+	AllowedTools           []string       `json:"allowedTools"`
+	Category               string         `json:"category"`
+	Frontmatter            map[string]any `json:"frontmatter"`
+	Body                   string         `json:"body"`
+	ContentHash            string         `json:"contentHash"`
+	Files                  []skillFile    `json:"files"`
 }
 
 type manifestEntry struct {
@@ -144,6 +148,38 @@ func (syncer *skillSyncer) sync(ctx context.Context, full bool) (syncResult, err
 			result.unchanged++
 		}
 	}
+	// Prune managed skills that no longer exist on the server (physical deletes).
+	// Full sync already has the complete list; delta sync fetches it separately.
+	if len(manifest.Skills) > 0 {
+		allSkills := remote.Skills
+		if !full {
+			allRemote, err := syncer.api.listSkills(ctx, "")
+			if err != nil {
+				return syncResult{}, fmt.Errorf("fetch full skill list for orphan detection: %w", err)
+			}
+			allSkills = allRemote.Skills
+			debugf(syncer.logger, "orphan check fetched full list skills=%d", len(allSkills))
+		}
+		remoteIDs := make(map[string]struct{}, len(allSkills))
+		for _, metadata := range allSkills {
+			if metadata.DeletedAt == nil {
+				remoteIDs[metadata.ID] = struct{}{}
+			}
+		}
+		for id := range manifest.Skills {
+			if _, exists := remoteIDs[id]; !exists {
+				deleted, err := syncer.deleteSkill(manifest, id)
+				if err != nil {
+					return syncResult{}, err
+				}
+				if deleted {
+					result.deleted++
+					infof(syncer.logger, "orphaned skill pruned id=%s", id)
+				}
+			}
+		}
+	}
+
 	if remote.Cursor != nil {
 		manifest.Cursor = *remote.Cursor
 	}
@@ -257,13 +293,16 @@ func (syncer *skillSyncer) syncSkill(
 
 func definitionFromContent(content skillContent) skillDefinition {
 	return skillDefinition{
-		Name:        content.Name,
-		Description: content.Description,
-		AlwaysApply: content.AlwaysApply,
-		Category:    content.Category,
-		Frontmatter: content.Frontmatter,
-		Body:        content.Body,
-		Files:       content.Files,
+		Name:                   content.Name,
+		Description:            content.Description,
+		AlwaysApply:            content.AlwaysApply,
+		DisableModelInvocation: content.DisableModelInvocation,
+		UserInvocable:          content.UserInvocable,
+		AllowedTools:           content.AllowedTools,
+		Category:               content.Category,
+		Frontmatter:            content.Frontmatter,
+		Body:                   content.Body,
+		Files:                  content.Files,
 	}
 }
 
@@ -318,10 +357,24 @@ func writeSkill(directory string, skill skillDefinition) error {
 	if err != nil {
 		return err
 	}
-	yamlBytes, err := yaml.Marshal(skillHeader{
-		Name: skill.Name, Description: skill.Description, AlwaysApply: skill.AlwaysApply,
-		Category: skill.Category, Frontmatter: frontmatter,
-	})
+	header := skillHeader{
+		Name:        skill.Name,
+		Description: skill.Description,
+		AlwaysApply: skill.AlwaysApply,
+		Category:    skill.Category,
+		Frontmatter: frontmatter,
+	}
+	if skill.DisableModelInvocation {
+		header.DisableModelInvocation = true
+	}
+	if !skill.UserInvocable {
+		userInvocable := false
+		header.UserInvocable = &userInvocable
+	}
+	if len(skill.AllowedTools) > 0 {
+		header.AllowedTools = skill.AllowedTools
+	}
+	yamlBytes, err := yaml.Marshal(header)
 	if err != nil {
 		return err
 	}
@@ -341,7 +394,11 @@ func writeSkill(directory string, skill skillDefinition) error {
 		if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
 			return err
 		}
-		if err := os.WriteFile(filePath, []byte(*file.Content), 0o644); err != nil {
+		perm := os.FileMode(0o644)
+		if file.IsExecutable {
+			perm = 0o755
+		}
+		if err := os.WriteFile(filePath, []byte(*file.Content), perm); err != nil {
 			return err
 		}
 	}

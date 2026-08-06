@@ -23,13 +23,14 @@ func TestSkillSyncAddModifyLocalDriftAndDelete(t *testing.T) {
 	guideV1 := "guide v1"
 	remote := &fakeRegistry{cursor: "2026-08-05T10:00:00Z"}
 	remote.setSkill("skill-1", "demo-skill", skillDefinition{
-		Name:        "demo-skill",
-		Description: "demo",
-		AlwaysApply: false,
-		Category:    "testing",
-		Frontmatter: map[string]any{"model": "test-model"},
-		Body:        "# Demo\n",
-		Files:       []skillFile{{RelativePath: "references/guide.md", Content: &guideV1}},
+		Name:          "demo-skill",
+		Description:   "demo",
+		AlwaysApply:   false,
+		UserInvocable: true,
+		Category:      "testing",
+		Frontmatter:   map[string]any{"model": "test-model"},
+		Body:          "# Demo\n",
+		Files:         []skillFile{{RelativePath: "references/guide.md", Content: &guideV1}},
 	})
 	server := httptest.NewServer(http.HandlerFunc(remote.serveHTTP))
 	t.Cleanup(server.Close)
@@ -66,13 +67,14 @@ func TestSkillSyncAddModifyLocalDriftAndDelete(t *testing.T) {
 		guideV2 := "guide v2"
 		remote.cursor = "2026-08-05T10:01:00Z"
 		remote.setSkill("skill-1", "demo-skill", skillDefinition{
-			Name:        "demo-skill",
-			Description: "updated demo",
-			AlwaysApply: true,
-			Category:    "updated",
-			Frontmatter: map[string]any{"model": "updated-model"},
-			Body:        "# Updated demo\n",
-			Files:       []skillFile{{RelativePath: "references/guide.md", Content: &guideV2}},
+			Name:          "demo-skill",
+			Description:   "updated demo",
+			AlwaysApply:   true,
+			UserInvocable: true,
+			Category:      "updated",
+			Frontmatter:   map[string]any{"model": "updated-model"},
+			Body:          "# Updated demo\n",
+			Files:         []skillFile{{RelativePath: "references/guide.md", Content: &guideV2}},
 		})
 		result, err := syncer.sync(context.Background(), false)
 		if err != nil {
@@ -123,31 +125,112 @@ func TestSkillSyncAddModifyLocalDriftAndDelete(t *testing.T) {
 	})
 }
 
+func TestFullSyncPrunesPhysicallyDeletedSkills(t *testing.T) {
+	// When a skill is physically deleted on the server (no tombstone), a full
+	// sync should detect the orphaned manifest entry and remove it locally.
+	guideContent := "guide content"
+	remote := &fakeRegistry{cursor: "2026-08-05T10:00:00Z"}
+	remote.setSkill("skill-1", "demo-skill", skillDefinition{
+		Name: "demo-skill", Description: "demo", UserInvocable: true,
+		Category: "testing", Frontmatter: map[string]any{},
+		Body: "# Demo\n", Files: []skillFile{{RelativePath: "guide.md", Content: &guideContent}},
+	})
+	server := httptest.NewServer(http.HandlerFunc(remote.serveHTTP))
+	t.Cleanup(server.Close)
+
+	workspace := t.TempDir()
+	syncer := &skillSyncer{
+		api:          &apiClient{baseURL: server.URL, token: "test-token", http: server.Client()},
+		skillsRoot:   filepath.Join(workspace, "skills"),
+		manifestPath: filepath.Join(workspace, "manifest.json"),
+	}
+
+	// Initial sync adds the skill.
+	result, err := syncer.sync(context.Background(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.added != 1 {
+		t.Fatalf("expected 1 added, got %+v", result)
+	}
+	skillDir := filepath.Join(syncer.skillsRoot, "demo-skill")
+	if _, err := os.Stat(skillDir); err != nil {
+		t.Fatalf("skill directory should exist: %v", err)
+	}
+
+	// Simulate physical deletion: server returns an empty skill list.
+	emptyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer test-token" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/proxy/skills" {
+			cursor := "2026-08-05T11:00:00Z"
+			_ = json.NewEncoder(w).Encode(skillListResponse{Skills: []skillMetadata{}, Cursor: &cursor})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(emptyServer.Close)
+	syncer.api = &apiClient{baseURL: emptyServer.URL, token: "test-token", http: emptyServer.Client()}
+
+	// Delta sync also detects the physical deletion via a full-list probe.
+	result, err = syncer.sync(context.Background(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.deleted != 1 {
+		t.Fatalf("delta sync should prune 1 orphan, got %+v", result)
+	}
+	if _, err := os.Stat(skillDir); !os.IsNotExist(err) {
+		t.Fatalf("skill directory should be deleted after full sync, got %v", err)
+	}
+	manifest, err := loadManifest(syncer.manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(manifest.Skills) != 0 {
+		t.Fatalf("expected empty manifest, got %+v", manifest.Skills)
+	}
+}
+
 func TestHashChangesForEveryLocalDefinitionField(t *testing.T) {
 	base := skillDefinition{
-		Name: "demo", Description: "description", Category: "category", Frontmatter: map[string]any{}, Body: "body",
+		Name: "demo", Description: "description", UserInvocable: true,
+		Category: "category", Frontmatter: map[string]any{}, Body: "body",
 	}
 	baseHash := mustHash(t, base)
-	changed := base
-	changed.AlwaysApply = true
-	if mustHash(t, changed) == baseHash {
-		t.Fatal("alwaysApply must affect the hash")
+
+	cases := []struct {
+		field  string
+		mutate func(d *skillDefinition)
+	}{
+		{"AlwaysApply", func(d *skillDefinition) { d.AlwaysApply = true }},
+		{"Category", func(d *skillDefinition) { d.Category = "other" }},
+		{"DisableModelInvocation", func(d *skillDefinition) { d.DisableModelInvocation = true }},
+		{"UserInvocable", func(d *skillDefinition) { d.UserInvocable = false }},
+		{"AllowedTools", func(d *skillDefinition) { d.AllowedTools = []string{"bash"} }},
 	}
-	changed = base
-	changed.Category = "other"
-	if mustHash(t, changed) == baseHash {
-		t.Fatal("category must affect the hash")
+	for _, tc := range cases {
+		t.Run(tc.field, func(t *testing.T) {
+			changed := base
+			tc.mutate(&changed)
+			if mustHash(t, changed) == baseHash {
+				t.Fatalf("%s must affect the hash", tc.field)
+			}
+		})
 	}
 }
 
 func TestHashMatchesPythonVector(t *testing.T) {
 	guide := "guide v1"
 	definition := skillDefinition{
-		Name: "demo", Description: "description", Category: "testing",
+		Name: "demo", Description: "description", UserInvocable: true, Category: "testing",
 		Frontmatter: map[string]any{"model": "test-model"}, Body: "# Demo\n",
 		Files: []skillFile{{RelativePath: "references/guide.md", Content: &guide}},
 	}
-	const pythonHash = "sha256:2bcafdeddf03eb74a9cbbd64f495dbaa4e49e05f13f98fa9db2825247ae67175"
+	const pythonHash = "sha256:39c205b84a2f3f047bcaaf5c0dcd1f08050b85bc3c837ac3c36c647291e312cf"
 	if actual := mustHash(t, definition); actual != pythonHash {
 		t.Fatalf("Python/Go hash mismatch: expected %s, got %s", pythonHash, actual)
 	}
@@ -155,7 +238,7 @@ func TestHashMatchesPythonVector(t *testing.T) {
 
 func TestEmptyFrontmatterRoundTripPreservesHash(t *testing.T) {
 	definition := skillDefinition{
-		Name: "demo", Description: "description", Category: "testing",
+		Name: "demo", Description: "description", UserInvocable: true, Category: "testing",
 		Frontmatter: map[string]any{}, Body: "# Demo\n",
 	}
 	skillDirectory := t.TempDir()
@@ -174,7 +257,7 @@ func TestEmptyFrontmatterRoundTripPreservesHash(t *testing.T) {
 
 func TestJSONNumberFrontmatterRoundTripPreservesHash(t *testing.T) {
 	definition := skillDefinition{
-		Name: "demo", Description: "description", Category: "testing",
+		Name: "demo", Description: "description", UserInvocable: true, Category: "testing",
 		Frontmatter: map[string]any{
 			"priority": json.Number("10"),
 			"config": map[string]any{
@@ -263,7 +346,9 @@ func (fake *fakeRegistry) setSkill(id string, skillPath string, definition skill
 	}
 	fake.content = skillContent{
 		ID: id, Name: definition.Name, Description: definition.Description, AlwaysApply: definition.AlwaysApply,
-		Category: definition.Category, Frontmatter: definition.Frontmatter, Body: definition.Body,
+		DisableModelInvocation: definition.DisableModelInvocation, UserInvocable: definition.UserInvocable,
+		AllowedTools: definition.AllowedTools, Category: definition.Category,
+		Frontmatter: definition.Frontmatter, Body: definition.Body,
 		ContentHash: hash, Files: definition.Files,
 	}
 }

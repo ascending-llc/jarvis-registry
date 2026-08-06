@@ -22,21 +22,27 @@ const (
 )
 
 type skillDefinition struct {
-	Name        string
-	Description string
-	AlwaysApply bool
-	Category    string
-	Frontmatter map[string]any
-	Body        string
-	Files       []skillFile
+	Name                   string
+	Description            string
+	AlwaysApply            bool
+	DisableModelInvocation bool
+	UserInvocable          bool
+	AllowedTools           []string
+	Category               string
+	Frontmatter            map[string]any
+	Body                   string
+	Files                  []skillFile
 }
 
 type skillHeader struct {
-	Name        string         `yaml:"name"`
-	Description string         `yaml:"description"`
-	AlwaysApply bool           `yaml:"always-apply"`
-	Category    string         `yaml:"category"`
-	Frontmatter map[string]any `yaml:",inline"`
+	Name                   string         `yaml:"name"`
+	Description            string         `yaml:"description"`
+	AlwaysApply            bool           `yaml:"always-apply"`
+	DisableModelInvocation bool           `yaml:"disable-model-invocation,omitempty"`
+	UserInvocable          *bool          `yaml:"user-invocable,omitempty"`
+	AllowedTools           []string       `yaml:"allowed-tools,omitempty"`
+	Category               string         `yaml:"category"`
+	Frontmatter            map[string]any `yaml:",inline"`
 }
 
 func computeSkillHash(skill skillDefinition) (string, error) {
@@ -66,19 +72,28 @@ func computeSkillHash(skill skillDefinition) (string, error) {
 		}
 		manifestFiles = append(manifestFiles, map[string]any{
 			"content":      *file.Content,
+			"isExecutable": file.IsExecutable,
 			"relativePath": file.RelativePath,
 		})
+	}
+
+	var allowedTools any
+	if skill.AllowedTools != nil {
+		allowedTools = skill.AllowedTools
 	}
 
 	manifest := map[string]any{
 		"format": hashFormat,
 		"skill": map[string]any{
-			"alwaysApply": skill.AlwaysApply,
-			"body":        skill.Body,
-			"category":    skill.Category,
-			"description": skill.Description,
-			"frontmatter": skill.Frontmatter,
-			"name":        skill.Name,
+			"allowedTools":           allowedTools,
+			"alwaysApply":            skill.AlwaysApply,
+			"body":                   skill.Body,
+			"category":               skill.Category,
+			"description":            skill.Description,
+			"disableModelInvocation": skill.DisableModelInvocation,
+			"frontmatter":            skill.Frontmatter,
+			"name":                   skill.Name,
+			"userInvocable":          skill.UserInvocable,
 		},
 		"files": manifestFiles,
 	}
@@ -101,8 +116,8 @@ func canonicalJSON(value any) ([]byte, error) {
 		return nil, fmt.Errorf("encode canonical manifest: %w", err)
 	}
 	encoded := bytes.TrimSuffix(output.Bytes(), []byte("\n"))
-	encoded = bytes.ReplaceAll(encoded, []byte(`\u2028`), []byte("\u2028"))
-	encoded = bytes.ReplaceAll(encoded, []byte(`\u2029`), []byte("\u2029"))
+	encoded = bytes.ReplaceAll(encoded, []byte("\\u2028"), []byte(" "))
+	encoded = bytes.ReplaceAll(encoded, []byte("\\u2029"), []byte(" "))
 	return encoded, nil
 }
 
@@ -135,14 +150,21 @@ func readLocalSkill(skillDir string) (skillDefinition, error) {
 	if frontmatter == nil {
 		frontmatter = map[string]any{}
 	}
+	userInvocable := true
+	if header.UserInvocable != nil {
+		userInvocable = *header.UserInvocable
+	}
 	return skillDefinition{
-		Name:        header.Name,
-		Description: header.Description,
-		AlwaysApply: header.AlwaysApply,
-		Category:    header.Category,
-		Frontmatter: frontmatter,
-		Body:        body,
-		Files:       files,
+		Name:                   header.Name,
+		Description:            header.Description,
+		AlwaysApply:            header.AlwaysApply,
+		DisableModelInvocation: header.DisableModelInvocation,
+		UserInvocable:          userInvocable,
+		AllowedTools:           header.AllowedTools,
+		Category:               header.Category,
+		Frontmatter:            frontmatter,
+		Body:                   body,
+		Files:                  files,
 	}, nil
 }
 
@@ -193,12 +215,21 @@ func readSupportingFiles(skillDir string) ([]skillFile, error) {
 		if !utf8.Valid(content) {
 			return fmt.Errorf("local binary file is not supported: %s", filePath)
 		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		isExecutable := info.Mode()&0o111 != 0
 		relativePath, err := filepath.Rel(skillDir, filePath)
 		if err != nil {
 			return err
 		}
 		text := string(content)
-		files = append(files, skillFile{RelativePath: filepath.ToSlash(relativePath), Content: &text})
+		files = append(files, skillFile{
+			RelativePath: filepath.ToSlash(relativePath),
+			Content:      &text,
+			IsExecutable: isExecutable,
+		})
 		return nil
 	})
 	return files, err
