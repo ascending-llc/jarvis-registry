@@ -1,20 +1,23 @@
 import SERVICES from '@/services';
-import type { NodeRun, WorkflowRun } from '@/services/workflow/type';
+import { normalizePendingRequirements } from '@/services/workflow/normalizers';
+import type { NodeRun, WorkflowRun, WorkflowRunStatus } from '@/services/workflow/type';
 import type { RunEntry } from '../../types';
 
-export const STATUS_MAP: Record<string, RunEntry['status']> = {
+export const STATUS_MAP: Record<WorkflowRunStatus, RunEntry['status']> = {
   running: 'live',
   pending: 'live',
   paused: 'paused',
+  awaiting_approval: 'live',
   completed: 'ok',
   failed: 'fail',
   cancelled: 'fail',
 };
 
-export const ACTIONS_BY_STATUS: Record<string, RunEntry['actions']> = {
+export const ACTIONS_BY_STATUS: Record<WorkflowRunStatus, RunEntry['actions']> = {
   running: ['pause', 'cancel'],
   pending: ['cancel'],
   paused: ['resume', 'cancel'],
+  awaiting_approval: [],
   completed: [],
   failed: ['retry'],
   cancelled: ['retry'],
@@ -45,6 +48,10 @@ export const normalizeWorkflowRun = (raw: Record<string, unknown>): WorkflowRun 
     finishedAt: (nr.finishedAt ?? nr.finished_at) as string | undefined,
   }));
 
+  const pendingRequirementsRaw = raw.pendingRequirements ?? raw.pending_requirements;
+  const pendingRequirements =
+    pendingRequirementsRaw === undefined ? undefined : normalizePendingRequirements(pendingRequirementsRaw);
+
   return {
     id: String(raw.id ?? ''),
     workflowDefinitionId: String(raw.workflowDefinitionId ?? raw.workflow_definition_id ?? ''),
@@ -55,6 +62,7 @@ export const normalizeWorkflowRun = (raw: Record<string, unknown>): WorkflowRun 
     parentRunId: (raw.parentRunId ?? raw.parent_run_id) as string | null | undefined,
     errorSummary: (raw.errorSummary ?? raw.error_summary) as string | null | undefined,
     nodeRuns,
+    pendingRequirements,
   };
 };
 

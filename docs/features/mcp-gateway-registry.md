@@ -1,6 +1,6 @@
-# MCP Server Registry
+# MCP Server Gateway & Registry
 
-The MCP Server Registry is the central catalog of all [Model Context Protocol (MCP)](https://exploreagentic.ai/mcp/) servers available in your enterprise. It acts as the hub — registering servers, managing access, and orchestrating secure token exchange so that any authenticated AI copilot can discover and invoke your tools through a single secure gateway.
+The MCP Server Gateway & Registry is the central catalog of all [Model Context Protocol (MCP)](https://exploreagentic.ai/mcp/) servers available in your enterprise. It acts as the hub — registering servers, managing access, and orchestrating secure token exchange so that any authenticated AI copilot can discover and invoke your tools through a single secure gateway.
 
 ---
 

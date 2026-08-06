@@ -93,6 +93,7 @@ const ConsentDownstream: React.FC = () => {
         <ConsentPrompt
           clientName={context.client_name}
           clientUri={context.client_uri}
+          redirectUri={context.redirect_uri}
           ipAddress={context.ip_address}
           registeredAt={context.registered_at}
           description='This will let it obtain an access token to connect to a downstream MCP server on your behalf.'

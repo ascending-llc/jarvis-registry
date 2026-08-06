@@ -465,6 +465,7 @@ def test_get_downstream_consent_context_returns_client_metadata(
     assert resp.json() == {
         "client_name": "Claude",
         "client_uri": "https://claude.ai",
+        "redirect_uri": "http://localhost:33418/cb",
         "ip_address": "203.0.113.7",
         "registered_at": 1_700_000_000,
         "server_path": "github",
