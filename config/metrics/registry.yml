@@ -55,6 +55,12 @@ counters:
     unit: "1"
     capture: true
 
+  # Workflow: tool-level calls within MCP agent executions
+  - name: workflow_tool_calls_total
+    description: Total MCP tool calls within agent executions
+    unit: "1"
+    capture: true
+
 histograms:
   # Registry operation latency
   - name: registry_operation_duration_seconds
@@ -101,5 +107,11 @@ histograms:
   # Workflow: workflow run latency
   - name: workflow_run_seconds
     description: Total workflow run latency in seconds
+    unit: "s"
+    capture: true
+
+  # Workflow: individual MCP tool call latency
+  - name: workflow_tool_call_seconds
+    description: Individual MCP tool call latency in seconds
     unit: "s"
     capture: true
