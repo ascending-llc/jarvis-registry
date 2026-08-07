@@ -83,6 +83,32 @@
   margin: 12px !important;
 }
 
+/* Shared live-status animation for canvas nodes and run history. */
+@keyframes workflow-status-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+
+.workflow-status-pulse {
+  animation: workflow-status-pulse 1.2s infinite;
+}
+
+.workflow-canvas-root .node-dot.workflow-status-running {
+  box-shadow: 0 0 0 2px currentColor;
+  transform: scale(1.15);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workflow-status-pulse {
+    animation: none;
+  }
+}
+
 /* NodePicker modal animation */
 @keyframes pin {
   from {
