@@ -413,6 +413,52 @@ def test_redirect_error_actions_reject_other_consent_payload_without_consuming(p
     assert pending_store.peek("nonce-1") == _pending_payload()
 
 
+def test_consent_page_rejects_redirect_error_payload_without_consuming() -> None:
+    client, _, _, pending_store = _client()
+    pending_store.save("nonce-1", _redirect_error_pending_payload())
+
+    client.cookies.set(settings.oauth2_consent_nonce_cookie_name, "nonce-1")
+    response = client.get(
+        "/auth/oauth2/consent",
+        params={"nonce": "nonce-1"},
+    )
+
+    assert response.status_code == 400
+    assert "This link has expired" in response.text
+    assert pending_store.peek("nonce-1") == _redirect_error_pending_payload()
+
+
+def test_approve_consent_rejects_redirect_error_payload_without_consuming() -> None:
+    client, _, _, pending_store = _client()
+    pending_store.save("nonce-1", _redirect_error_pending_payload())
+
+    client.cookies.set(settings.oauth2_consent_nonce_cookie_name, "nonce-1")
+    response = client.post(
+        "/auth/oauth2/consent/approve",
+        data={"nonce": "nonce-1"},
+    )
+
+    assert response.status_code == 400
+    assert "expired" in response.json()["detail"]
+    assert pending_store.peek("nonce-1") == _redirect_error_pending_payload()
+
+
+def test_deny_consent_rejects_redirect_error_payload_without_consuming() -> None:
+    client, _, _, pending_store = _client()
+    pending_store.save("nonce-1", _redirect_error_pending_payload())
+
+    client.cookies.set(settings.oauth2_consent_nonce_cookie_name, "nonce-1")
+    response = client.post(
+        "/auth/oauth2/consent/deny",
+        data={"nonce": "nonce-1"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 302
+    assert response.headers["location"].startswith(settings.registry_error_redirect)
+    assert pending_store.peek("nonce-1") == _redirect_error_pending_payload()
+
+
 @patch("auth_server.routes.oauth_flow.exchange_code_for_token")
 @patch("auth_server.routes.oauth_flow.get_token_kid")
 @patch("auth_server.routes.oauth_flow.decode_jwt_with_jwk")

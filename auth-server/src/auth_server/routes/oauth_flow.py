@@ -133,6 +133,31 @@ def _consume_redirect_error_consent(
     return consumed
 
 
+def _peek_authorization_consent(
+    pending_store: PendingConsentStore,
+    nonce: str,
+) -> dict[str, Any] | None:
+    """Return a pending authorization-consent request, rejecting the redirect-error payload type."""
+    pending = pending_store.peek(nonce)
+    if pending is None or pending.get("flow_type") == _REDIRECT_ERROR_CONSENT_FLOW_TYPE:
+        return None
+    return pending
+
+
+def _consume_authorization_consent(
+    pending_store: PendingConsentStore,
+    nonce: str,
+) -> dict[str, Any] | None:
+    """Atomically consume a pending authorization-consent request, rejecting the redirect-error payload type."""
+    if _peek_authorization_consent(pending_store, nonce) is None:
+        return None
+
+    consumed = pending_store.consume(nonce)
+    if consumed is None or consumed.get("flow_type") == _REDIRECT_ERROR_CONSENT_FLOW_TYPE:
+        return None
+    return consumed
+
+
 def oauth_error_response(error: str, error_description: str | None = None, status_code: int = 400) -> JSONResponse:
     return JSONResponse(status_code=status_code, content=oauth_error_payload(error, error_description))
 
@@ -1115,7 +1140,7 @@ async def consent_page(
         if not nonce or not oauth2_consent_nonce or not hmac.compare_digest(oauth2_consent_nonce, nonce):
             return HTMLResponse(render_consent_error_page(), status_code=400)
 
-        pending = pending_store.peek(oauth2_consent_nonce)
+        pending = _peek_authorization_consent(pending_store, oauth2_consent_nonce)
         if pending is None:
             return HTMLResponse(render_consent_error_page(), status_code=400)
 
@@ -1153,7 +1178,7 @@ async def approve_consent(
         if not oauth2_consent_nonce or not hmac.compare_digest(oauth2_consent_nonce, nonce):
             return JSONResponse({"detail": "Invalid or expired consent request"}, status_code=400)
 
-        pending = pending_store.consume(nonce)
+        pending = _consume_authorization_consent(pending_store, nonce)
         if pending is None:
             return JSONResponse(
                 {"detail": "This consent link has expired. Please retry from your MCP client."},
@@ -1204,7 +1229,7 @@ async def deny_consent(
         if not oauth2_consent_nonce or not hmac.compare_digest(oauth2_consent_nonce, nonce):
             return JSONResponse({"detail": "Invalid or expired consent request"}, status_code=400)
 
-        pending = pending_store.consume(nonce)
+        pending = _consume_authorization_consent(pending_store, nonce)
         if pending and pending.get("flow_type") == "device":
             response = _finish_device_denial(pending["device_code"], store)
             response.delete_cookie(settings.oauth2_consent_nonce_cookie_name)
