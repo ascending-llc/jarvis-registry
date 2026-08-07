@@ -10,6 +10,7 @@ backend handles a given key, then delegates to the appropriate factory:
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import logging
 import time
@@ -73,7 +74,13 @@ def _instrumented_executor(
                 kwargs["run_context"] = run_context
             result = await executor(step_input, **kwargs)
             success = getattr(result, "success", True)
+            if not success:
+                error_type = "StepOutputFailure"
             return result
+        except asyncio.CancelledError:
+            success = False
+            error_type = "CancelledError"
+            raise
         except Exception as exc:
             success = False
             error_type = type(exc).__name__

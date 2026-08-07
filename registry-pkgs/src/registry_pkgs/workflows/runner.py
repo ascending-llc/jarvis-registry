@@ -44,7 +44,6 @@ Usage::
 from __future__ import annotations
 
 import logging
-import time
 from datetime import UTC, datetime
 from typing import Any
 
@@ -75,6 +74,8 @@ from registry_pkgs.workflows.mcp_executor import McpHeadersProvider
 from registry_pkgs.workflows.types import WorkflowConfigError
 
 logger = logging.getLogger(__name__)
+
+_TERMINAL_RUN_STATUSES = frozenset({WorkflowRunStatus.COMPLETED, WorkflowRunStatus.FAILED, WorkflowRunStatus.CANCELLED})
 
 
 def definition_from_snapshot(snapshot: dict[str, Any]) -> WorkflowDefinition:
@@ -225,7 +226,6 @@ class WorkflowRunner:
         if self._directive_queue is not None:
             self._directive_queue.register(str(run.id))
 
-        _metrics_start = time.perf_counter()
         try:
             try:
                 executor_registry = await self._build_registry(definition, auth_context)
@@ -251,24 +251,26 @@ class WorkflowRunner:
         finally:
             if self._directive_queue is not None:
                 self._directive_queue.unregister(str(run.id))
-            self._record_run_metrics(str(definition_id), getattr(definition, "name", "unknown"), run, _metrics_start)
+            self._record_run_metrics(getattr(definition, "name", "unknown"), run)
 
         node_runs = await NodeRun.find(NodeRun.workflow_run_id == run.id).to_list()
         return run, node_runs
 
     @staticmethod
     def _record_run_metrics(
-        workflow_id: str,
         workflow_name: str,
         run: WorkflowRun,
-        start_time: float,
     ) -> None:
+        if run.status not in _TERMINAL_RUN_STATUSES:
+            return
+
         try:
+            finished_at = run.finished_at or datetime.now(UTC)
+            duration_seconds = max(0.0, (finished_at - run.started_at).total_seconds())
             record_workflow_run(
-                workflow_id=workflow_id,
                 workflow_name=workflow_name,
                 status=run.status.value.lower(),
-                duration_seconds=time.perf_counter() - start_time,
+                duration_seconds=duration_seconds,
             )
         except Exception:
             logger.warning("Failed to record workflow run metrics", exc_info=True)
@@ -377,7 +379,6 @@ class WorkflowRunner:
         if self._directive_queue is not None:
             self._directive_queue.register(existing_run_id)
 
-        _metrics_start = time.perf_counter()
         try:
             requirements = [hydrate_requirement(item) for item in pending]
             executor_registry = await self._build_registry(snapshot_def, auth_context)
@@ -412,9 +413,8 @@ class WorkflowRunner:
         finally:
             if self._directive_queue is not None:
                 self._directive_queue.unregister(existing_run_id)
-            wf_id = str(run.definition_snapshot.get("id", "unknown")) if run.definition_snapshot else "unknown"
             wf_name = getattr(snapshot_def, "name", "unknown") if snapshot_def else "unknown"
-            self._record_run_metrics(wf_id, wf_name, run, _metrics_start)
+            self._record_run_metrics(wf_name, run)
 
         node_runs = await NodeRun.find(NodeRun.workflow_run_id == run.id).to_list()
         return run, node_runs

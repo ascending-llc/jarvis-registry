@@ -12,7 +12,8 @@ from fastapi import FastAPI
 
 from registry_pkgs.database import close_mongodb, init_mongodb
 from registry_pkgs.database.redis_client import close_redis_client, create_redis_client
-from registry_pkgs.telemetry import setup_metrics
+from registry_pkgs.telemetry import setup_metrics, setup_tracing
+from registry_pkgs.telemetry.workflow_metrics import initialize_workflow_metrics
 from registry_pkgs.vector.client import create_database_client
 from registry_pkgs.workflows.control import DirectiveQueue
 from registry_pkgs.workflows.hitl import MongoBackedCancellationManager
@@ -65,8 +66,13 @@ def _initialize_telemetry() -> None:
     logger.info("Initializing telemetry")
     try:
         setup_metrics("mcp-gateway-registry", settings.telemetry_config)
+        initialize_workflow_metrics(settings.telemetry_config)
     except Exception as exc:
-        logger.warning("Failed to initialize telemetry: %s", exc)
+        logger.warning("Failed to initialize metrics: %s", exc)
+    try:
+        setup_tracing("mcp-gateway-registry", settings.telemetry_config)
+    except Exception as exc:
+        logger.warning("Failed to initialize tracing: %s", exc)
 
 
 async def _startup_container(app: FastAPI) -> _RuntimeResources:
