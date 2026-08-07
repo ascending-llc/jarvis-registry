@@ -83,6 +83,55 @@ def render_consent_page(
 </html>"""
 
 
+def render_redirect_error_consent_page(
+    *,
+    redirect_uri: str,
+    error: str,
+    error_description: str,
+    nonce: str,
+    approve_action: str,
+    deny_action: str,
+) -> str:
+    """Render explicit confirmation before relaying an OAuth error to an unverified client."""
+    safe_redirect_uri = html.escape(redirect_uri)
+    safe_error = html.escape(error)
+    safe_error_description = html.escape(error_description)
+    safe_nonce = html.escape(nonce)
+    safe_approve_action = html.escape(approve_action, quote=True)
+    safe_deny_action = html.escape(deny_action, quote=True)
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Send error to your MCP client? - Jarvis Registry</title>
+<style>{_STYLE}</style>
+</head>
+<body>
+  <div class="card">
+    <h1>We couldn't complete this sign-in</h1>
+    <p class="meta">Error: <code>{safe_error}</code></p>
+    <p class="meta">{safe_error_description}</p>
+    <p class="meta">We can send this error to the application waiting at:</p>
+    <p class="meta"><code>{safe_redirect_uri}</code></p>
+    <div class="actions">
+      <form method="POST" action="{safe_approve_action}" style="display:inline;">
+        <input type="hidden" name="nonce" value="{safe_nonce}" />
+        <button type="submit" class="approve">Send error to application</button>
+      </form>
+      <form method="POST" action="{safe_deny_action}" style="display:inline;">
+        <input type="hidden" name="nonce" value="{safe_nonce}" />
+        <button type="submit" class="deny">Cancel</button>
+      </form>
+    </div>
+    <p class="warning">Only continue if you recognize this address as your own MCP client
+    running locally, or a sign-in helper for your editor.</p>
+  </div>
+</body>
+</html>"""
+
+
 def render_consent_error_page() -> str:
     return f"""<!DOCTYPE html>
 <html lang="en">

@@ -45,7 +45,22 @@ OAUTH2_CONFIG = {
             "email_claim": "email",
             "name_claim": "name",
             "groups_claim": "groups",
-        }
+        },
+        "entra": {
+            "enabled": True,
+            "client_id": "entra-provider-client",
+            "client_secret": "entra-provider-secret",
+            "response_type": "code",
+            "grant_type": "authorization_code",
+            "scopes": ["openid", "profile", "email"],
+            "auth_url": "https://login.microsoftonline.com/authorize",
+            "token_url": "https://login.microsoftonline.com/token",
+            "user_info_url": "https://graph.microsoft.com/oidc/userinfo",
+            "username_claim": "preferred_username",
+            "email_claim": "email",
+            "name_claim": "name",
+            "groups_claim": "groups",
+        },
     }
 }
 
@@ -212,6 +227,137 @@ class TestDynamicClientRegistration:
 
         assert response.status_code == 400
         assert response.json()["error"] == "invalid_redirect_uri"
+
+
+@pytest.mark.integration
+@pytest.mark.oauth_flow
+class TestLoginRedirectErrorConsent:
+    @pytest.mark.parametrize(
+        "redirect_uri",
+        [
+            "http://127.0.0.1:43123/callback",
+            "http://localhost:43123/callback",
+            "https://vscode.dev/redirect",
+            "http://localhost:8888/api/mcp/jarvis_registry/oauth/callback",
+        ],
+    )
+    def test_unknown_client_safe_redirect_uses_consent_detour(
+        self,
+        test_client: TestClient,
+        clear_device_storage,
+        redirect_uri: str,
+    ) -> None:
+        _configure_oauth2(test_client)
+
+        response = test_client.get(
+            f"{API_PREFIX}/oauth2/login/entra",
+            params={
+                "client_id": "unknown-client",
+                "response_type": "code",
+                "redirect_uri": redirect_uri,
+                "code_challenge": "challenge",
+                "code_challenge_method": "S256",
+                "state": "client-state",
+            },
+            follow_redirects=False,
+        )
+
+        assert response.status_code == 302
+        assert "/oauth2/redirect-error-consent?nonce=" in response.headers["location"]
+        nonce = response.headers["location"].split("nonce=", maxsplit=1)[1]
+        assert test_pending_consent_store.peek(nonce) == {
+            "flow_type": "redirect_error",
+            "redirect_uri": redirect_uri,
+            "error": "invalid_client",
+            "error_description": "Unknown client_id",
+            "client_state": "client-state",
+        }
+
+    @pytest.mark.parametrize(
+        "redirect_uri",
+        [
+            "https://vscode.dev/redirect/extra",
+            "https://evil.example.com/callback",
+        ],
+    )
+    def test_unknown_client_unsafe_redirect_keeps_json_error(
+        self,
+        test_client: TestClient,
+        clear_device_storage,
+        redirect_uri: str,
+    ) -> None:
+        _configure_oauth2(test_client)
+
+        response = test_client.get(
+            f"{API_PREFIX}/oauth2/login/entra",
+            params={
+                "client_id": "unknown-client",
+                "response_type": "code",
+                "redirect_uri": redirect_uri,
+                "code_challenge": "challenge",
+                "code_challenge_method": "S256",
+            },
+            follow_redirects=False,
+        )
+
+        assert response.status_code == 400
+        assert response.json() == {
+            "error": "invalid_client",
+            "error_description": "Unknown client_id",
+        }
+        assert test_pending_consent_store.pending == {}
+
+    def test_known_client_unregistered_safe_redirect_uses_same_consent_detour(
+        self,
+        test_client: TestClient,
+        clear_device_storage,
+    ) -> None:
+        _configure_oauth2(test_client)
+
+        response = test_client.get(
+            f"{API_PREFIX}/oauth2/login/entra",
+            params={
+                "client_id": "test-client",
+                "response_type": "code",
+                "redirect_uri": "http://localhost:43123/different-path",
+                "code_challenge": "challenge",
+                "code_challenge_method": "S256",
+            },
+            follow_redirects=False,
+        )
+
+        assert response.status_code == 302
+        nonce = response.headers["location"].split("nonce=", maxsplit=1)[1]
+        pending = test_pending_consent_store.peek(nonce)
+        assert pending is not None
+        assert pending["error"] == "invalid_request"
+        assert pending["error_description"] == "redirect_uri is not registered for this client"
+
+    def test_known_client_unregistered_unsafe_redirect_keeps_json_error(
+        self,
+        test_client: TestClient,
+        clear_device_storage,
+    ) -> None:
+        _configure_oauth2(test_client)
+
+        response = test_client.get(
+            f"{API_PREFIX}/oauth2/login/entra",
+            params={
+                "client_id": "test-client",
+                "response_type": "code",
+                "redirect_uri": "https://evil.example.com/callback",
+                "code_challenge": "challenge",
+                "code_challenge_method": "S256",
+            },
+            follow_redirects=False,
+        )
+
+        assert response.status_code == 400
+        assert response.json() == {
+            "error": "invalid_request",
+            "error_description": "redirect_uri is not registered for this client",
+        }
+        assert test_pending_consent_store.pending == {}
 
 
 @pytest.mark.integration
