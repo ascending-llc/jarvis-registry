@@ -15,13 +15,12 @@ import (
 type fakeRegistry struct {
 	metadata     skillMetadata
 	content      skillContent
-	cursor       string
 	contentCalls int
 }
 
 func TestSkillSyncAddModifyLocalDriftAndDelete(t *testing.T) {
 	guideV1 := "guide v1"
-	remote := &fakeRegistry{cursor: "2026-08-05T10:00:00Z"}
+	remote := &fakeRegistry{}
 	remote.setSkill("skill-1", "demo-skill", skillDefinition{
 		Name:          "demo-skill",
 		Description:   "demo",
@@ -65,7 +64,6 @@ func TestSkillSyncAddModifyLocalDriftAndDelete(t *testing.T) {
 
 	t.Run("remote modification replaces local skill", func(t *testing.T) {
 		guideV2 := "guide v2"
-		remote.cursor = "2026-08-05T10:01:00Z"
 		remote.setSkill("skill-1", "demo-skill", skillDefinition{
 			Name:          "demo-skill",
 			Description:   "updated demo",
@@ -87,8 +85,8 @@ func TestSkillSyncAddModifyLocalDriftAndDelete(t *testing.T) {
 	})
 
 	t.Run("full sync repairs local drift", func(t *testing.T) {
-		filePath := filepath.Join(syncer.skillsRoot, "demo-skill", "references", "guide.md")
-		if err := os.WriteFile(filePath, []byte("locally changed"), 0o644); err != nil {
+		skillMDPath := filepath.Join(syncer.skillsRoot, "demo-skill", "SKILL.md")
+		if err := os.WriteFile(skillMDPath, []byte("---\nname: demo-skill\ndescription: corrupted\ncategory: x\nalways-apply: false\n---\n\n# Corrupted body\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		result, err := syncer.sync(context.Background(), true)
@@ -98,12 +96,10 @@ func TestSkillSyncAddModifyLocalDriftAndDelete(t *testing.T) {
 		if result.updated != 1 || remote.contentCalls != 3 {
 			t.Fatalf("unexpected result: %+v contentCalls=%d", result, remote.contentCalls)
 		}
-		assertFileContent(t, filePath, "guide v2")
 	})
 
 	t.Run("remote tombstone deletes only managed skill", func(t *testing.T) {
 		deletedAt := "2026-08-05T10:02:00Z"
-		remote.cursor = deletedAt
 		remote.metadata.DeletedAt = &deletedAt
 		result, err := syncer.sync(context.Background(), false)
 		if err != nil {
@@ -126,10 +122,8 @@ func TestSkillSyncAddModifyLocalDriftAndDelete(t *testing.T) {
 }
 
 func TestFullSyncPrunesPhysicallyDeletedSkills(t *testing.T) {
-	// When a skill is physically deleted on the server (no tombstone), a full
-	// sync should detect the orphaned manifest entry and remove it locally.
 	guideContent := "guide content"
-	remote := &fakeRegistry{cursor: "2026-08-05T10:00:00Z"}
+	remote := &fakeRegistry{}
 	remote.setSkill("skill-1", "demo-skill", skillDefinition{
 		Name: "demo-skill", Description: "demo", UserInvocable: true,
 		Category: "testing", Frontmatter: map[string]any{},
@@ -145,7 +139,6 @@ func TestFullSyncPrunesPhysicallyDeletedSkills(t *testing.T) {
 		manifestPath: filepath.Join(workspace, "manifest.json"),
 	}
 
-	// Initial sync adds the skill.
 	result, err := syncer.sync(context.Background(), false)
 	if err != nil {
 		t.Fatal(err)
@@ -158,7 +151,6 @@ func TestFullSyncPrunesPhysicallyDeletedSkills(t *testing.T) {
 		t.Fatalf("skill directory should exist: %v", err)
 	}
 
-	// Simulate physical deletion: server returns an empty skill list.
 	emptyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer test-token" {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -166,8 +158,7 @@ func TestFullSyncPrunesPhysicallyDeletedSkills(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Path == "/proxy/skills" {
-			cursor := "2026-08-05T11:00:00Z"
-			_ = json.NewEncoder(w).Encode(skillListResponse{Skills: []skillMetadata{}, Cursor: &cursor})
+			_ = json.NewEncoder(w).Encode(skillListResponse{Skills: []skillMetadata{}})
 			return
 		}
 		http.NotFound(w, r)
@@ -175,16 +166,15 @@ func TestFullSyncPrunesPhysicallyDeletedSkills(t *testing.T) {
 	t.Cleanup(emptyServer.Close)
 	syncer.api = &apiClient{baseURL: emptyServer.URL, token: "test-token", http: emptyServer.Client()}
 
-	// Delta sync also detects the physical deletion via a full-list probe.
 	result, err = syncer.sync(context.Background(), false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.deleted != 1 {
-		t.Fatalf("delta sync should prune 1 orphan, got %+v", result)
+		t.Fatalf("sync should prune 1 orphan, got %+v", result)
 	}
 	if _, err := os.Stat(skillDir); !os.IsNotExist(err) {
-		t.Fatalf("skill directory should be deleted after full sync, got %v", err)
+		t.Fatalf("skill directory should be deleted after sync, got %v", err)
 	}
 	manifest, err := loadManifest(syncer.manifestPath)
 	if err != nil {
@@ -195,7 +185,7 @@ func TestFullSyncPrunesPhysicallyDeletedSkills(t *testing.T) {
 	}
 }
 
-func TestHashChangesForEveryLocalDefinitionField(t *testing.T) {
+func TestHashOnlyDependsOnBody(t *testing.T) {
 	base := skillDefinition{
 		Name: "demo", Description: "description", UserInvocable: true,
 		Category: "category", Frontmatter: map[string]any{}, Body: "body",
@@ -211,26 +201,35 @@ func TestHashChangesForEveryLocalDefinitionField(t *testing.T) {
 		{"DisableModelInvocation", func(d *skillDefinition) { d.DisableModelInvocation = true }},
 		{"UserInvocable", func(d *skillDefinition) { d.UserInvocable = false }},
 		{"AllowedTools", func(d *skillDefinition) { d.AllowedTools = []string{"bash"} }},
+		{"Name", func(d *skillDefinition) { d.Name = "other" }},
+		{"Description", func(d *skillDefinition) { d.Description = "other" }},
+		{"Frontmatter", func(d *skillDefinition) { d.Frontmatter = map[string]any{"k": "v"} }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.field, func(t *testing.T) {
 			changed := base
 			tc.mutate(&changed)
-			if mustHash(t, changed) == baseHash {
-				t.Fatalf("%s must affect the hash", tc.field)
+			if mustHash(t, changed) != baseHash {
+				t.Fatalf("changing %s must NOT affect the hash (body-only)", tc.field)
 			}
 		})
 	}
+
+	t.Run("Body", func(t *testing.T) {
+		changed := base
+		changed.Body = "different body"
+		if mustHash(t, changed) == baseHash {
+			t.Fatal("changing Body must affect the hash")
+		}
+	})
 }
 
 func TestHashMatchesPythonVector(t *testing.T) {
-	guide := "guide v1"
 	definition := skillDefinition{
 		Name: "demo", Description: "description", UserInvocable: true, Category: "testing",
 		Frontmatter: map[string]any{"model": "test-model"}, Body: "# Demo\n",
-		Files: []skillFile{{RelativePath: "references/guide.md", Content: &guide}},
 	}
-	const pythonHash = "sha256:39c205b84a2f3f047bcaaf5c0dcd1f08050b85bc3c837ac3c36c647291e312cf"
+	const pythonHash = "sha256:8a84d10c9fccef5a9cd82670df6f979f60ed912a96eaff221d2fcd8d3d190814"
 	if actual := mustHash(t, definition); actual != pythonHash {
 		t.Fatalf("Python/Go hash mismatch: expected %s, got %s", pythonHash, actual)
 	}
@@ -342,7 +341,7 @@ func TestSyncLoggerFiltersBelowMinimumLevel(t *testing.T) {
 func (fake *fakeRegistry) setSkill(id string, skillPath string, definition skillDefinition) {
 	hash := mustHashValue(definition)
 	fake.metadata = skillMetadata{
-		ID: id, Path: skillPath, Name: definition.Name, ContentHash: hash, UpdatedAt: fake.cursor,
+		ID: id, Path: skillPath, Name: definition.Name, ContentHash: hash, UpdatedAt: "2026-08-05T10:00:00Z",
 	}
 	fake.content = skillContent{
 		ID: id, Name: definition.Name, Description: definition.Description, AlwaysApply: definition.AlwaysApply,
@@ -360,7 +359,7 @@ func (fake *fakeRegistry) serveHTTP(response http.ResponseWriter, request *http.
 	}
 	response.Header().Set("Content-Type", "application/json")
 	if request.URL.Path == "/proxy/skills" {
-		_ = json.NewEncoder(response).Encode(skillListResponse{Skills: []skillMetadata{fake.metadata}, Cursor: &fake.cursor})
+		_ = json.NewEncoder(response).Encode(skillListResponse{Skills: []skillMetadata{fake.metadata}})
 		return
 	}
 	if request.URL.Path == "/proxy/skills/skill-1/content" {

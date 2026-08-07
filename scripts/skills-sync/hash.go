@@ -9,7 +9,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -46,56 +45,14 @@ type skillHeader struct {
 }
 
 func computeSkillHash(skill skillDefinition) (string, error) {
-	// The Registry's Python service hashes the same versioned logical manifest.
-	// Keep field selection, validation, UTF-8 path ordering, and JSON encoding in
+	// The Registry's Python service hashes only the body inside a versioned
+	// envelope.  Keep the manifest shape, JSON encoding, and key ordering in
 	// sync with that implementation; changing any of them requires a new format.
-	files := append([]skillFile(nil), skill.Files...)
-	sort.Slice(files, func(i int, j int) bool {
-		return bytes.Compare([]byte(files[i].RelativePath), []byte(files[j].RelativePath)) < 0
-	})
-
-	manifestFiles := make([]any, 0, len(files))
-	seen := make(map[string]struct{}, len(files))
-	for _, file := range files {
-		if err := validateRelativePath(file.RelativePath); err != nil {
-			return "", err
-		}
-		if _, exists := seen[file.RelativePath]; exists {
-			return "", fmt.Errorf("duplicate relative path %q", file.RelativePath)
-		}
-		seen[file.RelativePath] = struct{}{}
-		if file.IsBinary != nil && *file.IsBinary {
-			return "", fmt.Errorf("binary file %q cannot be synchronized", file.RelativePath)
-		}
-		if file.Content == nil {
-			return "", fmt.Errorf("file %q has no content", file.RelativePath)
-		}
-		manifestFiles = append(manifestFiles, map[string]any{
-			"content":      *file.Content,
-			"isExecutable": file.IsExecutable,
-			"relativePath": file.RelativePath,
-		})
-	}
-
-	var allowedTools any
-	if skill.AllowedTools != nil {
-		allowedTools = skill.AllowedTools
-	}
-
 	manifest := map[string]any{
 		"format": hashFormat,
 		"skill": map[string]any{
-			"allowedTools":           allowedTools,
-			"alwaysApply":            skill.AlwaysApply,
-			"body":                   skill.Body,
-			"category":               skill.Category,
-			"description":            skill.Description,
-			"disableModelInvocation": skill.DisableModelInvocation,
-			"frontmatter":            skill.Frontmatter,
-			"name":                   skill.Name,
-			"userInvocable":          skill.UserInvocable,
+			"body": skill.Body,
 		},
-		"files": manifestFiles,
 	}
 	canonical, err := canonicalJSON(manifest)
 	if err != nil {

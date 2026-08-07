@@ -28,7 +28,6 @@ type skillMetadata struct {
 
 type skillListResponse struct {
 	Skills []skillMetadata `json:"skills"`
-	Cursor *string         `json:"cursor"`
 }
 
 type skillFile struct {
@@ -61,7 +60,6 @@ type manifestEntry struct {
 }
 
 type localManifest struct {
-	Cursor string                   `json:"cursor,omitempty"`
 	Skills map[string]manifestEntry `json:"skills"`
 }
 
@@ -87,34 +85,21 @@ type skillSyncer struct {
 }
 
 func (syncer *skillSyncer) sync(ctx context.Context, full bool) (syncResult, error) {
-	// The manifest cursor is a batch commit marker: process every returned change
-	// first, then persist the new cursor once. On failure, the previous cursor is
-	// retained so the Registry can replay the incomplete delta on the next run.
 	manifest, err := loadManifest(syncer.manifestPath)
 	if err != nil {
 		return syncResult{}, err
 	}
 	debugf(
 		syncer.logger,
-		"manifest loaded path=%q managed_skills=%d cursor=%q",
+		"manifest loaded path=%q managed_skills=%d",
 		syncer.manifestPath,
 		len(manifest.Skills),
-		manifest.Cursor,
 	)
-	since := manifest.Cursor
-	if full {
-		infof(syncer.logger, "full reconciliation requested; stored cursor will not be sent")
-		since = ""
-	}
-	remote, err := syncer.api.listSkills(ctx, since)
+	remote, err := syncer.api.listSkills(ctx)
 	if err != nil {
 		return syncResult{}, err
 	}
-	responseCursor := ""
-	if remote.Cursor != nil {
-		responseCursor = *remote.Cursor
-	}
-	infof(syncer.logger, "metadata received skills=%d cursor=%q", len(remote.Skills), responseCursor)
+	infof(syncer.logger, "metadata received skills=%d", len(remote.Skills))
 	if err := os.MkdirAll(syncer.skillsRoot, 0o755); err != nil {
 		return syncResult{}, err
 	}
@@ -149,19 +134,10 @@ func (syncer *skillSyncer) sync(ctx context.Context, full bool) (syncResult, err
 		}
 	}
 	// Prune managed skills that no longer exist on the server (physical deletes).
-	// Full sync already has the complete list; delta sync fetches it separately.
+	// The list endpoint always returns all skills, so orphans are detected directly.
 	if len(manifest.Skills) > 0 {
-		allSkills := remote.Skills
-		if !full {
-			allRemote, err := syncer.api.listSkills(ctx, "")
-			if err != nil {
-				return syncResult{}, fmt.Errorf("fetch full skill list for orphan detection: %w", err)
-			}
-			allSkills = allRemote.Skills
-			debugf(syncer.logger, "orphan check fetched full list skills=%d", len(allSkills))
-		}
-		remoteIDs := make(map[string]struct{}, len(allSkills))
-		for _, metadata := range allSkills {
+		remoteIDs := make(map[string]struct{}, len(remote.Skills))
+		for _, metadata := range remote.Skills {
 			if metadata.DeletedAt == nil {
 				remoteIDs[metadata.ID] = struct{}{}
 			}
@@ -180,17 +156,13 @@ func (syncer *skillSyncer) sync(ctx context.Context, full bool) (syncResult, err
 		}
 	}
 
-	if remote.Cursor != nil {
-		manifest.Cursor = *remote.Cursor
-	}
 	if err := saveManifest(syncer.manifestPath, manifest); err != nil {
 		return syncResult{}, err
 	}
 	debugf(
 		syncer.logger,
-		"manifest saved path=%q cursor=%q managed_skills=%d",
+		"manifest saved path=%q managed_skills=%d",
 		syncer.manifestPath,
-		manifest.Cursor,
 		len(manifest.Skills),
 	)
 	return result, nil
@@ -536,13 +508,8 @@ func saveManifest(manifestPath string, manifest *localManifest) error {
 	return os.Rename(temporaryPath, manifestPath)
 }
 
-func (client *apiClient) listSkills(ctx context.Context, since string) (skillListResponse, error) {
+func (client *apiClient) listSkills(ctx context.Context) (skillListResponse, error) {
 	endpoint := client.baseURL + "/proxy/skills"
-	if since != "" {
-		query := url.Values{}
-		query.Set("since", since)
-		endpoint += "?" + query.Encode()
-	}
 	response := skillListResponse{}
 	err := client.getJSON(ctx, endpoint, &response)
 	return response, err
