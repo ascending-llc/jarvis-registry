@@ -17,9 +17,15 @@ Two validation phases with different rules:
 """
 
 import ipaddress
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 LOOPBACK_HOSTNAMES = frozenset({"localhost", "127.0.0.1", "::1"})
+
+VENDOR_BROKER_REDIRECT_URIS = frozenset(
+    {
+        "https://vscode.dev/redirect",
+    }
+)
 
 BLOCKED_REDIRECT_SCHEMES = frozenset(
     {
@@ -48,6 +54,58 @@ def is_loopback_host(host: str | None) -> bool:
     if not host:
         return False
     return host.lower() in LOOPBACK_HOSTNAMES
+
+
+def is_safe_unverified_redirect_target(
+    redirect_uri: str,
+    trusted_exact_uris: frozenset[str] = frozenset(),
+) -> bool:
+    """Return whether an OAuth error may be relayed to an otherwise unverified redirect target.
+
+    Only exact trusted URIs and plaintext HTTP loopback listeners are accepted. Parsing failures and
+    fragments fail closed. Callers must still require an explicit user action before redirecting.
+    """
+    try:
+        parts = urlsplit(redirect_uri)
+        hostname = parts.hostname
+    except ValueError:
+        return False
+
+    if parts.fragment:
+        return False
+
+    if redirect_uri in trusted_exact_uris:
+        return True
+
+    return parts.scheme.lower() == "http" and is_loopback_host(hostname)
+
+
+def build_oauth_error_redirect_url(
+    redirect_uri: str,
+    error: str,
+    error_description: str,
+    state: str | None = None,
+) -> str:
+    """Append an RFC 6749-shaped error to an already trusted redirect URI.
+
+    Existing query parameters are preserved, while OAuth error fields are replaced so stale values
+    cannot conflict with the current result. The caller is responsible for trusting ``redirect_uri``.
+    """
+    parts = urlsplit(redirect_uri)
+    reserved_params = {"error", "error_description", "state"}
+    query_params = [
+        (key, value) for key, value in parse_qsl(parts.query, keep_blank_values=True) if key not in reserved_params
+    ]
+    query_params.extend(
+        [
+            ("error", error),
+            ("error_description", error_description),
+        ]
+    )
+    if state is not None:
+        query_params.append(("state", state))
+
+    return urlunsplit(parts._replace(query=urlencode(query_params)))
 
 
 def _is_blocked_https_ip(host: str) -> bool:

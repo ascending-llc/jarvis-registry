@@ -9,7 +9,7 @@ import json
 import logging
 import secrets
 import time
-from typing import Any, cast
+from typing import Any, NamedTuple, cast
 from urllib.parse import urlencode, urlparse
 
 import httpx
@@ -38,7 +38,13 @@ from registry_pkgs.core.jwt_utils import (
     get_token_kid,
 )
 from registry_pkgs.core.oauth_state_store import REFRESH_TOKEN_TTL_SECONDS, OAuthStateStoreProtocol
-from registry_pkgs.core.redirect_uri import redirect_uri_matches, validate_registration_redirect_uri
+from registry_pkgs.core.redirect_uri import (
+    VENDOR_BROKER_REDIRECT_URIS,
+    build_oauth_error_redirect_url,
+    is_safe_unverified_redirect_target,
+    redirect_uri_matches,
+    validate_registration_redirect_uri,
+)
 from registry_pkgs.core.scopes import map_groups_to_scopes
 
 from ..core.config import settings
@@ -73,6 +79,7 @@ from .consent_templates import (
     render_device_code_entry_page,
     render_device_denied_page,
     render_device_link_error_page,
+    render_redirect_error_consent_page,
 )
 
 logger = logging.getLogger(__name__)
@@ -87,6 +94,43 @@ JWT_SELF_SIGNED_KID = settings.jwt_self_signed_kid
 JWT_TOKEN_CONFIG = settings.jwt_token_config
 
 _OIDC_TOKEN_ALGORITHMS = ["RS256"]
+_REDIRECT_ERROR_CONSENT_FLOW_TYPE = "redirect_error"
+
+
+class _RedirectValidationError(NamedTuple):
+    error: str
+    error_description: str
+
+
+def _trusted_error_redirect_uris() -> frozenset[str]:
+    """Return exact redirect targets trusted independently of DCR client metadata."""
+    deployment_callback = f"{settings.jwt_issuer}/api/mcp/jarvis_registry/oauth/callback"
+    return VENDOR_BROKER_REDIRECT_URIS | {deployment_callback}
+
+
+def _peek_redirect_error_consent(
+    pending_store: PendingConsentStore,
+    nonce: str,
+) -> dict[str, Any] | None:
+    """Return a pending redirect-error request without accepting another consent payload type."""
+    pending = pending_store.peek(nonce)
+    if pending is None or pending.get("flow_type") != _REDIRECT_ERROR_CONSENT_FLOW_TYPE:
+        return None
+    return pending
+
+
+def _consume_redirect_error_consent(
+    pending_store: PendingConsentStore,
+    nonce: str,
+) -> dict[str, Any] | None:
+    """Atomically consume a redirect-error request after verifying its payload type."""
+    if _peek_redirect_error_consent(pending_store, nonce) is None:
+        return None
+
+    consumed = pending_store.consume(nonce)
+    if consumed is None or consumed.get("flow_type") != _REDIRECT_ERROR_CONSENT_FLOW_TYPE:
+        return None
+    return consumed
 
 
 def oauth_error_response(error: str, error_description: str | None = None, status_code: int = 400) -> JSONResponse:
@@ -210,16 +254,16 @@ def _validate_known_client_for_redirect(
     client_id: str,
     redirect_uri: str,
     store: OAuthStateStoreProtocol,
-) -> JSONResponse | None:
+) -> _RedirectValidationError | None:
     if _is_registry_client(client_id):
         return None
 
     client_metadata = store.get_client(client_id)
     if client_metadata is None:
-        return _get_unknown_client_response()
+        return _RedirectValidationError("invalid_client", "Unknown client_id")
 
     if not _is_registered_redirect_uri(client_metadata, redirect_uri):
-        return oauth_error_response("invalid_request", "redirect_uri is not registered for this client")
+        return _RedirectValidationError("invalid_request", "redirect_uri is not registered for this client")
 
     return None
 
@@ -287,6 +331,7 @@ def _redirect_to_pending_consent(
     ttl_seconds: int,
     is_https: bool,
     pending_store: PendingConsentStore,
+    consent_path: str = "/oauth2/consent",
 ) -> RedirectResponse:
     """Save a pending-consent nonce and 302 to /oauth2/consent; shared tail of the device-flow and
     Authorization-Code-Grant consent detours in oauth2_callback — the only difference between
@@ -295,7 +340,7 @@ def _redirect_to_pending_consent(
     nonce = secrets.token_urlsafe(32)
     pending_store.save(nonce, pending_payload, ttl_seconds=ttl_seconds)
 
-    consent_url = f"{_auth_server_external_url('/oauth2/consent')}?nonce={nonce}"
+    consent_url = f"{_auth_server_external_url(consent_path)}?nonce={nonce}"
     response = RedirectResponse(url=consent_url, status_code=302)
     response.set_cookie(
         key=settings.oauth2_consent_nonce_cookie_name,
@@ -349,6 +394,24 @@ def _finish_oauth2_callback(
     response = RedirectResponse(url=redirect_url, status_code=302)
     response.delete_cookie(settings.oauth2_temp_session_cookie_name)
     return response
+
+
+def _redirect_error_to_client(
+    redirect_uri: str,
+    error: str,
+    error_description: str,
+    client_state: str | None,
+) -> RedirectResponse:
+    """Redirect an OAuth error to a redirect URI already established as safe."""
+    return RedirectResponse(
+        url=build_oauth_error_redirect_url(
+            redirect_uri,
+            error,
+            error_description,
+            client_state,
+        ),
+        status_code=302,
+    )
 
 
 def _finish_device_callback(
@@ -972,6 +1035,7 @@ async def oauth2_login(
     signer: URLSafeTimedSerializer = Depends(get_signer),
     is_https: bool = Depends(check_if_https),
     store: OAuthStateStoreProtocol = Depends(get_oauth_state_store),
+    pending_store: PendingConsentStore = Depends(get_pending_consent_store),
 ):
     error_url = settings.registry_error_redirect
     try:
@@ -992,7 +1056,21 @@ async def oauth2_login(
 
         client_error = _validate_known_client_for_redirect(client_id, redirect_uri, store)
         if client_error is not None:
-            return client_error
+            if is_safe_unverified_redirect_target(redirect_uri, _trusted_error_redirect_uris()):
+                return _redirect_to_pending_consent(
+                    {
+                        "flow_type": _REDIRECT_ERROR_CONSENT_FLOW_TYPE,
+                        "redirect_uri": redirect_uri,
+                        "error": client_error.error,
+                        "error_description": client_error.error_description,
+                        "client_state": state,
+                    },
+                    PENDING_CONSENT_TTL_SECONDS,
+                    is_https,
+                    pending_store,
+                    consent_path="/oauth2/redirect-error-consent",
+                )
+            return oauth_error_response(client_error.error, client_error.error_description)
 
         if code_challenge_method != "S256":
             params = {
@@ -1143,6 +1221,103 @@ async def deny_consent(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+@router.get("/oauth2/redirect-error-consent", response_class=HTMLResponse)
+async def redirect_error_consent_page(
+    nonce: str | None = None,
+    oauth2_consent_nonce: str | None = Cookie(None, alias=settings.oauth2_consent_nonce_cookie_name),
+    pending_store: PendingConsentStore = Depends(get_pending_consent_store),
+) -> HTMLResponse:
+    try:
+        if not nonce or not oauth2_consent_nonce or not hmac.compare_digest(oauth2_consent_nonce, nonce):
+            return HTMLResponse(render_consent_error_page(), status_code=400)
+
+        pending = _peek_redirect_error_consent(pending_store, oauth2_consent_nonce)
+        if pending is None:
+            return HTMLResponse(render_consent_error_page(), status_code=400)
+
+        return HTMLResponse(
+            render_redirect_error_consent_page(
+                redirect_uri=pending["redirect_uri"],
+                error=pending["error"],
+                error_description=pending["error_description"],
+                nonce=oauth2_consent_nonce,
+                approve_action=_auth_server_route_path("/oauth2/redirect-error-consent/approve"),
+                deny_action=_auth_server_route_path("/oauth2/redirect-error-consent/deny"),
+            )
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error rendering redirect-error consent page")
+        raise HTTPException(status_code=500, detail="Internal server error") from e
+
+
+@router.post("/oauth2/redirect-error-consent/approve")
+async def approve_redirect_error_consent(
+    nonce: str = Form(...),
+    oauth2_consent_nonce: str | None = Cookie(None, alias=settings.oauth2_consent_nonce_cookie_name),
+    pending_store: PendingConsentStore = Depends(get_pending_consent_store),
+) -> Response:
+    try:
+        if not oauth2_consent_nonce or not hmac.compare_digest(oauth2_consent_nonce, nonce):
+            return JSONResponse({"detail": "Invalid or expired consent request"}, status_code=400)
+
+        pending = _consume_redirect_error_consent(pending_store, nonce)
+        if pending is None:
+            return JSONResponse(
+                {"detail": "This link has expired. Please retry from your MCP client."},
+                status_code=400,
+            )
+
+        response = _redirect_error_to_client(
+            pending["redirect_uri"],
+            pending["error"],
+            pending["error_description"],
+            pending.get("client_state"),
+        )
+        response.delete_cookie(settings.oauth2_consent_nonce_cookie_name)
+        return response
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error approving redirect-error consent")
+        raise HTTPException(status_code=500, detail="Internal server error") from e
+
+
+@router.post("/oauth2/redirect-error-consent/deny")
+async def deny_redirect_error_consent(
+    nonce: str = Form(...),
+    oauth2_consent_nonce: str | None = Cookie(None, alias=settings.oauth2_consent_nonce_cookie_name),
+    pending_store: PendingConsentStore = Depends(get_pending_consent_store),
+) -> Response:
+    try:
+        if not oauth2_consent_nonce or not hmac.compare_digest(oauth2_consent_nonce, nonce):
+            return JSONResponse({"detail": "Invalid or expired consent request"}, status_code=400)
+
+        pending = _consume_redirect_error_consent(pending_store, nonce)
+        if pending is None:
+            return JSONResponse(
+                {"detail": "This link has expired. Please retry from your MCP client."},
+                status_code=400,
+            )
+
+        params = {
+            "error": "access_denied",
+            "error_description": "User declined to relay this error to the MCP client",
+        }
+        response = RedirectResponse(
+            url=f"{settings.registry_error_redirect}?{urlencode(params)}",
+            status_code=302,
+        )
+        response.delete_cookie(settings.oauth2_consent_nonce_cookie_name)
+        return response
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error denying redirect-error consent")
+        raise HTTPException(status_code=500, detail="Internal server error") from e
+
+
 @router.get("/oauth2/callback/{provider}")
 async def oauth2_callback(
     provider: AllowedProvider,
@@ -1283,17 +1458,12 @@ async def oauth2_callback(
                     response.delete_cookie(settings.oauth2_temp_session_cookie_name)
                     return response
 
-                error_params = {
-                    "error": "invalid_scope",
-                    "error_description": "Requested scopes are not available for this user",
-                }
-                client_state = session_data.get("client_state")
-                if client_state:
-                    error_params["state"] = client_state
-
-                client_redirect_uri = session_data["client_redirect_uri"]
-                redirect_url = f"{client_redirect_uri}?{urlencode(error_params)}"
-                response = RedirectResponse(url=redirect_url, status_code=302)
+                response = _redirect_error_to_client(
+                    session_data["client_redirect_uri"],
+                    "invalid_scope",
+                    "Requested scopes are not available for this user",
+                    session_data.get("client_state"),
+                )
                 response.delete_cookie(settings.oauth2_temp_session_cookie_name)
                 return response
 

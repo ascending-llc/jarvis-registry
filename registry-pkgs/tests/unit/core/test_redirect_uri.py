@@ -1,9 +1,14 @@
 """Unit tests for shared redirect_uri validation."""
 
+from urllib.parse import parse_qs, urlsplit
+
 import pytest
 
 from registry_pkgs.core.redirect_uri import (
+    VENDOR_BROKER_REDIRECT_URIS,
+    build_oauth_error_redirect_url,
     is_loopback_host,
+    is_safe_unverified_redirect_target,
     redirect_uri_matches,
     validate_registration_redirect_uri,
 )
@@ -17,6 +22,130 @@ class TestIsLoopbackHost:
     @pytest.mark.parametrize("host", ["example.com", "10.0.0.1", "", None])
     def test_non_loopback_hosts(self, host: str | None) -> None:
         assert is_loopback_host(host) is False
+
+
+class TestIsSafeUnverifiedRedirectTarget:
+    @pytest.mark.parametrize(
+        "uri",
+        [
+            "http://localhost/callback",
+            "http://localhost:54321/callback",
+            "http://127.0.0.1/callback",
+            "http://127.0.0.1:54321/callback",
+            "http://[::1]/callback",
+            "http://[::1]:54321/callback",
+        ],
+    )
+    def test_http_loopback_accepted(self, uri: str) -> None:
+        assert is_safe_unverified_redirect_target(uri) is True
+
+    @pytest.mark.parametrize(
+        "uri",
+        [
+            "https://localhost/callback",
+            "https://127.0.0.1/callback",
+            "https://[::1]/callback",
+        ],
+    )
+    def test_https_loopback_rejected(self, uri: str) -> None:
+        assert is_safe_unverified_redirect_target(uri) is False
+
+    def test_exact_allowlist_match_accepted(self) -> None:
+        assert (
+            is_safe_unverified_redirect_target(
+                "https://vscode.dev/redirect",
+                VENDOR_BROKER_REDIRECT_URIS,
+            )
+            is True
+        )
+
+    @pytest.mark.parametrize(
+        "uri",
+        [
+            "https://vscode.dev/redirect/",
+            "https://vscode.dev/redirect/extra",
+            "https://vscode.dev/redirect-elsewhere",
+            "https://vscode.dev.evil.example/redirect",
+        ],
+    )
+    def test_allowlist_near_matches_rejected(self, uri: str) -> None:
+        assert is_safe_unverified_redirect_target(uri, VENDOR_BROKER_REDIRECT_URIS) is False
+
+    @pytest.mark.parametrize(
+        ("uri", "trusted"),
+        [
+            ("http://localhost/callback#fragment", frozenset()),
+            (
+                "https://trusted.example/callback#fragment",
+                frozenset({"https://trusted.example/callback#fragment"}),
+            ),
+        ],
+    )
+    def test_fragment_rejected_even_if_otherwise_safe(self, uri: str, trusted: frozenset[str]) -> None:
+        assert is_safe_unverified_redirect_target(uri, trusted) is False
+
+    def test_malformed_uri_rejected_without_raising(self) -> None:
+        assert is_safe_unverified_redirect_target("http://[::1") is False
+
+
+class TestBuildOauthErrorRedirectUrl:
+    def test_error_fields_always_present_and_return_is_string(self) -> None:
+        result = build_oauth_error_redirect_url(
+            "http://localhost:1234/callback",
+            "invalid_client",
+            "Unknown client_id",
+        )
+
+        assert isinstance(result, str)
+        assert parse_qs(urlsplit(result).query) == {
+            "error": ["invalid_client"],
+            "error_description": ["Unknown client_id"],
+        }
+
+    def test_state_appended_when_provided(self) -> None:
+        result = build_oauth_error_redirect_url(
+            "http://localhost/callback",
+            "invalid_request",
+            "Bad redirect",
+            "client-state",
+        )
+
+        assert parse_qs(urlsplit(result).query)["state"] == ["client-state"]
+
+    def test_state_omitted_when_none(self) -> None:
+        result = build_oauth_error_redirect_url(
+            "http://localhost/callback",
+            "invalid_client",
+            "Unknown client_id",
+            None,
+        )
+
+        assert "state" not in parse_qs(urlsplit(result).query)
+
+    def test_empty_state_is_preserved(self) -> None:
+        result = build_oauth_error_redirect_url(
+            "http://localhost/callback",
+            "invalid_client",
+            "Unknown client_id",
+            "",
+        )
+
+        assert parse_qs(urlsplit(result).query, keep_blank_values=True)["state"] == [""]
+
+    def test_existing_query_is_preserved_without_duplicate_oauth_fields(self) -> None:
+        result = build_oauth_error_redirect_url(
+            "http://localhost/callback?existing=1&error=stale&state=stale",
+            "invalid_client",
+            "Unknown client_id",
+            "fresh",
+        )
+
+        assert parse_qs(urlsplit(result).query) == {
+            "existing": ["1"],
+            "error": ["invalid_client"],
+            "error_description": ["Unknown client_id"],
+            "state": ["fresh"],
+        }
 
 
 class TestValidateRegistrationRedirectUri:
