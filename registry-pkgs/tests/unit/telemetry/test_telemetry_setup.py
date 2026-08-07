@@ -27,7 +27,8 @@ class TestTelemetrySetup:
             provider = metrics.get_meter_provider()
             if hasattr(provider, "shutdown"):
                 provider.shutdown(timeout_millis=100)
-        except Exception:
+        except Exception as e:
+            print(e)
             pass
 
     @pytest.fixture
@@ -268,7 +269,7 @@ class TestSetupTracing:
             provider = trace_api.get_tracer_provider()
             if isinstance(provider, TracerProvider):
                 provider.shutdown()
-        except Exception:
+        except Exception:  # best-effort teardown; provider may already be shut down
             pass
         registry_pkgs.telemetry._agno_instrumented = False
         registry_pkgs.telemetry._trace_exporter_configured = False
