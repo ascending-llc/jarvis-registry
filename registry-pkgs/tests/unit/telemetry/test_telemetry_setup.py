@@ -1,9 +1,13 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
+from opentelemetry import trace as trace_api
+from opentelemetry.metrics import Histogram
+from opentelemetry.sdk.trace import TracerProvider
 
+import registry_pkgs.telemetry
 from registry_pkgs.core.config import TelemetryConfig
-from registry_pkgs.telemetry import setup_metrics
+from registry_pkgs.telemetry import setup_metrics, setup_tracing, shutdown_telemetry
 
 
 @pytest.mark.unit
@@ -74,7 +78,11 @@ class TestTelemetrySetup:
         _, kwargs = mock_otel_deps["resource"].create.call_args
         assert kwargs["attributes"]["service.name"] == service_name
 
-        mock_otel_deps["safe_exporter"].assert_called_once_with(endpoint=f"{otlp_endpoint}/v1/metrics", timeout=5)
+        mock_otel_deps["safe_exporter"].assert_called_once_with(
+            endpoint=f"{otlp_endpoint}/v1/metrics",
+            timeout=5,
+            headers=None,
+        )
         mock_otel_deps["metrics"].set_meter_provider.assert_called_once()
 
     def test_setup_metrics_disabled(self, mock_otel_deps):
@@ -82,6 +90,13 @@ class TestTelemetrySetup:
         setup_metrics("test-service", TelemetryConfig(), enable_metrics=False)
 
         mock_otel_deps["metrics"].set_meter_provider.assert_not_called()
+
+    def test_workflow_bucket_view_only_matches_histograms(self, mock_otel_deps):
+        setup_metrics("test-service", TelemetryConfig())
+
+        views = mock_otel_deps["meter_provider"].call_args.kwargs["views"]
+        workflow_view = views[0]
+        assert workflow_view._instrument_type is Histogram
 
     def test_setup_prometheus_enabled(self, mock_otel_deps):
         """Test that Prometheus reader is added when env var is set."""
@@ -102,7 +117,22 @@ class TestTelemetrySetup:
         """Test that it falls back to env var if no endpoint provided."""
         env_endpoint = "http://env-collector:4318"
         setup_metrics("test-service", TelemetryConfig(otel_exporter_otlp_endpoint=env_endpoint), otlp_endpoint=None)
-        mock_otel_deps["safe_exporter"].assert_called_with(endpoint=f"{env_endpoint}/v1/metrics", timeout=5)
+        mock_otel_deps["safe_exporter"].assert_called_with(
+            endpoint=f"{env_endpoint}/v1/metrics",
+            timeout=5,
+            headers=None,
+        )
+
+    def test_setup_metrics_passes_gateway_bearer_token(self, mock_otel_deps):
+        config = TelemetryConfig(otel_gateway_token="secret-token")
+
+        setup_metrics("test-service", config, otlp_endpoint="http://collector:4318")
+
+        mock_otel_deps["safe_exporter"].assert_called_once_with(
+            endpoint="http://collector:4318/v1/metrics",
+            timeout=5,
+            headers={"Authorization": "Bearer secret-token"},
+        )
 
     def test_setup_handles_initialization_failure(self, mock_otel_deps):
         """Test that initialization failure is caught and logged."""
@@ -184,8 +214,6 @@ class TestShutdownTelemetry:
 
     def test_shutdown_telemetry_calls_provider_shutdown(self):
         """Test that shutdown calls the meter provider's shutdown method."""
-        from registry_pkgs.telemetry import shutdown_telemetry
-
         with patch("registry_pkgs.telemetry.metrics.get_meter_provider") as mock_get_provider:
             mock_provider = MagicMock()
             mock_get_provider.return_value = mock_provider
@@ -196,8 +224,6 @@ class TestShutdownTelemetry:
 
     def test_shutdown_telemetry_handles_missing_shutdown(self):
         """Test that shutdown handles providers without shutdown method."""
-        from registry_pkgs.telemetry import shutdown_telemetry
-
         with patch("registry_pkgs.telemetry.metrics.get_meter_provider") as mock_get_provider:
             mock_provider = MagicMock(spec=[])  # No shutdown method
             mock_get_provider.return_value = mock_provider
@@ -207,8 +233,6 @@ class TestShutdownTelemetry:
 
     def test_shutdown_telemetry_suppresses_errors(self):
         """Test that shutdown errors are suppressed."""
-        from registry_pkgs.telemetry import shutdown_telemetry
-
         with patch("registry_pkgs.telemetry.metrics.get_meter_provider") as mock_get_provider:
             mock_provider = MagicMock()
             mock_provider.shutdown.side_effect = Exception("Shutdown error")
@@ -216,3 +240,116 @@ class TestShutdownTelemetry:
 
             # Should not raise
             shutdown_telemetry()
+
+    def test_shutdown_telemetry_shuts_down_tracer_provider(self):
+        """Test that shutdown also calls tracer_provider.shutdown()."""
+        mock_tracer_provider = MagicMock()
+        with (
+            patch("registry_pkgs.telemetry.metrics.get_meter_provider") as mock_get_meter,
+            patch("opentelemetry.trace.get_tracer_provider", return_value=mock_tracer_provider),
+        ):
+            mock_get_meter.return_value = MagicMock()
+            shutdown_telemetry()
+
+            mock_tracer_provider.shutdown.assert_called_once()
+
+
+@pytest.mark.unit
+@pytest.mark.telemetry
+class TestSetupTracing:
+    """Test suite for setup_tracing"""
+
+    @pytest.fixture(autouse=True)
+    def reset_otel_trace_state(self):
+        registry_pkgs.telemetry._agno_instrumented = False
+        registry_pkgs.telemetry._trace_exporter_configured = False
+        yield
+        try:
+            provider = trace_api.get_tracer_provider()
+            if isinstance(provider, TracerProvider):
+                provider.shutdown()
+        except Exception:
+            pass
+        registry_pkgs.telemetry._agno_instrumented = False
+        registry_pkgs.telemetry._trace_exporter_configured = False
+
+    def test_setup_tracing_installs_tracer_provider(self):
+        """After setup_tracing(), global TracerProvider is a real TracerProvider."""
+        from opentelemetry.sdk.trace import TracerProvider
+
+        mock_instrumentor_type = MagicMock()
+        mock_trace_config_type = MagicMock()
+        with (
+            patch("opentelemetry.trace.get_tracer_provider", return_value=MagicMock()),
+            patch("opentelemetry.trace.set_tracer_provider") as mock_set,
+            patch(
+                "registry_pkgs.telemetry._load_agno_instrumentation",
+                return_value=(mock_instrumentor_type, mock_trace_config_type),
+            ),
+            patch("registry_pkgs.telemetry.OTLPSpanExporter"),
+            patch("registry_pkgs.telemetry.BatchSpanProcessor"),
+        ):
+            setup_tracing("test-service", TelemetryConfig(), otlp_endpoint="http://localhost:4318")
+
+            mock_set.assert_called_once()
+            tp_arg = mock_set.call_args[0][0]
+            assert isinstance(tp_arg, TracerProvider)
+            mock_instrumentor_type.return_value.instrument.assert_called_once()
+            _, instrument_kwargs = mock_instrumentor_type.return_value.instrument.call_args
+            assert instrument_kwargs["tracer_provider"] is tp_arg
+            assert instrument_kwargs["config"] is mock_trace_config_type.return_value
+            mock_trace_config_type.assert_called_once_with(
+                hide_inputs=True,
+                hide_outputs=True,
+                hide_llm_tools=True,
+                hide_llm_invocation_parameters=True,
+            )
+
+    def test_setup_tracing_is_idempotent(self):
+        """Second call is a no-op when TracerProvider already set."""
+        from opentelemetry.sdk.trace import TracerProvider
+
+        existing_provider = TracerProvider()
+        mock_instrumentor_type = MagicMock()
+        with (
+            patch("opentelemetry.trace.get_tracer_provider", return_value=existing_provider),
+            patch("opentelemetry.trace.set_tracer_provider") as mock_set,
+            patch(
+                "registry_pkgs.telemetry._load_agno_instrumentation",
+                return_value=(mock_instrumentor_type, MagicMock()),
+            ),
+            patch("registry_pkgs.telemetry.OTLPSpanExporter"),
+            patch("registry_pkgs.telemetry.BatchSpanProcessor"),
+        ):
+            setup_tracing("test-service", TelemetryConfig())
+            setup_tracing("test-service", TelemetryConfig())
+
+            mock_set.assert_not_called()
+            mock_instrumentor_type.return_value.instrument.assert_called_once()
+
+        existing_provider.shutdown()
+
+    def test_setup_tracing_graceful_without_openinference(self):
+        """When openinference not installed, logs warning and returns."""
+        with (
+            patch("registry_pkgs.telemetry._load_agno_instrumentation", side_effect=ImportError("missing")),
+            patch("opentelemetry.trace.set_tracer_provider") as mock_set,
+        ):
+            registry_pkgs.telemetry.setup_tracing("test-service", TelemetryConfig())
+            mock_set.assert_not_called()
+
+    def test_setup_tracing_uses_same_resource_as_metrics(self):
+        """setup_tracing() uses _build_resource() with same args pattern as setup_metrics()."""
+        with (
+            patch("registry_pkgs.telemetry._build_resource") as mock_build,
+            patch("opentelemetry.trace.get_tracer_provider", return_value=MagicMock()),
+            patch("opentelemetry.trace.set_tracer_provider"),
+            patch("registry_pkgs.telemetry._load_agno_instrumentation", return_value=(MagicMock(), MagicMock())),
+            patch("registry_pkgs.telemetry.OTLPSpanExporter"),
+            patch("registry_pkgs.telemetry.BatchSpanProcessor"),
+        ):
+            mock_build.return_value = MagicMock()
+            config = TelemetryConfig(build_version="v1.2.3")
+            setup_tracing("my-service", config)
+
+            mock_build.assert_called_once_with("my-service", config)

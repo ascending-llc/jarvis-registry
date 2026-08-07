@@ -125,4 +125,5 @@ exclude-signatures = [
     {signature = 'ba0567896f2ffb7c1701179146296d8e5f9c6bf11907bed3ae10734b767ba434', reason = 'synthetic MongoDB ObjectId in consent route unit test is not a credential'},
     {signature = 'c72defc4e901de19821a7608e0f845ad3f5a26320b330abec1233191919fdf47', reason = 'OTEL histogram bucket boundaries are numeric arrays, not credentials'},
     {signature = '561e4d65e220362b61c6c35541a40710574dc2b03fc185d6ccaab0962e0bfce4', reason = 'OTel tracing setup code with BatchSpanProcessor config constants, not credentials'},
+    {signature = '489507678cb679b1ede8492ec458aed91d29a84a9fa4316f889f4c77b62209e4', reason = 'workflow metrics test file with OTel SDK test fixtures and bucket boundaries, not credentials'},
 ]
