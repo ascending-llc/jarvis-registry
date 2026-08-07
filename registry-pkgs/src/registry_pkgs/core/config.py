@@ -6,7 +6,7 @@ from urllib.parse import urlparse
 from cryptography.exceptions import UnsupportedAlgorithm
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey, RSAPublicKey
 from cryptography.hazmat.primitives.serialization import load_pem_private_key, load_pem_public_key
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .scopes import ScopesConfig, load_scopes_config
@@ -101,6 +101,17 @@ class TelemetryConfig(BaseModel):
         default="unknown",
         description="Build identifier (release tag or commit SHA) used as the OTel service.version resource attribute",
     )
+    otel_gateway_token: SecretStr = Field(
+        default=SecretStr(""),
+        description="Optional bearer token used when the OTLP gateway requires authentication",
+    )
+    otel_trace_hide_inputs: bool = Field(default=True, description="Redact agent and model inputs from spans")
+    otel_trace_hide_outputs: bool = Field(default=True, description="Redact agent and model outputs from spans")
+    otel_trace_hide_llm_tools: bool = Field(default=True, description="Redact LLM tool definitions from spans")
+    otel_trace_hide_llm_invocation_parameters: bool = Field(
+        default=True,
+        description="Redact LLM invocation parameters from spans",
+    )
 
 
 class JarvisBaseSettings(BaseSettings):
@@ -177,6 +188,11 @@ class JarvisBaseSettings(BaseSettings):
     otel_prometheus_enabled: bool = False
     otel_prometheus_port: int = 9464
     build_version: str = "unknown"
+    otel_gateway_token: SecretStr = SecretStr("")
+    otel_trace_hide_inputs: bool = True
+    otel_trace_hide_outputs: bool = True
+    otel_trace_hide_llm_tools: bool = True
+    otel_trace_hide_llm_invocation_parameters: bool = True
 
     # ==================== Auth Provider ====================
     auth_provider: str = "entra"  # cognito, keycloak, entra
@@ -333,6 +349,11 @@ class JarvisBaseSettings(BaseSettings):
             otel_prometheus_enabled=self.otel_prometheus_enabled,
             otel_prometheus_port=self.otel_prometheus_port,
             build_version=self.build_version,
+            otel_gateway_token=self.otel_gateway_token,
+            otel_trace_hide_inputs=self.otel_trace_hide_inputs,
+            otel_trace_hide_outputs=self.otel_trace_hide_outputs,
+            otel_trace_hide_llm_tools=self.otel_trace_hide_llm_tools,
+            otel_trace_hide_llm_invocation_parameters=self.otel_trace_hide_llm_invocation_parameters,
         )
 
     @cached_property
