@@ -6,12 +6,12 @@ from beanie import Document, PydanticObjectId
 class SkillFile(Document):
     skillId: PydanticObjectId
     relativePath: str
-    content: str | None = None
     mimeType: str
     bytes: int
-    isBinary: bool = False
     isExecutable: bool = False
     tenantId: str | None = None
+    content: str | None = None
+    isBinary: bool | None = None
     createdAt: datetime | None = None
     updatedAt: datetime | None = None
 

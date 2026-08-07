@@ -87,7 +87,7 @@ def skill_app(monkeypatch) -> Generator[SimpleNamespace, None, None]:
 
 
 class TestListSkills:
-    @patch("registry.api.v1.skill.skill_routes.list_skills_delta", new_callable=AsyncMock)
+    @patch("registry.api.v1.skill.skill_routes.list_skills", new_callable=AsyncMock)
     def test_list_skills_returns_200(self, mock_list, skill_app):
         skill = _make_skill(content_hash="stored_hash_value")
         mock_list.return_value = [skill]
@@ -102,11 +102,11 @@ class TestListSkills:
         assert len(data["skills"]) == 1
         assert data["skills"][0]["name"] == "test-skill"
         assert data["skills"][0]["contentHash"] == "stored_hash_value"
-        assert data["cursor"] is not None
+        assert "cursor" not in data
 
-        mock_list.assert_awaited_once_with(None)
+        mock_list.assert_awaited_once_with()
 
-    @patch("registry.api.v1.skill.skill_routes.list_skills_delta", new_callable=AsyncMock)
+    @patch("registry.api.v1.skill.skill_routes.list_skills", new_callable=AsyncMock)
     def test_list_skills_empty(self, mock_list, skill_app):
         mock_list.return_value = []
 
@@ -118,18 +118,6 @@ class TestListSkills:
         assert resp.status_code == 200
         data = resp.json()
         assert data["skills"] == []
-        assert data["cursor"] is None
-
-    @patch("registry.api.v1.skill.skill_routes.list_skills_delta", new_callable=AsyncMock)
-    def test_list_skills_with_since_param(self, mock_list, skill_app):
-        mock_list.return_value = []
-
-        resp = skill_app.client.get(
-            "/proxy/skills?since=2026-08-01T00:00:00Z",
-            headers={"Authorization": f"Bearer {_mint_token()}"},
-        )
-
-        assert resp.status_code == 200
 
     def test_list_skills_no_auth_returns_401(self, skill_app):
         resp = skill_app.client.get("/proxy/skills")
@@ -143,7 +131,7 @@ class TestListSkills:
 
         assert resp.status_code == 403
 
-    @patch("registry.api.v1.skill.skill_routes.list_skills_delta", new_callable=AsyncMock)
+    @patch("registry.api.v1.skill.skill_routes.list_skills", new_callable=AsyncMock)
     def test_list_skills_includes_tags_and_path(self, mock_list, skill_app):
         skill = _make_skill()
         skill.tags = ["ai", "coding"]
@@ -160,7 +148,7 @@ class TestListSkills:
         assert data["skills"][0]["tags"] == ["ai", "coding"]
         assert data["skills"][0]["path"] == "my-skill"
 
-    @patch("registry.api.v1.skill.skill_routes.list_skills_delta", new_callable=AsyncMock)
+    @patch("registry.api.v1.skill.skill_routes.list_skills", new_callable=AsyncMock)
     def test_list_skills_unreconstructable_content_returns_409(self, mock_list, skill_app):
         mock_list.side_effect = SkillContentUnavailableError("content unavailable")
 

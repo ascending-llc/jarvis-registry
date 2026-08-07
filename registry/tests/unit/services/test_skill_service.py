@@ -1,14 +1,12 @@
-from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from beanie import PydanticObjectId
 
 from registry.services.skill_service import (
-    SkillContentUnavailableError,
     compute_skill_content_hash,
     get_skill_with_files,
-    list_skills_delta,
+    list_skills,
 )
 
 
@@ -28,136 +26,80 @@ def _make_skill(name: str = "test-skill", body: str = "body") -> MagicMock:
     return skill
 
 
-def _make_file(relative_path: str, content: str | None, is_binary: bool | None = False) -> MagicMock:
-    skill_file = MagicMock()
-    skill_file.skillId = PydanticObjectId()
-    skill_file.relativePath = relative_path
-    skill_file.content = content
-    skill_file.isBinary = is_binary
-    skill_file.isExecutable = False
-    return skill_file
-
-
 class TestComputeSkillContentHash:
     def test_is_deterministic_and_uses_versioned_sha256(self):
         skill = _make_skill()
 
-        first = compute_skill_content_hash(skill, [])
-        second = compute_skill_content_hash(skill, [])
+        first = compute_skill_content_hash(skill)
+        second = compute_skill_content_hash(skill)
 
         assert first == second
         assert first.startswith("sha256:")
         assert len(first) == 71
 
-    @pytest.mark.parametrize(
-        "field",
-        [
-            "name",
-            "description",
-            "alwaysApply",
-            "disableModelInvocation",
-            "userInvocable",
-            "allowedTools",
-            "category",
-            "body",
-            "frontmatter",
-        ],
-    )
-    def test_skill_definition_change_changes_hash(self, field):
-        original = _make_skill()
-        changed = _make_skill()
-        if field == "frontmatter":
-            value = {"changed": True}
-        elif field in ("alwaysApply", "disableModelInvocation"):
-            value = True
-        elif field == "userInvocable":
-            value = False
-        elif field == "allowedTools":
-            value = ["tool_a", "tool_b"]
-        else:
-            value = "changed"
-        setattr(changed, field, value)
+    def test_body_change_changes_hash(self):
+        original = _make_skill(body="original body")
+        changed = _make_skill(body="changed body")
 
-        assert compute_skill_content_hash(original, []) != compute_skill_content_hash(changed, [])
+        assert compute_skill_content_hash(original) != compute_skill_content_hash(changed)
 
-    def test_file_order_is_irrelevant(self):
-        skill = _make_skill()
-        first = _make_file("scripts/run.sh", "run")
-        second = _make_file("references/guide.md", "guide")
+    def test_non_body_fields_do_not_affect_hash(self):
+        skill_a = _make_skill()
+        skill_b = _make_skill()
+        skill_b.name = "different-name"
+        skill_b.description = "different description"
+        skill_b.category = "other"
+        skill_b.frontmatter = {"different": True}
+        skill_b.alwaysApply = True
+        skill_b.disableModelInvocation = True
+        skill_b.userInvocable = False
+        skill_b.allowedTools = ["bash"]
 
-        assert compute_skill_content_hash(skill, [first, second]) == compute_skill_content_hash(skill, [second, first])
+        assert compute_skill_content_hash(skill_a) == compute_skill_content_hash(skill_b)
 
-    def test_file_content_change_changes_hash(self):
-        skill = _make_skill()
+    def test_manifest_contains_format_and_body(self):
+        from registry.services.skill_service import _canonical_manifest
 
-        assert compute_skill_content_hash(skill, [_make_file("a.txt", "one")]) != compute_skill_content_hash(
-            skill, [_make_file("a.txt", "two")]
-        )
+        skill = _make_skill(body="test body")
+        manifest = _canonical_manifest(skill)
 
-    @pytest.mark.parametrize(
-        ("skill_file", "message"),
-        [
-            (_make_file("assets/logo.png", None, True), "binary"),
-            (_make_file("references/large.md", None, False), "no cached content"),
-            (_make_file("../escape.txt", "bad"), "unsafe relative path"),
-        ],
-    )
-    def test_unreconstructable_file_fails_closed(self, skill_file, message):
-        with pytest.raises(SkillContentUnavailableError, match=message):
-            compute_skill_content_hash(_make_skill(), [skill_file])
-
-    def test_duplicate_path_fails_closed(self):
-        files = [_make_file("a.txt", "one"), _make_file("a.txt", "two")]
-
-        with pytest.raises(SkillContentUnavailableError, match="duplicate"):
-            compute_skill_content_hash(_make_skill(), files)
-
-    def test_non_json_frontmatter_fails_closed(self):
-        skill = _make_skill()
-        skill.frontmatter = {"invalid": object()}
-
-        with pytest.raises(SkillContentUnavailableError, match="canonical JSON"):
-            compute_skill_content_hash(skill, [])
+        assert manifest == {
+            "format": "jarvis-skill-content-v1",
+            "skill": {"body": "test body"},
+        }
 
 
-class TestListSkillsDelta:
+class TestListSkills:
     @pytest.mark.asyncio
-    @patch("registry.services.skill_service.SkillFile")
     @patch("registry.services.skill_service.Skill")
-    async def test_batches_files_and_computes_fresh_hash_without_saving(self, mock_skill_cls, mock_file_cls):
+    async def test_returns_body_only_skills_with_hashes(self, mock_skill_cls):
         skill = _make_skill()
         skill.save = AsyncMock()
-        skill_file = _make_file("scripts/run.sh", "run")
-        skill_file.skillId = skill.id
 
         skill_query = MagicMock()
         skill_query.sort.return_value = skill_query
         skill_query.to_list = AsyncMock(return_value=[skill])
         mock_skill_cls.find.return_value = skill_query
-        mock_file_cls.find.return_value.to_list = AsyncMock(return_value=[skill_file])
 
-        result = await list_skills_delta()
+        result = await list_skills()
 
         assert result == [skill]
         assert skill.contentHash.startswith("sha256:")
         skill.save.assert_not_awaited()
-        mock_file_cls.find.assert_called_once_with({"skillId": {"$in": [skill.id]}})
+        mock_skill_cls.find.assert_called_once_with({"fileCount": 0})
 
     @pytest.mark.asyncio
-    @patch("registry.services.skill_service.SkillFile")
     @patch("registry.services.skill_service.Skill")
-    async def test_filters_by_inclusive_cursor(self, mock_skill_cls, mock_file_cls):
-        since = datetime(2026, 8, 1, tzinfo=UTC)
+    async def test_returns_empty_when_no_body_only_skills(self, mock_skill_cls):
         query = MagicMock()
         query.sort.return_value = query
         query.to_list = AsyncMock(return_value=[])
         mock_skill_cls.find.return_value = query
 
-        result = await list_skills_delta(since)
+        result = await list_skills()
 
         assert result == []
-        mock_skill_cls.find.assert_called_once_with({"updatedAt": {"$gte": since}})
-        mock_file_cls.find.assert_not_called()
+        mock_skill_cls.find.assert_called_once_with({"fileCount": 0})
 
 
 class TestGetSkillWithFiles:
@@ -169,8 +111,9 @@ class TestGetSkillWithFiles:
         skill = _make_skill()
         skill.id = skill_id
         skill.save = AsyncMock()
-        skill_file = _make_file("references/guide.md", "guide")
+        skill_file = MagicMock()
         skill_file.skillId = skill_id
+        skill_file.relativePath = "references/guide.md"
         mock_skill_cls.get = AsyncMock(return_value=skill)
         mock_file_cls.skillId = "skillId"
         mock_file_cls.find.return_value.to_list = AsyncMock(return_value=[skill_file])

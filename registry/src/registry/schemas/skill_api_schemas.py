@@ -21,7 +21,6 @@ class SkillMetadataResponse(BaseModel):
 
 class SkillListResponse(BaseModel):
     skills: list[SkillMetadataResponse]
-    cursor: datetime | None = None
 
 
 class SkillFileResponse(BaseModel):

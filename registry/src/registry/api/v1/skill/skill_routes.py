@@ -1,8 +1,7 @@
 import logging
-from datetime import datetime
 
 from beanie import PydanticObjectId
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException
 
 from ....auth.dependencies import CurrentUser
 from ....schemas.skill_api_schemas import (
@@ -14,7 +13,7 @@ from ....schemas.skill_api_schemas import (
 from ....services.skill_service import (
     SkillContentUnavailableError,
     get_skill_with_files,
-    list_skills_delta,
+    list_skills,
 )
 
 logger = logging.getLogger(__name__)
@@ -26,15 +25,14 @@ router = APIRouter()
 @router.get(
     "/skills",
     response_model=SkillListResponse,
-    summary="List skills (delta sync)",
-    description="Return skill metadata updated since the given cursor. Omit `since` for a full listing.",
+    summary="List skills",
+    description="Return metadata for all body-only skills (fileCount == 0).",
 )
-async def list_skills(
-    since: datetime | None = Query(None, description="ISO-8601 cursor from previous sync"),
+async def list_skills_route(
     user_context: CurrentUser = None,
 ) -> SkillListResponse:
     try:
-        skills = await list_skills_delta(since)
+        skills = await list_skills()
     except HTTPException:
         raise
     except SkillContentUnavailableError as e:
@@ -63,8 +61,7 @@ async def list_skills(
             )
         )
 
-    cursor = items[-1].updatedAt if items else None
-    return SkillListResponse(skills=items, cursor=cursor)
+    return SkillListResponse(skills=items)
 
 
 @router.get(
