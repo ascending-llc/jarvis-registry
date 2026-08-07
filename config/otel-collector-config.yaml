@@ -18,6 +18,13 @@ exporters:
   prometheus:
     endpoint: "0.0.0.0:8889"
 
+  # Receives semantic MCP tool and A2A agent spans emitted by Jarvis Registry.
+  otlp_http/langfuse:
+    endpoint: https://us.cloud.langfuse.com/api/public/otel
+    headers:
+      Authorization: "Basic ${env:LANGFUSE_OTLP_AUTHORIZATION}"
+      x-langfuse-ingestion-version: "4"
+
 service:
   pipelines:
     logs:
@@ -28,3 +35,9 @@ service:
       receivers: [otlp]
       processors: [batch]
       exporters: [debug, prometheus]
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters:
+        - debug
+        - otlp_http/langfuse

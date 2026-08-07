@@ -32,6 +32,7 @@ from ...core.config import settings
 from ...services.access_control_service import ACLService
 from ...services.generated_token_policy import is_consent_exempt
 from ..core.types import McpAppContext
+from ..tracing import trace_agent_execution
 from .utils import (
     _build_url_elicitation_result,
     _extract_authenticated_user_context,
@@ -199,6 +200,7 @@ class AgentMessageInput(BaseModel):
     )
 
 
+@trace_agent_execution
 async def execute_agent_impl(
     agent_id: str,
     message: AgentMessageInput,
