@@ -13,6 +13,20 @@ setup_registry_test_env()
 pytest_plugins = ["tests.fixtures.factories"]
 
 
+def pytest_report_teststatus(report, config):
+    """
+    This pytest configuration suppresses the green dots ONLY for the situation
+    when all tests pass. In the age of AI coding agent, we should make
+    the outputs of successful unit test runs as short as possible to avoid polluting
+    the LLM context. When certain tests fail, the output is as detailed as
+    without this configuration.
+    """
+    if report.when == "call" and report.passed:
+        # Returns (category, short_letter, verbose_word)
+        # Setting short_letter to "" suppresses the green dot
+        return ("passed", "", "")
+
+
 @pytest.fixture
 def sample_server_data():
     """Sample MCP server data matching ExtendedMCPServer structure."""

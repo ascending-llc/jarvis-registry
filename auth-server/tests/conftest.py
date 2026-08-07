@@ -23,6 +23,20 @@ from registry_pkgs.testing.fixtures import setup_test_rsa_keys
 _test_rsa_key = setup_test_rsa_keys()
 
 
+def pytest_report_teststatus(report, config):
+    """
+    This pytest configuration suppresses the green dots ONLY for the situation
+    when all tests pass. In the age of AI coding agent, we should make
+    the outputs of successful unit test runs as short as possible to avoid polluting
+    the LLM context. When certain tests fail, the output is as detailed as
+    without this configuration.
+    """
+    if report.when == "call" and report.passed:
+        # Returns (category, short_letter, verbose_word)
+        # Setting short_letter to "" suppresses the green dot
+        return ("passed", "", "")
+
+
 class _InMemoryConsentStore:
     def __init__(self) -> None:
         self.client_consents: set[tuple[str, str]] = set()

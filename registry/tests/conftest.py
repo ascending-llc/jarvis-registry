@@ -38,6 +38,20 @@ if TYPE_CHECKING:
     from registry.core.config import Settings
 
 
+def pytest_report_teststatus(report, config):
+    """
+    This pytest configuration suppresses the green dots ONLY for the situation
+    when all tests pass. In the age of AI coding agent, we should make
+    the outputs of successful unit test runs as short as possible to avoid polluting
+    the LLM context. When certain tests fail, the output is as detailed as
+    without this configuration.
+    """
+    if report.when == "call" and report.passed:
+        # Returns (category, short_letter, verbose_word)
+        # Setting short_letter to "" suppresses the green dot
+        return ("passed", "", "")
+
+
 @pytest.fixture(scope="session")
 def event_loop():
     """Create an event loop for the test session."""
