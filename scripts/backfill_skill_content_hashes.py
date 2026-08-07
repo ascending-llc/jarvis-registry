@@ -23,7 +23,6 @@ from registry.services.skill_service import SkillContentUnavailableError, comput
 from registry_pkgs.core.config import MongoConfig
 from registry_pkgs.database.mongodb import MongoDB
 from registry_pkgs.models import ExtendedSkill as Skill
-from registry_pkgs.models import ExtendedSkillFile as SkillFile
 
 logger = logging.getLogger(__name__)
 
@@ -77,9 +76,8 @@ async def backfill_content_hashes(
 
     for skill in skills:
         stats.scanned += 1
-        skill_files = await SkillFile.find(SkillFile.skillId == skill.id).to_list()
         try:
-            content_hash = compute_skill_content_hash(skill, skill_files)
+            content_hash = compute_skill_content_hash(skill)
         except SkillContentUnavailableError as e:
             stats.unavailable += 1
             logger.warning("SKIP %s (%s): %s", skill.id, skill.name, e)
