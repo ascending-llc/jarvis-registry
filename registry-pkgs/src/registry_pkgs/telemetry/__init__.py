@@ -1,10 +1,16 @@
 import logging
+from typing import Any
 
 from opentelemetry import metrics
+from opentelemetry import trace as trace_api
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.metrics import Histogram
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.sdk.metrics.view import ExplicitBucketHistogramAggregation, View
 from opentelemetry.sdk.resources import SERVICE_NAME, Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
 from ..core.config import TelemetryConfig
 from .decorators import (
@@ -14,6 +20,7 @@ from .decorators import (
 
 __all__ = [
     "setup_metrics",
+    "setup_tracing",
     "shutdown_telemetry",
     "LATENCY_BUCKETS",
     "WORKFLOW_LATENCY_BUCKETS",
@@ -36,16 +43,43 @@ WORKFLOW_LATENCY_BUCKETS = [0.5, 1.0, 2.5, 5.0, 10.0, 25.0, 50.0, 75.0, 100.0, 1
 # OTel semantic-convention resource attribute key. Declared as a literal to avoid
 # pulling in the optional `opentelemetry-semconv` dependency.
 _SERVICE_VERSION = "service.version"
+_OTLP_EXPORT_TIMEOUT_SECONDS = 5
+_TRACE_MAX_QUEUE_SIZE = 2048
+_TRACE_MAX_EXPORT_BATCH_SIZE = 512
+_TRACE_SCHEDULE_DELAY_MILLIS = 5000
+
+_agno_instrumented = False
+_trace_exporter_configured = False
+
+
+def _otlp_headers(telemetry_config: TelemetryConfig) -> dict[str, str] | None:
+    token = telemetry_config.otel_gateway_token.get_secret_value()
+    if not token:
+        return None
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _load_agno_instrumentation() -> tuple[type[Any], type[Any]]:
+    """Import optional Agno tracing dependencies only when tracing is configured."""
+    from openinference.instrumentation import TraceConfig
+    from openinference.instrumentation.agno import AgnoInstrumentor
+
+    return AgnoInstrumentor, TraceConfig
 
 
 class SafeOTLPMetricExporter:
     """Wrapper that catches all exceptions during export."""
 
-    def __init__(self, endpoint: str, timeout: int = 5):
+    def __init__(
+        self,
+        endpoint: str,
+        timeout: int = _OTLP_EXPORT_TIMEOUT_SECONDS,
+        headers: dict[str, str] | None = None,
+    ):
         try:
             from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
 
-            self._exporter = OTLPMetricExporter(endpoint=endpoint, timeout=timeout)
+            self._exporter = OTLPMetricExporter(endpoint=endpoint, timeout=timeout, headers=headers)
             self._endpoint = endpoint
         except Exception as e:
             logger.warning(f"Failed to create OTLP metric exporter: {e}")
@@ -148,7 +182,11 @@ def setup_metrics(
                 # OTLP setup with safe wrapper
                 if otlp_endpoint:
                     try:
-                        safe_exporter = SafeOTLPMetricExporter(endpoint=f"{otlp_endpoint}/v1/metrics", timeout=5)
+                        safe_exporter = SafeOTLPMetricExporter(
+                            endpoint=f"{otlp_endpoint}/v1/metrics",
+                            timeout=_OTLP_EXPORT_TIMEOUT_SECONDS,
+                            headers=_otlp_headers(telemetry_config),
+                        )
                         reader = PeriodicExportingMetricReader(
                             safe_exporter, export_interval_millis=60000, export_timeout_millis=5000
                         )
@@ -159,6 +197,7 @@ def setup_metrics(
 
                 views = [
                     View(
+                        instrument_type=Histogram,
                         instrument_name="workflow_*",
                         aggregation=ExplicitBucketHistogramAggregation(boundaries=WORKFLOW_LATENCY_BUCKETS),
                     ),
@@ -185,11 +224,73 @@ def setup_metrics(
         logger.warning(f"Telemetry initialization failed: {e}")
 
 
+def setup_tracing(
+    service_name: str,
+    telemetry_config: TelemetryConfig,
+    otlp_endpoint: str | None = None,
+) -> None:
+    """Configure OTel distributed tracing with OTLP export for agno agents.
+
+    Uses AgnoInstrumentor to auto-instrument all agno Agent/Model/Tool calls.
+    Shares the same OTLP collector endpoint and Resource as setup_metrics().
+    """
+    global _agno_instrumented, _trace_exporter_configured
+
+    logger.info("Setting up tracing...")
+    try:
+        instrumentor_type, trace_config_type = _load_agno_instrumentation()
+        current_provider = trace_api.get_tracer_provider()
+        provider_is_new = not isinstance(current_provider, TracerProvider)
+        tracer_provider = (
+            TracerProvider(resource=_build_resource(service_name, telemetry_config))
+            if provider_is_new
+            else current_provider
+        )
+
+        if not _agno_instrumented:
+            trace_config = trace_config_type(
+                hide_inputs=telemetry_config.otel_trace_hide_inputs,
+                hide_outputs=telemetry_config.otel_trace_hide_outputs,
+                hide_llm_tools=telemetry_config.otel_trace_hide_llm_tools,
+                hide_llm_invocation_parameters=telemetry_config.otel_trace_hide_llm_invocation_parameters,
+            )
+            instrumentor_type().instrument(tracer_provider=tracer_provider, config=trace_config)
+            _agno_instrumented = True
+
+        otlp_endpoint = otlp_endpoint or telemetry_config.otel_exporter_otlp_endpoint
+        if otlp_endpoint and not _trace_exporter_configured:
+            exporter = OTLPSpanExporter(
+                endpoint=f"{otlp_endpoint}/v1/traces",
+                timeout=_OTLP_EXPORT_TIMEOUT_SECONDS,
+                headers=_otlp_headers(telemetry_config),
+            )
+            processor = BatchSpanProcessor(
+                exporter,
+                max_queue_size=_TRACE_MAX_QUEUE_SIZE,
+                max_export_batch_size=_TRACE_MAX_EXPORT_BATCH_SIZE,
+                schedule_delay_millis=_TRACE_SCHEDULE_DELAY_MILLIS,
+            )
+            tracer_provider.add_span_processor(processor)
+            _trace_exporter_configured = True
+
+        if provider_is_new:
+            trace_api.set_tracer_provider(tracer_provider)
+        logger.info("Agno tracing initialized (OTLP endpoint: %s)", otlp_endpoint)
+    except Exception as exc:
+        logger.warning("Failed to setup agno tracing: %s", exc)
+
+
 def shutdown_telemetry():
     """Gracefully shutdown telemetry providers."""
     try:
         provider = metrics.get_meter_provider()
         if hasattr(provider, "shutdown"):
             provider.shutdown(timeout_millis=1000)
-    except Exception:  # nosec B110 - intentional suppression during teardown
-        pass
+    except Exception as exc:
+        logger.warning("Failed to shutdown telemetry: %s", exc)
+    try:
+        tracer_provider = trace_api.get_tracer_provider()
+        if hasattr(tracer_provider, "shutdown"):
+            tracer_provider.shutdown()
+    except Exception as exc:
+        logger.warning("Failed to shutdown telemetry: %s", exc)
