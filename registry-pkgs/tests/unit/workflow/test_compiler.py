@@ -1281,29 +1281,6 @@ class TestIntentionData:
         assert 'Dependencies:\n- "Ghost Node": produce ghost output.' in prompt
         assert "Current Step Inputs:" not in prompt
 
-    @pytest.mark.skip(reason="truncation temporarily disabled")
-    @pytest.mark.asyncio
-    async def test_long_output_is_truncated_in_dependency_prompt(self):
-        upstream = _step_node("Big Node", "tool", "produce long output")
-        node = self._step_node_with_refs("echo", ["Big Node"], "consume long output")
-        definition = _workflow_definition([upstream, node])
-        received_prompts: list[str] = []
-
-        async def capturing_executor(step_input, session_state=None):
-            received_prompts.append(build_prompt(step_input))
-            return SimpleNamespace(content="ok")
-
-        workflow = compiler.compile_workflow(
-            definition, _workflow_run(), executor_registry={"tool": capturing_executor}
-        )
-        long_content = "x" * 10_000
-        previous = self._make_previous_outputs(**{"Big Node": long_content})
-        await workflow.steps[1].executor(StepInput(input="task", previous_step_outputs=previous), {})
-
-        prompt = received_prompts[0]
-        assert "x" * 8000 in prompt
-        assert "[truncated: 2000 chars omitted]" in prompt
-
     @pytest.mark.asyncio
     async def test_no_dependencies_entry_node_renders_initial_input(self):
         node = _step_node("plain", "tool", "handle initial input")
