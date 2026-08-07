@@ -6,6 +6,7 @@ entropy = true
 exclude-path-patterns = [
     {path-pattern = 'uv\.lock$', reason = 'uv lock file'},
     {path-pattern = '.*package-lock\.json$', reason = 'npm lock file'},
+    {path-pattern = '.*go\.sum$', reason = 'Go module checksum file'},
     {path-pattern = 'tartufo\.toml$', reason = 'Tartufo config file'},
     {path-pattern = '.*\.svg$', reason = 'SVG assets are static images and can trigger entropy false positives'},
     {path-pattern = 'docs/llms\.txt$', reason = 'llms.txt is a plain-text LLM index file with no credentials'},
@@ -15,6 +16,7 @@ exclude-path-patterns = [
 exclude-entropy-patterns = [
     {path-pattern = '\\.env\\.example$', pattern = 'JWT_PRIVATE_KEY=.*', reason = '.env.example JWT private key placeholder is not a credential'},
     {path-pattern = '\\.env\\.example$', pattern = 'JWT_PUBLIC_KEY=.*', reason = '.env.example JWT public key placeholder is not a credential'},
+    {path-pattern = '^scripts/skills-sync/(sync_test\.go|skills-cli-sync\.md)$', pattern = 'sha256:[0-9a-f]{64}', reason = 'deterministic cross-language content hash test vector'},
 ]
 
 exclude-signatures = [
