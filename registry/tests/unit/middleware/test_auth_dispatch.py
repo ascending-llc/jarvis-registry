@@ -25,6 +25,14 @@ def _build_app() -> FastAPI:
     async def proxy_ep():  # pragma: no cover - body trivial
         return JSONResponse({"ok": "proxy"})
 
+    @app.get("/proxy/skills")
+    async def skills_ep():
+        return JSONResponse({"ok": "skills"})
+
+    @app.get("/proxy/a2a/test-agent")
+    async def a2a_ep():
+        return JSONResponse({"ok": "a2a"})
+
     @app.get("/proxy/server/{user_id}/{server_path:path}")
     async def direct_connect_ep(user_id: str, server_path: str):
         return JSONResponse({"ok": "direct", "user_id": user_id, "server_path": server_path})
@@ -167,6 +175,20 @@ def test_proxy_401_advertises_bearer_challenge(client):
     resp = client.get("/proxy/mcpgw/mcp")
     assert resp.status_code == 401
     assert resp.headers.get("WWW-Authenticate", "").startswith("Bearer")
+
+
+def test_skills_proxy_401_advertises_skills_scope(client):
+    resp = client.get("/proxy/skills")
+
+    assert resp.status_code == 401
+    assert 'scope="skills-proxy-ops"' in resp.headers["WWW-Authenticate"]
+
+
+def test_a2a_proxy_401_advertises_a2a_scope(client):
+    resp = client.get("/proxy/a2a/test-agent")
+
+    assert resp.status_code == 401
+    assert 'scope="a2a-proxy-ops"' in resp.headers["WWW-Authenticate"]
 
 
 def test_direct_connect_accepts_matching_user_id(client):
