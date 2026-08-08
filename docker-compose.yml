@@ -10,6 +10,21 @@ services:
       - "4317:4317"   # OTLP gRPC receiver
       - "8889:8889"   # Prometheus exporter (optional)
     restart: unless-stopped
+    depends_on:
+      - tempo
+    profiles:
+      - full
+
+  # Tempo stores OTLP traces for local Grafana exploration.
+  tempo:
+    image: grafana/tempo:2.8.2
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./config/tempo.yaml:/etc/tempo.yaml
+      - tempo-data:/var/tempo
+    ports:
+      - "3200:3200"
+    restart: unless-stopped
     profiles:
       - full
 
@@ -235,7 +250,7 @@ services:
   grafana:
     image: grafana/grafana:latest
     ports:
-      - "3000:3000"
+      - "${GRAFANA_PORT:-3000}:3000"
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=admin
       - GF_USERS_ALLOW_SIGN_UP=false
@@ -245,6 +260,7 @@ services:
       - ./config/grafana/datasources:/etc/grafana/provisioning/datasources
     depends_on:
       - prometheus
+      - tempo
     restart: unless-stopped
     profiles:
       - full
@@ -329,4 +345,6 @@ volumes:
   weaviate_data:
     driver: local
   redis_data:
+    driver: local
+  tempo-data:
     driver: local

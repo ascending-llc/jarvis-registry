@@ -264,13 +264,22 @@ class TestManualMcpExecutor:
 
     @pytest.mark.asyncio
     async def test_raises_when_agent_returns_error_status(self, monkeypatch: pytest.MonkeyPatch):
+        tool_execution = SimpleNamespace(tool_name="failed_tool", tool_call_error=True, metrics=None)
         fake_agent_instance = SimpleNamespace(
-            arun=AsyncMock(return_value=SimpleNamespace(content="Unable to locate credentials", status="error"))
+            arun=AsyncMock(
+                return_value=SimpleNamespace(
+                    content="Unable to locate credentials",
+                    status="error",
+                    tools=[tool_execution],
+                )
+            )
         )
         fake_mcp_tools = SimpleNamespace(initialized=True, connect=AsyncMock())
 
         monkeypatch.setattr("registry_pkgs.workflows.mcp_executor.MCPTools", lambda *args, **kwargs: fake_mcp_tools)
         monkeypatch.setattr("registry_pkgs.workflows.mcp_executor.Agent", lambda **kwargs: fake_agent_instance)
+        record_tool_calls = MagicMock()
+        monkeypatch.setattr("registry_pkgs.workflows.mcp_executor.record_tool_calls", record_tool_calls)
 
         async def fake_headers_provider(server, auth_context):
             return {"Authorization": "Bearer token"}
@@ -287,3 +296,5 @@ class TestManualMcpExecutor:
 
         with pytest.raises(RuntimeError, match="Unable to locate credentials"):
             await executor(StepInput(input="hello", previous_step_content="ctx"), {})
+
+        record_tool_calls.assert_called_once_with("oauth-server", [tool_execution])

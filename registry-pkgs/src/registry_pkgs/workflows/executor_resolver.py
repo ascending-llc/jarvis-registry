@@ -10,7 +10,10 @@ backend handles a given key, then delegates to the appropriate factory:
 
 from __future__ import annotations
 
+import asyncio
+import functools
 import logging
+import time
 from typing import Any
 
 import httpx
@@ -22,12 +25,73 @@ from registry_pkgs.core.config import JwtSigningConfig
 from registry_pkgs.models.a2a_agent import A2AAgent
 from registry_pkgs.models.extended_mcp_server import ExtendedMCPServer
 from registry_pkgs.models.workflow import WorkflowNode
+from registry_pkgs.telemetry.workflow_metrics import record_agent_invocation
 from registry_pkgs.workflows.a2a_client import HeadersProvider
 from registry_pkgs.workflows.a2a_executor import make_a2a_executor, make_a2a_pool_executor
 from registry_pkgs.workflows.mcp_executor import McpHeadersProvider, make_mcp_executor
 from registry_pkgs.workflows.types import POOL_KEY_PREFIX
 
 logger = logging.getLogger(__name__)
+
+_AGENT_TYPE_SUFFIXES = {
+    "_mcp_executor": "mcp",
+    "_a2a_executor": "a2a",
+    "_pool_executor": "a2a_pool",
+}
+
+
+def _detect_agent_type(executor: StepExecutor) -> str:
+    name = getattr(executor, "__name__", "")
+    for suffix, agent_type in _AGENT_TYPE_SUFFIXES.items():
+        if name.endswith(suffix):
+            return agent_type
+    if name.startswith("builtin_"):
+        return "builtin"
+    return "unknown"
+
+
+def _instrumented_executor(
+    executor: StepExecutor,
+    agent_type: str,
+    executor_key: str,
+) -> StepExecutor:
+    """Wrap a StepExecutor with invocation metrics."""
+
+    @functools.wraps(executor)
+    async def _wrapper(
+        step_input: StepInput,
+        session_state: dict[str, Any] | None = None,
+        run_context: Any | None = None,
+    ) -> StepOutput:
+        start = time.perf_counter()
+        error_type = "none"
+        success = True
+        try:
+            kwargs: dict[str, Any] = {}
+            if session_state is not None:
+                kwargs["session_state"] = session_state
+            if run_context is not None:
+                kwargs["run_context"] = run_context
+            result = await executor(step_input, **kwargs)
+            success = getattr(result, "success", True)
+            if not success:
+                error_type = "StepOutputFailure"
+            return result
+        except asyncio.CancelledError:
+            success = False
+            error_type = "CancelledError"
+            raise
+        except Exception as exc:
+            success = False
+            error_type = type(exc).__name__
+            raise
+        finally:
+            try:
+                record_agent_invocation(agent_type, executor_key, success, time.perf_counter() - start, error_type)
+            except Exception:
+                logger.warning("Failed to record agent invocation metrics", exc_info=True)
+
+    return _wrapper
 
 
 def _builtin_executor(key: str) -> StepExecutor | None:
@@ -98,7 +162,7 @@ async def build_executor_registry(
     registry: dict[str, StepExecutor] = {}
 
     for key in dict.fromkeys(executor_keys):  # deduplicate while preserving order
-        registry[key] = await _resolve_executor(
+        raw = await _resolve_executor(
             key,
             llm=llm,
             auth_context=auth_context,
@@ -109,11 +173,12 @@ async def build_executor_registry(
             redis_key_prefix=redis_key_prefix,
             mcp_headers_provider=mcp_headers_provider,
         )
+        registry[key] = _instrumented_executor(raw, _detect_agent_type(raw), key)
 
     _selector = selector_llm or llm
     for node in pool_nodes or []:
         synthetic_key = f"{POOL_KEY_PREFIX}{node.id}"
-        registry[synthetic_key] = make_a2a_pool_executor(
+        raw = make_a2a_pool_executor(
             node_name=node.name,
             pool_keys=node.a2a_pool,
             selector_llm=_selector,
@@ -121,6 +186,7 @@ async def build_executor_registry(
             httpx_client=a2a_httpx_client,
             headers_provider=headers_provider,
         )
+        registry[synthetic_key] = _instrumented_executor(raw, "a2a_pool", synthetic_key)
         logger.debug("pool executor registered: %r → %s", node.name, synthetic_key)
 
     return registry
