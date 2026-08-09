@@ -20,6 +20,8 @@ logger = logging.getLogger(__name__)
 # Direct-connect proxy path: /proxy/server/{user_id}/{server_path}. Used to bind a managed-agent
 # token's direct-connect claims to the URL.
 DIRECT_CONNECT_RE = re.compile(r"^/proxy/server/([^/]+)/(.+)$")
+SKILLS_PROXY_RE = re.compile(r"^/proxy/skills(?:/|$)")
+A2A_PROXY_RE = re.compile(r"^/proxy/a2a(?:/|$)")
 
 
 def _parse_bearer_token(request: Request) -> str | None:
@@ -33,6 +35,14 @@ def _parse_bearer_token(request: Request) -> str | None:
         return None
 
     return token.strip() or None
+
+
+def _required_proxy_scope(path: str) -> str:
+    if SKILLS_PROXY_RE.match(path):
+        return "skills-proxy-ops"
+    if A2A_PROXY_RE.match(path):
+        return "a2a-proxy-ops"
+    return "mcp-proxy-ops"
 
 
 class UnifiedAuthMiddleware:
@@ -159,7 +169,7 @@ class UnifiedAuthMiddleware:
                     headers["WWW-Authenticate"] = (
                         f'Bearer realm="{settings.jarvis_realm}", '
                         f'resource_metadata="{settings.jwt_issuer}/.well-known/oauth-protected-resource{settings.service_base_path}{path}", '
-                        'scope="mcp-proxy-ops"'
+                        f'scope="{_required_proxy_scope(path)}"'
                     )
                 # Non-proxy routes are cookie-authenticated (CRUD-session cookie). Cookie/session
                 # auth has no RFC 7235 challenge scheme, and the only caller is our frontend, which

@@ -19,6 +19,8 @@ from .a2a_agent import A2AAgent
 from .extended_access_role import RegistryAccessRole
 from .extended_acl_entry import RegistryAclEntry
 from .extended_mcp_server import ExtendedMCPServer
+from .extended_skill import ExtendedSkill
+from .extended_skill_file import ExtendedSkillFile
 from .federation import Federation
 from .federation_metadata import (
     A2AFederationMetadata,
@@ -36,6 +38,8 @@ __all__ = [
     "A2AAgent",
     "RegistryAclEntry",
     "ExtendedMCPServer",
+    "ExtendedSkill",
+    "ExtendedSkillFile",
     "Federation",
     "A2AFederationMetadata",
     "AgentCoreA2AFederationMetadata",
