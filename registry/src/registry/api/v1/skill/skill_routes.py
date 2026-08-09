@@ -10,11 +10,7 @@ from ....schemas.skill_api_schemas import (
     SkillListResponse,
     SkillMetadataResponse,
 )
-from ....services.skill_service import (
-    SkillContentUnavailableError,
-    get_skill_with_files,
-    list_skills,
-)
+from ....services.skill_service import get_skill_with_files, list_skills
 
 logger = logging.getLogger(__name__)
 
@@ -35,9 +31,6 @@ async def list_skills_route(
         skills = await list_skills()
     except HTTPException:
         raise
-    except SkillContentUnavailableError as e:
-        logger.warning("Skill content is unavailable while listing skills: %s", e)
-        raise HTTPException(status_code=409, detail=str(e)) from e
     except Exception as e:
         logger.exception("Failed to list skills")
         raise HTTPException(status_code=500, detail="Internal server error") from e
@@ -55,7 +48,6 @@ async def list_skills_route(
                 version=skill.version,
                 fileCount=skill.fileCount,
                 alwaysApply=skill.alwaysApply,
-                contentHash=skill.contentHash,
                 updatedAt=skill.updatedAt,
                 deletedAt=skill.deletedAt,
             )
@@ -78,8 +70,6 @@ async def get_skill_content(
         skill, skill_files = await get_skill_with_files(skill_id)
     except HTTPException:
         raise
-    except SkillContentUnavailableError as e:
-        raise HTTPException(status_code=409, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
     except Exception as e:
@@ -109,6 +99,5 @@ async def get_skill_content(
         userInvocable=skill.userInvocable,
         allowedTools=skill.allowedTools,
         category=skill.category,
-        contentHash=skill.contentHash,
         files=files,
     )

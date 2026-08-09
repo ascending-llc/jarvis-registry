@@ -14,7 +14,6 @@ class SkillMetadataResponse(BaseModel):
     version: int = 1
     fileCount: int = 0
     alwaysApply: bool = False
-    contentHash: str
     updatedAt: datetime
     deletedAt: datetime | None = None
 
@@ -43,5 +42,4 @@ class SkillContentResponse(BaseModel):
     userInvocable: bool = True
     allowedTools: list[str] | None = None
     category: str = ""
-    contentHash: str
     files: list[SkillFileResponse]

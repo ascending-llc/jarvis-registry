@@ -54,7 +54,6 @@ Accept: application/json
       "version": 3,
       "fileCount": 0,
       "alwaysApply": false,
-      "contentHash": "sha256:<digest>",
       "updatedAt": "2026-08-05T10:01:00Z",
       "deletedAt": null
     }
@@ -73,10 +72,9 @@ Accept: application/json
 | `skills[].description` | string | Skill description |
 | `skills[].category` | string | Skill category |
 | `skills[].tags` | string array | Skill tags |
-| `skills[].version` | integer | Source Skill version; not a replacement for `contentHash` |
+| `skills[].version` | integer | Source Skill version; increments whenever the body or files change. Clients use this to detect updates |
 | `skills[].fileCount` | integer | Always `0` for skills returned by this endpoint |
 | `skills[].alwaysApply` | boolean | Whether the Skill is always applied |
-| `skills[].contentHash` | string | Versioned SHA-256 hash of the skill body |
 | `skills[].updatedAt` | datetime | Last source update time |
 | `skills[].deletedAt` | datetime or null | Soft-delete tombstone time |
 
@@ -85,7 +83,7 @@ Accept: application/json
 `GET /skills/{skill_id}/content`
 
 Returns the data required to reconstruct the local Skill directory. Clients normally call this endpoint only when the
-metadata `contentHash` differs from the hash computed from local files.
+metadata `version` differs from the version stored locally.
 
 ### Path Parameters
 
@@ -119,7 +117,6 @@ Accept: application/json
   "userInvocable": true,
   "allowedTools": null,
   "category": "development",
-  "contentHash": "sha256:<digest>",
   "files": []
 }
 ```
@@ -138,7 +135,6 @@ Accept: application/json
 | `userInvocable` | boolean | Whether users can invoke this skill directly |
 | `allowedTools` | string array or null | Whitelist of tools this skill is allowed to use; `null` means no restriction |
 | `category` | string | Maps to the `category` YAML key |
-| `contentHash` | string | Hash of the skill body (same algorithm as the list endpoint) |
 | `files` | array | Supporting files under the Skill directory (currently always empty for synced skills) |
 | `files[].relativePath` | string | Normalized POSIX path relative to the Skill directory |
 | `files[].content` | string or null | UTF-8 text content; `null` when content is unavailable |
@@ -178,51 +174,6 @@ supporting file, the CLI must set the file's execute permission (`chmod +x`) aft
 Clients must reject absolute paths, parent traversal (`..`), duplicate paths, backslashes, and non-normalized POSIX
 paths before writing supporting files.
 
-## Content Hash
-
-`contentHash` uses Skill Content Hash v1 and has this format:
-
-```text
-sha256:<64 lowercase hexadecimal characters>
-```
-
-The logical manifest currently contains only the skill body:
-
-```json
-{
-  "format": "jarvis-skill-content-v1",
-  "skill": {
-    "body": "# Mongoose to Beanie\n"
-  }
-}
-```
-
-> **Design note**: The manifest uses a structured envelope (`format` + `skill` object) so that additional fields
-> (e.g. frontmatter metadata, supporting file hashes) can be added in future versions without changing the format
-> identifier or invalidating existing client logic.
-
-Hash calculation:
-
-1. Serialize the manifest as UTF-8 JSON with object keys sorted lexicographically, no insignificant whitespace, direct
-   Unicode output, and non-finite numbers rejected.
-2. Compute SHA-256 over the serialized bytes.
-3. Prefix the lowercase hexadecimal digest with `sha256:`.
-
-Python reference serialization:
-
-```python
-json.dumps(
-    manifest,
-    sort_keys=True,
-    separators=(",", ":"),
-    ensure_ascii=False,
-    allow_nan=False,
-)
-```
-
-Only changes to the skill `body` affect the hash. Changes to name, description, category, frontmatter, or other
-metadata fields do not change the hash in the current version.
-
 ## Error Responses
 
 All errors use the standard FastAPI response shape:
@@ -238,7 +189,6 @@ All errors use the standard FastAPI response shape:
 | `401 Unauthorized` | Bearer token is missing, invalid, or expired |
 | `403 Forbidden` | Token does not include `skills-proxy-ops` |
 | `404 Not Found` | `skill_id` does not exist |
-| `409 Conflict` | Skill body is not serializable as canonical JSON |
 | `422 Unprocessable Entity` | ObjectID format is invalid |
 | `500 Internal Server Error` | Unexpected server failure |
 

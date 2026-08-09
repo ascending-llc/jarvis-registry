@@ -14,7 +14,6 @@ from registry.api.v1.skill.skill_routes import router as skill_router
 from registry.core.config import settings
 from registry.middleware.auth import UnifiedAuthMiddleware
 from registry.middleware.rbac import ScopePermissionMiddleware
-from registry.services.skill_service import SkillContentUnavailableError
 from registry_pkgs.core.jwt_tokens import mint_managed_agent_token
 
 pytestmark = [pytest.mark.integration, pytest.mark.proxy]
@@ -40,7 +39,6 @@ def _make_skill(
     skill_id: PydanticObjectId | None = None,
     name: str = "test-skill",
     body: str = "# Test",
-    content_hash: str = "abc123def456",
 ) -> MagicMock:
     skill = MagicMock()
     skill.id = skill_id or PydanticObjectId()
@@ -58,7 +56,6 @@ def _make_skill(
     skill.tags = ["python", "test"]
     skill.path = None
     skill.deletedAt = None
-    skill.contentHash = content_hash
     skill.updatedAt = datetime(2026, 8, 1, tzinfo=UTC)
     return skill
 
@@ -89,7 +86,7 @@ def skill_app(monkeypatch) -> Generator[SimpleNamespace, None, None]:
 class TestListSkills:
     @patch("registry.api.v1.skill.skill_routes.list_skills", new_callable=AsyncMock)
     def test_list_skills_returns_200(self, mock_list, skill_app):
-        skill = _make_skill(content_hash="stored_hash_value")
+        skill = _make_skill()
         mock_list.return_value = [skill]
 
         resp = skill_app.client.get(
@@ -101,7 +98,6 @@ class TestListSkills:
         data = resp.json()
         assert len(data["skills"]) == 1
         assert data["skills"][0]["name"] == "test-skill"
-        assert data["skills"][0]["contentHash"] == "stored_hash_value"
         assert "cursor" not in data
 
         mock_list.assert_awaited_once_with()
@@ -148,24 +144,12 @@ class TestListSkills:
         assert data["skills"][0]["tags"] == ["ai", "coding"]
         assert data["skills"][0]["path"] == "my-skill"
 
-    @patch("registry.api.v1.skill.skill_routes.list_skills", new_callable=AsyncMock)
-    def test_list_skills_unreconstructable_content_returns_409(self, mock_list, skill_app):
-        mock_list.side_effect = SkillContentUnavailableError("content unavailable")
-
-        resp = skill_app.client.get(
-            "/proxy/skills",
-            headers={"Authorization": f"Bearer {_mint_token()}"},
-        )
-
-        assert resp.status_code == 409
-        assert resp.json()["detail"] == "content unavailable"
-
 
 class TestGetSkillContent:
     @patch("registry.api.v1.skill.skill_routes.get_skill_with_files", new_callable=AsyncMock)
     def test_get_content_returns_200(self, mock_get, skill_app):
         skill_id = PydanticObjectId()
-        skill = _make_skill(skill_id=skill_id, body="# Hello", content_hash="persisted_hash")
+        skill = _make_skill(skill_id=skill_id, body="# Hello")
         files = [_make_skill_file("scripts/run.sh", "#!/bin/bash")]
         mock_get.return_value = (skill, files)
 
@@ -178,7 +162,6 @@ class TestGetSkillContent:
         data = resp.json()
         assert data["id"] == str(skill_id)
         assert data["body"] == "# Hello"
-        assert data["contentHash"] == "persisted_hash"
         assert len(data["files"]) == 1
         assert data["files"][0]["relativePath"] == "scripts/run.sh"
         assert data["files"][0]["isBinary"] is None
@@ -292,15 +275,3 @@ class TestGetSkillContent:
         assert resp.status_code == 200
         data = resp.json()
         assert data["files"][0]["isExecutable"] is True
-
-    @patch("registry.api.v1.skill.skill_routes.get_skill_with_files", new_callable=AsyncMock)
-    def test_get_content_unreconstructable_content_returns_409(self, mock_get, skill_app):
-        mock_get.side_effect = SkillContentUnavailableError("binary content unavailable")
-
-        resp = skill_app.client.get(
-            f"/proxy/skills/{PydanticObjectId()}/content",
-            headers={"Authorization": f"Bearer {_mint_token()}"},
-        )
-
-        assert resp.status_code == 409
-        assert resp.json()["detail"] == "binary content unavailable"
