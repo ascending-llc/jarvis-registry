@@ -5,17 +5,14 @@ from typing import Annotated, Any
 from beanie import Document
 from pydantic import BaseModel, Field, StringConstraints
 
-EmailValue = Annotated[str, StringConstraints(pattern=r"\S+@\S+\.\S+", to_lower=True)]
-LowercaseStr = Annotated[str, StringConstraints(to_lower=True)]
-
 
 class SystemRoles(StrEnum):
     ADMIN = "ADMIN"
     USER = "USER"
 
 
-class Personalization(BaseModel):
-    memories: bool = True
+EmailValue = Annotated[str, StringConstraints(pattern=r"\S+@\S+\.\S+", to_lower=True)]
+LowercaseStr = Annotated[str, StringConstraints(to_lower=True)]
 
 
 class Favorite(BaseModel):
@@ -23,6 +20,10 @@ class Favorite(BaseModel):
     model: str | None = None
     endpoint: str | None = None
     spec: str | None = None
+
+
+class Personalization(BaseModel):
+    memories: bool = True
 
 
 class User(Document):
@@ -46,6 +47,7 @@ class User(Document):
     twoFactorEnabled: bool = False
     expiresAt: datetime | None = None
     termsAccepted: bool = False
+    termsAcceptedAt: datetime | None = None
     personalization: Personalization = Field(default_factory=Personalization)
     favorites: list[Favorite] = Field(default_factory=list)
     skillStates: dict[str, bool] = Field(default_factory=dict)
