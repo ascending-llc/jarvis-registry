@@ -926,3 +926,37 @@ class TestRealScopesConfigAgentConsent:
         mw = ScopePermissionMiddleware(FastAPI())
 
         assert mw._has_permission(["agents-read"], path, method) is False
+
+
+@pytest.mark.unit
+class TestRealScopesConfigSkills:
+    """Validate read/write separation for the real Skill scope rules."""
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/skills",
+            "/skills/507f1f77bcf86cd799439011",
+            "/skills/507f1f77bcf86cd799439011/content",
+            "/skills/507f1f77bcf86cd799439011/files/references/guide.md",
+        ],
+    )
+    def test_skill_reads_are_granted_with_sync_scope(self, path: str) -> None:
+        middleware = ScopePermissionMiddleware(FastAPI())
+
+        assert middleware._has_permission(["skills-proxy-ops"], path, "GET") is True
+
+    @pytest.mark.parametrize(
+        ("method", "path"),
+        [
+            ("POST", "/skills"),
+            ("PATCH", "/skills/507f1f77bcf86cd799439011"),
+            ("DELETE", "/skills/507f1f77bcf86cd799439011"),
+            ("POST", "/skills/507f1f77bcf86cd799439011/toggle"),
+        ],
+    )
+    def test_skill_writes_require_write_scope(self, method: str, path: str) -> None:
+        middleware = ScopePermissionMiddleware(FastAPI())
+
+        assert middleware._has_permission(["skills-write"], path, method) is True
+        assert middleware._has_permission(["skills-proxy-ops"], path, method) is False
