@@ -1,9 +1,7 @@
 """Request and response schemas for the Skill management API."""
 
-# ruff: noqa: UP045 -- Repository guidance requires explicit Optional[T] annotations.
-
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -12,7 +10,7 @@ from .acl_schema import ResourcePermissions
 
 class SkillCreateRequest(BaseModel):
     name: str = Field(..., max_length=64, pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
-    displayTitle: Optional[str] = Field(default=None, max_length=128)
+    displayTitle: str | None = Field(default=None, max_length=128)
     description: str = Field(..., max_length=1024)
     body: str = Field(default="", max_length=100_000)
     category: str = Field(default="", max_length=128)
@@ -20,20 +18,20 @@ class SkillCreateRequest(BaseModel):
     alwaysApply: bool = False
     userInvocable: bool = True
     disableModelInvocation: bool = False
-    allowedTools: Optional[list[str]] = None
+    allowedTools: list[str] | None = None
 
 
 class SkillUpdateRequest(BaseModel):
-    name: Optional[str] = Field(default=None, max_length=64, pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
-    displayTitle: Optional[str] = Field(default=None, max_length=128)
-    description: Optional[str] = Field(default=None, max_length=1024)
-    body: Optional[str] = Field(default=None, max_length=100_000)
-    category: Optional[str] = Field(default=None, max_length=128)
-    tags: Optional[list[str]] = None
-    alwaysApply: Optional[bool] = None
-    userInvocable: Optional[bool] = None
-    disableModelInvocation: Optional[bool] = None
-    allowedTools: Optional[list[str]] = None
+    name: str | None = Field(default=None, max_length=64, pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+    displayTitle: str | None = Field(default=None, max_length=128)
+    description: str | None = Field(default=None, max_length=1024)
+    body: str | None = Field(default=None, max_length=100_000)
+    category: str | None = Field(default=None, max_length=128)
+    tags: list[str] | None = None
+    alwaysApply: bool | None = None
+    userInvocable: bool | None = None
+    disableModelInvocation: bool | None = None
+    allowedTools: list[str] | None = None
 
 
 class SkillToggleRequest(BaseModel):
@@ -45,29 +43,29 @@ class SkillFileMetadataResponse(BaseModel):
     relativePath: str
     mimeType: str
     bytes: int
-    isBinary: Optional[bool] = None
+    isBinary: bool | None = None
     isExecutable: bool = False
-    source: Optional[str] = None
+    source: str | None = None
 
 
 class SkillFileResponse(BaseModel):
     """File representation retained by the CLI sync-down response."""
 
     relativePath: str
-    content: Optional[str] = None
+    content: str | None = None
     mimeType: str
     bytes: int
-    isBinary: Optional[bool] = None
+    isBinary: bool | None = None
     isExecutable: bool = False
-    source: Optional[str] = None
+    source: str | None = None
     available: bool = True
-    unavailableReason: Optional[str] = None
+    unavailableReason: str | None = None
 
 
 class SkillMetadataResponse(BaseModel):
     id: str
     name: str
-    displayTitle: Optional[str] = None
+    displayTitle: str | None = None
     description: str
     category: str = ""
     tags: list[str] = Field(default_factory=list)
@@ -79,10 +77,10 @@ class SkillMetadataResponse(BaseModel):
     author: str
     authorName: str
     source: str = "inline"
-    sourceMetadata: Optional[dict[str, Any]] = None
-    permissions: Optional[ResourcePermissions] = None
-    updatedAt: Optional[datetime] = None
-    deletedAt: Optional[datetime] = None
+    sourceMetadata: dict[str, Any] | None = None
+    permissions: ResourcePermissions | None = None
+    updatedAt: datetime | None = None
+    deletedAt: datetime | None = None
 
 
 class SkillListResponse(BaseModel):
@@ -98,7 +96,7 @@ class SkillContentResponse(BaseModel):
     alwaysApply: bool = False
     disableModelInvocation: bool = False
     userInvocable: bool = True
-    allowedTools: Optional[list[str]] = None
+    allowedTools: list[str] | None = None
     category: str = ""
     files: list[SkillFileResponse]
 
@@ -106,7 +104,7 @@ class SkillContentResponse(BaseModel):
 class SkillDetailResponse(BaseModel):
     id: str
     name: str
-    displayTitle: Optional[str] = None
+    displayTitle: str | None = None
     description: str
     body: str
     frontmatter: dict[str, Any] = Field(default_factory=dict)
@@ -118,25 +116,25 @@ class SkillDetailResponse(BaseModel):
     alwaysApply: bool = False
     userInvocable: bool = True
     disableModelInvocation: bool = False
-    allowedTools: Optional[list[str]] = None
+    allowedTools: list[str] | None = None
     author: str
     authorName: str
     source: str = "inline"
-    sourceMetadata: Optional[dict[str, Any]] = None
-    createdAt: Optional[datetime] = None
-    updatedAt: Optional[datetime] = None
+    sourceMetadata: dict[str, Any] | None = None
+    createdAt: datetime | None = None
+    updatedAt: datetime | None = None
     files: list[SkillFileMetadataResponse] = Field(default_factory=list)
-    permissions: Optional[ResourcePermissions] = None
+    permissions: ResourcePermissions | None = None
 
 
 class SkillFileContentResponse(BaseModel):
     relativePath: str
-    content: Optional[str] = None
-    body: Optional[str] = Field(default=None, description="Base64-encoded binary content")
+    content: str | None = None
+    body: str | None = Field(default=None, description="Base64-encoded binary content")
     mimeType: str
-    isBinary: Optional[bool] = None
+    isBinary: bool | None = None
     available: bool = True
-    unavailableReason: Optional[str] = None
+    unavailableReason: str | None = None
 
 
 class SkillToggleResponse(BaseModel):
