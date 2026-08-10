@@ -5,15 +5,27 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Awaitable, Callable
+from enum import Enum
 from functools import wraps
 from typing import Any
 
+from a2a.types import DataPart, FilePart, FileWithBytes, FileWithUri, TextPart
 from mcp.server.fastmcp import Context
 from mcp.server.session import ServerSession
-from mcp.types import CallToolResult
+from mcp.types import (
+    Annotations,
+    AudioContent,
+    BlobResourceContents,
+    CallToolResult,
+    EmbeddedResource,
+    ImageContent,
+    ResourceLink,
+    TextContent,
+    TextResourceContents,
+)
 from opentelemetry import trace
 from opentelemetry.trace import Span, Status, StatusCode
-from pydantic import BaseModel
+from pydantic import AnyUrl, BaseModel
 
 from .core.types import McpAppContext
 
@@ -22,21 +34,76 @@ logger = logging.getLogger(__name__)
 _TOOL_SPAN_NAME = "registry.mcp.tool.execute"
 _AGENT_SPAN_NAME = "registry.a2a.agent.execute"
 _TRACER = trace.get_tracer("registry.mcpgw")
-_BINARY_VALUE = "[BINARY OMITTED]"
+_RAW_PYTHON_BYTES_OMITTED = "[RAW PYTHON BYTES OMITTED]"
+_TRACE_MODEL_FIELDS: dict[type[BaseModel], tuple[str, ...]] = {
+    Annotations: ("audience", "priority"),
+    AudioContent: ("type", "mimeType", "annotations"),
+    BlobResourceContents: ("uri", "mimeType"),
+    CallToolResult: ("content", "structuredContent", "isError"),
+    DataPart: ("kind", "data"),
+    EmbeddedResource: ("type", "resource", "annotations"),
+    FilePart: ("kind", "file"),
+    FileWithBytes: ("name", "mime_type"),
+    FileWithUri: ("name", "mime_type", "uri"),
+    ImageContent: ("type", "mimeType", "annotations"),
+    ResourceLink: ("type", "name", "title", "uri", "description", "mimeType", "size", "annotations"),
+    TextContent: ("type", "text", "annotations"),
+    TextPart: ("kind", "text"),
+    TextResourceContents: ("uri", "mimeType", "text"),
+}
 
 
-def _sanitize_for_audit(value: Any) -> Any:
+def _project_model_fields(value: BaseModel) -> dict[str, Any]:
+    fields = _TRACE_MODEL_FIELDS.get(type(value))
+    if fields is None:
+        raise TypeError(f"Unsupported trace model type: {type(value).__name__}")
+    projected: dict[str, Any] = {}
+    for field_name in fields:
+        field_value = getattr(value, field_name)
+        if field_value is None:
+            continue
+        field_info = type(value).model_fields[field_name]
+        alias = field_info.serialization_alias or field_info.alias
+        key = alias if isinstance(alias, str) else field_name
+        projected[key] = _project_trace_value(field_value)
+    return projected
+
+
+def _build_agent_trace_input(agent_id: str, message: Any) -> dict[str, Any]:
+    return {
+        "agent_id": agent_id,
+        "message": {"parts": message.parts},
+    }
+
+
+def _build_tool_trace_input(tool_name: str, server_id: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "arguments": arguments,
+        "server_id": server_id,
+        "tool_name": tool_name,
+    }
+
+
+def _project_trace_value(value: Any) -> Any:
     if isinstance(value, BaseModel):
-        return _sanitize_for_audit(value.model_dump(mode="json"))
+        return _project_model_fields(value)
 
     if isinstance(value, dict):
-        return {str(key): _sanitize_for_audit(item) for key, item in value.items()}
+        return {str(key): _project_trace_value(item) for key, item in value.items()}
 
     if isinstance(value, (list, tuple)):
-        return [_sanitize_for_audit(item) for item in value]
+        return [_project_trace_value(item) for item in value]
 
     if isinstance(value, bytes):
-        return {"content": _BINARY_VALUE, "size_bytes": len(value)}
+        # This is an unexpected in-process Python value inside selected business data,
+        # not one of the protocol-defined base64 string fields omitted above.
+        return _RAW_PYTHON_BYTES_OMITTED
+
+    if isinstance(value, AnyUrl):
+        return str(value)
+
+    if isinstance(value, Enum):
+        return _project_trace_value(value.value)
 
     if isinstance(value, str):
         return value
@@ -44,12 +111,12 @@ def _sanitize_for_audit(value: Any) -> Any:
     if value is None or isinstance(value, (bool, int, float)):
         return value
 
-    return f"[{type(value).__name__} OMITTED]"
+    raise TypeError(f"Unsupported trace value type: {type(value).__name__}")
 
 
-def _serialize_audit_value(value: Any) -> str:
-    serialized = _sanitize_for_audit(value)
-    return json.dumps(serialized, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+def _serialize_trace_value(value: Any) -> str:
+    serialized = _project_trace_value(value)
+    return json.dumps(serialized, ensure_ascii=False, separators=(",", ":"))
 
 
 def _clean_attributes(attributes: dict[str, Any]) -> dict[str, bool | int | float | str]:
@@ -121,13 +188,30 @@ def _caller_attributes(ctx: Context[ServerSession, McpAppContext]) -> dict[str, 
     )
 
 
-def _set_serialized_attribute(span: Span, key: str, value: Any) -> None:
+def _set_serialized_attribute(
+    span: Span,
+    key: str,
+    value: Any = None,
+    *,
+    projection: Callable[[], Any] | None = None,
+) -> None:
     try:
         if span.is_recording():
-            span.set_attribute(key, _serialize_audit_value(value))
-    except Exception:
-        logger.warning("Failed to serialize or set trace attribute %s", key, exc_info=True)
-        return
+            trace_value = projection() if projection is not None else value
+            span.set_attribute(key, _serialize_trace_value(trace_value))
+    except Exception as exc:
+        logger.warning("Failed to project, serialize, or set trace attribute %s", key, exc_info=True)
+        try:
+            if span.is_recording():
+                span.add_event(
+                    "registry.tracing.attribute.error",
+                    attributes={
+                        "exception.type": type(exc).__name__,
+                        "registry.tracing.attribute": key,
+                    },
+                )
+        except Exception:
+            logger.warning("Failed to record trace attribute error event for %s", key, exc_info=True)
 
 
 def _record_result(span: Span, result: CallToolResult) -> None:
@@ -151,7 +235,7 @@ def trace_tool_execution(
     [Context[ServerSession, McpAppContext], str, dict[str, Any], str],
     Awaitable[CallToolResult],
 ]:
-    """Trace one downstream MCP tool execution with sanitized input and output."""
+    """Trace one downstream MCP tool execution with trace-relevant input and output."""
 
     @wraps(func)
     async def wrapper(
@@ -173,11 +257,7 @@ def trace_tool_execution(
             _set_serialized_attribute(
                 span,
                 "langfuse.observation.input",
-                {
-                    "arguments": arguments,
-                    "server_id": server_id,
-                    "tool_name": tool_name,
-                },
+                projection=lambda: _build_tool_trace_input(tool_name, server_id, arguments),
             )
             result = await func(ctx, tool_name, arguments, server_id)
             _record_result(span, result)
@@ -195,7 +275,7 @@ def trace_agent_execution[AgentMessageT](
     [str, AgentMessageT, Context[ServerSession, McpAppContext]],
     Awaitable[CallToolResult],
 ]:
-    """Trace one downstream A2A agent execution with sanitized input and output."""
+    """Trace one downstream A2A agent execution with trace-relevant input and output."""
 
     @wraps(func)
     async def wrapper(
@@ -215,10 +295,7 @@ def trace_agent_execution[AgentMessageT](
             _set_serialized_attribute(
                 span,
                 "langfuse.observation.input",
-                {
-                    "agent_id": agent_id,
-                    "message": message,
-                },
+                projection=lambda: _build_agent_trace_input(agent_id, message),
             )
             result = await func(agent_id, message, ctx)
             _record_result(span, result)
