@@ -202,13 +202,7 @@ def setup_tracing(
             logger.warning("No OTLP endpoint configured - traces will not be exported")
             return
 
-        resource = Resource.create(
-            attributes={
-                SERVICE_NAME: service_name,
-                _SERVICE_VERSION: telemetry_config.build_version,
-                "application": service_name,
-            }
-        )
+        resource = _build_resource(service_name, telemetry_config)
         exporter = OTLPSpanExporter(endpoint=f"{endpoint}/v1/traces", timeout=5)
         provider = TracerProvider(resource=resource)
         provider.add_span_processor(BatchSpanProcessor(exporter))

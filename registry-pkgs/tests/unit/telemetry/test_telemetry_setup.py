@@ -127,13 +127,14 @@ class TestTelemetrySetup:
         """Test tracing setup with its default enabled behavior."""
         service_name = "test-service"
         otlp_endpoint = "http://localhost:4318"
+        telemetry_config = TelemetryConfig()
 
-        setup_tracing(service_name, TelemetryConfig(), otlp_endpoint=otlp_endpoint)
+        setup_tracing(service_name, telemetry_config, otlp_endpoint=otlp_endpoint)
 
         mock_otel_deps["resource"].create.assert_called_once()
         _, kwargs = mock_otel_deps["resource"].create.call_args
         assert kwargs["attributes"]["service.name"] == service_name
-        assert kwargs["attributes"]["application"] == service_name
+        assert kwargs["attributes"]["service.version"] == telemetry_config.build_version
         mock_otel_deps["span_exporter"].assert_called_once_with(
             endpoint=f"{otlp_endpoint}/v1/traces",
             timeout=5,
