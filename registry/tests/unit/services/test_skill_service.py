@@ -13,7 +13,6 @@ from registry.services.skill_service import SkillService
 from registry_pkgs.models import SkillSource
 
 _USER_ID = "000000000000000000000001"
-_TENANT_ID = "tenant-1"
 
 
 def _make_skill(*, created_by_registry: bool = True) -> MagicMock:
@@ -23,7 +22,6 @@ def _make_skill(*, created_by_registry: bool = True) -> MagicMock:
     skill.author = PydanticObjectId(_USER_ID)
     skill.source = SkillSource.INLINE
     skill.createdByRegistry = created_by_registry
-    skill.tenantId = _TENANT_ID
     skill.enabled = True
     skill.updatedAt = None
     skill.save = AsyncMock()
@@ -53,7 +51,7 @@ def acl_service() -> MagicMock:
 def user_service() -> MagicMock:
     service = MagicMock()
     service.get_user_by_user_id = AsyncMock(
-        return_value=SimpleNamespace(name="Database User", username="database-user", tenantId=_TENANT_ID)
+        return_value=SimpleNamespace(name="Database User", username="database-user")
     )
     return service
 
@@ -205,8 +203,7 @@ async def test_create_inserts_skill_and_grants_owner(mock_skill_cls, mock_mongod
     assert mock_skill_cls.call_args.kwargs["source"] == SkillSource.INLINE
     assert mock_skill_cls.call_args.kwargs["createdByRegistry"] is True
     assert mock_skill_cls.call_args.kwargs["authorName"] == "Database User"
-    assert mock_skill_cls.call_args.kwargs["tenantId"] == _TENANT_ID
     assert mock_skill_cls.call_args.kwargs["fileCount"] == 0
     mock_skill_cls.find_one.assert_awaited_once_with(
-        {"name": "test-skill", "author": PydanticObjectId(_USER_ID), "tenantId": _TENANT_ID, "deletedAt": None}
+        {"name": "test-skill", "author": PydanticObjectId(_USER_ID), "deletedAt": None}
     )

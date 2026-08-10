@@ -208,7 +208,6 @@ class SkillService:
         duplicate_query = {
             "name": data.name,
             "author": object_user_id,
-            "tenantId": user.tenantId,
             "deletedAt": None,
         }
         if await Skill.find_one(duplicate_query):
@@ -222,7 +221,6 @@ class SkillService:
             frontmatter=self._frontmatter_from_create(data),
             path=data.name,
             source=SkillSource.INLINE,
-            tenantId=user.tenantId,
             enabled=True,
             createdByRegistry=True,
             fileCount=0,
@@ -293,7 +291,6 @@ class SkillService:
                                 "_id": {"$ne": skill_id},
                                 "name": updates["name"],
                                 "author": skill.author,
-                                "tenantId": skill.tenantId,
                                 "deletedAt": None,
                             },
                             session=mongo_session,

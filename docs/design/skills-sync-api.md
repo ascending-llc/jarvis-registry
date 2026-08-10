@@ -147,7 +147,7 @@ Accept: application/json
 `POST /skills`
 
 Creates a new skill. The authenticated user is automatically granted OWNER permission. A duplicate check is
-performed on `(name, author, tenantId)` — returns 409 on conflict.
+performed on `(name, author)` — returns 409 on conflict.
 
 ### Request Body
 
