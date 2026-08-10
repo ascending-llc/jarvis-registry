@@ -6,7 +6,7 @@ from beanie import Document, PydanticObjectId
 class SkillFile(Document):
     skillId: PydanticObjectId
     relativePath: str
-    source: str  # Storage Policy，This value is primarily controlled by chat; it should not be configured as an enumeration.
+    source: str  # Storage policy. This value is primarily controlled by Chat; it should not be configured as an enumeration.
     mimeType: str
     bytes: int
     isExecutable: bool = False

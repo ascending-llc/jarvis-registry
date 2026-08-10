@@ -262,6 +262,21 @@ class SkillService:
         # Chat-only fields that are not modelled on ExtendedSkill.
         skill = await self._get_existing_skill(skill_id)
         updates = data.model_dump(exclude_unset=True)
+        _nullable_fields = {"displayTitle", "allowedTools"}
+        invalid_nulls = [k for k, v in updates.items() if v is None and k not in _nullable_fields]
+        if invalid_nulls:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Fields cannot be null: {', '.join(sorted(invalid_nulls))}",
+            )
+        if not updates:
+            permissions = await self.acl_service.check_user_permission(
+                user_id=object_user_id,
+                resource_type=RegistryResourceType.SKILL.value,
+                resource_id=skill_id,
+                required_permission="EDIT",
+            )
+            return skill, await self._list_skill_files(skill_id), permissions
         try:
             async with MongoDB.get_client().start_session() as mongo_session:
                 async with await mongo_session.start_transaction():
