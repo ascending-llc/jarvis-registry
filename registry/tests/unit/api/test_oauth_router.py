@@ -1,4 +1,5 @@
 from unittest.mock import AsyncMock, Mock
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from bson import ObjectId
@@ -37,6 +38,23 @@ def make_async(func):
         return func(*args, **kwargs)
 
     return async_func
+
+
+def _layer_b_flow(state: str = "valid-state") -> Mock:
+    flow = Mock()
+    flow.user_id = "test_user"
+    flow.server_id = TEST_SERVER_ID
+    flow.status = "pending"
+    flow.state = state
+    flow.metadata.mcp_client_context = {
+        "redirect_uri": "http://localhost:33418/cb?existing=1",
+        "client_id": "claude",
+        "code_challenge": "cc",
+        "state": "client-state",
+        "server_path": "github",
+    }
+    flow.metadata.device_code = None
+    return flow
 
 
 # Make all mock methods async for oauth_service
@@ -387,8 +405,6 @@ class TestOAuthRouter:
         assert response.status_code == 307
         location = response.headers["location"]
         assert location.startswith("http://localhost:33418/cb")
-        from urllib.parse import parse_qs, urlsplit
-
         query = parse_qs(urlsplit(location).query)
         assert query["state"] == ["st123"]
         assert query["code"][0] and query["code"][0] != "GHCODE"
@@ -398,7 +414,9 @@ class TestOAuthRouter:
 
     def test_oauth_callback_missing_code(self, client):
         """Test OAuth callback with missing code parameter"""
-        response = client.get("/mcp/test_server/oauth/callback?state=some_state", follow_redirects=False)
+        mock_mcp_service.oauth_service.flow_manager.decode_state = lambda _: {"flow_id": "flow-1"}
+        mock_mcp_service.oauth_service.flow_manager.get_flow = lambda _: None
+        response = client.get("/mcp/test_server/oauth/callback?state=valid-state", follow_redirects=False)
 
         assert response.status_code == 307
         assert "oauth-callback?type=error" in response.headers["location"]
@@ -416,12 +434,135 @@ class TestOAuthRouter:
 
     def test_oauth_callback_provider_error(self, client):
         """Test OAuth callback with error from provider"""
-        response = client.get("/mcp/test_server/oauth/callback?error=access_denied", follow_redirects=False)
+        mock_mcp_service.oauth_service.flow_manager.decode_state = lambda _: {"flow_id": "flow-1"}
+        mock_mcp_service.oauth_service.flow_manager.get_flow = lambda _: None
+        response = client.get(
+            "/mcp/test_server/oauth/callback?error=access_denied&state=valid-state",
+            follow_redirects=False,
+        )
 
         assert response.status_code == 307
         assert "oauth-callback?type=error" in response.headers["location"]
         assert "serverPath=test_server" in response.headers["location"]
         assert "error=access_denied" in response.headers["location"]
+
+    @pytest.mark.parametrize(
+        ("callback_query", "expected_error", "expected_description"),
+        [
+            (
+                "error=access_denied&state=valid-state",
+                "access_denied",
+                "Upstream OAuth provider returned an error",
+            ),
+            (
+                "state=valid-state",
+                "invalid_request",
+                "missing authorization code",
+            ),
+        ],
+    )
+    def test_oauth_callback_relays_layer_b_failures_to_client(
+        self,
+        client,
+        callback_query,
+        expected_error,
+        expected_description,
+    ):
+        mock_mcp_service.oauth_service.flow_manager.decode_state = lambda _: {"flow_id": "flow-1"}
+        mock_mcp_service.oauth_service.flow_manager.get_flow = lambda _: _layer_b_flow()
+
+        response = client.get(f"/mcp/github/oauth/callback?{callback_query}", follow_redirects=False)
+
+        assert response.status_code == 302
+        location = response.headers["location"]
+        assert location.startswith("http://localhost:33418/cb")
+        query = parse_qs(urlsplit(location).query)
+        assert query == {
+            "existing": ["1"],
+            "error": [expected_error],
+            "error_description": [expected_description],
+            "state": ["client-state"],
+        }
+
+    def test_oauth_callback_relays_sanitized_complete_failure_to_layer_b_client(self, client):
+        mock_mcp_service.oauth_service.flow_manager.decode_state = lambda _: {"flow_id": "flow-1"}
+        mock_mcp_service.oauth_service.flow_manager.get_flow = lambda _: _layer_b_flow()
+        mock_mcp_service.oauth_service.complete_oauth_flow = make_async(
+            lambda *args, **kwargs: (False, "provider secret: token exchange failed")
+        )
+
+        response = client.get(
+            "/mcp/github/oauth/callback?code=code-1&state=valid-state",
+            follow_redirects=False,
+        )
+
+        assert response.status_code == 302
+        query = parse_qs(urlsplit(response.headers["location"]).query)
+        assert query["error"] == ["server_error"]
+        assert query["error_description"] == ["Downstream OAuth flow failed"]
+        assert query["state"] == ["client-state"]
+        assert "provider secret" not in response.headers["location"]
+
+    @pytest.mark.parametrize(
+        "callback_query",
+        [
+            "error=access_denied&state=forged-state",
+            "state=forged-state",
+        ],
+    )
+    def test_oauth_callback_does_not_relay_error_for_state_mismatch(self, client, callback_query):
+        mock_mcp_service.oauth_service.flow_manager.decode_state = lambda _: {"flow_id": "flow-1"}
+        mock_mcp_service.oauth_service.flow_manager.get_flow = lambda _: _layer_b_flow(state="expected-state")
+
+        response = client.get(f"/mcp/github/oauth/callback?{callback_query}", follow_redirects=False)
+
+        assert response.status_code == 307
+        assert "oauth-callback?type=error" in response.headers["location"]
+        assert not response.headers["location"].startswith("http://localhost:33418/cb")
+
+    def test_oauth_callback_does_not_relay_complete_failure_for_state_mismatch(self, client):
+        mock_mcp_service.oauth_service.flow_manager.decode_state = lambda _: {"flow_id": "flow-1"}
+        mock_mcp_service.oauth_service.flow_manager.get_flow = lambda _: _layer_b_flow(state="expected-state")
+        mock_mcp_service.oauth_service.complete_oauth_flow = make_async(
+            lambda *args, **kwargs: (False, "Invalid state parameter")
+        )
+
+        response = client.get(
+            "/mcp/github/oauth/callback?code=code-1&state=forged-state",
+            follow_redirects=False,
+        )
+
+        assert response.status_code == 307
+        assert "oauth-callback?type=error" in response.headers["location"]
+        assert not response.headers["location"].startswith("http://localhost:33418/cb")
+
+    def test_oauth_callback_complete_failure_without_layer_b_context_keeps_page_redirect(self, client):
+        mock_mcp_service.oauth_service.flow_manager.decode_state = lambda _: {"flow_id": "flow-1"}
+        mock_mcp_service.oauth_service.flow_manager.get_flow = lambda _: None
+        mock_mcp_service.oauth_service.complete_oauth_flow = make_async(
+            lambda *args, **kwargs: (False, "upstream_failed")
+        )
+
+        response = client.get(
+            "/mcp/test_server/oauth/callback?code=code-1&state=valid-state",
+            follow_redirects=False,
+        )
+
+        assert response.status_code == 307
+        assert "oauth-callback?type=error" in response.headers["location"]
+        assert "error=upstream_failed" in response.headers["location"]
+
+    def test_oauth_callback_unexpected_exception_keeps_page_redirect(self, client):
+        mock_mcp_service.oauth_service.flow_manager.decode_state = Mock(side_effect=RuntimeError("unexpected"))
+
+        response = client.get(
+            "/mcp/test_server/oauth/callback?code=code-1&state=valid-state",
+            follow_redirects=False,
+        )
+
+        assert response.status_code == 307
+        assert "oauth-callback?type=error" in response.headers["location"]
+        assert "error=callback_failed" in response.headers["location"]
 
     def test_oauth_callback_invalid_state_format(self, client):
         """Test OAuth callback with invalid state format"""

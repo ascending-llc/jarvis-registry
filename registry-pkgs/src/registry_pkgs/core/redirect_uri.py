@@ -17,7 +17,7 @@ Two validation phases with different rules:
 """
 
 import ipaddress
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import SplitResult, parse_qsl, urlencode, urlsplit, urlunsplit
 
 LOOPBACK_HOSTNAMES = frozenset({"localhost", "127.0.0.1", "::1"})
 
@@ -49,6 +49,38 @@ BLOCKED_REDIRECT_SCHEMES = frozenset(
 )
 
 
+def _parse_unambiguous_redirect_uri(redirect_uri: str) -> SplitResult:
+    """Parse a redirect URI after rejecting syntax browsers may interpret differently."""
+    if any(ord(character) <= 0x20 or ord(character) == 0x7F for character in redirect_uri):
+        raise ValueError("redirect_uri must not contain whitespace or control characters")
+    if "\\" in redirect_uri:
+        raise ValueError("redirect_uri must not contain backslashes")
+
+    parts = urlsplit(redirect_uri)
+    if parts.username is not None or parts.password is not None:
+        raise ValueError("redirect_uri must not contain user information")
+
+    # Accessing ``port`` validates that it is numeric and in the valid TCP range.
+    port = parts.port
+    if port == 0:
+        raise ValueError("redirect_uri port must be between 1 and 65535")
+    scheme = parts.scheme.lower()
+    if scheme not in {"http", "https"}:
+        return parts
+
+    hostname = parts.hostname
+    if hostname is None:
+        return parts
+    if "%" in parts.netloc:
+        raise ValueError("http(s) redirect_uri host must not use percent encoding")
+
+    canonical_host = f"[{hostname}]" if ":" in hostname else hostname
+    canonical_authority = f"{canonical_host}:{port}" if port is not None else canonical_host
+    if parts.netloc.lower() != canonical_authority.lower():
+        raise ValueError("http(s) redirect_uri authority is ambiguous")
+    return parts
+
+
 def is_loopback_host(host: str | None) -> bool:
     """Return True for ``localhost`` / ``127.0.0.1`` / ``[::1]`` (host as returned by ``.hostname``)."""
     if not host:
@@ -66,7 +98,7 @@ def is_safe_unverified_redirect_target(
     fragments fail closed. Callers must still require an explicit user action before redirecting.
     """
     try:
-        parts = urlsplit(redirect_uri)
+        parts = _parse_unambiguous_redirect_uri(redirect_uri)
         hostname = parts.hostname
     except ValueError:
         return False
@@ -91,7 +123,7 @@ def build_oauth_error_redirect_url(
     Existing query parameters are preserved, while OAuth error fields are replaced so stale values
     cannot conflict with the current result. The caller is responsible for trusting ``redirect_uri``.
     """
-    parts = urlsplit(redirect_uri)
+    parts = _parse_unambiguous_redirect_uri(redirect_uri)
     reserved_params = {"error", "error_description", "state"}
     query_params = [
         (key, value) for key, value in parse_qsl(parts.query, keep_blank_values=True) if key not in reserved_params
@@ -165,7 +197,7 @@ def validate_registration_redirect_uri(redirect_uri: str) -> None:
       | any other non-http(s) scheme                       | PASS — native private-use scheme|
       | http(s): host vetted by ``_validate_web_redirect_host`` | PASS or FAIL               |
     """
-    parts = urlsplit(redirect_uri)
+    parts = _parse_unambiguous_redirect_uri(redirect_uri)
     scheme = parts.scheme.lower()
 
     if not scheme:
@@ -191,12 +223,15 @@ def redirect_uri_matches(received: str, registered: str) -> bool:
     Non-loopback: exact string match (port included). Loopback: match scheme + host + path, ignore
     the port so a native app's ephemeral loopback port does not break the match (RFC 8252 §7.3).
     """
-    registered_parts = urlsplit(registered)
+    try:
+        registered_parts = _parse_unambiguous_redirect_uri(registered)
+        received_parts = _parse_unambiguous_redirect_uri(received)
+    except ValueError:
+        return False
 
     if not is_loopback_host(registered_parts.hostname):
         return received == registered
 
-    received_parts = urlsplit(received)
     return (
         is_loopback_host(received_parts.hostname)
         and received_parts.scheme.lower() == registered_parts.scheme.lower()

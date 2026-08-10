@@ -1,5 +1,7 @@
 from unittest.mock import Mock
+from urllib.parse import parse_qs, urlsplit
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -59,6 +61,18 @@ def _build_client(pending_store: _InMemoryPendingConsentStore, client_metadata: 
     return TestClient(app)
 
 
+def _downstream_error_payload(user_id: str = USER_ID) -> dict:
+    return {
+        "flow_type": "downstream_error",
+        "user_id": user_id,
+        "server_path": "github",
+        "redirect_uri": "http://localhost:33418/callback?existing=1",
+        "error": "invalid_client",
+        "error_description": "unknown client_id",
+        "client_state": "state-1",
+    }
+
+
 def test_downstream_consent_context_includes_redirect_uri() -> None:
     pending_store = _InMemoryPendingConsentStore()
     pending_store.save(
@@ -104,3 +118,85 @@ def test_downstream_consent_context_returns_null_redirect_uri_for_device_flow() 
     data = response.json()
     assert data["redirect_uri"] is None
     assert data["client_name"] == "External App"
+
+
+def test_downstream_error_consent_context_and_approval_are_one_shot() -> None:
+    pending_store = _InMemoryPendingConsentStore()
+    pending_store.save("error-nonce", _downstream_error_payload())
+    client = _build_client(pending_store)
+
+    context_response = client.get("/mcp/consent/downstream-error", params={"nonce": "error-nonce"})
+    approve_response = client.post("/mcp/consent/downstream-error", json={"nonce": "error-nonce"})
+    replay_response = client.post("/mcp/consent/downstream-error", json={"nonce": "error-nonce"})
+
+    assert context_response.status_code == 200
+    assert context_response.json()["redirect_uri"] == "http://localhost:33418/callback?existing=1"
+    assert approve_response.status_code == 200
+    query = parse_qs(urlsplit(approve_response.json()["redirect_url"]).query)
+    assert query == {
+        "existing": ["1"],
+        "error": ["invalid_client"],
+        "error_description": ["unknown client_id"],
+        "state": ["state-1"],
+    }
+    assert replay_response.status_code == 404
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("GET", "/mcp/consent/downstream-error"),
+        ("POST", "/mcp/consent/downstream-error"),
+        ("POST", "/mcp/consent/downstream-error/deny"),
+    ],
+)
+def test_downstream_error_consent_wrong_user_does_not_consume_nonce(method: str, path: str) -> None:
+    pending_store = _InMemoryPendingConsentStore()
+    pending_store.save("owned-nonce", _downstream_error_payload(user_id="other-user"))
+    client = _build_client(pending_store)
+
+    if method == "GET":
+        response = client.get(path, params={"nonce": "owned-nonce"})
+    else:
+        response = client.post(path, json={"nonce": "owned-nonce"})
+
+    assert response.status_code == 404
+    assert pending_store.peek("owned-nonce") is not None
+
+
+def test_downstream_error_consent_deny_never_returns_redirect_uri() -> None:
+    pending_store = _InMemoryPendingConsentStore()
+    pending_store.save("deny-nonce", _downstream_error_payload())
+    client = _build_client(pending_store)
+
+    response = client.post("/mcp/consent/downstream-error/deny", json={"nonce": "deny-nonce"})
+    replay_response = client.post("/mcp/consent/downstream-error/deny", json={"nonce": "deny-nonce"})
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "denied"}
+    assert "redirect" not in response.text
+    assert pending_store.peek("deny-nonce") is None
+    assert replay_response.status_code == 404
+
+
+def test_regular_and_error_consent_routes_reject_other_payload_type_without_consuming() -> None:
+    pending_store = _InMemoryPendingConsentStore()
+    pending_store.save("error-nonce", _downstream_error_payload())
+    pending_store.save(
+        "regular-nonce",
+        {
+            "user_id": USER_ID,
+            "server_path": "github",
+            "client_id": "ext-client",
+            "redirect_uri": "http://localhost:33418/callback",
+        },
+    )
+    client = _build_client(pending_store)
+
+    regular_response = client.get("/mcp/consent/downstream", params={"nonce": "error-nonce"})
+    error_response = client.get("/mcp/consent/downstream-error", params={"nonce": "regular-nonce"})
+
+    assert regular_response.status_code == 404
+    assert error_response.status_code == 404
+    assert pending_store.peek("error-nonce") is not None
+    assert pending_store.peek("regular-nonce") is not None

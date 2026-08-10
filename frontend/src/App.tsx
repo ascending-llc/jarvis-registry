@@ -9,6 +9,7 @@ import { ThemeProvider } from './contexts/ThemeContext';
 import AgentRegistryOrEdit from './pages/AgentRegistryOrEdit';
 import ConsentAgent from './pages/ConsentAgent';
 import ConsentDownstream from './pages/ConsentDownstream';
+import ConsentDownstreamError from './pages/ConsentDownstreamError';
 import ConsentServer from './pages/ConsentServer';
 import Dashboard from './pages/Dashboard';
 import DeviceVerify from './pages/DeviceVerify';
@@ -45,6 +46,14 @@ const router = createBrowserRouter(
       element: (
         <ProtectedRoute>
           <ConsentDownstream />
+        </ProtectedRoute>
+      ),
+    },
+    {
+      path: APP_ROUTES.consentDownstreamError,
+      element: (
+        <ProtectedRoute>
+          <ConsentDownstreamError />
         </ProtectedRoute>
       ),
     },

@@ -383,7 +383,12 @@ def test_authorize_accepts_native_scheme_redirect_uri(client, store_mock, mcp_se
     mcp_service_mock.oauth_service.initiate_oauth_flow.assert_called_once()
 
 
-def test_authorize_rejects_unregistered_redirect_uri(client, store_mock, mcp_service_mock):
+def test_authorize_rejects_unregistered_redirect_uri(
+    client,
+    store_mock,
+    pending_consent_store,
+    mcp_service_mock,
+):
     store_mock.get_client.return_value = {"redirect_uris": ["https://other.example.com/cb"]}
     resp = client.get(
         f"/mcp/downstream/oauth/authorize/{USER_A}/github",
@@ -391,6 +396,8 @@ def test_authorize_rejects_unregistered_redirect_uri(client, store_mock, mcp_ser
         follow_redirects=False,
     )
     assert resp.status_code == 400
+    assert resp.json() == {"detail": "redirect_uri is not registered for this client"}
+    assert pending_consent_store.pending == {}
     mcp_service_mock.oauth_service.initiate_oauth_flow.assert_not_called()
 
 
@@ -403,6 +410,133 @@ def test_authorize_rejects_unknown_client(client, store_mock, mcp_service_mock):
     )
     assert resp.status_code == 400
     mcp_service_mock.oauth_service.initiate_oauth_flow.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("client_metadata", "redirect_uri", "expected_error"),
+    [
+        (None, "http://127.0.0.1:45678/callback", "invalid_client"),
+        (None, "http://localhost:45678/callback", "invalid_client"),
+        (None, "https://vscode.dev/redirect", "invalid_client"),
+        ({"redirect_uris": ["https://other.example.com/cb"]}, "http://localhost:45678/callback", "invalid_request"),
+    ],
+)
+def test_authorize_gates_safe_unverified_redirect_errors_through_consent(
+    client,
+    store_mock,
+    pending_consent_store,
+    mcp_service_mock,
+    client_metadata,
+    redirect_uri,
+    expected_error,
+):
+    store_mock.get_client.return_value = client_metadata
+
+    resp = client.get(
+        f"/mcp/downstream/oauth/authorize/{USER_A}/github",
+        params={
+            "client_id": "ghost",
+            "redirect_uri": redirect_uri,
+            "code_challenge": "abc",
+            "state": "client-state",
+        },
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 302
+    assert resp.headers["location"].startswith(f"{settings.registry_client_url}/consent/downstream-error?nonce=")
+    pending = next(iter(pending_consent_store.pending.values()))
+    assert pending == {
+        "flow_type": "downstream_error",
+        "user_id": USER_A,
+        "server_path": "github",
+        "redirect_uri": redirect_uri,
+        "error": expected_error,
+        "error_description": (
+            "unknown client_id"
+            if expected_error == "invalid_client"
+            else "redirect_uri is not registered for this client"
+        ),
+        "client_state": "client-state",
+    }
+    mcp_service_mock.oauth_service.initiate_oauth_flow.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "redirect_uri",
+    [
+        "https://vscode.dev/redirect/extra",
+        "https://app.example.com/cb",
+    ],
+)
+def test_authorize_unknown_client_keeps_plain_json_for_unsafe_redirect(
+    client,
+    store_mock,
+    pending_consent_store,
+    redirect_uri,
+):
+    store_mock.get_client.return_value = None
+
+    resp = client.get(
+        f"/mcp/downstream/oauth/authorize/{USER_A}/github",
+        params={"client_id": "ghost", "redirect_uri": redirect_uri, "code_challenge": "abc"},
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 400
+    assert resp.json() == {"detail": "unknown client_id"}
+    assert pending_consent_store.pending == {}
+
+
+@pytest.mark.parametrize(
+    "redirect_uri",
+    [
+        "http://evil.example\\@localhost/callback",
+        "http://user@localhost/callback",
+        "http://localhost:0/callback",
+    ],
+)
+def test_authorize_rejects_ambiguous_loopback_without_creating_consent(
+    client,
+    store_mock,
+    pending_consent_store,
+    redirect_uri,
+):
+    store_mock.get_client.return_value = None
+
+    response = client.get(
+        f"/mcp/downstream/oauth/authorize/{USER_A}/github",
+        params={"client_id": "ghost", "redirect_uri": redirect_uri, "code_challenge": "abc"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 400
+    assert pending_consent_store.pending == {}
+
+
+def test_regular_downstream_approval_rejects_error_payload_without_consuming(
+    client,
+    pending_consent_store,
+    consent_store_mock,
+):
+    pending_consent_store.save(
+        "error-nonce",
+        {
+            "flow_type": "downstream_error",
+            "user_id": USER_A,
+            "server_path": "github",
+            "redirect_uri": "http://localhost:33418/callback",
+            "error": "invalid_client",
+            "error_description": "unknown client_id",
+            "client_state": "state-1",
+        },
+    )
+
+    response = client.post("/mcp/consent/downstream", json={"nonce": "error-nonce"})
+
+    assert response.status_code == 404
+    assert pending_consent_store.peek("error-nonce") is not None
+    consent_store_mock.grant_client_consent.assert_not_called()
 
 
 def test_authorize_session_user_mismatch_returns_403(client, mcp_service_mock):

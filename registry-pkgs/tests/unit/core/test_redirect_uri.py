@@ -87,6 +87,21 @@ class TestIsSafeUnverifiedRedirectTarget:
     def test_malformed_uri_rejected_without_raising(self) -> None:
         assert is_safe_unverified_redirect_target("http://[::1") is False
 
+    @pytest.mark.parametrize(
+        "uri",
+        [
+            "http://evil.example\\@localhost/callback",
+            "http://user@localhost/callback",
+            "http://localhost:0/callback",
+            "http://localhost:99999/callback",
+            "http://local%68ost/callback",
+            "http://localhost/call back",
+            "http://localhost/callback\n",
+        ],
+    )
+    def test_ambiguous_loopback_uri_rejected(self, uri: str) -> None:
+        assert is_safe_unverified_redirect_target(uri) is False
+
 
 class TestBuildOauthErrorRedirectUrl:
     def test_error_fields_always_present_and_return_is_string(self) -> None:
@@ -193,6 +208,14 @@ class TestValidateRegistrationRedirectUri:
             "sms:+15551234567",
             "tel:+15551234567",
             "cb-only",  # no scheme
+            "http://evil.example\\@localhost/callback",
+            "http://user@localhost/callback",
+            "http://localhost:0/callback",
+            "http://localhost:99999/callback",
+            "https://user@example.com/callback",
+            "https://exam%70le.com/callback",
+            "https://example.com/call back",
+            "https://example.com/callback\r",
         ],
     )
     def test_invalid_uris_raise(self, uri: str) -> None:
@@ -222,3 +245,15 @@ class TestRedirectUriMatches:
 
     def test_received_non_loopback_against_registered_loopback_fails(self) -> None:
         assert redirect_uri_matches("http://evil.com:1234/cb", "http://localhost:1234/cb") is False
+
+    @pytest.mark.parametrize(
+        "received",
+        [
+            "http://evil.example\\@localhost/cb",
+            "http://user@localhost/cb",
+            "http://localhost:0/cb",
+            "http://localhost:99999/cb",
+        ],
+    )
+    def test_ambiguous_received_loopback_fails(self, received: str) -> None:
+        assert redirect_uri_matches(received, "http://localhost:1234/cb") is False
