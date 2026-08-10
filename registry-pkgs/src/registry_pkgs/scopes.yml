@@ -33,6 +33,7 @@ group_mappings:
     - mcp-proxy-ops
     - a2a-proxy-ops
     - skills-proxy-ops
+    - skills-write
     - workflows-control
     - workflows-share
   jarvis-registry-power-user:
@@ -53,6 +54,7 @@ group_mappings:
     - mcp-proxy-ops
     - a2a-proxy-ops
     - skills-proxy-ops
+    - skills-write
     - workflows-control
     - workflows-share
   jarvis-registry-user:
@@ -69,6 +71,7 @@ group_mappings:
     - mcp-proxy-ops
     - a2a-proxy-ops
     - skills-proxy-ops
+    - skills-write
     - workflows-control
   jarvis-registry-read-only:
     - servers-read
@@ -413,7 +416,27 @@ workflows-share:
 skills-proxy-ops:
   - action: list_skills
     method: GET
-    endpoint: /proxy/skills
+    endpoint: /skills
+  - action: get_skill
+    method: GET
+    endpoint: /skills/{skill_id}
   - action: get_skill_content
     method: GET
-    endpoint: /proxy/skills/{skill_id}/content
+    endpoint: /skills/{skill_id}/content
+  - action: get_skill_file_content
+    method: GET
+    endpoint: /skills/{skill_id}/files/{path}
+
+skills-write:
+  - action: create_skill
+    method: POST
+    endpoint: /skills
+  - action: update_skill
+    method: PATCH
+    endpoint: /skills/{skill_id}
+  - action: delete_skill
+    method: DELETE
+    endpoint: /skills/{skill_id}
+  - action: toggle_skill
+    method: POST
+    endpoint: /skills/{skill_id}/toggle
