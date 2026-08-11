@@ -220,8 +220,8 @@ def validate_registration_redirect_uri(redirect_uri: str) -> None:
 def redirect_uri_matches(received: str, registered: str) -> bool:
     """Return True if a request-time ``received`` redirect_uri matches a ``registered`` one.
 
-    Non-loopback: exact string match (port included). Loopback: match scheme + host + path, ignore
-    the port so a native app's ephemeral loopback port does not break the match (RFC 8252 §7.3).
+    Non-loopback: exact string match (port included). Loopback: match every component except the
+    port so a native app's ephemeral loopback port does not break the match (RFC 8252 §7.3).
     """
     try:
         registered_parts = _parse_unambiguous_redirect_uri(registered)
@@ -237,4 +237,6 @@ def redirect_uri_matches(received: str, registered: str) -> bool:
         and received_parts.scheme.lower() == registered_parts.scheme.lower()
         and (received_parts.hostname or "").lower() == (registered_parts.hostname or "").lower()
         and received_parts.path == registered_parts.path
+        and received_parts.query == registered_parts.query
+        and received_parts.fragment == registered_parts.fragment
     )

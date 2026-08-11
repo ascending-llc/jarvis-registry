@@ -237,6 +237,27 @@ class TestRedirectUriMatches:
     def test_loopback_ignores_port(self) -> None:
         assert redirect_uri_matches("http://127.0.0.1:54321/cb", "http://127.0.0.1:1234/cb") is True
 
+    def test_loopback_ignores_only_port_when_query_matches(self) -> None:
+        assert (
+            redirect_uri_matches(
+                "http://localhost:54321/cb?tenant=expected",
+                "http://localhost:1234/cb?tenant=expected",
+            )
+            is True
+        )
+
+    def test_loopback_query_mismatch_fails(self) -> None:
+        assert (
+            redirect_uri_matches(
+                "http://localhost:54321/cb?tenant=attacker",
+                "http://localhost:1234/cb?tenant=expected",
+            )
+            is False
+        )
+
+    def test_loopback_fragment_mismatch_fails(self) -> None:
+        assert redirect_uri_matches("http://localhost:54321/cb", "http://localhost:1234/cb#fragment") is False
+
     def test_loopback_scheme_mismatch_fails(self) -> None:
         assert redirect_uri_matches("https://localhost:1/cb", "http://localhost:2/cb") is False
 

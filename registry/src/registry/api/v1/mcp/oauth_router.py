@@ -30,6 +30,7 @@ from registry_pkgs.core.redirect_uri import (
 )
 
 from ....auth.dependencies import CurrentUser
+from ....auth.oauth.flow_state_manager import FlowStateManager
 from ....auth.oauth.reconnection import OAuthReconnectionManager
 from ....auth.oauth.types import ClientBranding
 from ....constants import DownstreamOAuthConstants
@@ -307,11 +308,15 @@ def _relay_callback_error(
     page_error_msg: str,
     client_error: str,
     client_error_description: str,
+    *,
+    flow_manager: FlowStateManager,
+    flow_id: str,
 ) -> RedirectResponse:
-    """Relay a Layer-B callback failure to its previously verified client redirect URI."""
+    """Consume and relay a Layer-B callback failure to its previously verified client redirect URI."""
     if ctx is None:
         return _redirect_to_page(request, server_path, error_msg=page_error_msg)
 
+    flow_manager.delete_flow(flow_id)
     redirect_url = build_oauth_error_redirect_url(
         ctx["redirect_uri"],
         client_error,
@@ -324,9 +329,12 @@ def _relay_callback_error(
 def _get_verified_mcp_client_context(
     flow: OAuthFlow | None,
     state: str,
+    flow_manager: FlowStateManager,
 ) -> MCPClientContext | None:
-    """Return Layer-B context only when the callback carries the flow's exact CSRF-bound state."""
-    if flow is None or not isinstance(flow.state, str) or not secrets.compare_digest(flow.state, state):
+    """Return Layer-B context only for an active flow carrying the exact CSRF-bound state."""
+    if flow is None or flow.status != OAuthFlowStatus.PENDING or flow_manager.is_flow_expired(flow):
+        return None
+    if not isinstance(flow.state, str) or not secrets.compare_digest(flow.state, state):
         return None
     return flow.metadata.mcp_client_context if flow.metadata else None
 
@@ -380,15 +388,16 @@ async def oauth_callback(
             return _redirect_to_page(request, server_path, error_msg="missing_state")
 
         try:
-            state_dict = mcp_service.oauth_service.flow_manager.decode_state(state)
+            flow_manager = mcp_service.oauth_service.flow_manager
+            state_dict = flow_manager.decode_state(state)
             flow_id = state_dict["flow_id"]
         except ValueError as e:
             logger.error(f"[MCP OAuth] Failed to decode state: {e}")
             return _redirect_to_page(request, server_path, error_msg="invalid_state_format")
         logger.info(f"[MCP OAuth] Callback received: server={server_path}, flow_id={flow_id}")
 
-        flow = mcp_service.oauth_service.flow_manager.get_flow(flow_id)
-        ctx = _get_verified_mcp_client_context(flow, state)
+        flow = flow_manager.get_flow(flow_id)
+        ctx = _get_verified_mcp_client_context(flow, state, flow_manager)
 
         if error:
             logger.error(f"[MCP OAuth] OAuth error received from provider: {error}")
@@ -399,6 +408,8 @@ async def oauth_callback(
                 error,
                 error,
                 "Upstream OAuth provider returned an error",
+                flow_manager=flow_manager,
+                flow_id=flow_id,
             )
         if not code or not isinstance(code, str):
             logger.error("[MCP OAuth] Missing or invalid authorization code")
@@ -409,6 +420,8 @@ async def oauth_callback(
                 "missing_code",
                 "invalid_request",
                 "missing authorization code",
+                flow_manager=flow_manager,
+                flow_id=flow_id,
             )
 
         if flow and flow.status == OAuthFlowStatus.COMPLETED:
@@ -428,10 +441,12 @@ async def oauth_callback(
                 error_msg or "unknown_error",
                 "server_error",
                 "Downstream OAuth flow failed",
+                flow_manager=flow_manager,
+                flow_id=flow_id,
             )
         logger.info(f"[MCP OAuth] OAuth flow completed successfully for {server_path}")
 
-        flow = mcp_service.oauth_service.flow_manager.get_flow(flow_id)
+        flow = flow_manager.get_flow(flow_id)
 
         # 5. Reconnect/notification are best effort; device-state finalization is required.
         await _reconnect_after_oauth(mcp_service, reconnection_manager, flow, server_path)

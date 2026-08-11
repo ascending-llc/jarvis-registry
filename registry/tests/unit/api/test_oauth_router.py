@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from registry.api.v1.mcp.oauth_router import router
 from registry.core.session_store import SessionStore
 from registry.deps import get_container
+from registry.schemas.enums import OAuthFlowStatus
 from registry.services.oauth.mcp_service import MCPService
 from tests.conftest import make_container_factory
 
@@ -94,6 +95,9 @@ for attr in dir(mock_flow_manager):
 @pytest.fixture
 def client():
     from fastapi import FastAPI
+
+    mock_flow_manager.is_flow_expired = Mock(return_value=False)
+    mock_flow_manager.delete_flow = Mock()
 
     app = FastAPI()
 
@@ -483,6 +487,7 @@ class TestOAuthRouter:
             "error_description": [expected_description],
             "state": ["client-state"],
         }
+        mock_flow_manager.delete_flow.assert_called_once_with("flow-1")
 
     def test_oauth_callback_relays_sanitized_complete_failure_to_layer_b_client(self, client):
         mock_mcp_service.oauth_service.flow_manager.decode_state = lambda _: {"flow_id": "flow-1"}
@@ -502,6 +507,60 @@ class TestOAuthRouter:
         assert query["error_description"] == ["Downstream OAuth flow failed"]
         assert query["state"] == ["client-state"]
         assert "provider secret" not in response.headers["location"]
+        mock_flow_manager.delete_flow.assert_called_once_with("flow-1")
+
+    def test_oauth_callback_does_not_relay_provider_error_for_completed_layer_b_flow(self, client):
+        flow = _layer_b_flow()
+        flow.status = OAuthFlowStatus.COMPLETED
+        mock_flow_manager.decode_state = lambda _: {"flow_id": "flow-1"}
+        mock_flow_manager.get_flow = lambda _: flow
+
+        response = client.get(
+            "/mcp/github/oauth/callback?error=access_denied&state=valid-state",
+            follow_redirects=False,
+        )
+
+        assert response.status_code == 307
+        assert "oauth-callback?type=error" in response.headers["location"]
+        assert not response.headers["location"].startswith("http://localhost:33418/cb")
+        mock_flow_manager.delete_flow.assert_not_called()
+
+    def test_oauth_callback_does_not_relay_provider_error_for_expired_layer_b_flow(self, client):
+        mock_flow_manager.decode_state = lambda _: {"flow_id": "flow-1"}
+        mock_flow_manager.get_flow = lambda _: _layer_b_flow()
+        mock_flow_manager.is_flow_expired.return_value = True
+
+        response = client.get(
+            "/mcp/github/oauth/callback?error=access_denied&state=valid-state",
+            follow_redirects=False,
+        )
+
+        assert response.status_code == 307
+        assert "oauth-callback?type=error" in response.headers["location"]
+        assert not response.headers["location"].startswith("http://localhost:33418/cb")
+        mock_flow_manager.delete_flow.assert_not_called()
+
+    def test_oauth_callback_layer_b_error_state_is_consumed_after_first_relay(self, client):
+        flow_holder = {"flow": _layer_b_flow()}
+        mock_flow_manager.decode_state = lambda _: {"flow_id": "flow-1"}
+        mock_flow_manager.get_flow = lambda _: flow_holder["flow"]
+        mock_flow_manager.delete_flow.side_effect = lambda _: flow_holder.update(flow=None)
+
+        first_response = client.get(
+            "/mcp/github/oauth/callback?error=access_denied&state=valid-state",
+            follow_redirects=False,
+        )
+        replay_response = client.get(
+            "/mcp/github/oauth/callback?error=access_denied&state=valid-state",
+            follow_redirects=False,
+        )
+
+        assert first_response.status_code == 302
+        assert first_response.headers["location"].startswith("http://localhost:33418/cb")
+        assert replay_response.status_code == 307
+        assert "oauth-callback?type=error" in replay_response.headers["location"]
+        assert not replay_response.headers["location"].startswith("http://localhost:33418/cb")
+        mock_flow_manager.delete_flow.assert_called_once_with("flow-1")
 
     @pytest.mark.parametrize(
         "callback_query",
@@ -579,8 +638,6 @@ class TestOAuthRouter:
 
     def test_oauth_callback_already_completed(self, client):
         """Test OAuth callback when flow is already completed"""
-        from registry.schemas.enums import OAuthFlowStatus
-
         # Mock decode_state - note: decode_state is NOT async in the actual code
         mock_mcp_service.oauth_service.flow_manager.decode_state = lambda _: {
             "flow_id": "test_user-flow123",
@@ -605,8 +662,6 @@ class TestOAuthRouter:
 
     def test_completed_device_callback_repairs_device_state_without_reexchange(self, client):
         """A retry must finalize device state if the first callback completed before Redis failed."""
-        from registry.schemas.enums import OAuthFlowStatus
-
         mock_mcp_service.oauth_service.flow_manager.decode_state = lambda _: {
             "flow_id": "test_user-flow123",
             "security_token": "security_token",
