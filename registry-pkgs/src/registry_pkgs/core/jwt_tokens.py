@@ -1,5 +1,6 @@
 from typing import Any
 
+from .client_categories import resolve_granted_scopes
 from .config import JwtTokenConfig
 from .jwt_utils import (
     InvalidTokenError,
@@ -53,6 +54,7 @@ def mint_managed_agent_token(
     *,
     subject: str,
     client_id: str,
+    requested_scopes: str | list[str],
     expires_in_seconds: int,
     iat: int | None = None,
     extra_claims: dict[str, Any] | None = None,
@@ -63,14 +65,26 @@ def mint_managed_agent_token(
     ``"user-generated"`` for token vending, or a device-flow client). It is recorded
     as-is; the proxy verifier later rejects tokens whose ``client_id`` equals the
     registry backend's own id.
+
+    ``requested_scopes`` is intersected against ``client_id``'s category builtin max scope set
+    (``resolve_granted_scopes``) before being written to the ``scope`` claim — this is the third,
+    non-bypassable factor on top of whatever two-way (client-request ∩ user-scopes) intersection
+    the caller already performed upstream.
     """
+    if extra_claims and "scope" in extra_claims:
+        raise ValueError("extra_claims cannot override reserved JWT claims: scope")
+
+    granted_scopes = resolve_granted_scopes(client_id, requested_scopes, config)
+    claims = _merge_class_claims(extra_claims, TOKEN_CLASS_MANAGED_AGENT, client_id)
+    claims["scope"] = " ".join(granted_scopes)
+
     payload = build_jwt_payload(
         subject=subject,
         issuer=config.jwt_issuer,
         audience=config.managed_agents_audience,
         expires_in_seconds=expires_in_seconds,
         iat=iat,
-        extra_claims=_merge_class_claims(extra_claims, TOKEN_CLASS_MANAGED_AGENT, client_id),
+        extra_claims=claims,
     )
     return encode_jwt(payload, config.jwt_private_key, kid=config.jwt_self_signed_kid)
 

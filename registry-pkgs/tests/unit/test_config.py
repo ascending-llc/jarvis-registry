@@ -48,3 +48,11 @@ def test_headless_agent_client_id_allows_custom_value_and_strips_whitespace() ->
     )
 
     assert settings.headless_agent_client_id == "custom-headless-agent"
+
+
+@pytest.mark.unit
+def test_jwt_token_config_carries_headless_agent_client_id_and_all_scopes() -> None:
+    settings = JarvisBaseSettings(x_jarvis_registry_import_checks="disabled")
+    jtc = settings.jwt_token_config
+    assert jtc.headless_agent_client_id == settings.headless_agent_client_id
+    assert jtc.all_scopes == frozenset(settings.scopes_list)
