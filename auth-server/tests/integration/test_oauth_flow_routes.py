@@ -230,6 +230,103 @@ class TestDynamicClientRegistration:
 
 
 @pytest.mark.integration
+@pytest.mark.device_flow
+class TestA2ADynamicClientRegistration:
+    """Integration tests for A2A Dynamic Client Registration endpoint."""
+
+    def test_register_a2a_client_default(self, test_client: TestClient, clear_device_storage):
+        response = test_client.post(
+            f"{API_PREFIX}/oauth2/register/a2a",
+            json={"redirect_uris": ["https://example.com/callback"]},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["client_id"].startswith("a2a-client-")
+        assert data["grant_types"] == ["authorization_code", "refresh_token", DEVICE_CODE_GRANT_TYPE]
+        assert data["response_types"] == ["code"]
+        assert data["token_endpoint_auth_method"] == "none"
+        assert data["scope"] == "a2a-proxy-ops"
+        assert data["client_name"] == "A2A Client"
+        assert data["client_id"] in registered_clients
+
+    def test_register_a2a_client_full_metadata(self, test_client: TestClient, clear_device_storage):
+        response = test_client.post(
+            f"{API_PREFIX}/oauth2/register/a2a",
+            json={
+                "client_name": "My A2A Agent",
+                "client_uri": "https://example.com",
+                "redirect_uris": ["https://example.com/callback"],
+                "grant_types": ["authorization_code"],
+                "response_types": ["code"],
+                "scope": "a2a-proxy-ops",
+                "contacts": ["admin@example.com"],
+                "token_endpoint_auth_method": "client_secret_post",
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["client_id"].startswith("a2a-client-")
+        assert data["client_name"] == "My A2A Agent"
+        assert data["grant_types"] == ["authorization_code", "refresh_token", DEVICE_CODE_GRANT_TYPE]
+        assert data["token_endpoint_auth_method"] == "client_secret_post"
+        assert data["scope"] == "a2a-proxy-ops"
+
+    def test_register_a2a_client_substitutes_unsupported_auth_method(
+        self,
+        test_client: TestClient,
+        clear_device_storage,
+    ):
+        response = test_client.post(
+            f"{API_PREFIX}/oauth2/register/a2a",
+            json={
+                "redirect_uris": ["https://example.com/callback"],
+                "token_endpoint_auth_method": "client_secret_basic",
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["token_endpoint_auth_method"] == "none"
+        assert registered_clients[data["client_id"]]["token_endpoint_auth_method"] == "none"
+
+    @pytest.mark.parametrize(
+        "bad_uri",
+        [
+            "http://example.com/cb",
+            "https://10.0.0.1/cb",
+            "https://example.com/cb#frag",
+            "javascript:alert(1)",
+            "data:text/html;base64,PHNjcmlwdD4=",
+        ],
+    )
+    def test_register_a2a_with_unsafe_redirect_uri_rejected(
+        self,
+        test_client: TestClient,
+        clear_device_storage,
+        bad_uri: str,
+    ):
+        response = test_client.post(
+            f"{API_PREFIX}/oauth2/register/a2a",
+            json={"client_name": "Unsafe", "redirect_uris": [bad_uri]},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["error"] == "invalid_redirect_uri"
+
+    def test_mcp_register_still_produces_mcp_prefix(self, test_client: TestClient, clear_device_storage):
+        """Regression: root /oauth2/register still generates mcp-client-* IDs."""
+        response = test_client.post(
+            f"{API_PREFIX}/oauth2/register",
+            json={"redirect_uris": ["https://example.com/callback"]},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["client_id"].startswith("mcp-client-")
+
+
+@pytest.mark.integration
 @pytest.mark.oauth_flow
 class TestLoginRedirectErrorConsent:
     @pytest.mark.parametrize(

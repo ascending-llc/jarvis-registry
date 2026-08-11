@@ -74,6 +74,26 @@ class TestWellKnownRoutes:
         assert isinstance(data["scopes_supported"], list)
         assert len(data["scopes_supported"]) > 0
 
+    def test_a2a_oauth_authorization_server_metadata(self, test_client: TestClient):
+        """A2A metadata overrides only registration_endpoint; everything else matches root."""
+        root_response = test_client.get("/.well-known/oauth-authorization-server")
+        a2a_response = test_client.get("/.well-known/oauth-authorization-server/a2a")
+
+        assert a2a_response.status_code == 200
+        root_data = root_response.json()
+        a2a_data = a2a_response.json()
+
+        assert a2a_data["registration_endpoint"] == "http://localhost:8888/auth/oauth2/register/a2a"
+        assert a2a_data["registration_endpoint"] != root_data["registration_endpoint"]
+
+        assert a2a_data["issuer"] == root_data["issuer"]
+        assert a2a_data["authorization_endpoint"] == root_data["authorization_endpoint"]
+        assert a2a_data["token_endpoint"] == root_data["token_endpoint"]
+        assert a2a_data["device_authorization_endpoint"] == root_data["device_authorization_endpoint"]
+        assert a2a_data["jwks_uri"] == root_data["jwks_uri"]
+        assert a2a_data["grant_types_supported"] == root_data["grant_types_supported"]
+        assert a2a_data["scopes_supported"] == root_data["scopes_supported"]
+
     def test_openid_configuration(self, test_client: TestClient):
         """Test OpenID Connect Discovery endpoint."""
         response = test_client.get("/.well-known/openid-configuration")
