@@ -50,7 +50,8 @@ async def test_generate_user_token_selects_client_id_from_purpose(
     assert call_kwargs["client_id"] == expected_client_id
     assert call_kwargs["expires_in_seconds"] == 8 * 3600
     assert call_kwargs["extra_claims"]["user_id"] == USER_CONTEXT["user_id"]
-    assert call_kwargs["extra_claims"]["scope"] == " ".join(USER_CONTEXT["scopes"])
+    assert call_kwargs["requested_scopes"] == USER_CONTEXT["scopes"]
+    assert "scope" not in call_kwargs["extra_claims"]
     assert call_kwargs["extra_claims"]["groups"] == USER_CONTEXT["groups"]
 
 

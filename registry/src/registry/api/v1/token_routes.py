@@ -76,7 +76,6 @@ async def generate_user_token(
 
         extra_claims = {
             "user_id": user_id,
-            "scope": " ".join(final_scopes),
             "groups": user_groups,
             "jti": str(uuid.uuid4()),
             "token_use": "access",
@@ -96,6 +95,7 @@ async def generate_user_token(
             settings.jwt_token_config,
             subject=username,
             client_id=client_id,
+            requested_scopes=final_scopes,
             expires_in_seconds=expires_in_seconds,
             iat=current_time,
             extra_claims=extra_claims,

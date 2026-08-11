@@ -117,6 +117,7 @@ class TestCrudSessionTokens:
             settings.jwt_token_config,
             subject="alice",
             client_id="mcp-client-abc",
+            requested_scopes=["mcp-proxy-ops"],
             expires_in_seconds=3600,
         )
         assert verify_access_token(managed) is None
