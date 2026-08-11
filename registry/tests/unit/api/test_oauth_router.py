@@ -97,7 +97,7 @@ def client():
     from fastapi import FastAPI
 
     mock_flow_manager.is_flow_expired = Mock(return_value=False)
-    mock_flow_manager.delete_flow = Mock()
+    mock_flow_manager.consume_flow = Mock(side_effect=lambda flow_id, _state: mock_flow_manager.get_flow(flow_id))
 
     app = FastAPI()
 
@@ -487,7 +487,7 @@ class TestOAuthRouter:
             "error_description": [expected_description],
             "state": ["client-state"],
         }
-        mock_flow_manager.delete_flow.assert_called_once_with("flow-1")
+        mock_flow_manager.consume_flow.assert_called_once_with("flow-1", "valid-state")
 
     def test_oauth_callback_relays_sanitized_complete_failure_to_layer_b_client(self, client):
         mock_mcp_service.oauth_service.flow_manager.decode_state = lambda _: {"flow_id": "flow-1"}
@@ -507,7 +507,7 @@ class TestOAuthRouter:
         assert query["error_description"] == ["Downstream OAuth flow failed"]
         assert query["state"] == ["client-state"]
         assert "provider secret" not in response.headers["location"]
-        mock_flow_manager.delete_flow.assert_called_once_with("flow-1")
+        mock_flow_manager.consume_flow.assert_called_once_with("flow-1", "valid-state")
 
     def test_oauth_callback_does_not_relay_provider_error_for_completed_layer_b_flow(self, client):
         flow = _layer_b_flow()
@@ -523,7 +523,7 @@ class TestOAuthRouter:
         assert response.status_code == 307
         assert "oauth-callback?type=error" in response.headers["location"]
         assert not response.headers["location"].startswith("http://localhost:33418/cb")
-        mock_flow_manager.delete_flow.assert_not_called()
+        mock_flow_manager.consume_flow.assert_not_called()
 
     def test_oauth_callback_does_not_relay_provider_error_for_expired_layer_b_flow(self, client):
         mock_flow_manager.decode_state = lambda _: {"flow_id": "flow-1"}
@@ -538,13 +538,13 @@ class TestOAuthRouter:
         assert response.status_code == 307
         assert "oauth-callback?type=error" in response.headers["location"]
         assert not response.headers["location"].startswith("http://localhost:33418/cb")
-        mock_flow_manager.delete_flow.assert_not_called()
+        mock_flow_manager.consume_flow.assert_not_called()
 
     def test_oauth_callback_layer_b_error_state_is_consumed_after_first_relay(self, client):
         flow_holder = {"flow": _layer_b_flow()}
         mock_flow_manager.decode_state = lambda _: {"flow_id": "flow-1"}
-        mock_flow_manager.get_flow = lambda _: flow_holder["flow"]
-        mock_flow_manager.delete_flow.side_effect = lambda _: flow_holder.update(flow=None)
+        mock_flow_manager.get_flow = lambda _: flow_holder.get("flow")
+        mock_flow_manager.consume_flow.side_effect = lambda _flow_id, _state: flow_holder.pop("flow", None)
 
         first_response = client.get(
             "/mcp/github/oauth/callback?error=access_denied&state=valid-state",
@@ -560,7 +560,23 @@ class TestOAuthRouter:
         assert replay_response.status_code == 307
         assert "oauth-callback?type=error" in replay_response.headers["location"]
         assert not replay_response.headers["location"].startswith("http://localhost:33418/cb")
-        mock_flow_manager.delete_flow.assert_called_once_with("flow-1")
+        mock_flow_manager.consume_flow.assert_called_once_with("flow-1", "valid-state")
+
+    def test_oauth_callback_does_not_relay_when_atomic_consume_fails(self, client):
+        mock_flow_manager.decode_state = lambda _: {"flow_id": "flow-1"}
+        mock_flow_manager.get_flow = lambda _: _layer_b_flow()
+        mock_flow_manager.consume_flow.side_effect = None
+        mock_flow_manager.consume_flow.return_value = None
+
+        response = client.get(
+            "/mcp/github/oauth/callback?error=access_denied&state=valid-state",
+            follow_redirects=False,
+        )
+
+        assert response.status_code == 307
+        assert "oauth-callback?type=error" in response.headers["location"]
+        assert not response.headers["location"].startswith("http://localhost:33418/cb")
+        mock_flow_manager.consume_flow.assert_called_once_with("flow-1", "valid-state")
 
     @pytest.mark.parametrize(
         "callback_query",

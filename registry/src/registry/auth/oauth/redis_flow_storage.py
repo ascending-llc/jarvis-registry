@@ -10,6 +10,17 @@ from ...schemas.oauth_schema import MCPOAuthFlowMetadata, OAuthFlow, OAuthTokens
 
 logger = logging.getLogger(__name__)
 
+_CONSUME_PENDING_FLOW_SCRIPT = """
+local state = redis.call('HGET', KEYS[1], 'state')
+local status = redis.call('HGET', KEYS[1], 'status')
+if state ~= ARGV[1] or status ~= ARGV[2] then
+    return {}
+end
+local data = redis.call('HGETALL', KEYS[1])
+redis.call('DEL', KEYS[1])
+return data
+"""
+
 
 class RedisFlowStorage:
     """
@@ -28,6 +39,34 @@ class RedisFlowStorage:
     def _make_key(self, flow_id: str) -> str:
         """Generate Redis key for flow"""
         return f"{self.key_prefix}{flow_id}"
+
+    @staticmethod
+    def _deserialize_flow(data: dict[str, str]) -> OAuthFlow:
+        """Reconstruct an OAuth flow from its Redis hash."""
+        tokens = None
+        if data.get("tokens_json"):
+            tokens_dict = json.loads(data["tokens_json"])
+            tokens = OAuthTokens(**tokens_dict)
+
+        metadata = None
+        if data.get("metadata_json"):
+            metadata_dict = json.loads(data["metadata_json"])
+            metadata = MCPOAuthFlowMetadata(**metadata_dict)
+
+        return OAuthFlow(
+            flow_id=data["flow_id"],
+            server_id=data["server_id"],
+            server_name=metadata.server_name,
+            user_id=data["user_id"],
+            code_verifier=data["code_verifier"],
+            state=data["state"],
+            status=OAuthFlowStatus(data["status"]),
+            created_at=float(data["created_at"]),
+            completed_at=float(data["completed_at"]) if data.get("completed_at") else None,
+            tokens=tokens,
+            error=data.get("error") or None,
+            metadata=metadata,
+        )
 
     def save_flow(self, flow: OAuthFlow, ttl: int = DEFAULT_TTL) -> bool:
         """
@@ -83,36 +122,29 @@ class RedisFlowStorage:
             if not data:
                 return None
 
-            # Deserialize tokens
-            tokens = None
-            if data.get("tokens_json"):
-                tokens_dict = json.loads(data["tokens_json"])
-                tokens = OAuthTokens(**tokens_dict)
-
-            # Deserialize metadata
-            metadata = None
-            if data.get("metadata_json"):
-                metadata_dict = json.loads(data["metadata_json"])
-                metadata = MCPOAuthFlowMetadata(**metadata_dict)
-
-            # Reconstruct OAuthFlow
-            return OAuthFlow(
-                flow_id=data["flow_id"],
-                server_id=data["server_id"],
-                server_name=metadata.server_name,
-                user_id=data["user_id"],
-                code_verifier=data["code_verifier"],
-                state=data["state"],
-                status=OAuthFlowStatus(data["status"]),  # Convert string back to enum
-                created_at=float(data["created_at"]),
-                completed_at=float(data["completed_at"]) if data.get("completed_at") else None,
-                tokens=tokens,
-                error=data.get("error") or None,
-                metadata=metadata,
-            )
+            return self._deserialize_flow(data)
 
         except Exception as e:
             logger.error(f"Failed to get flow from Redis: {e}", exc_info=True)
+            return None
+
+    def consume_flow(self, flow_id: str, expected_state: str) -> OAuthFlow | None:
+        """Atomically retrieve and delete the matching pending OAuth flow from Redis."""
+        try:
+            key = self._make_key(flow_id)
+            raw_data = self.redis.eval(
+                _CONSUME_PENDING_FLOW_SCRIPT,
+                1,
+                key,
+                expected_state,
+                OAuthFlowStatus.PENDING.value,
+            )
+            if not raw_data:
+                return None
+            data = dict(zip(raw_data[::2], raw_data[1::2], strict=True))
+            return self._deserialize_flow(data)
+        except Exception as e:
+            logger.error(f"Failed to consume flow from Redis: {e}", exc_info=True)
             return None
 
     def delete_flow(self, flow_id: str) -> bool:

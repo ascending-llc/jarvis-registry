@@ -3,7 +3,7 @@
 import pytest
 
 from registry.auth.oauth.flow_state_manager import FlowStateManager
-from registry.schemas.oauth_schema import OAuthProtectedResourceMetadata
+from registry.schemas.oauth_schema import OAuthFlow, OAuthProtectedResourceMetadata
 
 
 class TestCreateFlowMetadataResourceResolution:
@@ -93,3 +93,35 @@ class TestCreateFlowMetadataResourceResolution:
         metadata = self._call(manager, self._base_oauth_config(resource=""))
 
         assert metadata.resource_metadata is None
+
+
+class TestConsumeFlow:
+    def test_memory_flow_is_returned_once(self) -> None:
+        manager = FlowStateManager(fallback_to_memory=True)
+        flow = OAuthFlow(
+            flow_id="flow-1",
+            server_id="server-1",
+            server_name="server",
+            user_id="user-1",
+            code_verifier="verifier",
+            state="state",
+        )
+        manager._memory_flows[flow.flow_id] = flow
+
+        assert manager.consume_flow(flow.flow_id, "state") is flow
+        assert manager.consume_flow(flow.flow_id, "state") is None
+
+    def test_memory_flow_is_not_consumed_for_mismatched_state(self) -> None:
+        manager = FlowStateManager(fallback_to_memory=True)
+        flow = OAuthFlow(
+            flow_id="flow-1",
+            server_id="server-1",
+            server_name="server",
+            user_id="user-1",
+            code_verifier="verifier",
+            state="expected-state",
+        )
+        manager._memory_flows[flow.flow_id] = flow
+
+        assert manager.consume_flow(flow.flow_id, "forged-state") is None
+        assert manager.get_flow(flow.flow_id) is flow

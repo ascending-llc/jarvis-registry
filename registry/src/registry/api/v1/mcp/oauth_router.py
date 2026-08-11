@@ -311,17 +311,22 @@ def _relay_callback_error(
     *,
     flow_manager: FlowStateManager,
     flow_id: str,
+    callback_state: str,
 ) -> RedirectResponse:
     """Consume and relay a Layer-B callback failure to its previously verified client redirect URI."""
     if ctx is None:
         return _redirect_to_page(request, server_path, error_msg=page_error_msg)
 
-    flow_manager.delete_flow(flow_id)
+    consumed_flow = flow_manager.consume_flow(flow_id, callback_state)
+    consumed_ctx = _get_verified_mcp_client_context(consumed_flow, callback_state, flow_manager)
+    if consumed_ctx is None:
+        return _redirect_to_page(request, server_path, error_msg=page_error_msg)
+
     redirect_url = build_oauth_error_redirect_url(
-        ctx["redirect_uri"],
+        consumed_ctx["redirect_uri"],
         client_error,
         client_error_description,
-        ctx.get("state"),
+        consumed_ctx.get("state"),
     )
     return RedirectResponse(url=redirect_url, status_code=status.HTTP_302_FOUND)
 
@@ -410,6 +415,7 @@ async def oauth_callback(
                 "Upstream OAuth provider returned an error",
                 flow_manager=flow_manager,
                 flow_id=flow_id,
+                callback_state=state,
             )
         if not code or not isinstance(code, str):
             logger.error("[MCP OAuth] Missing or invalid authorization code")
@@ -422,6 +428,7 @@ async def oauth_callback(
                 "missing authorization code",
                 flow_manager=flow_manager,
                 flow_id=flow_id,
+                callback_state=state,
             )
 
         if flow and flow.status == OAuthFlowStatus.COMPLETED:
@@ -443,6 +450,7 @@ async def oauth_callback(
                 "Downstream OAuth flow failed",
                 flow_manager=flow_manager,
                 flow_id=flow_id,
+                callback_state=state,
             )
         logger.info(f"[MCP OAuth] OAuth flow completed successfully for {server_path}")
 
