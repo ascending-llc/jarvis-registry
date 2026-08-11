@@ -33,6 +33,14 @@ def _build_app() -> FastAPI:
     async def skill_content_ep(skill_id: str):
         return JSONResponse({"ok": "skill-content", "skill_id": skill_id})
 
+    @app.get("/api/v1/skills/{skill_id}")
+    async def skill_detail_ep(skill_id: str):
+        return JSONResponse({"ok": "skill-detail", "skill_id": skill_id})
+
+    @app.get("/api/v1/skills/{skill_id}/files/{file_path:path}")
+    async def skill_file_ep(skill_id: str, file_path: str):
+        return JSONResponse({"ok": "skill-file", "skill_id": skill_id, "file_path": file_path})
+
     @app.post("/api/v1/skills")
     async def create_skill_ep():
         return JSONResponse({"ok": "create-skill"})
@@ -190,7 +198,7 @@ def test_skills_sync_401_advertises_skills_scope(client):
     resp = client.get("/api/v1/skills")
 
     assert resp.status_code == 401
-    assert 'scope="skills-proxy-ops"' in resp.headers["WWW-Authenticate"]
+    assert 'scope="skills-read"' in resp.headers["WWW-Authenticate"]
 
 
 @pytest.mark.parametrize(
@@ -201,7 +209,7 @@ def test_skills_sync_401_advertises_skills_scope(client):
     ],
 )
 def test_skill_sync_reads_accept_managed_agent_bearer(client, path):
-    token = _managed_agent_token(user_id=USER_A, token_scope="skills-proxy-ops")
+    token = _managed_agent_token(user_id=USER_A, token_scope="skills-read")
 
     resp = client.get(path, headers={"Authorization": f"Bearer {token}"})
 
@@ -217,7 +225,7 @@ def test_skill_sync_read_accepts_session_cookie(client):
 
 
 def test_skill_write_rejects_managed_agent_bearer(client):
-    token = _managed_agent_token(user_id=USER_A, token_scope="skills-proxy-ops")
+    token = _managed_agent_token(user_id=USER_A, token_scope="skills-read")
 
     resp = client.post("/api/v1/skills", headers={"Authorization": f"Bearer {token}"})
 
@@ -338,6 +346,37 @@ def test_crud_paths_classify_as_non_proxy(path):
 def test_lifespan_scope_passes_through_without_error():
     with TestClient(_build_app()):
         pass
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        f"/api/v1/skills/{USER_A}",
+        f"/api/v1/skills/{USER_A}/files/scripts/parse.sh",
+    ],
+)
+def test_skill_non_sync_reads_reject_bearer(client, path):
+    token = _managed_agent_token(user_id=USER_A, token_scope="skills-read")
+
+    resp = client.get(path, headers={"Authorization": f"Bearer {token}"})
+
+    assert resp.status_code == 401
+    assert "WWW-Authenticate" not in resp.headers
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        f"/api/v1/skills/{USER_A}",
+        f"/api/v1/skills/{USER_A}/files/scripts/parse.sh",
+    ],
+)
+def test_skill_non_sync_reads_accept_session_cookie(client, path):
+    client.cookies.set(_COOKIE, _crud_cookie_token())
+
+    resp = client.get(path)
+
+    assert resp.status_code == 200
 
 
 async def test_non_http_scope_forwarded_to_app_unchanged():

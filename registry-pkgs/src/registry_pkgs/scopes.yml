@@ -32,7 +32,7 @@ group_mappings:
     - acl-write
     - mcp-proxy-ops
     - a2a-proxy-ops
-    - skills-proxy-ops
+    - skills-read
     - skills-write
     - workflows-control
     - workflows-share
@@ -53,7 +53,7 @@ group_mappings:
     - acl-write
     - mcp-proxy-ops
     - a2a-proxy-ops
-    - skills-proxy-ops
+    - skills-read
     - skills-write
     - workflows-control
     - workflows-share
@@ -70,7 +70,7 @@ group_mappings:
     - acl-read
     - mcp-proxy-ops
     - a2a-proxy-ops
-    - skills-proxy-ops
+    - skills-read
     - skills-write
     - workflows-control
   jarvis-registry-read-only:
@@ -80,7 +80,7 @@ group_mappings:
     - workflows-read
     - user-read
     - acl-read
-    - skills-proxy-ops
+    - skills-read
 
 servers-read:
   - action: list_servers
@@ -413,7 +413,7 @@ workflows-share:
     method: PUT
     endpoint: /permissions/workflow/{resource_id}
 
-skills-proxy-ops:
+skills-read:
   - action: list_skills
     method: GET
     endpoint: /skills

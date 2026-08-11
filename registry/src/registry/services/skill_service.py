@@ -79,9 +79,15 @@ def _sync_file_response(skill_file: SkillFile) -> SkillFileResponse:
             unavailableReason=_UNAVAILABLE_FILE_REASON,
         )
 
+    text_content = _registry_file_text(skill_file)
+    binary_body = None
+    if text_content is None and skill_file.body is not None:
+        binary_body = base64.b64encode(skill_file.body).decode("ascii")
+
     return SkillFileResponse(
         relativePath=skill_file.relativePath,
-        content=_registry_file_text(skill_file),
+        content=text_content,
+        body=binary_body,
         mimeType=skill_file.mimeType,
         bytes=skill_file.bytes,
         isBinary=skill_file.isBinary,

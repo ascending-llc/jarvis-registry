@@ -81,7 +81,7 @@ def skill_app() -> Generator[SimpleNamespace, None, None]:
         "client_id": "browser",
         "username": "Integration User",
         "groups": [],
-        "scopes": ["skills-proxy-ops", "skills-write"],
+        "scopes": ["skills-read", "skills-write"],
         "auth_method": "oauth2",
         "provider": "entra",
         "auth_source": "jwt_session_auth",

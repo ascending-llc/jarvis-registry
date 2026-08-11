@@ -944,7 +944,7 @@ class TestRealScopesConfigSkills:
     def test_skill_reads_are_granted_with_sync_scope(self, path: str) -> None:
         middleware = ScopePermissionMiddleware(FastAPI())
 
-        assert middleware._has_permission(["skills-proxy-ops"], path, "GET") is True
+        assert middleware._has_permission(["skills-read"], path, "GET") is True
 
     @pytest.mark.parametrize(
         ("method", "path"),
@@ -959,4 +959,4 @@ class TestRealScopesConfigSkills:
         middleware = ScopePermissionMiddleware(FastAPI())
 
         assert middleware._has_permission(["skills-write"], path, method) is True
-        assert middleware._has_permission(["skills-proxy-ops"], path, method) is False
+        assert middleware._has_permission(["skills-read"], path, method) is False

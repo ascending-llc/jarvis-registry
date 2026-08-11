@@ -43,7 +43,7 @@ def _parse_bearer_token(request: Request) -> str | None:
 
 def _required_bearer_scope(path: str) -> str:
     if SKILLS_API_RE.match(path):
-        return "skills-proxy-ops"
+        return "skills-read"
     if A2A_PROXY_RE.match(path):
         return "a2a-proxy-ops"
     return "mcp-proxy-ops"

@@ -53,6 +53,7 @@ class SkillFileResponse(BaseModel):
 
     relativePath: str
     content: str | None = None
+    body: str | None = Field(default=None, description="Base64-encoded binary content")
     mimeType: str
     bytes: int
     isBinary: bool | None = None
@@ -78,6 +79,7 @@ class SkillMetadataResponse(BaseModel):
     authorName: str
     source: str = "inline"
     sourceMetadata: dict[str, Any] | None = None
+    createdByRegistry: bool = False
     permissions: ResourcePermissions | None = None
     updatedAt: datetime | None = None
     deletedAt: datetime | None = None
@@ -98,6 +100,7 @@ class SkillContentResponse(BaseModel):
     userInvocable: bool = True
     allowedTools: list[str] | None = None
     category: str = ""
+    createdByRegistry: bool = False
     files: list[SkillFileResponse]
 
 
@@ -121,6 +124,7 @@ class SkillDetailResponse(BaseModel):
     authorName: str
     source: str = "inline"
     sourceMetadata: dict[str, Any] | None = None
+    createdByRegistry: bool = False
     createdAt: datetime | None = None
     updatedAt: datetime | None = None
     files: list[SkillFileMetadataResponse] = Field(default_factory=list)

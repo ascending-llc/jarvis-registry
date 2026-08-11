@@ -8,8 +8,8 @@ The Skills API uses **dual authentication** — the auth method depends on the e
 
 | Endpoint type | Auth method | Credential | Required scope |
 |---------------|-------------|------------|----------------|
-| Sync-down reads (`GET /skills`, `GET /skills/{id}/content`) | Session cookie **or** Bearer token | `jarvis_registry_session` cookie / `Authorization: Bearer <token>` | `skills-proxy-ops` |
-| All other reads (`GET /skills/{id}`, `GET /skills/{id}/files/{path}`) | Session cookie only | `jarvis_registry_session` cookie | `skills-proxy-ops` |
+| Sync-down reads (`GET /skills`, `GET /skills/{id}/content`) | Session cookie **or** Bearer token | `jarvis_registry_session` cookie / `Authorization: Bearer <token>` | `skills-read` |
+| All other reads (`GET /skills/{id}`, `GET /skills/{id}/files/{path}`) | Session cookie only | `jarvis_registry_session` cookie | `skills-read` |
 | Writes (`POST`, `PATCH`, `DELETE`) | Session cookie only | `jarvis_registry_session` cookie + `X-Jarvis-CSRF` header | `skills-write` |
 
 Sync-down reads accept Bearer tokens so that CLI agents can pull skill content using managed-agent tokens without
@@ -546,5 +546,5 @@ Defined in `registry-pkgs/src/registry_pkgs/scopes.yml`:
 
 | Scope | Actions |
 |-------|---------|
-| `skills-proxy-ops` | `skills:list`, `skills:get`, `skills:getContent`, `skills:getFileContent` |
+| `skills-read` | `skills:list`, `skills:get`, `skills:getContent`, `skills:getFileContent` |
 | `skills-write` | `skills:create`, `skills:update`, `skills:delete`, `skills:toggle` |

@@ -46,6 +46,7 @@ def _metadata_response(skill, permissions: ResourcePermissions) -> SkillMetadata
         authorName=skill.authorName,
         source=skill.source,
         sourceMetadata=skill.sourceMetadata,
+        createdByRegistry=skill.createdByRegistry,
         permissions=permissions,
         updatedAt=skill.updatedAt,
         deletedAt=skill.deletedAt,
@@ -73,6 +74,7 @@ def _detail_response(skill, files, permissions: ResourcePermissions) -> SkillDet
         authorName=skill.authorName,
         source=skill.source,
         sourceMetadata=skill.sourceMetadata,
+        createdByRegistry=skill.createdByRegistry,
         createdAt=skill.createdAt,
         updatedAt=skill.updatedAt,
         files=[skill_file_metadata(skill_file) for skill_file in files],
@@ -165,6 +167,7 @@ async def get_skill_content(
             userInvocable=skill.userInvocable,
             allowedTools=skill.allowedTools,
             category=skill.category,
+            createdByRegistry=skill.createdByRegistry,
             files=files,
         )
     except HTTPException:
