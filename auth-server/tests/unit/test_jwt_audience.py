@@ -23,8 +23,9 @@ class TestSelfSignedTokenValidation:
             cfg,
             subject="alice",
             client_id="mcp-client-abc",
+            requested_scopes=["mcp-proxy-ops"],
             expires_in_seconds=3600,
-            extra_claims={"token_use": "access", "scope": "a b"},
+            extra_claims={"token_use": "access"},
         )
 
         result = validator.validate_self_signed_token(token)
@@ -33,7 +34,7 @@ class TestSelfSignedTokenValidation:
         assert result["method"] == "self_signed"
         assert result["client_id"] == "mcp-client-abc"
         assert result["username"] == "alice"
-        assert result["scopes"] == ["a", "b"]
+        assert result["scopes"] == ["mcp-proxy-ops"]
 
     def test_rejects_crud_session_token(self, validator, cfg):
         # A dashboard cookie token must never validate as a managed-agent token.
@@ -54,6 +55,7 @@ class TestSelfSignedTokenValidation:
             cfg,
             subject="self",
             client_id=cfg.registry_client_id,
+            requested_scopes=[],
             expires_in_seconds=3600,
             extra_claims={"token_use": "access"},
         )
@@ -66,6 +68,7 @@ class TestSelfSignedTokenValidation:
             cfg,
             subject="alice",
             client_id="mcp-client-abc",
+            requested_scopes=["mcp-proxy-ops"],
             expires_in_seconds=3600,
             extra_claims={"token_use": "id"},
         )

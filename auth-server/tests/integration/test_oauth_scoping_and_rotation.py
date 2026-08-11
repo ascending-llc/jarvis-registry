@@ -94,7 +94,7 @@ class TestAccessTokenScoping:
         mock_map_groups.return_value = default_scopes
 
         # Create authorization code without resolved_scope (backward compatibility)
-        client_id = "test-client"
+        client_id = "user-generated"
         redirect_uri = "https://example.com/callback"
         auth_code, user_info = self._create_mock_callback_state(client_id, redirect_uri, requested_scope=None)
 
@@ -130,7 +130,7 @@ class TestAccessTokenScoping:
         mock_map_groups.return_value = default_scopes
 
         # Simulate callback flow with requested scope
-        client_id = "test-client"
+        client_id = "user-generated"
         redirect_uri = "https://example.com/callback"
         requested_scopes = ["servers-read", "agents-read"]  # Subset
 
@@ -441,7 +441,7 @@ class TestAccessTokenScoping:
         mock_map_groups.return_value = default_scopes
 
         # Create authorization code WITHOUT resolved_scope field (old format)
-        client_id = "test-client"
+        client_id = "user-generated"
         redirect_uri = "https://example.com/callback"
         auth_code, user_info = self._create_mock_callback_state(client_id, redirect_uri)
 
@@ -480,7 +480,7 @@ class TestRefreshTokenRotation:
         """Test that using a refresh token generates a new refresh token."""
 
         # Setup initial refresh token
-        client_id = "test-client"
+        client_id = "user-generated"
         old_refresh_token = secrets.token_urlsafe(32)
         current_time = int(time.time())
 
@@ -539,7 +539,7 @@ class TestRefreshTokenRotation:
         mock_user_service,
     ):
         """Existing refresh tokens must not mint new access tokens until the user consents."""
-        client_id = "test-client"
+        client_id = "user-generated"
         old_refresh_token = secrets.token_urlsafe(32)
         current_time = int(time.time())
         user_info = {
@@ -581,7 +581,7 @@ class TestRefreshTokenRotation:
         clear_device_storage,
     ):
         """A prior consent record allows refresh-token rotation to continue."""
-        client_id = "test-client"
+        client_id = "user-generated"
         old_refresh_token = secrets.token_urlsafe(32)
         current_time = int(time.time())
         user_info = {
@@ -618,7 +618,7 @@ class TestRefreshTokenRotation:
         """Test that after rotation, old refresh token is invalidated."""
 
         # Setup initial refresh token
-        client_id = "test-client"
+        client_id = "user-generated"
         old_refresh_token = secrets.token_urlsafe(32)
         current_time = int(time.time())
 
@@ -664,7 +664,7 @@ class TestRefreshTokenRotation:
     def test_refresh_token_rotation_chain(self, test_client_with_user_service: TestClient, clear_device_storage):
         """Test that refresh tokens can be rotated multiple times in a chain."""
 
-        client_id = "test-client"
+        client_id = "user-generated"
         current_time = int(time.time())
 
         user_info = {
@@ -718,7 +718,7 @@ class TestRefreshTokenRotation:
     def test_refresh_token_scope_preserved(self, test_client_with_user_service: TestClient, clear_device_storage):
         """Test that scope is preserved when rotating refresh tokens."""
 
-        client_id = "test-client"
+        client_id = "user-generated"
         original_scope = "servers-read agents-read servers-write"
         old_refresh_token = secrets.token_urlsafe(32)
         current_time = int(time.time())
@@ -780,7 +780,7 @@ class TestRefreshTokenRotation:
     def test_refresh_token_expired(self, test_client_with_user_service: TestClient, clear_device_storage):
         """Test that expired refresh token is rejected and removed."""
 
-        client_id = "test-client"
+        client_id = "user-generated"
         expired_refresh_token = secrets.token_urlsafe(32)
         current_time = int(time.time())
 
@@ -889,7 +889,7 @@ class TestScopingAndRotationIntegration:
         mock_map_groups.return_value = default_scopes
 
         # Simulate authorization code flow with scoped token
-        client_id = "test-client"
+        client_id = "user-generated"
         redirect_uri = "https://example.com/callback"
         negotiated_scopes = ["servers-read", "agents-read"]  # Subset requested by client
 

@@ -104,6 +104,23 @@ def _seed_default_oauth_state() -> None:
             "ip_address": "127.0.0.1",
         },
     )
+    test_oauth_state_store.save_client(
+        "user-generated",
+        {
+            "client_id": "user-generated",
+            "client_name": "User-Generated Token Client",
+            "redirect_uris": [
+                "http://localhost/callback",
+                "https://example.com/callback",
+            ],
+            "grant_types": ["authorization_code", "refresh_token"],
+            "response_types": ["code"],
+            "scope": "servers-read agents-read servers-write agents-write",
+            "token_endpoint_auth_method": "none",
+            "registered_at": 0,
+            "ip_address": "127.0.0.1",
+        },
+    )
 
 
 @pytest.fixture

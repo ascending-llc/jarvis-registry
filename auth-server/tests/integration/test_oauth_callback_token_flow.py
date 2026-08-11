@@ -760,7 +760,7 @@ class TestOAuth2TokenEndpoint:
             token_claims = mock_mint_token.call_args.kwargs["extra_claims"]
             assert token_claims["user_id"] == "507f1f77bcf86cd799439011"
             assert token_claims["groups"] == ["user-group"]
-            assert token_claims["scope"] == "servers-read agents-read"
+            assert mock_mint_token.call_args.kwargs["requested_scopes"] == "servers-read agents-read"
             assert token_claims["token_use"] == "access"
             assert token_claims["auth_provider"] is not None
 
