@@ -1081,15 +1081,15 @@ def _downstream_refresh_token_grant(
     if not refresh_token:
         return _oauth_token_error("invalid_request", "refresh_token is required")
 
-    if not store.validate_client_credentials(client_id, client_secret):
-        return _oauth_token_error("invalid_client", "invalid client credentials")
-
     token_data = store.get_refresh_token(refresh_token)
     if token_data is None:
         return _oauth_token_error("invalid_grant", "invalid or expired refresh_token")
 
     if token_data.get("client_id") != client_id:
         return _oauth_token_error("invalid_client", "client_id mismatch")
+
+    if not store.validate_client_credentials(client_id, client_secret):
+        return _oauth_token_error("invalid_client", "invalid client credentials")
 
     if token_data.get("user_id") != user_id or token_data.get("server_path") != server_path:
         return _oauth_token_error("invalid_grant", "refresh_token does not match this endpoint")

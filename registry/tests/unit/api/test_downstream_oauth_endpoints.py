@@ -1302,8 +1302,17 @@ def test_refresh_invalid_client_secret_returns_invalid_client(client, store_mock
     store_mock.validate_client_credentials.return_value = False
     store_mock.get_refresh_token.return_value = _refresh_data()
     _assert_token_error(_post_refresh(client), "invalid_client", "invalid client credentials")
-    # The refresh token must NOT be touched when client auth fails.
-    store_mock.get_refresh_token.assert_not_called()
+    # Client credentials are checked only after the grant itself is confirmed valid.
+    store_mock.get_refresh_token.assert_called_once()
+
+
+def test_refresh_unknown_client_and_token_returns_invalid_grant(client, store_mock):
+    # invalid_grant takes precedence over invalid_client (mirrors root-AS ordering in
+    # auth-server/routes/oauth_flow.py) so a client can retry /authorize with the same client_id.
+    store_mock.validate_client_credentials.return_value = False
+    store_mock.get_refresh_token.return_value = None
+    _assert_token_error(_post_refresh(client), "invalid_grant", "invalid or expired refresh_token")
+    store_mock.validate_client_credentials.assert_not_called()
 
 
 # ---- device authorization grant (AS-1727) ----
