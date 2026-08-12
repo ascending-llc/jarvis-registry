@@ -1,5 +1,7 @@
 """Unit tests for OAuth token grant dispatch and request validation."""
 
+import logging
+import time
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -47,11 +49,17 @@ def test_validate_request_rejects_missing_required_parameters(
     assert expected_description.encode() in response.body
 
 
-async def test_exchange_rejects_unsupported_grant(service: TokenGrantService) -> None:
+async def test_exchange_rejects_unsupported_grant(
+    service: TokenGrantService,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="auth_server.services.token_grant_service")
+
     response = await service.exchange(OAuthTokenRequest(grant_type="password", client_id="mcp-client-test"))
 
     assert response.status_code == 400
     assert b"unsupported_grant_type" in response.body
+    assert "client_id: mcp-client-test" in caplog.text
 
 
 @pytest.mark.parametrize(
@@ -88,13 +96,16 @@ async def test_exchange_dispatches_supported_grant(
     service: TokenGrantService,
     grant_request: AuthorizationCodeTokenRequest | DeviceCodeTokenRequest | RefreshTokenRequest,
     method_name: str,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
+    caplog.set_level(logging.INFO, logger="auth_server.services.token_grant_service")
     expected = Mock()
     with patch.object(service, method_name, new=AsyncMock(return_value=expected)) as grant_method:
         response = await service.exchange(grant_request)
 
     assert response is expected
     grant_method.assert_awaited_once_with(grant_request)
+    assert "client_id: mcp-client-test" in caplog.text
 
 
 def test_validate_request_rejects_non_string_fields() -> None:
@@ -164,3 +175,93 @@ async def test_refresh_exchange_propagates_unexpected_store_failure() -> None:
 
     with pytest.raises(RuntimeError, match="store unavailable"):
         await service.exchange(grant_request)
+
+
+async def test_authorization_code_exchange_resolves_and_logs_user_before_client_mismatch(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="auth_server.services.token_grant_service")
+    store = InMemoryOAuthStateStore()
+    user_info = {"username": "test-user"}
+    store.save_authcode(
+        "auth-code",
+        {
+            "client_id": "stored-client",
+            "redirect_uri": "https://client.example/callback",
+            "expires_at": int(time.time()) + 600,
+            "user_info": user_info,
+        },
+    )
+    user_service = Mock(resolve_user_id=AsyncMock(return_value="user-123"))
+    service = TokenGrantService(user_service=user_service, store=store, consent_store=Mock())
+    grant_request = AuthorizationCodeTokenRequest(
+        grant_type=AUTHORIZATION_CODE_GRANT_TYPE,
+        client_id="request-client",
+        code="auth-code",
+        redirect_uri="https://client.example/callback",
+    )
+
+    response = await service.exchange(grant_request)
+
+    assert response.status_code == 400
+    assert b"client_id mismatch" in response.body
+    user_service.resolve_user_id.assert_awaited_once_with(user_info)
+    assert "user_id: user-123" in caplog.text
+
+
+async def test_refresh_exchange_resolves_and_logs_user_before_client_mismatch(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="auth_server.services.token_grant_service")
+    store = InMemoryOAuthStateStore()
+    user_info = {"username": "test-user"}
+    store.save_refresh_token("refresh-token", {"client_id": "stored-client", "user_info": user_info})
+    user_service = Mock(resolve_user_id=AsyncMock(return_value="user-123"))
+    service = TokenGrantService(user_service=user_service, store=store, consent_store=Mock())
+    grant_request = RefreshTokenRequest(
+        grant_type=REFRESH_TOKEN_GRANT_TYPE,
+        client_id="request-client",
+        refresh_token="refresh-token",
+    )
+
+    response = await service.exchange(grant_request)
+
+    assert response.status_code == 400
+    assert b"client_id mismatch" in response.body
+    user_service.resolve_user_id.assert_awaited_once_with(user_info)
+    assert "user_id: user-123" in caplog.text
+
+
+async def test_authorization_code_exchange_logs_user_before_redirect_uri_mismatch(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="auth_server.services.token_grant_service")
+    store = InMemoryOAuthStateStore()
+    user_info = {"username": "test-user"}
+    store.save_client(
+        "mcp-client-123",
+        {"grant_types": [AUTHORIZATION_CODE_GRANT_TYPE], "token_endpoint_auth_method": "none"},
+    )
+    store.save_authcode(
+        "auth-code",
+        {
+            "client_id": "mcp-client-123",
+            "redirect_uri": "https://client.example/registered",
+            "expires_at": int(time.time()) + 600,
+            "user_info": user_info,
+        },
+    )
+    user_service = Mock(resolve_user_id=AsyncMock(return_value="user-123"))
+    service = TokenGrantService(user_service=user_service, store=store, consent_store=Mock())
+    grant_request = AuthorizationCodeTokenRequest(
+        grant_type=AUTHORIZATION_CODE_GRANT_TYPE,
+        client_id="mcp-client-123",
+        code="auth-code",
+        redirect_uri="https://client.example/mismatch",
+    )
+
+    response = await service.exchange(grant_request)
+
+    assert response.status_code == 400
+    assert b"redirect_uri mismatch" in response.body
+    assert "user_id: user-123" in caplog.text

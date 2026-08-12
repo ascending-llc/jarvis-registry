@@ -150,6 +150,11 @@ class JarvisBaseSettings(BaseSettings):
     # we use a generic value like below.
     jarvis_realm: str = "jarvis-resources"
 
+    # ==================== Auth-server Redis namespace ====================
+    # Canonical Redis key prefix for auth-server's OAuth client and consent stores. Registry reads
+    # those records directly, so both services must always use the same namespace.
+    auth_server_redis_key_prefix: str = "jarvis-auth-server"
+
     # ==================== Server URLs ====================
     auth_server_url: str = "http://localhost:8888"
     auth_server_external_url: str = "http://localhost:8888"

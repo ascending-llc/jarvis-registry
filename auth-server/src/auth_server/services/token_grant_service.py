@@ -116,6 +116,7 @@ class TokenGrantService:
     async def exchange(self, request: TokenGrantRequest) -> DeviceTokenResponse | JSONResponse:
         logger.info("TOKEN ENDPOINT CALLED")
         logger.info("grant_type: %s", request.grant_type)
+        logger.info("client_id: %s", request.client_id)
 
         if isinstance(request, AuthorizationCodeTokenRequest):
             return await self._exchange_authorization_code(request)
@@ -183,6 +184,10 @@ class TokenGrantService:
         auth_code_data = self._store.get_authcode(request.code)
         if not auth_code_data:
             return _oauth_error("invalid_grant", "authorization code not found or expired")
+
+        user_id = await self._user_service.resolve_user_id(auth_code_data["user_info"])
+        logger.info("user_id: %s", user_id)
+
         if auth_code_data["client_id"] != request.client_id:
             return _oauth_error("invalid_client", "client_id mismatch")
 
@@ -224,7 +229,6 @@ class TokenGrantService:
                 else user_info.get("scopes", [])
             )
 
-        user_id = await self._user_service.resolve_user_id(user_info)
         refresh_token = secrets.token_urlsafe(32)
         response = self._mint_response(
             client_id=request.client_id,
@@ -299,6 +303,12 @@ class TokenGrantService:
         refresh_data = self._store.get_refresh_token(request.refresh_token)
         if not refresh_data:
             return _oauth_error("invalid_grant", "refresh token invalid or expired")
+
+        user_info = refresh_data["user_info"]
+        stored_user_id = user_info.get("user_id")
+        user_id = str(stored_user_id) if stored_user_id else await self._user_service.resolve_user_id(user_info)
+        logger.info("user_id: %s", user_id)
+
         if refresh_data.get("client_id") != request.client_id:
             return _oauth_error("invalid_client", "client_id mismatch")
 
@@ -306,9 +316,6 @@ class TokenGrantService:
         if client_error is not None:
             return client_error
 
-        user_info = refresh_data["user_info"]
-        stored_user_id = user_info.get("user_id")
-        user_id = str(stored_user_id) if stored_user_id else await self._user_service.resolve_user_id(user_info)
         if (
             user_id
             and not is_registry_client(request.client_id)
