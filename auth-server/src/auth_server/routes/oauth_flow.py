@@ -19,6 +19,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from pydantic import BaseModel
 
+from registry_pkgs.core.client_categories import A2A_CLIENT_ID_PREFIX, MCP_CLIENT_ID_PREFIX
 from registry_pkgs.core.consent_store import PENDING_CONSENT_TTL_SECONDS, ConsentStore, PendingConsentStore
 from registry_pkgs.core.downstream_oauth import (
     DEVICE_CODE_GRANT_TYPE,
@@ -467,11 +468,14 @@ def _finish_device_denial(device_code: str, store: OAuthStateStoreProtocol) -> H
     return HTMLResponse(render_device_denied_page())
 
 
-@router.post("/oauth2/register", response_model=ClientRegistrationResponse, response_model_exclude_none=True)
-async def register_client(
+async def _register_client_common(
     registration: ClientRegistrationRequest,
     request: Request,
-    store: OAuthStateStoreProtocol = Depends(get_oauth_state_store),
+    store: OAuthStateStoreProtocol,
+    *,
+    client_id_prefix: str,
+    default_scope: str,
+    default_client_name: str,
 ) -> ClientRegistrationResponse | JSONResponse:
     try:
         logger.info(
@@ -489,7 +493,7 @@ async def register_client(
             )
             return redirect_uri_error
 
-        client_id = f"mcp-client-{secrets.token_urlsafe(16)}"
+        client_id = f"{client_id_prefix}{secrets.token_urlsafe(16)}"
 
         requested_auth_method = registration.token_endpoint_auth_method
         if requested_auth_method in SUPPORTED_TOKEN_ENDPOINT_AUTH_METHODS:
@@ -516,12 +520,12 @@ async def register_client(
             "client_secret": client_secret,
             "client_id_issued_at": issued_at,
             "client_secret_expires_at": 0,
-            "client_name": registration.client_name or "MCP Client",
+            "client_name": registration.client_name or default_client_name,
             "client_uri": registration.client_uri,
             "redirect_uris": registration.redirect_uris or [],
             "grant_types": grant_types,
             "response_types": response_types,
-            "scope": registration.scope or "servers-read agents-read",
+            "scope": registration.scope or default_scope,
             "token_endpoint_auth_method": token_endpoint_auth_method,
             "contacts": registration.contacts or [],
             "registered_at": issued_at,
@@ -551,6 +555,38 @@ async def register_client(
         logger.exception("Client registration failed")
 
         raise HTTPException(status_code=500, detail="Client registration failed")
+
+
+@router.post("/oauth2/register", response_model=ClientRegistrationResponse, response_model_exclude_none=True)
+async def register_client(
+    registration: ClientRegistrationRequest,
+    request: Request,
+    store: OAuthStateStoreProtocol = Depends(get_oauth_state_store),
+) -> ClientRegistrationResponse | JSONResponse:
+    return await _register_client_common(
+        registration,
+        request,
+        store,
+        client_id_prefix=MCP_CLIENT_ID_PREFIX,
+        default_scope="mcp-proxy-ops",
+        default_client_name="MCP Client",
+    )
+
+
+@router.post("/oauth2/register/a2a", response_model=ClientRegistrationResponse, response_model_exclude_none=True)
+async def register_a2a_client(
+    registration: ClientRegistrationRequest,
+    request: Request,
+    store: OAuthStateStoreProtocol = Depends(get_oauth_state_store),
+) -> ClientRegistrationResponse | JSONResponse:
+    return await _register_client_common(
+        registration,
+        request,
+        store,
+        client_id_prefix=A2A_CLIENT_ID_PREFIX,
+        default_scope="a2a-proxy-ops",
+        default_client_name="A2A Client",
+    )
 
 
 @router.post("/oauth2/device/code", response_model=DeviceCodeResponse, response_model_exclude_none=True)
