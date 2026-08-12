@@ -86,13 +86,9 @@ class TestWellKnownRoutes:
         assert a2a_data["registration_endpoint"] == "http://localhost:8888/auth/oauth2/register/a2a"
         assert a2a_data["registration_endpoint"] != root_data["registration_endpoint"]
 
-        assert a2a_data["issuer"] == root_data["issuer"]
-        assert a2a_data["authorization_endpoint"] == root_data["authorization_endpoint"]
-        assert a2a_data["token_endpoint"] == root_data["token_endpoint"]
-        assert a2a_data["device_authorization_endpoint"] == root_data["device_authorization_endpoint"]
-        assert a2a_data["jwks_uri"] == root_data["jwks_uri"]
-        assert a2a_data["grant_types_supported"] == root_data["grant_types_supported"]
-        assert a2a_data["scopes_supported"] == root_data["scopes_supported"]
+        assert {key: value for key, value in a2a_data.items() if key != "registration_endpoint"} == {
+            key: value for key, value in root_data.items() if key != "registration_endpoint"
+        }
 
     def test_openid_configuration(self, test_client: TestClient):
         """Test OpenID Connect Discovery endpoint."""

@@ -86,9 +86,9 @@ def _seed_default_oauth_state() -> None:
     test_consent_store.default_client_consent = True
     test_pending_consent_store.pending.clear()
     test_oauth_state_store.save_client(
-        "test-client",
+        "mcp-client-test",
         {
-            "client_id": "test-client",
+            "client_id": "mcp-client-test",
             "client_secret": "test-secret",
             "client_name": "Default Test Client",
             "redirect_uris": [
@@ -98,16 +98,16 @@ def _seed_default_oauth_state() -> None:
             ],
             "grant_types": ["authorization_code", "refresh_token", "urn:ietf:params:oauth:grant-type:device_code"],
             "response_types": ["code"],
-            "scope": "servers-read agents-read",
+            "scope": "mcp-proxy-ops",
             "token_endpoint_auth_method": "none",
             "registered_at": 0,
             "ip_address": "127.0.0.1",
         },
     )
     test_oauth_state_store.save_client(
-        "user-generated",
+        "mcp-client-user-gen",
         {
-            "client_id": "user-generated",
+            "client_id": "mcp-client-user-gen",
             "client_name": "User-Generated Token Client",
             "redirect_uris": [
                 "http://localhost/callback",
@@ -115,7 +115,7 @@ def _seed_default_oauth_state() -> None:
             ],
             "grant_types": ["authorization_code", "refresh_token"],
             "response_types": ["code"],
-            "scope": "servers-read agents-read servers-write agents-write",
+            "scope": "mcp-proxy-ops",
             "token_endpoint_auth_method": "none",
             "registered_at": 0,
             "ip_address": "127.0.0.1",

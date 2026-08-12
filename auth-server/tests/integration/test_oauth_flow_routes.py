@@ -18,8 +18,11 @@ from itsdangerous import URLSafeTimedSerializer
 
 from auth_server.deps import get_auth_provider, get_oauth2_config, get_user_service
 from auth_server.routes.oauth_flow import DEVICE_CODE_GRANT_TYPE, generate_user_code
+from registry_pkgs.core.jwt_tokens import MintedManagedAgentToken
+from registry_pkgs.core.jwt_utils import decode_jwt_unverified
 from tests.conftest import test_consent_store, test_pending_consent_store
 from tests.support.oauth_state_store import (
+    authorization_codes_storage,
     device_codes_storage,
     refresh_tokens_storage,
     registered_clients,
@@ -116,8 +119,8 @@ def _seed_legacy_client_without_device_grant() -> None:
 def _start_device_flow(
     test_client: TestClient,
     *,
-    client_id: str = "test-client",
-    scope: str | None = "servers-read agents-read",
+    client_id: str = "mcp-client-test",
+    scope: str | None = "mcp-proxy-ops",
 ) -> dict[str, str | int]:
     data = {"client_id": client_id}
     if scope is not None:
@@ -128,7 +131,7 @@ def _start_device_flow(
     return response.json()
 
 
-def _approve_device_directly(device_code: str) -> None:
+def _approve_device_directly(device_code: str, resolved_scope: str = "mcp-proxy-ops") -> None:
     device_data = dict(device_codes_storage[device_code])
     device_data["status"] = "approved"
     device_data["mapped_user"] = {
@@ -140,7 +143,7 @@ def _approve_device_directly(device_code: str) -> None:
         "user_id": "user-123",
         "provider": "keycloak",
     }
-    device_data["resolved_scope"] = ["servers-read", "agents-read"]
+    device_data["resolved_scope"] = [resolved_scope]
     device_codes_storage[device_code] = device_data
 
 
@@ -172,7 +175,7 @@ class TestDynamicClientRegistration:
                 "redirect_uris": ["https://example.com/callback"],
                 "grant_types": ["authorization_code"],
                 "response_types": ["code"],
-                "scope": "registry-admin",
+                "scope": "mcp-proxy-ops",
                 "contacts": ["admin@example.com"],
                 "token_endpoint_auth_method": "client_secret_post",
             },
@@ -183,7 +186,37 @@ class TestDynamicClientRegistration:
         assert data["client_name"] == "Test MCP Client"
         assert data["grant_types"] == ["authorization_code", "refresh_token", DEVICE_CODE_GRANT_TYPE]
         assert data["token_endpoint_auth_method"] == "client_secret_post"
+        assert data["scope"] == "mcp-proxy-ops"
+
+    def test_register_client_preserves_scope_outside_category_ceiling(
+        self,
+        test_client: TestClient,
+        clear_device_storage,
+    ):
+        response = test_client.post(
+            f"{API_PREFIX}/oauth2/register",
+            json={"redirect_uris": ["https://example.com/callback"], "scope": "registry-admin"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
         assert data["scope"] == "registry-admin"
+        assert registered_clients[data["client_id"]]["scope"] == "registry-admin"
+
+    def test_register_client_preserves_whitespace_only_scope(
+        self,
+        test_client: TestClient,
+        clear_device_storage,
+    ):
+        response = test_client.post(
+            f"{API_PREFIX}/oauth2/register",
+            json={"redirect_uris": ["https://example.com/callback"], "scope": "   "},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["scope"] == "   "
+        assert registered_clients[data["client_id"]]["scope"] == "   "
 
     def test_register_client_substitutes_unsupported_auth_method_with_none(
         self,
@@ -203,6 +236,20 @@ class TestDynamicClientRegistration:
         data = response.json()
         assert data["token_endpoint_auth_method"] == "none"
         assert registered_clients[data["client_id"]]["token_endpoint_auth_method"] == "none"
+
+    def test_registration_store_failure_is_wrapped_as_500(
+        self,
+        test_client: TestClient,
+        clear_device_storage,
+    ) -> None:
+        with patch.object(test_oauth_state_store, "save_client", side_effect=RuntimeError("store unavailable")):
+            response = test_client.post(
+                f"{API_PREFIX}/oauth2/register",
+                json={"redirect_uris": ["https://example.com/callback"]},
+            )
+
+        assert response.status_code == 500
+        assert response.json() == {"detail": "Client registration failed"}
 
     @pytest.mark.parametrize(
         "bad_uri",
@@ -291,6 +338,21 @@ class TestA2ADynamicClientRegistration:
         assert data["token_endpoint_auth_method"] == "none"
         assert registered_clients[data["client_id"]]["token_endpoint_auth_method"] == "none"
 
+    def test_register_a2a_client_preserves_requested_scope(
+        self,
+        test_client: TestClient,
+        clear_device_storage,
+    ):
+        response = test_client.post(
+            f"{API_PREFIX}/oauth2/register/a2a",
+            json={"redirect_uris": ["https://example.com/callback"], "scope": "mcp-proxy-ops"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["scope"] == "mcp-proxy-ops"
+        assert registered_clients[data["client_id"]]["scope"] == "mcp-proxy-ops"
+
     @pytest.mark.parametrize(
         "bad_uri",
         [
@@ -324,6 +386,44 @@ class TestA2ADynamicClientRegistration:
 
         assert response.status_code == 200
         assert response.json()["client_id"].startswith("mcp-client-")
+
+    def test_a2a_discovery_registration_and_token_scope_closed_loop(
+        self,
+        test_client: TestClient,
+        clear_device_storage,
+    ) -> None:
+        _configure_user_service(test_client)
+        discovery = test_client.get("/.well-known/oauth-authorization-server/a2a")
+        assert discovery.status_code == 200
+
+        registration_path = discovery.json()["registration_endpoint"].removeprefix("http://localhost:8888")
+        redirect_uri = "https://a2a.example.com/callback"
+        registration = test_client.post(registration_path, json={"redirect_uris": [redirect_uri]})
+        assert registration.status_code == 200
+        client_id = registration.json()["client_id"]
+
+        authorization_codes_storage["a2a-auth-code"] = {
+            "client_id": client_id,
+            "redirect_uri": redirect_uri,
+            "expires_at": int(time.time()) + 600,
+            "user_info": {"username": "a2a-user", "groups": ["registry-users"]},
+            "resolved_scope": ["a2a-proxy-ops", "mcp-proxy-ops"],
+        }
+        token_response = test_client.post(
+            discovery.json()["token_endpoint"].removeprefix("http://localhost:8888"),
+            data={
+                "grant_type": "authorization_code",
+                "client_id": client_id,
+                "code": "a2a-auth-code",
+                "redirect_uri": redirect_uri,
+            },
+        )
+
+        assert token_response.status_code == 200
+        token_data = token_response.json()
+        assert token_data["scope"] == "a2a-proxy-ops"
+        assert decode_jwt_unverified(token_data["access_token"])["scope"] == "a2a-proxy-ops"
+        assert refresh_tokens_storage[token_data["refresh_token"]]["scope"] == "a2a-proxy-ops"
 
 
 @pytest.mark.integration
@@ -414,7 +514,7 @@ class TestLoginRedirectErrorConsent:
         response = test_client.get(
             f"{API_PREFIX}/oauth2/login/entra",
             params={
-                "client_id": "test-client",
+                "client_id": "mcp-client-test",
                 "response_type": "code",
                 "redirect_uri": "http://localhost:43123/different-path",
                 "code_challenge": "challenge",
@@ -440,7 +540,7 @@ class TestLoginRedirectErrorConsent:
         response = test_client.get(
             f"{API_PREFIX}/oauth2/login/entra",
             params={
-                "client_id": "test-client",
+                "client_id": "mcp-client-test",
                 "response_type": "code",
                 "redirect_uri": "https://evil.example.com/callback",
                 "code_challenge": "challenge",
@@ -477,7 +577,7 @@ class TestDeviceFlowRoutes:
     def test_device_authorization_success(self, test_client: TestClient, clear_device_storage):
         response = test_client.post(
             f"{API_PREFIX}/oauth2/device/code",
-            data={"client_id": "test-client", "scope": "servers-read agents-read"},
+            data={"client_id": "mcp-client-test", "scope": "mcp-proxy-ops"},
         )
 
         assert response.status_code == 200
@@ -492,7 +592,7 @@ class TestDeviceFlowRoutes:
         assert data["user_code"] in data["verification_uri_complete"]
 
         stored = device_codes_storage[data["device_code"]]
-        assert stored["scope"] == "servers-read agents-read"
+        assert stored["scope"] == "mcp-proxy-ops"
         assert stored["mapped_user"] is None
         assert stored["resolved_scope"] is None
         assert "token" not in stored
@@ -526,6 +626,102 @@ class TestDeviceFlowRoutes:
         data = response.json()
         assert "device_code" in data
         assert "user_code" in data
+
+    def test_cli_device_flow_and_refresh_keep_skills_read_scope(
+        self,
+        test_client: TestClient,
+        clear_device_storage,
+    ) -> None:
+        user_service = _configure_user_service(test_client)
+        device_data = _start_device_flow(
+            test_client,
+            client_id="jarvis-registry-cli",
+            scope="skills-read",
+        )
+        nonce = "cli-device-consent-nonce"
+        test_pending_consent_store.save(
+            nonce,
+            {
+                "flow_type": "device",
+                "device_code": device_data["device_code"],
+                "mapped_user": {
+                    "username": "test-user",
+                    "email": "test@example.com",
+                    "name": "Test User",
+                    "idp_id": "idp-123",
+                    "groups": ["registry-users"],
+                    "user_id": "user-123",
+                },
+                "resolved_scopes": ["skills-read"],
+                "session_data": {"client_id": "jarvis-registry-cli"},
+            },
+        )
+        test_client.cookies.set("oauth2_consent_nonce", nonce)
+        approval = test_client.post(f"{API_PREFIX}/oauth2/consent/approve", data={"nonce": nonce})
+
+        assert approval.status_code == 200
+        assert device_codes_storage[device_data["device_code"]]["status"] == "approved"
+        assert test_consent_store.has_client_consent("user-123", "jarvis-registry-cli") is True
+
+        token_response = test_client.post(
+            f"{API_PREFIX}/oauth2/token",
+            data={
+                "grant_type": DEVICE_CODE_GRANT_TYPE,
+                "device_code": device_data["device_code"],
+                "client_id": "jarvis-registry-cli",
+            },
+        )
+
+        assert token_response.status_code == 200
+        first_token = token_response.json()
+        assert first_token["scope"] == "skills-read"
+        assert decode_jwt_unverified(first_token["access_token"])["scope"] == "skills-read"
+        assert first_token["refresh_token"] in refresh_tokens_storage
+        assert "jarvis-registry-cli" not in registered_clients
+
+        refresh_response = test_client.post(
+            f"{API_PREFIX}/oauth2/token",
+            data={
+                "grant_type": "refresh_token",
+                "refresh_token": first_token["refresh_token"],
+                "client_id": "jarvis-registry-cli",
+            },
+        )
+
+        assert refresh_response.status_code == 200
+        refreshed_token = refresh_response.json()
+        assert refreshed_token["scope"] == "skills-read"
+        assert decode_jwt_unverified(refreshed_token["access_token"])["scope"] == "skills-read"
+        assert first_token["refresh_token"] not in refresh_tokens_storage
+        assert refresh_tokens_storage[refreshed_token["refresh_token"]]["scope"] == "skills-read"
+        assert user_service.resolve_user_id.await_count == 1
+
+    def test_cli_authorization_code_grant_is_rejected(
+        self,
+        test_client: TestClient,
+        clear_device_storage,
+    ) -> None:
+        authorization_codes_storage["cli-auth-code"] = {
+            "client_id": "jarvis-registry-cli",
+            "redirect_uri": "http://localhost/callback",
+            "expires_at": int(time.time()) + 600,
+            "user_info": {"username": "test-user", "groups": []},
+            "resolved_scope": ["skills-read"],
+        }
+
+        response = test_client.post(
+            f"{API_PREFIX}/oauth2/token",
+            data={
+                "grant_type": "authorization_code",
+                "client_id": "jarvis-registry-cli",
+                "code": "cli-auth-code",
+                "redirect_uri": "http://localhost/callback",
+            },
+        )
+
+        assert response.status_code == 400
+        assert response.json()["error"] == "unauthorized_client"
+        assert "cli-auth-code" in authorization_codes_storage
 
     def test_device_verify_entry_without_user_code_renders_entry_form(self, test_client: TestClient):
         response = test_client.get(f"{API_PREFIX}/oauth2/device/verify")
@@ -604,12 +800,30 @@ class TestDeviceFlowRoutes:
             data={
                 "grant_type": DEVICE_CODE_GRANT_TYPE,
                 "device_code": data["device_code"],
-                "client_id": "test-client",
+                "client_id": "mcp-client-test",
             },
         )
 
         assert response.status_code == 400
         assert response.json()["error"] == "authorization_pending"
+
+    def test_token_route_wraps_unexpected_store_failure(
+        self,
+        test_client: TestClient,
+        clear_device_storage,
+    ) -> None:
+        with patch.object(test_oauth_state_store, "get_device_code", side_effect=RuntimeError("store unavailable")):
+            response = test_client.post(
+                f"{API_PREFIX}/oauth2/token",
+                data={
+                    "grant_type": DEVICE_CODE_GRANT_TYPE,
+                    "device_code": "device-code",
+                    "client_id": "mcp-client-test",
+                },
+            )
+
+        assert response.status_code == 500
+        assert response.json() == {"detail": "Internal server error"}
 
     def test_device_token_denied(self, test_client: TestClient, clear_device_storage):
         data = _start_device_flow(test_client)
@@ -620,7 +834,7 @@ class TestDeviceFlowRoutes:
             data={
                 "grant_type": DEVICE_CODE_GRANT_TYPE,
                 "device_code": data["device_code"],
-                "client_id": "test-client",
+                "client_id": "mcp-client-test",
             },
         )
 
@@ -636,7 +850,7 @@ class TestDeviceFlowRoutes:
             data={
                 "grant_type": DEVICE_CODE_GRANT_TYPE,
                 "device_code": data["device_code"],
-                "client_id": "test-client",
+                "client_id": "mcp-client-test",
             },
         )
 
@@ -667,13 +881,14 @@ class TestDeviceFlowRoutes:
         assert response.status_code == 400
         assert response.json()["error"] == "invalid_client"
 
-    @patch("auth_server.routes.oauth_flow.mint_managed_agent_token", return_value="mock-access-token")
+    @patch("auth_server.services.token_grant_service.mint_managed_agent_token_with_scope")
     def test_device_token_success_mints_refresh_token_and_consumes_device_code(
         self,
         mock_mint_token,
         test_client: TestClient,
         clear_device_storage,
     ):
+        mock_mint_token.return_value = MintedManagedAgentToken("mock-access-token", "mcp-proxy-ops")
         _configure_user_service(test_client)
         data = _start_device_flow(test_client)
         _approve_device_directly(str(data["device_code"]))
@@ -683,7 +898,7 @@ class TestDeviceFlowRoutes:
             data={
                 "grant_type": DEVICE_CODE_GRANT_TYPE,
                 "device_code": data["device_code"],
-                "client_id": "test-client",
+                "client_id": "mcp-client-test",
             },
         )
 
@@ -692,13 +907,15 @@ class TestDeviceFlowRoutes:
         assert token_data["access_token"] == "mock-access-token"
         assert token_data["token_type"] == "Bearer"
         assert token_data["expires_in"] == 3600
-        assert token_data["scope"] == "servers-read agents-read"
+        assert token_data["scope"] == "mcp-proxy-ops"
         assert token_data["refresh_token"] in refresh_tokens_storage
+        assert refresh_tokens_storage[token_data["refresh_token"]]["scope"] == token_data["scope"]
         assert data["device_code"] not in device_codes_storage
         assert data["user_code"] not in user_codes_storage
 
         mock_mint_token.assert_called_once()
         assert mock_mint_token.call_args.kwargs["subject"] == "test-user"
+        assert mock_mint_token.call_args.kwargs["requested_scopes"] == [token_data["scope"]]
         assert mock_mint_token.call_args.kwargs["extra_claims"]["user_id"] == "user-123"
 
         second_response = test_client.post(
@@ -706,7 +923,7 @@ class TestDeviceFlowRoutes:
             data={
                 "grant_type": DEVICE_CODE_GRANT_TYPE,
                 "device_code": data["device_code"],
-                "client_id": "test-client",
+                "client_id": "mcp-client-test",
             },
         )
         assert second_response.status_code == 400
@@ -729,7 +946,7 @@ class TestDeviceFlowRoutes:
                 data={
                     "grant_type": DEVICE_CODE_GRANT_TYPE,
                     "device_code": data["device_code"],
-                    "client_id": "test-client",
+                    "client_id": "mcp-client-test",
                 },
             )
 
@@ -741,16 +958,16 @@ class TestDeviceFlowRoutes:
     def test_device_token_rejects_invalid_client_secret(self, test_client: TestClient, clear_device_storage):
         """A client_secret_post-registered device client must present its registered secret."""
         test_oauth_state_store.save_client(
-            "confidential-client",
+            "mcp-client-confidential",
             {
-                "client_id": "confidential-client",
+                "client_id": "mcp-client-confidential",
                 "client_secret": "correct-secret",
                 "grant_types": ["authorization_code", "refresh_token", DEVICE_CODE_GRANT_TYPE],
                 "response_types": ["code"],
                 "token_endpoint_auth_method": "client_secret_post",
             },
         )
-        data = _start_device_flow(test_client, client_id="confidential-client")
+        data = _start_device_flow(test_client, client_id="mcp-client-confidential")
         _approve_device_directly(str(data["device_code"]))
 
         response = test_client.post(
@@ -758,7 +975,7 @@ class TestDeviceFlowRoutes:
             data={
                 "grant_type": DEVICE_CODE_GRANT_TYPE,
                 "device_code": data["device_code"],
-                "client_id": "confidential-client",
+                "client_id": "mcp-client-confidential",
                 "client_secret": "wrong-secret",
             },
         )
@@ -767,7 +984,7 @@ class TestDeviceFlowRoutes:
         assert response.json()["error"] == "invalid_client"
         assert data["device_code"] in device_codes_storage
 
-    @patch("auth_server.routes.oauth_flow.mint_managed_agent_token", return_value="mock-access-token")
+    @patch("auth_server.services.token_grant_service.mint_managed_agent_token_with_scope")
     def test_device_token_accepts_valid_client_secret(
         self,
         mock_mint_token,
@@ -775,10 +992,11 @@ class TestDeviceFlowRoutes:
         clear_device_storage,
     ):
         """A client_secret_post-registered device client mints a token when its secret matches."""
+        mock_mint_token.return_value = MintedManagedAgentToken("mock-access-token", "mcp-proxy-ops")
         test_oauth_state_store.save_client(
-            "confidential-client",
+            "mcp-client-confidential",
             {
-                "client_id": "confidential-client",
+                "client_id": "mcp-client-confidential",
                 "client_secret": "correct-secret",
                 "grant_types": ["authorization_code", "refresh_token", DEVICE_CODE_GRANT_TYPE],
                 "response_types": ["code"],
@@ -786,7 +1004,7 @@ class TestDeviceFlowRoutes:
             },
         )
         _configure_user_service(test_client)
-        data = _start_device_flow(test_client, client_id="confidential-client")
+        data = _start_device_flow(test_client, client_id="mcp-client-confidential")
         _approve_device_directly(str(data["device_code"]))
 
         response = test_client.post(
@@ -794,7 +1012,7 @@ class TestDeviceFlowRoutes:
             data={
                 "grant_type": DEVICE_CODE_GRANT_TYPE,
                 "device_code": data["device_code"],
-                "client_id": "confidential-client",
+                "client_id": "mcp-client-confidential",
                 "client_secret": "correct-secret",
             },
         )
@@ -916,7 +1134,7 @@ class TestDeviceFlowCallbackAndConsent:
                     "user_id": "user-123",
                 },
                 "resolved_scopes": ["servers-read"],
-                "session_data": {"client_id": "test-client"},
+                "session_data": {"client_id": "mcp-client-test"},
             },
         )
 
@@ -929,7 +1147,7 @@ class TestDeviceFlowCallbackAndConsent:
         assert response.status_code == 200
         assert "Your device is connected" in response.text
         assert device_codes_storage[data["device_code"]]["status"] == "approved"
-        assert ("user-123", "test-client") in test_consent_store.client_consents
+        assert ("user-123", "mcp-client-test") in test_consent_store.client_consents
 
     def test_deny_device_consent_marks_device_denied(self, test_client: TestClient, clear_device_storage):
         data = _start_device_flow(test_client)
@@ -941,7 +1159,7 @@ class TestDeviceFlowCallbackAndConsent:
                 "device_code": data["device_code"],
                 "mapped_user": {"user_id": "user-123"},
                 "resolved_scopes": ["servers-read"],
-                "session_data": {"client_id": "test-client"},
+                "session_data": {"client_id": "mcp-client-test"},
             },
         )
 
