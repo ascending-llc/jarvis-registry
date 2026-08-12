@@ -257,6 +257,15 @@ user-read:
   - action: deny_downstream_consent
     method: POST
     endpoint: /mcp/consent/downstream/deny
+  - action: get_downstream_error_consent_context
+    method: GET
+    endpoint: /mcp/consent/downstream-error
+  - action: approve_downstream_error_consent
+    method: POST
+    endpoint: /mcp/consent/downstream-error
+  - action: deny_downstream_error_consent
+    method: POST
+    endpoint: /mcp/consent/downstream-error/deny
   - action: get_server_consent_context
     method: GET
     endpoint: /mcp/consent/server
