@@ -19,7 +19,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from pydantic import BaseModel
 
-from registry_pkgs.core.client_categories import A2A_CLIENT_ID_PREFIX, MCP_CLIENT_ID_PREFIX
+from registry_pkgs.core.client_categories import A2A_CLIENT_ID_PREFIX, MCP_CLIENT_ID_PREFIX, REGISTRY_CLI_CLIENT_ID
 from registry_pkgs.core.consent_store import PENDING_CONSENT_TTL_SECONDS, ConsentStore, PendingConsentStore
 from registry_pkgs.core.downstream_oauth import (
     DEVICE_CODE_GRANT_TYPE,
@@ -246,8 +246,59 @@ class ClientRegistrationResponse(BaseModel):
 SUPPORTED_TOKEN_ENDPOINT_AUTH_METHODS = frozenset({"none", "client_secret_post"})
 
 
+STATIC_CLIENT_METADATA: dict[str, dict[str, Any]] = {
+    REGISTRY_CLI_CLIENT_ID: {
+        "client_id": REGISTRY_CLI_CLIENT_ID,
+        "client_name": "Jarvis Registry CLI",
+        "client_secret": None,
+        "redirect_uris": [],
+        "grant_types": [DEVICE_CODE_GRANT_TYPE, "refresh_token"],
+        "response_types": [],
+        "token_endpoint_auth_method": "none",
+    },
+}
+
+
 def _is_registry_client(client_id: str) -> bool:
     return client_id == settings.registry_app_name
+
+
+def _resolve_client_metadata(client_id: str, store: OAuthStateStoreProtocol) -> dict[str, Any] | None:
+    static = STATIC_CLIENT_METADATA.get(client_id)
+    if static is not None:
+        return static
+    return store.get_client(client_id)
+
+
+def _validate_client_credentials(
+    client_id: str,
+    client_secret: str | None,
+    store: OAuthStateStoreProtocol,
+) -> bool:
+    if _is_registry_client(client_id):
+        return client_secret == settings.registry_client_secret
+
+    static = STATIC_CLIENT_METADATA.get(client_id)
+    if static is not None:
+        return static.get("token_endpoint_auth_method") == "none"
+
+    return store.validate_client_credentials(client_id, client_secret)
+
+
+def _is_client_authorized_for_grant(
+    client_id: str,
+    grant_type: str,
+    store: OAuthStateStoreProtocol,
+) -> bool:
+    if _is_registry_client(client_id):
+        return True
+
+    metadata = _resolve_client_metadata(client_id, store)
+    if metadata is None:
+        return False
+
+    allowed = metadata.get("grant_types") or []
+    return grant_type in allowed
 
 
 def _is_registered_redirect_uri(client_metadata: dict[str, Any], redirect_uri: str) -> bool:
@@ -301,7 +352,7 @@ def _validate_known_client(
     if _is_registry_client(client_id):
         return None
 
-    if store.get_client(client_id) is None:
+    if _resolve_client_metadata(client_id, store) is None:
         return _get_unknown_client_response()
 
     return None
@@ -602,7 +653,7 @@ async def device_authorization(
         if client_error is not None:
             return client_error
 
-        client_metadata = store.get_client(client_id) or {}
+        client_metadata = _resolve_client_metadata(client_id, store) or {}
         if DEVICE_CODE_GRANT_TYPE not in (client_metadata.get("grant_types") or []):
             return oauth_error_response(
                 "unauthorized_client",
@@ -849,10 +900,10 @@ async def _device_token_handler(
             return oauth_error_response("invalid_grant", "authorization code not found or expired")
         if auth_code_data["client_id"] != client_id:
             return oauth_error_response("invalid_client", "client_id mismatch")
-        if client_id == settings.registry_app_name and client_secret != settings.registry_client_secret:
-            return oauth_error_response("invalid_client", "missing or invalid client_secret")
-        if client_id != settings.registry_app_name and not store.validate_client_credentials(client_id, client_secret):
+        if not _validate_client_credentials(client_id, client_secret, store):
             return oauth_error_response("invalid_client", "invalid client credentials")
+        if not _is_client_authorized_for_grant(client_id, grant_type, store):
+            return oauth_error_response("unauthorized_client", f"client is not authorized for {grant_type}")
         if auth_code_data["redirect_uri"] != redirect_uri:
             return oauth_error_response("invalid_grant", "redirect_uri mismatch")
         current_time = int(time.time())
@@ -939,8 +990,10 @@ async def _device_token_handler(
             return oauth_error_response("invalid_grant", "device_code not found")
         if device_data["client_id"] != client_id:
             return oauth_error_response("invalid_client", "client_id mismatch")
-        if not store.validate_client_credentials(client_id, client_secret):
+        if not _validate_client_credentials(client_id, client_secret, store):
             return oauth_error_response("invalid_client", "invalid client credentials")
+        if not _is_client_authorized_for_grant(client_id, grant_type, store):
+            return oauth_error_response("unauthorized_client", f"client is not authorized for {grant_type}")
         current_time = int(time.time())
         if current_time > device_data["expires_at"]:
             return oauth_error_response("expired_token", "device_code has expired")
@@ -1008,10 +1061,10 @@ async def _device_token_handler(
             return oauth_error_response("invalid_grant", "refresh token invalid or expired")
         if refresh_token_data.get("client_id") != client_id:
             return oauth_error_response("invalid_client", "client_id mismatch")
-        if client_id == settings.registry_app_name and client_secret != settings.registry_client_secret:
-            return oauth_error_response("invalid_client", "missing or invalid client_secret")
-        if client_id != settings.registry_app_name and not store.validate_client_credentials(client_id, client_secret):
+        if not _validate_client_credentials(client_id, client_secret, store):
             return oauth_error_response("invalid_client", "invalid client credentials")
+        if not _is_client_authorized_for_grant(client_id, grant_type, store):
+            return oauth_error_response("unauthorized_client", f"client is not authorized for {grant_type}")
 
         user_info = refresh_token_data["user_info"]
         user_id = await user_service.resolve_user_id(user_info)
@@ -1181,7 +1234,7 @@ async def consent_page(
             return HTMLResponse(render_consent_error_page(), status_code=400)
 
         client_id = pending["session_data"]["client_id"]
-        client_metadata = store.get_client(client_id) or {}
+        client_metadata = _resolve_client_metadata(client_id, store) or {}
 
         return HTMLResponse(
             render_consent_page(

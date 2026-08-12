@@ -515,6 +515,18 @@ class TestDeviceFlowRoutes:
         assert response.status_code == 400
         assert response.json()["error"] == "invalid_client"
 
+    def test_device_authorization_cli_without_seed(self, test_client: TestClient, clear_device_storage):
+        """CLI client succeeds via static metadata without Redis seed."""
+        response = test_client.post(
+            f"{API_PREFIX}/oauth2/device/code",
+            data={"client_id": "jarvis-registry-cli", "scope": "skills-read"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "device_code" in data
+        assert "user_code" in data
+
     def test_device_verify_entry_without_user_code_renders_entry_form(self, test_client: TestClient):
         response = test_client.get(f"{API_PREFIX}/oauth2/device/verify")
 
@@ -942,6 +954,27 @@ class TestDeviceFlowCallbackAndConsent:
         assert response.status_code == 200
         assert "You denied this request" in response.text
         assert device_codes_storage[data["device_code"]]["status"] == "denied"
+
+    def test_consent_page_shows_cli_name(self, test_client: TestClient, clear_device_storage):
+        """CLI consent page shows 'Jarvis Registry CLI' via static metadata."""
+        nonce = "cli-consent-nonce"
+        test_pending_consent_store.save(
+            nonce,
+            {
+                "flow_type": "device",
+                "device_code": "dummy-device-code",
+                "mapped_user": {"user_id": "user-123"},
+                "resolved_scopes": ["skills-read"],
+                "session_data": {"client_id": "jarvis-registry-cli"},
+            },
+        )
+
+        test_client.cookies.set("oauth2_consent_nonce", nonce)
+        response = test_client.get(f"{API_PREFIX}/oauth2/consent", params={"nonce": nonce})
+
+        assert response.status_code == 200
+        assert "Jarvis Registry CLI" in response.text
+        assert "Unknown application" not in response.text
 
 
 def _extract_state_from_temp_session(session_cookie: str) -> str:
