@@ -1,3 +1,7 @@
+MAX_RETURN_PATH_LENGTH = 2048
+OAUTH_AUTHORIZE_RETURN_URL_TOO_LONG_DETAIL = "OAuth authorize return URL is too long"
+
+
 class DownstreamOAuthConstants:
     """Layer B (registry-as-AS) downstream OAuth protocol invariants"""
 

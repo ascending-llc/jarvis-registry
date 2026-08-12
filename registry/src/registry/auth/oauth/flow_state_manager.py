@@ -252,6 +252,24 @@ class FlowStateManager:
             return True
         return time.time() - flow.created_at > self._flow_ttl
 
+    def consume_flow(self, flow_id: str, expected_state: str) -> OAuthFlow | None:
+        """Atomically retrieve and delete the matching pending flow."""
+        if self._use_redis and self._redis_storage:
+            flow = self._redis_storage.consume_flow(flow_id, expected_state)
+            if flow:
+                logger.info(f"Consumed flow from Redis: {flow_id}")
+            return flow
+
+        flow = self._memory_flows.get(flow_id)
+        if (
+            flow is None
+            or flow.status != OAuthFlowStatus.PENDING
+            or not secrets.compare_digest(flow.state, expected_state)
+        ):
+            return None
+        logger.debug(f"Consumed flow from memory: {flow_id}")
+        return self._memory_flows.pop(flow_id)
+
     def delete_flow(self, flow_id: str) -> None:
         """
         Delete OAuth flow from storage

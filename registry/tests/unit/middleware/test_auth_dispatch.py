@@ -1,4 +1,5 @@
 from unittest.mock import AsyncMock
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from fastapi import FastAPI
@@ -6,6 +7,7 @@ from fastapi.responses import JSONResponse
 from starlette.testclient import TestClient
 from starlette.types import Receive, Scope, Send
 
+from registry.constants import MAX_RETURN_PATH_LENGTH
 from registry.core.config import settings
 from registry.middleware.auth import UnifiedAuthMiddleware
 from registry.utils.crypto_utils import generate_access_token
@@ -319,9 +321,45 @@ def test_other_a2a_paths_still_require_bearer(
     assert resp.status_code == 401
 
 
-def test_downstream_authorize_endpoint_is_not_public(client):
-    resp = client.get(f"/api/v1/mcp/downstream/oauth/authorize/{USER_A}/github")
+def test_downstream_authorize_get_without_session_redirects_to_login(client):
+    authorize_path = f"/api/v1/mcp/downstream/oauth/authorize/{USER_A}/github"
+    resp = client.get(
+        authorize_path,
+        params={"client_id": "claude", "redirect_uri": "http://localhost:33418/cb", "state": "state-1"},
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 302
+    location = urlsplit(resp.headers["location"])
+    assert location.path.endswith("/login")
+    assert parse_qs(location.query)["next"] == [
+        f"{authorize_path}?client_id=claude&redirect_uri=http%3A%2F%2Flocalhost%3A33418%2Fcb&state=state-1"
+    ]
+
+
+def test_downstream_authorize_non_get_without_session_still_returns_401(client):
+    resp = client.post(f"/api/v1/mcp/downstream/oauth/authorize/{USER_A}/github")
+
     assert resp.status_code == 401
+
+
+def test_downstream_authorize_oversized_return_url_is_rejected(client):
+    resp = client.get(
+        f"/api/v1/mcp/downstream/oauth/authorize/{USER_A}/github",
+        params={"state": "x" * MAX_RETURN_PATH_LENGTH},
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 414
+    assert resp.json() == {"detail": "OAuth authorize return URL is too long"}
+    assert "location" not in resp.headers
+
+
+def test_downstream_authorize_get_with_session_reaches_route(client):
+    client.cookies.set(_COOKIE, _crud_cookie_token())
+    resp = client.get(f"/api/v1/mcp/downstream/oauth/authorize/{USER_A}/github")
+
+    assert resp.status_code == 200
 
 
 def test_all_proxy_router_paths_classify_as_proxy():

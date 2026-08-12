@@ -898,6 +898,37 @@ class TestRealScopesConfigDownstreamOAuth:
 
 
 @pytest.mark.unit
+class TestRealScopesConfigDownstreamErrorConsent:
+    """Validate the real scopes.yml permits the complete downstream error consent flow."""
+
+    @pytest.mark.parametrize(
+        ("path", "method"),
+        [
+            ("/mcp/consent/downstream-error", "GET"),
+            ("/mcp/consent/downstream-error", "POST"),
+            ("/mcp/consent/downstream-error/deny", "POST"),
+        ],
+    )
+    def test_downstream_error_consent_granted_with_user_read(self, path: str, method: str) -> None:
+        mw = ScopePermissionMiddleware(FastAPI())
+
+        assert mw._has_permission(["user-read"], path, method) is True
+
+    @pytest.mark.parametrize(
+        ("path", "method"),
+        [
+            ("/mcp/consent/downstream-error", "GET"),
+            ("/mcp/consent/downstream-error", "POST"),
+            ("/mcp/consent/downstream-error/deny", "POST"),
+        ],
+    )
+    def test_downstream_error_consent_denied_without_user_read(self, path: str, method: str) -> None:
+        mw = ScopePermissionMiddleware(FastAPI())
+
+        assert mw._has_permission(["servers-read"], path, method) is False
+
+
+@pytest.mark.unit
 class TestRealScopesConfigAgentConsent:
     """Validate the real scopes.yml permits the complete Agent consent decision flow."""
 

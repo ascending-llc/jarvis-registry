@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 from registry_pkgs.core.jwt_utils import decode_jwt
 from registry_pkgs.core.scopes import filter_known_groups, map_groups_to_scopes
 
+from ..constants import MAX_RETURN_PATH_LENGTH
 from ..core.config import settings
 from ..deps import check_if_https, get_group_service, get_user_service
 from ..services.group_service import GroupService
@@ -37,7 +38,6 @@ router = APIRouter()
 
 ACCESS_TOKEN_COOKIE_MAX_AGE_SECONDS = 86400
 SESSION_STARTED_AT_CLOCK_SKEW_SECONDS = 300
-MAX_RETURN_PATH_LENGTH = 2048
 
 
 def _set_csrf_cookie(response: Response, access_token: str, cookie_secure: bool) -> None:
