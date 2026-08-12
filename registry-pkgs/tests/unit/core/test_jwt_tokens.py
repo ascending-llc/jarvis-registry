@@ -9,6 +9,7 @@ from registry_pkgs.core.jwt_tokens import (
     TOKEN_CLASS_MANAGED_AGENT,
     mint_crud_session_token,
     mint_managed_agent_token,
+    mint_managed_agent_token_with_scope,
     verify_crud_session_token,
     verify_managed_agent_token,
 )
@@ -237,6 +238,19 @@ def test_ceiling_enforcement_drops_out_of_scope(cfg):
     )
     claims = verify_managed_agent_token(cfg, token)
     assert claims["scope"] == "mcp-proxy-ops"
+
+
+def test_mint_with_scope_returns_exact_scope_written_to_token(cfg):
+    minted = mint_managed_agent_token_with_scope(
+        cfg,
+        subject="alice",
+        client_id="a2a-client-x",
+        requested_scopes=["a2a-proxy-ops", "mcp-proxy-ops"],
+        expires_in_seconds=3600,
+    )
+
+    assert minted.scope == "a2a-proxy-ops"
+    assert verify_managed_agent_token(cfg, minted.token)["scope"] == minted.scope
 
 
 def test_scope_in_extra_claims_raises_value_error(cfg):

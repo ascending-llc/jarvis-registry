@@ -18,6 +18,7 @@ exclude-entropy-patterns = [
 ]
 
 exclude-signatures = [
+    {signature = '8a7fec12564c8a3cc8c57f2041b5e2d5759246fe7cc71ec605a6238aee2dec7e', reason = 'OAuth client policy diff contains only public protocol constants'},
     {signature = '133f866ac4d1c086e5efc4f059cae9f2ad928462f1364c083a38b6a27ea5fb6a', reason = 'example server ID is not credential'},
     {signature = '48262775df5e0ffc9e0050332701dfaf7d7637f248314030dadb86af47177272', reason = 'OpenAI model name is not credential'},
     {signature = 'f21bc298b18aa023df145ffa17620b99de81d12f2d2de22d39792eba522bc2ce', reason = 'OpenAI model name is not credential'},

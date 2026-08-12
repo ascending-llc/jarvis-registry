@@ -3,8 +3,12 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from registry_pkgs.core.client_categories import (
+    AUTHORIZATION_CODE_GRANT_TYPE,
+    DEVICE_CODE_GRANT_TYPE,
+    REFRESH_TOKEN_GRANT_TYPE,
     ClientCategory,
     get_builtin_max_scopes,
+    get_client_policy,
     resolve_client_category,
     resolve_granted_scopes,
 )
@@ -106,6 +110,43 @@ def test_user_generated_ceiling_equals_all():
 )
 def test_fixed_category_ceilings(category, expected):
     assert get_builtin_max_scopes(category, _ALL_SCOPES) == expected
+
+
+@pytest.mark.parametrize(
+    "category, prefix, default_scope",
+    [
+        (ClientCategory.MCP_DCR, "mcp-client-", "mcp-proxy-ops"),
+        (ClientCategory.A2A_DCR, "a2a-client-", "a2a-proxy-ops"),
+    ],
+)
+def test_dcr_client_policy(category, prefix, default_scope):
+    policy = get_client_policy(category)
+
+    assert policy is not None
+    assert policy.client_id_prefix == prefix
+    assert policy.default_scope == default_scope
+    assert policy.allowed_grant_types == (
+        AUTHORIZATION_CODE_GRANT_TYPE,
+        REFRESH_TOKEN_GRANT_TYPE,
+        DEVICE_CODE_GRANT_TYPE,
+    )
+
+
+def test_registry_cli_policy_is_public_device_client():
+    policy = get_client_policy(ClientCategory.REGISTRY_CLI)
+
+    assert policy is not None
+    assert policy.allowed_grant_types == (DEVICE_CODE_GRANT_TYPE, REFRESH_TOKEN_GRANT_TYPE)
+    assert policy.token_endpoint_auth_method == "none"
+    assert policy.default_scope == "skills-read"
+
+
+def test_category_without_protocol_policy_returns_none():
+    policy = get_client_policy(ClientCategory.UNKNOWN)
+
+    assert policy is not None
+    assert policy.allowed_grant_types == ()
+    assert policy.max_scopes == frozenset()
 
 
 def test_resolve_granted_scopes_filters_by_ceiling(cfg):

@@ -66,7 +66,7 @@ class TestStateEncoding:
         response = test_client.get(
             "/auth/oauth2/login/entra",
             params={
-                "client_id": "test-client",
+                "client_id": "mcp-client-test",
                 "response_type": "code",
                 "redirect_uri": "http://localhost/callback",
                 "code_challenge": "test123",
@@ -128,7 +128,7 @@ class TestStateEncoding:
         response = test_client.get(
             "/auth/oauth2/login/entra",
             params={
-                "client_id": "test-client",
+                "client_id": "mcp-client-test",
                 "response_type": "code",
                 "redirect_uri": "http://localhost/callback",
                 "code_challenge": "test123",
