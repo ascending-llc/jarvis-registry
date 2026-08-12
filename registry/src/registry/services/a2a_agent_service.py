@@ -68,7 +68,7 @@ def _build_managed_agent_security() -> tuple[dict[str, Any], list[dict[str, list
                     "scopes": {_A2A_PROXY_SCOPE: _A2A_PROXY_SCOPE_DESCRIPTION},
                 }
             },
-            "oauth2MetadataUrl": f"{settings.jwt_issuer}/.well-known/oauth-authorization-server",
+            "oauth2MetadataUrl": f"{settings.jwt_issuer}/.well-known/oauth-authorization-server/a2a",
         }
     }
     return security_schemes, [{"oauth2": [_A2A_PROXY_SCOPE]}]

@@ -9,9 +9,11 @@ from registry_pkgs.core.oauth_state_store import OAuthStateStore
 from .core.config import AuthSettings
 from .core.types import AllowedProvider
 from .providers.factory import get_auth_provider
+from .services.client_registration_service import ClientRegistrationService
 from .services.cognito_validator_service import SimplifiedCognitoValidator
 from .services.downstream_token_service import DownstreamTokenCheckService
 from .services.server_service import ServerService
+from .services.token_grant_service import TokenGrantService
 from .services.user_service import UserService
 from .utils.config_loader import AuthProviderConfig, EntraConfig, OAuth2Config, OAuth2ConfigLoader
 
@@ -68,6 +70,14 @@ class AuthContainer:
             redis_client=self.redis_client,
             key_prefix=self._settings.auth_server_redis_key_prefix,
         )
+
+    @cached_property
+    def client_registration_service(self) -> ClientRegistrationService:
+        return ClientRegistrationService(self.oauth_state_store)
+
+    @cached_property
+    def token_grant_service(self) -> TokenGrantService:
+        return TokenGrantService(self.user_service, self.oauth_state_store, self.consent_store)
 
     @cache
     def get_provider_config(self, provider: AllowedProvider) -> AuthProviderConfig | EntraConfig:

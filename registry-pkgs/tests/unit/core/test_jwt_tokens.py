@@ -9,6 +9,7 @@ from registry_pkgs.core.jwt_tokens import (
     TOKEN_CLASS_MANAGED_AGENT,
     mint_crud_session_token,
     mint_managed_agent_token,
+    mint_managed_agent_token_with_scope,
     verify_crud_session_token,
     verify_managed_agent_token,
 )
@@ -30,7 +31,22 @@ _PUBLIC_KEY = (
 )
 
 _REGISTRY_CLIENT_ID = "jarvis-registry-client"
+_HEADLESS_AGENT_CLIENT_ID = "jarvis-headless-agent"
 _KID = "self-signed-key-v1"
+_ALL_SCOPES = frozenset(
+    {
+        "servers-read",
+        "servers-write",
+        "agents-read",
+        "agents-write",
+        "mcp-proxy-ops",
+        "a2a-proxy-ops",
+        "skills-read",
+        "skills-write",
+        "user-read",
+        "system-ops",
+    }
+)
 
 
 @pytest.fixture
@@ -43,19 +59,25 @@ def cfg() -> JwtTokenConfig:
         managed_agents_audience="jarvis-managed-agents",
         crud_services_audience="jarvis-crud-services",
         registry_client_id=_REGISTRY_CLIENT_ID,
+        headless_agent_client_id=_HEADLESS_AGENT_CLIENT_ID,
+        all_scopes=_ALL_SCOPES,
     )
 
 
 def test_managed_agent_roundtrip(cfg):
     token = mint_managed_agent_token(
-        cfg, subject="alice", client_id="mcp-client-abc", expires_in_seconds=3600, extra_claims={"scope": "x"}
+        cfg,
+        subject="alice",
+        client_id="mcp-client-abc",
+        requested_scopes=["mcp-proxy-ops"],
+        expires_in_seconds=3600,
     )
     claims = verify_managed_agent_token(cfg, token)
     assert claims["sub"] == "alice"
     assert claims["aud"] == "jarvis-managed-agents"
     assert claims["client_id"] == "mcp-client-abc"
     assert claims[TOKEN_CLASS_CLAIM] == TOKEN_CLASS_MANAGED_AGENT
-    assert claims["scope"] == "x"
+    assert claims["scope"] == "mcp-proxy-ops"
 
 
 def test_crud_session_roundtrip(cfg):
@@ -85,6 +107,7 @@ def test_managed_agent_rejects_reserved_standard_claims(cfg):
             cfg,
             subject="alice",
             client_id="mcp-client-abc",
+            requested_scopes=["mcp-proxy-ops"],
             expires_in_seconds=3600,
             extra_claims={"aud": "wrong-audience"},
         )
@@ -96,7 +119,9 @@ def test_managed_agent_rejects_reserved_standard_claims(cfg):
 
 
 def test_managed_agent_token_rejected_by_crud_verifier(cfg):
-    token = mint_managed_agent_token(cfg, subject="a", client_id="mcp-client-abc", expires_in_seconds=3600)
+    token = mint_managed_agent_token(
+        cfg, subject="a", client_id="mcp-client-abc", requested_scopes=["mcp-proxy-ops"], expires_in_seconds=3600
+    )
     with pytest.raises(InvalidTokenError):
         verify_crud_session_token(cfg, token)
 
@@ -108,9 +133,9 @@ def test_crud_token_rejected_by_managed_agent_verifier(cfg):
 
 
 def test_registry_client_id_managed_agent_token_is_inert(cfg):
-    # Registry's own login mints a managed_agent token with client_id == registry.
-    # It must be rejected by the proxy verifier (and also by CRUD verifier via aud).
-    token = mint_managed_agent_token(cfg, subject="self", client_id=_REGISTRY_CLIENT_ID, expires_in_seconds=3600)
+    token = mint_managed_agent_token(
+        cfg, subject="self", client_id=_REGISTRY_CLIENT_ID, requested_scopes=[], expires_in_seconds=3600
+    )
     with pytest.raises(InvalidTokenError):
         verify_managed_agent_token(cfg, token)
     with pytest.raises(InvalidTokenError):
@@ -124,7 +149,6 @@ def test_wrong_token_type_rejected(cfg):
 
 
 def test_foreign_kid_rejected(cfg):
-    # A token signed with the right key but a foreign kid must be rejected early.
     from registry_pkgs.core.jwt_utils import build_jwt_payload
 
     payload = build_jwt_payload(
@@ -197,3 +221,57 @@ def test_crud_session_wrong_client_id_rejected(cfg):
     token = encode_jwt(payload, _PRIVATE_KEY, kid=_KID)
     with pytest.raises(InvalidTokenError):
         verify_crud_session_token(cfg, token)
+
+
+# --------------------------------------------------------------------------- #
+# Ceiling enforcement (AS-1784)
+# --------------------------------------------------------------------------- #
+
+
+def test_ceiling_enforcement_drops_out_of_scope(cfg):
+    token = mint_managed_agent_token(
+        cfg,
+        subject="alice",
+        client_id="mcp-client-x",
+        requested_scopes=["mcp-proxy-ops", "servers-read"],
+        expires_in_seconds=3600,
+    )
+    claims = verify_managed_agent_token(cfg, token)
+    assert claims["scope"] == "mcp-proxy-ops"
+
+
+def test_mint_with_scope_returns_exact_scope_written_to_token(cfg):
+    minted = mint_managed_agent_token_with_scope(
+        cfg,
+        subject="alice",
+        client_id="a2a-client-x",
+        requested_scopes=["a2a-proxy-ops", "mcp-proxy-ops"],
+        expires_in_seconds=3600,
+    )
+
+    assert minted.scope == "a2a-proxy-ops"
+    assert verify_managed_agent_token(cfg, minted.token)["scope"] == minted.scope
+
+
+def test_scope_in_extra_claims_raises_value_error(cfg):
+    with pytest.raises(ValueError, match="scope"):
+        mint_managed_agent_token(
+            cfg,
+            subject="alice",
+            client_id="mcp-client-abc",
+            requested_scopes=["mcp-proxy-ops"],
+            expires_in_seconds=3600,
+            extra_claims={"scope": "evil"},
+        )
+
+
+def test_crud_session_token_scope_in_extra_claims_still_works(cfg):
+    token = mint_crud_session_token(
+        cfg,
+        subject="bob",
+        token_type="access_token",
+        expires_in_seconds=3600,
+        extra_claims={"scope": "servers-read agents-read"},
+    )
+    claims = verify_crud_session_token(cfg, token, expected_token_type="access_token")
+    assert claims["scope"] == "servers-read agents-read"

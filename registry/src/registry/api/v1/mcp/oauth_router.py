@@ -982,12 +982,12 @@ def _mint_downstream_access_token(user_id: str, client_id: str, server_path: str
         settings.jwt_token_config,
         subject=user_id,
         client_id=client_id,
+        requested_scopes=[DownstreamOAuthConstants.PROXY_OPS_SCOPE],
         expires_in_seconds=DownstreamOAuthConstants.ACCESS_TOKEN_TTL_SECONDS,
         iat=int(time.time()),
         extra_claims={
             "user_id": user_id,
             "server_path": server_path,
-            "scope": DownstreamOAuthConstants.PROXY_OPS_SCOPE,
         },
     )
 

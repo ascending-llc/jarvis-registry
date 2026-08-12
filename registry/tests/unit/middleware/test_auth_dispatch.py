@@ -105,7 +105,7 @@ def _managed_agent_token(
     server_path: str | None = None,
     token_scope: str = "mcp-proxy-ops",
 ) -> str:
-    extra: dict = {"scope": token_scope}
+    extra: dict = {}
     if user_id is not None:
         extra["user_id"] = user_id
     if server_path is not None:
@@ -114,8 +114,9 @@ def _managed_agent_token(
         settings.jwt_token_config,
         subject="alice",
         client_id=client_id,
+        requested_scopes=token_scope,
         expires_in_seconds=3600,
-        extra_claims=extra,
+        extra_claims=extra or None,
     )
 
 
@@ -211,7 +212,7 @@ def test_skills_sync_401_advertises_skills_scope(client):
     ],
 )
 def test_skill_sync_reads_accept_managed_agent_bearer(client, path):
-    token = _managed_agent_token(user_id=USER_A, token_scope="skills-read")
+    token = _managed_agent_token(client_id="jarvis-registry-cli", user_id=USER_A, token_scope="skills-read")
 
     resp = client.get(path, headers={"Authorization": f"Bearer {token}"})
 
@@ -227,7 +228,7 @@ def test_skill_sync_read_accepts_session_cookie(client):
 
 
 def test_skill_write_rejects_managed_agent_bearer(client):
-    token = _managed_agent_token(user_id=USER_A, token_scope="skills-read")
+    token = _managed_agent_token(client_id="jarvis-registry-cli", user_id=USER_A, token_scope="skills-read")
 
     resp = client.post("/api/v1/skills", headers={"Authorization": f"Bearer {token}"})
 
@@ -394,7 +395,7 @@ def test_lifespan_scope_passes_through_without_error():
     ],
 )
 def test_skill_non_sync_reads_reject_bearer(client, path):
-    token = _managed_agent_token(user_id=USER_A, token_scope="skills-read")
+    token = _managed_agent_token(client_id="jarvis-registry-cli", user_id=USER_A, token_scope="skills-read")
 
     resp = client.get(path, headers={"Authorization": f"Bearer {token}"})
 
