@@ -60,11 +60,10 @@ class AuthSettings(JarvisBaseSettings):
 
     # ==================== Redis ====================
     redis_uri: str = "redis://registry-redis:6379/1"
-    redis_key_prefix: str = "jarvis-auth-server"
 
     @cached_property
     def redis_config(self) -> RedisConfig:
-        return RedisConfig(redis_uri=self.redis_uri, redis_key_prefix=self.redis_key_prefix)
+        return RedisConfig(redis_uri=self.redis_uri, redis_key_prefix=self.auth_server_redis_key_prefix)
 
     def model_post_init(self, __context: Any) -> None:
         super().model_post_init(__context)

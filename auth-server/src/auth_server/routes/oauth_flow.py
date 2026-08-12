@@ -796,13 +796,14 @@ async def _device_token_handler(
     refresh_token: str | None = params["refresh_token"]
     redirect_uri: str | None = params["redirect_uri"]
 
+    logger.info("TOKEN ENDPOINT CALLED")
+    logger.info("grant_type: %s", grant_type)
+    logger.info("client_id: %s", client_id)
+
     if not grant_type:
         return oauth_error_response("invalid_request", "grant_type is required")
     if not client_id:
         return oauth_error_response("invalid_request", "client_id is required")
-
-    logger.info("TOKEN ENDPOINT CALLED")
-    logger.info(f"grant_type: {grant_type}")
 
     # Authorization Code Flow
     if grant_type == "authorization_code":
@@ -811,6 +812,8 @@ async def _device_token_handler(
         auth_code_data = store.get_authcode(code)
         if not auth_code_data:
             return oauth_error_response("invalid_grant", "authorization code not found or expired")
+        user_id = await user_service.resolve_user_id(auth_code_data["user_info"])
+        logger.info("user_id: %s", user_id)
         if auth_code_data["client_id"] != client_id:
             return oauth_error_response("invalid_client", "client_id mismatch")
         if client_id == settings.registry_app_name and client_secret != settings.registry_client_secret:
@@ -853,9 +856,6 @@ async def _device_token_handler(
                 if user_groups
                 else user_info.get("scopes", [])
             )
-
-        # Resolve user_id from MongoDB
-        user_id = await user_service.resolve_user_id(user_info)
 
         scope_claim = " ".join(resolved_scopes) if isinstance(resolved_scopes, list) else resolved_scopes
         access_token = mint_managed_agent_token(
@@ -970,6 +970,8 @@ async def _device_token_handler(
         refresh_token_data = store.get_refresh_token(refresh_token)
         if not refresh_token_data:
             return oauth_error_response("invalid_grant", "refresh token invalid or expired")
+        user_id = await user_service.resolve_user_id(refresh_token_data["user_info"])
+        logger.info("user_id: %s", user_id)
         if refresh_token_data.get("client_id") != client_id:
             return oauth_error_response("invalid_client", "client_id mismatch")
         if client_id == settings.registry_app_name and client_secret != settings.registry_client_secret:
@@ -978,7 +980,6 @@ async def _device_token_handler(
             return oauth_error_response("invalid_client", "invalid client credentials")
 
         user_info = refresh_token_data["user_info"]
-        user_id = await user_service.resolve_user_id(user_info)
         if user_id and not _is_registry_client(client_id) and not consent_store.has_client_consent(user_id, client_id):
             return oauth_error_response(
                 "invalid_grant",

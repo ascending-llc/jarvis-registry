@@ -23,6 +23,13 @@ redis.call('DEL', KEYS[1])
 return val
 """
 
+_GET_AND_EXTEND_TTL_SCRIPT = """
+local val = redis.call('GET', KEYS[1])
+if not val then return nil end
+redis.call('EXPIRE', KEYS[1], ARGV[1])
+return val
+"""
+
 _ROTATE_REFRESH_TOKEN_SCRIPT = """
 local old_key = KEYS[1]
 local new_key = KEYS[2]
@@ -239,17 +246,12 @@ class OAuthClientStore:
 
     def get_client(self, client_id: str) -> dict[str, Any] | None:
         key = self._client_key(client_id)
-        client_metadata = self._json_store.get_json(key)
-        if client_metadata is None:
-            return None
-
         try:
-            self._redis.expire(key, CLIENT_TTL_SECONDS)
+            raw = self._redis.eval(_GET_AND_EXTEND_TTL_SCRIPT, 1, key, CLIENT_TTL_SECONDS)
         except RedisError:
-            logger.exception("Failed to extend OAuth client TTL for client_id=%s", client_id)
+            logger.exception("Failed to get/extend OAuth client TTL for client_id=%s", client_id)
             raise
-
-        return client_metadata
+        return self._json_store.loads_json(raw)
 
     def validate_client_credentials(
         self,

@@ -52,6 +52,7 @@ class TestSettings:
         assert settings.local_embeddings_model_name == "all-MiniLM-L6-v2"
         assert settings.local_embeddings_model_dimensions == 384
         assert settings.health_check_interval_seconds == 300  # 5 minutes
+        assert settings.auth_server_redis_key_prefix == "jarvis-auth-server"
 
     def test_secret_key_required(self):
         """Test that Settings raises a validation error when SECRET_KEY is absent."""
@@ -75,6 +76,7 @@ class TestSettings:
             "SECRET_KEY": "test-secret",
             "LOCAL_EMBEDDINGS_MODEL_NAME": "test-model",
             "HEALTH_CHECK_INTERVAL_SECONDS": "120",
+            "AUTH_SERVER_REDIS_KEY_PREFIX": "jarvis-auth-server-test",
         },
     )
     def test_environment_variables(self):
@@ -84,6 +86,7 @@ class TestSettings:
         assert settings.secret_key == "test-secret"
         assert settings.local_embeddings_model_name == "test-model"
         assert settings.health_check_interval_seconds == 120
+        assert settings.auth_server_redis_key_prefix == "jarvis-auth-server-test"
 
     def test_case_insensitive_env_vars(self):
         """Test that environment variables are case insensitive."""

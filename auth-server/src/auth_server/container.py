@@ -54,17 +54,20 @@ class AuthContainer:
     def oauth_state_store(self) -> OAuthStateStore:
         return OAuthStateStore(
             redis_client=self.redis_client,
-            key_prefix=self._settings.redis_key_prefix,
+            key_prefix=self._settings.auth_server_redis_key_prefix,
             client_secret_hash_key=self._settings.secret_key,
         )
 
     @cached_property
     def consent_store(self) -> ConsentStore:
-        return ConsentStore(redis_client=self.redis_client, key_prefix=self._settings.redis_key_prefix)
+        return ConsentStore(redis_client=self.redis_client, key_prefix=self._settings.auth_server_redis_key_prefix)
 
     @cached_property
     def pending_consent_store(self) -> PendingConsentStore:
-        return PendingConsentStore(redis_client=self.redis_client, key_prefix=self._settings.redis_key_prefix)
+        return PendingConsentStore(
+            redis_client=self.redis_client,
+            key_prefix=self._settings.auth_server_redis_key_prefix,
+        )
 
     @cache
     def get_provider_config(self, provider: AllowedProvider) -> AuthProviderConfig | EntraConfig:
