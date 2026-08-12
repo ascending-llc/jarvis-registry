@@ -19,6 +19,24 @@ def test_validation_disablement(caplog) -> None:
 
 
 @pytest.mark.unit
+def test_auth_server_redis_key_prefix_default_and_env_override() -> None:
+    with patch.dict(os.environ, {"X_JARVIS_REGISTRY_IMPORT_CHECKS": "disabled"}, clear=True):
+        default_settings = JarvisBaseSettings(_env_file=None)
+    with patch.dict(
+        os.environ,
+        {
+            "AUTH_SERVER_REDIS_KEY_PREFIX": "jarvis-auth-server-test",
+            "X_JARVIS_REGISTRY_IMPORT_CHECKS": "disabled",
+        },
+        clear=True,
+    ):
+        overridden_settings = JarvisBaseSettings(_env_file=None)
+
+    assert default_settings.auth_server_redis_key_prefix == "jarvis-auth-server"
+    assert overridden_settings.auth_server_redis_key_prefix == "jarvis-auth-server-test"
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("client_id", ["", "   ", "user-generated"])
 def test_headless_agent_client_id_rejects_empty_and_interactive_values(client_id: str) -> None:
     with pytest.raises(ValidationError, match="headless_agent_client_id"):

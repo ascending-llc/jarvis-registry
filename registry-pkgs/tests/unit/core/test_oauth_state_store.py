@@ -36,6 +36,7 @@ class _FakeRedis:
         self.values: dict[str, str] = {}
         self.ttls: dict[str, int | None] = {}
         self.last_pipeline_transaction: bool | None = None
+        self.eval_calls: list[tuple[str, int, tuple[Any, ...]]] = []
 
     def set(self, key: str, value: str, ex: int | None = None) -> bool:
         self.values[key] = value
@@ -73,11 +74,23 @@ class _FakeRedis:
         return _FakePipeline(self)
 
     def eval(self, script: str, numkeys: int, *args: Any) -> str | None:
+        self.eval_calls.append((script, numkeys, args))
         if numkeys == 2:
             if len(args) == 7:
                 return self._issue_device_refresh_token(args)
             return self._rotate_refresh_token(args)
+        if len(args) == 2:
+            return self._get_and_extend_ttl(args)
         return self._consume_authcode(args)
+
+    def _get_and_extend_ttl(self, args: tuple[Any, ...]) -> str | None:
+        key = str(args[0])
+        ttl_seconds = int(args[1])
+        value = self.get(key)
+        if value is None:
+            return None
+        self.expire(key, ttl_seconds)
+        return value
 
     def _consume_authcode(self, args: tuple[Any, ...]) -> str | None:
         key = str(args[0])
@@ -165,6 +178,8 @@ def test_save_and_get_client_hashes_secret_and_slides_ttl(
     fake_redis.ttls[key] = 100
     assert store.get_client("client-1") == stored
     assert fake_redis.ttls[key] == CLIENT_TTL_SECONDS
+    assert len(fake_redis.eval_calls) == 1
+    assert fake_redis.eval_calls[0][1:] == (1, (key, CLIENT_TTL_SECONDS))
 
 
 def test_validate_client_credentials_uses_hash(

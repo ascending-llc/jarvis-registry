@@ -1,16 +1,43 @@
 """Unit tests for oauth_flow redirect_uri helpers."""
 
-from unittest.mock import patch
+import json
+import logging
+import time
+from unittest.mock import AsyncMock, Mock, patch
 from urllib.parse import parse_qs, urlparse
 
+import pytest
+from fastapi import HTTPException
+from starlette.requests import Request
+
 from auth_server.routes.oauth_flow import (
+    DEVICE_CODE_GRANT_TYPE,
+    _device_token_handler,
     _is_registered_redirect_uri,
     _redirect_error_to_client,
     _trusted_error_redirect_uris,
     _validate_known_client_for_redirect,
+    device_token,
 )
 from registry_pkgs.core.redirect_uri import is_safe_unverified_redirect_target
 from tests.support.oauth_state_store import InMemoryOAuthStateStore
+
+
+def _json_token_request(payload: dict[str, str]) -> Request:
+    body = json.dumps(payload).encode()
+
+    async def receive() -> dict[str, object]:
+        return {"type": "http.request", "body": body}
+
+    return Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/oauth2/token",
+            "headers": [(b"content-type", b"application/json")],
+        },
+        receive,
+    )
 
 
 class TestIsRegisteredRedirectUri:
@@ -109,3 +136,162 @@ def test_redirect_error_to_client_builds_302_with_oauth_error() -> None:
         "error_description": ["Unknown client_id"],
         "state": ["client-state"],
     }
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"grant_type": "authorization_code", "client_id": "client-123"},
+        {"grant_type": "refresh_token", "client_id": "client-123"},
+        {"grant_type": DEVICE_CODE_GRANT_TYPE, "client_id": "client-123"},
+        {"grant_type": "unsupported", "client_id": "client-123"},
+    ],
+)
+async def test_token_endpoint_logs_client_id_for_every_grant_type(
+    payload: dict[str, str],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="auth_server.routes.oauth_flow")
+
+    await _device_token_handler(
+        _json_token_request(payload),
+        Mock(),
+        InMemoryOAuthStateStore(),
+        Mock(),
+    )
+
+    assert "client_id: client-123" in caplog.text
+
+
+@pytest.mark.unit
+async def test_token_endpoint_logs_missing_client_id_before_validation(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="auth_server.routes.oauth_flow")
+
+    await _device_token_handler(
+        _json_token_request({"grant_type": "authorization_code"}),
+        Mock(),
+        InMemoryOAuthStateStore(),
+        Mock(),
+    )
+
+    assert "client_id: None" in caplog.text
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("grant_type", ["authorization_code", "refresh_token"])
+async def test_token_endpoint_resolves_and_logs_user_before_client_mismatch(
+    grant_type: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="auth_server.routes.oauth_flow")
+    store = InMemoryOAuthStateStore()
+    user_info = {"username": "test-user"}
+    payload = {
+        "grant_type": grant_type,
+        "client_id": "request-client",
+    }
+    if grant_type == "authorization_code":
+        payload.update({"code": "auth-code", "redirect_uri": "https://client.example/callback"})
+        store.save_authcode(
+            "auth-code",
+            {
+                "client_id": "stored-client",
+                "redirect_uri": "https://client.example/callback",
+                "expires_at": int(time.time()) + 600,
+                "user_info": user_info,
+            },
+        )
+    else:
+        payload["refresh_token"] = "refresh-token"
+        store.save_refresh_token(
+            "refresh-token",
+            {
+                "client_id": "stored-client",
+                "user_info": user_info,
+            },
+        )
+    user_service = Mock()
+    user_service.resolve_user_id = AsyncMock(return_value="user-123")
+
+    response = await _device_token_handler(
+        _json_token_request(payload),
+        user_service,
+        store,
+        Mock(),
+    )
+
+    assert response.status_code == 400
+    assert json.loads(response.body)["error"] == "invalid_client"
+    user_service.resolve_user_id.assert_awaited_once_with(user_info)
+    assert "user_id: user-123" in caplog.text
+
+
+@pytest.mark.unit
+async def test_token_endpoint_logs_user_before_invalid_grant(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="auth_server.routes.oauth_flow")
+    store = InMemoryOAuthStateStore()
+    user_info = {"username": "test-user"}
+    store.save_client("client-123", {"token_endpoint_auth_method": "none"})
+    store.save_authcode(
+        "auth-code",
+        {
+            "client_id": "client-123",
+            "redirect_uri": "https://client.example/registered",
+            "expires_at": int(time.time()) + 600,
+            "user_info": user_info,
+        },
+    )
+    user_service = Mock()
+    user_service.resolve_user_id = AsyncMock(return_value="user-123")
+
+    response = await _device_token_handler(
+        _json_token_request(
+            {
+                "grant_type": "authorization_code",
+                "client_id": "client-123",
+                "code": "auth-code",
+                "redirect_uri": "https://client.example/mismatch",
+            }
+        ),
+        user_service,
+        store,
+        Mock(),
+    )
+
+    assert response.status_code == 400
+    assert json.loads(response.body)["error"] == "invalid_grant"
+    assert "user_id: user-123" in caplog.text
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("grant_type", ["authorization_code", "refresh_token"])
+async def test_token_endpoint_returns_500_when_early_user_resolution_fails(
+    grant_type: str,
+) -> None:
+    store = InMemoryOAuthStateStore()
+    user_info = {"username": "test-user"}
+    payload = {"grant_type": grant_type, "client_id": "request-client"}
+    if grant_type == "authorization_code":
+        payload.update({"code": "auth-code", "redirect_uri": "https://client.example/callback"})
+        store.save_authcode("auth-code", {"client_id": "stored-client", "user_info": user_info})
+    else:
+        payload["refresh_token"] = "refresh-token"
+        store.save_refresh_token("refresh-token", {"client_id": "stored-client", "user_info": user_info})
+    user_service = Mock()
+    user_service.resolve_user_id = AsyncMock(side_effect=RuntimeError("MongoDB unavailable"))
+
+    with pytest.raises(HTTPException) as exc_info:
+        await device_token(
+            _json_token_request(payload),
+            user_service,
+            store,
+            Mock(),
+        )
+
+    assert exc_info.value.status_code == 500
+    assert exc_info.value.detail == "Internal server error"
