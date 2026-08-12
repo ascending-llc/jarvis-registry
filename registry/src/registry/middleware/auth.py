@@ -22,8 +22,12 @@ logger = logging.getLogger(__name__)
 # Direct-connect proxy path: /proxy/server/{user_id}/{server_path}. Used to bind a managed-agent
 # token's direct-connect claims to the URL.
 DIRECT_CONNECT_RE = re.compile(r"^/proxy/server/([^/]+)/(.+)$")
-SKILLS_PROXY_RE = re.compile(r"^/proxy/skills(?:/|$)")
+SKILLS_API_RE = re.compile(r"^/api/v[^/]+/skills(?:/|$)")
 A2A_PROXY_RE = re.compile(r"^/proxy/a2a(?:/|$)")
+DUAL_AUTH_SKILL_READ_PATTERNS = (
+    re.compile(r"^/api/v[^/]+/skills$"),
+    re.compile(r"^/api/v[^/]+/skills/[^/]+/content$"),
+)
 
 
 def _parse_bearer_token(request: Request) -> str | None:
@@ -39,9 +43,9 @@ def _parse_bearer_token(request: Request) -> str | None:
     return token.strip() or None
 
 
-def _required_proxy_scope(path: str) -> str:
-    if SKILLS_PROXY_RE.match(path):
-        return "skills-proxy-ops"
+def _required_bearer_scope(path: str) -> str:
+    if SKILLS_API_RE.match(path):
+        return "skills-read"
     if A2A_PROXY_RE.match(path):
         return "a2a-proxy-ops"
     return "mcp-proxy-ops"
@@ -125,6 +129,11 @@ class UnifiedAuthMiddleware:
         login_url = f"{settings.registry_client_url}/login?next={quote(next_path, safe='')}"
         return RedirectResponse(url=login_url, status_code=302)
 
+    @staticmethod
+    def _is_dual_auth_skill_read(request: Request, path: str) -> bool:
+        """Return whether this is one of the two CLI sync-down skill endpoints."""
+        return request.method == "GET" and any(pattern.fullmatch(path) for pattern in DUAL_AUTH_SKILL_READ_PATTERNS)
+
     def _compile_patterns(self, patterns: list[str]) -> list[tuple]:
         """
         Compile path patterns into Starlette route matchers
@@ -187,14 +196,14 @@ class UnifiedAuthMiddleware:
 
                 headers = {"Connection": "close"}
 
-                if self._is_proxy_route(path):
+                if self._is_proxy_route(path) or self._is_dual_auth_skill_read(request, path):
                     # Proxy routes are Bearer-authenticated (managed-agent tokens). Advertise a
                     # Bearer challenge with resource metadata so AI agents can perform Dynamic
                     # Client Registration.
                     headers["WWW-Authenticate"] = (
                         f'Bearer realm="{settings.jarvis_realm}", '
                         f'resource_metadata="{settings.jwt_issuer}/.well-known/oauth-protected-resource{settings.service_base_path}{path}", '
-                        f'scope="{_required_proxy_scope(path)}"'
+                        f'scope="{_required_bearer_scope(path)}"'
                     )
                 # Non-proxy routes are cookie-authenticated (CRUD-session cookie). Cookie/session
                 # auth has no RFC 7235 challenge scheme, and the only caller is our frontend, which
@@ -230,6 +239,7 @@ class UnifiedAuthMiddleware:
 
         - Proxy routes (``/proxy/*``): the ONLY accepted credential is a managed-agent
           Bearer token in the Authorization header. The session cookie is never consulted.
+        - Skill sync-down reads: session cookie first, then managed-agent Bearer token.
         - Every other authenticated route: the ONLY accepted credential is the
           CRUD-session cookie. The Authorization header is never consulted.
 
@@ -247,6 +257,15 @@ class UnifiedAuthMiddleware:
             if user_context:
                 return user_context
             raise SoftAuthRedirect(self._build_soft_auth_response(request, path))
+
+        if self._is_dual_auth_skill_read(request, path):
+            user_context = await self._try_session_auth(request)
+            if user_context:
+                return user_context
+            user_context = self._try_jwt_auth(request, path)
+            if user_context:
+                return user_context
+            raise AuthenticationError("Session or managed-agent authentication required")
 
         user_context = await self._try_session_auth(request)
         if user_context:

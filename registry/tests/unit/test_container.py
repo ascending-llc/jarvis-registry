@@ -68,3 +68,14 @@ class TestWorkflowRunnerModelSelection:
 
         mock_bedrock.assert_called_once()
         assert mock_bedrock.call_args.kwargs["id"] == _FALLBACK_MODEL
+
+
+@pytest.mark.unit
+def test_skill_service_is_app_scoped_and_uses_shared_acl_service():
+    container = _make_container(_make_settings())
+
+    skill_service = container.skill_service
+
+    assert skill_service is container.skill_service
+    assert skill_service.acl_service is container.acl_service
+    assert skill_service.user_service is container.user_service

@@ -7,8 +7,8 @@ This directory contains auto-generated Beanie ODM models from Mongoose schemas.
 ## Generation Info
 
 - **Repository**: ascending-llc/jarvis-api
-- **Version**: asc0.7.0
-- **Downloaded at**: `2026-08-06T22:03:16.958219+00:00`
+- **Version**: asc0.7.1
+- **Downloaded at**: `2026-08-10T19:56:26.130169+00:00`
 - **Files**: 10
 
 ## Regenerate Models
@@ -22,7 +22,7 @@ uv run poe generate-schemas
 To regenerate from a specific version tag, provide a positional argument like below.
 
 ```bash
-uv run poe generate-schemas asc0.7.0
+uv run poe generate-schemas asc0.7.1
 ```
 
 **The generated files should be Git tracked.**

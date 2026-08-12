@@ -53,6 +53,7 @@ from .services.search.base import VectorSearchService
 from .services.search.service import SearchService
 from .services.security_scanner import SecurityScannerService
 from .services.server_service import ServerServiceV1
+from .services.skill_service import SkillService
 from .services.user_service import UserService
 from .services.workflow_control_service import WorkflowControlService
 from .services.workflow_mcp_headers_provider import McpHeadersProvider, make_mcp_headers_provider
@@ -165,6 +166,10 @@ class RegistryContainer:
             group_service=self.group_service,
             role_cache=self.role_cache,
         )
+
+    @cached_property
+    def skill_service(self) -> SkillService:
+        return SkillService(acl_service=self.acl_service, user_service=self.user_service)
 
     @cached_property
     def token_service(self) -> TokenService:

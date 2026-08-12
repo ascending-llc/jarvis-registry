@@ -12,6 +12,7 @@ from ._generated import (
     Key,
     PrincipalType,
     ResourceType,
+    SkillSource,
     Token,
     User,
 )
@@ -60,4 +61,5 @@ __all__ = [
     "TokenType",
     "PrincipalType",
     "ResourceType",
+    "SkillSource",
 ]

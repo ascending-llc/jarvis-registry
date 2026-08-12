@@ -47,5 +47,5 @@ def register_routers(app: FastAPI) -> None:
     )
     app.include_router(system_router)
     app.include_router(auth_provider_router, tags=["Authentication"])
-    app.include_router(skill_router, prefix="/proxy", tags=["Skills Sync"])
+    app.include_router(skill_router, prefix=f"/api/{settings.api_version}", tags=["Skills Management"])
     app.include_router(proxy_router, prefix="/proxy", tags=["MCP Proxy"])
