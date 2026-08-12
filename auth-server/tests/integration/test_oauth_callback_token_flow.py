@@ -14,10 +14,19 @@ from fastapi.testclient import TestClient
 from itsdangerous import URLSafeTimedSerializer
 
 from auth_server.core.config import settings
-from auth_server.deps import get_auth_provider, get_oauth2_config, get_oauth_state_store, get_signer, get_user_service
+from auth_server.deps import (
+    get_auth_provider,
+    get_oauth2_config,
+    get_oauth_state_store,
+    get_signer,
+    get_token_grant_service,
+    get_user_service,
+)
 from auth_server.server import app
+from auth_server.services.token_grant_service import TokenGrantService
 from registry_pkgs.core.jwt_tokens import MintedManagedAgentToken
 from registry_pkgs.core.jwt_utils import InvalidSignatureError, InvalidTokenError
+from tests.conftest import test_consent_store
 from tests.integration.conftest import _mock_keycloak_provider
 from tests.support.oauth_state_store import authorization_codes_storage, test_oauth_state_store
 
@@ -741,6 +750,9 @@ class TestOAuth2TokenEndpoint:
 
             app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
             app.dependency_overrides[get_user_service] = lambda: mock_user_service
+            app.dependency_overrides[get_token_grant_service] = lambda: TokenGrantService(
+                mock_user_service, test_oauth_state_store, test_consent_store
+            )
 
             test_client = TestClient(app)
 
@@ -801,6 +813,9 @@ class TestOAuth2TokenEndpoint:
         app.dependency_overrides = {}
         app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
         app.dependency_overrides[get_user_service] = lambda: mock_user_service
+        app.dependency_overrides[get_token_grant_service] = lambda: TokenGrantService(
+            mock_user_service, test_oauth_state_store, test_consent_store
+        )
 
         test_client = TestClient(app)
         response = test_client.post(
@@ -861,6 +876,9 @@ class TestOAuth2TokenEndpoint:
             app.dependency_overrides = {}
             app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
             app.dependency_overrides[get_user_service] = lambda: mock_user_service
+            app.dependency_overrides[get_token_grant_service] = lambda: TokenGrantService(
+                mock_user_service, test_oauth_state_store, test_consent_store
+            )
 
             test_client = TestClient(app)
 
@@ -925,6 +943,9 @@ class TestOAuth2TokenEndpoint:
             app.dependency_overrides = {}
             app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
             app.dependency_overrides[get_user_service] = lambda: mock_user_service
+            app.dependency_overrides[get_token_grant_service] = lambda: TokenGrantService(
+                mock_user_service, test_oauth_state_store, test_consent_store
+            )
 
             test_client = TestClient(app)
 
@@ -972,6 +993,9 @@ class TestOAuth2TokenEndpoint:
 
         app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
         app.dependency_overrides[get_user_service] = lambda: mock_user_service
+        app.dependency_overrides[get_token_grant_service] = lambda: TokenGrantService(
+            mock_user_service, test_oauth_state_store, test_consent_store
+        )
 
         test_client = TestClient(app)
 
@@ -994,6 +1018,9 @@ class TestOAuth2TokenEndpoint:
 
         app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
         app.dependency_overrides[get_user_service] = lambda: mock_user_service
+        app.dependency_overrides[get_token_grant_service] = lambda: TokenGrantService(
+            mock_user_service, test_oauth_state_store, test_consent_store
+        )
 
         test_client = TestClient(app)
 
@@ -1021,6 +1048,9 @@ class TestOAuth2TokenEndpoint:
         app.dependency_overrides = {}
         app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
         app.dependency_overrides[get_user_service] = lambda: mock_user_service
+        app.dependency_overrides[get_token_grant_service] = lambda: TokenGrantService(
+            mock_user_service, test_oauth_state_store, test_consent_store
+        )
         test_client = TestClient(app)
 
         response = test_client.post(

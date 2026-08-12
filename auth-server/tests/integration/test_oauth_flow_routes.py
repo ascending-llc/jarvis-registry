@@ -16,8 +16,9 @@ import pytest
 from fastapi.testclient import TestClient
 from itsdangerous import URLSafeTimedSerializer
 
-from auth_server.deps import get_auth_provider, get_oauth2_config, get_user_service
+from auth_server.deps import get_auth_provider, get_oauth2_config, get_token_grant_service, get_user_service
 from auth_server.routes.oauth_flow import DEVICE_CODE_GRANT_TYPE, generate_user_code
+from auth_server.services.token_grant_service import TokenGrantService
 from registry_pkgs.core.jwt_tokens import MintedManagedAgentToken
 from registry_pkgs.core.jwt_utils import decode_jwt_unverified
 from tests.conftest import test_consent_store, test_pending_consent_store
@@ -74,6 +75,7 @@ def clear_oauth_flow_route_overrides(test_client: TestClient):
     test_client.app.dependency_overrides.pop(get_auth_provider, None)
     test_client.app.dependency_overrides.pop(get_oauth2_config, None)
     test_client.app.dependency_overrides.pop(get_user_service, None)
+    test_client.app.dependency_overrides.pop(get_token_grant_service, None)
 
 
 def _cookies_from_response(response) -> SimpleCookie:
@@ -89,9 +91,17 @@ def _configure_oauth2(test_client: TestClient) -> None:
 
 
 def _configure_user_service(test_client: TestClient, user_id: str = "user-123") -> Mock:
+    """Override user_service everywhere it's consulted: directly (oauth2_callback) and via
+    TokenGrantService (the /oauth2/token grant branches), mirroring get_server_service-style
+    overrides for composed services rather than trying to swap a sub-dependency and expect
+    propagation into the container-cached TokenGrantService.
+    """
     user_service = Mock()
     user_service.resolve_user_id = AsyncMock(return_value=user_id)
     test_client.app.dependency_overrides[get_user_service] = lambda: user_service
+    test_client.app.dependency_overrides[get_token_grant_service] = lambda: TokenGrantService(
+        user_service, test_oauth_state_store, test_consent_store
+    )
     return user_service
 
 

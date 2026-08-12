@@ -75,7 +75,7 @@ class TestWellKnownRoutes:
         assert len(data["scopes_supported"]) > 0
 
     def test_a2a_oauth_authorization_server_metadata(self, test_client: TestClient):
-        """A2A metadata overrides only registration_endpoint; everything else matches root."""
+        """A2A metadata overrides issuer and registration_endpoint; everything else matches root."""
         root_response = test_client.get("/.well-known/oauth-authorization-server")
         a2a_response = test_client.get("/.well-known/oauth-authorization-server/a2a")
 
@@ -86,8 +86,13 @@ class TestWellKnownRoutes:
         assert a2a_data["registration_endpoint"] == "http://localhost:8888/auth/oauth2/register/a2a"
         assert a2a_data["registration_endpoint"] != root_data["registration_endpoint"]
 
-        assert {key: value for key, value in a2a_data.items() if key != "registration_endpoint"} == {
-            key: value for key, value in root_data.items() if key != "registration_endpoint"
+        # Per RFC 8414 §3.3, issuer MUST match the well-known path this metadata was fetched from.
+        assert a2a_data["issuer"] == f"{root_data['issuer']}/a2a"
+        assert a2a_data["issuer"] != root_data["issuer"]
+
+        overridden_keys = {"issuer", "registration_endpoint"}
+        assert {key: value for key, value in a2a_data.items() if key not in overridden_keys} == {
+            key: value for key, value in root_data.items() if key not in overridden_keys
         }
 
     def test_openid_configuration(self, test_client: TestClient):

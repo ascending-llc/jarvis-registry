@@ -49,11 +49,13 @@ from ..core.types import AllowedProvider, AuthProviderConfig, EntraConfig, OAuth
 from ..deps import (
     check_if_https,
     get_auth_provider,
+    get_client_registration_service,
     get_consent_store,
     get_oauth2_config,
     get_oauth_state_store,
     get_pending_consent_store,
     get_signer,
+    get_token_grant_service,
     get_user_service,
     get_validator,
 )
@@ -427,7 +429,7 @@ def _finish_device_denial(device_code: str, store: OAuthStateStoreProtocol) -> H
 def _register_client_common(
     registration: ClientRegistrationRequest,
     request: Request,
-    store: OAuthStateStoreProtocol,
+    client_registration_service: ClientRegistrationService,
     *,
     category: ClientCategory,
     default_client_name: str,
@@ -439,7 +441,7 @@ def _register_client_common(
             f"token_endpoint_auth_method: {registration.token_endpoint_auth_method}."
         )
 
-        return ClientRegistrationService(store).register(
+        return client_registration_service.register(
             registration,
             category=category,
             default_client_name=default_client_name,
@@ -458,12 +460,12 @@ def _register_client_common(
 async def register_client(
     registration: ClientRegistrationRequest,
     request: Request,
-    store: OAuthStateStoreProtocol = Depends(get_oauth_state_store),
+    client_registration_service: ClientRegistrationService = Depends(get_client_registration_service),
 ) -> ClientRegistrationResponse | JSONResponse:
     return _register_client_common(
         registration,
         request,
-        store,
+        client_registration_service,
         category=ClientCategory.MCP_DCR,
         default_client_name="MCP Client",
     )
@@ -473,12 +475,12 @@ async def register_client(
 async def register_a2a_client(
     registration: ClientRegistrationRequest,
     request: Request,
-    store: OAuthStateStoreProtocol = Depends(get_oauth_state_store),
+    client_registration_service: ClientRegistrationService = Depends(get_client_registration_service),
 ) -> ClientRegistrationResponse | JSONResponse:
     return _register_client_common(
         registration,
         request,
-        store,
+        client_registration_service,
         category=ClientCategory.A2A_DCR,
         default_client_name="A2A Client",
     )
@@ -703,12 +705,10 @@ async def _parse_device_token_params(request: Request) -> dict[str, Any]:
 @router.post("/oauth2/token", response_model=DeviceTokenResponse, response_model_exclude_none=True)
 async def device_token(
     request: Request,
-    user_service: UserService = Depends(get_user_service),
-    store: OAuthStateStoreProtocol = Depends(get_oauth_state_store),
-    consent_store: ConsentStore = Depends(get_consent_store),
+    token_grant_service: TokenGrantService = Depends(get_token_grant_service),
 ):
     try:
-        return await _device_token_handler(request, user_service, store, consent_store)
+        return await _device_token_handler(request, token_grant_service)
     except HTTPException:
         raise
     except Exception:
@@ -718,9 +718,7 @@ async def device_token(
 
 async def _device_token_handler(
     request: Request,
-    user_service: UserService,
-    store: OAuthStateStoreProtocol,
-    consent_store: ConsentStore,
+    token_grant_service: TokenGrantService,
 ) -> DeviceTokenResponse | JSONResponse:
     params = await _parse_device_token_params(request)
     invalid_request = params.pop("_invalid_request", None)
@@ -730,7 +728,7 @@ async def _device_token_handler(
     token_request = validate_token_grant_request(params)
     if isinstance(token_request, JSONResponse):
         return token_request
-    return await TokenGrantService(user_service, store, consent_store).exchange(token_request)
+    return await token_grant_service.exchange(token_request)
 
 
 @router.get("/oauth2/providers")

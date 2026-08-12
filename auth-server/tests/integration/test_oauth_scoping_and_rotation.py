@@ -15,8 +15,16 @@ from authlib.oauth2.rfc7636 import create_s256_code_challenge
 from fastapi.testclient import TestClient
 
 from auth_server.core.config import settings
-from auth_server.deps import get_auth_provider, get_oauth2_config, get_oauth_state_store, get_signer, get_user_service
+from auth_server.deps import (
+    get_auth_provider,
+    get_oauth2_config,
+    get_oauth_state_store,
+    get_signer,
+    get_token_grant_service,
+    get_user_service,
+)
 from auth_server.server import app
+from auth_server.services.token_grant_service import TokenGrantService
 from registry_pkgs.core import client_categories
 from registry_pkgs.core.client_categories import ClientCategory
 from registry_pkgs.core.jwt_utils import decode_jwt_unverified
@@ -43,9 +51,15 @@ def mock_user_service():
 
 @pytest.fixture
 def test_client_with_user_service(mock_user_service):
-    """Create test client with user_service dependency override."""
+    """Create test client with a TokenGrantService built around the mock user_service.
+
+    /oauth2/token only depends on get_token_grant_service now, so overriding get_user_service
+    directly here would never reach it (that override is only load-bearing for oauth2_callback).
+    """
     app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
-    app.dependency_overrides[get_user_service] = lambda: mock_user_service
+    app.dependency_overrides[get_token_grant_service] = lambda: TokenGrantService(
+        mock_user_service, test_oauth_state_store, test_consent_store
+    )
     client = TestClient(app)
     yield client
     app.dependency_overrides.clear()

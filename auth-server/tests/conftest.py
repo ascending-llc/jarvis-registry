@@ -161,8 +161,17 @@ def auth_server_test_container() -> Generator[None, None, None]:
 @pytest.fixture
 def auth_server_app():
     """Import and return the auth server FastAPI app."""
-    from auth_server.deps import get_consent_store, get_oauth_state_store, get_pending_consent_store
+    from auth_server.deps import (
+        get_client_registration_service,
+        get_consent_store,
+        get_oauth_state_store,
+        get_pending_consent_store,
+        get_token_grant_service,
+    )
     from auth_server.server import app
+    from auth_server.services.client_registration_service import ClientRegistrationService
+    from auth_server.services.token_grant_service import TokenGrantService
+    from auth_server.services.user_service import UserService
     from tests.support.oauth_state_store import test_oauth_state_store
 
     if not hasattr(app.state, "container"):
@@ -173,6 +182,16 @@ def auth_server_app():
     app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
     app.dependency_overrides[get_consent_store] = lambda: test_consent_store
     app.dependency_overrides[get_pending_consent_store] = lambda: test_pending_consent_store
+    # Defaults matching the stores above; tests that need a specific user_service behavior
+    # override get_token_grant_service directly (see test_oauth_flow_routes.py's
+    # _configure_user_service), mirroring how registry's tests override get_server_service
+    # rather than trying to swap one of its sub-dependencies and expect propagation.
+    app.dependency_overrides[get_client_registration_service] = lambda: ClientRegistrationService(
+        test_oauth_state_store
+    )
+    app.dependency_overrides[get_token_grant_service] = lambda: TokenGrantService(
+        UserService(), test_oauth_state_store, test_consent_store
+    )
     return app
 
 
