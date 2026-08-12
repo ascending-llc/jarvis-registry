@@ -103,6 +103,7 @@ Accept: application/json
       "authorName": "Jane Doe",
       "source": "inline",
       "sourceMetadata": null,
+      "createdByRegistry": true,
       "permissions": {
         "VIEW": true,
         "EDIT": true,
@@ -136,6 +137,7 @@ Accept: application/json
 | `skills[].authorName` | string | Author's display name |
 | `skills[].source` | string | Source type (`"inline"`, etc.) |
 | `skills[].sourceMetadata` | object or null | Source-specific metadata |
+| `skills[].createdByRegistry` | boolean | `true` only for skills created through this API; `false` for Chat-created skills |
 | `skills[].permissions` | object | Caller's permissions (`VIEW`, `EDIT`, `DELETE`, `SHARE`) |
 | `skills[].updatedAt` | datetime | Last update time |
 | `skills[].deletedAt` | datetime or null | Soft-delete tombstone |
@@ -235,6 +237,7 @@ Returns full skill detail including file metadata (without file content) and the
   "authorName": "Jane Doe",
   "source": "inline",
   "sourceMetadata": null,
+  "createdByRegistry": true,
   "createdAt": "2026-08-01T12:00:00Z",
   "updatedAt": "2026-08-05T10:01:00Z",
   "files": [
@@ -285,6 +288,7 @@ Accepts both session cookie and Bearer token authentication.
   "userInvocable": true,
   "allowedTools": null,
   "category": "development",
+  "createdByRegistry": true,
   "files": [
     {
       "relativePath": "references/guide.md",
@@ -294,10 +298,22 @@ Accepts both session cookie and Bearer token authentication.
       "isBinary": false,
       "isExecutable": false,
       "source": "registry-inline"
+    },
+    {
+      "relativePath": "assets/icon.png",
+      "body": "<base64-encoded>",
+      "mimeType": "image/png",
+      "bytes": 4096,
+      "isBinary": true,
+      "isExecutable": false,
+      "source": "registry-inline"
     }
   ]
 }
 ```
+
+Each entry in `files[]` is a `SkillFileResponse`: text `registry-inline` files carry `content`; binary
+`registry-inline` files carry `body` (base64) instead, with `content` omitted.
 
 ### File Availability
 

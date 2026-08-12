@@ -12,7 +12,7 @@ from fastapi import FastAPI
 
 from registry_pkgs.database import close_mongodb, init_mongodb
 from registry_pkgs.database.redis_client import close_redis_client, create_redis_client
-from registry_pkgs.telemetry import setup_metrics
+from registry_pkgs.telemetry import setup_metrics, setup_tracing, shutdown_telemetry
 from registry_pkgs.vector.client import create_database_client
 from registry_pkgs.workflows.control import DirectiveQueue
 from registry_pkgs.workflows.hitl import MongoBackedCancellationManager
@@ -65,6 +65,7 @@ def _initialize_telemetry() -> None:
     logger.info("Initializing telemetry")
     try:
         setup_metrics("mcp-gateway-registry", settings.telemetry_config)
+        setup_tracing("jarvis-registry", settings.telemetry_config)
     except Exception as exc:
         logger.warning("Failed to initialize telemetry: %s", exc)
 
@@ -173,6 +174,7 @@ async def lifespan(app: FastAPI):
         logger.info("Application startup completed")
     except Exception as exc:
         logger.error("Failed to initialize services: %s", exc, exc_info=True)
+        shutdown_telemetry()
         raise
 
     async with _get_gateway_mcp_app(app).session_manager.run():
@@ -184,6 +186,8 @@ async def lifespan(app: FastAPI):
         logger.info("Application shutdown completed")
     except Exception as exc:
         logger.error("Error during shutdown: %s", exc, exc_info=True)
+    finally:
+        shutdown_telemetry()
 
 
 # The gateway is created once here, but it resolves the active container lazily

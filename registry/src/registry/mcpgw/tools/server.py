@@ -49,6 +49,7 @@ from ...services.access_control_service import ACLService
 from ...services.generated_token_policy import is_consent_exempt
 from ...utils.otel_metrics import record_server_request
 from ..core.types import McpAppContext
+from ..tracing import trace_tool_execution
 from .types import get_meta_field
 from .utils import (
     _build_url_elicitation_result,
@@ -209,6 +210,7 @@ async def _downstream_tool_call(
         raise InternalServerException(msg) from exc
 
 
+@trace_tool_execution
 async def execute_tool_impl(
     ctx: Context[ServerSession, McpAppContext],
     tool_name: str,
