@@ -7,8 +7,12 @@ class TestSkillFile:
         assert SkillFile.__annotations__["isBinary"] == bool | None
         assert SkillFile.model_fields["isBinary"].default is None
 
-    def test_extended_model_adds_no_fields(self):
-        assert ExtendedSkillFile.__dict__.get("__annotations__", {}) == {}
+    def test_extended_model_adds_registry_storage_fields(self):
+        assert SkillFile.__annotations__["source"] is str
+        assert SkillFile.model_fields["source"].is_required()
+        assert "source" not in ExtendedSkillFile.__annotations__
+        assert ExtendedSkillFile.__annotations__["body"] == bytes | None
+        assert ExtendedSkillFile.model_fields["body"].default is None
         assert ExtendedSkillFile.model_fields["isBinary"].default is None
 
     def test_is_binary_preserves_all_three_states(self):

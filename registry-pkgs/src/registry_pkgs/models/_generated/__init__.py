@@ -3,7 +3,7 @@ from .acl_entry import AclEntry, PrincipalModel, PrincipalType, ResourceType
 from .group import Group, GroupSource
 from .key import Key
 from .mcp_server import MCPServer
-from .skill import Skill
+from .skill import Skill, SkillSource
 from .skill_file import SkillFile
 from .token import Token
 from .user import Favorite, Personalization, SystemRoles, User
@@ -23,6 +23,7 @@ __all__ = [
     "ResourceType",
     "Skill",
     "SkillFile",
+    "SkillSource",
     "SystemRoles",
     "Token",
     "User",

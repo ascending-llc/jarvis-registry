@@ -6,6 +6,7 @@ from beanie import Document, PydanticObjectId
 class SkillFile(Document):
     skillId: PydanticObjectId
     relativePath: str
+    source: str
     mimeType: str
     bytes: int
     isExecutable: bool = False

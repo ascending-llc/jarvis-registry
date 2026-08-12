@@ -1,11 +1,11 @@
 """
-Seed AccessRole data for ACL system - Federation roles only (Standalone version)
+Seed AccessRole data for Registry-owned ACL resource types (Standalone version)
 
 This script directly operates on MongoDB collections without using Beanie ORM
 to completely avoid any model imports that might trigger A2AAgent initialization.
 
 Jarvis Chat initializes base roles (agent, mcpServer, promptGroup, etc).
-Jarvis Registry only needs to seed the 3 federation roles.
+Jarvis Registry seeds federation, workflow, and skill roles.
 
 Usage:
     python scripts/seed_access_roles_standalone.py
@@ -21,14 +21,14 @@ from pymongo import AsyncMongoClient
 
 async def seed_access_roles(collection, session):
     """
-    Seed AccessRole records for federation resource type only.
+    Seed AccessRole records for Registry-owned resource types.
 
     Uses direct MongoDB operations instead of Beanie ORM to avoid
     triggering A2AAgent model initialization.
     """
-    print("=== Seeding Federation & Workflow AccessRoles ===\n")
+    print("=== Seeding Federation, Workflow & Skill AccessRoles ===\n")
 
-    # Only define federation + workflow roles - Chat handles all other resource types
+    # Chat handles its own resource types. Registry owns these additional role catalogs.
     roles_data = [
         {
             "accessRoleId": "federation_viewer",
@@ -85,6 +85,36 @@ async def seed_access_roles(collection, session):
             "resourceType": "workflow",
             "name": "com_ui_workflow_role_owner",
             "description": "com_ui_workflow_owner_desc",
+            "permBits": 15,
+            "createdAt": datetime.now(UTC),
+            "updatedAt": datetime.now(UTC),
+            "__v": 0,
+        },
+        {
+            "accessRoleId": "skill_viewer",
+            "resourceType": "skill",
+            "name": "com_ui_skill_role_viewer",
+            "description": "com_ui_skill_viewer_desc",
+            "permBits": 1,
+            "createdAt": datetime.now(UTC),
+            "updatedAt": datetime.now(UTC),
+            "__v": 0,
+        },
+        {
+            "accessRoleId": "skill_editor",
+            "resourceType": "skill",
+            "name": "com_ui_skill_role_editor",
+            "description": "com_ui_skill_editor_desc",
+            "permBits": 3,
+            "createdAt": datetime.now(UTC),
+            "updatedAt": datetime.now(UTC),
+            "__v": 0,
+        },
+        {
+            "accessRoleId": "skill_owner",
+            "resourceType": "skill",
+            "name": "com_ui_skill_role_owner",
+            "description": "com_ui_skill_owner_desc",
             "permBits": 15,
             "createdAt": datetime.now(UTC),
             "updatedAt": datetime.now(UTC),

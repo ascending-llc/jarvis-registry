@@ -5,14 +5,13 @@ from typing import Annotated, Any
 from beanie import Document
 from pydantic import BaseModel, Field, StringConstraints
 
+EmailValue = Annotated[str, StringConstraints(pattern=r"\S+@\S+\.\S+", to_lower=True)]
+LowercaseStr = Annotated[str, StringConstraints(to_lower=True)]
+
 
 class SystemRoles(StrEnum):
     ADMIN = "ADMIN"
     USER = "USER"
-
-
-EmailValue = Annotated[str, StringConstraints(pattern=r"\S+@\S+\.\S+", to_lower=True)]
-LowercaseStr = Annotated[str, StringConstraints(to_lower=True)]
 
 
 class Favorite(BaseModel):
