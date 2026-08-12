@@ -11,17 +11,19 @@ before prefix matches, and an unrecognized client_id resolves to UNKNOWN with an
 (fail closed) rather than falling back to any other category's scopes.
 """
 
+from dataclasses import dataclass
 from enum import StrEnum
 
 from .config import INTERACTIVE_TOKEN_CLIENT_ID, JwtTokenConfig
+from .downstream_oauth import DEVICE_CODE_GRANT_TYPE
 
 MCP_CLIENT_ID_PREFIX = "mcp-client-"
 A2A_CLIENT_ID_PREFIX = "a2a-client-"
 REGISTRY_CLI_CLIENT_ID = "jarvis-registry-cli"
+AUTHORIZATION_CODE_GRANT_TYPE = "authorization_code"
+REFRESH_TOKEN_GRANT_TYPE = "refresh_token"
 
 _PROXY_OPS_SCOPES_EXCLUDED_FROM_REGISTRY_APP = frozenset({"mcp-proxy-ops", "a2a-proxy-ops", "skills-read"})
-
-_FIXED_CATEGORY_CEILINGS: dict["ClientCategory", frozenset[str]] = {}
 
 
 class ClientCategory(StrEnum):
@@ -34,15 +36,62 @@ class ClientCategory(StrEnum):
     UNKNOWN = "unknown"
 
 
-_FIXED_CATEGORY_CEILINGS.update(
-    {
-        ClientCategory.MCP_DCR: frozenset({"mcp-proxy-ops"}),
-        ClientCategory.A2A_DCR: frozenset({"a2a-proxy-ops"}),
-        ClientCategory.HEADLESS_AGENT: frozenset({"mcp-proxy-ops", "a2a-proxy-ops"}),
-        ClientCategory.REGISTRY_CLI: frozenset({"skills-read"}),
-        ClientCategory.UNKNOWN: frozenset(),
-    }
+@dataclass(frozen=True)
+class ClientPolicy:
+    """Security policy attached to a client category.
+
+    Presentation metadata and endpoint URLs intentionally remain owned by the service exposing
+    them; authorization decisions live here so discovery, registration, and token issuance can
+    project the same policy.
+    """
+
+    category: ClientCategory
+    allowed_grant_types: tuple[str, ...]
+    max_scopes: frozenset[str]
+    token_endpoint_auth_method: str | None = None
+    client_id_prefix: str | None = None
+    default_scope: str | None = None
+
+
+_DCR_GRANT_TYPES = (
+    AUTHORIZATION_CODE_GRANT_TYPE,
+    REFRESH_TOKEN_GRANT_TYPE,
+    DEVICE_CODE_GRANT_TYPE,
 )
+
+_CLIENT_POLICIES: dict[ClientCategory, ClientPolicy] = {
+    ClientCategory.MCP_DCR: ClientPolicy(
+        category=ClientCategory.MCP_DCR,
+        allowed_grant_types=_DCR_GRANT_TYPES,
+        max_scopes=frozenset({"mcp-proxy-ops"}),
+        client_id_prefix=MCP_CLIENT_ID_PREFIX,
+        default_scope="mcp-proxy-ops",
+    ),
+    ClientCategory.A2A_DCR: ClientPolicy(
+        category=ClientCategory.A2A_DCR,
+        allowed_grant_types=_DCR_GRANT_TYPES,
+        max_scopes=frozenset({"a2a-proxy-ops"}),
+        client_id_prefix=A2A_CLIENT_ID_PREFIX,
+        default_scope="a2a-proxy-ops",
+    ),
+    ClientCategory.REGISTRY_CLI: ClientPolicy(
+        category=ClientCategory.REGISTRY_CLI,
+        allowed_grant_types=(DEVICE_CODE_GRANT_TYPE, REFRESH_TOKEN_GRANT_TYPE),
+        max_scopes=frozenset({"skills-read"}),
+        token_endpoint_auth_method="none",
+        default_scope="skills-read",
+    ),
+    ClientCategory.HEADLESS_AGENT: ClientPolicy(
+        category=ClientCategory.HEADLESS_AGENT,
+        allowed_grant_types=(),
+        max_scopes=frozenset({"mcp-proxy-ops", "a2a-proxy-ops"}),
+    ),
+    ClientCategory.UNKNOWN: ClientPolicy(
+        category=ClientCategory.UNKNOWN,
+        allowed_grant_types=(),
+        max_scopes=frozenset(),
+    ),
+}
 
 
 def resolve_client_category(client_id: str, config: JwtTokenConfig) -> ClientCategory:
@@ -62,6 +111,11 @@ def resolve_client_category(client_id: str, config: JwtTokenConfig) -> ClientCat
     return ClientCategory.UNKNOWN
 
 
+def get_client_policy(category: ClientCategory) -> ClientPolicy | None:
+    """Return the explicit protocol policy for a client category, if it has one."""
+    return _CLIENT_POLICIES.get(category)
+
+
 def get_builtin_max_scopes(category: ClientCategory, all_scopes: frozenset[str]) -> frozenset[str]:
     """Return the builtin max scope set for a category.
 
@@ -73,7 +127,8 @@ def get_builtin_max_scopes(category: ClientCategory, all_scopes: frozenset[str])
         return all_scopes - _PROXY_OPS_SCOPES_EXCLUDED_FROM_REGISTRY_APP
     if category is ClientCategory.USER_GENERATED:
         return all_scopes
-    return _FIXED_CATEGORY_CEILINGS.get(category, frozenset())
+    policy = get_client_policy(category)
+    return policy.max_scopes if policy is not None else frozenset()
 
 
 def resolve_granted_scopes(
