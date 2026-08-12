@@ -6,9 +6,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from registry_pkgs.core.client_categories import (
     AUTHORIZATION_CODE_GRANT_TYPE,
-    DEVICE_CODE_GRANT_TYPE,
     REFRESH_TOKEN_GRANT_TYPE,
 )
+from registry_pkgs.core.downstream_oauth import DEVICE_CODE_GRANT_TYPE
 
 
 class OAuthTokenRequest(BaseModel):

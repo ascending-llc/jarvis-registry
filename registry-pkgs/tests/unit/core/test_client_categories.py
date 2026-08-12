@@ -92,7 +92,7 @@ def test_unknown_ceiling_is_empty():
 
 def test_registry_app_ceiling_excludes_proxy_ops():
     result = get_builtin_max_scopes(ClientCategory.REGISTRY_APP, _ALL_SCOPES)
-    assert result == _ALL_SCOPES - {"mcp-proxy-ops", "a2a-proxy-ops", "skills-read"}
+    assert result == _ALL_SCOPES - {"mcp-proxy-ops", "a2a-proxy-ops"}
 
 
 def test_user_generated_ceiling_equals_all():

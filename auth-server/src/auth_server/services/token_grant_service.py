@@ -11,11 +11,10 @@ from pydantic import ValidationError
 
 from registry_pkgs.core.client_categories import (
     AUTHORIZATION_CODE_GRANT_TYPE,
-    DEVICE_CODE_GRANT_TYPE,
     REFRESH_TOKEN_GRANT_TYPE,
 )
 from registry_pkgs.core.consent_store import ConsentStore
-from registry_pkgs.core.downstream_oauth import oauth_error_payload
+from registry_pkgs.core.downstream_oauth import DEVICE_CODE_GRANT_TYPE, oauth_error_payload
 from registry_pkgs.core.jwt_tokens import mint_managed_agent_token_with_scope
 from registry_pkgs.core.oauth_state_store import REFRESH_TOKEN_TTL_SECONDS, OAuthStateStoreProtocol
 from registry_pkgs.core.scopes import map_groups_to_scopes

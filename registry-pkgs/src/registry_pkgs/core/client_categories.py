@@ -23,7 +23,7 @@ REGISTRY_CLI_CLIENT_ID = "jarvis-registry-cli"
 AUTHORIZATION_CODE_GRANT_TYPE = "authorization_code"
 REFRESH_TOKEN_GRANT_TYPE = "refresh_token"
 
-_PROXY_OPS_SCOPES_EXCLUDED_FROM_REGISTRY_APP = frozenset({"mcp-proxy-ops", "a2a-proxy-ops", "skills-read"})
+_PROXY_OPS_SCOPES_EXCLUDED_FROM_REGISTRY_APP = frozenset({"mcp-proxy-ops", "a2a-proxy-ops"})
 
 
 class ClientCategory(StrEnum):

@@ -10,7 +10,7 @@ from registry.core.config import settings
 from registry.schemas.common_api_schemas import TokenGenerateRequest
 from registry.schemas.enums import TokenPurpose
 from registry.services.generated_token_policy import INTERACTIVE_CLIENT_ID
-from registry_pkgs.core.jwt_tokens import verify_managed_agent_token
+from registry_pkgs.core.jwt_tokens import MintedManagedAgentToken, verify_managed_agent_token
 
 USER_CONTEXT = {
     "username": "alice",
@@ -44,16 +44,10 @@ async def test_generate_user_token_selects_client_id_from_purpose(
     request_data: TokenGenerateRequest,
     expected_client_id: str,
 ) -> None:
-    with (
-        patch(
-            "registry.api.v1.token_routes.mint_managed_agent_token",
-            return_value="signed-token",
-        ) as mint_token,
-        patch(
-            "registry.api.v1.token_routes.resolve_granted_scopes",
-            return_value=USER_CONTEXT["scopes"],
-        ) as mock_resolve,
-    ):
+    with patch(
+        "registry.api.v1.token_routes.mint_managed_agent_token_with_scope",
+        return_value=MintedManagedAgentToken(token="signed-token", scope=" ".join(USER_CONTEXT["scopes"])),
+    ) as mint_token:
         result = await generate_user_token(request_data, USER_CONTEXT)
 
     assert result.tokenData.accessToken == "signed-token"
@@ -67,7 +61,6 @@ async def test_generate_user_token_selects_client_id_from_purpose(
     assert call_kwargs["requested_scopes"] == USER_CONTEXT["scopes"]
     assert "scope" not in call_kwargs["extra_claims"]
     assert call_kwargs["extra_claims"]["groups"] == USER_CONTEXT["groups"]
-    mock_resolve.assert_called_once_with(expected_client_id, USER_CONTEXT["scopes"], settings.jwt_token_config)
 
 
 @pytest.mark.parametrize(
@@ -91,11 +84,7 @@ async def test_generate_user_token_applies_client_scope_ceiling(
     request_data: TokenGenerateRequest,
     expected_scope: str,
 ) -> None:
-    with patch(
-        "registry.api.v1.token_routes.mint_managed_agent_token",
-        return_value="signed-token",
-    ):
-        result = await generate_user_token(request_data, CEILING_TEST_USER_CONTEXT)
+    result = await generate_user_token(request_data, CEILING_TEST_USER_CONTEXT)
 
     assert result.tokenData.scope == expected_scope
     assert result.requestedScopes == CEILING_TEST_SCOPES
