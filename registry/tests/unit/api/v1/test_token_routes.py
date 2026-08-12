@@ -37,13 +37,20 @@ async def test_generate_user_token_selects_client_id_from_purpose(
     request_data: TokenGenerateRequest,
     expected_client_id: str,
 ) -> None:
-    with patch(
-        "registry.api.v1.token_routes.mint_managed_agent_token",
-        return_value="signed-token",
-    ) as mint_token:
+    with (
+        patch(
+            "registry.api.v1.token_routes.mint_managed_agent_token",
+            return_value="signed-token",
+        ) as mint_token,
+        patch(
+            "registry.api.v1.token_routes.resolve_granted_scopes",
+            return_value=USER_CONTEXT["scopes"],
+        ) as mock_resolve,
+    ):
         result = await generate_user_token(request_data, USER_CONTEXT)
 
     assert result.tokenData.accessToken == "signed-token"
+    assert result.tokenData.scope == " ".join(USER_CONTEXT["scopes"])
     assert result.requestedScopes == USER_CONTEXT["scopes"]
     mint_token.assert_called_once()
     call_kwargs = mint_token.call_args.kwargs
@@ -53,6 +60,7 @@ async def test_generate_user_token_selects_client_id_from_purpose(
     assert call_kwargs["requested_scopes"] == USER_CONTEXT["scopes"]
     assert "scope" not in call_kwargs["extra_claims"]
     assert call_kwargs["extra_claims"]["groups"] == USER_CONTEXT["groups"]
+    mock_resolve.assert_called_once_with(expected_client_id, USER_CONTEXT["scopes"], settings.jwt_token_config)
 
 
 def test_token_generate_request_rejects_unknown_purpose() -> None:

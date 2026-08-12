@@ -5,6 +5,7 @@ import uuid
 from fastapi import APIRouter, HTTPException
 from pydantic import ValidationError
 
+from registry_pkgs.core.client_categories import resolve_granted_scopes
 from registry_pkgs.core.jwt_tokens import mint_managed_agent_token
 
 from ...auth.dependencies import CurrentUser
@@ -101,6 +102,8 @@ async def generate_user_token(
             extra_claims=extra_claims,
         )
 
+        granted_scopes = resolve_granted_scopes(client_id, final_scopes, settings.jwt_token_config)
+
         logger.info(
             "Successfully generated token for user '%s' with expiry %sh (purpose=%s, client_id=%s)",
             username,
@@ -116,7 +119,7 @@ async def generate_user_token(
                 accessToken=access_token,
                 expiresIn=expires_in_seconds,
                 tokenType="Bearer",
-                scope=" ".join(final_scopes),
+                scope=" ".join(granted_scopes),
             ),
             userScopes=user_scopes,
             requestedScopes=final_scopes,
