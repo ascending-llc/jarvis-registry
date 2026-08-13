@@ -11,10 +11,10 @@ from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import Histogram, InMemoryMetricReader, Sum
 from opentelemetry.sdk.metrics.view import ExplicitBucketHistogramAggregation, View
 
-import registry_pkgs.telemetry.workflow_metrics as workflow_metrics_module
 from registry_pkgs.core.config import TelemetryConfig
 from registry_pkgs.models.enums import WorkflowRunStatus
 from registry_pkgs.telemetry import WORKFLOW_LATENCY_BUCKETS
+from registry_pkgs.telemetry import workflow_metrics as _wf_metrics_module
 from registry_pkgs.telemetry.metrics_client import create_metrics_client
 from registry_pkgs.telemetry.workflow_metrics import (
     initialize_workflow_metrics,
@@ -279,14 +279,14 @@ histograms:
         encoding="utf-8",
     )
 
-    original_metrics = workflow_metrics_module.metrics
+    original_metrics = _wf_metrics_module.metrics
     try:
         client = initialize_workflow_metrics(TelemetryConfig(), config_path=str(config_path))
 
         assert set(client._counters) == {"workflow_runs_total"}
         assert set(client._histogram_configs) == {"workflow_run_seconds"}
     finally:
-        workflow_metrics_module.metrics = original_metrics
+        _wf_metrics_module.metrics = original_metrics
 
 
 def test_workflow_metrics_export_counter_and_histogram_with_expected_types():

@@ -10,7 +10,7 @@ from agno.run.cancel import get_cancellation_manager, set_cancellation_manager
 from agno.run.cancellation_management.in_memory_cancellation_manager import InMemoryRunCancellationManager
 from fastapi import FastAPI
 
-from registry_pkgs.core.logging import configure_structured_logging
+from registry_pkgs.core.structured_logging import configure_structured_logging
 from registry_pkgs.database import close_mongodb, init_mongodb
 from registry_pkgs.database.redis_client import close_redis_client, create_redis_client
 from registry_pkgs.telemetry import setup_metrics, setup_tracing, shutdown_telemetry

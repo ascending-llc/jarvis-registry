@@ -7,7 +7,7 @@ from logging import INFO, LogRecord, StreamHandler, getLogger
 
 import pytest
 
-from registry_pkgs.core.logging import (
+from registry_pkgs.core.structured_logging import (
     StructuredLogFormatter,
     _configured_loggers,
     configure_structured_logging,

@@ -5,7 +5,7 @@ from opentelemetry import trace
 from opentelemetry.metrics import Histogram
 from opentelemetry.sdk.trace import TracerProvider
 
-import registry_pkgs.telemetry
+import registry_pkgs.telemetry as _telemetry_module
 from registry_pkgs.core.config import TelemetryConfig
 from registry_pkgs.telemetry import setup_metrics, setup_tracing, shutdown_telemetry
 
@@ -269,7 +269,6 @@ class TestSetupTracing:
 
     @pytest.fixture(autouse=True)
     def reset_otel_trace_state(self):
-        registry_pkgs.telemetry._agno_instrumented = False
         yield
         try:
             provider = trace.get_tracer_provider()
@@ -277,13 +276,21 @@ class TestSetupTracing:
                 provider.shutdown()
         except Exception:  # best-effort teardown; provider may already be shut down
             pass
-        registry_pkgs.telemetry._agno_instrumented = False
+        try:
+            from openinference.instrumentation.agno import AgnoInstrumentor
+
+            instrumentor = AgnoInstrumentor()
+            if instrumentor.is_instrumented_by_opentelemetry:
+                instrumentor.uninstrument()
+        except Exception:
+            pass
 
     def test_setup_tracing_installs_tracer_provider(self):
         """After setup_tracing(), global TracerProvider is a real TracerProvider."""
         from opentelemetry.sdk.trace import TracerProvider
 
         mock_instrumentor_type = MagicMock()
+        mock_instrumentor_type.return_value.is_instrumented_by_opentelemetry = False
         mock_trace_config_type = MagicMock()
         with (
             patch("opentelemetry.trace.get_tracer_provider", return_value=MagicMock()),
@@ -312,11 +319,12 @@ class TestSetupTracing:
             )
 
     def test_setup_tracing_is_idempotent(self):
-        """Second call is a no-op when TracerProvider already set."""
+        """Second call is a no-op when already instrumented and TracerProvider already set."""
         from opentelemetry.sdk.trace import TracerProvider
 
         existing_provider = TracerProvider()
         mock_instrumentor_type = MagicMock()
+        mock_instrumentor_type.return_value.is_instrumented_by_opentelemetry = True
         with (
             patch("opentelemetry.trace.get_tracer_provider", return_value=existing_provider),
             patch("opentelemetry.trace.set_tracer_provider") as mock_set,
@@ -328,10 +336,9 @@ class TestSetupTracing:
             patch("registry_pkgs.telemetry.BatchSpanProcessor"),
         ):
             setup_tracing("test-service", TelemetryConfig())
-            setup_tracing("test-service", TelemetryConfig())
 
             mock_set.assert_not_called()
-            mock_instrumentor_type.return_value.instrument.assert_called_once()
+            mock_instrumentor_type.return_value.instrument.assert_not_called()
 
         existing_provider.shutdown()
 
@@ -341,7 +348,7 @@ class TestSetupTracing:
             patch("registry_pkgs.telemetry._load_agno_instrumentation", side_effect=ImportError("missing")),
             patch("opentelemetry.trace.set_tracer_provider") as mock_set,
         ):
-            registry_pkgs.telemetry.setup_tracing("test-service", TelemetryConfig())
+            _telemetry_module.setup_tracing("test-service", TelemetryConfig())
             mock_set.assert_not_called()
 
     def test_setup_tracing_uses_same_resource_as_metrics(self):

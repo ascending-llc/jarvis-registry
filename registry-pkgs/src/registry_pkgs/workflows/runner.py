@@ -371,7 +371,7 @@ class WorkflowRunner:
             )
 
         # Reconstruct definition from the snapshot to guarantee version determinism
-        snapshot_def: WorkflowDefinition | None = definition_from_snapshot(run.definition_snapshot)
+        snapshot_def = definition_from_snapshot(run.definition_snapshot)
 
         # Pull the pending requirements out; hydration happens inside the try below.
         pending = list(run.pending_requirements)
@@ -413,7 +413,7 @@ class WorkflowRunner:
         finally:
             if self._directive_queue is not None:
                 self._directive_queue.unregister(existing_run_id)
-            wf_name = getattr(snapshot_def, "name", "unknown") if snapshot_def else "unknown"
+            wf_name = getattr(snapshot_def, "name", "unknown")
             self._record_run_metrics(wf_name, run)
 
         node_runs = await NodeRun.find(NodeRun.workflow_run_id == run.id).to_list()

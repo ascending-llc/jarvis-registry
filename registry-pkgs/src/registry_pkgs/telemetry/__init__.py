@@ -47,8 +47,6 @@ _TRACE_MAX_QUEUE_SIZE = 2048
 _TRACE_MAX_EXPORT_BATCH_SIZE = 512
 _TRACE_SCHEDULE_DELAY_MILLIS = 5000
 
-_agno_instrumented = False
-
 
 def _otlp_headers(telemetry_config: TelemetryConfig) -> dict[str, str] | None:
     token = telemetry_config.otel_gateway_token.get_secret_value()
@@ -232,8 +230,6 @@ def setup_tracing(
     Uses AgnoInstrumentor to auto-instrument all agno Agent/Model/Tool calls.
     Shares the same OTLP collector endpoint and Resource as setup_metrics().
     """
-    global _agno_instrumented
-
     logger.info("Setting up tracing...")
     try:
         instrumentor_type, trace_config_type = _load_agno_instrumentation()
@@ -245,15 +241,15 @@ def setup_tracing(
             else current_provider
         )
 
-        if not _agno_instrumented:
+        instrumentor = instrumentor_type()
+        if not instrumentor.is_instrumented_by_opentelemetry:
             trace_config = trace_config_type(
                 hide_inputs=telemetry_config.otel_trace_hide_inputs,
                 hide_outputs=telemetry_config.otel_trace_hide_outputs,
                 hide_llm_tools=telemetry_config.otel_trace_hide_llm_tools,
                 hide_llm_invocation_parameters=telemetry_config.otel_trace_hide_llm_invocation_parameters,
             )
-            instrumentor_type().instrument(tracer_provider=tracer_provider, config=trace_config)
-            _agno_instrumented = True
+            instrumentor.instrument(tracer_provider=tracer_provider, config=trace_config)
 
         otlp_endpoint = otlp_endpoint or telemetry_config.otel_exporter_otlp_endpoint
         if otlp_endpoint and provider_is_new:
