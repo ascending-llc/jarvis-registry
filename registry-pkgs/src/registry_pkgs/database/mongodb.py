@@ -14,6 +14,8 @@ from ..core.config import MongoConfig
 from ..models import (
     A2AAgent,
     ExtendedMCPServer,
+    ExtendedSkill,
+    ExtendedSkillFile,
     Federation,
     FederationSyncJob,
     Group,
@@ -105,6 +107,8 @@ class MongoDB:
                 "A2AAgent": A2AAgent,
                 "Federation": Federation,
                 "FederationSyncJob": FederationSyncJob,
+                "ExtendedSkill": ExtendedSkill,
+                "ExtendedSkillFile": ExtendedSkillFile,
             }
             User.model_rebuild(_types_namespace=rebuild_namespace)
             RegistryAccessRole.model_rebuild(_types_namespace=rebuild_namespace)
@@ -116,6 +120,8 @@ class MongoDB:
             A2AAgent.model_rebuild(_types_namespace=rebuild_namespace)
             Federation.model_rebuild(_types_namespace=rebuild_namespace)
             FederationSyncJob.model_rebuild(_types_namespace=rebuild_namespace)
+            ExtendedSkill.model_rebuild(_types_namespace=rebuild_namespace)
+            ExtendedSkillFile.model_rebuild(_types_namespace=rebuild_namespace)
 
             # Initialize Beanie with all document models
             await init_beanie(
@@ -135,6 +141,8 @@ class MongoDB:
                     WorkflowRun,
                     NodeRun,
                     WorkflowVersion,
+                    ExtendedSkill,
+                    ExtendedSkillFile,
                 ],
             )
         except Exception:

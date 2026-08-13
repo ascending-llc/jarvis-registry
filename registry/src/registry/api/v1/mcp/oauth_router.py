@@ -2,7 +2,7 @@ import json
 import logging
 import secrets
 import time
-from typing import Any
+from typing import Any, NamedTuple
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 from authlib.oauth2.rfc7636 import create_s256_code_challenge
@@ -21,9 +21,16 @@ from registry_pkgs.core.downstream_oauth import (
 )
 from registry_pkgs.core.jwt_tokens import mint_managed_agent_token
 from registry_pkgs.core.oauth_state_store import DownstreamOAuthStoreProtocol
-from registry_pkgs.core.redirect_uri import redirect_uri_matches, validate_registration_redirect_uri
+from registry_pkgs.core.redirect_uri import (
+    VENDOR_BROKER_REDIRECT_URIS,
+    build_oauth_error_redirect_url,
+    is_safe_unverified_redirect_target,
+    redirect_uri_matches,
+    validate_registration_redirect_uri,
+)
 
 from ....auth.dependencies import CurrentUser
+from ....auth.oauth.flow_state_manager import FlowStateManager
 from ....auth.oauth.reconnection import OAuthReconnectionManager
 from ....auth.oauth.types import ClientBranding
 from ....constants import DownstreamOAuthConstants
@@ -62,6 +69,18 @@ from ....utils.schema_converter import convert_dict_keys_to_camel
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/mcp", tags=["oauth"])
+
+_DOWNSTREAM_ERROR_FLOW_TYPE = "downstream_error"
+
+
+class _RedirectValidationError(NamedTuple):
+    error: str
+    error_description: str
+
+
+def _trusted_error_redirect_uris() -> frozenset[str]:
+    """Return exact-match redirect targets trusted for unverified-client error relay."""
+    return VENDOR_BROKER_REDIRECT_URIS
 
 
 @router.get("/oauth/discover", response_model=OAuthMetadataDiscoverResponse, response_model_by_alias=True)
@@ -282,6 +301,49 @@ def _build_downstream_client_redirect(
     return RedirectResponse(url=_append_query_params(ctx["redirect_uri"], code=b_code, state=ctx["state"]))
 
 
+def _relay_callback_error(
+    request: Request,
+    server_path: str,
+    ctx: MCPClientContext | None,
+    page_error_msg: str,
+    client_error: str,
+    client_error_description: str,
+    *,
+    flow_manager: FlowStateManager,
+    flow_id: str,
+    callback_state: str,
+) -> RedirectResponse:
+    """Consume and relay a Layer-B callback failure to its previously verified client redirect URI."""
+    if ctx is None:
+        return _redirect_to_page(request, server_path, error_msg=page_error_msg)
+
+    consumed_flow = flow_manager.consume_flow(flow_id, callback_state)
+    consumed_ctx = _get_verified_mcp_client_context(consumed_flow, callback_state, flow_manager)
+    if consumed_ctx is None:
+        return _redirect_to_page(request, server_path, error_msg=page_error_msg)
+
+    redirect_url = build_oauth_error_redirect_url(
+        consumed_ctx["redirect_uri"],
+        client_error,
+        client_error_description,
+        consumed_ctx.get("state"),
+    )
+    return RedirectResponse(url=redirect_url, status_code=status.HTTP_302_FOUND)
+
+
+def _get_verified_mcp_client_context(
+    flow: OAuthFlow | None,
+    state: str,
+    flow_manager: FlowStateManager,
+) -> MCPClientContext | None:
+    """Return Layer-B context only for an active flow carrying the exact CSRF-bound state."""
+    if flow is None or flow.status != OAuthFlowStatus.PENDING or flow_manager.is_flow_expired(flow):
+        return None
+    if not isinstance(flow.state, str) or not secrets.compare_digest(flow.state, state):
+        return None
+    return flow.metadata.mcp_client_context if flow.metadata else None
+
+
 def _mark_completed_device_flow_approved(
     flow: OAuthFlow | None,
     store: DownstreamOAuthStoreProtocol,
@@ -326,43 +388,73 @@ async def oauth_callback(
     5. Redirect to success/failure page
     """
     try:
-        # 1. Provider returned an error, or required params are missing.
-        if error:
-            logger.error(f"[MCP OAuth] OAuth error received from provider: {error}")
-            return _redirect_to_page(request, server_path, error_msg=error)
-        if not code or not isinstance(code, str):
-            logger.error("[MCP OAuth] Missing or invalid authorization code")
-            return _redirect_to_page(request, server_path, error_msg="missing_code")
         if not state or not isinstance(state, str):
             logger.error("[MCP OAuth] Missing or invalid state parameter")
             return _redirect_to_page(request, server_path, error_msg="missing_state")
 
-        # 2. Decode flow_id from state.
         try:
-            state_dict = mcp_service.oauth_service.flow_manager.decode_state(state)
+            flow_manager = mcp_service.oauth_service.flow_manager
+            state_dict = flow_manager.decode_state(state)
             flow_id = state_dict["flow_id"]
         except ValueError as e:
             logger.error(f"[MCP OAuth] Failed to decode state: {e}")
             return _redirect_to_page(request, server_path, error_msg="invalid_state_format")
         logger.info(f"[MCP OAuth] Callback received: server={server_path}, flow_id={flow_id}")
 
-        # 3. Short-circuit a duplicate callback for an already-completed flow.
-        flow = mcp_service.oauth_service.flow_manager.get_flow(flow_id)
+        flow = flow_manager.get_flow(flow_id)
+        ctx = _get_verified_mcp_client_context(flow, state, flow_manager)
+
+        if error:
+            logger.error(f"[MCP OAuth] OAuth error received from provider: {error}")
+            return _relay_callback_error(
+                request,
+                server_path,
+                ctx,
+                error,
+                error,
+                "Upstream OAuth provider returned an error",
+                flow_manager=flow_manager,
+                flow_id=flow_id,
+                callback_state=state,
+            )
+        if not code or not isinstance(code, str):
+            logger.error("[MCP OAuth] Missing or invalid authorization code")
+            return _relay_callback_error(
+                request,
+                server_path,
+                ctx,
+                "missing_code",
+                "invalid_request",
+                "missing authorization code",
+                flow_manager=flow_manager,
+                flow_id=flow_id,
+                callback_state=state,
+            )
+
         if flow and flow.status == OAuthFlowStatus.COMPLETED:
             logger.warning(f"[MCP OAuth] Flow already completed, preventing duplicate token exchange: {flow_id}")
             _mark_completed_device_flow_approved(flow, store)
             return _redirect_to_page(request, server_path, flag="success")
 
-        # 4. Complete the flow (validate state + exchange tokens for downstream MCP tokens).
         success, error_msg = await mcp_service.oauth_service.complete_oauth_flow(
             flow_id=flow_id, authorization_code=code, state=state
         )
         if not success:
             logger.error(f"[MCP OAuth] Failed to complete OAuth flow: {error_msg}")
-            return _redirect_to_page(request, server_path, error_msg=error_msg or "unknown_error")
+            return _relay_callback_error(
+                request,
+                server_path,
+                ctx,
+                error_msg or "unknown_error",
+                "server_error",
+                "Downstream OAuth flow failed",
+                flow_manager=flow_manager,
+                flow_id=flow_id,
+                callback_state=state,
+            )
         logger.info(f"[MCP OAuth] OAuth flow completed successfully for {server_path}")
 
-        flow = mcp_service.oauth_service.flow_manager.get_flow(flow_id)
+        flow = flow_manager.get_flow(flow_id)
 
         # 5. Reconnect/notification are best effort; device-state finalization is required.
         await _reconnect_after_oauth(mcp_service, reconnection_manager, flow, server_path)
@@ -663,22 +755,21 @@ def _validate_downstream_authorize_params(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
 
 
-def _validate_registered_redirect_uri(client_metadata: dict[str, Any] | None, redirect_uri: str) -> None:
-    """Reject an authorize request whose redirect_uri is not registered for this client.
-
-    Per RFC 6749 §4.1.2.1 we MUST NOT redirect to an unverified redirect_uri, so all failures here
-    raise an in-place 400 instead of a 302. Unknown clients are rejected (clients must DCR against
-    auth-server first). Loopback redirect_uris match scheme+host+path and ignore the port.
-    """
+def _validate_registered_redirect_uri(
+    client_metadata: dict[str, Any] | None,
+    redirect_uri: str,
+) -> _RedirectValidationError | None:
+    """Describe client/redirect validation failures without choosing their delivery mechanism."""
     if client_metadata is None:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="unknown client_id")
+        return _RedirectValidationError("invalid_client", "unknown client_id")
 
     registered = client_metadata.get("redirect_uris") or []
     if not any(redirect_uri_matches(redirect_uri, candidate) for candidate in registered):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="redirect_uri is not registered for this client",
+        return _RedirectValidationError(
+            "invalid_request",
+            "redirect_uri is not registered for this client",
         )
+    return None
 
 
 async def _build_downstream_authorize_redirect(
@@ -715,7 +806,28 @@ async def _build_downstream_authorize_redirect(
     if not server:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Server not found for path '{server_path}'")
 
-    _validate_registered_redirect_uri(store.get_client(client_id), redirect_uri)
+    redirect_error = _validate_registered_redirect_uri(store.get_client(client_id), redirect_uri)
+    if redirect_error is not None:
+        if is_safe_unverified_redirect_target(redirect_uri, _trusted_error_redirect_uris()):
+            nonce = secrets.token_urlsafe(32)
+            pending_store.save(
+                nonce,
+                {
+                    "flow_type": _DOWNSTREAM_ERROR_FLOW_TYPE,
+                    "user_id": user_id,
+                    "server_path": server_path,
+                    "redirect_uri": redirect_uri,
+                    "error": redirect_error.error,
+                    "error_description": redirect_error.error_description,
+                    "client_state": state,
+                },
+            )
+            consent_url = f"{settings.registry_client_url}/consent/downstream-error?nonce={nonce}"
+            return RedirectResponse(url=consent_url, status_code=status.HTTP_302_FOUND)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=redirect_error.error_description,
+        )
 
     if client_id != settings.jwt_token_config.registry_client_id and not consent_store.has_client_consent(
         user_id, client_id
@@ -870,12 +982,12 @@ def _mint_downstream_access_token(user_id: str, client_id: str, server_path: str
         settings.jwt_token_config,
         subject=user_id,
         client_id=client_id,
+        requested_scopes=[DownstreamOAuthConstants.PROXY_OPS_SCOPE],
         expires_in_seconds=DownstreamOAuthConstants.ACCESS_TOKEN_TTL_SECONDS,
         iat=int(time.time()),
         extra_claims={
             "user_id": user_id,
             "server_path": server_path,
-            "scope": DownstreamOAuthConstants.PROXY_OPS_SCOPE,
         },
     )
 
@@ -969,15 +1081,15 @@ def _downstream_refresh_token_grant(
     if not refresh_token:
         return _oauth_token_error("invalid_request", "refresh_token is required")
 
-    if not store.validate_client_credentials(client_id, client_secret):
-        return _oauth_token_error("invalid_client", "invalid client credentials")
-
     token_data = store.get_refresh_token(refresh_token)
     if token_data is None:
         return _oauth_token_error("invalid_grant", "invalid or expired refresh_token")
 
     if token_data.get("client_id") != client_id:
         return _oauth_token_error("invalid_client", "client_id mismatch")
+
+    if not store.validate_client_credentials(client_id, client_secret):
+        return _oauth_token_error("invalid_client", "invalid client credentials")
 
     if token_data.get("user_id") != user_id or token_data.get("server_path") != server_path:
         return _oauth_token_error("invalid_grant", "refresh_token does not match this endpoint")

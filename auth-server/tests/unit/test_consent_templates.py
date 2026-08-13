@@ -1,6 +1,6 @@
 """Unit tests for auth-server consent HTML rendering."""
 
-from auth_server.routes.consent_templates import render_consent_page
+from auth_server.routes.consent_templates import render_consent_page, render_redirect_error_consent_page
 
 
 def test_consent_page_escapes_attacker_controlled_client_metadata() -> None:
@@ -41,3 +41,22 @@ def test_consent_page_omits_redirect_uri_when_none() -> None:
     )
 
     assert "Redirects to" not in html
+
+
+def test_redirect_error_consent_page_escapes_attacker_controlled_values() -> None:
+    html = render_redirect_error_consent_page(
+        redirect_uri='http://localhost/callback"><script>alert("redirect")</script>',
+        error="invalid_client",
+        error_description='<script>alert("description")</script>',
+        nonce='nonce"><script>alert("nonce")</script>',
+        approve_action='/auth/oauth2/redirect-error-consent/approve?x="bad"',
+        deny_action='/auth/oauth2/redirect-error-consent/deny?x="bad"',
+    )
+
+    assert "<script>" not in html
+    assert "&lt;script&gt;alert(&quot;description&quot;)&lt;/script&gt;" in html
+    assert "http://localhost/callback&quot;&gt;&lt;script&gt;alert(&quot;redirect&quot;)&lt;/script&gt;" in html
+    assert '<a href="' not in html
+    assert 'method="POST"' in html
+    assert 'action="/auth/oauth2/redirect-error-consent/approve?x=&quot;bad&quot;"' in html
+    assert 'action="/auth/oauth2/redirect-error-consent/deny?x=&quot;bad&quot;"' in html

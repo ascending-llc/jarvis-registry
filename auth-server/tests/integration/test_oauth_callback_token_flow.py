@@ -14,9 +14,19 @@ from fastapi.testclient import TestClient
 from itsdangerous import URLSafeTimedSerializer
 
 from auth_server.core.config import settings
-from auth_server.deps import get_auth_provider, get_oauth2_config, get_oauth_state_store, get_signer, get_user_service
+from auth_server.deps import (
+    get_auth_provider,
+    get_oauth2_config,
+    get_oauth_state_store,
+    get_signer,
+    get_token_grant_service,
+    get_user_service,
+)
 from auth_server.server import app
+from auth_server.services.token_grant_service import TokenGrantService
+from registry_pkgs.core.jwt_tokens import MintedManagedAgentToken
 from registry_pkgs.core.jwt_utils import InvalidSignatureError, InvalidTokenError
+from tests.conftest import test_consent_store
 from tests.integration.conftest import _mock_keycloak_provider
 from tests.support.oauth_state_store import authorization_codes_storage, test_oauth_state_store
 
@@ -716,11 +726,11 @@ class TestOAuth2TokenEndpoint:
                 "groups": ["user-group"],
                 "idp_id": "provider-sub-123",
             },
-            "client_id": "test-client",
+            "client_id": "mcp-client-test",
             "expires_at": current_time + 600,
             "used": False,
             "redirect_uri": "http://localhost/callback",
-            "resolved_scope": ["servers-read", "agents-read"],
+            "resolved_scope": ["mcp-proxy-ops"],
             "resource": None,
             "created_at": current_time,
         }
@@ -728,18 +738,21 @@ class TestOAuth2TokenEndpoint:
         payload = {
             "grant_type": "authorization_code",
             "code": auth_code,
-            "client_id": "test-client",
+            "client_id": "mcp-client-test",
             "redirect_uri": "http://localhost/callback",
         }
 
         # Exchange code for token
-        with patch("auth_server.routes.oauth_flow.mint_managed_agent_token") as mock_mint_token:
-            mock_mint_token.return_value = "mock-jwt-token-with-user-id"
+        with patch("auth_server.services.token_grant_service.mint_managed_agent_token_with_scope") as mock_mint_token:
+            mock_mint_token.return_value = MintedManagedAgentToken("mock-jwt-token-with-user-id", "mcp-proxy-ops")
 
             app.dependency_overrides = {}
 
             app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
             app.dependency_overrides[get_user_service] = lambda: mock_user_service
+            app.dependency_overrides[get_token_grant_service] = lambda: TokenGrantService(
+                mock_user_service, test_oauth_state_store, test_consent_store
+            )
 
             test_client = TestClient(app)
 
@@ -756,11 +769,11 @@ class TestOAuth2TokenEndpoint:
 
             # Verify managed-agent token was minted with resolved user identity
             assert mock_mint_token.call_args.kwargs["subject"] == "testuser"
-            assert mock_mint_token.call_args.kwargs["client_id"] == "test-client"
+            assert mock_mint_token.call_args.kwargs["client_id"] == "mcp-client-test"
             token_claims = mock_mint_token.call_args.kwargs["extra_claims"]
             assert token_claims["user_id"] == "507f1f77bcf86cd799439011"
             assert token_claims["groups"] == ["user-group"]
-            assert token_claims["scope"] == "servers-read agents-read"
+            assert mock_mint_token.call_args.kwargs["requested_scopes"] == ["mcp-proxy-ops"]
             assert token_claims["token_use"] == "access"
             assert token_claims["auth_provider"] is not None
 
@@ -800,6 +813,9 @@ class TestOAuth2TokenEndpoint:
         app.dependency_overrides = {}
         app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
         app.dependency_overrides[get_user_service] = lambda: mock_user_service
+        app.dependency_overrides[get_token_grant_service] = lambda: TokenGrantService(
+            mock_user_service, test_oauth_state_store, test_consent_store
+        )
 
         test_client = TestClient(app)
         response = test_client.post(
@@ -837,7 +853,7 @@ class TestOAuth2TokenEndpoint:
                 "groups": ["user-group"],
                 "idp_id": "provider-sub-123",
             },
-            "client_id": "test-client",
+            "client_id": "mcp-client-test",
             "expires_at": current_time + 600,
             "used": False,
             "redirect_uri": "https://us-east-1.quicksight.aws.amazon.com/sn/oauthcallback",
@@ -852,14 +868,17 @@ class TestOAuth2TokenEndpoint:
             "redirect_uri": "https://us-east-1.quicksight.aws.amazon.com/sn/oauthcallback",
         }
 
-        basic_auth = base64.b64encode(b"test-client:test-secret").decode("ascii")
+        basic_auth = base64.b64encode(b"mcp-client-test:test-secret").decode("ascii")
 
-        with patch("auth_server.routes.oauth_flow.mint_managed_agent_token") as mock_mint_token:
-            mock_mint_token.return_value = "mock-jwt-token-with-user-id"
+        with patch("auth_server.services.token_grant_service.mint_managed_agent_token_with_scope") as mock_mint_token:
+            mock_mint_token.return_value = MintedManagedAgentToken("mock-jwt-token-with-user-id", "mcp-proxy-ops")
 
             app.dependency_overrides = {}
             app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
             app.dependency_overrides[get_user_service] = lambda: mock_user_service
+            app.dependency_overrides[get_token_grant_service] = lambda: TokenGrantService(
+                mock_user_service, test_oauth_state_store, test_consent_store
+            )
 
             test_client = TestClient(app)
 
@@ -876,7 +895,7 @@ class TestOAuth2TokenEndpoint:
             token_data = response.json()
             assert token_data["access_token"] == "mock-jwt-token-with-user-id"
 
-            assert mock_mint_token.call_args.kwargs["client_id"] == "test-client"
+            assert mock_mint_token.call_args.kwargs["client_id"] == "mcp-client-test"
             token_claims = mock_mint_token.call_args.kwargs["extra_claims"]
             assert token_claims["user_id"] == "507f1f77bcf86cd799439011"
             assert token_claims["token_use"] == "access"
@@ -903,7 +922,7 @@ class TestOAuth2TokenEndpoint:
                 "groups": ["user-group"],
                 "idp_id": "provider-sub-123",
             },
-            "client_id": "test-client",
+            "client_id": "mcp-client-test",
             "expires_at": current_time + 600,
             "used": False,
             "redirect_uri": "https://example.com/oauth/callback",
@@ -918,12 +937,15 @@ class TestOAuth2TokenEndpoint:
             "redirect_uri": "https://example.com/oauth/callback",
         }
 
-        basic_auth = base64.b64encode(b"test-client:test-secret").decode("ascii")
+        basic_auth = base64.b64encode(b"mcp-client-test:test-secret").decode("ascii")
 
-        with patch("auth_server.routes.oauth_flow.mint_managed_agent_token") as mock_mint_token:
+        with patch("auth_server.services.token_grant_service.mint_managed_agent_token_with_scope") as mock_mint_token:
             app.dependency_overrides = {}
             app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
             app.dependency_overrides[get_user_service] = lambda: mock_user_service
+            app.dependency_overrides[get_token_grant_service] = lambda: TokenGrantService(
+                mock_user_service, test_oauth_state_store, test_consent_store
+            )
 
             test_client = TestClient(app)
 
@@ -953,17 +975,17 @@ class TestOAuth2TokenEndpoint:
         authorization_codes_storage[auth_code] = {
             "token_data": {},
             "user_info": {"username": "testuser", "groups": []},
-            "client_id": "test-client",
+            "client_id": "mcp-client-test",
             "expires_at": current_time + 600,
             "redirect_uri": "http://localhost/callback",
             "created_at": current_time,
-            "resolved_scope": ["servers-read"],
+            "resolved_scope": ["mcp-proxy-ops"],
         }
 
         payload = {
             "grant_type": "authorization_code",
             "code": auth_code,
-            "client_id": "test-client",
+            "client_id": "mcp-client-test",
             "redirect_uri": "http://localhost/callback",
         }
 
@@ -971,12 +993,15 @@ class TestOAuth2TokenEndpoint:
 
         app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
         app.dependency_overrides[get_user_service] = lambda: mock_user_service
+        app.dependency_overrides[get_token_grant_service] = lambda: TokenGrantService(
+            mock_user_service, test_oauth_state_store, test_consent_store
+        )
 
         test_client = TestClient(app)
 
         kwargs = {"json": payload} if content_type == "json" else {"data": payload}
-        with patch("auth_server.routes.oauth_flow.mint_managed_agent_token") as mock_mint_token:
-            mock_mint_token.return_value = "mock-jwt-token"
+        with patch("auth_server.services.token_grant_service.mint_managed_agent_token_with_scope") as mock_mint_token:
+            mock_mint_token.return_value = MintedManagedAgentToken("mock-jwt-token", "mcp-proxy-ops")
             first_response = test_client.post(f"{API_PREFIX}/oauth2/token", **kwargs)
             response = test_client.post(f"{API_PREFIX}/oauth2/token", **kwargs)
 
@@ -993,6 +1018,9 @@ class TestOAuth2TokenEndpoint:
 
         app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
         app.dependency_overrides[get_user_service] = lambda: mock_user_service
+        app.dependency_overrides[get_token_grant_service] = lambda: TokenGrantService(
+            mock_user_service, test_oauth_state_store, test_consent_store
+        )
 
         test_client = TestClient(app)
 
@@ -1003,3 +1031,50 @@ class TestOAuth2TokenEndpoint:
         )
 
         assert response.status_code == 415
+
+    @pytest.mark.parametrize(
+        "content, expected_description",
+        [
+            ('["not", "an", "object"]', "JSON body must be an object"),
+            ('{"grant_type":', "JSON body is malformed"),
+        ],
+    )
+    def test_token_endpoint_rejects_invalid_json_shape(
+        self,
+        mock_user_service,
+        content: str,
+        expected_description: str,
+    ):
+        app.dependency_overrides = {}
+        app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
+        app.dependency_overrides[get_user_service] = lambda: mock_user_service
+        app.dependency_overrides[get_token_grant_service] = lambda: TokenGrantService(
+            mock_user_service, test_oauth_state_store, test_consent_store
+        )
+        test_client = TestClient(app)
+
+        response = test_client.post(
+            f"{API_PREFIX}/oauth2/token",
+            content=content,
+            headers={"Content-Type": "application/json"},
+        )
+
+        assert response.status_code == 400
+        assert response.json() == {
+            "error": "invalid_request",
+            "error_description": expected_description,
+        }
+
+    def test_token_endpoint_rejects_non_string_fields(self, test_client: TestClient):
+        response = test_client.post(
+            f"{API_PREFIX}/oauth2/token",
+            json={
+                "grant_type": "authorization_code",
+                "client_id": ["mcp-client-test"],
+                "code": "code",
+                "redirect_uri": "https://example.com/callback",
+            },
+        )
+
+        assert response.status_code == 400
+        assert response.json()["error"] == "invalid_request"

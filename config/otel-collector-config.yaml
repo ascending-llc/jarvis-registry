@@ -22,6 +22,13 @@ exporters:
   otlp_http/tempo:
     endpoint: http://tempo:4318
 
+  # Receives semantic MCP tool and A2A agent spans emitted by Jarvis Registry.
+  otlp_http/langfuse:
+    endpoint: https://us.cloud.langfuse.com/api/public/otel
+    headers:
+      Authorization: "Basic ${env:LANGFUSE_OTLP_AUTHORIZATION}"
+      x-langfuse-ingestion-version: "4"
+
 service:
   pipelines:
     logs:
@@ -35,4 +42,7 @@ service:
     traces:
       receivers: [otlp]
       processors: [batch]
-      exporters: [debug, otlp_http/tempo]
+      exporters:
+        - debug
+        - otlp_http/tempo
+        - otlp_http/langfuse

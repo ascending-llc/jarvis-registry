@@ -17,6 +17,13 @@ export interface ResolveDeviceCodeResponse {
   nonce: string;
 }
 
+export interface DownstreamErrorConsentContext {
+  redirect_uri: string;
+  error: string;
+  error_description: string;
+  server_path: string;
+}
+
 const MOCK_ENABLED = import.meta.env.VITE_MOCK_CONSENT_API === 'true';
 const MOCK_DEVICE_NONCE = 'mock-device-nonce';
 
@@ -69,6 +76,30 @@ export interface ConsentDecisionResponse {
 export async function denyDownstreamConsent(nonce: string): Promise<ConsentDecisionResponse> {
   if (MOCK_ENABLED) return { status: 'denied', client_branding: null };
   return service.post(API.denyDownstreamConsent, { nonce }) as Promise<ConsentDecisionResponse>;
+}
+
+export async function getDownstreamErrorConsentContext(nonce: string): Promise<DownstreamErrorConsentContext> {
+  if (MOCK_ENABLED) {
+    return {
+      redirect_uri: 'http://localhost:33418/callback',
+      error: 'invalid_client',
+      error_description: 'unknown client_id',
+      server_path: 'github',
+    };
+  }
+  return service.get(API.getDownstreamErrorConsent(nonce)) as Promise<DownstreamErrorConsentContext>;
+}
+
+export async function approveDownstreamErrorConsent(nonce: string): Promise<{ redirect_url: string }> {
+  if (MOCK_ENABLED) {
+    return { redirect_url: 'http://localhost:33418/callback?error=invalid_client' };
+  }
+  return service.post(API.approveDownstreamErrorConsent, { nonce }) as Promise<{ redirect_url: string }>;
+}
+
+export async function denyDownstreamErrorConsent(nonce: string): Promise<{ status: string }> {
+  if (MOCK_ENABLED) return { status: 'denied' };
+  return service.post(API.denyDownstreamErrorConsent, { nonce }) as Promise<{ status: string }>;
 }
 
 export async function getServerConsentContext(nonce: string): Promise<ConsentContext> {

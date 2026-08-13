@@ -35,8 +35,7 @@ async def test_load_role_cache_filters_to_registry_owned_resource_types(mock_rol
     mock_role.find.assert_called_once()
     (query,), _ = mock_role.find.call_args
     valid = set(query["resourceType"]["$in"])
-    assert {"mcpServer", "remoteAgent", "federation", "workflow"} <= valid
-    assert "skill" not in valid
+    assert {"mcpServer", "remoteAgent", "federation", "workflow", "skill"} <= valid
     assert "agent" not in valid
 
 

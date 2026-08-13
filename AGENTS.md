@@ -314,10 +314,11 @@ When tackling complex problems or features:
 - **Config**: All workspaces use `pytest.ini` with `asyncio_mode = auto`.
 
 ### Test Execution
-- **Developer Runs Tests**: NEVER automatically run tests after making code changes unless explicitly requested.
-- **Commands**: Run tests from the workspace directory (e.g., `cd registry`).
-  - `uv run poe test` or `uv run pytest tests/unit -v`
-  - Check `pytest.ini` for markers and paths.
+- **Agents May Run Tests**: Python suites suppress per-test success noise (one summary line per workspace, e.g. `N passed in T s`); failures still print in full. Run proactively without being asked.
+- **Scope**: Narrowest scope while iterating; full suite of the touched workspace before declaring done. Touched `registry-pkgs`? Run `uv run poe test-all` from repo root — it's a shared dependency of both `registry` and `auth-server`. Many failures expected? Use `--maxfail=N` first.
+- **Commands**: Run from the workspace directory (e.g., `cd registry`).
+  - `uv run poe test`, or `uv run pytest <path>` for a specific file/case.
+  - Options are controlled by `pytest.ini` — don't pass ad hoc flags.
 
 ### Coverage & Quality
 - **Minimum 80% code coverage** required.

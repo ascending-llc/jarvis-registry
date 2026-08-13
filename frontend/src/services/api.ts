@@ -28,6 +28,10 @@ const API = {
   getDownstreamConsent: (nonce: string) => `${MCP_BASE_URL}/consent/downstream?nonce=${encodeURIComponent(nonce)}`,
   approveDownstreamConsent: `${MCP_BASE_URL}/consent/downstream`,
   denyDownstreamConsent: `${MCP_BASE_URL}/consent/downstream/deny`,
+  getDownstreamErrorConsent: (nonce: string) =>
+    `${MCP_BASE_URL}/consent/downstream-error?nonce=${encodeURIComponent(nonce)}`,
+  approveDownstreamErrorConsent: `${MCP_BASE_URL}/consent/downstream-error`,
+  denyDownstreamErrorConsent: `${MCP_BASE_URL}/consent/downstream-error/deny`,
   getServerConsent: (nonce: string) => `${MCP_BASE_URL}/consent/server?nonce=${encodeURIComponent(nonce)}`,
   approveServerConsent: `${MCP_BASE_URL}/consent/server`,
   denyServerConsent: `${MCP_BASE_URL}/consent/server/deny`,

@@ -1,8 +1,9 @@
 import logging
 import re
+from urllib.parse import quote
 
-from fastapi import Request
-from fastapi.responses import JSONResponse
+from fastapi import Request, status
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from starlette.routing import compile_path, get_route_path
 from starlette.types import ASGIApp, Receive, Scope, Send
 
@@ -11,6 +12,7 @@ from registry_pkgs.core.jwt_utils import ExpiredSignatureError, InvalidTokenErro
 from registry_pkgs.core.scopes import map_groups_to_scopes
 
 from ..auth.dependencies import UserContextDict
+from ..constants import MAX_RETURN_PATH_LENGTH, OAUTH_AUTHORIZE_RETURN_URL_TOO_LONG_DETAIL
 from ..core.config import settings
 from ..core.telemetry_decorators import AuthMetricsContext
 from ..utils.crypto_utils import verify_access_token
@@ -20,6 +22,12 @@ logger = logging.getLogger(__name__)
 # Direct-connect proxy path: /proxy/server/{user_id}/{server_path}. Used to bind a managed-agent
 # token's direct-connect claims to the URL.
 DIRECT_CONNECT_RE = re.compile(r"^/proxy/server/([^/]+)/(.+)$")
+SKILLS_API_RE = re.compile(r"^/api/v[^/]+/skills(?:/|$)")
+A2A_PROXY_RE = re.compile(r"^/proxy/a2a(?:/|$)")
+DUAL_AUTH_SKILL_READ_PATTERNS = (
+    re.compile(r"^/api/v[^/]+/skills$"),
+    re.compile(r"^/api/v[^/]+/skills/[^/]+/content$"),
+)
 
 
 def _parse_bearer_token(request: Request) -> str | None:
@@ -33,6 +41,14 @@ def _parse_bearer_token(request: Request) -> str | None:
         return None
 
     return token.strip() or None
+
+
+def _required_bearer_scope(path: str) -> str:
+    if SKILLS_API_RE.match(path):
+        return "skills-read"
+    if A2A_PROXY_RE.match(path):
+        return "a2a-proxy-ops"
+    return "mcp-proxy-ops"
 
 
 class UnifiedAuthMiddleware:
@@ -84,6 +100,9 @@ class UnifiedAuthMiddleware:
                 "/.well-known/{path:path}",  # OAuth discovery endpoints must be public
             ]
         )
+        self.soft_auth_paths_compiled = self._compile_patterns(
+            [f"/api/{settings.api_version}/mcp/downstream/oauth/authorize/{{user_id}}/{{server_path:path}}"]
+        )
 
         logger.info(f"Auth middleware initialized with Starlette routing: {len(self.public_paths_compiled)} public.")
 
@@ -94,6 +113,26 @@ class UnifiedAuthMiddleware:
     def _is_proxy_route(self, path: str) -> bool:
         """Single source of truth for the proxy/non-proxy split."""
         return path.startswith("/proxy/")
+
+    def _is_downstream_authorize_route(self, request: Request, path: str) -> bool:
+        """Return whether this GET authorize entrypoint is eligible for soft authentication."""
+        return request.method == "GET" and self._match_path(path, self.soft_auth_paths_compiled)
+
+    def _build_soft_auth_response(self, request: Request, path: str) -> Response:
+        """Build a login redirect, or reject a return target too large to round-trip safely."""
+        next_path = f"{path}?{request.url.query}" if request.url.query else path
+        if len(next_path) > MAX_RETURN_PATH_LENGTH:
+            return JSONResponse(
+                status_code=status.HTTP_414_URI_TOO_LONG,
+                content={"detail": OAUTH_AUTHORIZE_RETURN_URL_TOO_LONG_DETAIL},
+            )
+        login_url = f"{settings.registry_client_url}/login?next={quote(next_path, safe='')}"
+        return RedirectResponse(url=login_url, status_code=302)
+
+    @staticmethod
+    def _is_dual_auth_skill_read(request: Request, path: str) -> bool:
+        """Return whether this is one of the two CLI sync-down skill endpoints."""
+        return request.method == "GET" and any(pattern.fullmatch(path) for pattern in DUAL_AUTH_SKILL_READ_PATTERNS)
 
     def _compile_patterns(self, patterns: list[str]) -> list[tuple]:
         """
@@ -145,6 +184,11 @@ class UnifiedAuthMiddleware:
 
                 logger.info(f"User {user_context.get('username')} authenticated via {auth_source}")
 
+            except SoftAuthRedirect as e:
+                auth_ctx.set_success(False)
+                await e.response(scope, receive, send)
+                return
+
             except AuthenticationError as e:
                 auth_ctx.set_success(False)
 
@@ -152,14 +196,14 @@ class UnifiedAuthMiddleware:
 
                 headers = {"Connection": "close"}
 
-                if self._is_proxy_route(path):
+                if self._is_proxy_route(path) or self._is_dual_auth_skill_read(request, path):
                     # Proxy routes are Bearer-authenticated (managed-agent tokens). Advertise a
                     # Bearer challenge with resource metadata so AI agents can perform Dynamic
                     # Client Registration.
                     headers["WWW-Authenticate"] = (
                         f'Bearer realm="{settings.jarvis_realm}", '
                         f'resource_metadata="{settings.jwt_issuer}/.well-known/oauth-protected-resource{settings.service_base_path}{path}", '
-                        'scope="mcp-proxy-ops"'
+                        f'scope="{_required_bearer_scope(path)}"'
                     )
                 # Non-proxy routes are cookie-authenticated (CRUD-session cookie). Cookie/session
                 # auth has no RFC 7235 challenge scheme, and the only caller is our frontend, which
@@ -195,6 +239,7 @@ class UnifiedAuthMiddleware:
 
         - Proxy routes (``/proxy/*``): the ONLY accepted credential is a managed-agent
           Bearer token in the Authorization header. The session cookie is never consulted.
+        - Skill sync-down reads: session cookie first, then managed-agent Bearer token.
         - Every other authenticated route: the ONLY accepted credential is the
           CRUD-session cookie. The Authorization header is never consulted.
 
@@ -206,6 +251,21 @@ class UnifiedAuthMiddleware:
             if user_context:
                 return user_context
             raise AuthenticationError("Managed-agent Bearer token required for proxy routes")
+
+        if self._is_downstream_authorize_route(request, path):
+            user_context = await self._try_session_auth(request)
+            if user_context:
+                return user_context
+            raise SoftAuthRedirect(self._build_soft_auth_response(request, path))
+
+        if self._is_dual_auth_skill_read(request, path):
+            user_context = await self._try_session_auth(request)
+            if user_context:
+                return user_context
+            user_context = self._try_jwt_auth(request, path)
+            if user_context:
+                return user_context
+            raise AuthenticationError("Session or managed-agent authentication required")
 
         user_context = await self._try_session_auth(request)
         if user_context:
@@ -379,3 +439,10 @@ class UnifiedAuthMiddleware:
 
 class AuthenticationError(Exception):
     pass
+
+
+class SoftAuthRedirect(Exception):
+    """Carry a pre-built response for a soft-auth route with no active session."""
+
+    def __init__(self, response: Response) -> None:
+        self.response = response

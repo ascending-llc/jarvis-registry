@@ -88,6 +88,10 @@ class JwtTokenConfig(BaseModel):
     managed_agents_audience: str = Field(description="`aud` for managed-agent (proxy / Bearer) tokens")
     crud_services_audience: str = Field(description="`aud` for CRUD session (cookie) tokens")
     registry_client_id: str = Field(description="`client_id` of the registry backend (the first-party CRUD principal)")
+    headless_agent_client_id: str = Field(description="Sentinel `client_id` for non-interactive agent-vended tokens")
+    all_scopes: frozenset[str] = Field(
+        description="Every scope name defined in scopes.yml — used to compute open-ended category ceilings"
+    )
 
 
 class TelemetryConfig(BaseModel):
@@ -156,6 +160,11 @@ class JarvisBaseSettings(BaseSettings):
     # the resource being protected. Since we use the same value for both `registry` and `auth-server`,
     # we use a generic value like below.
     jarvis_realm: str = "jarvis-resources"
+
+    # ==================== Auth-server Redis namespace ====================
+    # Canonical Redis key prefix for auth-server's OAuth client and consent stores. Registry reads
+    # those records directly, so both services must always use the same namespace.
+    auth_server_redis_key_prefix: str = "jarvis-auth-server"
 
     # ==================== Server URLs ====================
     auth_server_url: str = "http://localhost:8888"
@@ -339,6 +348,8 @@ class JarvisBaseSettings(BaseSettings):
             managed_agents_audience=self.jwt_audience_managed_agents,
             crud_services_audience=self.jwt_audience_crud_services,
             registry_client_id=self.registry_app_name,
+            headless_agent_client_id=self.headless_agent_client_id,
+            all_scopes=frozenset(self.scopes_list),
         )
 
     @cached_property

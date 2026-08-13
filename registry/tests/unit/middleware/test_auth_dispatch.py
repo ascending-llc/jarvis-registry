@@ -1,4 +1,5 @@
 from unittest.mock import AsyncMock
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from fastapi import FastAPI
@@ -6,6 +7,7 @@ from fastapi.responses import JSONResponse
 from starlette.testclient import TestClient
 from starlette.types import Receive, Scope, Send
 
+from registry.constants import MAX_RETURN_PATH_LENGTH
 from registry.core.config import settings
 from registry.middleware.auth import UnifiedAuthMiddleware
 from registry.utils.crypto_utils import generate_access_token
@@ -24,6 +26,30 @@ def _build_app() -> FastAPI:
     @app.get("/proxy/mcpgw/mcp")
     async def proxy_ep():  # pragma: no cover - body trivial
         return JSONResponse({"ok": "proxy"})
+
+    @app.get("/api/v1/skills")
+    async def skills_ep():
+        return JSONResponse({"ok": "skills"})
+
+    @app.get("/api/v1/skills/{skill_id}/content")
+    async def skill_content_ep(skill_id: str):
+        return JSONResponse({"ok": "skill-content", "skill_id": skill_id})
+
+    @app.get("/api/v1/skills/{skill_id}")
+    async def skill_detail_ep(skill_id: str):
+        return JSONResponse({"ok": "skill-detail", "skill_id": skill_id})
+
+    @app.get("/api/v1/skills/{skill_id}/files/{file_path:path}")
+    async def skill_file_ep(skill_id: str, file_path: str):
+        return JSONResponse({"ok": "skill-file", "skill_id": skill_id, "file_path": file_path})
+
+    @app.post("/api/v1/skills")
+    async def create_skill_ep():
+        return JSONResponse({"ok": "create-skill"})
+
+    @app.get("/proxy/a2a/test-agent")
+    async def a2a_ep():
+        return JSONResponse({"ok": "a2a"})
 
     @app.get("/proxy/server/{user_id}/{server_path:path}")
     async def direct_connect_ep(user_id: str, server_path: str):
@@ -77,8 +103,9 @@ def _managed_agent_token(
     client_id: str = "mcp-client-abc",
     user_id: str | None = None,
     server_path: str | None = None,
+    token_scope: str = "mcp-proxy-ops",
 ) -> str:
-    extra: dict = {"scope": "mcp-proxy-ops"}
+    extra: dict = {}
     if user_id is not None:
         extra["user_id"] = user_id
     if server_path is not None:
@@ -87,8 +114,9 @@ def _managed_agent_token(
         settings.jwt_token_config,
         subject="alice",
         client_id=client_id,
+        requested_scopes=token_scope,
         expires_in_seconds=3600,
-        extra_claims=extra,
+        extra_claims=extra or None,
     )
 
 
@@ -167,6 +195,52 @@ def test_proxy_401_advertises_bearer_challenge(client):
     resp = client.get("/proxy/mcpgw/mcp")
     assert resp.status_code == 401
     assert resp.headers.get("WWW-Authenticate", "").startswith("Bearer")
+
+
+def test_skills_sync_401_advertises_skills_scope(client):
+    resp = client.get("/api/v1/skills")
+
+    assert resp.status_code == 401
+    assert 'scope="skills-read"' in resp.headers["WWW-Authenticate"]
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/v1/skills",
+        f"/api/v1/skills/{USER_A}/content",
+    ],
+)
+def test_skill_sync_reads_accept_managed_agent_bearer(client, path):
+    token = _managed_agent_token(client_id="jarvis-registry-cli", user_id=USER_A, token_scope="skills-read")
+
+    resp = client.get(path, headers={"Authorization": f"Bearer {token}"})
+
+    assert resp.status_code == 200
+
+
+def test_skill_sync_read_accepts_session_cookie(client):
+    client.cookies.set(_COOKIE, _crud_cookie_token())
+
+    resp = client.get("/api/v1/skills")
+
+    assert resp.status_code == 200
+
+
+def test_skill_write_rejects_managed_agent_bearer(client):
+    token = _managed_agent_token(client_id="jarvis-registry-cli", user_id=USER_A, token_scope="skills-read")
+
+    resp = client.post("/api/v1/skills", headers={"Authorization": f"Bearer {token}"})
+
+    assert resp.status_code == 401
+    assert "WWW-Authenticate" not in resp.headers
+
+
+def test_a2a_proxy_401_advertises_a2a_scope(client):
+    resp = client.get("/proxy/a2a/test-agent")
+
+    assert resp.status_code == 401
+    assert 'scope="a2a-proxy-ops"' in resp.headers["WWW-Authenticate"]
 
 
 def test_direct_connect_accepts_matching_user_id(client):
@@ -248,9 +322,45 @@ def test_other_a2a_paths_still_require_bearer(
     assert resp.status_code == 401
 
 
-def test_downstream_authorize_endpoint_is_not_public(client):
-    resp = client.get(f"/api/v1/mcp/downstream/oauth/authorize/{USER_A}/github")
+def test_downstream_authorize_get_without_session_redirects_to_login(client):
+    authorize_path = f"/api/v1/mcp/downstream/oauth/authorize/{USER_A}/github"
+    resp = client.get(
+        authorize_path,
+        params={"client_id": "claude", "redirect_uri": "http://localhost:33418/cb", "state": "state-1"},
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 302
+    location = urlsplit(resp.headers["location"])
+    assert location.path.endswith("/login")
+    assert parse_qs(location.query)["next"] == [
+        f"{authorize_path}?client_id=claude&redirect_uri=http%3A%2F%2Flocalhost%3A33418%2Fcb&state=state-1"
+    ]
+
+
+def test_downstream_authorize_non_get_without_session_still_returns_401(client):
+    resp = client.post(f"/api/v1/mcp/downstream/oauth/authorize/{USER_A}/github")
+
     assert resp.status_code == 401
+
+
+def test_downstream_authorize_oversized_return_url_is_rejected(client):
+    resp = client.get(
+        f"/api/v1/mcp/downstream/oauth/authorize/{USER_A}/github",
+        params={"state": "x" * MAX_RETURN_PATH_LENGTH},
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 414
+    assert resp.json() == {"detail": "OAuth authorize return URL is too long"}
+    assert "location" not in resp.headers
+
+
+def test_downstream_authorize_get_with_session_reaches_route(client):
+    client.cookies.set(_COOKIE, _crud_cookie_token())
+    resp = client.get(f"/api/v1/mcp/downstream/oauth/authorize/{USER_A}/github")
+
+    assert resp.status_code == 200
 
 
 def test_all_proxy_router_paths_classify_as_proxy():
@@ -275,6 +385,37 @@ def test_crud_paths_classify_as_non_proxy(path):
 def test_lifespan_scope_passes_through_without_error():
     with TestClient(_build_app()):
         pass
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        f"/api/v1/skills/{USER_A}",
+        f"/api/v1/skills/{USER_A}/files/scripts/parse.sh",
+    ],
+)
+def test_skill_non_sync_reads_reject_bearer(client, path):
+    token = _managed_agent_token(client_id="jarvis-registry-cli", user_id=USER_A, token_scope="skills-read")
+
+    resp = client.get(path, headers={"Authorization": f"Bearer {token}"})
+
+    assert resp.status_code == 401
+    assert "WWW-Authenticate" not in resp.headers
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        f"/api/v1/skills/{USER_A}",
+        f"/api/v1/skills/{USER_A}/files/scripts/parse.sh",
+    ],
+)
+def test_skill_non_sync_reads_accept_session_cookie(client, path):
+    client.cookies.set(_COOKIE, _crud_cookie_token())
+
+    resp = client.get(path)
+
+    assert resp.status_code == 200
 
 
 async def test_non_http_scope_forwarded_to_app_unchanged():

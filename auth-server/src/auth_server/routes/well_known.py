@@ -69,6 +69,23 @@ async def oauth_authorization_server_metadata():
     }
 
 
+@router.get("/.well-known/oauth-authorization-server/a2a")
+async def a2a_oauth_authorization_server_metadata():
+    """A2A-specific OAuth 2.0 Authorization Server Metadata.
+
+    ``issuer`` is overridden to ``{jwt_issuer}/a2a`` to match the well-known path this metadata
+    was retrieved from (RFC 8414 §3.3); ``registration_endpoint`` points to the A2A DCR endpoint
+    so that A2A clients register with an ``a2a-client-*`` prefix and receive the correct scope
+    ceiling.
+    """
+    base = await oauth_authorization_server_metadata()
+    return {
+        **base,
+        "issuer": f"{settings.jwt_issuer}/a2a",
+        "registration_endpoint": f"{settings.auth_server_external_url}/oauth2/register/a2a",
+    }
+
+
 @router.get(f"/.well-known/oauth-authorization-server/{DOWNSTREAM_OAUTH_NAMESPACE}/{{user_id}}/{{server_path:path}}")
 async def downstream_authorization_server_metadata(user_id: str, server_path: str):
     """Per-user, per-server downstream OAuth authorization server metadata (RFC 8414).

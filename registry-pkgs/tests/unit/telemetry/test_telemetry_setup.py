@@ -1,7 +1,7 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
-from opentelemetry import trace as trace_api
+from opentelemetry import trace
 from opentelemetry.metrics import Histogram
 from opentelemetry.sdk.trace import TracerProvider
 
@@ -18,8 +18,9 @@ class TestTelemetrySetup:
     @pytest.fixture(autouse=True)
     def reset_otel_state(self):
         """Reset OTel global state before and after each test."""
-        # Ensure clean state before test
-        yield
+        with patch("registry_pkgs.telemetry._tracer_provider", None):
+            yield
+
         # Clean up after test to prevent background thread issues
         try:
             from opentelemetry import metrics
@@ -45,6 +46,10 @@ class TestTelemetrySetup:
             patch(f"{module_path}.MeterProvider") as mock_meter_provider,
             patch(f"{module_path}.PeriodicExportingMetricReader") as mock_periodic_reader,
             patch(f"{module_path}.SafeOTLPMetricExporter") as mock_safe_exporter,
+            patch(f"{module_path}.trace") as mock_trace,
+            patch(f"{module_path}.OTLPSpanExporter") as mock_span_exporter,
+            patch(f"{module_path}.TracerProvider") as mock_tracer_provider,
+            patch(f"{module_path}.BatchSpanProcessor") as mock_span_processor,
         ):
             mock_resource_instance = MagicMock()
             mock_resource.create.return_value = mock_resource_instance
@@ -66,6 +71,10 @@ class TestTelemetrySetup:
                 "meter_provider": mock_meter_provider,
                 "periodic_reader": mock_periodic_reader,
                 "safe_exporter": mock_safe_exporter,
+                "trace": mock_trace,
+                "span_exporter": mock_span_exporter,
+                "tracer_provider": mock_tracer_provider,
+                "span_processor": mock_span_processor,
             }
 
     def test_setup_metrics_defaults(self, mock_otel_deps):
@@ -242,17 +251,18 @@ class TestShutdownTelemetry:
             # Should not raise
             shutdown_telemetry()
 
-    def test_shutdown_telemetry_shuts_down_tracer_provider(self):
-        """Test that shutdown also calls tracer_provider.shutdown()."""
-        mock_tracer_provider = MagicMock()
+    def test_shutdown_telemetry_shuts_down_trace_provider(self):
+        from registry_pkgs import telemetry
+
+        trace_provider = MagicMock()
         with (
-            patch("registry_pkgs.telemetry.metrics.get_meter_provider") as mock_get_meter,
-            patch("opentelemetry.trace.get_tracer_provider", return_value=mock_tracer_provider),
+            patch.object(telemetry, "_tracer_provider", trace_provider),
+            patch("registry_pkgs.telemetry.metrics.get_meter_provider") as mock_get_provider,
         ):
-            mock_get_meter.return_value = MagicMock()
             shutdown_telemetry()
 
-            mock_tracer_provider.shutdown.assert_called_once()
+        trace_provider.shutdown.assert_called_once_with()
+        mock_get_provider.return_value.shutdown.assert_called_once_with(timeout_millis=1000)
 
 
 @pytest.mark.unit
@@ -264,15 +274,17 @@ class TestSetupTracing:
     def reset_otel_trace_state(self):
         registry_pkgs.telemetry._agno_instrumented = False
         registry_pkgs.telemetry._trace_exporter_configured = False
+        registry_pkgs.telemetry._tracer_provider = None
         yield
         try:
-            provider = trace_api.get_tracer_provider()
+            provider = trace.get_tracer_provider()
             if isinstance(provider, TracerProvider):
                 provider.shutdown()
         except Exception:  # best-effort teardown; provider may already be shut down
             pass
         registry_pkgs.telemetry._agno_instrumented = False
         registry_pkgs.telemetry._trace_exporter_configured = False
+        registry_pkgs.telemetry._tracer_provider = None
 
     def test_setup_tracing_installs_tracer_provider(self):
         """After setup_tracing(), global TracerProvider is a real TracerProvider."""
