@@ -10,9 +10,10 @@ from agno.run.cancel import get_cancellation_manager, set_cancellation_manager
 from agno.run.cancellation_management.in_memory_cancellation_manager import InMemoryRunCancellationManager
 from fastapi import FastAPI
 
+from registry_pkgs.core.logging import configure_structured_logging
 from registry_pkgs.database import close_mongodb, init_mongodb
 from registry_pkgs.database.redis_client import close_redis_client, create_redis_client
-from registry_pkgs.telemetry import setup_metrics, setup_tracing
+from registry_pkgs.telemetry import setup_metrics, setup_tracing, shutdown_telemetry
 from registry_pkgs.telemetry.workflow_metrics import initialize_workflow_metrics
 from registry_pkgs.vector.client import create_database_client
 from registry_pkgs.workflows.control import DirectiveQueue
@@ -61,6 +62,14 @@ class _RuntimeResources:
         self.redis_client = redis_client
 
 
+def _shutdown_telemetry_safe() -> None:
+    """Best-effort telemetry shutdown that never raises."""
+    try:
+        shutdown_telemetry()
+    except Exception as exc:
+        logger.warning("Failed to shutdown telemetry: %s", exc)
+
+
 def _initialize_telemetry() -> None:
     """Best-effort telemetry setup that should not block the application from starting."""
     logger.info("Initializing telemetry")
@@ -73,6 +82,15 @@ def _initialize_telemetry() -> None:
         setup_tracing("mcp-gateway-registry", settings.telemetry_config)
     except Exception as exc:
         logger.warning("Failed to initialize tracing: %s", exc)
+    try:
+        configure_structured_logging(
+            "registry",
+            "registry_pkgs",
+            service_name="mcp-gateway-registry",
+            service_version=settings.telemetry_config.build_version,
+        )
+    except Exception as exc:
+        logger.warning("Failed to configure structured logging: %s", exc)
 
 
 async def _startup_container(app: FastAPI) -> _RuntimeResources:
@@ -179,17 +197,21 @@ async def lifespan(app: FastAPI):
         logger.info("Application startup completed")
     except Exception as exc:
         logger.error("Failed to initialize services: %s", exc, exc_info=True)
+        _shutdown_telemetry_safe()
         raise
 
-    async with _get_gateway_mcp_app(app).session_manager.run():
-        yield
-
-    logger.info("Shutting down MCP Gateway Registry")
     try:
-        await _shutdown_container(app, resources)
-        logger.info("Application shutdown completed")
-    except Exception as exc:
-        logger.error("Error during shutdown: %s", exc, exc_info=True)
+        async with _get_gateway_mcp_app(app).session_manager.run():
+            yield
+    finally:
+        logger.info("Shutting down MCP Gateway Registry")
+        try:
+            await _shutdown_container(app, resources)
+            logger.info("Application shutdown completed")
+        except Exception as exc:
+            logger.error("Error during shutdown: %s", exc, exc_info=True)
+        finally:
+            _shutdown_telemetry_safe()
 
 
 # The gateway is created once here, but it resolves the active container lazily

@@ -160,3 +160,77 @@ class TestMainApplication:
 
         main_logger = logging.getLogger("registry.main")
         assert main_logger is not None
+
+
+@pytest.mark.unit
+@pytest.mark.core
+class TestLifespanTelemetryShutdown:
+    """Verify _shutdown_telemetry_safe() is called on all lifespan exit paths."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_agno_cancellation_manager(self):
+        yield
+        from agno.run.cancel import set_cancellation_manager
+        from agno.run.cancellation_management.in_memory_cancellation_manager import (
+            InMemoryRunCancellationManager,
+        )
+
+        set_cancellation_manager(InMemoryRunCancellationManager())
+
+    @pytest.fixture
+    def mock_services(self):
+        mock_container = Mock()
+        mock_container.startup = AsyncMock()
+        mock_container.shutdown = AsyncMock()
+
+        with (
+            patch("registry.main.RegistryContainer", return_value=mock_container),
+            patch("registry.main.init_mongodb", new=AsyncMock()),
+            patch("registry.main.close_mongodb", new=AsyncMock()),
+            patch("registry.main.create_redis_client", return_value=Mock()),
+            patch("registry.main.close_redis_client"),
+            patch("registry.main.create_database_client", return_value=Mock()),
+        ):
+            mock_gateway_mcp_app = Mock()
+            mock_gateway_mcp_app.session_manager.run.return_value = _mock_async_context_manager()
+
+            yield {
+                "container": mock_container,
+                "gateway_mcp_app": mock_gateway_mcp_app,
+            }
+
+    @pytest.mark.asyncio
+    async def test_normal_exit_calls_shutdown_telemetry(self, mock_services):
+        test_app = FastAPI()
+        test_app.state.gateway_mcp_app = mock_services["gateway_mcp_app"]
+
+        with patch("registry.main._shutdown_telemetry_safe") as mock_shutdown:
+            async with lifespan(test_app):
+                pass
+
+            mock_shutdown.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_startup_failure_calls_shutdown_telemetry(self, mock_services):
+        mock_services["container"].startup.side_effect = RuntimeError("db down")
+        test_app = FastAPI()
+        test_app.state.gateway_mcp_app = mock_services["gateway_mcp_app"]
+
+        with patch("registry.main._shutdown_telemetry_safe") as mock_shutdown:
+            with pytest.raises(RuntimeError, match="db down"):
+                async with lifespan(test_app):
+                    pass
+
+            mock_shutdown.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_shutdown_error_does_not_mask_telemetry_shutdown(self, mock_services):
+        mock_services["container"].shutdown.side_effect = RuntimeError("shutdown boom")
+        test_app = FastAPI()
+        test_app.state.gateway_mcp_app = mock_services["gateway_mcp_app"]
+
+        with patch("registry.main._shutdown_telemetry_safe") as mock_shutdown:
+            async with lifespan(test_app):
+                pass
+
+            mock_shutdown.assert_called()

@@ -14,6 +14,7 @@ dependencies = [
   "python-dotenv>=1.0.0",
   "inflection>=0.5.1",
   "cryptography>=46.0.5",
+  "opentelemetry-instrumentation-openai>=0.62.3",
 ]
 
 [tool.uv.workspace]
@@ -278,4 +279,3 @@ help = "Schema version tag (e.g. asc0.4.5). Defaults to latest release."
 name = "version"
 positional = true
 default = ""
-

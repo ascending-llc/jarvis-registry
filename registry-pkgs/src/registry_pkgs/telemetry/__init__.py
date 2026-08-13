@@ -282,6 +282,8 @@ def setup_tracing(
 
 def shutdown_telemetry():
     """Gracefully shutdown telemetry providers."""
+    global _trace_exporter_configured
+
     try:
         provider = metrics.get_meter_provider()
         if hasattr(provider, "shutdown"):
@@ -292,5 +294,6 @@ def shutdown_telemetry():
         tracer_provider = trace_api.get_tracer_provider()
         if hasattr(tracer_provider, "shutdown"):
             tracer_provider.shutdown()
+        _trace_exporter_configured = False
     except Exception as exc:
         logger.warning("Failed to shutdown telemetry: %s", exc)
