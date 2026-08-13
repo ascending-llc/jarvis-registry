@@ -21,6 +21,24 @@ _STYLE = """
 """
 
 
+def _render_device_status_page(*, title: str, heading: str, message: str) -> str:
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>{title} - Jarvis Registry</title>
+<style>{_STYLE}</style>
+</head>
+<body>
+  <div class="card">
+    <h1>{heading}</h1>
+    <p class="meta">{message}</p>
+  </div>
+</body>
+</html>"""
+
+
 def render_consent_page(
     *,
     client_name: str,
@@ -252,6 +270,25 @@ def render_device_denied_page() -> str:
   </div>
 </body>
 </html>"""
+    )
+
+
+def render_device_scope_error_page() -> str:
+    return _render_device_status_page(
+        title="Access denied",
+        heading="Your account doesn't have the permissions this application requested",
+        message=(
+            "Contact your administrator, or ask the application to request different permissions. "
+            "You can close this window."
+        ),
+    )
+
+
+def render_device_server_error_page() -> str:
+    return _render_device_status_page(
+        title="Something went wrong",
+        heading="We couldn't complete this sign-in",
+        message="Return to your device and try again. If this keeps happening, contact support.",
     )
 
 

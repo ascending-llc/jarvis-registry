@@ -23,6 +23,7 @@ from auth_server.deps import (
     get_token_grant_service,
     get_user_service,
 )
+from auth_server.routes.consent_templates import render_device_scope_error_page
 from auth_server.server import app
 from auth_server.services.token_grant_service import TokenGrantService
 from registry_pkgs.core import client_categories
@@ -31,7 +32,12 @@ from registry_pkgs.core.jwt_utils import decode_jwt_unverified
 from registry_pkgs.core.oauth_state_store import REFRESH_TOKEN_TTL_SECONDS as REFRESH_TOKEN_EXPIRY_SECONDS
 from tests.conftest import test_consent_store
 from tests.integration.conftest import _mock_keycloak_provider
-from tests.support.oauth_state_store import authorization_codes_storage, refresh_tokens_storage, test_oauth_state_store
+from tests.support.oauth_state_store import (
+    authorization_codes_storage,
+    device_codes_storage,
+    refresh_tokens_storage,
+    test_oauth_state_store,
+)
 
 # API prefix for OAuth endpoints (set in conftest.py via AUTH_SERVER_API_PREFIX env var)
 API_PREFIX = "/auth"
@@ -450,6 +456,113 @@ class TestAccessTokenScoping:
 
             # Cleanup
             app.dependency_overrides = {}
+
+    @patch("auth_server.routes.oauth_flow.get_token_kid")
+    @patch("auth_server.routes.oauth_flow.decode_jwt_with_jwk")
+    @patch("auth_server.routes.oauth_flow.map_groups_to_scopes")
+    @patch("auth_server.routes.oauth_flow.get_user_info")
+    @patch("auth_server.routes.oauth_flow.exchange_code_for_token")
+    def test_device_scope_negotiation_failure_is_terminal(
+        self,
+        mock_exchange,
+        mock_get_user_info,
+        mock_map_groups,
+        mock_decode_jwt,
+        mock_get_token_kid,
+        clear_device_storage,
+        mock_user_service,
+    ):
+        """Device scope rejection renders a distinct page and immediately stops token polling."""
+        from itsdangerous import URLSafeTimedSerializer
+
+        requested_scopes = "skills-proxy-ops"
+        device_code = "scope-denied-device-code"
+        test_oauth_state_store.save_device_code(
+            device_code,
+            {
+                "client_id": "mcp-client-test",
+                "scope": requested_scopes,
+                "status": "pending",
+                "expires_at": int(time.time()) + 600,
+            },
+            600,
+        )
+        mock_map_groups.return_value = ["servers-read", "agents-read"]
+        mock_exchange.return_value = {
+            "access_token": "provider_access_token",
+            "id_token": "provider_id_token",
+        }
+        mock_get_token_kid.return_value = "test-kid"
+        mock_decode_jwt.return_value = {
+            "sub": "user456",
+            "preferred_username": "basicuser",
+            "groups": ["basic-user"],
+        }
+        mock_get_user_info.return_value = {
+            "sub": "user456",
+            "preferred_username": "basicuser",
+            "groups": ["basic-user"],
+        }
+        oauth2_config = {
+            "providers": {
+                "keycloak": {
+                    "enabled": True,
+                    "client_id": "test-client",
+                    "client_secret": "test-secret",
+                    "token_url": "http://keycloak/token",
+                    "user_info_url": "http://keycloak/userinfo",
+                }
+            }
+        }
+
+        with patch("auth_server.routes.oauth_flow.settings") as mock_settings:
+            mock_settings.auth_server_external_url = "http://localhost:8888"
+            mock_settings.auth_server_api_prefix = ""
+            mock_settings.oauth_session_ttl_seconds = 600
+            mock_settings.oauth2_temp_session_cookie_name = settings.oauth2_temp_session_cookie_name
+
+            signer = URLSafeTimedSerializer("test-secret-key")
+            app.dependency_overrides = {}
+            app.dependency_overrides[get_oauth_state_store] = lambda: test_oauth_state_store
+            app.dependency_overrides[get_oauth2_config] = lambda: oauth2_config
+            app.dependency_overrides[get_user_service] = lambda: mock_user_service
+            app.dependency_overrides[get_signer] = lambda: signer
+            app.dependency_overrides[get_auth_provider] = _mock_keycloak_provider
+            app.dependency_overrides[get_token_grant_service] = lambda: TokenGrantService(
+                mock_user_service, test_oauth_state_store, test_consent_store
+            )
+
+            test_client = TestClient(app)
+            session = signer.dumps(
+                {
+                    "state": "device-state",
+                    "provider": "keycloak",
+                    "flow_type": "device",
+                    "device_code": device_code,
+                }
+            )
+            test_client.cookies.set(settings.oauth2_temp_session_cookie_name, session)
+
+            callback_response = test_client.get(
+                f"{API_PREFIX}/oauth2/callback/keycloak",
+                params={"code": "auth-code", "state": "device-state"},
+            )
+            token_response = test_client.post(
+                f"{API_PREFIX}/oauth2/token",
+                data={
+                    "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                    "device_code": device_code,
+                    "client_id": "mcp-client-test",
+                },
+            )
+
+        assert callback_response.status_code == 400
+        assert callback_response.text == render_device_scope_error_page()
+        assert device_codes_storage[device_code]["status"] == "scope_denied"
+        assert token_response.status_code == 400
+        assert token_response.json()["error"] == "invalid_scope"
+        assert token_response.json()["error_description"] == "Requested scopes are not available for this user"
+        app.dependency_overrides = {}
 
     @patch("auth_server.routes.oauth_flow.map_groups_to_scopes")
     def test_backward_compatibility_without_resolved_scope(
