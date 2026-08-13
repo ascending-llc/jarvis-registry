@@ -18,8 +18,7 @@ class TestTelemetrySetup:
     @pytest.fixture(autouse=True)
     def reset_otel_state(self):
         """Reset OTel global state before and after each test."""
-        with patch("registry_pkgs.telemetry._tracer_provider", None):
-            yield
+        yield
 
         # Clean up after test to prevent background thread issues
         try:
@@ -252,16 +251,14 @@ class TestShutdownTelemetry:
             shutdown_telemetry()
 
     def test_shutdown_telemetry_shuts_down_trace_provider(self):
-        from registry_pkgs import telemetry
-
-        trace_provider = MagicMock()
+        mock_tracer_provider = MagicMock(spec=TracerProvider)
         with (
-            patch.object(telemetry, "_tracer_provider", trace_provider),
+            patch("registry_pkgs.telemetry.trace.get_tracer_provider", return_value=mock_tracer_provider),
             patch("registry_pkgs.telemetry.metrics.get_meter_provider") as mock_get_provider,
         ):
             shutdown_telemetry()
 
-        trace_provider.shutdown.assert_called_once_with()
+        mock_tracer_provider.shutdown.assert_called_once_with()
         mock_get_provider.return_value.shutdown.assert_called_once_with(timeout_millis=1000)
 
 
@@ -273,8 +270,6 @@ class TestSetupTracing:
     @pytest.fixture(autouse=True)
     def reset_otel_trace_state(self):
         registry_pkgs.telemetry._agno_instrumented = False
-        registry_pkgs.telemetry._trace_exporter_configured = False
-        registry_pkgs.telemetry._tracer_provider = None
         yield
         try:
             provider = trace.get_tracer_provider()
@@ -283,8 +278,6 @@ class TestSetupTracing:
         except Exception:  # best-effort teardown; provider may already be shut down
             pass
         registry_pkgs.telemetry._agno_instrumented = False
-        registry_pkgs.telemetry._trace_exporter_configured = False
-        registry_pkgs.telemetry._tracer_provider = None
 
     def test_setup_tracing_installs_tracer_provider(self):
         """After setup_tracing(), global TracerProvider is a real TracerProvider."""

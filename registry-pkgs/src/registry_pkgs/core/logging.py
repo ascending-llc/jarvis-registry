@@ -49,7 +49,6 @@ class StructuredLogFormatter(logging.Formatter):
 
 
 _configured_loggers: set[str] = set()
-_instrumentor_installed: bool = False
 
 
 def configure_structured_logging(
@@ -59,14 +58,13 @@ def configure_structured_logging(
     level: int | None = None,
 ) -> None:
     """Install ``LoggingInstrumentor`` and ``StructuredLogFormatter`` on named loggers."""
-    global _instrumentor_installed  # noqa: PLW0603
-    if not _instrumentor_installed:
-        LoggingInstrumentor().instrument(
+    instrumentor = LoggingInstrumentor()
+    if not instrumentor.is_instrumented_by_opentelemetry:
+        instrumentor.instrument(
             set_logging_format=False,
             inject_trace_context=True,
             enable_log_auto_instrumentation=False,
         )
-        _instrumentor_installed = True
 
     formatter = StructuredLogFormatter(
         service_name=service_name,

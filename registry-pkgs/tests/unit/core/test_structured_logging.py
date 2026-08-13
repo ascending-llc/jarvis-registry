@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-import logging
+from logging import INFO, LogRecord, StreamHandler, getLogger
 
 import pytest
 
@@ -18,8 +18,8 @@ from registry_pkgs.core.logging import (
 class TestStructuredLogFormatter:
     """StructuredLogFormatter outputs single-line JSON."""
 
-    def _make_record(self, msg="test message", level=logging.INFO, exc_info=None):
-        record = logging.LogRecord("test.logger", level, "test.py", 42, msg, (), exc_info)
+    def _make_record(self, msg="test message", level=INFO, exc_info=None):
+        record = LogRecord("test.logger", level, "test.py", 42, msg, (), exc_info)
         record.otelTraceID = "abc123"
         record.otelSpanID = "def456"
         return record
@@ -67,7 +67,7 @@ class TestStructuredLogFormatter:
 
     def test_no_trace_attrs_defaults_to_zero(self):
         fmt = StructuredLogFormatter()
-        record = logging.LogRecord("test", logging.INFO, "", 0, "msg", (), None)
+        record = LogRecord("test", INFO, "", 0, "msg", (), None)
         output = fmt.format(record)
         parsed = json.loads(output)
 
@@ -95,9 +95,9 @@ class TestConfigureStructuredLogging:
         _configured_loggers.clear()
 
     def test_installs_on_existing_handlers(self):
-        test_logger = logging.getLogger("test_structured_existing")
+        test_logger = getLogger("test_structured_existing")
         test_logger.handlers.clear()
-        handler = logging.StreamHandler()
+        handler = StreamHandler()
         test_logger.addHandler(handler)
 
         configure_structured_logging("test_structured_existing", service_name="svc")
@@ -105,7 +105,7 @@ class TestConfigureStructuredLogging:
         assert isinstance(handler.formatter, StructuredLogFormatter)
 
     def test_creates_handler_if_none_exist(self):
-        test_logger = logging.getLogger("test_structured_nohandler")
+        test_logger = getLogger("test_structured_nohandler")
         test_logger.handlers.clear()
 
         configure_structured_logging("test_structured_nohandler", service_name="svc")
@@ -114,9 +114,9 @@ class TestConfigureStructuredLogging:
         assert isinstance(test_logger.handlers[0].formatter, StructuredLogFormatter)
 
     def test_idempotent(self):
-        test_logger = logging.getLogger("test_structured_idempotent")
+        test_logger = getLogger("test_structured_idempotent")
         test_logger.handlers.clear()
-        handler = logging.StreamHandler()
+        handler = StreamHandler()
         test_logger.addHandler(handler)
 
         configure_structured_logging("test_structured_idempotent", service_name="svc")
@@ -126,9 +126,9 @@ class TestConfigureStructuredLogging:
 
     def test_multiple_loggers(self):
         for name in ("test_structured_multi_a", "test_structured_multi_b"):
-            lg = logging.getLogger(name)
+            lg = getLogger(name)
             lg.handlers.clear()
-            lg.addHandler(logging.StreamHandler())
+            lg.addHandler(StreamHandler())
 
         configure_structured_logging(
             "test_structured_multi_a",
@@ -137,5 +137,5 @@ class TestConfigureStructuredLogging:
         )
 
         for name in ("test_structured_multi_a", "test_structured_multi_b"):
-            lg = logging.getLogger(name)
+            lg = getLogger(name)
             assert isinstance(lg.handlers[0].formatter, StructuredLogFormatter)

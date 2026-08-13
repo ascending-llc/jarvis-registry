@@ -30,8 +30,6 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-_tracer_provider: TracerProvider | None = None
-
 # Histogram bucket boundaries for latency metrics (in seconds)
 # These buckets are designed to capture p50, p95, p99 accurately
 LATENCY_BUCKETS = [0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1.0, 2.5, 5.0, 7.5, 10.0]
@@ -50,7 +48,6 @@ _TRACE_MAX_EXPORT_BATCH_SIZE = 512
 _TRACE_SCHEDULE_DELAY_MILLIS = 5000
 
 _agno_instrumented = False
-_trace_exporter_configured = False
 
 
 def _otlp_headers(telemetry_config: TelemetryConfig) -> dict[str, str] | None:
@@ -235,7 +232,7 @@ def setup_tracing(
     Uses AgnoInstrumentor to auto-instrument all agno Agent/Model/Tool calls.
     Shares the same OTLP collector endpoint and Resource as setup_metrics().
     """
-    global _agno_instrumented, _trace_exporter_configured, _tracer_provider
+    global _agno_instrumented
 
     logger.info("Setting up tracing...")
     try:
@@ -259,7 +256,7 @@ def setup_tracing(
             _agno_instrumented = True
 
         otlp_endpoint = otlp_endpoint or telemetry_config.otel_exporter_otlp_endpoint
-        if otlp_endpoint and not _trace_exporter_configured:
+        if otlp_endpoint and provider_is_new:
             exporter = OTLPSpanExporter(
                 endpoint=f"{otlp_endpoint}/v1/traces",
                 timeout=_OTLP_EXPORT_TIMEOUT_SECONDS,
@@ -272,11 +269,9 @@ def setup_tracing(
                 schedule_delay_millis=_TRACE_SCHEDULE_DELAY_MILLIS,
             )
             tracer_provider.add_span_processor(processor)
-            _trace_exporter_configured = True
 
         if provider_is_new:
             trace.set_tracer_provider(tracer_provider)
-            _tracer_provider = tracer_provider
         logger.info("Agno tracing initialized (OTLP endpoint: %s)", otlp_endpoint)
     except Exception as exc:
         logger.warning("Failed to setup agno tracing: %s", exc)
@@ -284,12 +279,10 @@ def setup_tracing(
 
 def shutdown_telemetry() -> None:
     """Gracefully shutdown telemetry providers."""
-    global _trace_exporter_configured, _tracer_provider
-
     try:
-        if _tracer_provider is not None:
-            _tracer_provider.shutdown()
-            _tracer_provider = None
+        tracer_provider = trace.get_tracer_provider()
+        if isinstance(tracer_provider, TracerProvider):
+            tracer_provider.shutdown()
     except Exception:  # nosec B110 - intentional suppression during teardown
         pass
 
@@ -299,5 +292,3 @@ def shutdown_telemetry() -> None:
             provider.shutdown(timeout_millis=1000)
     except Exception as exc:
         logger.warning("Failed to shutdown metrics: %s", exc)
-
-    _trace_exporter_configured = False
