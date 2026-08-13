@@ -5,7 +5,6 @@ from opentelemetry import trace
 from opentelemetry.metrics import Histogram
 from opentelemetry.sdk.trace import TracerProvider
 
-import registry_pkgs.telemetry as _telemetry_module
 from registry_pkgs.core.config import TelemetryConfig
 from registry_pkgs.telemetry import setup_metrics, setup_tracing, shutdown_telemetry
 
@@ -274,16 +273,16 @@ class TestSetupTracing:
             provider = trace.get_tracer_provider()
             if isinstance(provider, TracerProvider):
                 provider.shutdown()
-        except Exception:  # best-effort teardown; provider may already be shut down
-            pass
+        except Exception as e:
+            print(f"e: {e}")
         try:
             from openinference.instrumentation.agno import AgnoInstrumentor
 
             instrumentor = AgnoInstrumentor()
             if instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.uninstrument()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"e: {e}")
 
     def test_setup_tracing_installs_tracer_provider(self):
         """After setup_tracing(), global TracerProvider is a real TracerProvider."""
@@ -348,7 +347,7 @@ class TestSetupTracing:
             patch("registry_pkgs.telemetry._load_agno_instrumentation", side_effect=ImportError("missing")),
             patch("opentelemetry.trace.set_tracer_provider") as mock_set,
         ):
-            _telemetry_module.setup_tracing("test-service", TelemetryConfig())
+            setup_tracing("test-service", TelemetryConfig())
             mock_set.assert_not_called()
 
     def test_setup_tracing_uses_same_resource_as_metrics(self):
