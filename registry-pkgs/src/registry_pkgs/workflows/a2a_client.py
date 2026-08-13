@@ -36,10 +36,9 @@ from registry_pkgs.models.federation_metadata import (
 
 logger = logging.getLogger(__name__)
 
-_A2A_JWT_TTL_SECONDS = 300
-_A2A_HTTP_TIMEOUT = 300
-# a2a poll timeout needs to be strictly less than _A2A_JWT_TTL_SECONDS and _A2A_HTTP_TIMEOUT
-_A2A_POLL_TIMEOUT = _A2A_HTTP_TIMEOUT * 0.6
+_A2A_TASK_BUDGET_SECONDS = 3600
+_A2A_JWT_TTL_SECONDS = _A2A_TASK_BUDGET_SECONDS + 300
+_A2A_HTTP_TIMEOUT = httpx.Timeout(30.0, read=_A2A_TASK_BUDGET_SECONDS)
 
 HeadersProvider = Callable[[A2AAgent], Awaitable[dict[str, str]]]
 ClientProvider = Callable[[A2AAgent], Awaitable[httpx.AsyncClient]]
@@ -265,11 +264,10 @@ async def _poll_until_terminal(
     `blocking=True` is only a hint; servers may ignore it and return a
     `submitted`/`working` Task immediately. Caller-side polling is the
     documented workaround (see a2a-send-message-1.md, Bug 2). Returns the
-    final Task. Raises TimeoutError if the _A2A_POLL_TIMEOUT budget is exceeded.
+    final Task. Raises TimeoutError if _A2A_TASK_BUDGET_SECONDS is exceeded.
     """
-    # Exponential backoff capped at 8s; total budget _A2A_POLL_TIMEOUT.
-    back_offs = (0.5, 1.0, 2.0, 4.0, 8.0)
-    deadline = time.monotonic() + _A2A_POLL_TIMEOUT
+    back_offs = (0.5, 1.0, 2.0, 4.0, 8.0, 15.0, 30.0)
+    deadline = time.monotonic() + _A2A_TASK_BUDGET_SECONDS
     delay_iter = iter(back_offs)
     while True:
         try:
@@ -279,7 +277,7 @@ async def _poll_until_terminal(
 
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            raise TimeoutError(f"polling timed out after {_A2A_POLL_TIMEOUT}s for task {task_id!r}")
+            raise TimeoutError(f"polling timed out after {_A2A_TASK_BUDGET_SECONDS}s for task {task_id!r}")
         await asyncio.sleep(min(delay, remaining))
 
         task = await client.get_task(TaskQueryParams(id=task_id), context=context)

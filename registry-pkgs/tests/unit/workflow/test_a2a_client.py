@@ -28,6 +28,7 @@ from registry_pkgs.testing.federation_metadata import (
     make_azure_foundry_metadata,
 )
 from registry_pkgs.workflows.a2a_client import (
+    _A2A_TASK_BUDGET_SECONDS,
     A2ACallResult,
     _ensure_a2a_result_fields,
     _extra_call_headers,
@@ -370,7 +371,8 @@ async def test_call_a2a_polling_timeout_returns_failure():
     )
 
     # Patch time.monotonic to jump past deadline on the second call.
-    monotonic_values = iter([0.0, 1000.0, 1000.0, 1000.0])
+    past_budget = _A2A_TASK_BUDGET_SECONDS + 1
+    monotonic_values = iter([0.0, past_budget, past_budget, past_budget])
 
     with (
         patch("registry_pkgs.workflows.a2a_client.ClientFactory", return_value=mock_factory),
